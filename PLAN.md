@@ -6,7 +6,9 @@ and interactions back into the agent session. Each such page is a **tendril**: a
 sensory and UI limb the agent grows on demand.
 
 Status: agreed design, 2026-11-13, simplified the same day to serve agent pages
-directly. Nothing is built. Claims about other systems
+directly. Exact interfaces are in `docs/PROTOCOL.md`, which wins where the two differ.
+Implementation started 2026-11-13; end-to-end encryption and the native wrapper are
+deferred (phase 6). Nothing is built. Claims about other systems
 come from reading their code and docs, not from running them; the ones that still
 need a live test are listed in section 12.
 
@@ -130,7 +132,7 @@ Most page activity must not wake the agent. Three tiers:
 1. **Reflex**: handled by page code (turn-by-turn from GPS, a game loop, counting
    reps from the accelerometer).
 2. **Record**: written to state or the log, seen when the agent next looks.
-3. **Wake**: an explicit `tendril.send(…, {wake: true})`, a spoken or typed
+3. **Wake**: `tendril.send(data)` (wakes by default; `{wake: false}` only records), a spoken or typed
    instruction, or an error in freshly pushed content.
 
 The agent chooses the split by how it writes the page. The instructions file must
@@ -339,7 +341,7 @@ Needs a live test (phase 2):
 - **Adoption without the token.** From an owner device, the page control offers "connect
   an agent": it shows a one-time code, the user gives it to the new agent, and the
   agent exchanges it for a fresh token. The old token is revoked.
-- **Handover note.** State has a reserved `about` entry the agent maintains:
+- **Handover note.** State has a reserved `_about` entry the agent maintains:
   purpose, how the content is organised, where its source lives. A new session
   reads this, then the files, state and recent activity.
 - **Unattended.** The page keeps working on its own code. The presence indicator
@@ -381,6 +383,6 @@ Needs a live test (phase 2):
   copyable snippets are accessible by default.
 - **Automated check.** On request (`check`), a standard accessibility audit runs
   in the page and the findings go back to the agent. It is never part of a push.
-- **Preferences.** State has a reserved `prefs` entry (text size, contrast, no
+- **Preferences.** State has a reserved `_prefs` entry (text size, contrast, no
   audio, language) set by the user in the page control. Agent content is expected to
   honour it.

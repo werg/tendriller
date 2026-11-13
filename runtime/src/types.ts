@@ -29,6 +29,17 @@ export interface Core {
   request(msg: { t: string; [k: string]: any }): Promise<any>;
   raw(msg: object): void;
   upload(blob: Blob, opts?: { name?: string }): Promise<{ id: string; url: string }>;
+  // Additions (runtime-core). Bus also emits: "transcript" (entry), "notify_local" ({title,body}) when no
+  // Notification permission, "reload" ({version}), "welcome" (the raw welcome message).
+  /** Last `welcome` message from the server (tendril name, version pointers, budget, primary…), or null. */
+  welcome: any | null;
+  /** Current device rules (from welcome / `rules`). */
+  rules: any[];
+  /** Local speech synthesis honoring `_prefs.audio` / `_prefs.language`. */
+  speak(text: string): void;
+  /** Health signal (PROTOCOL 4): report now / defer the automatic report until ready(). */
+  ready(): void;
+  readyManual(): void;
 }
 export interface Voice {
   expose(name: string, opts: { description?: string; phrases?: string[]; params?: object }, fn: (args: any) => any): () => void;

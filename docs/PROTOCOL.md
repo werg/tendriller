@@ -62,8 +62,8 @@ Public, unauthenticated:
 | `GET P_tendril/tendril.js` | Runtime bundle (static asset `/_tendril/tendril.js`). |
 | `GET P_tendril/sw.js` | Service worker (static asset) with header `Service-Worker-Allowed: <path of P>`. |
 | `GET P_tendril/ws` | WebSocket upgrade (section 7). |
-| `GET P_tendril/info` | `{"id","version","files":[paths],"features":{...}}` for the service worker's cache list. |
-| `POST P_tendril/blob` | Raw body upload, `Content-Type` kept, optional header `X-Tendril-Name`. Max 25 MB. → `{"id","url"}` where `url` is page-relative `_tendril/blob/<id>`. Recorded in activity. |
+| `GET P_tendril/info` | `{"id","version","base","files":[paths],"features":{...}}` for the service worker's cache list. `files` are paths relative to `P`. |
+| `POST P_tendril/blob` | Raw body upload, `Content-Type` kept, optional headers `X-Tendril-Name` and `X-Tendril-Device` (the uploading device id, for attribution in activity). Max 25 MB. → `{"id","url"}` where `url` is page-relative `_tendril/blob/<id>`. Recorded in activity. Refused (403) for `display` links. |
 | `GET P_tendril/blob/<id>` | Blob bytes. |
 | `GET P_tendril/snippets/<name>.js` | Same as `/snippets/<name>.js`, so pages can use relative URLs. |
 | `GET P_tendril/manifest.webmanifest` | Web app manifest from tendril metadata (`name`, `short_name`, `theme_color`, `background_color`, icon); `start_url` and `scope` = `P`. |
@@ -100,7 +100,9 @@ All requests need `Authorization: Bearer <token>` except `POST /api/tendrils`
 **Files and versions (section 4)**
 
 - `PUT A/files/<path>` raw body, `Content-Type` stored (guessed from extension if
-  absent or `application/octet-stream`). Optional query `message`. Creates a new
+  absent, `application/octet-stream` or `application/x-www-form-urlencoded`; a
+  `text/plain` type is also replaced by the guess when the extension is known, because
+  `curl --data-binary` and `fetch(url, {body: string})` send those by default). Optional query `message`. Creates a new
   version = previous latest version's files + this file. → `{"version","files":[paths]}`.
 - `POST A/files` body `{"files":{"<path>": "<utf8 text>" | {"base64":"…","type"?:"…"}}, "delete"?:["path"], "replace"?:bool, "message"?:string}`
   → one new version. `replace: true` means the version holds only the given files.
@@ -163,7 +165,8 @@ All requests need `Authorization: Bearer <token>` except `POST /api/tendrils`
 **State (section 3.2)**
 
 - `GET A/state` → `{"rev","state"}`.
-- `PUT A/state` body = whole new state object → `{"rev"}`.
+- `PUT A/state` body = whole new state object → `{"rev"}`. Broadcast to pages as
+  top-level ops (`delete` for removed keys, `set` for each key).
 - `PATCH A/state` body = JSON Merge Patch (RFC 7396; `null` deletes) **or**
   `{"ops":[{"op":"set","path":["a","b"],"value":…}|{"op":"delete","path":[…]}]}`
   → `{"rev"}`.
@@ -233,7 +236,12 @@ logs 2000 kept; events 10 000 kept and 30 days; activity 30 days; eval code 256 
 - Serving rule: a request for `P` gets `current` unless `current` is failed, in
   which case it gets `healthy`; no healthy and no current → holding page.
 - Pages can include the served version in requests for other files via the
-  `?v=<n>` query the runtime adds; without it, files come from `current`.
+  `?v=<n>` query the runtime adds; without it, files come from the version the
+  serving rule picks (normally `current`).
+- "Served to a connected device" (start of the 15 s timer) means: an HTML file of the
+  pending version was served to a browser navigation (`Sec-Fetch-Mode: navigate` or
+  `Sec-Fetch-Dest: document`) or while any page socket was connected, or a page sent
+  `hello` with that version. A plain `curl` of the page does not start the timer.
 
 ## 5. Runtime injection
 
@@ -267,7 +275,24 @@ is no `<head>`):
 ## 7. WebSocket protocol (page ↔ Durable Object)
 
 Path `P_tendril/ws`. Messages are JSON objects with field `t`. Server uses the
-hibernation API; per-socket attachment holds `{deviceId, role, linkId}`.
+hibernation API; per-socket attachment holds `{deviceId, linkId, version}` (the role
+is read from the device record on every message, so role changes apply at once).
+
+Server behaviour details:
+- `hello` must come first; anything else before it gets `error` `not_ready` (`ping`
+  is always answered). An invalid `hello` closes with 4400; a known device id with a
+  different secret gets `error` `device_secret` and close 4003.
+- Close codes: 4001 link deleted/rotated/expired, 4003 device removed, 4004 tendril
+  deleted.
+- Replies to messages with a `cid` are `ack` (or the typed reply listed below). A
+  failed request gets `ack {cid, error:"<code>", message}`; owner-only messages from
+  other roles get `error {code:"forbidden", cid}`.
+- Dedupe applies to `send`, `state`, `rollback`, `rule_fired`, `voice_event`, keyed by
+  `(device id, cid)`; a duplicate gets the original `ack` again.
+- `state_reset` is sent after `welcome` when the page's `rev` is newer than the
+  server's (unknown), and after a rejected `state` message so the page drops its
+  optimistic change. `welcome` always carries the full state.
+- `instruction_echo` goes to every device except the sender.
 
 Page → server:
 
@@ -304,7 +329,7 @@ Server → page:
 | `state_reset` | `state, rev` (sent instead of ops when the page's rev is too old) |
 | `eval` | `call_id, code` |
 | `reload` | `version` |
-| `presence` | presence object (section 8.4) |
+| `presence` | the presence object's fields at top level: `{"t":"presence","state","text",…}` (section 8.4) |
 | `say` | `text, speak, ts` |
 | `instruction_echo` | `text, via, device, ts` (so all devices show the transcript) |
 | `role` | `role, pending` |
@@ -330,7 +355,8 @@ agent to look and carries a count, never content.
 - Over budget: the event is stored with `wake:false, withheld:true`, the class's
   withheld counter increments (reported in `GET A/events` as `withheld` and in the
   wake config), and pages get a presence update so the control can say "the agent
-  will see this at its next check".
+  will see this at its next check". The counters reset to 0 when a `GET A/events`
+  response returns events (not on a long-poll timeout, which still reports them).
 - `version_failed` wakes at most once per version regardless of budget.
 
 ### 8.3 Delivery paths
@@ -356,10 +382,22 @@ Computed by the server, broadcast to pages on change, recomputed by an alarm eve
 - `working`: a check-in happened within the last 60 s and no long-poll is held, or `POST A/status` set it.
 - `scheduled`: schedule hint set; text "checks every N min"; becomes `not_responding` if no check-in for 2 × N + 5 min.
 - `not_responding`: a wake was delivered and no check-in followed within `grace_seconds` (default 120).
-- `away`: last check-in more than 1 h ago and none of the above; text "last heard from <relative time>".
+- `away`: none of the above applies (in practice: no long-poll held, no webhook, no
+  schedule, last check-in more than 60 s ago); text "Last heard from <relative time>".
+  (Changed from "more than 1 h ago", which left 60 s–1 h undefined.)
 - `no_agent`: never checked in, or all tokens revoked.
 
 A check-in is any authenticated agent API call. It clears `not_responding`.
+
+Precedence: `no_agent` > `not_responding` (grace) > `listening` (long-poll held) >
+`POST A/status` with `state:"working"` > `working` (check-in < 60 s) > `listening`
+(webhook) > `scheduled` / `not_responding` (schedule) > `away`. `POST A/status` with
+`state` `idle` or `done` keeps the computed state (without the 60 s `working`) and
+replaces its text (default "Idle"/"Done"). A wake counts as delivered when a held
+long-poll is released or a webhook POST succeeds; if the grace period then passes
+without a check-in and a webhook is configured, the webhook is sent once more.
+Presence is re-broadcast when anything but `last_seen` changes, or when `last_seen`
+enters a new minute.
 
 ## 9. Fast voice layer (owner: voice agent)
 
@@ -458,6 +496,14 @@ export interface Core {
 }
 export function createCore(cfg: Window["__TENDRIL__"]): Core;
 ```
+Additions (see `runtime/src/types.ts`): `core.welcome` (last welcome message), `core.rules`,
+`core.speak(text)`, `core.ready()`, `core.readyManual()`; the bus also emits `transcript`
+(new entry, or `null` when replaced by a welcome), `notify_local` (`{title, body}` when the
+Notification permission is missing) and `reload` (`{version}`, just before reloading).
+`send()` resolves `{queued: true}` when not acked (offline, or 3 s before the first connect);
+an ack carrying `error` resolves with `error` set instead of rejecting, so page code without a
+`catch` cannot fail its own health check. `window.tendril._core` (non-enumerable) is the Core,
+for the control and tests.
 `runtime/src/control/index.ts` (control agent) exports `mountControl(core: Core): ControlApi` with `ControlApi = { hide(); show(); position(p) }`.
 `runtime/src/voice/index.ts` (voice agent) exports `createVoice(core: Core): { expose(name, opts, fn): () => void; start(): Promise<void>; stop(): void; readonly state: "idle"|"listening"|"thinking"|"unavailable"; handleUtterance(text: string, via: "voice"|"text"): Promise<boolean> }`.
 The control's push-to-talk calls `voice.handleUtterance(text, "voice")`; if it returns `false`, the control calls `core.instruction(text, "voice")`.
