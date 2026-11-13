@@ -1,0 +1,310 @@
+# Tendriller as a public service: plan
+
+Status: proposal, 2026-11-13. Nothing here is built yet. It changes the trust model in
+`docs/PROTOCOL.md` (sections 1, 2, 6) and is meant to be agreed before those change.
+
+## 1. Goals
+
+- Any agent can create a tendril with no account, key or setup, as today.
+- A person sees a tendril's page only after signing in with GitHub or Google, and the
+  page then belongs to that sign-in.
+- Abuse is expensive, visible and quick to remove. Costs have a hard ceiling.
+- The whole Cloudflare setup is reproducible from the repository plus a few one-time
+  manual steps.
+
+Not goals: paid plans, team accounts, custom domains per user, data residency choices.
+They can come later without changing this design.
+
+## 2. The trust model: open creation, signed-in pages
+
+### 2.1 Lifecycle
+
+1. **Created (unclaimed).** `POST /api/tendrils` needs no key. It is rate limited per IP
+   (section 5). The agent can name who the page is for:
+   `{"owner": "ana@example.com"}` (an email), `"github:octocat"` or `"google:ana@example.com"`.
+   The agent gets its token and the page URL as now and can upload files, set state and
+   so on. An unclaimed tendril has small limits (section 5.2) and is deleted if nobody
+   claims it within 24 hours.
+2. **Claim, on first open.** Opening the page URL starts sign-in right away: the page
+   shows one screen ("An AI agent made this page for you. Sign in with GitHub or Google to
+   open it.") and the OAuth sign-in follows. With a named owner, only a sign-in whose
+   verified identity matches can open it: an email matches a verified email from Google
+   or GitHub (GitHub's verified addresses come from the `user:email` scope), and
+   `github:`/`google:` match the account. The screen shows the expected owner masked
+   (`a***@example.com`). Without a named owner, the first person to sign in claims it.
+   Either way the tendril is then bound to that account. Link previewers and crawlers
+   cannot claim, because claiming needs an interactive OAuth sign-in.
+3. **Claimed.** The page is served only to signed-in accounts with a role: the owner, and
+   people the owner invited (section 2.3). Quotas now come from the owner's account. The
+   agent keeps its token and works as today. `GET A` reports the owner
+   (`{"owner": {"provider": "github", "login": "octocat"}}`) so the agent can tell the
+   user who claimed it.
+
+### 2.2 Closing the gaps of claim-on-first-open
+
+| Gap | Answer |
+|---|---|
+| An attacker sends an unclaimed link to one victim, who claims it and sees attacker content. | One link reaches one person; mass phishing needs one tendril per victim, which the per-IP creation limit and abuse handling (section 6) make expensive. The claim screen warns first. A first visit to a claimed page from a device that has not opened it before shows a one-line notice in the control ("made by an AI agent; Tendriller never asks for passwords"). |
+| The link is posted in a group chat and the wrong person claims it. | Name the owner at creation (step 1); then nobody else can claim it. Without one, the agent sees the owner in `GET A` and can `POST A/release` to make it unclaimed again (harmless: an agent can always make a new tendril). |
+| An attacker names a victim as owner. | Gives the attacker nothing beyond sending them an unnamed link: the victim still has to choose to sign in, and the tendril is then the victim's, with the same notices and reporting. |
+| An anonymous agent uses the API as free file storage or a file share without ever showing the page. | Unclaimed tendrils hold at most 2 MB and live 24 hours; API reads of files and blobs are rate limited per tendril. |
+| Outbound requests (webhooks, MCP Events) on behalf of anonymous agents. | They only fire on wakes, and wakes come from page events, which need a claimed page. Webhook and MCP Events targets must be public HTTPS (already enforced). |
+| Login-free viewing (a kitchen display, a TV). | Only the owner can create a link that skips sign-in (`display` role), from the page while signed in, never from the agent token. The link shows "shared by <owner>" and counts against the owner's quota. Every login-free view therefore traces to a signed-in person. |
+
+### 2.3 Roles after the claim
+
+Today roles come from page links plus device pairing. With sign-in:
+
+- **Owner**: the claiming account, on any device where it is signed in. Device pairing
+  (`pairing: required`) is no longer needed and is removed.
+- **Guest**: an account the owner invited. The owner (from the page) or the agent
+  (`POST A/links {"role":"guest"}`) creates an invite link; opening it requires sign-in;
+  the owner approves the first sign-in from the control unless the agent passed
+  `"approve": "auto"`. Guests' text and voice stay data, not instructions (unchanged).
+- **Display**: login-free, owner-created only (section 2.2).
+
+The page key in the URL stays as the routing secret, but it no longer grants access by
+itself.
+
+### 2.4 Optional account keys for agents
+
+Signed-in users can create named API keys on the dashboard (or through the device flow
+below) and give them to their agents. A key is never required. It gives:
+
+- higher limits (the account's quota from the start, resident tendrils);
+- tendrils that are already claimed by the key's account, so there is no claim step and
+  no race;
+- revocation per agent.
+
+**Device flow**, so an agent can get a key without copy and paste:
+`POST /api/device` → `{device_code, user_code, verification_url}`. The agent shows the
+URL and code to its user, who signs in and approves "Agent <name> wants a key". The agent
+polls `POST /api/device/token` and receives `ak_…` once approved.
+
+## 3. Domains and origin isolation
+
+Two domains, both on Cloudflare:
+
+- **Service domain** (for example `tendriller.dev`): landing page, `agent.md`, the API,
+  sign-in, dashboard, admin, abuse reports.
+- **Pages domain** (for example `tendrilpages.dev`): only tendril pages, each at
+  `<tendril id>.<pages domain>`. Every tendril is its own origin, so one page cannot read
+  another's storage, cookies or service worker. Abuse on a page cannot affect the service
+  domain's reputation. The server already supports this (`PAGE_HOST_MODE=subdomain`).
+
+Then submit the pages domain to the Public Suffix List, so browsers treat each
+subdomain as a separate site: cookies are scoped to each one, and reputation systems
+(Safe Browsing) judge pages one by one. Acceptance takes weeks, so start early. It is
+not a launch blocker, because host-only cookies and separate origins already give
+isolation.
+
+### 3.1 What is automatable on Cloudflare
+
+All of it except buying the domains and creating the OAuth apps:
+
+| Step | How | Manual? |
+|---|---|---|
+| Register both domains | Cloudflare Registrar or any registrar | Yes, once (payment) |
+| Add the zones, point nameservers | Automatic with Cloudflare Registrar; otherwise API plus a registrar change | Once |
+| Certificates | Universal SSL covers the apex and one subdomain level (`<id>.<pages domain>`) automatically and for free. Deeper levels would need Advanced Certificate Manager, so pages stay one level deep. | No |
+| Pages wildcard | Proxied DNS record `*` (`AAAA 100::`) on the pages zone through the API, and a Worker route `*.<pages domain>/*` in `wrangler.jsonc` | No |
+| Service domain | Worker Custom Domain in `wrangler.jsonc` (creates its DNS record and certificate) | No |
+| D1 database, R2 bucket, rate-limit namespaces | `wrangler d1 create`, `wrangler r2 bucket create`; rate limits are declared in `wrangler.jsonc` | No |
+| Secrets | `wrangler secret put` from a script | No |
+| GitHub OAuth app, Google OAuth client | Their consoles; the client ids and secrets then become Worker secrets | Yes, once each |
+
+A new tendril needs nothing: the wildcard record and route cover every id. A script,
+`scripts/provision.mjs`, will do the automatable rows idempotently with a scoped API token
+(Zone DNS edit, Workers Scripts and Routes edit, D1 edit, R2 edit). Deploys run from CI
+(section 8).
+
+## 4. Accounts and sign-in
+
+- **Storage:** D1, with tables `accounts`, `identities (provider, subject)`, `sessions`,
+  `api_keys (hash, name, account, created, last_used)`, `tendrils (id, owner, created,
+  claimed, state, bytes)`, `reports`, `audit_log`, `blocks`. Per-tendril data stays in
+  each Durable Object. D1 is the index across tendrils and the place quotas are checked.
+- **Sign-in:** OAuth authorization code flow with PKCE for GitHub and Google (OIDC), done
+  by the Worker on the service domain. Accounts are keyed by `(provider, subject)`, not by
+  email. A signed-in user can link the other provider.
+- **Session on the service domain:** an `HttpOnly; Secure; SameSite=Lax` cookie with an
+  opaque id, stored hashed in D1.
+- **Session on a page origin:** a page subdomain cannot read the service cookie. Opening
+  a page without a page session redirects to `<service>/auth/page?tendril=<id>`. If the
+  service session is valid and the account has a role, the service redirects back to
+  `<id>.<pages>/_tendril/session?code=<one-time code>`. The page origin exchanges the
+  code with its Durable Object and sets a host-only `HttpOnly` cookie. One sign-in per
+  browser covers every tendril; later visits pass through without a prompt.
+- **The runtime's WebSocket** authenticates with that page session instead of the device
+  secret. Device ids stay for presence and the device list.
+- **Account deletion** deletes the account, its keys and every tendril it owns. A data
+  export (JSON of the tendril list plus each tendril's files) comes with it.
+
+## 5. Rate controls and quotas
+
+Two mechanisms:
+
+- The Workers **Rate Limiting binding** for request rates. It counts per Cloudflare
+  location and is approximate (eventually consistent), so it slows floods but does not
+  enforce hard caps. Periods are 10 or 60 seconds.
+- **Hard quotas** counted exactly: per tendril in its Durable Object (one writer, so
+  exact), and per account in D1. Durable Objects report byte changes to D1 in their alarm.
+
+### 5.1 Request rates (Rate Limiting binding)
+
+| Key | Limit (starting point) |
+|---|---|
+| Create, unauthenticated, per IP | 5 / 60 s, plus 30 per day per IP (counted in D1) |
+| Create, per account key | 30 / 60 s |
+| Agent API, per tendril token | 300 / 60 s |
+| `eval`, per tendril | 60 / 60 s |
+| Failed authentication, per IP | 20 / 60 s (then 429 for the rest of the minute) |
+| Abuse reports, per IP | 5 / 60 s |
+| Sign-in attempts, per IP | 20 / 60 s |
+| Page WebSocket messages, per device | 50 / s, exact, in the Durable Object |
+
+### 5.2 Quotas (exact)
+
+| | Unclaimed | Claimed (free account) |
+|---|---|---|
+| Lifetime | 24 h unless claimed | ad hoc: 30 days idle; resident: until deleted |
+| Storage per tendril (files, versions, blobs) | 2 MB | 100 MB |
+| Single file / blob | 1 MB | 10 MB (today 25 MB) |
+| Tendrils per account | — | 50 active, 10 resident |
+| Storage per account | — | 1 GB |
+| Notifications | none | 20 per tendril per hour |
+| Webhook and MCP Events subscriptions | none (no wakes before claim) | 10 per tendril (as now) |
+| Voice and transcription (if enabled) | none | minutes per account per day, set when enabled |
+
+When a quota is reached the API answers `429` or `413` with `{"error":{"code":"quota", "limit", "used"}}`
+and the page's control says so.
+
+### 5.3 Global controls
+
+- A `service_state` row in D1 (`open`, `creation_paused`, `read_only`), checked on every
+  create and write. It lets an operator stop sign-ups or writes during an incident without
+  a deploy.
+- Cloudflare budget and usage notifications on the account; a daily job compares usage
+  with the quotas' worst case and alerts on drift.
+
+## 6. Abuse handling
+
+### 6.1 What to expect
+
+Phishing and credential capture; malware or scam downloads; spam and search-engine pages;
+covert tracking (a page that streams someone's location or camera without their
+knowledge); crypto mining in the browser; illegal content; using the service as free
+storage or as an outbound request relay.
+
+### 6.2 Prevention
+
+- Pages only for signed-in accounts with a role, one claimer per link (section 2).
+- A separate pages domain, an origin per tendril, the Public Suffix List (section 3).
+- A visible sensor indicator: while a page uses location, camera, microphone or motion,
+  the control shows it, and the owner sees from the dashboard which devices shared what.
+  Guests always see the indicator.
+- Checks on every new version before it is served to anyone but the owner. These are
+  cheap static checks: `<input type=password>`, forms posting to other origins, large
+  executables, known miner scripts, and known brand names next to sign-in words. Matches
+  raise a score. A high score holds the version for guests and display links (owners still
+  see it) and puts it in the review queue.
+- URLs in pages and in outbound webhook targets checked against Google Web Risk (or Safe
+  Browsing) when a version is created.
+- Every page carries "Report this page" in the control's menu, and `/_tendril/report` works
+  even when the control is hidden.
+
+### 6.3 Detection
+
+- Reports: from the page, from `<service>/report` (URL plus reason, Turnstile protected),
+  and by email to `abuse@<service domain>` (also the address Cloudflare forwards its own
+  abuse complaints to).
+- Signals that open a review item automatically: version checks (6.2); a burst of distinct
+  signed-in guests on a young tendril; many tendrils created then claimed by different
+  accounts from one IP (one sender, many victims); repeated releases of claims.
+
+### 6.4 Response
+
+- **Admin console** at `<service>/admin` for accounts on an allowlist of GitHub or Google
+  identities. It shows the report and flag queue with a sandboxed preview (static file
+  listing, plus an optional Browser Rendering screenshot), the tendril's owner and history,
+  and actions:
+  - **Disable a tendril:** the Durable Object marks itself disabled, pages show a takedown
+    notice, the API answers 403 `{"code":"disabled"}`. Files are kept as evidence for
+    90 days, then deleted.
+  - **Suspend an account:** all its tendrils disabled, keys revoked, sign-in refused; the
+    identity goes into `blocks` so a new account cannot be made with it.
+  - **Block an IP or range** for unauthenticated creation.
+  - **Restore**, with a reason.
+- **Automatic hold:** reports from 3 different signed-in accounts within 24 hours, or a
+  high version-check score on an account younger than 7 days, disables the tendril
+  pending review. The owner is told why and can appeal.
+- **Notices:** the owner gets an email at the address the identity provider gave
+  (GitHub primary email or Google email) with the reason and an appeal link. Reporters get
+  an acknowledgement.
+- **Audit log** of every admin action, with who, when, what and why.
+- **Targets:** review held items within 24 hours; act on credible phishing reports within
+  4 hours during staffed hours. Someone has to own the queue (open question).
+
+## 7. Legal and privacy
+
+To be written with legal review before launch: terms of service and acceptable use
+policy, privacy policy (what is stored: files, events and sensor data for 30 days,
+transcripts, device information; processors: Cloudflare, and OpenAI if voice is
+enabled), a DMCA designated agent, a minimum age, GDPR rights (export and deletion are
+section 4), and a law-enforcement request process. The claim screen links the terms and
+the privacy policy.
+
+## 8. Operations
+
+- **Environments:** `staging` and `production` as Wrangler environments, each with its own
+  domains, D1, R2 and secrets. The current workers.dev deployment becomes staging.
+- **CI:** GitHub Actions run typecheck and tests, deploy staging on `main`, and deploy
+  production on a tag, with a scoped API token stored as a repository secret.
+- **Monitoring:** Workers observability logs, alerts on error rate, creation rate and
+  quota rejections, and a public status page.
+- **Backups:** D1 Time Travel for the account index. Tendril data lives only in its
+  Durable Object and R2, so there are no backups of user pages beyond the takedown evidence
+  copies. Say so in the terms.
+- **Runbooks:** pausing creation, mass takedown, key leak, OAuth secret rotation.
+
+## 9. Changes to the code
+
+- `router.ts`: split by host. The service domain gets API, auth, dashboard, admin and
+  report routes; the pages domain gets only page routes. Remove `CREATE_KEY`; add per-IP
+  limits and the `owner` field.
+- New `server/src/accounts/` (OAuth, sessions, keys, device flow), `server/src/abuse/`
+  (reports, checks, admin), and D1 migrations.
+- `tendril.ts`: `owner`, `claimed_at`, `disabled`, per-tendril limits from the owner's
+  tier, `release`, byte reporting to D1, deletion of unclaimed tendrils after 24 h.
+- `page.ts` and `ws.ts`: the claim screen, page sessions, the role check before serving
+  anything, the first-visit notice, report routes.
+- Runtime control: sign-in state, the sensor indicator, invite and approve, the report menu.
+- `PROTOCOL.md` sections 1, 2, 6 and 8 and `agent.md` rewritten for the new model; `agent.md`
+  gains the device flow and the `owner` field.
+
+## 10. Phases
+
+Each phase ships to staging with tests, then production.
+
+1. **Domains and isolation.** Provisioning script, two domains, subdomain mode by default,
+   CI and environments. Check: two tendrils cannot read each other's `localStorage`.
+2. **Sign-in and claim.** OAuth, sessions, the claim screen, page sessions, roles, invites,
+   display links, the `owner` field, release, deletion of unclaimed tendrils. Check: an unclaimed
+   page never serves page content; a second account cannot open a claimed page without an
+   invite.
+3. **Quotas and rate limits.** Rate Limiting bindings, D1 counters, Durable Object byte
+   accounting, error shapes, the service state switch. Check: load tests at each limit.
+4. **Abuse tooling.** Reports, admin console, disable, suspend and block, version checks,
+   Web Risk, automatic holds, notices, audit log.
+5. **Keys and device flow.** Dashboard, `ak_…` keys, device flow, higher limits.
+6. **Launch.** Terms, privacy policy, abuse contact, status page, budget alerts, Public
+   Suffix List submission (started in phase 1), runbooks.
+
+## 11. Open questions
+
+- The two domain names.
+- Who handles the abuse queue, and in which hours.
+- Whether display links (login-free) are allowed at launch or later.
+- Starting quotas (section 5) and whether there will ever be a paid tier.
+- Whether voice and Workers AI transcription are on at launch, which sets the per-account
+  minutes.

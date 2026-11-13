@@ -7,6 +7,8 @@ sensory and UI limb the agent grows on demand.
 
 Status: agreed design, 2026-11-13, simplified the same day to serve agent pages
 directly. Exact interfaces are in `docs/PROTOCOL.md`, which wins where the two differ.
+Running Tendriller as a public service (open creation, pages behind GitHub or Google
+sign-in, quotas and abuse handling) is proposed in `docs/PUBLIC_SERVICE.md`.
 Implementation started 2026-11-13; end-to-end encryption and the native wrapper are
 deferred (phase 6). Nothing is built. Claims about other systems
 come from reading their code and docs, not from running them; the ones that still
