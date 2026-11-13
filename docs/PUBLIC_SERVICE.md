@@ -103,12 +103,17 @@ polls `POST /api/device/token` and receives `ak_…` once approved.
 
 Two domains, both on Cloudflare:
 
-- **Service domain** (for example `tendriller.dev`): landing page, `agent.md`, the API,
+- **Service domain**, `tendriller.dev`: landing page, `agent.md`, the API,
   sign-in, dashboard, admin, abuse reports.
-- **Pages domain** (for example `tendrilpages.dev`): only tendril pages, each at
-  `<tendril id>.<pages domain>`. Every tendril is its own origin, so one page cannot read
+- **Pages domain**, `tendriller.site`: only tendril pages, each at
+  `<tendril id>.tendriller.site`. Every tendril is its own origin, so one page cannot read
   another's storage, cookies or service worker. Abuse on a page cannot affect the service
   domain's reputation. The server already supports this (`PAGE_HOST_MODE=subdomain`).
+
+`.dev` is on browsers' HTTPS-only (HSTS preload) list as a whole top-level domain;
+`.site` is not. The pages domain therefore sends
+`Strict-Transport-Security: max-age=63072000; includeSubDomains; preload` from the start
+and is submitted to the HSTS preload list (hstspreload.org) in phase 1.
 
 Then submit the pages domain to the Public Suffix List, so browsers treat each
 subdomain as a separate site and reputation systems (Safe Browsing) judge pages one by
@@ -134,8 +139,8 @@ All of it except buying the domains and creating the OAuth apps:
 |---|---|---|
 | Register both domains | Cloudflare Registrar or any registrar | Yes, once (payment) |
 | Add the zones, point nameservers | Automatic with Cloudflare Registrar; otherwise API plus a registrar change | Once |
-| Certificates | Universal SSL covers the apex and one subdomain level (`<id>.<pages domain>`) automatically and for free. Deeper levels would need Advanced Certificate Manager, so pages stay one level deep. | No |
-| Pages wildcard | Proxied DNS record `*` (`AAAA 100::`) on the pages zone through the API, and a Worker route `*.<pages domain>/*` in `wrangler.jsonc` | No |
+| Certificates | Universal SSL covers the apex and one subdomain level (`<id>.tendriller.site`) automatically and for free. Deeper levels would need Advanced Certificate Manager, so pages stay one level deep. | No |
+| Pages wildcard | Proxied DNS record `*` (`AAAA 100::`) on the pages zone through the API, and a Worker route `*.tendriller.site/*` in `wrangler.jsonc` | No |
 | Service domain | Worker Custom Domain in `wrangler.jsonc` (creates its DNS record and certificate) | No |
 | D1 database, R2 bucket, rate-limit namespaces | `wrangler d1 create`, `wrangler r2 bucket create`; rate limits are declared in `wrangler.jsonc` | No |
 | Secrets | `wrangler secret put` from a script | No |
@@ -388,7 +393,9 @@ a tendril needs `CREATE_KEY`, so it is not open to the public. Phase 7 opens pro
 and only once quotas and ceilings, reporting, automatic takedowns, appeals and the legal
 pages are all live on staging.
 
-1. **Domains and isolation.** Provisioning script, two domains, subdomain mode by default,
+1. **Domains and isolation.** Register `tendriller.dev` and `tendriller.site` (Cloudflare
+   Registrar puts the zones on Cloudflare directly), provisioning script, subdomain mode by default,
+   HSTS preload and Public Suffix List submissions for `tendriller.site`,
    CI and environments, `__Host-` cookies and Origin checks. Check: the hostile-tendril
    tests in section 3 pass.
 2. **Sign-in and claim.** OAuth, sessions, the claim screen, page sessions, roles, invites,
@@ -415,6 +422,8 @@ pages are all live on staging.
 - Speech: on the device with a downloadable model, Cactus Whistle first (section 7); no
   server-side speech.
 
+- Domains: `tendriller.dev` (service) and `tendriller.site` (pages).
+
 ## 13. Open questions
 
-- The two domain names.
+None at the moment.
