@@ -1,6 +1,6 @@
 # Tendriller as a public service: plan
 
-Status: proposal, 2026-11-13. Nothing here is built yet. It changes the trust model in
+Status: proposal, 2026-11-13, with the decisions in section 12. Nothing here is built yet. It changes the trust model in
 `docs/PROTOCOL.md` (sections 1, 2, 6) and is meant to be agreed before those change.
 
 ## 1. Goals
@@ -165,16 +165,19 @@ Two mechanisms:
 
 ### 5.2 Quotas (exact)
 
+Starting values, deliberately tight; loosen with real usage. There is no paid tier.
+
 | | Unclaimed | Claimed (free account) |
 |---|---|---|
 | Lifetime | 24 h unless claimed | ad hoc: 30 days idle; resident: until deleted |
-| Storage per tendril (files, versions, blobs) | 2 MB | 100 MB |
-| Single file / blob | 1 MB | 10 MB (today 25 MB) |
-| Tendrils per account | — | 50 active, 10 resident |
-| Storage per account | — | 1 GB |
+| Storage per tendril (files, versions, blobs) | 2 MB | 25 MB |
+| Single file / blob | 1 MB | 5 MB (today 25 MB) |
+| Tendrils per account | — | 20 active, 3 resident |
+| Storage per account | — | 200 MB |
 | Notifications | none | 20 per tendril per hour |
 | Webhook and MCP Events subscriptions | none (no wakes before claim) | 10 per tendril (as now) |
-| Voice and transcription (if enabled) | none | minutes per account per day, set when enabled |
+| Display links | none | 3 per tendril |
+| Server-side voice | none | none (speech runs on the device, section 7) |
 
 When a quota is reached the API answers `429` or `413` with `{"error":{"code":"quota", "limit", "used"}}`
 and the page's control says so.
@@ -206,8 +209,9 @@ storage or as an outbound request relay.
 - Checks on every new version before it is served to anyone but the owner. These are
   cheap static checks: `<input type=password>`, forms posting to other origins, large
   executables, known miner scripts, and known brand names next to sign-in words. Matches
-  raise a score. A high score holds the version for guests and display links (owners still
-  see it) and puts it in the review queue.
+  raise a score. A high score withholds the version from guests and display links (owners
+  still see it, and the owner can appeal); on a young account it holds the tendril
+  (section 6.4).
 - URLs in pages and in outbound webhook targets checked against Google Web Risk (or Safe
   Browsing) when a version is created.
 - Every page carries "Report this page" in the control's menu, and `/_tendril/report` works
@@ -218,16 +222,35 @@ storage or as an outbound request relay.
 - Reports: from the page, from `<service>/report` (URL plus reason, Turnstile protected),
   and by email to `abuse@<service domain>` (also the address Cloudflare forwards its own
   abuse complaints to).
-- Signals that open a review item automatically: version checks (6.2); a burst of distinct
-  signed-in guests on a young tendril; many tendrils created then claimed by different
-  accounts from one IP (one sender, many victims); repeated releases of claims.
+- Complaints Cloudflare forwards, and mail to `abuse@`, go through Email Routing to a
+  Worker that extracts tendril URLs and files them as reports, so no inbox needs watching.
+- Signals: version checks (6.2); a Web Risk match; a burst of distinct signed-in guests,
+  or of display-link visitors from many IPs, on a young tendril; many tendrils created and
+  then claimed by different accounts from one IP (one sender, many victims); repeated
+  releases of claims.
 
 ### 6.4 Response
 
+Nobody reviews reports as they come in. Takedowns are automatic; a person looks only at
+appeals, when they can. The terms say so: no promised review time, and an appeal
+restores a page that was wrongly held.
+
+- **Automatic hold** (the tendril is disabled pending appeal) when any of these happens:
+  - a Web Risk match, or a forwarded complaint naming the tendril;
+  - reports from 3 different signed-in accounts within 24 hours. Only accounts at least
+    7 days old count, accounts that reported pages later restored on appeal stop
+    counting, and an owner's own invitees count once together, so a group cannot take
+    down a stranger's page cheaply;
+  - a high version-check score on an account younger than 7 days;
+  - a signal from 6.3 that crosses its threshold.
+- **Automatic account suspension:** an account with 3 holds not reversed on appeal within
+  30 days is suspended (all tendrils disabled, keys revoked, identity blocked).
+- **Unclaimed tendrils** that are reported are deleted outright, and their creator IP
+  loses keyless creation for 24 hours.
 - **Admin console** at `<service>/admin` for accounts on an allowlist of GitHub or Google
   identities. It shows the report and flag queue with a sandboxed preview (static file
   listing, plus an optional Browser Rendering screenshot), the tendril's owner and history,
-  and actions:
+  and actions, used for appeals and for anything automation missed:
   - **Disable a tendril:** the Durable Object marks itself disabled, pages show a takedown
     notice, the API answers 403 `{"code":"disabled"}`. Files are kept as evidence for
     90 days, then deleted.
@@ -235,26 +258,52 @@ storage or as an outbound request relay.
     identity goes into `blocks` so a new account cannot be made with it.
   - **Block an IP or range** for unauthenticated creation.
   - **Restore**, with a reason.
-- **Automatic hold:** reports from 3 different signed-in accounts within 24 hours, or a
-  high version-check score on an account younger than 7 days, disables the tendril
-  pending review. The owner is told why and can appeal.
 - **Notices:** the owner gets an email at the address the identity provider gave
   (GitHub primary email or Google email) with the reason and an appeal link. Reporters get
   an acknowledgement.
-- **Audit log** of every admin action, with who, when, what and why.
-- **Targets:** review held items within 24 hours; act on credible phishing reports within
-  4 hours during staffed hours. Someone has to own the queue (open question).
+- **Audit log** of every automatic and manual action, with what triggered it.
+- **Known weakness:** with no human queue, a page that passes the checks stays up until
+  three established accounts report it, and a wrongful hold lasts until someone reads the
+  appeal. Watch the hold and appeal rates in the first weeks and add a review step if
+  either is high.
 
-## 7. Legal and privacy
+## 7. Speech on the device
+
+No server-side speech at launch: no Workers AI transcription and no OpenAI realtime voice.
+The runtime transcribes on the device with a small downloadable model:
+
+- **Model:** Cactus Whistle (Cactus Compute, released 2026-10-02): 16.9 MB, Apache 2.0,
+  English, German, French, Spanish, Italian, Dutch and Polish, batch transcription of up
+  to 30 s per pass. Its engine is built for the browser as WebAssembly (a WebGPU build
+  exists in the community).
+- **Delivery:** the service serves a pinned copy of the model and engine from R2, so pages
+  do not depend on a third-party host. The runtime downloads them the first time someone
+  presses the microphone, never before, and says how large the download is.
+- **The cost of isolation:** browsers partition caches by site, so with an origin per
+  tendril (and the pages domain on the Public Suffix List) each tendril downloads the
+  model once per device. 17 MB is acceptable for a deliberate tap; the control shows it.
+- **Interface:** the same `listen()` and microphone button as today, so the model can be
+  swapped for a newer one without changing pages. The model choice is a runtime setting
+  (`speech: {model, url, sha256}`), checked by hash before use.
+- **Fallbacks:** the browser's own speech recognition where present, for languages Whistle
+  does not cover or when the download is declined; typing always works.
+- **Privacy:** audio never leaves the device, and there is no speech processor to list in
+  the privacy policy.
+
+Before building: confirm the browser package and API of the Cactus engine (the launch post
+shows a browser demo but the integration documentation is thin), measure transcription
+time on a mid-range phone, and decide whether to chunk long recordings into 30 s passes.
+
+## 8. Legal and privacy
 
 To be written with legal review before launch: terms of service and acceptable use
 policy, privacy policy (what is stored: files, events and sensor data for 30 days,
-transcripts, device information; processors: Cloudflare, and OpenAI if voice is
-enabled), a DMCA designated agent, a minimum age, GDPR rights (export and deletion are
+transcripts the page sends, device information; processor: Cloudflare; speech is
+transcribed on the device), a DMCA designated agent, a minimum age, GDPR rights (export and deletion are
 section 4), and a law-enforcement request process. The claim screen links the terms and
 the privacy policy.
 
-## 8. Operations
+## 9. Operations
 
 - **Environments:** `staging` and `production` as Wrangler environments, each with its own
   domains, D1, R2 and secrets. The current workers.dev deployment becomes staging.
@@ -267,7 +316,7 @@ the privacy policy.
   copies. Say so in the terms.
 - **Runbooks:** pausing creation, mass takedown, key leak, OAuth secret rotation.
 
-## 9. Changes to the code
+## 10. Changes to the code
 
 - `router.ts`: split by host. The service domain gets API, auth, dashboard, admin and
   report routes; the pages domain gets only page routes. Remove `CREATE_KEY`; add per-IP
@@ -278,11 +327,13 @@ the privacy policy.
   tier, `release`, byte reporting to D1, deletion of unclaimed tendrils after 24 h.
 - `page.ts` and `ws.ts`: the claim screen, page sessions, the role check before serving
   anything, the first-visit notice, report routes.
-- Runtime control: sign-in state, the sensor indicator, invite and approve, the report menu.
+- Runtime control: sign-in state, the sensor indicator, invite and approve, display links,
+  the report menu, and on-device speech (section 7).
+- An Email Routing Worker for `abuse@` and forwarded complaints.
 - `PROTOCOL.md` sections 1, 2, 6 and 8 and `agent.md` rewritten for the new model; `agent.md`
   gains the device flow and the `owner` field.
 
-## 10. Phases
+## 11. Phases
 
 Each phase ships to staging with tests, then production.
 
@@ -294,17 +345,21 @@ Each phase ships to staging with tests, then production.
    invite.
 3. **Quotas and rate limits.** Rate Limiting bindings, D1 counters, Durable Object byte
    accounting, error shapes, the service state switch. Check: load tests at each limit.
-4. **Abuse tooling.** Reports, admin console, disable, suspend and block, version checks,
-   Web Risk, automatic holds, notices, audit log.
-5. **Keys and device flow.** Dashboard, `ak_…` keys, device flow, higher limits.
-6. **Launch.** Terms, privacy policy, abuse contact, status page, budget alerts, Public
+4. **Abuse tooling.** Reports, the abuse mail Worker, automatic holds and suspensions,
+   version checks, Web Risk, notices and appeals, admin console, audit log.
+5. **On-device speech.** Whistle in the runtime, hosted copy, hash check, fallbacks.
+6. **Keys and device flow.** Dashboard, `ak_…` keys, device flow, higher limits.
+7. **Launch.** Terms, privacy policy, abuse contact, status page, budget alerts, Public
    Suffix List submission (started in phase 1), runbooks.
 
-## 11. Open questions
+## 12. Decisions (2026-11-13)
+
+- Abuse: automatic holds only; people review appeals, with no promised time (section 6.4).
+- Display links: at launch, owner-created only (section 2.2), 3 per tendril.
+- Quotas: the tight set in section 5.2; no paid tier.
+- Speech: on the device with a downloadable model, Cactus Whistle first (section 7); no
+  server-side speech.
+
+## 13. Open questions
 
 - The two domain names.
-- Who handles the abuse queue, and in which hours.
-- Whether display links (login-free) are allowed at launch or later.
-- Starting quotas (section 5) and whether there will ever be a paid tier.
-- Whether voice and Workers AI transcription are on at launch, which sets the per-account
-  minutes.
