@@ -379,6 +379,8 @@ agent to look and carries a count, never content.
    `{"source":"tendriller","tendril":"<id>","waiting":<n>,"text":"<n> tendril event(s) waiting on <name>. Read them with GET <A>/events?after=<cursor>","events_url":"<A>/events"}`.
    Debounced 2 s. 10 s timeout. A non-2xx or network error is retried with backoff
    (30 s, 2 min, 10 min).
+   MCP Events subscriptions (section 13.2) are delivered on the same path, next to the
+   webhook, with the same debounce and backoff.
 3. Nothing: the event waits for the agent's next check (schedule or manual).
 
 ### 8.4 Presence
@@ -539,3 +541,59 @@ The control's push-to-talk calls `voice.handleUtterance(text, "voice")`; if it r
 | `snippets/**` | snippets agent |
 | `cli/**`, `agent.md`, `README.md` | cli agent |
 | `docs/PROTOCOL.md`, `PLAN.md`, `scripts/build.mjs`, `package.json`, `test/e2e/**` | coordinator |
+
+## 13. MCP connector
+
+Each tendril is also an MCP server, for hosts that connect through MCP (OpenAI dots and
+ChatGPT Work chats, Claude Duet and claude.ai connectors). It is a view of the agent
+API, not a second implementation: every tool calls the route in section 2.2 with the
+same token, so checks, check-ins and presence are identical.
+
+- Endpoint: `POST A/mcp` with `Authorization: Bearer <token>`, or `POST A/mcp/<token>`
+  for hosts that cannot send headers (issue a separate named token with
+  `POST A/tokens` and revoke it to cut the connector off). Streamable HTTP, JSON
+  responses only: `GET` returns 405 (no server stream), notifications get 202,
+  batches are rejected.
+- `initialize` → `capabilities: {tools: {}, events: {}}`, protocol versions
+  `2025-11-25`, `2025-06-18`, `2025-03-26`.
+
+### 13.1 Tools
+
+`tendril_info` (GET A), `read_events` (`after` defaults to the last read; `wait` 0–25 s
+holds the call like `GET A/events?wait`), `write_files` (POST A/files), `list_versions`,
+`rollback`, `eval`, `say`, `get_state`, `update_state` (JSON Merge Patch), `set_status`,
+`read_logs`, `notify`. Results are the API's JSON as text, plus `structuredContent` for
+objects; API errors come back with `isError: true`.
+
+A host that cannot be pushed to keeps a chained long-poll open: call `read_events` with
+`wait: 25`, handle what comes back, call it again. Events are stored behind the cursor,
+so nothing is lost between calls.
+
+### 13.2 MCP Events
+
+Implements the webhook mode of the draft MCP Events extension (SEP-3415) as OpenAI
+documents it for ChatGPT and dots.
+
+- `events/list` → one event, `tendril.events_waiting`, no arguments. Payload
+  `{"tendril_id","name","waiting","text"}`: a count, never event content (section 8.1).
+- `events/subscribe` `{name, arguments: {}, delivery: {mode: "webhook", url, secret}, ttlMs?}`:
+  `url` must be https to a public host (no IP literals in private ranges, no `localhost`,
+  `.local` or `.internal`; `http://localhost` is allowed only when `PUBLIC_BASE` is
+  localhost). `secret` is `whsec_` + base64 of 24–64 bytes. A new subscription (or a new
+  secret) is verified first: the server POSTs `{"type":"verification","challenge"}`
+  signed like a delivery and needs a 2xx whose body echoes the challenge (JSON
+  `{"challenge"}`, a JSON string or plain text); otherwise error `-32015` with
+  `data.reason` `challenge_failed` or `timeout`. Lifetime: `ttlMs` clamped to 1 h–7 d,
+  default 24 h, `null` gets 7 d. Result `{id, refreshBefore, cursor: null, truncated: false}`.
+  Subscribing again with the same name, arguments and URL refreshes it. At most 10 per
+  tendril.
+- `events/unsubscribe` `{name, arguments, delivery: {url}?}` → `{}` (idempotent).
+- Delivery: `POST <url>` body `{"eventId":"evt_<tendril>_<seq>","name","timestamp","data","cursor":null}`
+  with `webhook-id` (= eventId), `webhook-timestamp`, `webhook-signature`
+  (`v1,` + base64 HMAC-SHA256 over `id.timestamp.body` with the decoded secret) and
+  `X-MCP-Subscription-Id`. No redirects are followed. A retry keeps the event id and is
+  signed afresh. 410 removes the subscription; 413 is not retried; other failures use the
+  webhook backoff. Skipped when the agent read past the event before it was due, or when a
+  long-poll is held.
+- An active subscription counts as a webhook for presence (`listening`).
+

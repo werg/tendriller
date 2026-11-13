@@ -7,6 +7,7 @@ import {
   WEBHOOK_TIMEOUT,
 } from "./limits";
 import { apiUrl } from "./urls";
+import { queueMcpWake } from "./mcpEvents";
 
 export type EventType = "event" | "instruction" | "version_failed" | "version_healthy" | "device" | "rule" | "voice";
 export type WakeClass = "owner" | "page";
@@ -148,7 +149,7 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
   return { seq, ts, type: e.type, data: e.data ?? null, device: e.device ?? null, role: e.role ?? null, wake, withheld, by: e.by ?? null };
 }
 
-/** Delivery path 1 (held long-polls) or 2 (webhook). Never affects storage of the event. */
+/** Delivery path 1 (held long-polls) or 2 (webhook and MCP Events). Never affects storage of the event. */
 function deliverWake(t: Tendril, seq: number): void {
   if (t.waiters.size > 0) {
     scheduleRelease(t);
@@ -165,6 +166,7 @@ function deliverWake(t: Tendril, seq: number): void {
       t.scheduleAlarm();
     }
   }
+  queueMcpWake(t, seq);
 }
 
 function scheduleRelease(t: Tendril): void {

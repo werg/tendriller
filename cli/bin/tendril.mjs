@@ -34,7 +34,7 @@ Talk to the page
   check [--device D]           accessibility audit (axe-core) in the page
 
 Hear from the page
-  events [--wait N] [--after C] [--limit N] [--peek] [--follow]
+  events [--wait N] [--after C] [--limit N] [--peek] [--follow [--wakes]]
   wait [--timeout S]           block until a wake event, print events JSON, exit 0
   logs [--after C] [--follow]
   activity [--after C] [--note TEXT]
@@ -206,7 +206,7 @@ const commands = {
       try {
         let r = await api.get(`/events?after=${after}&wait=${w}${limit}`);
         if (!r.events?.length) r = await api.get(`/events?after=${after}&wait=0${limit}`);
-        for (const e of r.events || []) out(e);
+        for (const e of r.events || []) if (!f.wakes || e.wake) out(e);
         if (typeof r.cursor === "number") { after = r.cursor; save(after); }
         backoff = 1000;
       } catch (e) {

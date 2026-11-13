@@ -3,6 +3,8 @@ import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 import { addActivity, preview, pruneActivity } from "./activity";
 import { handleAgent } from "./agent";
+import { handleMcp } from "./mcp";
+import { mcpJobDue, mcpSubs, pruneMcpSubs, runMcpEvents } from "./mcpEvents";
 import { Db } from "./db";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
 import { checkHealthTimeouts, fileKey, nextHealthDeadline } from "./files";
@@ -128,7 +130,11 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "create") return await this.create(req);
       if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) throw new HttpError(404, "not_found", "No such tendril");
-      if (kind === "agent") return await handleAgent(this, req, url);
+      if (kind === "agent") {
+        const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
+        if (rest === "mcp" || rest.startsWith("mcp/")) return await handleMcp(this, req, rest);
+        return await handleAgent(this, req, url);
+      }
       if (kind === "page") return await handlePage(this, req, url);
       throw new HttpError(404, "not_found");
     } catch (err) {
@@ -252,7 +258,12 @@ export class Tendril extends DurableObject<Env> {
   async authAgent(req: Request): Promise<string> {
     const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "");
     if (!m) throw new HttpError(401, "unauthorized", "Missing Authorization: Bearer <token>");
-    const hash = await sha256Hex(m[1]);
+    return this.authToken(m[1]);
+  }
+
+  /** Authenticates a raw agent token (a check-in). Returns the token name. */
+  async authToken(token: string): Promise<string> {
+    const hash = await sha256Hex(token);
     const row = this.db.one<{ name: string; hash: string }>("SELECT name, hash FROM tokens WHERE hash = ?", hash);
     if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
     this.checkin(row.name);
@@ -302,7 +313,7 @@ export class Tendril extends DurableObject<Env> {
       tokens: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")!.n,
       lastCheckin: this.db.get<number | null>("last_checkin", null),
       longPollHeld: this.waiters.size > 0,
-      webhook: !!w.webhook,
+      webhook: !!w.webhook || mcpSubs(this).length > 0,
       scheduleMinutes: w.schedule_minutes,
       wakePendingSince: this.db.get<number | null>("wake_pending_since", null),
       graceSeconds: w.grace_seconds,
@@ -664,6 +675,8 @@ export class Tendril extends DurableObject<Env> {
     const times: number[] = [];
     const job = this.db.get<WebhookJob | null>("webhook_job", null);
     if (job) times.push(job.due);
+    const mcpDue = mcpJobDue(this);
+    if (mcpDue !== null) times.push(mcpDue);
     const hd = nextHealthDeadline(this);
     if (hd !== null) times.push(hd);
     const sockets = this.connectedSockets().length > 0;
@@ -687,6 +700,7 @@ export class Tendril extends DurableObject<Env> {
     const now = this.now();
     checkHealthTimeouts(this);
     await runWebhook(this);
+    await runMcpEvents(this);
 
     // Grace expired after a delivered wake: retry the webhook once.
     const facts = this.presenceFacts();
@@ -719,6 +733,7 @@ export class Tendril extends DurableObject<Env> {
     const now = this.now();
     pruneEvents(this);
     pruneActivity(this);
+    pruneMcpSubs(this);
     await this.pruneBlobs(now);
     await this.pruneVersions();
     this.db.run("DELETE FROM dedupe WHERE ts < ?", now - DEDUPE_RETENTION);

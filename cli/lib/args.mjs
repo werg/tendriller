@@ -3,7 +3,7 @@
 // Short flags: -f (file), -h (help).
 
 export const BOOLEAN = new Set([
-  "resident", "follow", "pretty", "help", "no-replace", "no-speak", "no-wait",
+  "resident", "follow", "wakes", "pretty", "help", "no-replace", "no-speak", "no-wait",
   "yes", "peek", "off", "headed", "desktop", "all",
 ]);
 

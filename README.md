@@ -41,6 +41,10 @@ need HTTPS for sensors, so for real devices deploy the server or use a tunnel.
 The optional CLI wraps the same API: `node cli/bin/tendril.mjs new Hello` (see
 [cli/README.md](cli/README.md)).
 
+Each tendril is also an MCP server at `<api>/mcp` (tools for the whole API, plus an MCP
+Event that pushes "events waiting" to hosts that support MCP Events, such as OpenAI
+dots). See `agent.md` section 5.2 and `docs/PROTOCOL.md` section 13.
+
 ## Deploy to Cloudflare
 
 ```sh

@@ -184,12 +184,13 @@ look, and it carries a count, never content. Choose the recipe for your host:
 
 | Host | Recipe | Latency |
 |---|---|---|
-| **Claude Code** | Run the wait loop below as a **background command**. When it exits, your session is re-invoked with its output. Handle the events, then start it again. | Seconds |
+| **Claude Code** | Run the follow loop below under the **Monitor** tool: it prints one line per wake, each line starts a turn, and a quiet loop costs nothing. Without Monitor: run the wait loop as a **background command**; when it exits your session is re-invoked with its output; handle the events, then start it again. | Seconds |
 | **Muse** | Same background wait loop (processes survive between turns, and a finished background command starts a turn). Also add a scheduled check every 15–60 min as a fallback and set `schedule_minutes`. | Seconds |
 | **Grok Bot, Hermes, OpenClaw** | Register your inbound webhook: `PUT /wake {"webhook":{"url","token"}}`. Each POST from the server starts a turn. | Seconds |
 | **Codex, other terminal CLIs** | A listener outside the agent runs the wait loop and starts `codex exec …` (or `codex exec resume --last …`) per wake. Each wake is a new run, so continuity comes from files. | Seconds, new run |
-| **Claude Duet, OpenAI dot, schedule-only hosts** | Poll: inside a long turn (repeated `wait=25` calls), on the host's schedule, or with a background loop if the runtime allows it. Set `schedule_minutes` so the page shows "checks every N min". Duet's network goes through an allowlisted proxy: if calls to `$TENDRIL_SERVER` fail, ask the user to allow the domain. Untested so far. | Minutes |
-| **Anything else** | If you can run a process: the wait loop. If you have an inbound URL: the webhook. Otherwise: poll and set `schedule_minutes`. | Varies |
+| **OpenAI dot, ChatGPT Work chats** | Add the tendril as an MCP connector (section 5.2) and subscribe to `tendril.events_waiting`: the server pushes a signed MCP Event and the dot reads the events with `read_events`. Untested on a real dot. | Seconds |
+| **Claude Duet** | Add the tendril as a custom connector (section 5.2). Duet cannot be pushed to (it calls connectors on its own check-ins, every few hours, and Claude has no MCP Events yet). While a turn runs, keep a chained long-poll open: `read_events` with `wait: 25`, handle, repeat. If the runtime can watch a command's output, run the follow loop under it. Set `schedule_minutes` for the gaps. Duet's network goes through an allowlisted proxy: if calls fail, ask the user to allow the domain. Untested. | Seconds in a turn, hours between |
+| **Anything else** | If you can watch a command's output: the follow loop. If you can run a process: the wait loop. If you have an inbound URL: the webhook. If you speak MCP: the connector. Otherwise: chained `wait=25` long-polls while you run, and set `schedule_minutes`. | Varies |
 
 ### 5.1 The wait loop (Claude Code, Muse, listeners)
 
@@ -228,7 +229,24 @@ done
 A longer version with exact JSON parsing is in the Tendriller repo at
 `cli/scripts/tendril-wait.sh`.
 
-**Claude Code.** Start the loop with the Bash tool's `run_in_background: true`:
+**Follow loop (Monitor).** The wait loop, restarted after every wake, printing one line per
+wake and keeping the events in a file:
+
+```sh
+. ~/tendrils/kitchen/.env
+while sh ~/tendrils/kitchen/wait.sh > ~/tendrils/kitchen/batch.json; do
+  head -n 1 ~/tendrils/kitchen/batch.json
+done
+```
+
+It stops (and the monitor ends) only when the token is revoked or the tendril deleted.
+
+Each line names how many events arrived; read them from `batch.json` (the cursor has
+already moved past them). With the repo's CLI, `tendril events --follow --wakes` does the
+same and prints each waking event as one JSON line.
+
+**Claude Code.** Prefer the follow loop under the Monitor tool. Otherwise start the wait
+loop with the Bash tool's `run_in_background: true`:
 `. ~/tendrils/kitchen/.env && sh ~/tendrils/kitchen/wait.sh`. Then end your turn or keep
 working. When the user taps or speaks, the command exits and you are notified with its
 output. To handle a wake: (1) read the printed events, (2) apply the trust rule, (3) act:
@@ -268,11 +286,32 @@ done
 To keep one conversation going, use `codex exec resume --last "<prompt>"` instead. The
 repo's `cli/scripts/codex-listener.sh` is a fuller version with a configurable command.
 
-**Polling hosts (Duet, dot, schedule-only).** Inside a turn, repeat
+**Polling hosts (schedule-only).** Inside a turn, repeat
 `curl "$TENDRIL_API/events?after=$CURSOR&wait=25"` for as long as the turn may run.
 Each call returns at once if a wake is pending, and otherwise after 25 s with
 `"timeout":true`. Between turns, use the host's schedule. Always set
 `PUT /wake {"schedule_minutes":N}` to match, so the page can tell the user what to expect.
+
+### 5.2 MCP connector (dots, ChatGPT, Duet)
+
+Every tendril is also an MCP server with tools for the whole API (`read_events`,
+`write_files`, `eval`, `say`, `update_state`, …) and an MCP Event,
+`tendril.events_waiting`. Give the connector its own token so it can be revoked alone:
+
+```sh
+curl -sS -X POST "$TENDRIL_API/tokens" -H "Authorization: Bearer $TENDRIL_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"connector"}'
+```
+
+The connector URL is `$TENDRIL_API/mcp/<that token>` (or `$TENDRIL_API/mcp` with
+`Authorization: Bearer <token>` where the host can send headers). The user adds it in
+ChatGPT (Settings → Connectors) or claude.ai (Settings → Connectors → Add custom
+connector). Treat the URL like a password.
+
+On a host with MCP Events (ChatGPT, dots), ask it to watch `tendril.events_waiting`:
+the server then pushes a signed "N events waiting" whenever the page would wake you,
+under the same budget as every other wake. Elsewhere, call `read_events` with
+`wait: 25` in a loop while your turn runs.
 
 **Presence.** The page shows your status:
 

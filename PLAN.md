@@ -155,12 +155,13 @@ Three primitives on the server:
 
 | Host | Recipe | Response time |
 |---|---|---|
-| Claude Code | Wait loop as a background command; its exit re-invokes the session. Alternatives if needed: session messaging socket, Channels. | Seconds |
+| Claude Code | The wait loop restarted per wake under the Monitor tool (one output line per wake starts a turn); or the wait loop as a background command, whose exit re-invokes the session. Channels are an alternative. | Seconds |
 | Muse | Wait loop in the background; processes survive between turns and a finished background command starts a new turn. Backed by a scheduled check. | Seconds |
 | Grok Bot | Webhook to its URL starts a turn. | Seconds |
 | Hermes, OpenClaw | Webhook to their gateway. | Seconds |
 | Codex and other terminal CLIs | A listener starts a fresh headless run per wake. It is a new run, so continuity comes from files or `codex exec resume`. | Seconds, new run |
-| Claude Duet, OpenAI dot | Untested. Expected to work by polling: inside a long turn, on a schedule, or Muse-style if the runtime allows. Duet's network uses an allowlisted proxy, so our domain may need allowing. | To be tested |
+| OpenAI dot | The tendril's MCP connector (PROTOCOL section 13): MCP Events push a signed "events waiting" and the dot reads them with a tool. Untested on a real dot. | Seconds (expected) |
+| Claude Duet | Same connector, but Duet cannot be pushed to yet: chained `read_events` long-polls while a turn runs, a watched follow loop if its runtime offers one, its own check-ins between turns. Duet's network uses an allowlisted proxy, so our domain may need allowing. | Seconds in a turn, hours between |
 | Schedule-only hosts | Their own schedule polls every few minutes. | Minutes |
 
 Also copied: a wake that produces no check-in within a grace period is retried, and
