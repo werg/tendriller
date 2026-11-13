@@ -8,7 +8,8 @@ Status: proposal, 2026-11-13, with the decisions in section 12. Nothing here is 
 - Any agent can create a tendril with no account, key or setup, as today.
 - A person sees a tendril's page only after signing in with GitHub or Google, and the
   page then belongs to that sign-in.
-- Abuse is expensive, visible and quick to remove. Costs have a hard ceiling.
+- Abuse is expensive, visible and quick to remove. Creation and storage have hard
+  service-wide ceilings; request costs trip an automatic stop (section 5.3).
 - The whole Cloudflare setup is reproducible from the repository plus a few one-time
   manual steps.
 
@@ -35,10 +36,26 @@ They can come later without changing this design.
    Either way the tendril is then bound to that account. Link previewers and crawlers
    cannot claim, because claiming needs an interactive OAuth sign-in.
 3. **Claimed.** The page is served only to signed-in accounts with a role: the owner, and
-   people the owner invited (section 2.3). Quotas now come from the owner's account. The
-   agent keeps its token and works as today. `GET A` reports the owner
-   (`{"owner": {"provider": "github", "login": "octocat"}}`) so the agent can tell the
-   user who claimed it.
+   people the owner invited (section 2.3). Quotas now come from the owner's account. `GET A`
+   reports the owner (`{"owner": {"provider": "github", "login": "octocat"}}`) so the agent
+   can tell the user who claimed it.
+
+### 2.1.1 What the agent may do after the claim
+
+Building and running the page is the point, so the agent token keeps files, versions,
+state, eval, events, say, status, logs, blobs, notify (within the owner's quota),
+webhooks and MCP Events, and deleting the tendril. What changes:
+
+- **The owner sees and controls agents.** The control lists every agent token (name,
+  last used, webhook target if any) and has "Disconnect agent", which revokes it; with
+  every token revoked the page keeps working as the owner's, with no agent. Deleting the
+  tendril by token is recorded in the owner's dashboard.
+- **Invites need the owner.** A guest invite created by the agent works only after the
+  owner approves the guest's first sign-in in the control. There is no automatic approval.
+- **No login-free access from the agent.** Display links are owner-only (section 2.2),
+  and the agent cannot change roles.
+- **Release only before others see it.** `POST A/release` works only while no guest has
+  been approved, so an agent cannot strip an established page from its owner.
 
 ### 2.2 Closing the gaps of claim-on-first-open
 
@@ -58,9 +75,10 @@ Today roles come from page links plus device pairing. With sign-in:
 - **Owner**: the claiming account, on any device where it is signed in. Device pairing
   (`pairing: required`) is no longer needed and is removed.
 - **Guest**: an account the owner invited. The owner (from the page) or the agent
-  (`POST A/links {"role":"guest"}`) creates an invite link; opening it requires sign-in;
-  the owner approves the first sign-in from the control unless the agent passed
-  `"approve": "auto"`. Guests' text and voice stay data, not instructions (unchanged).
+  (`POST A/links {"role":"guest"}`) creates an invite link; opening it requires sign-in.
+  An invite the owner made admits the guest directly; one the agent made waits for the
+  owner's approval in the control (section 2.1.1). Guests' text and voice stay data, not
+  instructions (unchanged).
 - **Display**: login-free, owner-created only (section 2.2).
 
 The page key in the URL stays as the routing secret, but it no longer grants access by
@@ -93,10 +111,20 @@ Two domains, both on Cloudflare:
   domain's reputation. The server already supports this (`PAGE_HOST_MODE=subdomain`).
 
 Then submit the pages domain to the Public Suffix List, so browsers treat each
-subdomain as a separate site: cookies are scoped to each one, and reputation systems
-(Safe Browsing) judge pages one by one. Acceptance takes weeks, so start early. It is
-not a launch blocker, because host-only cookies and separate origins already give
-isolation.
+subdomain as a separate site and reputation systems (Safe Browsing) judge pages one by
+one. Acceptance takes weeks, so start early.
+
+Until it is accepted, sibling tendrils are separate origins but the same site: one can
+send same-site requests to another and can set a cookie for the whole pages domain that
+shadows another's. So, independent of the list:
+
+- Page session cookies use the `__Host-` prefix (`Secure`, `Path=/`, no `Domain`), which a
+  sibling cannot set or overwrite.
+- Every state-changing page request and the WebSocket upgrade must carry an `Origin`
+  equal to the tendril's own origin; anything else is refused. `SameSite` is not relied on.
+- The page API never reads a cookie without the prefix.
+- Tests run two hostile tendrils against each other: cookie tossing, cross-tendril
+  requests and WebSocket connections, and reads of storage, all of which must fail.
 
 ### 3.1 What is automatable on Cloudflare
 
@@ -147,8 +175,15 @@ Two mechanisms:
 - The Workers **Rate Limiting binding** for request rates. It counts per Cloudflare
   location and is approximate (eventually consistent), so it slows floods but does not
   enforce hard caps. Periods are 10 or 60 seconds.
-- **Hard quotas** counted exactly: per tendril in its Durable Object (one writer, so
-  exact), and per account in D1. Durable Objects report byte changes to D1 in their alarm.
+- **Hard quotas** counted exactly:
+  - per tendril in its Durable Object (one writer, so exact);
+  - per account and service-wide by reservation: before accepting a write, the Durable
+    Object reserves the bytes in D1 with one conditional statement
+    (`UPDATE accounts SET reserved = reserved + ? WHERE id = ? AND reserved + ? <= quota`,
+    plus the same against the service-wide total). A failed or rolled-back write releases
+    its reservation; deleting files or the tendril releases theirs. The Durable Object's
+    alarm reconciles the account's reservation with its real usage, so drift from a
+    crash cannot accumulate.
 
 ### 5.1 Request rates (Rate Limiting binding)
 
@@ -185,10 +220,19 @@ and the page's control says so.
 ### 5.3 Global controls
 
 - A `service_state` row in D1 (`open`, `creation_paused`, `read_only`), checked on every
-  create and write. It lets an operator stop sign-ups or writes during an incident without
-  a deploy.
-- Cloudflare budget and usage notifications on the account; a daily job compares usage
-  with the quotas' worst case and alerts on drift.
+  create and write. It stops creation or writes without a deploy.
+- **Hard ceilings:**
+  - Keyless creation passes through one Admission Durable Object that counts exactly:
+    creations per hour and live unclaimed tendrils, service-wide. Past either cap,
+    keyless creation answers `503 {"code":"busy"}`; account creation continues within
+    account quotas.
+  - Stored bytes are capped service-wide by the reservation in section 5. Past the cap,
+    writes answer `507 {"code":"service_full"}`.
+- **Automatic stop for request costs**, which cannot be capped exactly (page traffic,
+  API calls): Cloudflare usage notifications post to a webhook on the service, which sets
+  `creation_paused` at a first threshold and `read_only` at a second, and emails the
+  operator. Unauthenticated traffic to a claimed page only reaches the sign-in redirect,
+  so it is cheap.
 
 ## 6. Abuse handling
 
@@ -209,9 +253,11 @@ storage or as an outbound request relay.
 - Checks on every new version before it is served to anyone but the owner. These are
   cheap static checks: `<input type=password>`, forms posting to other origins, large
   executables, known miner scripts, and known brand names next to sign-in words. Matches
-  raise a score. A high score withholds the version from guests and display links (owners
-  still see it, and the owner can appeal); on a young account it holds the tendril
-  (section 6.4).
+  raise a score. A high score withholds the version from guests and display links, and
+  shows the owner an interstitial before the page loads ("This version asks for
+  passwords or sends data elsewhere. Tendriller never asks for passwords. Continue only if
+  you trust the agent that made it."), because under claim on first open the owner may be
+  the target. On a young account a high score holds the tendril (section 6.4).
 - URLs in pages and in outbound webhook targets checked against Google Web Risk (or Safe
   Browsing) when a version is created.
 - Every page carries "Report this page" in the control's menu, and `/_tendril/report` works
@@ -324,7 +370,9 @@ the privacy policy.
 - New `server/src/accounts/` (OAuth, sessions, keys, device flow), `server/src/abuse/`
   (reports, checks, admin), and D1 migrations.
 - `tendril.ts`: `owner`, `claimed_at`, `disabled`, per-tendril limits from the owner's
-  tier, `release`, byte reporting to D1, deletion of unclaimed tendrils after 24 h.
+  tier, `release`, byte reservations in D1, deletion of unclaimed tendrils after 24 h.
+- An Admission Durable Object for keyless creation, and a webhook for Cloudflare usage
+  notifications.
 - `page.ts` and `ws.ts`: the claim screen, page sessions, the role check before serving
   anything, the first-visit notice, report routes.
 - Runtime control: sign-in state, the sensor indicator, invite and approve, display links,
@@ -335,16 +383,23 @@ the privacy policy.
 
 ## 11. Phases
 
-Each phase ships to staging with tests, then production.
+Phases 1-6 ship to staging only. Production keeps today's model until launch: creating
+a tendril needs `CREATE_KEY`, so it is not open to the public. Phase 7 opens production,
+and only once quotas and ceilings, reporting, automatic takedowns, appeals and the legal
+pages are all live on staging.
 
 1. **Domains and isolation.** Provisioning script, two domains, subdomain mode by default,
-   CI and environments. Check: two tendrils cannot read each other's `localStorage`.
+   CI and environments, `__Host-` cookies and Origin checks. Check: the hostile-tendril
+   tests in section 3 pass.
 2. **Sign-in and claim.** OAuth, sessions, the claim screen, page sessions, roles, invites,
-   display links, the `owner` field, release, deletion of unclaimed tendrils. Check: an unclaimed
-   page never serves page content; a second account cannot open a claimed page without an
-   invite.
-3. **Quotas and rate limits.** Rate Limiting bindings, D1 counters, Durable Object byte
-   accounting, error shapes, the service state switch. Check: load tests at each limit.
+   display links, the `owner` field, release, agent list and disconnect, owner approval of
+   agent invites, deletion of unclaimed tendrils. Check: an unclaimed page never serves page
+   content; a second account cannot open a claimed page without an invite; an agent cannot
+   admit a guest without the owner.
+3. **Quotas and rate limits.** Rate Limiting bindings, byte reservations, the Admission
+   Durable Object, the service state switch and the usage-notification webhook. Check:
+   concurrent uploads to two tendrils of one account cannot exceed its quota; load tests
+   at each limit.
 4. **Abuse tooling.** Reports, the abuse mail Worker, automatic holds and suspensions,
    version checks, Web Risk, notices and appeals, admin console, audit log.
 5. **On-device speech.** Whistle in the runtime, hosted copy, hash check, fallbacks.
