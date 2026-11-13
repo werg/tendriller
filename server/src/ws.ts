@@ -2,7 +2,7 @@
 import type { Att, DeviceRow, Role, Tendril } from "./tendril";
 import { addActivity, countEvent, deleteActivity, listActivity, preview } from "./activity";
 import { addEvent } from "./events";
-import { listVersions, markServed, pointers, reportHealth, rollback, versionStatus } from "./files";
+import { listVersions, markServed, pointers, reportHealth, rollback, servedVersion, versionStatus } from "./files";
 import { HttpError, isPlainObject } from "./http";
 import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from "./ids";
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
@@ -21,7 +21,20 @@ interface Ctx {
 const LEVELS = new Set(["log", "info", "warn", "error"]);
 const VIA = new Set(["voice", "text", "voice_layer"]);
 
-export async function handleWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+/**
+ * Each socket's messages are processed strictly in arrival order. Handlers await I/O (hashing the
+ * device secret in `hello`, R2), and the runtime may yield there; without this chain a request
+ * sent right after `hello` could run before `hello` finished and be answered `not_ready`.
+ */
+const chains = new WeakMap<WebSocket, Promise<void>>();
+
+export function handleWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+  const next = (chains.get(ws) ?? Promise.resolve()).then(() => processWsMessage(t, ws, raw));
+  chains.set(ws, next.catch(() => {}));
+  return next;
+}
+
+async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
   if (!t.exists()) {
     ws.close(4004, "tendril deleted");
     return;
@@ -155,7 +168,7 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
     pending: !!dev.pending,
     primary: t.primaryDevice() === id,
     tendril: { id: t.tid, name: t.db.get("name", "Tendril") },
-    version: pointers(t),
+    version: { ...pointers(t), served: servedVersion(t) },
     state,
     rev,
     presence: t.presence(),
@@ -203,7 +216,9 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
       if (kind !== "event") return { error: "bad_request", message: `Unknown kind ${kind}` };
       const data = msg.data === undefined ? null : msg.data;
       if (JSON.stringify(data).length > MAX_EVENT_DATA) return { error: "too_large", message: "Event data exceeds 64 KB" };
-      const ev = addEvent(t, { type: "event", data, device: dev.id, role: dev.role, wake: msg.wake !== false, cls: "page" });
+      // A real user gesture on an owner device counts as a person, not a page loop (PROTOCOL 8.2).
+      const human = msg.gesture === true && dev.role === "owner" && !dev.pending;
+      const ev = addEvent(t, { type: "event", data, device: dev.id, role: dev.role, wake: msg.wake !== false, cls: "page", human });
       countEvent(t, dev.id, data);
       return { seq: ev.seq };
     });
@@ -333,10 +348,8 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   budget(c) {
     const { t, msg } = c;
     const w = t.wakeConfig();
-    for (const k of ["owner_per_hour", "page_per_hour"] as const) {
-      const n = Number(msg[k]);
-      if (msg[k] !== undefined && Number.isInteger(n) && n >= 0) w.budget[k] = Math.min(w.budget[k], n);
-    }
+    const n = Number(msg.page_streak);
+    if (msg.page_streak !== undefined && Number.isInteger(n) && n >= 0) w.budget.page_streak = Math.min(w.budget.page_streak, n);
     t.db.set("wake", w);
     ack(c, { budget: w.budget });
   },

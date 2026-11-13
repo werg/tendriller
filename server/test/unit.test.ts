@@ -4,7 +4,7 @@ import { resolveType } from "../src/mime";
 import { computePresence, type PresenceFacts } from "../src/presence";
 import { applyOps, mergePatchToOps, replaceToOps, validateOps } from "../src/state";
 import { normalizeFilePath } from "../src/urls";
-import { apiJson, create, inDO, req } from "./helpers";
+import { apiJson, create, inDO, PageClient, req } from "./helpers";
 
 describe("state ops", () => {
   it("merge patch follows RFC 7396 semantics", () => {
@@ -89,7 +89,11 @@ describe("transcription via Workers AI", () => {
     try {
       const html = await (await req(h.page_url)).text();
       expect(html).toContain('"transcribe":true');
-      const res = await req(h.page_url + "_tendril/transcribe", { method: "POST", body: new Uint8Array([1, 2, 3]), headers: { "Content-Type": "audio/webm" } });
+      const page = await PageClient.connect(h.page_url);
+      const proof = { "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret };
+      expect((await req(h.page_url + "_tendril/transcribe", { method: "POST", body: new Uint8Array([1]), headers: { "Content-Type": "audio/webm" } })).status).toBe(403);
+      const res = await req(h.page_url + "_tendril/transcribe", { method: "POST", body: new Uint8Array([1, 2, 3]), headers: { "Content-Type": "audio/webm", ...proof } });
+      page.close();
       expect(await res.json()).toEqual({ text: "hello world" });
       expect(seen[0]).toEqual({ model: "@cf/openai/whisper-large-v3-turbo", input: { audio: "AQID" } });
       expect((await apiJson(h, "GET", "")).id).toBe(h.id);

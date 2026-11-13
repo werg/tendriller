@@ -373,11 +373,10 @@ route("PUT", /^wake$/, async (t, req) => {
   }
   if (b.budget !== undefined) {
     if (!isPlainObject(b.budget)) throw new HttpError(400, "bad_request", "budget must be an object");
-    for (const k of ["owner_per_hour", "page_per_hour"] as const) {
-      if (b.budget[k] === undefined) continue;
-      const n = Number(b.budget[k]);
-      if (!Number.isInteger(n) || n < 0 || n > 10000) throw new HttpError(400, "bad_request", `${k} must be an integer 0..10000`);
-      w.budget[k] = n;
+    if (b.budget.page_streak !== undefined) {
+      const n = Number(b.budget.page_streak);
+      if (!Number.isInteger(n) || n < 0 || n > 1000) throw new HttpError(400, "bad_request", "page_streak must be an integer 0..1000");
+      w.budget.page_streak = n;
     }
   }
   if (b.grace_seconds !== undefined) {

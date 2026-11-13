@@ -58,7 +58,7 @@ describe("eval relay", () => {
     expect(off.status).toBe(409);
     const body = await off.json<any>();
     expect(body.error).toMatchObject({ code: "offline", last_seen: null });
-    expect(body.error.message).toContain("No device connected");
+    expect(body.error.message).toBe("No device has opened the page yet");
 
     const page = await PageClient.connect(h.page_url); // never answers
     const r = await api(h, "POST", "eval", { code: "1", timeout_ms: 300 });
@@ -218,7 +218,7 @@ describe("roles, pairing and devices", () => {
     expect(a.welcome).toMatchObject({ role: "owner", pending: false, primary: true, tendril: { id: h.id, name: "Tendril" } });
     expect(b.welcome.role).toBe("owner");
     expect(a.welcome).toHaveProperty("features");
-    expect(a.welcome.budget).toEqual({ owner_per_hour: 60, page_per_hour: 12 });
+    expect(a.welcome.budget).toEqual({ page_streak: 6 });
     a.close();
     b.close();
   });
@@ -445,5 +445,21 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     page.send({ t: "send", cid: "x", data: {} });
     expect(await page.next("error")).toMatchObject({ code: "not_ready" });
     page.close();
+  });
+});
+
+describe("message ordering", () => {
+  it("a request sent right after hello is answered, not refused as not_ready", async () => {
+    const h = await create();
+    for (let i = 0; i < 5; i++) {
+      const c = new PageClient(h.page_url);
+      await c.open();
+      // hello and an owner request back to back, without waiting for welcome
+      c.send({ t: "hello", device_id: c.deviceId, device_secret: c.secret, ua: "vitest", version: 0, rev: 0, caps: {} });
+      c.send({ t: "adopt_code", cid: `a${i}` });
+      const m = await c.next((x) => x.cid === `a${i}`);
+      expect(m.t).toBe("adopt_code");
+      c.close();
+    }
   });
 });

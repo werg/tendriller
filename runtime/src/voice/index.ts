@@ -192,7 +192,7 @@ export function createVoice(core: Core): Voice {
       const tools = toolDefs();
       const res = await fetch(`${core.config.base}_tendril/voice/session`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(core.deviceHeaders?.() ?? {}) },
         body: JSON.stringify({ instructions: contextInstructions(), tools }),
       });
       if (!res.ok) throw new Error(`voice session ${res.status}`);

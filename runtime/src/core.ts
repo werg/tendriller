@@ -245,8 +245,10 @@ export function createCore(cfg: TendrilConfig): Internal {
         sentThisConn.add(item.cid);
         if (item.msg.t === "upload") {
           try {
-            const r = await httpUpload(item.blob!, item.msg.name);
+            const r = await httpUpload(item.blob!, item.msg.name, item.cid);
             store.remove(item.cid);
+            // After a reload the original promise is gone; pages learn the result from the event.
+            bus.emit("upload", { cid: item.cid, name: item.msg.name ?? null, ...r });
             uploadWaiters.get(item.cid)?.res(r);
             uploadWaiters.delete(item.cid);
           } catch (e) {
@@ -282,9 +284,13 @@ export function createCore(cfg: TendrilConfig): Internal {
     return p;
   };
 
+  /** Proves this device to page HTTP routes (PROTOCOL 2.1). */
+  const deviceHeaders = (): Record<string, string> => ({ "X-Tendril-Device": stored.id, "X-Tendril-Device-Secret": stored.secret });
+
   // ---------- http upload ----------
-  const httpUpload = async (blob: Blob, name?: string): Promise<{ id: string; url: string }> => {
-    const headers: Record<string, string> = { "Content-Type": blob.type || "application/octet-stream" };
+  const httpUpload = async (blob: Blob, name?: string, cid?: string): Promise<{ id: string; url: string }> => {
+    const headers: Record<string, string> = { "Content-Type": blob.type || "application/octet-stream", ...deviceHeaders() };
+    if (cid) headers["X-Tendril-Cid"] = cid; // a replay after a lost response is stored once
     if (name) headers["X-Tendril-Name"] = name;
     const r = await fetch(cfg.base + "_tendril/blob", { method: "POST", body: blob, headers });
     if (!r.ok) {
@@ -438,7 +444,9 @@ export function createCore(cfg: TendrilConfig): Internal {
         bus.emit("connect");
         while (memQueue.length && ready) rawSend(memQueue.shift());
         pump();
-        const cur = m.version && m.version.current;
+        // `served` is what a reload would load (a failed current falls back to healthy), so
+        // comparing against it avoids a pointless reload after a failed version.
+        const cur = m.version && (m.version.served ?? m.version.current);
         if (cur != null) maybeReload(cur, true);
         break;
       }
@@ -549,6 +557,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   }
 
   const core: Internal = {
+    deviceHeaders,
     bus,
     config: cfg,
     device,
@@ -561,7 +570,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     state,
     health,
     async send(data: any, opts?: { wake?: boolean }) {
-      const msg = { t: "send", cid: newCid(), data: data === undefined ? null : serialize(data), wake: opts?.wake !== false };
+      // Browser user activation marks a real tap or key press; page code cannot fake it. The server
+      // treats such events from owner devices as human input for the page-wake cap (PROTOCOL 8.2).
+      const gesture = !!(navigator as any).userActivation?.isActive;
+      const msg = { t: "send", cid: newCid(), data: data === undefined ? null : serialize(data), wake: opts?.wake !== false, gesture };
       const ack = await sendAcked(msg);
       if (!ack) return { queued: true };
       const out: any = { seq: ack.seq, queued: false };

@@ -45,7 +45,7 @@ State, devices, sharing, wake
   link <owner|guest|display> [--label L] [--expires S] | link list | link rm <id> | link rotate
   tokens | tokens new <name> | tokens rm <name>
   rules | rules set <json|@file>
-  wake [--webhook URL [--token T] | --off] [--schedule N|off] [--budget OWNER,PAGE] [--grace S]
+  wake [--webhook URL [--token T] | --off] [--schedule N|off] [--page-streak N] [--grace S]
 
 Config: TENDRIL_API + TENDRIL_TOKEN, or --tendril <name> (~/.config/tendril/<name>.json,
 written by new/adopt), TENDRIL_SERVER (default http://localhost:8787), TENDRIL_CREATE_KEY.
@@ -323,9 +323,8 @@ const commands = {
     if (f.off) body.webhook = null;
     if (f.webhook) body.webhook = f.token ? { url: f.webhook, token: f.token } : { url: f.webhook };
     if (f.schedule !== undefined) body.schedule_minutes = f.schedule === "off" ? null : Number(f.schedule);
-    if (f.budget) {
-      const [o, p] = String(f.budget).split(",").map(Number);
-      body.budget = { owner_per_hour: o, page_per_hour: p };
+    if (f["page-streak"] !== undefined) {
+      body.budget = { page_streak: Number(f["page-streak"]) };
     }
     if (f.grace) body.grace_seconds = Number(f.grace);
     out(Object.keys(body).length ? await api.put("/wake", body) : await api.get("/wake"));

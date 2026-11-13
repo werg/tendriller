@@ -59,6 +59,8 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
       get state() { return registry.voice ? registry.voice.state : "unavailable"; },
     },
     speak: (text: string) => core.speak(text),
+    /** Headers proving this device to page HTTP routes such as `_tendril/transcribe`. */
+    deviceHeaders: () => core.deviceHeaders(),
     device: core.device, // live object: role/pending update in place
     version: cfg.version,
     get connected() { return core.connected; },

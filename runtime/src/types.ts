@@ -29,6 +29,8 @@ export interface Core {
   request(msg: { t: string; [k: string]: any }): Promise<any>;
   raw(msg: object): void;
   upload(blob: Blob, opts?: { name?: string }): Promise<{ id: string; url: string }>;
+  /** Headers proving this device to page HTTP routes (transcribe, voice session, blob). */
+  deviceHeaders(): Record<string, string>;
   // Additions (runtime-core). Bus also emits: "transcript" (entry), "notify_local" ({title,body}) when no
   // Notification permission, "reload" ({version}), "welcome" (the raw welcome message).
   /** Last `welcome` message from the server (tendril name, version pointers, budget, primary…), or null. */

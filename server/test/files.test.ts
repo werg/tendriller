@@ -237,3 +237,40 @@ describe("rollback", () => {
     page.close();
   });
 });
+
+describe("device proof on page HTTP routes", () => {
+  const post = (url: string, headers: Record<string, string> = {}) =>
+    req(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ tools: [] }) });
+
+  it("voice sessions need a verified owner device on an owner link", async () => {
+    const h = await create();
+    const owner = await PageClient.connect(h.page_url);
+    const proof = { "X-Tendril-Device": owner.deviceId, "X-Tendril-Device-Secret": owner.secret };
+    // no proof, wrong secret
+    expect((await post(h.page_url + "_tendril/voice/session")).status).toBe(403);
+    expect((await post(h.page_url + "_tendril/voice/session", { ...proof, "X-Tendril-Device-Secret": "a".repeat(32) })).status).toBe(403);
+    // a verified owner passes the gate (501: no provider configured in tests)
+    expect((await post(h.page_url + "_tendril/voice/session", proof)).status).toBe(501);
+    // a guest device on a guest link is refused
+    const link = await apiJson(h, "POST", "links", { role: "guest" });
+    const guest = await PageClient.connect(link.url);
+    const gproof = { "X-Tendril-Device": guest.deviceId, "X-Tendril-Device-Secret": guest.secret };
+    expect((await post(link.url + "_tendril/voice/session", gproof)).status).toBe(403);
+    // an owner's proof used through a guest link is refused too
+    expect((await post(link.url + "_tendril/voice/session", proof)).status).toBe(403);
+    owner.close();
+    guest.close();
+  });
+
+  it("blob uploads are attributed only with a valid device proof", async () => {
+    const h = await create();
+    const owner = await PageClient.connect(h.page_url);
+    const up = async (headers: Record<string, string>) =>
+      (await req(h.page_url + "_tendril/blob", { method: "POST", headers: { "Content-Type": "text/plain", ...headers }, body: "x" })).json() as Promise<any>;
+    await up({ "X-Tendril-Device": owner.deviceId });
+    await up({ "X-Tendril-Device": owner.deviceId, "X-Tendril-Device-Secret": owner.secret });
+    const blobs = (await apiJson(h, "GET", "blobs")).blobs;
+    expect(blobs.map((b: any) => b.device).sort()).toEqual([null, owner.deviceId].sort());
+    owner.close();
+  });
+});

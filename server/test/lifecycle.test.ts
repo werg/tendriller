@@ -110,7 +110,7 @@ describe("blobs and activity", () => {
     const up = await req(h.page_url + "_tendril/blob", {
       method: "POST",
       body: new Uint8Array([0xff, 0xd8, 0xff]),
-      headers: { "Content-Type": "image/jpeg", "X-Tendril-Name": "drawer.jpg", "X-Tendril-Device": page.deviceId },
+      headers: { "Content-Type": "image/jpeg", "X-Tendril-Name": "drawer.jpg", "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
     });
     const blob = await up.json<any>();
     expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `_tendril/blob/${blob.id}` });
@@ -169,7 +169,7 @@ describe("blobs and activity", () => {
   it("aggregates withheld wakes into one entry", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
-    await apiJson(h, "PUT", "wake", { budget: { page_per_hour: 0 } });
+    await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
     for (let i = 0; i < 3; i++) await page.request({ t: "send", data: {} });
     const entries = (await apiJson(h, "GET", "activity")).entries.filter((e: any) => e.kind === "wake_withheld");
     expect(entries).toHaveLength(1);
@@ -185,6 +185,33 @@ describe("blobs and activity", () => {
     await inDO(h.id, (t) => t.cleanup());
     const entries = (await apiJson(h, "GET", "activity")).entries;
     expect(entries.map((e: any) => e.summary)).toEqual(["new"]);
+  });
+
+  it("page blobs expire after 30 days; agent blobs and the icon stay", async () => {
+    const h = await create();
+    const pageBlob = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers: { "Content-Type": "text/plain" }, body: "photo" })).json<any>();
+    const iconBlob = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers: { "Content-Type": "image/png" }, body: "icon" })).json<any>();
+    const agentBlob = await (await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" })).json<any>();
+    await apiJson(h, "PATCH", "", { icon: iconBlob.id });
+    await advance(h.id, 31 * 86400_000);
+    await inDO(h.id, (t) => t.cleanup());
+    const ids = (await apiJson(h, "GET", "blobs")).blobs.map((b: any) => b.id).sort();
+    expect(ids).toEqual([iconBlob.id, agentBlob.id].sort());
+    expect(await env.FILES.get(`t/${h.id}/blobs/${pageBlob.id}`)).toBeNull();
+  });
+
+  it("prunes versions beyond the newest 50 and deletes file bodies nothing references", async () => {
+    const h = await create();
+    await apiJson(h, "PUT", "files/old.txt", "only in v1");
+    for (let i = 0; i < 55; i++) await apiJson(h, "POST", "files", { files: { "index.html": `<p>${i}</p>` }, replace: true });
+    const hashOld = await inDO(h.id, (t) => t.db.one<{ hash: string }>("SELECT hash FROM version_files WHERE path = 'old.txt'")!.hash);
+    await inDO(h.id, (t) => t.cleanup());
+    const vs = (await apiJson(h, "GET", "versions")).versions;
+    expect(vs.length).toBe(50);
+    expect(vs[0].version).toBe(56);
+    expect(await env.FILES.head(`t/${h.id}/files/${hashOld}`)).toBeNull();
+    // files of kept versions are still served
+    expect(await (await api(h, "GET", "files/index.html")).text()).toBe("<p>54</p>");
   });
 
   it("guests cannot read activity", async () => {

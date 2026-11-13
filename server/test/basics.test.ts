@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { route } from "../src/router";
-import { api, apiJson, BASE, create, req } from "./helpers";
+import { api, apiJson, BASE, create, PageClient, req } from "./helpers";
 
 describe("public routes", () => {
   it("serves health, landing page and 404s", async () => {
@@ -173,7 +173,12 @@ describe("page URLs", () => {
 
   it("voice session delegates to voice.ts (501 stub)", async () => {
     const h = await create();
-    const res = await req(h.page_url + "_tendril/voice/session", { method: "POST", body: "{}" });
+    const page = await PageClient.connect(h.page_url);
+    const res = await req(h.page_url + "_tendril/voice/session", {
+      method: "POST", body: "{}",
+      headers: { "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
+    });
+    page.close();
     expect(res.status).toBe(501);
     await res.text();
   });

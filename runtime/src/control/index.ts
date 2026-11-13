@@ -54,7 +54,7 @@ class Control {
   private doneTimer: any = 0;
   private lines: Line[] = [];
   private pairReqs: PairReq[] = [];
-  private budget: { owner_per_hour?: number; page_per_hour?: number } = {};
+  private budget: { page_streak?: number } = {};
   private lastSendAt = 0;
   private lastWithheld = 0;
   private bubbleTimer: any = 0;
@@ -224,7 +224,8 @@ class Control {
       onFinal: (t) => { this.showInterim(""); void this.submit(t, "voice"); },
       onState: (on) => this.renderMic(on),
       onError: (m) => { this.showInterim(""); this.showBubble(m, true); },
-    }, this.sensors, () => this.lang, this.core.config?.features?.transcribe ? this.core.config.base + "_tendril/transcribe" : null);
+    }, this.sensors, () => this.lang, this.core.config?.features?.transcribe ? this.core.config.base + "_tendril/transcribe" : null,
+      () => this.core.deviceHeaders?.() ?? {});
     this.view = this.computeView();
     this.applyPrefs();
     this.render();
@@ -836,32 +837,28 @@ class Control {
   }
 
   private renderBudget(panel: HTMLElement) {
-    const b = this.budget;
-    const ownerMax = b.owner_per_hour ?? 60;
-    const pageMax = b.page_per_hour ?? 12;
-    const ownerIn = h("input", { type: "number", id: "tendril-b-owner", min: "0", max: String(ownerMax), value: String(ownerMax), inputmode: "numeric" }) as HTMLInputElement;
-    const pageIn = h("input", { type: "number", id: "tendril-b-page", min: "0", max: String(pageMax), value: String(pageMax), inputmode: "numeric" }) as HTMLInputElement;
+    const max = this.budget.page_streak ?? 6;
+    const input = h("input", { type: "number", id: "tendril-b-page", min: "0", max: String(max), value: String(max), inputmode: "numeric" }) as HTMLInputElement;
     const msg = h("p", { "aria-live": "polite", class: "muted" });
     clear(panel,
-      h("p", { text: "How often per hour the agent may be woken. Over the limit, nothing is lost: the agent sees it at its next check. You can only lower these here." }),
-      h("div", { class: "field" }, h("label", { for: "tendril-b-owner", text: "Your messages per hour" }), ownerIn),
-      h("div", { class: "field" }, h("label", { for: "tendril-b-page", text: "Page wake-ups per hour" }), pageIn),
+      h("p", { text: "Your own messages and taps always reach the agent. The page can wake it on its own only this many times in a row; anything you say or tap resets the count. Over the limit nothing is lost: the agent sees it at its next check. You can only lower this here." }),
+      h("div", { class: "field" }, h("label", { for: "tendril-b-page", text: "Page wake-ups in a row" }), input),
       h("button", {
         type: "button", class: "btn", onclick: async () => {
-          const o = Math.max(0, Math.min(ownerMax, Math.floor(Number(ownerIn.value))));
-          const p = Math.max(0, Math.min(pageMax, Math.floor(Number(pageIn.value))));
+          const n = Math.max(0, Math.min(max, Math.floor(Number(input.value))));
           try {
-            await this.req({ t: "budget", owner_per_hour: o, page_per_hour: p });
-            this.budget = { owner_per_hour: o, page_per_hour: p };
+            await this.req({ t: "budget", page_streak: n });
+            this.budget = { page_streak: n };
             msg.textContent = "Saved.";
             this.renderBudget(panel);
-            this.announce("Wake limits saved.");
+            this.announce("Wake limit saved.");
           } catch (e: any) { msg.textContent = `Couldn't save: ${e?.message || "error"}`; }
         },
-      }, "Lower limits"),
+      }, "Lower limit"),
       msg,
     );
   }
+
 
   private async renderNotify(panel: HTMLElement) {
     const push = registry.push;

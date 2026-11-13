@@ -68,8 +68,14 @@ Public, unauthenticated:
 | `GET P_tendril/snippets/<name>.js` | Same as `/snippets/<name>.js`, so pages can use relative URLs. |
 | `GET P_tendril/manifest.webmanifest` | Web app manifest from tendril metadata (`name`, `short_name`, `theme_color`, `background_color`, icon); `start_url` and `scope` = `P`. |
 | `GET P_tendril/icon` | Icon: the blob named in metadata, else a generated SVG with the first letter of the name. |
-| `POST P_tendril/transcribe` | Raw audio body → `{"text"}`. Uses Workers AI binding `AI` if present, else 501 `{"error":{"code":"unavailable"}}`. |
-| `POST P_tendril/voice/session` | Fast voice layer session, delegated to `handleVoiceSession` in `server/src/voice.ts` (section 9). |
+| `POST P_tendril/transcribe` | Raw audio body → `{"text"}`. Uses Workers AI binding `AI` if present, else 501 `{"error":{"code":"unavailable"}}`. Needs a verified non-display device (below), else 403. |
+| `POST P_tendril/voice/session` | Fast voice layer session, delegated to `handleVoiceSession` in `server/src/voice.ts` (section 9). Bills the provider account, so it needs an owner link and a verified, paired owner device, else 403. |
+
+Device proof for page HTTP routes: headers `X-Tendril-Device: <device id>` and
+`X-Tendril-Device-Secret: <device secret>` (the same pair as `hello`). The runtime adds them
+via `tendril.deviceHeaders()`. On `POST _tendril/blob` they are optional and only attribute the
+upload to the device; with them, an `X-Tendril-Cid` header makes the upload idempotent
+for 24 h (the runtime's offline queue replays uploads with it).
 
 Paths beginning with `_tendril/` are reserved; agents cannot upload files there.
 
@@ -186,8 +192,8 @@ All requests need `Authorization: Bearer <token>` except `POST /api/tendrils`
 **Wake, activity, tokens, rules, notifications**
 
 - `GET A/wake`, `PUT A/wake` body any of
-  `{"webhook": {"url","token"?} | null, "schedule_minutes": n | null, "budget": {"owner_per_hour","page_per_hour"}, "grace_seconds": n}`
-  → wake config `{"webhook":{"url","has_token"}|null,"schedule_minutes","budget","grace_seconds","withheld":{"owner","page"}}`.
+  `{"webhook": {"url","token"?} | null, "schedule_minutes": n | null, "budget": {"page_streak"}, "grace_seconds": n}`
+  → wake config `{"webhook":{"url","has_token"}|null,"schedule_minutes","budget","grace_seconds","withheld":n,"page_streak":n}` (`page_streak` here is the current count).
 - `GET A/activity?after=&limit=` → `{"entries":[{"seq","ts","kind","summary","device","blob"?,"by"?,"source":"server"|"agent"}],"cursor"}`.
 - `POST A/activity` body `{"text"}` → agent note (`source: "agent"`).
 - `POST A/tokens` body `{"name"}` → `{"name","token"}` (additional agent token, e.g. for another person's agent). `GET A/tokens` → `{"tokens":[{"name","created_at","last_used"}]}`. `DELETE A/tokens/<name>`. The first token is named `main`.
@@ -299,7 +305,7 @@ Page → server:
 | `t` | Fields | Notes |
 |---|---|---|
 | `hello` | `device_id, device_secret, name?, ua, version, rev, caps` | First message. `version` = version the page loaded; `rev` = state rev it has. `caps` = feature probe summary. |
-| `send` | `cid, data, wake?=true, kind?="event", text?, via?` | `kind: "instruction"` with `text`,`via` comes only from the control/voice layer. Server dedupes by `cid` (24 h). → `ack`. |
+| `send` | `cid, data, wake?=true, gesture?, kind?="event", text?, via?` | `kind: "instruction"` with `text`,`via` comes only from the control/voice layer. Server dedupes by `cid` (24 h). → `ack`. |
 | `state` | `cid, ops` | → `ack {cid, rev}`; broadcast to others. |
 | `eval_result` | `call_id, ok, value?, error?` | |
 | `log` | `entries:[{level, message, stack?, ts}]` | Batched, at most every 500 ms. |
@@ -312,7 +318,7 @@ Page → server:
 | `pair_approve` | `cid, device_id, role` | Owner only. |
 | `devices` | `cid` | Owner only. → `{"t":"devices","cid","devices":[…]}`. |
 | `links` | `cid, create?:{role,label}` | Owner only. → `{"t":"links","cid","links":[…],"created"?}`. |
-| `budget` | `cid, owner_per_hour?, page_per_hour?` | Owner only; may only lower. |
+| `budget` | `cid, page_streak` | Owner only; may only lower the cap. |
 | `push_subscribe` | `cid, subscription` | Stores a PushSubscription (JSON) for this device. |
 | `push_unsubscribe` | `cid` | |
 | `rule_fired` | `cid, rule_id, detail` | → event `rule`. |
@@ -323,7 +329,7 @@ Server → page:
 
 | `t` | Fields |
 |---|---|
-| `welcome` | `device_id, role, pending, pair_code?, primary, tendril:{id,name}, version:{current,latest,healthy}, state, rev, presence, transcript:[{ts,from:"agent"|"user",text}], rules, features, budget` |
+| `welcome` | `device_id, role, pending, pair_code?, primary, tendril:{id,name}, version:{current,latest,healthy,served}, state, rev, presence, transcript:[{ts,from:"agent"|"user",text}], rules, features, budget` |
 | `ack` | `cid, seq?, rev?, version?, error?` |
 | `state` | `ops, rev, by` (by = `"agent:<name>"` or `"device:<id>"`) |
 | `state_reset` | `state, rev` (sent instead of ops when the page's rev is too old) |
@@ -346,18 +352,25 @@ Server → page:
 Delivery never depends on wake. Events are always stored; a wake only prompts the
 agent to look and carries a count, never content.
 
-### 8.2 Wake classes and budget
-- Class `owner`: `instruction` events from owner devices, `pair_request`.
+### 8.2 Wake classes and the page-wake cap
+- Class `owner`: `instruction` events from owner devices, `pair_request`. Never withheld.
 - Class `page`: `event` with `wake:true`, `rule`, `version_failed`.
-- Defaults: `owner_per_hour` 60, `page_per_hour` 12. A sliding one-hour window per
-  class counts **delivered wakes**. Wake-eligible events arriving within 3 s of the
-  previous delivered wake in the same class merge into it and do not count.
-- Over budget: the event is stored with `wake:false, withheld:true`, the class's
-  withheld counter increments (reported in `GET A/events` as `withheld` and in the
-  wake config), and pages get a presence update so the control can say "the agent
-  will see this at its next check". The counters reset to 0 when a `GET A/events`
-  response returns events (not on a long-poll timeout, which still reports them).
-- `version_failed` wakes at most once per version regardless of budget.
+- **Human input**: an owner instruction, or a `send` from an owner device whose `gesture`
+  flag is true (the runtime sets it from `navigator.userActivation.isActive`, a
+  browser-controlled signal page code cannot fake; it stays true for about 5 s after a
+  real tap or key press, so events in that window count as human). Human input always wakes and resets
+  the streak; gesture events from guest or display devices are not human input.
+- **Cap**: at most `budget.page_streak` (default 6, `0..1000`) page-class wakes may be
+  delivered in a row without human input in between. The bound is a count reset by a
+  person, not a clock, so a self-looping page stops waking the agent and a person is never
+  throttled. Wake-eligible events within 3 s of the previous delivered wake of the same
+  class merge into it and do not count.
+- Over the cap: the event is stored with `wake:false, withheld:true`, the withheld counter
+  increments (reported in `GET A/events` as `withheld` and in the wake config, which also
+  reports the current `page_streak` count), and pages get a presence update so the control
+  can say "the agent will see this at its next check". The counter resets to 0 when a
+  `GET A/events` response returns events (not on a long-poll timeout, which still reports it).
+- `version_failed` wakes at most once per version regardless of the cap and does not count.
 
 ### 8.3 Delivery paths
 1. Held long-polls (`GET A/events?wait>0`) are released (after a 300 ms debounce).
@@ -461,13 +474,16 @@ tendril.state.delete(path: string | string[]): void
 tendril.state.patch(mergePatch: object): void
 tendril.state.mine(): any                      // state._device[myId]
 tendril.state.on(fn: (state, ops, by) => void): () => void
-tendril.on(type: "connect"|"disconnect"|"presence"|"say"|"role"|"state"|"rules", fn): () => void
+tendril.on(type: "connect"|"disconnect"|"presence"|"say"|"role"|"state"|"rules"|"upload", fn): () => void
+// "upload" fires {cid, id, url, name} for each queued upload that completes, including ones
+// queued before a reload whose original promise no longer exists
 tendril.upload(blob: Blob, opts?: { name?: string }): Promise<{ id: string; url: string }>
 tendril.ready(): void                          // see section 4
 tendril.ready.manual(): void
 tendril.expose(name, opts, fn): () => void     // section 9
 tendril.voice: { start(), stop(), state }
 tendril.speak(text: string): void              // local speech synthesis honoring _prefs.audio
+tendril.deviceHeaders(): Record<string, string> // device proof for page HTTP routes (section 2.1)
 tendril.device: { id: string; role: string; name: string; pending: boolean }
 tendril.version: number
 tendril.connected: boolean

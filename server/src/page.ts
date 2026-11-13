@@ -4,12 +4,26 @@ import { addActivity } from "./activity";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles } from "./files";
 import { HttpError, json, readBody } from "./http";
-import { BLOB_ID_RE, DEVICE_ID_RE, toBase64 } from "./ids";
+import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, toBase64 } from "./ids";
+import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
 import { MAX_BLOB } from "./limits";
 import { handleVoiceSession } from "./voice";
 
 export const WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
+
+/**
+ * The device making an HTTP request from the page, verified by its device secret
+ * (`X-Tendril-Device` + `X-Tendril-Device-Secret`, PROTOCOL 2.1). Null if absent or wrong.
+ */
+async function verifiedDevice(t: Tendril, req: Request): Promise<DeviceRow | null> {
+  const id = req.headers.get("X-Tendril-Device");
+  const secret = req.headers.get("X-Tendril-Device-Secret");
+  if (!id || !secret || !DEVICE_ID_RE.test(id) || !DEVICE_SECRET_RE.test(secret)) return null;
+  const dev = t.device(id);
+  if (!dev) return null;
+  return safeEqual(dev.secret_hash, await sha256Hex(secret)) ? dev : null;
+}
 
 export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Response> {
   const key = req.headers.get("x-tendril-key") ?? "";
@@ -48,11 +62,15 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const body = await readBody(req, MAX_BLOB);
     const type = req.headers.get("Content-Type") || "application/octet-stream";
     const name = req.headers.get("X-Tendril-Name");
-    const devHeader = req.headers.get("X-Tendril-Device");
-    const device = devHeader && DEVICE_ID_RE.test(devHeader) && t.device(devHeader) ? devHeader : null;
-    const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page");
-    addActivity(t, { kind: "blob", summary: `${blobLabel(type)} sent${name ? ` (${name.slice(0, 80)})` : ""}, ${formatSize(body.byteLength)}`, blob: r.id, device });
-    return json(r);
+    const device = (await verifiedDevice(t, req))?.id ?? null;
+    const store = async () => {
+      const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page");
+      addActivity(t, { kind: "blob", summary: `${blobLabel(type)} sent${name ? ` (${name.slice(0, 80)})` : ""}, ${formatSize(body.byteLength)}`, blob: r.id, device });
+      return r;
+    };
+    // A verified device's upload carrying a client id is stored once (offline replay).
+    const cid = req.headers.get("X-Tendril-Cid");
+    return json(device && cid ? await t.dedupe(device, `upload:${cid}`, store) : await store());
   }
 
   const bm = /^blob\/(b_[a-z2-7]{20})$/.exec(sub);
@@ -87,6 +105,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "transcribe" && m === "POST") {
     if (!t.env.AI) throw new HttpError(501, "unavailable", "Server-side transcription is not configured");
+    const dev = await verifiedDevice(t, req);
+    if (!dev || dev.role === "display" || link.role === "display") throw new HttpError(403, "forbidden", "Transcription needs a connected, non-display device");
     const body = await readBody(req, MAX_BLOB);
     if (body.byteLength === 0) throw new HttpError(400, "bad_request", "Empty audio body");
     const lang = url.searchParams.get("language");
@@ -101,6 +121,11 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "voice/session" && m === "POST") {
+    // Voice sessions bill the server's provider account: owners only.
+    const dev = await verifiedDevice(t, req);
+    if (link.role !== "owner" || !dev || dev.role !== "owner" || dev.pending) {
+      throw new HttpError(403, "forbidden", "The voice layer is available to the owner's paired devices only");
+    }
     return handleVoiceSession(req, t.env, { tendrilId: t.tid, name: t.db.get("name", "Tendril") });
   }
 

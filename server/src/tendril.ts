@@ -4,14 +4,15 @@ import type { Env } from "./env";
 import { addActivity, preview, pruneActivity } from "./activity";
 import { handleAgent } from "./agent";
 import { Db } from "./db";
-import { pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
-import { checkHealthTimeouts, nextHealthDeadline } from "./files";
+import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
+import { checkHealthTimeouts, fileKey, nextHealthDeadline } from "./files";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
 import {
-  AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, DEDUPE_RETENTION, DEFAULT_GRACE_S, DEFAULT_OWNER_PER_HOUR,
-  DEFAULT_PAGE_PER_HOUR, MAX_STATE, MAX_TRANSCRIPT, PRESENCE_TICK,
+  ACTIVITY_RETENTION, KEEP_VERSIONS,
+  AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, DEDUPE_RETENTION, DEFAULT_GRACE_S, DEFAULT_PAGE_STREAK,
+  MAX_STATE, MAX_TRANSCRIPT, PRESENCE_TICK,
 } from "./limits";
 import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
@@ -62,7 +63,7 @@ interface PendingCall {
 export interface WakeConfig {
   webhook: { url: string; token: string | null } | null;
   schedule_minutes: number | null;
-  budget: { owner_per_hour: number; page_per_hour: number };
+  budget: { page_streak: number };
   grace_seconds: number;
 }
 
@@ -84,7 +85,7 @@ export interface Link {
 export const DEFAULT_WAKE: WakeConfig = {
   webhook: null,
   schedule_minutes: null,
-  budget: { owner_per_hour: DEFAULT_OWNER_PER_HOUR, page_per_hour: DEFAULT_PAGE_PER_HOUR },
+  budget: { page_streak: DEFAULT_PAGE_STREAK },
   grace_seconds: DEFAULT_GRACE_S,
 };
 
@@ -275,7 +276,8 @@ export class Tendril extends DurableObject<Env> {
 
   wakeConfig(): WakeConfig {
     const w = this.db.get<Partial<WakeConfig>>("wake", {});
-    return { ...DEFAULT_WAKE, ...w, budget: { ...DEFAULT_WAKE.budget, ...(w.budget ?? {}) } };
+    const budget = { page_streak: typeof w.budget?.page_streak === "number" ? w.budget.page_streak : DEFAULT_PAGE_STREAK };
+    return { ...DEFAULT_WAKE, ...w, budget };
   }
 
   renderWake() {
@@ -285,7 +287,8 @@ export class Tendril extends DurableObject<Env> {
       schedule_minutes: w.schedule_minutes,
       budget: w.budget,
       grace_seconds: w.grace_seconds,
-      withheld: this.db.get("withheld", { owner: 0, page: 0 }),
+      withheld: this.db.get<number>("withheld", 0),
+      page_streak: pageStreak(this),
     };
   }
 
@@ -293,7 +296,7 @@ export class Tendril extends DurableObject<Env> {
 
   presenceFacts(): PresenceFacts {
     const w = this.wakeConfig();
-    const withheld = this.db.get("withheld", { owner: 0, page: 0 });
+    const withheld = this.db.get<number>("withheld", 0);
     return {
       now: this.now(),
       tokens: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")!.n,
@@ -304,7 +307,7 @@ export class Tendril extends DurableObject<Env> {
       wakePendingSince: this.db.get<number | null>("wake_pending_since", null),
       graceSeconds: w.grace_seconds,
       status: this.db.get<StatusOverride | null>("status_override", null),
-      withheld: withheld.owner + withheld.page,
+      withheld,
     };
   }
 
@@ -499,14 +502,14 @@ export class Tendril extends DurableObject<Env> {
     if (ws) return [[target, ws]];
     const d = this.device(target);
     if (!d) throw new HttpError(404, "not_found", `No device ${target}`);
-    throw new HttpError(409, "offline", `Device ${target} is not connected; last seen at ${d.last_seen ? new Date(d.last_seen).toISOString() : "never"}`, {
+    throw new HttpError(409, "offline", `Device ${target} is not connected${d.last_seen ? `; last seen at ${new Date(d.last_seen).toISOString()}` : ""}`, {
       last_seen: d.last_seen ?? null,
     });
   }
 
   private throwOffline(): never {
     const last = this.lastDeviceSeen();
-    throw new HttpError(409, "offline", `No device connected; last seen at ${last ? new Date(last).toISOString() : "never"}`, { last_seen: last });
+    throw new HttpError(409, "offline", last ? `No device connected; last seen at ${new Date(last).toISOString()}` : "No device has opened the page yet", { last_seen: last });
   }
 
   // ---------------------------------------------------------------- state
@@ -697,7 +700,7 @@ export class Tendril extends DurableObject<Env> {
       }
     }
 
-    if (this.db.get<number>("next_cleanup", 0) <= now) this.cleanup();
+    if (this.db.get<number>("next_cleanup", 0) <= now) await this.cleanup();
 
     const sockets = this.connectedSockets().length > 0;
     if (sockets) this.db.set("last_device_seen", now);
@@ -712,15 +715,46 @@ export class Tendril extends DurableObject<Env> {
     this.scheduleAlarm();
   }
 
-  cleanup(): void {
+  async cleanup(): Promise<void> {
     const now = this.now();
     pruneEvents(this);
     pruneActivity(this);
+    await this.pruneBlobs(now);
+    await this.pruneVersions();
     this.db.run("DELETE FROM dedupe WHERE ts < ?", now - DEDUPE_RETENTION);
     this.db.run("DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at < ?", now);
     const a = this.db.get<{ expires_at: number } | null>("adopt", null);
     if (a && a.expires_at < now) this.db.del("adopt");
     this.db.set("next_cleanup", now + DAY);
+  }
+
+  /**
+   * Photos, clips and other page uploads expire with the activity record (30 days). Agent
+   * uploads and the install icon stay until deleted explicitly.
+   */
+  async pruneBlobs(now: number): Promise<void> {
+    const icon = this.db.get<string | null>("icon", null);
+    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE source = 'page' AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
+    for (const { id } of old) await this.deleteBlob(id);
+  }
+
+  /**
+   * Keeps the newest KEEP_VERSIONS versions plus the current and healthy ones, then deletes file
+   * bodies in R2 that no remaining version references.
+   */
+  async pruneVersions(): Promise<void> {
+    const keep = new Set<number>(this.db.all<{ version: number }>("SELECT version FROM versions ORDER BY version DESC LIMIT ?", KEEP_VERSIONS).map((r) => r.version));
+    for (const k of ["current", "healthy", "latest"]) keep.add(this.db.get<number>(k, 0));
+    const drop = this.db.all<{ version: number }>("SELECT version FROM versions").map((r) => r.version).filter((v) => !keep.has(v));
+    if (drop.length === 0) return;
+    const before = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
+    for (const v of drop) {
+      this.db.run("DELETE FROM version_files WHERE version = ?", v);
+      this.db.run("DELETE FROM versions WHERE version = ?", v);
+    }
+    const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
+    const gone = [...before].filter((h) => !after.has(h));
+    for (const hash of gone) await this.env.FILES.delete(fileKey(this, hash));
   }
 
   // ---------------------------------------------------------------- deletion

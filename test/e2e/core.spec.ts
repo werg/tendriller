@@ -67,8 +67,9 @@ test("new upload reloads the page; eval errors come back", async ({ page }) => {
   await expect(page.locator("#p")).toHaveText("one");
   await upload(h, html(`<p id="p">two</p>`));
   await expect(page.locator("#p")).toHaveText("two", { timeout: 15_000 });
+  await page.waitForFunction(() => (window as any).tendril?.connected === true); // the reloaded page reconnects
   const bad = await api(h, "/eval", { method: "POST", json: { code: "throw new Error('boom')" } });
-  expect(bad.data.ok).toBe(false);
+  expect(bad.data.ok, JSON.stringify(bad)).toBe(false);
   expect(String(bad.data.error)).toContain("boom");
 });
 
@@ -199,15 +200,19 @@ test("rollback and version list", async ({ page }) => {
   await expect(page.locator("#p")).toHaveText("one", { timeout: 15_000 });
 });
 
-test("wake budget withholds the wake but keeps the event", async ({ page }) => {
+test("page-wake cap withholds the wake but keeps the event; a real tap still wakes", async ({ page }) => {
   const h = await createTendril();
-  await api(h, "/wake", { method: "PUT", json: { budget: { page_per_hour: 1 } } });
+  await api(h, "/wake", { method: "PUT", json: { budget: { page_streak: 1 } } });
   await upload(h, html(`<p>x</p>`));
   await openPage(page, h);
   const c = (await api(h, "/events")).data.cursor;
-  await page.evaluate(() => (window as any).tendril.send({ n: 1 }));
+  // page code acting on its own (no user gesture): driven through eval, because Playwright's
+  // page.evaluate runs with a simulated gesture; wait out Chromium's ~5 s transient activation
+  // left by Playwright's own polling while opening the page
+  await new Promise((r) => setTimeout(r, 5500));
+  await api(h, "/eval", { method: "POST", json: { code: "await tendril.send({ n: 1 })" } });
   await new Promise((r) => setTimeout(r, 3500));
-  await page.evaluate(() => (window as any).tendril.send({ n: 2 }));
+  await api(h, "/eval", { method: "POST", json: { code: "await tendril.send({ n: 2 })" } });
   await new Promise((r) => setTimeout(r, 1500));
   // the withheld counter resets once a GET returns events, so read once
   const evs = (await api(h, `/events?after=${c}`)).data;
@@ -216,6 +221,11 @@ test("wake budget withholds the wake but keeps the event", async ({ page }) => {
   expect(second.withheld).toBe(true);
   expect(second.wake).toBe(false);
   expect(evs.withheld).toBeGreaterThanOrEqual(1);
+  // a real tap on an owner device is human input: it wakes despite the cap
+  await page.evaluate(() => { const b = document.createElement("button"); b.id = "tap"; b.onclick = () => (window as any).tendril.send({ n: 3 }); document.body.append(b); });
+  await new Promise((r) => setTimeout(r, 3500));
+  await page.click("#tap");
+  await expect.poll(async () => (await api(h, `/events?after=${c}`)).data.events.find((e: any) => e.data?.n === 3)?.withheld).toBe(false);
 });
 
 test("webhook wake is delivered to a registered URL", async ({ page }) => {

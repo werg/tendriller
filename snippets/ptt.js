@@ -53,7 +53,7 @@
 
   async function transcribe(blob) {
     const base = (window.__TENDRIL__ && window.__TENDRIL__.base) || "";
-    const res = await fetch(base + "_tendril/transcribe", { method: "POST", body: blob, headers: { "Content-Type": blob.type || "audio/webm" } });
+    const res = await fetch(base + "_tendril/transcribe", { method: "POST", body: blob, headers: { "Content-Type": blob.type || "audio/webm", ...(window.tendril?.deviceHeaders?.() || {}) } });
     if (!res.ok) throw new Error("Transcription failed (" + res.status + ")");
     return ((await res.json()).text || "").trim();
   }

@@ -26,6 +26,7 @@ export class SpeechCapture {
     private sensors: SensorTracker,
     private lang: () => string,
     private transcribeUrl: string | null,
+    private authHeaders: () => Record<string, string> = () => ({}),
   ) {
     const w = window as any;
     const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
@@ -134,7 +135,7 @@ export class SpeechCapture {
     if (!blob || !blob.size || !this.transcribeUrl) return;
     this.h.onInterim("Transcribing…");
     try {
-      const res = await fetch(this.transcribeUrl, { method: "POST", body: blob, headers: { "Content-Type": blob.type } });
+      const res = await fetch(this.transcribeUrl, { method: "POST", body: blob, headers: { "Content-Type": blob.type, ...this.authHeaders() } });
       if (!res.ok) throw new Error(String(res.status));
       const j = await res.json();
       const text = String(j?.text ?? "").trim();

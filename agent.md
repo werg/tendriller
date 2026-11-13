@@ -166,12 +166,15 @@ each kind of activity goes when you write the page:
   ("arrived", "10 reps done", "scene changed", a photo).
 - `wake:false` events are stored. They show up in your next `events` read, or together
   with the next wake.
-- **Budgets** are per tendril and per hour, with defaults of 60 owner-instruction wakes
-  and 12 page wakes. Wakes in the same class within 3 s merge into one. Over budget, the
-  event is still stored, but with `"wake":false,"withheld":true`, and the page tells the
-  user "the agent will see this at its next check". `withheld` in the `events` response
-  (and in `GET /wake`) counts the wakes that were held back. If it is above 0, check
-  whether your page wakes you too often.
+- **The page-wake cap.** The owner's own messages, and taps or key presses on an owner
+  device, always wake you. The page waking you *on its own* (timers, rules, sensor
+  triggers) is capped at 6 times in a row; anything the owner says or taps resets the
+  count. There is no hourly clock. Wakes within 3 s merge into one. Over the cap the event
+  is still stored, with `"wake":false,"withheld":true`, and the page tells the user "the
+  agent will see this at its next check". `withheld` in the `events` response (and in
+  `GET /wake`, with the current `page_streak`) counts what was held back; if it is above 0,
+  your page wakes you too often on its own. Raise or lower the cap with
+  `PUT /wake {"budget":{"page_streak":n}}`.
 - A version that fails its health check wakes you once per version (section 11).
 
 ## 5. Waking yourself
@@ -310,7 +313,7 @@ Errors look like `{"error":{"code","message"}}`.
 | `GET A/devices` | `{devices:[{id,name,role,connected,primary,last_seen,ua,link}]}` |
 | `PATCH A/devices/<id>` | `{"role"?, "name"?}`. Setting `role:"owner"` approves a pairing. `DELETE` forgets the device. |
 | `POST A/links` | `{"role":"owner"\|"guest"\|"display","label"?,"expires_in"?:seconds}` → `{id,url,role,label,expires_at}`. Also `GET A/links`, `DELETE A/links/<id>`, and `POST A/links/l_main/rotate` (new main URL). |
-| `GET/PUT A/wake` | `{"webhook":{"url","token"?}\|null, "schedule_minutes":n\|null, "budget":{"owner_per_hour","page_per_hour"}, "grace_seconds":n}` → config including `withheld:{owner,page}`. |
+| `GET/PUT A/wake` | `{"webhook":{"url","token"?}\|null, "schedule_minutes":n\|null, "budget":{"page_streak"}, "grace_seconds":n}` → config including `withheld` and the current `page_streak` count. |
 | `GET A/activity` | `?after=&limit=` → `{entries:[{seq,ts,kind,summary,device,blob?,by?,source}],cursor}`. A record the server built from the traffic it routed. `POST A/activity {"text"}` adds an agent note. |
 | `POST A/tokens` | `{"name"}` → `{name, token}` (an extra token, e.g. for another person's agent). `GET A/tokens`, `DELETE A/tokens/<name>`. The first token is named `main`. |
 | `GET/PUT A/rules` | `{"rules":[rule…]}`. Device rules (section 13). |
@@ -340,12 +343,17 @@ tendril.state.delete("list.a1")
 tendril.state.patch({ title: "Shop", old: null })   // merge patch
 tendril.state.mine()                    // state._device[<this device id>]
 tendril.state.on((state, ops, by) => render(state)) // → unsubscribe; fires for agent and other devices
-tendril.on("connect"|"disconnect"|"presence"|"say"|"role"|"state"|"rules", fn) // → unsubscribe
-tendril.upload(blob, { name })          // → {id, url}; url is page-relative ("_tendril/blob/<id>")
+tendril.on("connect"|"disconnect"|"presence"|"say"|"role"|"state"|"rules"|"upload", fn) // → unsubscribe
+tendril.upload(blob, { name })          // → {id, url}; url is page-relative ("_tendril/blob/<id>").
+                                        //   Offline uploads queue and replay; "upload" events report
+                                        //   {cid,id,url,name} even after a reload lost the promise
+tendril.deviceHeaders()                 // device proof for page HTTP routes such as _tendril/transcribe
 tendril.ready.manual(); tendril.ready() // slow startup: see section 11
 tendril.expose(name, opts, fn)          // fast voice layer (section 14)
 tendril.voice.start() / .stop() / .state
 tendril.speak(text)                     // local speech synthesis; honours _prefs.audio
+// The fast voice layer (tendril.expose / tendril.voice) works on the owner's paired devices only:
+// it bills the server's provider account, so guest and display devices are refused.
 tendril.device                          // {id, role:"owner"|"guest"|"display", name, pending}
 tendril.version; tendril.connected
 tendril.control.hide() / .show() / .position("bottom-left")

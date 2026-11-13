@@ -296,6 +296,16 @@ test("sensor indicator appears for camera, location and motion; stop switch stop
   await expect(chip).toContainText("Microphone in use");
   await page.evaluate(() => (window as any).__s2.getTracks().forEach((t: MediaStreamTrack) => t.stop()));
   await expect(chip).toBeHidden();
+  // The legacy callback API (and anything recording from it, e.g. MediaRecorder) is tracked too.
+  const legacy = await page.evaluate(() => typeof (navigator as any).webkitGetUserMedia === "function");
+  if (legacy) {
+    await page.evaluate(() => new Promise<void>((res) => (navigator as any).webkitGetUserMedia({ audio: true }, (s: MediaStream) => {
+      (window as any).__rec = new MediaRecorder(s); (window as any).__rec.start(); (window as any).__s3 = s; res();
+    }, () => res())));
+    await expect(chip).toContainText("Microphone in use");
+    await page.evaluate(() => (window as any).__s3.getTracks().forEach((t: MediaStreamTrack) => t.stop()));
+    await expect(chip).toBeHidden();
+  }
 });
 
 test("hide() keeps the sensor indicator visible; position() moves the dock", async ({ page }) => {

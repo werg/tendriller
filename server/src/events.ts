@@ -19,8 +19,14 @@ export interface NewEvent {
   /** Requested wake (the sender's `wake` flag). Only effective with a wake class. */
   wake: boolean;
   cls?: WakeClass | null;
-  /** Bypasses budget (version_failed: once per version). */
+  /** Bypasses the page-wake cap (version_failed: once per version). */
   force?: boolean;
+  /**
+   * A person caused this event: an owner instruction, or a page event sent during a real user
+   * gesture on an owner device (browser user activation, which page code cannot fake). It always
+   * wakes and resets the consecutive page-wake streak.
+   */
+  human?: boolean;
   by?: string | null;
 }
 
@@ -36,11 +42,12 @@ export interface StoredEvent {
   by: string | null;
 }
 
-interface BudgetClassState {
-  times: number[];
-  last: number | null;
+interface WakeBoundState {
+  /** Page-started wakes delivered since the last human input. */
+  streak: number;
+  /** Time of the last delivered wake per class, for merging bursts. */
+  last: Record<WakeClass, number | null>;
 }
-type BudgetState = Record<WakeClass, BudgetClassState>;
 
 export interface WebhookJob {
   due: number;
@@ -69,21 +76,38 @@ export function renderEvent(r: Record<string, any>): StoredEvent {
   };
 }
 
-/** Decides whether a wake-eligible event wakes, merges into the previous wake, or is withheld. */
-function budgetDecide(t: Tendril, cls: WakeClass, force: boolean): "wake" | "merged" | "withheld" {
+/**
+ * Decides whether a wake-eligible event wakes, merges into the previous wake, or is withheld.
+ *
+ * Owner wakes are never withheld. Page-started wakes are bounded by count, not by a clock: at most
+ * `budget.page_streak` consecutive page wakes may be delivered without a person in between. Any
+ * human input (owner instruction, or a page event sent during a real owner gesture) resets the
+ * streak. This bounds a page that loops on its own without ever throttling a person.
+ */
+function wakeDecide(t: Tendril, e: NewEvent): "wake" | "merged" | "withheld" {
+  const cls = e.cls!;
   const now = t.now();
-  const st = t.db.get<BudgetState>("budget_state", { owner: { times: [], last: null }, page: { times: [], last: null } });
-  const c = st[cls];
-  c.times = c.times.filter((x) => x > now - HOUR);
+  const st = t.db.get<WakeBoundState>("wake_bound", { streak: 0, last: { owner: null, page: null } });
   let decision: "wake" | "merged" | "withheld";
-  if (c.last !== null && now - c.last < WAKE_MERGE_WINDOW) decision = "merged";
-  else if (force || c.times.length < t.wakeConfig().budget[`${cls}_per_hour`]) {
-    c.times.push(now);
-    c.last = now;
+  if (cls === "owner" || e.human) {
+    st.streak = 0;
+    decision = st.last[cls] !== null && now - st.last[cls]! < WAKE_MERGE_WINDOW ? "merged" : "wake";
+  } else if (e.force) {
+    decision = "wake";
+  } else if (st.last.page !== null && now - st.last.page < WAKE_MERGE_WINDOW) {
+    decision = "merged";
+  } else if (st.streak < t.wakeConfig().budget.page_streak) {
+    st.streak += 1;
     decision = "wake";
   } else decision = "withheld";
-  t.db.set("budget_state", st);
+  if (decision === "wake") st.last[cls] = now;
+  t.db.set("wake_bound", st);
   return decision;
+}
+
+/** Page-started wakes delivered since the last human input. */
+export function pageStreak(t: Tendril): number {
+  return t.db.get<WakeBoundState>("wake_bound", { streak: 0, last: { owner: null, page: null } }).streak;
 }
 
 export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
@@ -91,7 +115,7 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
   let withheld = false;
   let decision: "wake" | "merged" | "withheld" | null = null;
   if (e.wake && e.cls) {
-    decision = budgetDecide(t, e.cls, !!e.force);
+    decision = wakeDecide(t, e);
     wake = decision !== "withheld";
     withheld = decision === "withheld";
   }
@@ -104,9 +128,7 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
   if (seq % 100 === 0) pruneEvents(t);
 
   if (withheld && e.cls) {
-    const w = t.db.get<Record<WakeClass, number>>("withheld", { owner: 0, page: 0 });
-    w[e.cls] += 1;
-    t.db.set("withheld", w);
+    t.db.set("withheld", t.db.get<number>("withheld", 0) + 1);
     const cls = e.cls;
     const openKey = `withheld_agg_${cls}`;
     let key = t.db.get<string | null>(openKey, null);
@@ -115,7 +137,7 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
       t.db.set(openKey, key);
     }
     bumpAggregate(t, key, "wake_withheld", null, { n: 1 }, (tot) =>
-      `${tot.n} ${cls === "owner" ? "instruction" : "page"} wake${tot.n === 1 ? "" : "s"} withheld (over budget); the agent sees them at its next check`);
+      `${tot.n} page wake${tot.n === 1 ? "" : "s"} withheld (the page woke the agent ${t.wakeConfig().budget.page_streak} times in a row without you); the agent sees them at its next check`);
     t.refreshPresence();
   }
   if (decision === "wake") {
@@ -173,8 +195,7 @@ export function hasWakeAfter(t: Tendril, after: number): boolean {
 }
 
 function withheldTotal(t: Tendril): number {
-  const w = t.db.get<Record<WakeClass, number>>("withheld", { owner: 0, page: 0 });
-  return w.owner + w.page;
+  return t.db.get<number>("withheld", 0);
 }
 
 /** Returns events after `after`; reports and resets the withheld counters; advances the agent cursor. */
@@ -183,7 +204,7 @@ export function readEvents(t: Tendril, after: number, limit: number): { events: 
   const cursor = events.length ? events[events.length - 1].seq : after;
   const withheld = withheldTotal(t);
   if (withheld > 0) {
-    t.db.set("withheld", { owner: 0, page: 0 });
+    t.db.set("withheld", 0);
     t.refreshPresence();
   }
   if (cursor > t.db.get<number>("agent_cursor", 0)) t.db.set("agent_cursor", cursor);

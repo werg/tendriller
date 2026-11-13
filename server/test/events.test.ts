@@ -102,23 +102,24 @@ describe("events and long-poll", () => {
   });
 });
 
-describe("wake budget", () => {
-  it("merges wakes within 3 s and withholds over budget", async () => {
+describe("page-wake cap", () => {
+  it("merges bursts, caps consecutive page wakes, and keeps withheld events", async () => {
     const { h, page } = await setup();
-    await apiJson(h, "PUT", "wake", { budget: { page_per_hour: 2 } });
+    await apiJson(h, "PUT", "wake", { budget: { page_streak: 2 } });
     const send = (i: number) => page.request({ t: "send", data: { i } });
-    await send(1); // delivered wake #1
-    await send(2); // within 3 s: merged
+    await send(1); // page wake #1
+    await send(2); // within 3 s: merged, not counted
     await advance(h.id, 4000);
-    await send(3); // delivered wake #2
+    await send(3); // page wake #2
     await advance(h.id, 4000);
-    await send(4); // over budget: withheld
+    await send(4); // third in a row: withheld
     const pres = await page.next((m) => m.t === "presence" && m.withheld === 1);
     expect(pres.withheld).toBe(1);
     await advance(h.id, 4000);
     await send(5); // withheld
     const wake = await apiJson(h, "GET", "wake");
-    expect(wake.withheld).toEqual({ owner: 0, page: 2 });
+    expect(wake.withheld).toBe(2);
+    expect(wake.page_streak).toBe(2);
     const r = await apiJson(h, "GET", "events");
     const ev = r.events.filter((e: any) => e.type === "event");
     expect(ev.map((e: any) => [e.data.i, e.wake, e.withheld])).toEqual([
@@ -129,33 +130,70 @@ describe("wake budget", () => {
       [5, false, true],
     ]);
     expect(r.withheld).toBe(2);
-    // reading resets the counter
-    expect((await apiJson(h, "GET", "wake")).withheld).toEqual({ owner: 0, page: 0 });
+    expect((await apiJson(h, "GET", "wake")).withheld).toBe(0);
     // withheld events do not release a long-poll
     const lp = await apiJson(h, "GET", `events?after=${r.cursor}&wait=1`);
     expect(lp.timeout).toBe(true);
-    // after an hour the budget frees up
-    await advance(h.id, 3600_000);
+    // no clock frees the cap: a day later the page still cannot wake the agent on its own
+    await advance(h.id, 86_400_000);
     await send(6);
     const r2 = await apiJson(h, "GET", `events?after=${r.cursor}`);
-    expect(r2.events.find((e: any) => e.data?.i === 6)).toMatchObject({ wake: true, withheld: false });
+    expect(r2.events.find((e: any) => e.data?.i === 6)).toMatchObject({ wake: false, withheld: true });
     page.close();
   });
 
-  it("owner instructions use their own class; withheld counts by class", async () => {
+  it("human input resets the streak: owner instructions and gesture events", async () => {
     const { h, page } = await setup();
-    await apiJson(h, "PUT", "wake", { budget: { owner_per_hour: 1, page_per_hour: 0 } });
-    await page.request({ t: "send", kind: "instruction", text: "one", via: "text" });
+    await apiJson(h, "PUT", "wake", { budget: { page_streak: 1 } });
+    await page.request({ t: "send", data: { i: 1 } }); // page wake, streak 1
     await advance(h.id, 4000);
-    await page.request({ t: "send", kind: "instruction", text: "two", via: "text" });
-    await page.request({ t: "send", data: {} });
-    expect((await apiJson(h, "GET", "wake")).withheld).toEqual({ owner: 1, page: 1 });
+    await page.request({ t: "send", data: { i: 2 } }); // withheld
+    await advance(h.id, 4000);
+    await page.request({ t: "send", data: { i: 3 }, gesture: true }); // a real tap: wakes, resets
+    await advance(h.id, 4000);
+    await page.request({ t: "send", data: { i: 4 } }); // page wake again, streak 1
+    await advance(h.id, 4000);
+    await page.request({ t: "send", data: { i: 5 } }); // withheld
+    await advance(h.id, 4000);
+    await page.request({ t: "send", kind: "instruction", text: "go on", via: "text" }); // owner: wakes, resets
+    await advance(h.id, 4000);
+    await page.request({ t: "send", data: { i: 6 } }); // page wake
+    const r = await apiJson(h, "GET", "events");
+    const byI = (i: number) => r.events.find((e: any) => e.data?.i === i);
+    expect([1, 2, 3, 4, 5, 6].map((i) => byI(i).withheld)).toEqual([false, true, false, false, true, false]);
+    expect(r.events.find((e: any) => e.type === "instruction")).toMatchObject({ wake: true, withheld: false });
     page.close();
   });
 
-  it("version_failed wakes regardless of budget", async () => {
+  it("owner instructions are never withheld, even with the page cap at 0", async () => {
     const { h, page } = await setup();
-    await apiJson(h, "PUT", "wake", { budget: { page_per_hour: 0 } });
+    await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
+    for (const text of ["one", "two", "three"]) {
+      await page.request({ t: "send", kind: "instruction", text, via: "text" });
+      await advance(h.id, 4000);
+    }
+    await page.request({ t: "send", data: {} });
+    const r = await apiJson(h, "GET", "events");
+    expect(r.events.filter((e: any) => e.type === "instruction").every((e: any) => e.wake && !e.withheld)).toBe(true);
+    expect(r.withheld).toBe(1);
+    page.close();
+  });
+
+  it("a guest's gesture does not count as human input", async () => {
+    const { h, page } = await setup();
+    await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
+    const link = await apiJson(h, "POST", "links", { role: "guest" });
+    const guest = await PageClient.connect(link.url);
+    await guest.request({ t: "send", data: { g: 1 }, gesture: true });
+    const r = await apiJson(h, "GET", "events");
+    expect(r.events.find((e: any) => e.data?.g === 1)).toMatchObject({ wake: false, withheld: true });
+    guest.close();
+    page.close();
+  });
+
+  it("version_failed wakes regardless of the cap", async () => {
+    const { h, page } = await setup();
+    await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
     await apiJson(h, "PUT", "files/index.html", "<p>x</p>");
     page.send({ t: "health", version: 1, ok: false, errors: ["e"] });
     await page.request({ t: "versions" });
@@ -164,11 +202,12 @@ describe("wake budget", () => {
     page.close();
   });
 
-  it("owner can lower but not raise the budget from the page", async () => {
+  it("owner can lower but not raise the cap from the page", async () => {
     const { h, page } = await setup();
-    const a = await page.request({ t: "budget", page_per_hour: 3, owner_per_hour: 500 });
-    expect(a.budget).toEqual({ owner_per_hour: 60, page_per_hour: 3 });
-    expect((await apiJson(h, "GET", "wake")).budget).toEqual({ owner_per_hour: 60, page_per_hour: 3 });
+    expect((await page.request({ t: "budget", page_streak: 50 })).budget).toEqual({ page_streak: 6 });
+    const a = await page.request({ t: "budget", page_streak: 3 });
+    expect(a.budget).toEqual({ page_streak: 3 });
+    expect((await apiJson(h, "GET", "wake")).budget).toEqual({ page_streak: 3 });
     page.close();
   });
 });

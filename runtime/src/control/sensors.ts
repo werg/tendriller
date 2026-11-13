@@ -78,6 +78,18 @@ export function installSensorWrappers(): SensorTracker {
       };
     } catch { /* ignore */ }
   }
+  // Legacy callback APIs reach the same devices; MediaRecorder and AudioContext can only get
+  // camera or microphone input through one of these, so tracking them covers recording too.
+  const nav: any = navigator;
+  for (const name of ["getUserMedia", "webkitGetUserMedia", "mozGetUserMedia"]) {
+    const orig = nav[name];
+    if (typeof orig !== "function") continue;
+    try {
+      nav[name] = function legacyGetUserMedia(c: MediaStreamConstraints, ok: (s: MediaStream) => void, fail?: (e: any) => void) {
+        return orig.call(nav, c, (s: MediaStream) => { trackStream(s, false); ok?.(s); }, fail);
+      };
+    } catch { /* ignore */ }
+  }
   if (md && typeof md.getDisplayMedia === "function") {
     const orig = md.getDisplayMedia.bind(md);
     try {

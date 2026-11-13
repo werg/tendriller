@@ -35,9 +35,11 @@ export const STATUS_OVERRIDE_TTL = 10 * MINUTE;
 export const ADOPT_CODE_TTL = 10 * MINUTE;
 export const ADOPT_MAX_ATTEMPTS = 10;
 export const DEFAULT_GRACE_S = 120;
-export const DEFAULT_OWNER_PER_HOUR = 60;
-export const DEFAULT_PAGE_PER_HOUR = 12;
+/** Consecutive page-started wakes allowed without human input in between. */
+export const DEFAULT_PAGE_STREAK = 6;
 export const EVAL_DEFAULT_TIMEOUT = 10 * SECOND;
 export const EVAL_MAX_TIMEOUT = 120 * SECOND;
 export const CHECK_TIMEOUT = 30 * SECOND;
 export const CLEANUP_INTERVAL = HOUR;
+/** Versions kept (besides current/healthy/latest); older ones and their unreferenced files are pruned daily. */
+export const KEEP_VERSIONS = 50;
