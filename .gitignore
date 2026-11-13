@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+server/public/_tendril/
+server/public/snippets/
+server/public/agent.md
+test-results/
+playwright-report/
+.dev.vars
+*.log

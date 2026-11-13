@@ -1,0 +1,22 @@
+{
+  "name": "tendriller",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "npm run build && wrangler dev --config server/wrangler.jsonc",
+    "test": "npm run build && vitest run --config server/vitest.config.ts",
+    "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.1",
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "@playwright/test": "^1.65.0",
+    "esbuild": "^0.28.2",
+    "qrcode-generator": "^2.0.4",
+    "typescript": "^7.0.2",
+    "vitest": "4.1",
+    "wrangler": "^4.161.0"
+  }
+}

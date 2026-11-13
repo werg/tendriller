@@ -1,0 +1,26 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tendriller",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "TENDRIL", "class_name": "Tendril" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tendril"] }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "tendriller-files" }],
+  "vars": {
+    "PUBLIC_BASE": "http://localhost:8787",
+    "PAGE_HOST_MODE": "path",
+    "PAGE_BASE_DOMAIN": ""
+  }
+  // Optional, set per deployment:
+  //   secrets: CREATE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT,
+  //            VOICE_PROVIDER, OPENAI_API_KEY
+  //   "ai": { "binding": "AI" }   (server-side transcription via Workers AI)
+}
