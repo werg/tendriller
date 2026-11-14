@@ -2,9 +2,8 @@ import { servicePage } from "./accounts/ui";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
-import { apiKeyAccount, dashboard } from "./accounts/keys";
+import { dashboard } from "./accounts/keys";
 import { accountData } from "./accounts/data";
-import { apiDevice, devicePage } from "./accounts/device";
 import { reportPage } from "./abuse/report";
 import { adminPage, appealPage } from "./abuse/admin";
 import { budgetWebhook } from "./budget";
@@ -131,7 +130,6 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/appeal" || path === "/appeal/account") return appealPage(req, env, url);
   if (path === "/admin" || path === "/admin/action" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
-  if (path === "/device") return devicePage(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
@@ -145,7 +143,13 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
     return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
   }
-  if (path === "/agent.md") return asset(env, url, "/agent.md", { "Content-Type": "text/markdown; charset=utf-8" });
+  if (path === "/agent.md") {
+    const guide = await asset(env, url, "/agent.md");
+    if (!guide.ok) return guide;
+    return new Response((await guide.text()).replaceAll("https://tendriller.dev", publicBase(env)), {
+      headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   }
@@ -158,18 +162,11 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
 async function api(req: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   try {
-    if (path === "/api/device" || path === "/api/device/token") return await apiDevice(req, env, url);
     if (path === "/api/tendrils") {
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
       await requireCreationOpen(env);
-      const accountId = await apiKeyAccount(req, env);
-      if (req.headers.has("Authorization") && !accountId) {
-        if (env.FAILED_AUTH_RATE && !(await env.FAILED_AUTH_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
-          throw new HttpError(429, "rate_limited", "Too many failed authentication attempts");
-        }
-        throw new HttpError(401, "unauthorized", "Invalid account key");
-      }
-      if (!accountId && env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
+      if (req.headers.has("Authorization")) throw new HttpError(400, "bad_request", "Creation uses an owner email, not an account key");
+      if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
         throw new HttpError(429, "rate_limited", "Creation rate limit reached");
       }
       const body = await readBody(req, 64 * 1024);
@@ -179,32 +176,30 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       if (!isPlainObject(createBody)) throw new HttpError(400, "bad_request", "Creation body must be an object");
       const lifetime = createBody.lifetime ?? "ad_hoc";
       if (lifetime !== "ad_hoc" && lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-      if (accountId && env.KEY_CREATE_RATE && !(await env.KEY_CREATE_RATE.limit({ key: accountId })).success) {
-        throw new HttpError(429, "rate_limited", "Account creation rate limit reached");
-      }
-      const releaseIp = accountId ? async () => {} : await reserveCreationIp(env, req);
+      if (typeof createBody.owner !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(createBody.owner) || createBody.owner.length > 254)
+        throw new HttpError(400, "bad_request", "owner must be a verified email address");
+      if (lifetime === "resident") throw new HttpError(400, "bad_request", "Create an ad_hoc page; the agent can make it resident after the owner opens it");
+      const releaseIp = await reserveCreationIp(env, req);
       let created = false;
       try {
         for (let i = 0; i < 3; i++) {
           const id = newTendrilId();
-          const admission = !accountId ? env.ADMISSION.get(env.ADMISSION.idFromName("global")) : null;
-          if (admission) {
-            const allowed = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": id } }));
-            if (!allowed.ok) return allowed;
-          }
+          const admission = env.ADMISSION.get(env.ADMISSION.idFromName("global"));
+          const allowed = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": id } }));
+          if (!allowed.ok) return allowed;
           let indexed = false;
           const cancel = async () => {
             try {
               if (indexed) await env.ACCOUNTS!.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
             } finally {
-              if (admission) await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
+              await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
             }
           };
           let res: Response;
           try {
             try {
               await env.ACCOUNTS.prepare("INSERT INTO tendrils (id, owner_account, creator_ip, created_at, claimed_at, lifetime) VALUES (?, ?, ?, ?, ?, ?)")
-                .bind(id, accountId, req.headers.get("CF-Connecting-IP"), Date.now(), accountId ? Date.now() : null, lifetime).run();
+                .bind(id, null, req.headers.get("CF-Connecting-IP"), Date.now(), null, lifetime).run();
             } catch (err) {
               const message = String(err);
               if (message.includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
@@ -214,7 +209,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
             indexed = true;
             res = await stub(env, id).fetch(
               new Request("https://tendril.internal/create", { method: "POST", headers: {
-                "x-tendril-id": id, "Content-Type": "application/json", ...(accountId ? { "x-tendril-owner-account": accountId } : {}),
+                "x-tendril-id": id, "Content-Type": "application/json",
               }, body }),
             );
           } catch (err) {

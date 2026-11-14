@@ -1,6 +1,6 @@
 # Public service operations
 
-The application has one service model: `https://tendriller.dev` for accounts and the API, and one page origin per tendril under `tendriller.site`. The repository is not ready for production deployment until the launch checks below pass.
+The application has one service model: `https://tendriller.dev` for accounts and the API, and one page origin per tendril under `tendriller.site`. Staging and production are deployed; page creation remains controlled by service state.
 
 Tendriller does not require Email Routing or Email Sending. Public reports use `/report`; owner notices and appeals appear in the authenticated dashboard, including a restricted view for suspended owners.
 
@@ -36,18 +36,18 @@ After creating the OAuth apps and Turnstile widgets, export their credentials lo
 
 GitHub Actions runs typecheck and tests on pull requests. Automatic deployment later needs a scoped Cloudflare API token because CI cannot use an interactive Wrangler login. Once staging launch checks pass, set repository variable `STAGING_READY=true`, the `CLOUDFLARE_API_TOKEN` secret, and `CLOUDFLARE_ACCOUNT_ID` variable in the staging environment. A push to `main` applies migrations and deploys staging. Production tags `v*` deploy only with `PRODUCTION_READY=true` and the corresponding production environment values.
 
-Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that normal keys, exports, and page access remain denied.
+Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
 ## Launch checks
 
 - Both OAuth providers sign in and link accounts through real callbacks. Verify a named owner against verified provider email and provider subject.
 - Run browser tests with two real page origins. Test sibling cookie tossing, cross-origin POST and WebSocket requests, storage isolation, and service-origin separation.
-- With staging open and an owner key created, set `E2E_SERVICE_BASE` and `E2E_ACCOUNT_KEY`, run `node scripts/capture-e2e-auth.mjs` to save a local OAuth session, then `npm run test:e2e`. The test creates two claimed pages, checks distinct browser origins and blocked cross-origin actions, and deletes them afterward. Keep `.e2e-auth.json` private.
-- Create and claim pages, approve an agent guest invite, revoke all agent tokens, create a display link, and release a claim before a guest is approved.
+- With staging open, set `E2E_SERVICE_BASE` and `E2E_OWNER_EMAIL`, run `node scripts/capture-e2e-auth.mjs` to save a local OAuth session, then `npm run test:e2e`. The test creates two pages and claims them on browser open, checks distinct browser origins and blocked cross-origin actions, and deletes them afterward. Keep `.e2e-auth.json` private.
+- Create pages for a verified email and open them to claim automatically, approve an agent guest invite, revoke all agent tokens, create a display link, and release a claim before a guest is approved.
 - Exercise each rate and quota boundary, including concurrent writes to two tendrils of one account. Check D1 reserved bytes against Durable Object file ledgers.
 - Submit page and external reports; verify automatic holds, account suspension, appeals, restore, notices, and audit entries.
 - Verify speech on a mid-range phone. Download occurs only after a deliberate microphone tap; confirm model hash, 30-second limit, transcription time, and that audio never leaves the browser.
-- Put legally reviewed `terms.html`, `privacy.html`, `acceptable-use.html`, `copyright.html`, and `law-enforcement.html` in `legal/`. Run `node scripts/check-legal.mjs` before deploy. The claim screen's terms and privacy links must resolve to those published pages. Verify the minimum age and rights process in the reviewed text.
+- Put legally reviewed `terms.html`, `privacy.html`, `acceptable-use.html`, `copyright.html`, and `law-enforcement.html` in `legal/`. Run `node scripts/check-legal.mjs` before deploy. The sign-in screen and dashboard must link to those published pages. Verify the minimum age and rights process in the reviewed text.
 - Monitor Free-tier limits or, if paid usage is enabled, verify spending limits and email budget alerts. Automatic `service_state` budget transitions require a compatible webhook policy and staging test before they can be relied upon.
 
 ## Runbooks
@@ -56,7 +56,7 @@ Each deployed Worker has a 15-minute cron that retries suspended-account page sh
 
 **Mass takedown:** Set `read_only`, then use the allowlisted `/admin` console to disable targeted tendrils or suspend an account with a recorded reason. Keep evidence for 90 days. Restore through `/admin` after reviewing an appeal; restored reports are disqualified from future threshold counts.
 
-**Leaked account key:** Revoke the named key in `/dashboard`. Inspect its `last_used` and the account's tendrils. If agent tokens were also exposed, disconnect them on each page. Rotate OAuth client secrets through their provider consoles and `set-secrets.mjs`; service sessions should be invalidated if compromise is suspected.
+**Leaked agent token:** Disconnect the token on its page. Inspect recent activity and replace the page if needed. Rotate OAuth client secrets through their provider consoles and `set-secrets.mjs`; service sessions should be invalidated if compromise is suspected.
 
 **Storage discrepancy:** Compare `service_state.reserved` with the sum of `tendrils.reserved`. The tendril alarm reconciles each local file ledger with its D1 row. Pause writes while resolving a persistent mismatch, then recheck before reopening.
 

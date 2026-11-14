@@ -27,7 +27,6 @@
   }],
   "ratelimits": [
     { "name": "CREATE_RATE", "namespace_id": "101", "simple": { "limit": 5, "period": 60 } },
-    { "name": "KEY_CREATE_RATE", "namespace_id": "107", "simple": { "limit": 30, "period": 60 } },
     { "name": "AGENT_RATE", "namespace_id": "102", "simple": { "limit": 300, "period": 60 } },
     { "name": "EVAL_RATE", "namespace_id": "103", "simple": { "limit": 60, "period": 60 } },
     { "name": "FILE_READ_RATE", "namespace_id": "108", "simple": { "limit": 120, "period": 60 } },

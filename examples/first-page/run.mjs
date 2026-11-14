@@ -3,10 +3,9 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const service = (process.env.TENDRILLER_SERVICE_BASE || "https://tendriller.dev").replace(/\/$/, "");
-const accountKey = process.env.TENDRILLER_ACCOUNT_KEY;
 const owner = process.env.TENDRILLER_OWNER;
 const name = process.env.TENDRILLER_PAGE_NAME || "A little hello";
-const headers = { "Content-Type": "application/json", ...(accountKey ? { Authorization: `Bearer ${accountKey}` } : {}) };
+const headers = { "Content-Type": "application/json" };
 
 async function request(url, options = {}) {
   const response = await fetch(url, options);
@@ -15,10 +14,10 @@ async function request(url, options = {}) {
   return body;
 }
 
-if (owner && accountKey) throw new Error("TENDRILLER_OWNER is for keyless creation. An account key already selects the owner.");
+if (!owner) throw new Error("Set TENDRILLER_OWNER to the person’s verified GitHub or Google email address.");
 const created = await request(`${service}/api/tendrils`, {
   method: "POST", headers,
-  body: JSON.stringify({ name, ...(owner ? { owner } : {}) }),
+  body: JSON.stringify({ name, owner }),
 });
 const api = created.api;
 const auth = { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" };

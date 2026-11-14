@@ -1,12 +1,12 @@
 # Tendriller as a public service: plan
 
-Status: repository implementation in progress, 2026-11-13. See `docs/PUBLIC_SERVICE_PROGRESS.md` for tested scope and launch blockers. The public trust model is the sole code path and is documented in `docs/PROTOCOL.md`.
+Status: public beta implementation, updated 2026-11-14. See `docs/PUBLIC_SERVICE_PROGRESS.md` for tested scope and launch blockers. The public trust model is the sole code path and is documented in `docs/PROTOCOL.md`.
 
 ## 1. Goals
 
-- Any agent can create a tendril with no account, key or setup, as today.
+- Any agent can create a tendril for a person using only their verified email address.
 - A person sees a tendril's page only after signing in with GitHub or Google, and the
-  page then belongs to that sign-in.
+  page then belongs to that sign-in when its verified email matches.
 - Abuse is expensive, visible and quick to remove. Creation and storage have hard
   service-wide ceilings; request costs trip an automatic stop (section 5.3).
 - The whole Cloudflare setup is reproducible from the repository plus a few one-time
@@ -20,8 +20,8 @@ They can come later without changing this design.
 ### 2.1 Lifecycle
 
 1. **Created (unclaimed).** `POST /api/tendrils` needs no key. It is rate limited per IP
-   (section 5). The agent can name who the page is for:
-   `{"owner": "ana@example.com"}` (an email), `"github:octocat"` or `"google:ana@example.com"`.
+   (section 5). The agent names who the page is for with a verified email:
+   `{"owner": "ana@example.com"}`.
    The agent gets its token and the page URL as now and can upload files, set state and
    so on. An unclaimed tendril has small limits (section 5.2) and is deleted if nobody
    claims it within 24 hours.
@@ -30,9 +30,8 @@ They can come later without changing this design.
    open it.") and the OAuth sign-in follows. With a named owner, only a sign-in whose
    verified identity matches can open it: an email matches a verified email from Google
    or GitHub (GitHub's verified addresses come from the `user:email` scope), and
-   `github:`/`google:` match the account. The screen shows the expected owner masked
-   (`a***@example.com`). Without a named owner, the first person to sign in claims it.
-   Either way the tendril is then bound to that account. Link previewers and crawlers
+   only that verified email matches the account. The screen shows the expected owner masked
+   (`a***@example.com`). Opening the link after sign-in binds the tendril to that account automatically. Link previewers and crawlers
    cannot claim, because claiming needs an interactive OAuth sign-in.
 3. **Claimed.** The page is served only to signed-in accounts with a role: the owner, and
    people the owner invited (section 2.3). Quotas now come from the owner's account. `GET A`
@@ -60,9 +59,9 @@ webhooks and MCP Events, and deleting the tendril. What changes:
 
 | Gap | Answer |
 |---|---|
-| An attacker sends an unclaimed link to one victim, who claims it and sees attacker content. | One link reaches one person; mass phishing needs one tendril per victim, which the per-IP creation limit and abuse handling (section 6) make expensive. The claim screen warns first. A first visit to a claimed page from a device that has not opened it before shows a one-line notice in the control ("made by an AI agent; Tendriller never asks for passwords"). |
-| The link is posted in a group chat and the wrong person claims it. | Name the owner at creation (step 1); then nobody else can claim it. Without one, the agent sees the owner in `GET A` and can `POST A/release` to make it unclaimed again (harmless: an agent can always make a new tendril). |
-| An attacker names a victim as owner. | Gives the attacker nothing beyond sending them an unnamed link: the victim still has to choose to sign in, and the tendril is then the victim's, with the same notices and reporting. |
+| An attacker sends an unclaimed link to one victim, who claims it and sees attacker content. | One link reaches one person; mass phishing needs one tendril per victim, which the per-IP creation limit and abuse handling (section 6) make expensive. The sign-in screen explains the page first. A first visit to a claimed page from a device that has not opened it before shows a one-line notice in the control ("made by an AI agent; Tendriller never asks for passwords"). |
+| The link is posted in a group chat and the wrong person opens it. | The verified owner email is required at creation, so nobody else can claim it. |
+| An attacker names a victim as owner. | The victim still has to choose to sign in; the attacker cannot claim the page, and the victim can disconnect the agent and report the page. |
 | An anonymous agent uses the API as free file storage or a file share without ever showing the page. | Unclaimed tendrils hold at most 2 MB and live 24 hours; API reads of files and blobs are rate limited per tendril. |
 | Outbound requests (webhooks, MCP Events) on behalf of anonymous agents. | They only fire on wakes, and wakes come from page events, which need a claimed page. Webhook and MCP Events targets must be public HTTPS (already enforced). |
 | Login-free viewing (a kitchen display, a TV). | Only the owner can create a link that skips sign-in (`display` role), from the page while signed in, never from the agent token. The link shows "shared by <owner>" and counts against the owner's quota. Every login-free view therefore traces to a signed-in person. |
@@ -83,20 +82,9 @@ Today roles come from page links plus device pairing. With sign-in:
 The page key in the URL stays as the routing secret, but it no longer grants access by
 itself.
 
-### 2.4 Optional account keys for agents
+### 2.4 Agent access
 
-Signed-in users can create named API keys on the dashboard (or through the device flow
-below) and give them to their agents. A key is never required. It gives:
-
-- higher limits (the account's quota from the start, resident tendrils);
-- tendrils that are already claimed by the key's account, so there is no claim step and
-  no race;
-- revocation per agent.
-
-**Device flow**, so an agent can get a key without copy and paste:
-`POST /api/device` → `{device_code, user_code, verification_url}`. The agent shows the
-URL and code to its user, who signs in and approves "Agent <name> wants a key". The agent
-polls `POST /api/device/token` and receives `ak_…` once approved.
+Creation requires the intended owner's verified email, but no account credential. The agent receives a token scoped to that page. When the person opens the link and signs in, the page is claimed automatically. The owner can disconnect the agent token. A claimed page may be made resident by its agent within the account's quota.
 
 ## 3. Domains and origin isolation
 
@@ -194,7 +182,6 @@ Two mechanisms:
 | Key | Limit (starting point) |
 |---|---|
 | Create, unauthenticated, per IP | 5 / 60 s, plus 30 per day per IP (counted in D1) |
-| Create, per account key | 30 / 60 s |
 | Agent API, per tendril token | 300 / 60 s |
 | `eval`, per tendril | 60 / 60 s |
 | Failed authentication, per IP | 20 / 60 s (then 429 for the rest of the minute) |
@@ -226,10 +213,9 @@ and the page's control says so.
 - A `service_state` row in D1 (`open`, `creation_paused`, `read_only`), checked on every
   create and write. It stops creation or writes without a deploy.
 - **Hard ceilings:**
-  - Keyless creation passes through one Admission Durable Object that counts exactly:
+  - Creation passes through one Admission Durable Object that counts exactly:
     creations per hour and live unclaimed tendrils, service-wide. Past either cap,
-    keyless creation answers `503 {"code":"busy"}`; account creation continues within
-    account quotas.
+    creation answers `503 {"code":"busy"}`.
   - Stored bytes are capped service-wide by the reservation in section 5. Past the cap,
     writes answer `507 {"code":"service_full"}`.
 - **Automatic stop for request costs**, which cannot be capped exactly (page traffic,
@@ -296,7 +282,7 @@ restores a page that was wrongly held.
 - **Automatic account suspension:** an account with 3 holds not reversed on appeal within
   30 days is suspended (all tendrils disabled and keys revoked; sign-in is restricted to notices and appeals).
 - **Unclaimed tendrils** that are reported are deleted outright, and their creator IP
-  loses keyless creation for 24 hours.
+  loses creation for 24 hours.
 - **Admin console** at `<service>/admin` for accounts on an allowlist of GitHub or Google
   identities. It shows the report and flag queue with a sandboxed preview (static file
   listing, plus an optional Browser Rendering screenshot), the tendril's owner and history,
@@ -348,7 +334,7 @@ To be written with legal review before launch: terms of service and acceptable u
 policy, privacy policy (what is stored: files, events and sensor data for 30 days,
 transcripts the page sends, device information; processor: Cloudflare; speech is
 transcribed on the device), a DMCA designated agent, a minimum age, GDPR rights (export and deletion are
-section 4), and a law-enforcement request process. The claim screen links the terms and
+section 4), and a law-enforcement request process. The sign-in screen links the terms and
 the privacy policy.
 
 ## 9. Operations
@@ -369,18 +355,18 @@ the privacy policy.
 - `router.ts`: split by host. The service domain gets API, auth, dashboard, admin and
   report routes; the pages domain gets only page routes. Remove `CREATE_KEY`; add per-IP
   limits and the `owner` field.
-- New `server/src/accounts/` (OAuth, sessions, keys, device flow), `server/src/abuse/`
+- New `server/src/accounts/` (OAuth, sessions, page ownership), `server/src/abuse/`
   (reports, checks, admin), and D1 migrations.
 - `tendril.ts`: `owner`, `claimed_at`, `disabled`, per-tendril limits from the owner's
   tier, `release`, byte reservations in D1, deletion of unclaimed tendrils after 24 h.
-- An Admission Durable Object for keyless creation, and a webhook for Cloudflare usage
+- An Admission Durable Object for creation, and a webhook for Cloudflare usage
   notifications.
-- `page.ts` and `ws.ts`: the claim screen, page sessions, the role check before serving
+- `page.ts` and `ws.ts`: the automatic email claim, page sessions, the role check before serving
   anything, the first-visit notice, report routes.
 - Runtime control: sign-in state, the sensor indicator, invite and approve, display links,
   the report menu, and on-device speech (section 7).
 - `PROTOCOL.md` sections 1, 2, 6 and 8 and `agent.md` rewritten for the new model; `agent.md`
-  gains the device flow and the `owner` field.
+  explains the required `owner` email and page-scoped agent token.
 
 ## 11. Phases
 
@@ -394,7 +380,7 @@ creation-key fallback or path-host route.
    HSTS preload and Public Suffix List submissions for `tendriller.site`,
    CI and environments, `__Host-` cookies and Origin checks. Check: the hostile-tendril
    tests in section 3 pass.
-2. **Sign-in and claim.** OAuth, sessions, the claim screen, page sessions, roles, invites,
+2. **Sign-in and claim.** OAuth, sessions, the automatic email claim, page sessions, roles, invites,
    display links, the `owner` field, release, agent list and disconnect, owner approval of
    agent invites, deletion of unclaimed tendrils. Check: an unclaimed page never serves page
    content; a second account cannot open a claimed page without an invite; an agent cannot
@@ -406,7 +392,7 @@ creation-key fallback or path-host route.
 4. **Abuse tooling.** Reports, automatic holds and suspensions,
    version checks, notices and appeals, admin console, audit log.
 5. **On-device speech.** Whistle in the runtime, hosted copy, hash check, fallbacks.
-6. **Keys and device flow.** Dashboard, `ak_…` keys, device flow, higher limits.
+6. **Automatic owner claim.** Verify provider email, claim on first open, and keep agent access page-scoped.
 7. **Launch.** Terms, privacy policy, web report form, status page, budget alerts, Public
    Suffix List submission (started in phase 1), runbooks.
 

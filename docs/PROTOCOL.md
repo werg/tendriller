@@ -6,15 +6,15 @@ This describes the sole supported service model. `docs/PUBLIC_SERVICE.md` gives 
 
 The service origin is `https://tendriller.dev`; each tendril page has its own origin `https://<12-char base32 id>.tendriller.site/s/<26-char base32 page key>/`. The service host serves the API, OAuth, dashboard, reports, and admin. Page hosts serve only the page and its runtime. Page keys route requests but never authorize a viewer alone. Mutating page requests and WebSocket upgrades require an `Origin` equal to that page origin. Page sessions are opaque `__Host-` cookies; service sessions are separate `__Host-` cookies on the service host. Cross-origin page storage is isolated by the host. HSTS covers the pages domain.
 
-Agent tokens start with `tk_` and authorize `A = https://tendriller.dev/api/t/<id>`. Named account keys start with `ak_` and are optional for `POST /api/tendrils`. Secrets are stored as hashes. Device IDs and device secrets identify browser devices for presence and offline replay; authorization comes from the page session and role.
+Agent tokens start with `tk_` and authorize `A = https://tendriller.dev/api/t/<id>`. Secrets are stored as hashes. Device IDs and device secrets identify browser devices for presence and offline replay; authorization comes from the page session and role.
 
 ## Lifecycle
 
-`POST /api/tendrils` accepts `{"name"?,"owner"?,"lifetime"?}`. Owner may be an email, `github:<login>`, or `google:<email>`. Keyless creation has an IP rate and daily cap, global hourly and live-unclaimed caps, a 24-hour claim deadline, and 2 MB storage. An account key creates an already claimed tendril. Only a claimed tendril can be resident.
+`POST /api/tendrils` accepts `{"name"?,"owner": "verified@example.com","lifetime"?}`. Owner must be an email verified by GitHub or Google. Creation has an IP rate and daily cap, global hourly and live-unclaimed caps, a 24-hour claim deadline, and 2 MB storage. Only a claimed tendril can be made resident by its agent.
 
-Opening a page without a page session redirects through `/auth/page` and OAuth. A named owner must match a verified provider identity. The first successful claimant binds an unnamed page. The service issues a one-use page code; the page origin redeems it for its own host-only cookie. The page owner may invite signed-in guests and approve invites made by agents. Only the owner may create a login-free display link. Display links are read only. `POST A/release` can release the claim before any guest has been approved.
+Opening a page without a page session redirects through `/auth/page` and OAuth. The signed-in account must have the intended email among its verified provider emails; opening the link claims the page automatically. The service issues a one-use page code; the page origin redeems it for its own host-only cookie. The page owner may invite signed-in guests and approve invites made by agents. Only the owner may create a login-free display link. Display links are read only. `POST A/release` can release the claim before any guest has been approved.
 
-Service sign-in uses GitHub or Google authorization code and PKCE. Account identities use provider subject, with verified emails recorded separately. The dashboard supports provider linking, named keys, export, and deletion. `POST /api/device`, `/api/device/token`, and `/device` implement account-key authorization for agents.
+Service sign-in uses GitHub or Google authorization code and PKCE. Account identities use provider subject, with verified emails recorded separately. The dashboard supports provider linking, export, and deletion.
 
 ## Agent API
 
@@ -28,12 +28,12 @@ The runtime opens `P_tendril/ws`; the server derives owner, guest, or display pe
 
 ## Limits and enforcement
 
-Unclaimed storage is 2 MB and individual files are 1 MB; claimed storage is 25 MB and files are 5 MB. An account has 200 MB storage, at most 20 active tendrils and 3 residents. The service has an exact global byte reservation and keyless admission object. Rate Limiting bindings slow request bursts. `service_state` can pause creation or set read only. A budget notification webhook changes state at configured thresholds.
+Unclaimed storage is 2 MB and individual files are 1 MB; claimed storage is 25 MB and files are 5 MB. An account has 200 MB storage, at most 20 active tendrils and 3 residents. The service has an exact global byte reservation and admission object. Rate Limiting bindings slow request bursts. `service_state` can pause creation or set read only. A budget notification webhook changes state at configured thresholds.
 
 Reports arrive from a signed-in page or the public Turnstile form at `/report`. Three qualifying account reports within 24 hours hold a claimed page. Reported unclaimed pages are deleted. Three unreversed holds in 30 days suspend an account. The owner can appeal at `/appeal`; allowlisted provider identities use `/admin` to act and audit reasons. `/_tendril/report` remains available from the page control. Every automatic/manual action is recorded in D1.
 
-Young-page guest and display visitor bursts, creator-IP claim patterns, and repeated claim releases also trigger holds at the thresholds in `PUBLIC_SERVICE.md`. The owner dashboard shows sensor activity reported by each connected page device. Suspended owners may sign in to a restricted dashboard with notices and page/account appeals; normal keys and page access remain denied. A scheduled Worker retries page disable/restore operations from the D1 queue; account suspension in D1 denies page access while reconciliation is pending.
+Young-page guest and display visitor bursts, creator-IP claim patterns, and repeated claim releases also trigger holds at the thresholds in `PUBLIC_SERVICE.md`. The owner dashboard shows sensor activity reported by each connected page device. Suspended owners may sign in to a restricted dashboard with notices and page/account appeals; normal page access remain denied. A scheduled Worker retries page disable/restore operations from the D1 queue; account suspension in D1 denies page access while reconciliation is pending.
 
 ## Deployment contract
 
-Staging and production use isolated D1, R2, secrets, routes, and Worker names generated by `scripts/provision.mjs`. D1 migrations initialize creation paused. `docs/OPERATIONS.md` lists the external domain, OAuth, Turnstile, budget, legal, and browser checks required before opening service state. The repository contains one public service route path; no creation-key or path-host fallback is deployed.
+Staging and production use isolated D1, R2, secrets, routes, and Worker names generated by `scripts/provision.mjs`. D1 migrations initialize creation paused. `docs/OPERATIONS.md` lists the external domain, OAuth, Turnstile, budget, legal, and browser checks required before opening service state. The repository contains one public service route path; no account-key or path-host fallback is deployed.

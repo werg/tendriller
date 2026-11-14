@@ -5,11 +5,11 @@ The repository uses one public-service code path. New D1 environments initialize
 ## Implemented locally
 
 - Service and page host split, page sessions, page `Origin` checks, HSTS, GitHub/Google OAuth with PKCE, verified identity matching, named or first-person claim, invited guests, owner-only display links, and owner agent revocation.
-- Account dashboard, named keys, device flow, data export, deletion, D1 account index, per-account and service byte reservations, keyless Admission object, rate bindings, state switch, and budget webhook.
+- Account dashboard, automatic verified-email claim, data export, deletion, D1 account index, per-account and service byte reservations, Admission object, rate bindings, state switch, and budget webhook.
 - External and page reports, Turnstile validation, static version screening, automatic holds and suspension, D1-backed owner notices, authenticated page/account appeals (including restricted suspended sign-in), admin actions with a static preview, and D1 audit log. The owner dashboard shows per-device page sensor history.
 - On-device Cactus Whistle runtime with pinned model and engine hashes, R2 asset installation script, provisioning script, CI workflow, and operational runbooks.
-- Public service tests and TypeScript checks pass locally. A new browser isolation suite is ready for staging; it cannot run until the real domains, OAuth apps, and owner key exist. The prior browser suite assumes anonymous page access and device pairing and is excluded. The deployed service and real provider, domain, and browser flows have not been exercised.
-- Experience follow-ups implemented locally: cohesive landing, claim and first-version waiting screens; account page cards with direct actions and one-time key reveal; guest request polling with approve/decline; private speech setup with streamed progress and language guidance; and a runnable create/publish/event/reply example. These browser-facing changes still need staging verification on real page origins.
+- Public service tests and TypeScript checks pass locally. A new browser isolation suite is ready for staging; it cannot run until the real domains, OAuth apps, and owner account exists. The prior browser suite assumes anonymous page access and device pairing and is excluded. The deployed service and real provider, domain, and browser flows have not been exercised.
+- Experience follow-ups implemented locally: cohesive landing, sign-in and first-version waiting screens; account page cards with direct actions ; guest request polling with approve/decline; private speech setup with streamed progress and language guidance; and a runnable create/publish/event/reply example. These browser-facing changes still need staging verification on real page origins.
 
 ## Launch blockers and incomplete plan items
 

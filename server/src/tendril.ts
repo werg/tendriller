@@ -241,24 +241,15 @@ export class Tendril extends DurableObject<Env> {
     const id = req.headers.get("x-tendril-id")!;
     const body = await readJson(req, 64 * 1024);
     const name = body.name === undefined ? "Tendril" : validName(body.name);
-    const owner = body.owner === undefined ? null : validIntendedOwner(body.owner);
-    const ownerAccount = req.headers.get("x-tendril-owner-account");
+    const owner = validIntendedOwner(body.owner);
     const lifetime = body.lifetime ?? "ad_hoc";
     if (lifetime !== "ad_hoc" && lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-    if (lifetime === "resident" && !ownerAccount) throw new HttpError(403, "account_required", "Resident tendrils require an account key");
-    if (ownerAccount && owner) throw new HttpError(400, "bad_request", "owner cannot be set when using an account key");
+    if (lifetime === "resident") throw new HttpError(400, "bad_request", "Claim the page before making it resident");
     if (body.pairing !== undefined) throw new HttpError(400, "bad_request", "Device pairing is unavailable");
     const now = this.now();
     this.db.set("id", id);
     this.db.set("name", name);
     if (owner) this.db.set("intended_owner", owner);
-    if (ownerAccount) {
-      this.db.set("owner_account", ownerAccount);
-      this.db.set("claimed_at", now);
-      const identity = await this.env.ACCOUNTS?.prepare("SELECT provider, login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
-        .bind(ownerAccount).first<{ provider: string; login: string }>();
-      if (identity) this.db.set("owner_label", `${identity.provider}:${identity.login}`);
-    }
     this.db.set("lifetime", lifetime);
     this.db.set("created_at", now);
     this.db.set("rev", 0);
@@ -394,7 +385,6 @@ export class Tendril extends DurableObject<Env> {
       .bind(now, owner).first();
     if (!suspended) return;
     await this.env.ACCOUNTS.batch([
-      this.env.ACCOUNTS.prepare("DELETE FROM api_keys WHERE account_id = ?").bind(owner),
       this.env.ACCOUNTS.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, 'automatic', 'suspend', ?, ?, ?)")
         .bind(crypto.randomUUID(), owner, "Three unreversed holds within 30 days", now),
     ]);
@@ -1198,9 +1188,7 @@ function validIntendedOwner(value: unknown): string {
   if (typeof value !== "string" || value.length > 254) throw new HttpError(400, "bad_request", "Invalid owner");
   const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (email.test(value)) return value.toLowerCase();
-  if (/^github:[A-Za-z0-9-]{1,39}$/i.test(value)) return `github:${value.slice(7).toLowerCase()}`;
-  if (value.startsWith("google:") && email.test(value.slice(7))) return `google:${value.slice(7).toLowerCase()}`;
-  throw new HttpError(400, "bad_request", "Owner must be an email, github:login, or google:email");
+  throw new HttpError(400, "bad_request", "Owner must be a verified email address");
 }
 
 function maskOwner(owner: string | null): string | null {
@@ -1214,11 +1202,7 @@ function ownerMatches(owner: string, identities: unknown[]): boolean {
   return identities.some((raw) => {
     if (!raw || typeof raw !== "object") return false;
     const identity = raw as { provider?: unknown; login?: unknown; emails?: unknown };
-    const provider = identity.provider;
-    const login = typeof identity.login === "string" ? identity.login.toLowerCase() : "";
     const emails = Array.isArray(identity.emails) ? identity.emails.filter((v): v is string => typeof v === "string").map((v) => v.toLowerCase()) : [];
-    if (owner.startsWith("github:")) return provider === "github" && login === owner.slice(7);
-    if (owner.startsWith("google:")) return provider === "google" && emails.includes(owner.slice(7));
     return emails.includes(owner);
   });
 }

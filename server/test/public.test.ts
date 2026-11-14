@@ -14,30 +14,60 @@ beforeAll(async () => {
   await db.prepare("UPDATE service_state SET mode = 'open' WHERE id = 1").run();
 });
 
-async function createPublic(owner?: string, ip = "192.0.2.10"): Promise<Handle> {
+async function createPublic(owner = "person@example.com", ip = "192.0.2.10"): Promise<Handle> {
   const res = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": ip }, body: JSON.stringify({ owner }) });
   expect(res.status).toBe(201);
   return res.json<Handle>();
 }
 
+async function claimAs(h: Handle, account: string, email: string, rawSession = `test-${crypto.randomUUID()}`): Promise<string> {
+  const now = Date.now();
+  await db.batch([
+    db.prepare("INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES ('google', ?, ?, ?, ?, ?)")
+      .bind(account, account, email.split('@')[0], email, now),
+    db.prepare("INSERT INTO identity_emails (provider, subject, email) VALUES ('google', ?, ?)").bind(account, email),
+    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .bind(await sha256Hex(rawSession), account, now, now + 86_400_000),
+  ]);
+  const cookie = `__Host-tendriller=${rawSession}`;
+  const auth = await req(`/auth/page?tendril=${h.id}&key=${new URL(h.page_url).pathname.split('/')[2]}`,
+    { headers: { Cookie: cookie }, redirect: "manual" });
+  expect(auth.status).toBe(303);
+  return cookie;
+}
+
+it("requires an owner email and refuses a different verified account", async () => {
+  const missing = await req("/api/tendrils", { method: "POST", headers: creatorHeaders, body: "{}" });
+  expect(missing.status).toBe(400);
+  const h = await createPublic("right@example.com", "192.0.2.50");
+  const account = crypto.randomUUID();
+  const session = `wrong-${crypto.randomUUID()}`;
+  const now = Date.now();
+  await db.batch([
+    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'wrong@example.com')").bind(account, now),
+    db.prepare("INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES ('google', ?, ?, 'wrong', 'wrong@example.com', ?)").bind(account, account, now),
+    db.prepare("INSERT INTO identity_emails (provider, subject, email) VALUES ('google', ?, 'wrong@example.com')").bind(account),
+    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .bind(await sha256Hex(session), account, now, now + 86_400_000),
+  ]);
+  const key = new URL(h.page_url).pathname.split('/')[2];
+  const result = await req(`/auth/page?tendril=${h.id}&key=${key}`, { redirect: "manual", headers: { Cookie: `__Host-tendriller=${session}` } });
+  expect(result.status).toBe(403);
+  expect((await db.prepare("SELECT owner_account FROM tendrils WHERE id = ?").bind(h.id).first<{ owner_account: string | null }>())?.owner_account).toBeNull();
+});
+
 it("blocks keyless creation from a configured CIDR range", async () => {
   await db.prepare("INSERT INTO blocks (kind, value, reason) VALUES ('cidr', '198.51.100.0/24', 'test')").run();
-  const blocked = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": "198.51.100.42" }, body: "{}" });
+  const blocked = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": "198.51.100.42" }, body: JSON.stringify({ owner: "person@example.com" }) });
   expect(blocked.status).toBe(403);
-  expect((await createPublic(undefined, "198.51.101.42")).id).toBeTruthy();
+  expect((await createPublic("person@example.com", "198.51.101.42")).id).toBeTruthy();
 });
 
 it("holds a young page after a burst of distinct guest sign-ins", async () => {
   const account = crypto.randomUUID();
-  const key = "ak_burst_" + crypto.randomUUID();
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'burst@example.com')").bind(account, Date.now()),
-    db.prepare("INSERT INTO api_keys (hash, name, account_id, created_at) VALUES (?, 'burst', ?, ?)")
-      .bind(await sha256Hex(key), account, Date.now()),
-  ]);
-  const created = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
-  expect(created.status).toBe(201);
-  const h = await created.json<Handle>();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), "burst@example.com").run();
+  const h = await createPublic("burst@example.com", "192.0.2.44");
+  await claimAs(h, account, "burst@example.com");
   await inDO(h.id, async t => {
     for (let i = 0; i < 8; i++) await t.recordVisitorSignal("guest", `guest-${i}`);
   });
@@ -47,15 +77,9 @@ it("holds a young page after a burst of distinct guest sign-ins", async () => {
 
 it("holds repeated claim releases before stripping the current owner", async () => {
   const account = crypto.randomUUID();
-  const key = "ak_release_" + crypto.randomUUID();
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'release@example.com')").bind(account, Date.now()),
-    db.prepare("INSERT INTO api_keys (hash, name, account_id, created_at) VALUES (?, 'release', ?, ?)")
-      .bind(await sha256Hex(key), account, Date.now()),
-  ]);
-  const created = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
-  expect(created.status).toBe(201);
-  const h = await created.json<Handle>();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), "release@example.com").run();
+  const h = await createPublic("release@example.com", "192.0.2.45");
+  await claimAs(h, account, "release@example.com");
   await inDO(h.id, t => t.db.run("INSERT INTO release_events (at) VALUES (?), (?)", t.now(), t.now()));
   expect((await api(h, "POST", "release")).status).toBe(403);
   const row = await db.prepare("SELECT owner_account, state FROM tendrils WHERE id = ?").bind(h.id)
@@ -87,19 +111,11 @@ it("keeps concurrent reservations across two account pages under the exact accou
 
 it("keeps suspended owners on an appeal-only session with in-app notices", async () => {
   const account = crypto.randomUUID();
-  const key = "ak_appeal_" + crypto.randomUUID();
   const token = "session_" + crypto.randomUUID();
   const cookie = `__Host-tendriller=${token}`;
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'appeal@example.com')").bind(account, Date.now()),
-    db.prepare("INSERT INTO api_keys (hash, name, account_id, created_at) VALUES (?, 'appeal', ?, ?)")
-      .bind(await sha256Hex(key), account, Date.now()),
-    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-      .bind(await sha256Hex(token), account, Date.now(), Date.now() + 60000),
-  ]);
-  const created = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
-  expect(created.status).toBe(201);
-  const h = await created.json<Handle>();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'appeal@example.com')").bind(account, Date.now()).run();
+  const h = await createPublic("appeal@example.com", "192.0.2.47");
+  await claimAs(h, account, "appeal@example.com", token);
   await inDO(h.id, t => t.hold("test hold"));
   await db.prepare("UPDATE accounts SET suspended_at = ? WHERE id = ?").bind(Date.now(), account).run();
   const dashboard = await req("/dashboard", { headers: { Cookie: cookie } });
@@ -119,7 +135,7 @@ it("keeps suspended owners on an appeal-only session with in-app notices", async
   expect((await req("/auth/me", { headers: { Cookie: cookie } })).status).toBe(401);
   expect((await req("/dashboard/keys", { method: "POST", headers: { Cookie: cookie, Origin: BASE, "Content-Type": "application/json" }, body: '{"name":"blocked"}' })).status).toBe(403);
   expect((await req("/dashboard/export", { headers: { Cookie: cookie } })).status).toBe(401);
-  expect((await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" })).status).toBe(401);
+  expect((await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: "Bearer obsolete" }, body: JSON.stringify({ owner: "person@example.com" }) })).status).toBe(400);
 });
 
 it("lets a suspended identity sign in again and redirects it to restricted dashboard", async () => {
@@ -158,7 +174,7 @@ it("lets a suspended identity sign in again and redirects it to restricted dashb
   }
 });
 
-it("requires an explicit matching claim and a page session", async () => {
+it("auto-claims only for a matching verified email and issues a page session", async () => {
   const h = await createPublic("ana@example.com");
   const page = await req(h.page_url, { redirect: "manual" });
   expect(page.status).toBe(302);
@@ -179,14 +195,7 @@ it("requires an explicit matching claim and a page session", async () => {
       .bind(await sha256Hex(rawSession), account, now, now + 86_400_000),
   ]);
   const cookie = `__Host-tendriller=${rawSession}`;
-  const screen = await req(claimUrl, { headers: { Cookie: cookie } });
-  const body = await screen.text();
-  expect(body).toContain("Claim and open page");
-  const nonce = /name="nonce" value="([^"]+)"/.exec(body)?.[1];
-  expect(nonce).toBeTruthy();
-  const post = await req(claimUrl, { method: "POST", redirect: "manual", headers: {
-    Cookie: cookie, Origin: BASE, "Content-Type": "application/x-www-form-urlencoded",
-  }, body: new URLSearchParams({ nonce: nonce! }) });
+  const post = await req(claimUrl, { redirect: "manual", headers: { Cookie: cookie } });
   expect(post.status).toBe(303);
   const exchange = await req(post.headers.get("Location")!, { redirect: "manual" });
   expect(exchange.status).toBe(303);
@@ -299,83 +308,17 @@ it("caps an unclaimed tendril at 2 MiB across file versions", async () => {
   expect(await over.json()).toMatchObject({ error: { code: "quota", limit: 2 * 1024 * 1024 } });
 });
 
-it("creates named account keys and claimed resident tendrils with an exact cap", async () => {
+it("creates for an email without account credentials, then allows resident after opening", async () => {
+  const email = `resident-${crypto.randomUUID()}@example.com`;
   const account = crypto.randomUUID();
-  const rawSession = "key-session-" + crypto.randomUUID();
-  const now = Date.now();
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'key@example.com')").bind(account, now),
-    db.prepare("INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES ('github', ?, ?, 'keyuser', 'key@example.com', ?)")
-      .bind(account, account, now),
-    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-      .bind(await sha256Hex(rawSession), account, now, now + 86_400_000),
-  ]);
-  const cookie = `__Host-tendriller=${rawSession}`;
-  const dashboard = await req("/dashboard", { headers: { Cookie: cookie } });
-  expect(await dashboard.text()).toContain("Agent keys");
-  const badOrigin = await req("/dashboard/keys", { method: "POST", headers: { Cookie: cookie, Origin: "https://elsewhere.test" }, body: "{}" });
-  expect(badOrigin.status).toBe(403);
-  const keyRes = await req("/dashboard/keys", { method: "POST", headers: { Cookie: cookie, Origin: BASE, "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "builder" }) });
-  expect(keyRes.status).toBe(201);
-  const key = (await keyRes.json<{ key: string }>()).key;
-  expect(key).toMatch(/^ak_/);
-  const created: Handle[] = [];
-  for (let i = 0; i < 3; i++) {
-    const res = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ name: `resident ${i}`, lifetime: "resident" }) });
-    expect(res.status).toBe(201);
-    created.push(await res.json<Handle>());
-  }
-  const populatedDashboard = await (await req("/dashboard", { headers: { Cookie: cookie } })).text();
-  expect(populatedDashboard).toContain("resident 0");
-  expect(populatedDashboard).toContain(created[0].page_url);
-  expect(populatedDashboard).toContain("Copy link");
-  const fourth = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ lifetime: "resident" }) });
-  expect(fourth.status).toBe(429);
-  expect(await fourth.json()).toMatchObject({ error: { code: "quota", limit: 3 } });
-  const owner = await (await api(created[0], "GET", "")).json<{ owner: { login: string } }>();
-  expect(owner.owner.login).toBe("keyuser");
-  const page = await req(created[0].page_url, { redirect: "manual" });
-  expect(page.status).toBe(302);
-  const auth = await req(page.headers.get("Location")!, { redirect: "manual", headers: { Cookie: cookie } });
-  expect(auth.status).toBe(303);
-  const revoke = await req("/dashboard/keys/builder", { method: "DELETE", headers: { Cookie: cookie, Origin: BASE } });
-  expect(revoke.status).toBe(204);
-  const denied = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
-  expect(denied.status).toBe(401);
-});
-
-it("grants a one-time agent key through device approval", async () => {
-  const account = crypto.randomUUID();
-  const rawSession = "device-session-" + crypto.randomUUID();
-  const now = Date.now();
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'device@example.com')").bind(account, now),
-    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-      .bind(await sha256Hex(rawSession), account, now, now + 86_400_000),
-  ]);
-  const init = await req("/api/device", { method: "POST", headers: { ...creatorHeaders }, body: JSON.stringify({ name: "my agent" }) });
-  expect(init.status).toBe(201);
-  const codes = await init.json<{ device_code: string; user_code: string; verification_url: string }>();
-  expect((await req("/api/device/token", { method: "POST", headers: creatorHeaders,
-    body: JSON.stringify({ device_code: codes.device_code }) })).status).toBe(428);
-  const cookie = `__Host-tendriller=${rawSession}`;
-  expect(await (await req(`/device?code=${codes.user_code}`, { headers: { Cookie: cookie } })).text()).toContain("my agent");
-  const denied = await req("/device", { method: "POST", headers: { Cookie: cookie, Origin: "https://elsewhere.test" },
-    body: new URLSearchParams({ code: codes.user_code }) });
-  expect(denied.status).toBe(403);
-  const approve = await req("/device", { method: "POST", headers: { Cookie: cookie, Origin: BASE,
-    "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ code: codes.user_code }) });
-  expect(approve.status).toBe(200);
-  const grant = await req("/api/device/token", { method: "POST", headers: creatorHeaders,
-    body: JSON.stringify({ device_code: codes.device_code }) });
-  expect(grant.status).toBe(200);
-  const key = (await grant.json<{ key: string }>()).key;
-  expect(key).toMatch(/^ak_/);
-  expect((await req("/api/device/token", { method: "POST", headers: creatorHeaders,
-    body: JSON.stringify({ device_code: codes.device_code }) })).status).toBe(400);
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), email).run();
+  const h = await createPublic(email, "192.0.2.48");
+  expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(403);
+  const cookie = await claimAs(h, account, email);
+  expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(200);
+  expect((await (await req("/dashboard", { headers: { Cookie: cookie } })).text())).toContain(h.page_url);
+  expect((await req("/dashboard/keys", { method: "POST", headers: { Cookie: cookie, Origin: BASE } })).status).toBe(404);
+  expect((await req("/api/device", { method: "POST", headers: creatorHeaders, body: "{}" })).status).toBe(404);
 });
 
 it("keeps page hosts separate from the service and rejects sibling origins", async () => {
@@ -397,7 +340,7 @@ it("keeps page hosts separate from the service and rejects sibling origins", asy
 
 it("deletes a reported unclaimed tendril and blocks its creator for 24 hours", async () => {
   const headers = { ...creatorHeaders, "CF-Connecting-IP": "192.0.2.99" };
-  const created = await req("/api/tendrils", { method: "POST", headers, body: "{}" });
+  const created = await req("/api/tendrils", { method: "POST", headers, body: JSON.stringify({ owner: "person@example.com" }) });
   expect(created.status).toBe(201);
   const h = await created.json<Handle>();
   const stub = env.TENDRIL.get(env.TENDRIL.idFromName(h.id));
@@ -405,25 +348,17 @@ it("deletes a reported unclaimed tendril and blocks its creator for 24 hours", a
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "external", account_id: null, reason: "deceptive" }) }));
   expect(report.status).toBe(200);
   expect((await db.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(h.id).first())).toBeNull();
-  const blocked = await req("/api/tendrils", { method: "POST", headers, body: "{}" });
+  const blocked = await req("/api/tendrils", { method: "POST", headers, body: JSON.stringify({ owner: "person@example.com" }) });
   expect(blocked.status).toBe(403);
 });
 
 it("exports files and deletes an account with its tendrils", async () => {
   const account = crypto.randomUUID();
   const session = "export-session-" + crypto.randomUUID();
-  const key = "ak_export_" + crypto.randomUUID();
   const now = Date.now();
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'export@example.com')").bind(account, now),
-    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-      .bind(await sha256Hex(session), account, now, now + 86_400_000),
-    db.prepare("INSERT INTO api_keys (hash, name, account_id, created_at) VALUES (?, 'export', ?, ?)")
-      .bind(await sha256Hex(key), account, now),
-  ]);
-  const created = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
-  expect(created.status).toBe(201);
-  const h = await created.json<Handle>();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'export@example.com')").bind(account, now).run();
+  const h = await createPublic("export@example.com", "192.0.2.49");
+  await claimAs(h, account, "export@example.com", session);
   expect((await api(h, "PUT", "files/data.txt", "hello world")).status).toBe(200);
   const cookie = `__Host-tendriller=${session}`;
   await inDO(h.id, t => t.db.run("INSERT INTO activity (ts, kind, summary, device, source) VALUES (?, 'sensor', 'Page used camera', 'd_test', 'server')", t.now()));
@@ -443,15 +378,9 @@ it("exports files and deletes an account with its tendrils", async () => {
 
 it("holds a high-risk version on a young account before serving it", async () => {
   const account = crypto.randomUUID();
-  const key = "ak_screen_" + crypto.randomUUID();
-  await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'screen@example.com')").bind(account, Date.now()),
-    db.prepare("INSERT INTO api_keys (hash, name, account_id, created_at) VALUES (?, 'screen', ?, ?)")
-      .bind(await sha256Hex(key), account, Date.now()),
-  ]);
-  const created = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
-  expect(created.status).toBe(201);
-  const h = await created.json<Handle>();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), "screen@example.com").run();
+  const h = await createPublic("screen@example.com", "192.0.2.46");
+  await claimAs(h, account, "screen@example.com");
   const upload = await api(h, "PUT", "files/index.html", "<html><input type=password></html>");
   expect(upload.status).toBe(200);
   expect((await db.prepare("SELECT state FROM tendrils WHERE id = ?").bind(h.id).first<{ state: string }>())?.state).toBe("held");
@@ -461,7 +390,7 @@ it("holds a high-risk version on a young account before serving it", async () =>
 });
 
 it("accepts pages with many outbound URLs without a reputation service", async () => {
-  const h = await createPublic(undefined, "192.0.2.223");
+  const h = await createPublic("person@example.com", "192.0.2.223");
   const links = Array.from({ length: 60 }, (_, i) => `<a href="https://example.org/${i}">link</a>`).join("");
   const upload = await api(h, "PUT", "files/index.html", `<html>${links}</html>`);
   expect(upload.status).toBe(200);
@@ -472,7 +401,7 @@ it("accepts pages with many outbound URLs without a reputation service", async (
 });
 
 it("retains local static screening for external form actions", async () => {
-  const h = await createPublic(undefined, "192.0.2.224");
+  const h = await createPublic("person@example.com", "192.0.2.224");
   const upload = await api(h, "PUT", "files/index.html", '<form action="https://example.org/collect"><p>Google sign in</p></form>');
   expect(upload.status).toBe(200);
   const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(

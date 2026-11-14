@@ -77,7 +77,6 @@ export async function accountData(req: Request, env: Env, url: URL): Promise<Res
     if (form.get("confirm") !== "DELETE") return errorResponse(400, "bad_request", "Type DELETE to confirm");
     await env.ACCOUNTS.prepare("UPDATE accounts SET deleting_at = COALESCE(deleting_at, ?) WHERE id = ?")
       .bind(Date.now(), account).run();
-    await env.ACCOUNTS.prepare("DELETE FROM api_keys WHERE account_id = ?").bind(account).run();
     const rows = await env.ACCOUNTS.prepare("SELECT id FROM tendrils WHERE owner_account = ?").bind(account).all<{ id: string }>();
     const results = await Promise.allSettled(rows.results.map(async row => {
       const response = await stub(env, row.id).fetch(accountRequest(account, "delete", "POST"));

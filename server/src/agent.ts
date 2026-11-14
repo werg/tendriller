@@ -81,7 +81,7 @@ route("PATCH", /^$/, async (t, req) => {
   if (b.name !== undefined) t.db.set("name", validName(b.name));
   if (b.lifetime !== undefined) {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-    if (b.lifetime === "resident" && !t.db.get<string | null>("owner_account", null)) throw new HttpError(403, "account_required", "Resident tendrils require an account key");
+    if (b.lifetime === "resident" && !t.db.get<string | null>("owner_account", null)) throw new HttpError(403, "account_required", "Open the page as its owner before making it resident");
     try {
       await t.env.ACCOUNTS.prepare("UPDATE tendrils SET lifetime = ? WHERE id = ?").bind(b.lifetime, t.tid).run();
     } catch (err) {

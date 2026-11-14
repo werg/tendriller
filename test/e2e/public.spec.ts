@@ -2,14 +2,14 @@ import { expect, test } from "@playwright/test";
 
 type Handle = { id: string; page_url: string; api: string; token: string };
 const base = process.env.E2E_SERVICE_BASE;
-const key = process.env.E2E_ACCOUNT_KEY;
-if (!base || !key || new URL(base).protocol !== "https:") {
-  throw new Error("Set E2E_SERVICE_BASE and E2E_ACCOUNT_KEY for a staging owner account");
+const owner = process.env.E2E_OWNER_EMAIL;
+if (!base || !owner || new URL(base).protocol !== "https:") {
+  throw new Error("Set E2E_SERVICE_BASE and E2E_OWNER_EMAIL for a staging owner account");
 }
 
 async function makePage(name: string): Promise<Handle> {
   const created = await fetch(`${base}/api/tendrils`, { method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner }) });
   expect(created.status, await created.clone().text()).toBe(201);
   const handle = await created.json() as Handle;
   const upload = await fetch(`${handle.api}/files/index.html`, { method: "PUT",

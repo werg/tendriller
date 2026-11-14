@@ -65,14 +65,7 @@
         "period": 60
       }
     },
-    {
-      "name": "KEY_CREATE_RATE",
-      "namespace_id": "107",
-      "simple": {
-        "limit": 30,
-        "period": 60
-      }
-    },
+
     {
       "name": "AGENT_RATE",
       "namespace_id": "102",

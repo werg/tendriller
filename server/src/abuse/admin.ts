@@ -154,7 +154,6 @@ export async function adminPage(req: Request, env: Env, url: URL): Promise<Respo
     if (!account) return errorResponse(404, "not_found");
     await db.batch([
       db.prepare("UPDATE accounts SET suspended_at = ? WHERE id = ?").bind(now, target),
-      db.prepare("DELETE FROM api_keys WHERE account_id = ?").bind(target),
       db.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, ?, 'suspend', ?, ?, ?)")
         .bind(crypto.randomUUID(), actor, target, reason, now),
     ]);

@@ -4,7 +4,6 @@ export interface Env {
   ADMISSION: DurableObjectNamespace;
   ACCOUNTS: D1Database;
   CREATE_RATE?: RateLimit;
-  KEY_CREATE_RATE?: RateLimit;
   AGENT_RATE?: RateLimit;
   EVAL_RATE?: RateLimit;
   FILE_READ_RATE?: RateLimit;

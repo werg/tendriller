@@ -36,6 +36,19 @@ async function issuePageCode(env: Env, id: string, key: string, accountId: strin
   return redirect(`${pageUrl(env, id, key)}_tendril/session?code=${encodeURIComponent(code)}`);
 }
 
+async function verifiedIdentities(env: Env, accountId: string): Promise<{ provider: string; login: string; emails: string[] }[]> {
+  const rows = await env.ACCOUNTS.prepare(`SELECT i.provider, i.login, e.email FROM identities i
+    LEFT JOIN identity_emails e ON e.provider = i.provider AND e.subject = i.subject WHERE i.account_id = ?`)
+    .bind(accountId).all<{ provider: string; login: string; email: string | null }>();
+  const grouped = new Map<string, { provider: string; login: string; emails: string[] }>();
+  for (const row of rows.results) {
+    const item = grouped.get(row.provider) ?? { provider: row.provider, login: row.login, emails: [] };
+    if (row.email) item.emails.push(row.email);
+    grouped.set(row.provider, item);
+  }
+  return [...grouped.values()];
+}
+
 export async function routePageAuth(req: Request, env: Env, url: URL): Promise<Response> {
   if (!env.ACCOUNTS) return errorResponse(503, "unavailable", "Accounts database is not configured");
   const id = url.searchParams.get("tendril") ?? "";
@@ -49,7 +62,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   const returnTo = `/auth/page?tendril=${id}&key=${key}`;
   if (!session) {
     if (req.method !== "GET") return errorResponse(401, "unauthorized", "Sign in first");
-    return html(`<section class="hero"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p>Sign in to open it. Your page lives on its own address, and you can control connected agents after you claim it.</p><p class="muted">${info.expected ? `Intended owner: ${escape(info.expected)}` : "Keep this invitation link private."}</p><div class="actions"><a class="button" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Continue with GitHub</a><a class="button secondary" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Continue with Google</a></div></section><p class="muted">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials.</p>`);
+    return html(`<section class="hero"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p>Sign in to open it. Your page lives on its own address, and you can control connected agents once it opens.</p><p class="muted">${info.expected ? `Intended owner: ${escape(info.expected)}` : "Keep this invitation link private."}</p><div class="actions"><a class="button" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Continue with GitHub</a><a class="button secondary" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Continue with Google</a></div></section><p class="muted">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials.</p>`);
   }
   const deleting = await env.ACCOUNTS.prepare("SELECT deleting_at FROM accounts WHERE id = ?").bind(session.accountId)
     .first<{ deleting_at: number | null }>();
@@ -59,6 +72,15 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   if (info.role === "owner" && owner.owner_account === session.accountId) return issuePageCode(env, id, key, session.accountId);
   if (info.role === "owner" && owner.owner_account) return html("<h1>This page belongs to another account</h1>", 403);
   if (info.role === "guest" && !owner.owner_account) return html("<h1>Waiting for the owner to claim this page</h1>", 403);
+  if (info.role === "owner" && req.method === "GET") {
+    const identities = await verifiedIdentities(env, session.accountId);
+    const claim = await stub(env, id).fetch(claimRequest(id, key, "owner", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_id: session.accountId, identities }),
+    }));
+    if (!claim.ok) return claim;
+    return issuePageCode(env, id, key, session.accountId);
+  }
   if (info.role === "guest" && req.method === "GET") {
     const statusRes = await stub(env, id).fetch(claimRequest(id, key, "guest-status", { headers: { "x-account-id": session.accountId } }));
     if (!statusRes.ok) return statusRes;
@@ -68,13 +90,13 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     if (status === "pending") return waitingPage();
     if (status === "declined") return html("<section class=\"hero\"><h1>Invitation declined</h1><p>The owner did not approve this request.</p></section>", 403);
   }
-  if (req.method === "GET") {
+  if (info.role === "guest" && req.method === "GET") {
     const nonce = randomToken();
     await env.ACCOUNTS.prepare("INSERT INTO claim_intents (hash, tendril_id, key_hash, account_id, expires_at) VALUES (?, ?, ?, ?, ?)")
       .bind(await sha256Hex(nonce), id, await sha256Hex(key), session.accountId, Date.now() + 10 * 60_000).run();
     return html(`<section class="hero"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "Ready to claim"}</span><h1>${info.role === "guest" ? "Join this page" : "Make this page yours"}</h1><p>${info.role === "guest" ? "The owner may need to approve your request. This screen will update when they do." : "Your agent can update the page after you claim it. You can disconnect it from the page's controls at any time."}</p><p class="muted">${info.expected ? `Intended owner: ${escape(info.expected)}` : "Keep this link private."}</p><form method="post"><input type="hidden" name="nonce" value="${nonce}"><button type="submit">${info.role === "guest" ? "Request access" : "Claim and open page"}</button></form></section><p class="muted">By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`);
   }
-  if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use GET or POST");
+  if (info.role !== "guest" || req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use GET");
   if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin", "Invalid claim origin");
   const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
   const nonce = form.get("nonce");
@@ -83,17 +105,9 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     AND account_id = ? AND expires_at > ? RETURNING hash`)
     .bind(await sha256Hex(nonce), id, await sha256Hex(key), session.accountId, Date.now()).first();
   if (!intent) return errorResponse(403, "invalid_claim", "Claim expired or already used");
-  const identities = await env.ACCOUNTS.prepare(`SELECT i.provider, i.login, e.email FROM identities i
-    LEFT JOIN identity_emails e ON e.provider = i.provider AND e.subject = i.subject WHERE i.account_id = ?`)
-    .bind(session.accountId).all<{ provider: string; login: string; email: string | null }>();
-  const grouped = new Map<string, { provider: string; login: string; emails: string[] }>();
-  for (const row of identities.results) {
-    const item = grouped.get(row.provider) ?? { provider: row.provider, login: row.login, emails: [] };
-    if (row.email) item.emails.push(row.email);
-    grouped.set(row.provider, item);
-  }
+  const identities = await verifiedIdentities(env, session.accountId);
   const claim = await stub(env, id).fetch(claimRequest(id, key, info.role === "guest" ? "guest" : "owner", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account_id: session.accountId, identities: [...grouped.values()] }),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account_id: session.accountId, identities }),
   }));
   if (!claim.ok) return claim;
   if (info.role === "guest" && !(await claim.json() as { approved: boolean }).approved) {
