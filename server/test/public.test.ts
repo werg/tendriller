@@ -118,6 +118,10 @@ it("serves the Hermes bridge and long-poll helper from the service origin", asyn
   const wait = await req("/tendril-wait.sh");
   expect(wait.status).toBe(200);
   expect(await wait.text()).toContain("wait_s=300");
+  const socketWait = await req("/tendril-wait.mjs");
+  expect(socketWait.status).toBe(200);
+  expect(socketWait.headers.get("Content-Type")).toContain("text/javascript");
+  expect(await socketWait.text()).toContain("/events/socket");
 });
 
 it("configures only valid signed wake receivers and never returns their secret", async () => {

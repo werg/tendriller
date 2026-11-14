@@ -141,7 +141,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (/^\/_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(path)) return asset(env, url, path);
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") return json({ ok: true });
-  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs"].includes(path) && req.method === "GET") {
+  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs"].includes(path) && req.method === "GET") {
     return asset(env, url, path, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
   }
   if (path === "/tendril-wait.sh" && req.method === "GET") {
