@@ -85,7 +85,9 @@ test("device playground loads the hardware lab and links to editable starters", 
     await (window as any).tendrilSnippets.playground.mount("#app");
   });
   await expect(page.getByRole("heading", { name: "Hardware lab" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Browse the recipe catalog" })).toHaveAttribute("href", "/recipes/catalog.json");
+  await page.getByRole("button", { name: "Build Field notebook" }).click();
+  expect((await calls(page)).send[0].data).toMatchObject({ type: "recipe_choice", recipe: "field-notebook" });
+  await expect(page.getByRole("link", { name: "Browse recipe source" })).toHaveAttribute("href", "https://github.com/werg/tendriller/tree/master/recipes");
 });
 
 test("agent editable UI can offer a specific hardware control", async ({ page }) => {

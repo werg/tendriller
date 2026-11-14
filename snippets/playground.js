@@ -46,9 +46,35 @@
     await Promise.all([load("serial"), load("bluetooth")]);
     (await load("hardware-lab")).mount(hardware);
     const starterTitle = document.createElement("h2"); starterTitle.textContent = "Build from a working page";
-    const starterNote = document.createElement("p"); starterNote.textContent = "An agent can copy any recipe into this page, preview it, and adapt it to your device.";
-    const catalogLink = document.createElement("a"); catalogLink.href = "/recipes/catalog.json"; catalogLink.textContent = "Browse the recipe catalog";
-    starters.append(starterTitle, starterNote, catalogLink);
+    const starterNote = document.createElement("p"); starterNote.textContent = "Choose an idea and your connected agent can build it into this page.";
+    const ideas = [
+      ["field-notebook", "Field notebook", "Collect observations, photos, and location."],
+      ["voice-coach", "Voice coach", "Talk through a task and hear short replies."],
+      ["motion-companion", "Motion companion", "Reflect on a movement session."],
+      ["photo-inspector", "Photo inspector", "Ask about something you see."],
+      ["collaborative-canvas", "Collaborative canvas", "Draw and explore together."],
+      ["adaptive-checkin", "Adaptive check-in", "Let the agent reshape a check-in."],
+    ];
+    const ideaGrid = document.createElement("div");
+    ideaGrid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.65rem";
+    const starterStatus = document.createElement("p"); starterStatus.setAttribute("role", "status"); starterStatus.setAttribute("aria-live", "polite");
+    for (const [id, name, description] of ideas) {
+      const card = document.createElement("div"); card.style.cssText = "border:1px solid currentColor;border-radius:.5rem;padding:.65rem";
+      const heading = document.createElement("h3"); heading.textContent = name;
+      const info = document.createElement("p"); info.textContent = description;
+      const choose = document.createElement("button"); choose.type = "button"; choose.textContent = `Build ${name}`;
+      choose.onclick = async () => {
+        choose.disabled = true; starterStatus.textContent = `Asking the agent to build ${name}…`;
+        try {
+          const result = await tendril.send({ type: "recipe_choice", recipe: id, at: Date.now() });
+          starterStatus.textContent = result?.queued ? `Saved your ${name} choice for the agent to receive later.` : `Sent ${name} to the agent.`;
+        } catch (error) { starterStatus.textContent = error?.message || "Could not send your choice."; }
+        finally { choose.disabled = false; }
+      };
+      card.append(heading, info, choose); ideaGrid.append(card);
+    }
+    const catalogLink = document.createElement("a"); catalogLink.href = "https://github.com/werg/tendriller/tree/master/recipes"; catalogLink.textContent = "Browse recipe source";
+    starters.append(starterTitle, starterNote, ideaGrid, starterStatus, catalogLink);
     return report;
   }
   ns.playground = { supported: () => true, mount };
