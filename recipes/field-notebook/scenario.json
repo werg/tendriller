@@ -1,0 +1,9 @@
+{
+  "permissions": ["camera", "microphone", "geolocation"],
+  "geolocation": { "latitude": 52.52, "longitude": 13.405, "accuracy": 20 },
+  "steps": [
+    { "fill": "#note", "value": "A red flower beside the path." },
+    { "click": "#send" },
+    { "expect_send": { "type": "input", "modality": "text" } }
+  ]
+}

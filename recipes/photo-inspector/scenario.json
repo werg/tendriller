@@ -1,0 +1,6 @@
+{
+  "steps": [
+    { "click": "text=Take photo" },
+    { "expect_send": { "type": "input", "modality": "photo" } }
+  ]
+}

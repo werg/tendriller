@@ -919,10 +919,10 @@ export class Tendril extends DurableObject<Env> {
       .map((r) => ({ ts: r.ts, from: r.src as "agent" | "user", text: r.text }));
   }
 
-  say(text: string, speak: boolean, by: string | null): void {
+  say(text: string, speak: boolean, by: string | null, replyTo: number | null = null): void {
     const ts = this.addTranscript("agent", text);
-    this.broadcast({ t: "say", text, speak, ts });
-    addActivity(this, { kind: "say", summary: `Agent said: ${preview(text)}`, by });
+    this.broadcast({ t: "say", text, speak, ts, in_reply_to: replyTo });
+    addActivity(this, { kind: "say", summary: `Agent said${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
   }
 
   async notify(n: { title: string; body?: string; url?: string; device?: string; tag?: string }, by: string | null) {

@@ -9,6 +9,7 @@ server/public/openclaw-bridge.mjs
 server/public/hermes-bridge.mjs
 server/public/tendril-wait.sh
 server/public/legal/
+server/public/recipes/
 test-results/
 playwright-report/
 .dev.vars

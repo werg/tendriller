@@ -158,6 +158,9 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" },
     });
   }
+  if (path === "/recipes/catalog.json" || path === "/recipes/ui-schema.json") return asset(env, url, path);
+  if (/^\/recipes\/[a-z0-9-]+\/index\.html$/.test(path))
+    return asset(env, url, path, { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   }

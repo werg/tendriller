@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Tendriller reference CLI. Zero dependencies, Node >= 18. See cli/README.md.
-import { readFileSync, existsSync, statSync } from "node:fs";
-import { basename } from "node:path";
+import { readFileSync, existsSync, statSync, cpSync, mkdirSync } from "node:fs";
+import { basename, resolve, join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
 import {
   resolveConfig, saveConfig, removeConfig, serverBase, cursorPath, readCursor, writeCursor,
@@ -24,11 +25,13 @@ Content
   push <dir|file> [--message M] [--no-replace] [--as <path>] [--no-wait] [--timeout S]
   files | versions | rollback [version]
   upload <file> [--name N]     store a blob (e.g. an icon) -> {id,url}
-  preview <dir> [--out png] [--wait-ms N] [--eval JS] [--state file.json] [--desktop] [--headed]
+  preview <dir> [--fixture scenario.json] [--out png] [--wait-ms N] [--eval JS] [--state file.json] [--desktop] [--headed]
+  recipes                      list complete starter pages
+  scaffold <recipe> <dir>      copy a starter page for editing
 
 Talk to the page
   eval <js> | eval -f <file> | eval -   [--device primary|all|<id>] [--timeout-ms N]
-  say <text> [--no-speak]
+  say <text> [--no-speak] [--in-reply-to SEQ]
   status <working|idle|done> [text]
   notify <title> [body] [--url U] [--device D] [--tag T]
   check [--device D]           accessibility audit (axe-core) in the page
@@ -38,10 +41,12 @@ Hear from the page
   wait [--timeout S]           block until a wake event, print events JSON, exit 0
   logs [--after C] [--follow]
   activity [--after C] [--note TEXT]
+  journey [--since UNIX_MS]     ordered event/read/reply/error timeline
 
 State, devices, sharing, wake
   state get [path] | set <path> <json> | delete <path> | patch <json> | put <json>
   devices | devices approve <id> [role] | devices rm <id>
+  capabilities                 live browser and hardware report per device
   link <owner|guest|display> [--label L] [--expires S] | link list | link rm <id> | link rotate
   tokens | tokens new <name> | tokens rm <name>
   rules | rules set <json|@file>
@@ -170,7 +175,8 @@ const commands = {
 
   async say(args, f, api) {
     if (!args.length) fail("usage: tendril say <text>");
-    out(await api.post("/say", { text: args.join(" "), speak: !f["no-speak"] }));
+    out(await api.post("/say", { text: args.join(" "), speak: !f["no-speak"],
+      ...(f["in-reply-to"] ? { in_reply_to: Number(f["in-reply-to"]) } : {}) }));
   },
 
   async status(args, f, api) {
@@ -259,6 +265,7 @@ const commands = {
     if (f.note) return out(await api.post("/activity", { text: f.note }));
     out(await api.get(`/activity?after=${Number(f.after || 0)}${f.limit ? `&limit=${Number(f.limit)}` : ""}`));
   },
+  async journey(args, f, api) { out(await api.get(`/journey?since=${Number(f.since || 0)}${f.limit ? `&limit=${Number(f.limit)}` : ""}`)); },
 
   async state(args, f, api) {
     const [sub, a, b] = args;
@@ -286,6 +293,8 @@ const commands = {
     if (sub === "rm") { await api.del(`/devices/${id}`); return out({ ok: true }); }
     fail("usage: tendril devices [approve <id> [role] | rename <id> <name> | rm <id>]");
   },
+
+  async capabilities(args, f, api) { out(await api.get("/capabilities")); },
 
   async link(args, f, api) {
     const [sub, id] = args;
@@ -338,15 +347,31 @@ const commands = {
     const r = await preview(dir, {
       out: f.out, waitMs: f["wait-ms"] ? Number(f["wait-ms"]) : undefined, eval: f.eval,
       state: f.state ? JSON.parse(readFileSync(f.state, "utf8")) : undefined,
+      fixture: f.fixture ? JSON.parse(readFileSync(f.fixture, "utf8")) : undefined,
       desktop: !!f.desktop, headed: !!f.headed,
       width: f.width ? Number(f.width) : undefined, height: f.height ? Number(f.height) : undefined,
     });
     out(r);
     if (!r.ok) process.exitCode = r.error ? 2 : 1;
   },
+  async recipes() {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../recipes");
+    out(JSON.parse(readFileSync(join(root, "catalog.json"), "utf8")));
+  },
+  async scaffold(args) {
+    const [name, target] = args;
+    if (!name || !target) fail("usage: tendril scaffold <recipe> <dir>");
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../recipes");
+    const catalog = JSON.parse(readFileSync(join(root, "catalog.json"), "utf8"));
+    if (!catalog.recipes.some((r) => r.id === name)) fail(`unknown recipe: ${name}`);
+    if (existsSync(target)) fail(`target already exists: ${target}`);
+    mkdirSync(target, { recursive: true });
+    cpSync(join(root, name), target, { recursive: true });
+    out({ recipe: name, path: resolve(target), next: `tendril preview ${target}` });
+  },
 };
 
-const NO_CONFIG = new Set(["new", "adopt", "preview"]);
+const NO_CONFIG = new Set(["new", "adopt", "preview", "recipes", "scaffold"]);
 
 async function main() {
   let parsed;

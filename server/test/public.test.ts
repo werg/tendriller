@@ -71,6 +71,20 @@ it("serves the first-party Codex bridge from the service origin", async () => {
   expect(await response.text()).toContain("codex");
 });
 
+it("offers the recipe catalog and a permission-aware device endpoint", async () => {
+  const catalog = await req("/recipes/catalog.json");
+  expect(catalog.status).toBe(200);
+  const body = await catalog.json<{ recipes: Array<{ id: string }> }>();
+  expect(body.recipes.map((r) => r.id)).toContain("field-notebook");
+  const h = await createPublic("explore@example.com", "192.0.2.99");
+  const caps = await (await api(h, "GET", "capabilities")).json<{ devices: unknown[] }>();
+  expect(caps.devices).toEqual([]);
+  const say = await api(h, "POST", "say", { text: "A reply" });
+  expect(say.status).toBe(200);
+  const journey = await (await api(h, "GET", "journey")).json<{ entries: Array<{ source: string; kind?: string }> }>();
+  expect(journey.entries).toContainEqual(expect.objectContaining({ source: "activity", kind: "say" }));
+});
+
 it("serves the Hermes bridge and long-poll helper from the service origin", async () => {
   const bridge = await req("/hermes-bridge.mjs");
   expect(bridge.status).toBe(200);

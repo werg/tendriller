@@ -30,6 +30,16 @@ node cli/bin/tendril.mjs --tendril kitchen wait       # blocks until a wake, pri
   a recording `window.tendril` stub and snippets from `snippets/`, opens it in Chromium
   with fake camera/mic, and reports uncaught errors, console errors, recorded `tendril.*`
   calls and a screenshot (`<dir>/.preview.png`, never pushed).
+  Pass `--fixture scenario.json` to set location and permissions and replay ordered
+  `steps` (`fill`, `click`, `event`, `motion`, `wait_ms`); use `denied` for
+  camera, microphone, location, or motion permission-denial scenarios. Steps can
+  assert `expect_text`, `expect_send` (shallow event fields), or `expect_no_send`.
+  The JSON output includes
+  `fixture_trace` and timestamped `calls` for inspection.
+- **capabilities** asks each connected device for a live permission-aware feature
+  report; disconnected devices return their older handshake probe.
+- **journey** orders events, event reads, agent replies, and browser logs by time.
+- **recipes/scaffold** list and copy complete starter pages from `recipes/`.
 
 ## Scripts
 

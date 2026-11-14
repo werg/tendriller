@@ -294,8 +294,11 @@ route("POST", /^eval$/, async (t, req, url, by) => {
 route("POST", /^say$/, async (t, req, url, by) => {
   const b = await readJson(req, 64 * 1024);
   if (typeof b.text !== "string" || !b.text) throw new HttpError(400, "bad_request", "text must be a non-empty string");
-  t.say(b.text.slice(0, 4000), b.speak !== false, by);
-  return json({ ok: true });
+  const replyTo = b.in_reply_to === undefined ? null : Number(b.in_reply_to);
+  if (replyTo !== null && (!Number.isInteger(replyTo) || replyTo < 1 || !t.db.one("SELECT 1 AS x FROM events WHERE seq = ?", replyTo)))
+    throw new HttpError(400, "bad_request", "in_reply_to must identify an existing event sequence");
+  t.say(b.text.slice(0, 4000), b.speak !== false, by, replyTo);
+  return json({ ok: true, in_reply_to: replyTo });
 });
 
 route("POST", /^status$/, async (t, req) => {
@@ -358,6 +361,24 @@ route("GET", /^logs$/, (t, req, url) => {
   return json({ logs, cursor: logs.length ? logs[logs.length - 1].seq : after });
 });
 
+// One ordered view of the page → agent → page path. Each entry retains its source
+// cursor so the developer can fetch the full event, activity, or log when needed.
+route("GET", /^journey$/, (t, req, url) => {
+  const since = intParam(url, "since", 0, 0, Number.MAX_SAFE_INTEGER);
+  const limit = intParam(url, "limit", 100, 1, 300);
+  const events = t.db.all<{ seq: number; ts: number; type: string; device: string | null; role: string | null; wake: number; withheld: number }>(
+    "SELECT seq,ts,type,device,role,wake,withheld FROM events WHERE ts >= ? ORDER BY ts DESC LIMIT ?", since, limit)
+    .map((e) => ({ source: "event", ...e }));
+  const activity = t.db.all<{ seq: number; ts: number; kind: string; summary: string; device: string | null }>(
+    "SELECT seq,ts,kind,summary,device FROM activity WHERE ts >= ? ORDER BY ts DESC LIMIT ?", since, limit)
+    .map((a) => ({ source: "activity", ...a }));
+  const logs = t.db.all<{ seq: number; ts: number; level: string; message: string; device: string | null }>(
+    "SELECT seq,ts,level,message,device FROM logs WHERE ts >= ? ORDER BY ts DESC LIMIT ?", since, limit)
+    .map((l) => ({ source: "log", ...l }));
+  const entries = [...events, ...activity, ...logs].sort((a, b) => a.ts - b.ts || a.seq - b.seq).slice(-limit);
+  return json({ entries, presence: t.presence(), agent_cursor: t.db.get<number>("agent_cursor", 0) });
+});
+
 route("PUT", /^blobs$/, async (t, req) => {
   const body = await readBody(req, t.blobLimit());
   const name = req.headers.get("X-Tendril-Name");
@@ -374,6 +395,23 @@ route("GET", /^blobs\/(b_[a-z2-7]{20})$/, (t, req, url, by, [id]) => t.getBlob(i
 // ------------------------------------------------------------------ devices and links
 
 route("GET", /^devices$/, (t) => json({ devices: t.listDevices() }));
+
+// A fresh browser-side report for connected devices, with the last handshake probe
+// as a useful (but explicitly stale) fallback for disconnected devices.
+route("GET", /^capabilities$/, async (t) => {
+  const sockets = t.deviceSockets();
+  const devices = await Promise.all(t.db.all<import("./tendril").DeviceRow>("SELECT * FROM devices ORDER BY created_at ASC").map(async (d) => {
+    const socket = sockets.get(d.id);
+    let last_handshake: unknown = null;
+    try { last_handshake = d.caps ? JSON.parse(d.caps) : null; } catch { /* malformed old probe */ }
+    if (!socket) return { id: d.id, name: d.name, connected: false, source: "handshake", captured_at: d.last_seen, report: last_handshake };
+    const live = await t.callDevice(d.id, socket, (call_id) => ({ t: "eval", call_id, code: "return await tendril.capabilities()" }), 5000);
+    return { id: d.id, name: d.name, connected: true, source: live.ok ? "live" : "handshake",
+      captured_at: live.ok ? t.now() : d.last_seen, report: live.ok ? live.value : last_handshake,
+      ...(live.ok ? {} : { error: live.error || "unavailable" }) };
+  }));
+  return json({ devices });
+});
 
 route("PATCH", /^devices\/([^/]+)$/, async (t, req, url, by, [id]) => {
   const b = await readJson(req, 4096);

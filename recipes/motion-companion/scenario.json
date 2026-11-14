@@ -1,0 +1,8 @@
+{
+  "steps": [
+    { "click": "text=Measure movement" },
+    { "motion": { "x": 0, "y": 0, "z": 12 } },
+    { "click": "text=Stop and send movement" },
+    { "expect_send": { "type": "input", "modality": "motion" } }
+  ]
+}

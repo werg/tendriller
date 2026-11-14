@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Field notebook</title>
+<style>body{font:18px system-ui;max-width:42rem;margin:auto;padding:1.5rem}button,textarea{font:inherit}textarea{width:100%;min-height:6rem}button{padding:.6rem;margin:.5rem 0}</style>
+<h1>Field notebook</h1><p>Share an observation when you choose. The agent can reply in the Tendriller conversation.</p>
+<div id="inputs"></div><label for="note">Observation</label><textarea id="note"></textarea><button id="send">Send note</button><p id="status" role="status"></p>
+<script src="_tendril/snippets/input-kit.js"></script><script>
+tendrilSnippets.inputs.mount('#inputs',{modalities:['photo','location','file']});
+document.querySelector('#send').onclick=async()=>{const note=document.querySelector('#note');if(!note.value.trim())return;await tendril.send({type:'input',modality:'text',text:note.value.trim(),at:Date.now()});note.value='';document.querySelector('#status').textContent='Note sent.'};
+</script></html>

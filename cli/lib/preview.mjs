@@ -23,7 +23,7 @@ export function loadPlaywright(cwd = process.cwd()) {
 
 export const STUB = String.raw`(function(){
   var calls = window.__tendrilCalls = [];
-  var rec = function(name, args){ try { calls.push({ fn: name, args: JSON.parse(JSON.stringify(args)) }); } catch(e) { calls.push({ fn: name, args: String(args) }); } };
+  var rec = function(name, args){ try { calls.push({ at: Date.now(), fn: name, args: JSON.parse(JSON.stringify(args)) }); } catch(e) { calls.push({ at: Date.now(), fn: name, args: String(args) }); } };
   var state = window.__TENDRIL_PREVIEW_STATE__ || {};
   var listeners = {}, stateListeners = [];
   var path = function(p){ return Array.isArray(p) ? p.map(String) : (p == null || p === "" ? [] : String(p).split(".").filter(Boolean)); };
@@ -50,11 +50,13 @@ export const STUB = String.raw`(function(){
     expose: function(name, opts, fn){ rec("expose", [name, opts]); return function(){}; },
     voice: { start: function(){ rec("voice.start", []); return Promise.resolve(); }, stop: function(){ rec("voice.stop", []); }, state: "unavailable" },
     speak: function(t){ rec("speak", [t]); },
+    capabilities: function(){ var report = window.__TENDRIL_PREVIEW_CAPABILITIES__ || {captured_at:Date.now(),secure:true,capabilities:{camera:{available:true,permission:"granted",needs_user_tap:true,active:false},microphone:{available:true,permission:"granted",needs_user_tap:true,active:false},location:{available:true,permission:"granted",needs_user_tap:true,active:false},motion:{available:true,permission:"unknown",needs_user_tap:true,active:false},file_picker:{available:true,permission:"unknown",needs_user_tap:true,active:null}}}; for(var name of window.__TENDRIL_PREVIEW_DENIED__ || []) if(report.capabilities[name]) report.capabilities[name].permission = "denied"; return Promise.resolve(report); },
     device: { id: "d_preview", role: "owner", name: "preview", pending: false },
     version: 1,
     connected: true,
     control: { hide: function(){ rec("control.hide", []); }, show: function(){ rec("control.show", []); }, position: function(p){ rec("control.position", [p]); } }
   };
+  window.__tendrilEmit = function(type, payload){ (listeners[type] || []).forEach(function(fn){ fn(payload); }); };
 })();`;
 
 export function injectRuntime(html) {
@@ -115,17 +117,56 @@ export async function preview(dir, opts = {}) {
       return { ok: false, error: "browser_missing", message: `Could not launch Chromium (${String(e.message).split("\n")[0]}). Try: npx playwright install chromium` };
     }
     const mobile = !opts.desktop;
+    const fixture = opts.fixture || {};
     const context = await browser.newContext({
       viewport: { width: opts.width || (mobile ? 390 : 1280), height: opts.height || (mobile ? 844 : 800) },
       deviceScaleFactor: mobile ? 2 : 1, isMobile: mobile, hasTouch: mobile,
-      permissions: ["camera", "microphone", "geolocation"],
-      geolocation: { latitude: 52.52, longitude: 13.405 },
+      permissions: fixture.permissions || ["camera", "microphone", "geolocation"],
+      geolocation: fixture.geolocation || { latitude: 52.52, longitude: 13.405 },
     });
     const page = await context.newPage();
+    await page.addInitScript((denyMotion) => {
+      for (const event of [window.DeviceMotionEvent, window.DeviceOrientationEvent]) {
+        if (event) Object.defineProperty(event, "requestPermission", { configurable: true,
+          value: () => Promise.resolve(denyMotion ? "denied" : "granted") });
+      }
+    }, !!fixture.denied?.includes("motion"));
+    if (fixture.denied?.length) await page.addInitScript((denied) => {
+      window.__TENDRIL_PREVIEW_DENIED__ = denied;
+      if (navigator.mediaDevices?.getUserMedia) {
+        const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getUserMedia = (constraints) => {
+          if ((constraints?.video && denied.includes("camera")) || (constraints?.audio && denied.includes("microphone")))
+            return Promise.reject(new DOMException("Permission denied by preview fixture", "NotAllowedError"));
+          return original(constraints);
+        };
+      }
+      if (denied.includes("location") && navigator.geolocation) {
+        Object.defineProperty(navigator.geolocation, "getCurrentPosition", { configurable: true,
+          value: (_ok, fail) => fail?.({ code: 1, message: "Location denied by preview fixture" }) });
+      }
+    }, fixture.denied);
+    if (fixture.capabilities) await page.addInitScript((caps) => { window.__TENDRIL_PREVIEW_CAPABILITIES__ = caps; }, fixture.capabilities);
     page.on("console", (m) => consoleMsgs.push({ level: m.type(), text: m.text() }));
     page.on("pageerror", (e) => errors.push({ message: e.message, stack: e.stack }));
     page.on("requestfailed", (r) => consoleMsgs.push({ level: "error", text: `request failed: ${r.url()} ${r.failure()?.errorText || ""}` }));
     const resp = await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load", timeout: 20000 });
+    const fixtureTrace = [];
+    for (const step of fixture.steps || []) {
+      if (step.wait_ms) await page.waitForTimeout(step.wait_ms);
+      try {
+        if (step.click) await page.locator(step.click).click();
+        if (step.fill) await page.locator(step.fill).fill(String(step.value ?? ""));
+        if (step.event) await page.evaluate(({event, data}) => window.__tendrilEmit(event, data), step);
+        if (step.motion) await page.evaluate((m) => window.dispatchEvent(new DeviceMotionEvent("devicemotion", { accelerationIncludingGravity: m, acceleration: m })), step.motion);
+        if (step.expect_text) await page.getByText(String(step.expect_text), { exact: false }).first().waitFor({ timeout: 3000 });
+        if (step.expect_send) await page.waitForFunction((expected) => (window.__tendrilCalls || []).some((call) =>
+          call.fn === "send" && Object.entries(expected).every(([key, value]) => call.args?.[0]?.[key] === value)), step.expect_send, { timeout: 3000 });
+        if (step.expect_no_send && await page.evaluate(() => (window.__tendrilCalls || []).some((call) => call.fn === "send")))
+          throw new Error("Expected no tendril.send call");
+        fixtureTrace.push({ step, ok: true });
+      } catch (e) { fixtureTrace.push({ step, ok: false, error: e.message }); errors.push({ message: `fixture: ${e.message}` }); }
+    }
     await page.waitForTimeout(opts.waitMs ?? 2500);
     if (opts.eval) {
       try {
@@ -141,7 +182,7 @@ export async function preview(dir, opts = {}) {
     return {
       ok: errors.length === 0 && (resp?.ok() ?? false),
       status: resp?.status(), title, uncaught: errors, console_errors: consoleErrors,
-      console: consoleMsgs.slice(-50), calls, screenshot: shot,
+      console: consoleMsgs.slice(-50), calls, fixture_trace: fixtureTrace, screenshot: shot,
     };
   } finally {
     if (browser) await browser.close();

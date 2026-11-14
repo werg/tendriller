@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Adaptive check-in</title>
+<style>body{font:18px system-ui;max-width:42rem;margin:auto;padding:1.5rem}button,select,textarea,input{font:inherit}button,select{padding:.55rem}</style>
+<div id="app"></div><script src="_tendril/snippets/ui.js"></script><script>
+if (!tendril.state.get('interface')) tendril.state.set('interface',{
+  title:'How is your day going?',description:'Choose an answer or leave a note. Your agent can change these controls as you talk.',
+  blocks:[{id:'mood',type:'choice',label:'How do you feel?',options:['Good','Unsure','Tired']},
+    {id:'energy',type:'slider',label:'Energy level',min:0,max:10,value:5},
+    {id:'note',type:'text',label:'Anything else?'}]});
+tendrilSnippets.ui.mount('#app');
+</script></html>

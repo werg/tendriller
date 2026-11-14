@@ -229,7 +229,10 @@ export function readEvents(t: Tendril, after: number, limit: number) {
     t.db.set("withheld", 0);
     t.refreshPresence();
   }
-  if (cursor > t.db.get<number>("agent_cursor", 0)) t.db.set("agent_cursor", cursor);
+  if (cursor > t.db.get<number>("agent_cursor", 0)) {
+    t.db.set("agent_cursor", cursor);
+    addActivity(t, { kind: "events_read", summary: `Agent read events through #${cursor}` });
+  }
   return { events, cursor, withheld, ...pollReminder(t, cursor) };
 }
 

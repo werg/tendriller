@@ -5,6 +5,8 @@ import { setupPush } from "./push";
 import { mountControl } from "./control";
 import { startRules } from "./rules";
 import { registry } from "./registry";
+import { describeCapabilities, observeCapabilities } from "./capabilities";
+import { installSensorWrappers } from "./control/sensors";
 import type { ControlApi, TendrilConfig } from "./types";
 
 function fallbackConfig(): TendrilConfig {
@@ -52,6 +54,7 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
     ready,
     speak: (text: string) => core.speak(text),
     tts: core.tts,
+    capabilities: () => describeCapabilities(installSensorWrappers().active()),
     /** Headers proving this device to page HTTP routes. */
     deviceHeaders: () => core.deviceHeaders(),
     device: core.device, // live object: role/pending update in place
@@ -69,6 +72,13 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
 
   registry.push = guard("push", () => setupPush(core));
   control = guard("control", () => mountControl(core));
+  guard("capabilities", () => {
+    const sensors = installSensorWrappers();
+    const emit = (report: Awaited<ReturnType<typeof describeCapabilities>>) => core.bus.emit("capabilities", report);
+    const stop = observeCapabilities(() => sensors.active(), emit);
+    const off = sensors.onChange(() => { void describeCapabilities(sensors.active()).then(emit); });
+    window.addEventListener("pagehide", () => { stop(); off(); }, { once: true });
+  });
   guard("rules", () => startRules(core));
   registerServiceWorker(cfg, core);
 })();
