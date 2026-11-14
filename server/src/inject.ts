@@ -112,7 +112,7 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <div class="hero-art">${brandLogo}</div>
 <div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
 <p>Your agent creates an ad-hoc page connected to your ongoing session. Talk or type to the agent from that page while it updates the interface live.</p>
-<p>Open it on any of your devices. With your permission, it can send that device’s camera, location, motion, microphone, and other inputs back to the agent.</p>
+<p>Open it on any of your devices. The page can send taps and other UI interactions back to the agent, along with camera, location, motion, microphone, and other sensor input you allow.</p>
 <div class="actions"><a class="button" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a><a class="button secondary" href="/dashboard">Open dashboard</a></div></div>
 </section>
 <section class="how" aria-labelledby="how-title"><h2 id="how-title">How it works</h2><p>Setup starts in the agent session you already use.</p>
