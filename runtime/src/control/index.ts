@@ -161,7 +161,11 @@ class Control {
       this.reportSensorUse();
     });
     on("presence", (p: Presence) => this.onPresence(p || this.core.presence));
-    on("say", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "agent", text: String(m.text) }); });
+    on("say", (m: any) => {
+      if (!m?.text) return;
+      this.addLine({ ts: m.ts || Date.now(), from: "agent", text: String(m.text) });
+      if (typeof m.message_id === "string") this.core.raw({ t: "say_rendered", message_id: m.message_id });
+    });
     on("tts", (s: { enabled: boolean; state: string; message: string }) => {
       if (this.ui.ttsStatus) this.ui.ttsStatus.textContent = s.message;
       if (this.ui.ttsVoice) (this.ui.ttsVoice as HTMLSelectElement).value = s.enabled ? "neural" : "browser";

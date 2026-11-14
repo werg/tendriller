@@ -38,6 +38,8 @@ Sensor permissions are the browser's own prompts and most need a tap: call `open
 | `list.js` | Shared list (shopping, packing) stored in state as records keyed by id; add/tick/edit/remove; offline via `tendril.state` | All | `list.mount("#list", {path: "shopping"})` |
 | `input-kit.js` | User-triggered photo, audio, location, motion, and file controls with one event contract | Depends on input | `inputs.mount("#inputs", {modalities:["photo","location"]})` |
 | `playground.js` | Live capability gallery and working controls on this device | All | `playground.mount("#explore")` |
+| `connectors.js` | User-triggered screen, clipboard, contacts, directory, gamepad, MIDI, HID, USB, NFC, XR, and Generic Sensor helpers | API and hardware dependent | `const s = await connectors.hid(); await s.sendSnapshot(); await s.stop()` |
+| `hardware-lab.js` | Accessible controls and explicit snapshot/stop actions for the connectors | Load `connectors.js` first | `hardwareLab.mount("#hardware")` |
 | `ui.js` | Agent-editable UI from shared `state.interface` | All | `ui.mount("#app", {path:"interface"})` |
 
 ## Reflex, record, wake

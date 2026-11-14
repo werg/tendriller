@@ -4,7 +4,7 @@
 (() => {
   const ns = (window.tendrilSnippets = window.tendrilSnippets || {});
   const load = (name) => new Promise((resolve, reject) => {
-    const key = name === "input-kit" ? "inputs" : name;
+    const key = ({ "input-kit": "inputs", "hardware-lab": "hardwareLab" })[name] || name;
     if (ns[key]) return resolve(ns[key]);
     const s = document.createElement("script"); s.src = `_tendril/snippets/${name}.js`;
     s.onload = () => resolve(ns[key]); s.onerror = () => reject(new Error(`Cannot load ${name}`)); document.head.append(s);
@@ -20,7 +20,10 @@
     const hiddenList = document.createElement("div");
     hidden.append(hiddenTitle, hiddenList);
     const input = document.createElement("div");
-    host.replaceChildren(title, summary, list, input, hidden);
+    input.dataset.inputKit = "";
+    const hardware = document.createElement("div");
+    const starters = document.createElement("section");
+    host.replaceChildren(title, summary, list, input, hardware, starters, hidden);
     const report = await tendril.capabilities();
     const all = Object.entries(report.capabilities);
     const availableCount = all.filter(([, c]) => c.available).length;
@@ -39,6 +42,13 @@
     }
     const available = ["photo", "audio", "location", "motion", "file"].filter((m) => m === "file" || report.capabilities[m === "photo" ? "camera" : m === "audio" ? "microphone" : m]?.available);
     if (available.length) (await load("input-kit")).mount(input, { modalities: available });
+    await load("connectors");
+    await Promise.all([load("serial"), load("bluetooth")]);
+    (await load("hardware-lab")).mount(hardware);
+    const starterTitle = document.createElement("h2"); starterTitle.textContent = "Build from a working page";
+    const starterNote = document.createElement("p"); starterNote.textContent = "An agent can copy any recipe into this page, preview it, and adapt it to your device.";
+    const catalogLink = document.createElement("a"); catalogLink.href = "/recipes/catalog.json"; catalogLink.textContent = "Browse the recipe catalog";
+    starters.append(starterTitle, starterNote, catalogLink);
     return report;
   }
   ns.playground = { supported: () => true, mount };

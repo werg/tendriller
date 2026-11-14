@@ -7,6 +7,7 @@
     "dev": "npm run build && wrangler d1 migrations apply ACCOUNTS --local --config server/wrangler.jsonc && wrangler dev --config server/wrangler.jsonc",
     "test": "npm run build && vitest run --config server/vitest.public.config.ts",
     "test:cli": "node --test cli/test/*.test.mjs",
+    "test:snippets": "playwright test --config snippets/test/playwright.config.ts",
     "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
     "test:tts": "playwright test --config runtime/test/tts/playwright.config.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit",

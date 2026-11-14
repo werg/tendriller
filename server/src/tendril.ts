@@ -809,6 +809,7 @@ export class Tendril extends DurableObject<Env> {
     this.db.set("state", next);
     this.db.set("rev", nrev);
     this.broadcast({ t: "state", ops, rev: nrev, by }, undefined, except);
+    addActivity(this, { kind: "state", summary: `Shared state revision ${nrev} applied (${ops.length} changes)`, by });
     return nrev;
   }
 
@@ -919,10 +920,12 @@ export class Tendril extends DurableObject<Env> {
       .map((r) => ({ ts: r.ts, from: r.src as "agent" | "user", text: r.text }));
   }
 
-  say(text: string, speak: boolean, by: string | null, replyTo: number | null = null): void {
+  say(text: string, speak: boolean, by: string | null, replyTo: number | null = null): string {
     const ts = this.addTranscript("agent", text);
-    this.broadcast({ t: "say", text, speak, ts, in_reply_to: replyTo });
-    addActivity(this, { kind: "say", summary: `Agent said${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
+    const messageId = crypto.randomUUID();
+    this.broadcast({ t: "say", text, speak, ts, message_id: messageId, in_reply_to: replyTo });
+    addActivity(this, { kind: "say", summary: `Message ${messageId}${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
+    return messageId;
   }
 
   async notify(n: { title: string; body?: string; url?: string; device?: string; tag?: string }, by: string | null) {

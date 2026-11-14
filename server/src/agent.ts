@@ -297,8 +297,8 @@ route("POST", /^say$/, async (t, req, url, by) => {
   const replyTo = b.in_reply_to === undefined ? null : Number(b.in_reply_to);
   if (replyTo !== null && (!Number.isInteger(replyTo) || replyTo < 1 || !t.db.one("SELECT 1 AS x FROM events WHERE seq = ?", replyTo)))
     throw new HttpError(400, "bad_request", "in_reply_to must identify an existing event sequence");
-  t.say(b.text.slice(0, 4000), b.speak !== false, by, replyTo);
-  return json({ ok: true, in_reply_to: replyTo });
+  const messageId = t.say(b.text.slice(0, 4000), b.speak !== false, by, replyTo);
+  return json({ ok: true, message_id: messageId, in_reply_to: replyTo });
 });
 
 route("POST", /^status$/, async (t, req) => {

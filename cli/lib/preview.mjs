@@ -147,6 +147,43 @@ export async function preview(dir, opts = {}) {
       }
     }, fixture.denied);
     if (fixture.capabilities) await page.addInitScript((caps) => { window.__TENDRIL_PREVIEW_CAPABILITIES__ = caps; }, fixture.capabilities);
+    if (fixture.hardware) await page.addInitScript((hardware) => {
+      const h = hardware || {};
+      const define = (key, value) => Object.defineProperty(navigator, key, { configurable: true, value });
+      if ("clipboard" in h) define("clipboard", { readText: async () => String(h.clipboard) });
+      if ("contacts" in h) define("contacts", { select: async () => h.contacts });
+      if ("directory" in h) window.showDirectoryPicker = async () => ({ name: h.directory.name || "fixture", async *entries() {
+        for (const entry of h.directory.entries || []) yield [entry.name, { kind: entry.kind || "file" }];
+      } });
+      if ("gamepads" in h) define("getGamepads", () => h.gamepads);
+      const midiInput = new EventTarget(); midiInput.id = "fixture-midi"; midiInput.name = "Fixture MIDI";
+      const midiAccess = new EventTarget(); midiAccess.inputs = new Map([[midiInput.id, midiInput]]);
+      if (h.midi) define("requestMIDIAccess", async () => midiAccess);
+      const hidDevice = new EventTarget(); Object.assign(hidDevice, { productName: "Fixture HID", vendorId: 1, productId: 1,
+        collections: [], open: async () => {}, close: async () => {}, sendReport: async () => {} });
+      if (h.hid) define("hid", { requestDevice: async () => [hidDevice] });
+      const usbDevice = { productName: "Fixture USB", vendorId: 1, productId: 1, configurations: [],
+        open: async () => {}, close: async () => {}, transferIn: async () => ({ status: "ok", data: new DataView(new Uint8Array(h.usb?.bytes || []).buffer) }),
+        transferOut: async () => ({ status: "ok" }) };
+      if (h.usb) define("usb", { requestDevice: async () => usbDevice });
+      const nfcReaders = [];
+      if (h.nfc) window.NDEFReader = class extends EventTarget { constructor() { super(); nfcReaders.push(this); } async scan() {} };
+      const sensors = {};
+      for (const [kind, ctor] of Object.entries({ ambient_light: "AmbientLightSensor", magnetometer: "Magnetometer", proximity: "ProximitySensor", accelerometer: "Accelerometer", gyroscope: "Gyroscope" })) {
+        if (!(kind in h)) continue;
+        window[ctor] = class extends EventTarget { constructor() { super(); sensors[kind] = this; Object.assign(this, h[kind]); }
+          start() { this.dispatchEvent(new Event("reading")); } stop() {} };
+      }
+      window.__tendrilHardwareEmit = (event) => {
+        if (event.modality === "nfc") for (const reader of nfcReaders) reader.dispatchEvent(Object.assign(new Event("reading"), {
+          serialNumber: event.serial_number || "fixture", message: { records: [{ recordType: "text", data: new TextEncoder().encode(event.text || "fixture tag") }] } }));
+        if (event.modality === "midi") midiInput.dispatchEvent(new MessageEvent("midimessage", { data: new Uint8Array(event.bytes || [144, 60, 100]) }));
+        if (event.modality === "hid") hidDevice.dispatchEvent(Object.assign(new Event("inputreport"), { reportId: event.report_id || 1,
+          data: new DataView(new Uint8Array(event.bytes || [1]).buffer) }));
+        if (event.modality === "gamepad") h.gamepads = event.gamepads || [];
+        if (sensors[event.modality]) { Object.assign(sensors[event.modality], event.reading || {}); sensors[event.modality].dispatchEvent(new Event("reading")); }
+      };
+    }, fixture.hardware);
     page.on("console", (m) => consoleMsgs.push({ level: m.type(), text: m.text() }));
     page.on("pageerror", (e) => errors.push({ message: e.message, stack: e.stack }));
     page.on("requestfailed", (r) => consoleMsgs.push({ level: "error", text: `request failed: ${r.url()} ${r.failure()?.errorText || ""}` }));
@@ -159,6 +196,7 @@ export async function preview(dir, opts = {}) {
         if (step.fill) await page.locator(step.fill).fill(String(step.value ?? ""));
         if (step.event) await page.evaluate(({event, data}) => window.__tendrilEmit(event, data), step);
         if (step.motion) await page.evaluate((m) => window.dispatchEvent(new DeviceMotionEvent("devicemotion", { accelerationIncludingGravity: m, acceleration: m })), step.motion);
+        if (step.hardware_event) await page.evaluate((event) => window.__tendrilHardwareEmit?.(event), step.hardware_event);
         if (step.expect_text) await page.getByText(String(step.expect_text), { exact: false }).first().waitFor({ timeout: 3000 });
         if (step.expect_send) await page.waitForFunction((expected) => (window.__tendrilCalls || []).some((call) =>
           call.fn === "send" && Object.entries(expected).every(([key, value]) => call.args?.[0]?.[key] === value)), step.expect_send, { timeout: 3000 });

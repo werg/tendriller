@@ -81,8 +81,32 @@ it("offers the recipe catalog and a permission-aware device endpoint", async () 
   expect(caps.devices).toEqual([]);
   const say = await api(h, "POST", "say", { text: "A reply" });
   expect(say.status).toBe(200);
+  const { message_id } = await say.json<{ message_id: string }>();
+  expect(message_id).toMatch(/^[0-9a-f-]{36}$/);
   const journey = await (await api(h, "GET", "journey")).json<{ entries: Array<{ source: string; kind?: string }> }>();
   expect(journey.entries).toContainEqual(expect.objectContaining({ source: "activity", kind: "say" }));
+});
+
+it("records a reply only after a connected page reports rendering it", async () => {
+  const email = `receipt-${crypto.randomUUID()}@example.com`;
+  const account = crypto.randomUUID();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), email).run();
+  const h = await createPublic(email, "192.0.2.100");
+  const accountCookie = await claimAs(h, account, email);
+  const key = new URL(h.page_url).pathname.split("/")[2];
+  const redirect = await req(`/auth/page?tendril=${h.id}&key=${key}`, { headers: { Cookie: accountCookie }, redirect: "manual" });
+  const pageSession = await req(redirect.headers.get("Location")!, { redirect: "manual" });
+  const pageCookie = pageSession.headers.get("Set-Cookie")!.split(";")[0];
+  const page = await PageClient.connect(h.page_url, { headers: { Origin: new URL(h.page_url).origin, Cookie: pageCookie } });
+  const sent = await (await api(h, "POST", "say", { text: "Hello", speak: false })).json<{ message_id: string }>();
+  expect(sent.message_id).toMatch(/^[0-9a-f-]{36}$/);
+  let entries = (await (await api(h, "GET", "journey")).json<{ entries: Array<{ kind?: string; summary?: string }> }>()).entries;
+  expect(entries.some((e) => e.kind === "say_rendered")).toBe(false);
+  await page.request({ t: "say_rendered", message_id: sent.message_id });
+  await page.request({ t: "say_rendered", message_id: sent.message_id });
+  entries = (await (await api(h, "GET", "journey")).json<{ entries: Array<{ kind?: string; summary?: string }> }>()).entries;
+  expect(entries.filter((e) => e.kind === "say_rendered" && e.summary?.includes(sent.message_id))).toHaveLength(1);
+  page.close();
 });
 
 it("serves the Hermes bridge and long-poll helper from the service origin", async () => {

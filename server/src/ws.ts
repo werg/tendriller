@@ -216,6 +216,15 @@ const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete
 const ack = (c: Ctx, extra: Msg = {}) => c.t.send(c.ws, { t: "ack", cid: c.msg.cid, ...extra });
 
 const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
+  say_rendered(c) {
+    const id = c.msg.message_id;
+    if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) { if (c.msg.cid) ack(c, { error: "bad_message" }); return; }
+    const sent = c.t.db.one("SELECT 1 AS x FROM activity WHERE kind = 'say' AND summary LIKE ? LIMIT 1", `Message ${id}%`);
+    if (!sent) { if (c.msg.cid) ack(c, { error: "unknown_message" }); return; }
+    const existing = c.t.db.one("SELECT 1 AS x FROM activity WHERE kind = 'say_rendered' AND device = ? AND summary = ? LIMIT 1", c.dev.id, `Message ${id} rendered`);
+    if (!existing) addActivity(c.t, { kind: "say_rendered", summary: `Message ${id} rendered`, device: c.dev.id });
+    if (c.msg.cid) ack(c);
+  },
   sensor_usage(c) {
     const allowed = new Set(["camera", "microphone", "screen", "location", "motion"]);
     const input = c.msg.active;

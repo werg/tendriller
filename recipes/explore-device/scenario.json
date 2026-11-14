@@ -1,0 +1,18 @@
+{
+  "hardware": {
+    "clipboard": "A field note from the clipboard",
+    "gamepads": [{ "index": 0, "id": "Fixture pad", "connected": true, "buttons": [{ "pressed": true, "value": 1 }], "axes": [0.5] }],
+    "nfc": true,
+    "midi": true,
+    "hid": true,
+    "usb": { "bytes": [5, 6] },
+    "ambient_light": { "illuminance": 24 }
+  },
+  "steps": [
+    { "click": "[data-connector=clipboard] button:has-text('Read clipboard text')", "expect_send": { "type": "input", "modality": "clipboard" } },
+    { "click": "[data-connector=gamepad] button:has-text('Inspect gamepads')" },
+    { "click": "[data-connector=gamepad] button:has-text('Send snapshot')", "expect_send": { "type": "input", "modality": "gamepad" } },
+    { "click": "[data-connector=nfc] button:has-text('Scan NFC tags')" },
+    { "hardware_event": { "modality": "nfc", "text": "fixture tag" }, "expect_send": { "type": "input", "modality": "nfc" } }
+  ]
+}

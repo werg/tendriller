@@ -19,6 +19,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:cli
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:snippets
+      - run: node cli/bin/tendril.mjs preview recipes/explore-device --fixture recipes/explore-device/scenario.json --wait-ms 100
 
   staging:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true'

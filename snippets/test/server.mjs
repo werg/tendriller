@@ -25,7 +25,8 @@ createServer(async (req, res) => {
     let file;
     if (url.pathname === "/vendor/qrcode.js") file = require.resolve("qrcode-generator"); // → dist/qrcode.js (the "require" export)
     else {
-      file = normalize(join(root, decodeURIComponent(url.pathname)));
+      const path = url.pathname.replace(/^\/_tendril\/snippets\//, "/");
+      file = normalize(join(root, decodeURIComponent(path)));
       if (!file.startsWith(root)) throw new Error("outside root");
     }
     const body = await readFile(file);

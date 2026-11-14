@@ -7,7 +7,8 @@
  */
 (() => {
   const ns = (window.tendrilSnippets = window.tendrilSnippets || {});
-  const types = ["message", "status", "choice", "text", "slider", "button", "photo", "location", "file", "drawing"];
+  const types = ["message", "status", "choice", "text", "slider", "button", "photo", "location", "file", "drawing", "hardware"];
+  const hardware = new Set(["screen", "clipboard", "contacts", "directory", "gamepad", "midi", "hid", "usb", "serial", "bluetooth", "nfc", "xr", "ambient_light", "magnetometer", "proximity", "accelerometer", "gyroscope"]);
   const element = (tag, text) => { const e = document.createElement(tag); if (text != null) e.textContent = String(text); return e; };
   function mount(target, { path = "interface" } = {}) {
     const host = typeof target === "string" ? document.querySelector(target) : target;
@@ -63,6 +64,19 @@
           const s = document.createElement("script"); s.src = "_tendril/snippets/input-kit.js";
           s.onload = () => { if (slot.isConnected) inputKits.push(ns.inputs.mount(slot, { modalities: [block.type], block: block.id })); };
           document.head.append(s);
+        } else if (block.type === "hardware" && hardware.has(block.connector)) {
+          const slot = element("div"); wrap.append(slot);
+          const load = (name, key) => new Promise((resolve, reject) => {
+            if (ns[key]) return resolve(ns[key]);
+            const script = document.createElement("script"); script.src = `_tendril/snippets/${name}.js`;
+            script.onload = () => resolve(ns[key]); script.onerror = () => reject(new Error(`Could not load ${name}`));
+            document.head.append(script);
+          });
+          void load("connectors", "connectors").then(() =>
+            ["serial", "bluetooth"].includes(block.connector) ? load(block.connector, block.connector) : null)
+            .then(() => load("hardware-lab", "hardwareLab"))
+            .then((lab) => { if (slot.isConnected) inputKits.push(lab.mount(slot, { only: block.connector })); })
+            .catch((error) => { slot.textContent = error.message; });
         } else {
           const id = `tendril-ui-${block.id.replace(/[^a-z0-9_-]/gi, "-")}`;
           const caption = element("label", label); caption.htmlFor = id; wrap.append(caption);

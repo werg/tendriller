@@ -54,7 +54,7 @@ test("device playground captures a photo only after a tap", async ({ page, conte
     await openClaimed(page, h);
     await expect(page.locator("#explore").getByRole("heading", { name: "Explore this device" })).toBeVisible();
     await page.getByRole("button", { name: "Take photo" }).click();
-    await expect(page.locator("#explore").getByRole("status").last()).toContainText("Photo sent");
+    await expect(page.locator("#explore [data-input-kit] [role=status]")).toContainText("Photo sent");
     const batch = await agent(h, "/events");
     const photo = batch.data.events.find((e: any) => e.data?.modality === "photo");
     expect(photo).toMatchObject({ type: "event", role: "owner" });
