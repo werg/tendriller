@@ -5,7 +5,7 @@
 //   agent.md              -> server/public/agent.md
 import { build } from "esbuild";
 import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,7 +16,8 @@ rmSync(join(out, "_tendril/tts"), { recursive: true, force: true });
 cpSync(join(root, "node_modules/phonon-tts"), join(out, "_tendril/tts"), { recursive: true });
 mkdirSync(join(out, "snippets"), { recursive: true });
 rmSync(join(out, "recipes"), { recursive: true, force: true });
-cpSync(join(root, "recipes"), join(out, "recipes"), { recursive: true });
+cpSync(join(root, "recipes"), join(out, "recipes"), { recursive: true,
+  filter: (source) => !basename(source).startsWith(".") });
 mkdirSync(join(out, "_tendril/brand"), { recursive: true });
 for (const [source, target] of [
   ["tendriller-logo-ai-compressed.png", "logo.png"],
