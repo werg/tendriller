@@ -27,11 +27,11 @@ export async function fakeSpeech(page: Page) {
     w.__sr = { instances: [] as any[], starts: 0 };
     class FakeSR {
       lang = ""; continuous = false; interimResults = false;
-      onresult: any = null; onend: any = null; onerror: any = null;
+      onstart: any = null; onresult: any = null; onend: any = null; onerror: any = null;
       results: any[] = [];
       running = false;
       constructor() { w.__sr.instances.push(this); w.__sr.last = this; }
-      start() { this.running = true; w.__sr.starts++; }
+      start() { this.running = true; w.__sr.starts++; this.onstart && this.onstart(); }
       stop() { if (this.running) { this.running = false; setTimeout(() => this.onend && this.onend(), 0); } }
       abort() { this.stop(); }
       // test helpers

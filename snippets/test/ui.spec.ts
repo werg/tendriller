@@ -234,3 +234,65 @@ test("wakeword: matches the phrase, passes the command, restarts after end", asy
   await page.waitForTimeout(400);
   expect(await page.evaluate(() => (window as any).__sr.starts)).toBe(2);
 });
+
+test("wakeword control: cues readiness, accepts a follow-up command, routes it and stops", async ({ page }) => {
+  await fakeSpeech(page);
+  await page.addInitScript(() => {
+    const w = window as any;
+    w.__tones = 0;
+    w.AudioContext = class {
+      state = "running"; currentTime = 0; destination = {};
+      resume() { return Promise.resolve(); }
+      close() { return Promise.resolve(); }
+      createOscillator() { return { type: "", frequency: { value: 0 }, connect() { return this; }, start() { w.__tones++; }, stop() {} }; }
+      createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() { return this; } }; }
+    };
+  });
+  await load(page, "wakeword");
+  await page.evaluate(() => (window as any).tendrilSnippets.wakeword.mount("#app", { phrases: ["hey coach"], commandTimeoutMs: 500, cooldownMs: 0 }));
+  await page.getByRole("button", { name: "Start hands-free" }).click();
+  await expect(page.getByRole("status")).toContainText("Listening for");
+  expect(await page.evaluate(() => (window as any).__tones)).toBe(1);
+  await page.evaluate(() => (window as any).__sr.last.say("hey coach"));
+  await expect(page.getByRole("status")).toContainText("Speak now");
+  expect(await page.evaluate(() => (window as any).__tones)).toBe(2);
+  await page.evaluate(() => (window as any).__sr.last.say("add milk to the list"));
+  await expect(page.getByRole("status")).toContainText("sent");
+  expect((await calls(page)).send).toEqual([{ data: { type: "utterance", text: "add milk to the list", via: "wakeword" }, wake: true }]);
+  await page.evaluate(() => (window as any).__sr.last.say("hey coach what's next"));
+  await expect.poll(async () => (await calls(page)).send.length).toBe(2);
+  expect((await calls(page)).send[1].data.text).toBe("what s next");
+  await page.getByRole("button", { name: "Stop hands-free" }).click();
+  await expect(page.getByRole("status")).toHaveText("Hands-free off.");
+  await page.evaluate(() => (window as any).__sr.last.say("hey coach try again"));
+  expect((await calls(page)).send).toHaveLength(2);
+});
+
+test("wakeword control: unsupported browsers show the voice fallback", async ({ page }) => {
+  await page.addInitScript(() => { delete (window as any).SpeechRecognition; delete (window as any).webkitSpeechRecognition; });
+  await load(page, "wakeword");
+  await page.evaluate(() => (window as any).tendrilSnippets.wakeword.mount("#app"));
+  await expect(page.getByRole("button", { name: "Start hands-free" })).toBeDisabled();
+  await expect(page.getByRole("status")).toContainText("Use the microphone button or type");
+});
+
+test("wakeword: follow-up expires and permission denial stops listening", async ({ page }) => {
+  await fakeSpeech(page);
+  await load(page, "wakeword");
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__commands = [];
+    w.__states = [];
+    w.__ww = w.tendrilSnippets.wakeword.start({ phrases: ["hey coach"], commandTimeoutMs: 30,
+      onCommand: (t: string) => w.__commands.push(t), onState: (s: string) => w.__states.push(s) });
+    w.__sr.last.say("hey coach");
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__states.at(-1))).toBe("listening");
+  await page.evaluate(() => (window as any).__sr.last.say("too late"));
+  expect(await page.evaluate(() => (window as any).__commands)).toEqual([]);
+  await page.evaluate(() => (window as any).__sr.last.onerror({ error: "not-allowed" }));
+  expect(await page.evaluate(() => (window as any).__ww.running)).toBe(false);
+  await page.evaluate(() => (window as any).__sr.last.end());
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => (window as any).__sr.starts)).toBe(1);
+});

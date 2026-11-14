@@ -2,7 +2,7 @@
   "version": 1,
   "recipes": [
     { "id": "field-notebook", "title": "Field notebook", "description": "Collect a photo, location, file, and note on a walk.", "modalities": ["photo", "location", "file", "text"], "path": "recipes/field-notebook" },
-    { "id": "voice-coach", "title": "Voice coach", "description": "Send spoken notes and receive short spoken replies.", "modalities": ["audio", "voice", "text"], "path": "recipes/voice-coach" },
+    { "id": "voice-coach", "title": "Voice coach", "description": "Optional wake phrase and audible cues for hands-free requests; send longer voice notes too.", "modalities": ["audio", "voice", "text"], "path": "recipes/voice-coach" },
     { "id": "motion-companion", "title": "Motion companion", "description": "Measure a movement session and ask the agent to interpret its summary.", "modalities": ["motion", "text"], "path": "recipes/motion-companion" },
     { "id": "photo-inspector", "title": "Photo inspector", "description": "Capture an object and ask a question about it.", "modalities": ["photo", "text"], "path": "recipes/photo-inspector" },
     { "id": "collaborative-canvas", "title": "Collaborative canvas", "description": "Give the agent drawings and choices from an editable interface.", "modalities": ["pointer", "touch", "choice"], "path": "recipes/collaborative-canvas" },

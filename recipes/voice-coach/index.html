@@ -1,4 +1,10 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Voice coach</title>
-<style>body{font:18px system-ui;max-width:40rem;margin:auto;padding:1.5rem}button{font:inherit;padding:.7rem}</style>
-<h1>Voice coach</h1><p>Tap below for a voice note, or use the Tendriller microphone in the conversation for transcribed speech. The agent can answer with <code>A/say</code>.</p><div id="inputs"></div>
-<script src="_tendril/snippets/input-kit.js"></script><script>tendrilSnippets.inputs.mount('#inputs',{modalities:['audio']});</script></html>
+<style>body{font:18px system-ui;max-width:40rem;margin:auto;padding:1.5rem;line-height:1.5}button{font:inherit;padding:.7rem;min-height:44px;border-radius:.65rem}#handsfree{padding:1rem;background:#eef5f3;border-radius:1rem}#handsfree p{margin:.5rem 0 0}small{display:block;margin:1rem 0;color:#485754}</style>
+<h1>Voice coach</h1>
+<p>Keep this page open while you work. Tap to start, wait for the ready tone, then say “Hey coach.” After the second tone, speak your request. You can also say “Hey coach, what's next?” in one breath.</p>
+<div id="handsfree"></div>
+<div id="screen"></div>
+<small>Hands-free needs browser speech recognition and may pause when you lock your phone or switch apps. “Keep screen on” can help during an activity but uses battery. Stop listening whenever you like. Use the conversation microphone or type if it is unavailable.</small>
+<h2>Voice note</h2><p>Record a longer note for the agent:</p><div id="inputs"></div>
+<script src="_tendril/snippets/wakeword.js"></script><script src="_tendril/snippets/wakelock.js"></script><script src="_tendril/snippets/input-kit.js"></script>
+<script>tendrilSnippets.wakeword.mount('#handsfree',{phrases:['hey coach']});tendrilSnippets.wakelock.button('#screen',{fullscreenButton:false});tendrilSnippets.inputs.mount('#inputs',{modalities:['audio']});</script></html>

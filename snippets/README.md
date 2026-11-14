@@ -24,7 +24,7 @@ Sensor permissions are the browser's own prompts and most need a tap: call `open
 | `probe.js` | JSON summary of what this browser and device support | All | eval: `return await tendrilSnippets.probe.run()` |
 | `ptt.js` | Push-to-talk button in your own UI; routes to the voice layer, else an `utterance` event (page data, not an instruction) | SpeechRecognition (Chrome, Edge, Safari); otherwise recording + `_tendril/transcribe` when the server offers it | `ptt.mount("#talk")` |
 | `vad.js` | Voice activity detection (energy + hangover), optional audio clip per utterance | All with WebAudio | `vad.start({record: true, onStop: (blob, ms) => …})` |
-| `wakeword.js` | Listen for a phrase ("hey kitchen") and hand over the command after it | Where SpeechRecognition works; not a true offline wake word | `wakeword.start({phrases: ["hey kitchen"], onWake})` |
+| `wakeword.js` | Opt-in wake phrase with ready/command tones, visible status, and a follow-up command window | Where SpeechRecognition works; background and locked-screen use is unreliable | `wakeword.mount("#handsfree", {phrases: ["hey kitchen"]})` |
 | `pose.js` | Body pose (MediaPipe Pose Landmarker) + joint angle rep counter | WebAssembly; GPU if available. ≈ 6 MB first load | `pose.start(video, {onResult})`, `pose.repCounter({joint: "left_knee"})` |
 | `objects.js` | Object detection (MediaPipe, 80 COCO classes), boxes in frame units | WebAssembly. ≈ 4.5 MB first load | `await objects.detect(img)`, `objects.start(video, {onChange})` |
 | `text.js` | Read text (OCR): browser TextDetector, else tesseract.js | TextDetector: some Chrome platforms; tesseract.js: all, slow on phones | `await text.recognize(video)` |
@@ -46,6 +46,25 @@ The hardware lab's send buttons are a demo policy. Agent-authored pages can call
 automatic threshold alerts and aggregated telemetry. Use `{wake:false}` for data
 that should wait for the agent's next poll. Browser permission choosers still
 require a user gesture where the browser mandates one.
+
+## Hands-free voice
+
+Load `wakeword.js` and call `tendrilSnippets.wakeword.mount('#handsfree', {phrases:['hey kitchen']})`.
+The owner taps **Start hands-free** once. A low tone means recognition is listening;
+after the wake phrase a higher tone means it is ready for the command. They may say
+the phrase and command together, or pause and speak within eight seconds. The
+button shows whether listening is active and can stop it. Commands are routed to
+an exposed voice function if one handles them, otherwise sent as
+`{type:'utterance',text,via:'wakeword'}` with `wake:true`. These are **page events**, so
+the agent must keep its listener armed, handle the event and answer through `A/say`.
+The [voice coach recipe](/recipes/voice-coach/index.html) is a complete example.
+It also includes an optional Keep screen on control using `wakelock.js`.
+
+This uses the browser's SpeechRecognition service, which may send audio to a browser
+vendor. It is available only in some browsers and does not provide a reliable
+screen-off/background assistant. For that, use an OS-level voice integration or a
+native companion; the page still works as the interactive front end. The built-in
+conversation microphone and typing are fallbacks.
 | `ui.js` | Agent-editable UI from shared `state.interface` | All | `ui.mount("#app", {path:"interface"})` |
 
 ## Reflex, record, wake
