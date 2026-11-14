@@ -1,21 +1,24 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
 
-const PORT = 8790;
 export default defineConfig({
   testDir: ".",
-  timeout: 60_000,
-  fullyParallel: false,
+  testMatch: ["local.spec.ts", "speech.spec.ts", "real-speech.spec.ts", "tts-integration.spec.ts"],
+  timeout: 45_000,
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: `http://localhost:${PORT}`,
-    ...devices["Pixel 7"],
-    launchOptions: { args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] },
+    browserName: "chromium",
+    baseURL: "https://service.localhost:8790",
+    ignoreHTTPSErrors: true,
+    launchOptions: { args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--host-resolver-rules=MAP *.localhost 127.0.0.1"] },
     permissions: ["camera", "microphone", "geolocation"],
+    trace: "retain-on-failure",
   },
   webServer: {
-    command: `rm -rf ../../.wrangler/state-e2e && npx wrangler dev --config ../../server/wrangler.jsonc --port ${PORT} --persist-to ../../.wrangler/state-e2e --var PUBLIC_BASE:http://localhost:${PORT}`,
-    url: `http://localhost:${PORT}/health`,
+    command: "node scripts/e2e-server.mjs",
+    cwd: "../..",
+    url: "https://service.localhost:8790/health",
+    ignoreHTTPSErrors: true,
     reuseExistingServer: false,
     timeout: 120_000,
     stdout: "ignore",

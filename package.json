@@ -6,9 +6,12 @@
     "build": "node scripts/build.mjs",
     "dev": "npm run build && wrangler d1 migrations apply ACCOUNTS --local --config server/wrangler.jsonc && wrangler dev --config server/wrangler.jsonc",
     "test": "npm run build && vitest run --config server/vitest.public.config.ts",
-    "test:e2e": "npm run build && playwright test --config test/e2e/public.playwright.config.ts",
+    "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
     "test:tts": "playwright test --config runtime/test/tts/playwright.config.ts",
-    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit"
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit",
+    "test:e2e:public": "npm run build && playwright test --config test/e2e/public.playwright.config.ts",
+    "test:e2e:speech-real": "E2E_REAL_SPEECH=1 npm run test:e2e -- --grep 'pinned Cactus WASM'",
+    "test:e2e:all": "npm run test:e2e && npm run test:tts"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.1",
