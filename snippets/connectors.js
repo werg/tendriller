@@ -1,6 +1,7 @@
 /* Browser input and hardware connectors. Load after tendril.js.
- * Call chooser methods directly from a click handler. Continuous inputs stay local
- * until sendSnapshot() is called; NFC tags and explicit captures send on request.
+ * Call chooser methods directly from a click handler. The page author controls
+ * when readings become events: callbacks can call tendril.send() with arbitrary
+ * logic, or a UI can offer sendSnapshot(). NFC sends tags by default.
  * All emitted page data has {type:'input',modality,at,...}. Device-specific packet
  * formats remain the page author's responsibility.
  */

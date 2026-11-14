@@ -24,7 +24,7 @@
     if (!host) throw new Error("Hardware lab target not found");
     const root = text("section", "");
     const title = text("h2", "Hardware lab");
-    const note = text("p", "Choose an input. Live readings stay on this device until you press Send snapshot. NFC sends each scanned tag. Stop ends the connection.");
+    const note = text("p", "This demo lets you choose when to send live readings. NFC sends each scanned tag. A custom page can send automatically when useful. Stop ends the connection.");
     const grid = text("div", "");
     grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.65rem";
     const unavailable = document.createElement("details");

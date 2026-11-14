@@ -140,6 +140,25 @@ test("selected contacts and sensor readings follow explicit send controls", asyn
   expect((await calls(page)).send.map((x: any) => x.data.modality)).toEqual(["contacts", "ambient_light"]);
 });
 
+test("agent-authored sensor callback sends automatically on its own threshold", async ({ page }) => {
+  await load(page, "connectors");
+  await page.evaluate(() => {
+    const w = window as any;
+    class FakeLight extends EventTarget { illuminance = 40; start() {} stop() {} }
+    w.AmbientLightSensor = FakeLight;
+    w.__light = w.tendrilSnippets.connectors.sensor("ambient_light", {
+      onReading: ({ lux }: { lux: number }) => {
+        if (lux < 20) void w.tendril.send({ type: "low_light", lux }, { wake: false });
+      },
+    });
+    w.__light.sensor.dispatchEvent(new Event("reading"));
+    w.__light.sensor.illuminance = 12;
+    w.__light.sensor.dispatchEvent(new Event("reading"));
+    w.__light.stop();
+  });
+  expect((await calls(page)).send).toEqual([{ data: { type: "low_light", lux: 12 }, wake: false }]);
+});
+
 test("XR actions stay local until a snapshot is sent", async ({ page }) => {
   await load(page, "connectors");
   const result = await page.evaluate(async () => {

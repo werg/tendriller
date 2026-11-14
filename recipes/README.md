@@ -31,4 +31,5 @@ The device explorer also mounts `hardware-lab.js`, which provides click-to-choos
 controls for screen, clipboard, contacts, directory, gamepad, MIDI, HID, USB, NFC,
 XR, and Generic Sensors where available. An agent can add one of these to a shared
 state interface with `{id:"sensor",type:"hardware",connector:"gamepad"}`.
-The person explicitly sends a snapshot; continuous observations stay on the device.
+That sample interface asks the person to send a snapshot. An agent can instead
+write page code that sends on a threshold, timer, or any other useful condition.

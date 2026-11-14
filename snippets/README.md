@@ -40,6 +40,12 @@ Sensor permissions are the browser's own prompts and most need a tap: call `open
 | `playground.js` | Live capability gallery and working controls on this device | All | `playground.mount("#explore")` |
 | `connectors.js` | User-triggered screen, clipboard, contacts, directory, gamepad, MIDI, HID, USB, NFC, XR, and Generic Sensor helpers | API and hardware dependent | `const s = await connectors.hid(); await s.sendSnapshot(); await s.stop()` |
 | `hardware-lab.js` | Accessible controls and explicit snapshot/stop actions for the connectors | Load `connectors.js` first | `hardwareLab.mount("#hardware")` |
+
+The hardware lab's send buttons are a demo policy. Agent-authored pages can call
+`tendril.send(...)` directly inside any connector callback or timer, including
+automatic threshold alerts and aggregated telemetry. Use `{wake:false}` for data
+that should wait for the agent's next poll. Browser permission choosers still
+require a user gesture where the browser mandates one.
 | `ui.js` | Agent-editable UI from shared `state.interface` | All | `ui.mount("#app", {path:"interface"})` |
 
 ## Reflex, record, wake
