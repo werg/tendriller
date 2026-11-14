@@ -68,6 +68,20 @@ it("serves the first-party Codex bridge from the service origin", async () => {
   expect(await response.text()).toContain("codex");
 });
 
+it("serves the bundled Claude Code channel from the service origin", async () => {
+  const response = await req("/claude-channel.mjs");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Type")).toContain("text/javascript");
+  expect(await response.text()).toContain("tendriller_attach");
+});
+
+it("serves the first-party OpenClaw bridge from the service origin", async () => {
+  const response = await req("/openclaw-bridge.mjs");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Type")).toContain("text/javascript");
+  expect(await response.text()).toContain("system','event'");
+});
+
 it("requires an owner email and refuses a different verified account", async () => {
   const missing = await req("/api/tendrils", { method: "POST", headers: creatorHeaders, body: "{}" });
   expect(missing.status).toBe(400);

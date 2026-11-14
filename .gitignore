@@ -4,6 +4,8 @@ server/public/_tendril/
 server/public/snippets/
 server/public/agent.md
 server/public/codex-bridge.mjs
+server/public/claude-channel.mjs
+server/public/openclaw-bridge.mjs
 server/public/legal/
 test-results/
 playwright-report/

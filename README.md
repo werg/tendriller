@@ -17,7 +17,9 @@ camera, GPS and other sensors back into the agent's session. Each such page is a
   for push-to-talk, status and undo.
 - **Agents** can create and control a page with HTTP. Live replies require a verified
   path that wakes their particular conversation. [`agent.md`](agent.md) explains the
-  setup; Codex on Linux has a first-party same-conversation bridge.
+  setup; Codex on Linux has a verified same-conversation bridge. Claude Code has a
+  first-party channel adapter tested in a live Claude Code session against a local API.
+  OpenClaw has a session-targeted bridge awaiting a real host test.
 
 The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md).

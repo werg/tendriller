@@ -157,10 +157,11 @@ Three primitives on the server:
 
 | Host | Recipe | Response time |
 |---|---|---|
-| Claude Code | The wait loop restarted per wake under the Monitor tool (one output line per wake starts a turn); or the wait loop as a background command, whose exit re-invokes the session. Channels are an alternative. | Seconds |
+| Claude Code | A first-party MCP channel attaches the private page handle to the current open session and sends count-only wake notices. A real idle Claude Code session read a local test event, posted a reply, and acknowledged it. A staging page-to-session test remains. Custom channels currently require research-preview opt-in. | Seconds when the channel session remains open |
 | Muse | Wait loop in the background; processes survive between turns and a finished background command starts a new turn. Backed by a scheduled check. | Seconds |
 | Grok Bot | Webhook to its URL starts a turn. | Seconds |
-| Hermes, OpenClaw | Webhook to their gateway. | Seconds |
+| OpenClaw on Linux | A first-party bridge polls the page and submits count-only system events to an explicit OpenClaw session key. Local fault-injection test passes; a real OpenClaw turn remains unverified. | Seconds when Gateway and service are available (expected) |
+| Hermes | Webhook to its gateway; no first-party adapter or real turn proof yet. | Unverified |
 | Codex on Linux | The first-party local bridge long-polls and queues a count-only notice into the creating Codex conversation. The agent reads and acknowledges events with its private page handle. A live staging tap woke the idle conversation; the agent changed the page and replied. | Seconds when the bridge and thread are available |
 | Other terminal CLIs | Need a host-specific adapter that starts or resumes the right conversation; event storage alone does not wake them. | Unverified |
 | OpenAI dot | The tendril's MCP connector (PROTOCOL section 13): MCP Events push a signed "events waiting" and the dot reads them with a tool. Untested on a real dot. | Seconds (expected) |

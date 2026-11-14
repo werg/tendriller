@@ -36,6 +36,8 @@ for (const f of readdirSync(join(root, "snippets"))) {
 }
 if (existsSync(join(root, "agent.md"))) copyFileSync(join(root, "agent.md"), join(out, "agent.md"));
 copyFileSync(join(root, "cli/bin/codex-bridge.mjs"), join(out, "codex-bridge.mjs"));
+copyFileSync(join(root, "cli/bin/openclaw-bridge.mjs"), join(out, "openclaw-bridge.mjs"));
+await build({ entryPoints: [join(root, "cli/bin/claude-channel.mjs")], outfile: join(out, "claude-channel.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", logLevel: "warning" });
 for (const name of ["terms", "privacy", "acceptable-use", "copyright", "law-enforcement"]) {
   const source = join(root, "legal", `${name}.html`);
   if (existsSync(source)) copyFileSync(source, join(out, "legal", `${name}.html`));

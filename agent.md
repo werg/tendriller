@@ -4,7 +4,7 @@ Tendriller lets an agent make a small, changeable web page for a person. Think o
 
 You only need the person's **verified GitHub or Google email address**. Ask for it if you don't know it, along with what they want the page to do. Create the page for that email, establish event delivery, then give them its `page_url`. When they open the link, Tendriller signs them in if needed and opens the page automatically. They do not need to create or copy an account key, enter a code, or press Claim. Their browser never shares OAuth credentials with you.
 
-**Before you give them the link, arrange event delivery.** Start a long-running `GET A/events?after=<cursor>&wait=25` loop and keep it alive, or configure `PUT A/wake` to reach an agent host that will actually resume you. A single poll, an agent token, a published page, and a message sent with `POST A/say` do **not** keep you listening. If your environment cannot run a listener or accept wakes, tell the person the page saves their input for later and do not promise immediate replies. The creation response's `agent_setup`, every event poll's `agent_reminder` and `next_poll`, and file upload responses repeat this requirement.
+**Before you give them the link, arrange conversation delivery.** A background poll by itself only collects events; it must wake this agent conversation. Use the host adapter below or a verified host wake endpoint. A single poll, an agent token, a published page, and a message sent with `POST A/say` do **not** keep you listening. If your host cannot resume this conversation, tell the person the page saves input for later and do not promise immediate replies. The creation response's `agent_setup`, every event poll's `agent_reminder` and `next_poll`, and file upload responses repeat this requirement.
 
 **Publication check:** the first `index.html` upload returns HTTP `428 listener_required` unless a long poll is currently waiting or a wake receiver is configured. A one-off `GET A/events` does not pass this check. If the receiver later stops, the page shows **Away** and keeps the person's input for later. Use the runnable example below as the simplest complete setup.
 
@@ -17,6 +17,26 @@ node ~/.local/share/tendriller/codex-bridge.mjs attach .tendril.json
 ```
 
 Use `https://staging.tendriller.dev/codex-bridge.mjs` for staging. The command reads `CODEX_THREAD_ID`, installs a user service, waits until its long poll is live, and prints the page URL. It queues only a count-only notice into that conversation; the agent reads the actual events with its private page token. After handling through `A/say`, state or files, the agent acknowledges the last event sequence with `node ~/.local/share/tendriller/codex-bridge.mjs ack <page-id> <seq>`. The bridge retries unacknowledged wakes. Codex displays the notice as a user message, so the notice explicitly says it came from the bridge and contains no page content. This adapter currently requires Linux with systemd and an available Codex CLI; other hosts need their own verified wake path.
+
+**Claude Code:** a channel can wake the same open conversation. The agent can install Tendriller's bundled channel once:
+
+```sh
+mkdir -p ~/.local/share/tendriller
+curl -fsS https://tendriller.dev/claude-channel.mjs -o ~/.local/share/tendriller/claude-channel.mjs
+claude mcp add --scope user tendriller -- node ~/.local/share/tendriller/claude-channel.mjs
+```
+
+For staging, download from `https://staging.tendriller.dev/claude-channel.mjs`. **Claude Code must then restart the session** with `claude --dangerously-load-development-channels server:tendriller` and accept the development-channel prompt. This is [required by Claude Code's current research preview](https://code.claude.com/docs/en/channels-reference); organization policy may also need to enable channels. Once the channel is active, call its `tendriller_attach` tool with the private creation-response file path before publishing. It starts continuous polling for this session and verifies the Worker sees a live poll. A count-only channel notice wakes the session; call `tendriller_events`, respond through `A/say` and any page changes, then call `tendriller_ack`. The channel does not put page content or the token in notifications. Claude Code must remain open (a persistent terminal is fine); if it closes, the page shows Away and saves input until you resume and attach again. The person using the page has no setup step.
+
+**OpenClaw on Linux:** from the agent's host, install the bridge and attach the page to the **exact current session key** shown by OpenClaw Runtime (often `agent:main:main` for the Home conversation):
+
+```sh
+mkdir -p ~/.local/share/tendriller
+curl -fsS https://tendriller.dev/openclaw-bridge.mjs -o ~/.local/share/tendriller/openclaw-bridge.mjs
+node ~/.local/share/tendriller/openclaw-bridge.mjs attach .tendril.json agent:main:main
+```
+
+Replace `agent:main:main` with your actual session key, and use the staging origin for a staging page. The bridge installs a systemd user service, waits until its page poll is live, and sends [OpenClaw `system event --mode now`](https://docs.openclaw.ai/cli/system) to that session. It sends only a count-only notice. Read the event queue with the private handle, respond on the page, then run `node ~/.local/share/tendriller/openclaw-bridge.mjs ack <page-id> <seq>`. Run `detach <page-id>` to stop and remove the service and local credentials. The OpenClaw Gateway and CLI must already be running and able to accept system events. This adapter has a fault-injection test but has not yet completed a live OpenClaw turn; verify a page tap before promising immediate replies. The page user has no setup step.
 
 ## A first build
 
@@ -47,7 +67,7 @@ chmod 600 .tendril.json
 
 The response has `page_url`, `api`, `token`, and `agent_setup`. Save `api` as `A` and the token as `TENDRIL_TOKEN` in your private storage; never put the token in a page or shared link. Give the person **only** `page_url` after arranging event delivery, or clearly say that replies will wait until your next session. Reuse this page across conversations. It is initially `ad_hoc` and must be opened by its intended owner within 24 hours. After they open it, you can make it persistent with `PATCH A` and `{"lifetime":"resident"}` if that suits their request.
 
-Start a persistent listener (or configure a working wake endpoint), then publish a page. The first `index.html` replaces the waiting screen automatically:
+Attach a host adapter or configure a working wake endpoint, then publish a page. The first `index.html` replaces the waiting screen automatically:
 
 ```html
 <!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -74,7 +94,7 @@ curl -sS -X POST "$A/say" -H "Authorization: Bearer $TENDRIL_TOKEN" \
   -H 'Content-Type: application/json' -d '{"text":"Your notebook is ready. Tap Share my location when you want me to use it."}'
 ```
 
-`tendril.send` queues an event; Tendriller does not execute your agent code or wake a chat session by itself. On **every** poll response, save `cursor`, handle the events, then immediately request `next_poll`, including after an empty timeout. Persist the cursor across restarts. If your agent host accepts webhooks, configure `PUT A/wake` so new activity can wake that process. Handle owner `instruction` events as requests. Handle page `event` data according to the interface you wrote, and tell the person what you did with `POST A/say`. Build a new version when the interface should change. A runnable Node example that starts its listener before announcing the page is at [`examples/first-page`](https://github.com/werg/tendriller/tree/master/examples/first-page): run it with `TENDRILLER_OWNER=ana@example.com node examples/first-page/run.mjs` and optionally set `TENDRILLER_SERVICE_BASE` for staging.
+`tendril.send` queues an event; Tendriller does not execute your agent code or wake a chat session by itself. On **every** poll response, save `cursor`, handle the events, then immediately request `next_poll`, including after an empty timeout. Persist the cursor across restarts. If your agent host accepts webhooks, configure `PUT A/wake` so new activity can wake that process. Handle owner `instruction` events as requests. Handle page `event` data according to the interface you wrote, and tell the person what you did with `POST A/say`. Build a new version when the interface should change. A runnable Node example that starts a **scripted responder** is at [`examples/first-page`](https://github.com/werg/tendriller/tree/master/examples/first-page); it demonstrates the API, not same-conversation agent push.
 
 ## Useful endpoints
 
