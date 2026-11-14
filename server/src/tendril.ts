@@ -851,11 +851,11 @@ export class Tendril extends DurableObject<Env> {
     if (used + additional > limit) throw new HttpError(413, "quota", "Tendril storage limit reached", { limit, used });
   }
 
-  reserveStoredFile(hash: string, size: number, riskScore: number, riskUrls: string[]): boolean {
+  reserveStoredFile(hash: string, size: number, riskScore: number): boolean {
     if (this.db.one("SELECT 1 AS x FROM stored_files WHERE hash = ?", hash)) return false;
     this.checkLocalStorage(size);
-    this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score, risk_urls) VALUES (?, ?, ?, ?, ?)",
-      hash, size, this.now(), riskScore, JSON.stringify(riskUrls));
+    this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score) VALUES (?, ?, ?, ?)",
+      hash, size, this.now(), riskScore);
     return true;
   }
 
@@ -1100,7 +1100,6 @@ export class Tendril extends DurableObject<Env> {
     this.db.run("DELETE FROM guest_accounts WHERE link_id NOT IN (SELECT id FROM links)");
     this.db.run("DELETE FROM ws_rate WHERE second < ?", Math.floor(now / 1000) - 60);
     this.db.run("DELETE FROM notify_rate WHERE hour < ?", Math.floor(now / HOUR) - 24);
-    this.db.run("DELETE FROM web_risk_cache WHERE expires_at < ?", now);
     const a = this.db.get<{ expires_at: number } | null>("adopt", null);
     if (a && a.expires_at < now) this.db.del("adopt");
     this.db.set("next_cleanup", now + DAY);

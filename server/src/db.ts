@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT, size INTEGER N
   device TEXT, source TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS trusted_versions (account_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (account_id, version));
-CREATE TABLE IF NOT EXISTS web_risk_cache (url_hash TEXT PRIMARY KEY, unsafe INTEGER NOT NULL, expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS page_sessions (hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, role TEXT NOT NULL,
   expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ws_rate (device_id TEXT PRIMARY KEY, second INTEGER NOT NULL, count INTEGER NOT NULL);
@@ -65,7 +64,8 @@ export class Db {
     }
     const fileColumns = this.sql.exec("PRAGMA table_info(stored_files)").toArray() as { name: string }[];
     if (!fileColumns.some(c => c.name === "risk_score")) this.sql.exec("ALTER TABLE stored_files ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0");
-    if (!fileColumns.some(c => c.name === "risk_urls")) this.sql.exec("ALTER TABLE stored_files ADD COLUMN risk_urls TEXT NOT NULL DEFAULT '[]'");
+    // Remove the retired URL lookup cache from existing Durable Objects.
+    this.sql.exec("DROP TABLE IF EXISTS web_risk_cache");
     const versionColumns = this.sql.exec("PRAGMA table_info(versions)").toArray() as { name: string }[];
     if (!versionColumns.some(c => c.name === "risk_score")) this.sql.exec("ALTER TABLE versions ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0");
     if (!versionColumns.some(c => c.name === "risk_flags")) this.sql.exec("ALTER TABLE versions ADD COLUMN risk_flags TEXT NOT NULL DEFAULT '[]'");

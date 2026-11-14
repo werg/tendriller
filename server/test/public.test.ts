@@ -425,3 +425,23 @@ it("holds a high-risk version on a young account before serving it", async () =>
   const audits = await db.prepare("SELECT action FROM audit_log WHERE subject = ?").bind(h.id).all<{ action: string }>();
   expect(audits.results.some(row => row.action === "hold")).toBe(true);
 });
+
+it("accepts pages with many outbound URLs without a reputation service", async () => {
+  const h = await createPublic(undefined, "192.0.2.223");
+  const links = Array.from({ length: 60 }, (_, i) => `<a href="https://example.org/${i}">link</a>`).join("");
+  const upload = await api(h, "PUT", "files/index.html", `<html>${links}</html>`);
+  expect(upload.status).toBe(200);
+  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("https://example.org/59");
+  const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(
+    "SELECT risk_score, risk_flags FROM versions WHERE version = 1"));
+  expect(version).toEqual({ risk_score: 0, risk_flags: "[]" });
+});
+
+it("retains local static screening for external form actions", async () => {
+  const h = await createPublic(undefined, "192.0.2.224");
+  const upload = await api(h, "PUT", "files/index.html", '<form action="https://example.org/collect"><p>Google sign in</p></form>');
+  expect(upload.status).toBe(200);
+  const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(
+    "SELECT risk_score, risk_flags FROM versions WHERE version = 1"));
+  expect(version).toEqual({ risk_score: 8, risk_flags: '["static_screening"]' });
+});

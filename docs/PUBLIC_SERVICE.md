@@ -262,8 +262,9 @@ storage or as an outbound request relay.
   passwords or sends data elsewhere. Tendriller never asks for passwords. Continue only if
   you trust the agent that made it."), because under claim on first open the owner may be
   the target. On a young account a high score holds the tendril (section 6.4).
-- URLs in pages and in outbound webhook targets checked against Google Web Risk (or Safe
-  Browsing) when a version is created.
+- Outbound URLs are allowed without an external reputation lookup. Static checks still
+  flag external form actions and other suspicious page content; known malicious links
+  alone are not detected by this screening.
 - Every page carries "Report this page" in the control's menu, and `/_tendril/report` works
   even when the control is hidden.
 
@@ -274,7 +275,7 @@ storage or as an outbound request relay.
   abuse complaints to).
 - Complaints Cloudflare forwards, and mail to `abuse@`, go through Email Routing to a
   Worker that extracts tendril URLs and files them as reports, so no inbox needs watching.
-- Signals: version checks (6.2); a Web Risk match; a burst of distinct signed-in guests,
+- Signals: version checks (6.2); a burst of distinct signed-in guests,
   or of display-link visitors from many IPs, on a young tendril; many tendrils created and
   then claimed by different accounts from one IP (one sender, many victims); repeated
   releases of claims.
@@ -291,7 +292,7 @@ appeals, when they can. The terms say so: no promised review time, and an appeal
 restores a page that was wrongly held.
 
 - **Automatic hold** (the tendril is disabled pending appeal) when any of these happens:
-  - a Web Risk match, or a forwarded complaint naming the tendril;
+  - a forwarded complaint naming the tendril;
   - reports from 3 different signed-in accounts within 24 hours. Only accounts at least
     7 days old count, accounts that reported pages later restored on appeal stop
     counting, and an owner's own invitees count once together, so a group cannot take
@@ -413,7 +414,7 @@ creation-key fallback or path-host route.
    concurrent uploads to two tendrils of one account cannot exceed its quota; load tests
    at each limit.
 4. **Abuse tooling.** Reports, the abuse mail Worker, automatic holds and suspensions,
-   version checks, Web Risk, notices and appeals, admin console, audit log.
+   version checks, notices and appeals, admin console, audit log.
 5. **On-device speech.** Whistle in the runtime, hosted copy, hash check, fallbacks.
 6. **Keys and device flow.** Dashboard, `ak_…` keys, device flow, higher limits.
 7. **Launch.** Terms, privacy policy, abuse contact, status page, budget alerts, Public

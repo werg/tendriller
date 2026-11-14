@@ -29,7 +29,6 @@ export interface Env {
   BUDGET_WEBHOOK_SECRET?: string;
   BUDGET_PAUSE_POLICY_ID?: string;
   BUDGET_READ_ONLY_POLICY_ID?: string;
-  WEB_RISK_API_KEY?: string;
   ABUSE_FORWARD_ADDRESS?: string;
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
