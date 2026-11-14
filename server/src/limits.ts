@@ -30,7 +30,6 @@ export const WEBHOOK_DEBOUNCE = 2 * SECOND;
 export const WEBHOOK_TIMEOUT = 10 * SECOND;
 export const WEBHOOK_BACKOFF = [30 * SECOND, 2 * MINUTE, 10 * MINUTE];
 export const PRESENCE_TICK = 30 * SECOND;
-export const WORKING_WINDOW = 60 * SECOND;
 export const STATUS_OVERRIDE_TTL = 10 * MINUTE;
 export const ADOPT_CODE_TTL = 10 * MINUTE;
 export const ADOPT_MAX_ATTEMPTS = 10;

@@ -168,7 +168,7 @@ class Control {
     this.prevPresenceState = now;
     if (prev !== now) {
       if (now === "working") { this.doneUntil = 0; this.cue("working"); }
-      else if ((prev === "working" && now && !["not_responding", "no_agent"].includes(now)) || (now as string) === "done") {
+      else if ((prev === "working" && now === "listening") || now === "done") {
         this.doneUntil = Date.now() + DONE_MS;
         clearTimeout(this.doneTimer);
         this.doneTimer = setTimeout(() => this.render(), DONE_MS + 20);

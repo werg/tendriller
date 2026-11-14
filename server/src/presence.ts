@@ -1,7 +1,7 @@
 // Agent presence (PROTOCOL section 8.4). Pure computation from the tendril's facts.
-import { DAY, HOUR, MINUTE, STATUS_OVERRIDE_TTL, WORKING_WINDOW } from "./limits";
+import { DAY, HOUR, MINUTE, STATUS_OVERRIDE_TTL } from "./limits";
 
-export type PresenceState = "listening" | "working" | "scheduled" | "not_responding" | "away" | "no_agent";
+export type PresenceState = "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent";
 
 export interface Presence {
   state: PresenceState;
@@ -54,9 +54,10 @@ export function computePresence(f: PresenceFacts): Presence {
 
   const status = f.status && f.now - f.status.at < STATUS_OVERRIDE_TTL ? f.status : null;
   if (status?.state === "working") return p("working", status.text || "Working");
-  const label = (fallback: string) => (status ? status.text || (status.state === "done" ? "Done" : "Idle") : fallback);
+  if (status?.state === "done" && f.now - status.at < 8000) return p("done", status.text || "Done");
+  const idle = status?.state === "idle" ? status : null;
+  const label = (fallback: string) => idle?.text || fallback;
 
-  if (!status && since < WORKING_WINDOW) return p("working", "Working");
   if (f.webhook && since < DAY) return p("listening", label("Listening"));
   if (f.scheduleMinutes) {
     const n = f.scheduleMinutes;
@@ -70,11 +71,14 @@ export function computePresence(f: PresenceFacts): Presence {
 export function nextPresenceChange(f: PresenceFacts): number | null {
   const times: number[] = [];
   if (f.lastCheckin !== null) {
-    times.push(f.lastCheckin + WORKING_WINDOW, f.lastCheckin + DAY);
+    times.push(f.lastCheckin + DAY);
     if (f.scheduleMinutes) times.push(f.lastCheckin + (2 * f.scheduleMinutes + 5) * MINUTE + 1);
   }
   if (f.wakePendingSince !== null) times.push(f.wakePendingSince + f.graceSeconds * 1000);
-  if (f.status) times.push(f.status.at + STATUS_OVERRIDE_TTL);
+  if (f.status) {
+    times.push(f.status.at + STATUS_OVERRIDE_TTL);
+    if (f.status.state === "done") times.push(f.status.at + 8000);
+  }
   const future = times.filter((t) => t > f.now);
   return future.length ? Math.min(...future) : null;
 }

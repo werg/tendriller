@@ -4,7 +4,7 @@ export interface Features { push: boolean; vapid: string | null; shared_by: stri
 export interface TendrilConfig { id: string; base: string; version: number; ws: string; features: Features }
 export type Role = "owner" | "guest" | "display";
 export interface Presence {
-  state: "listening" | "working" | "scheduled" | "not_responding" | "away" | "no_agent";
+  state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent";
   text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number;
   wake: "long_poll" | "webhook" | "schedule" | "none";
 }

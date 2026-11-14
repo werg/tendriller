@@ -8,5 +8,5 @@ const migrations = await readD1Migrations(join(here, "migrations"));
 export default defineConfig({
   root: here,
   plugins: [cloudflareTest({ wrangler: { configPath: join(here, "wrangler.public-test.jsonc") } })],
-  test: { include: ["test/public.test.ts", "test/admission.test.ts"], testTimeout: 30_000, provide: { d1Migrations: migrations } },
+  test: { include: ["test/public.test.ts", "test/admission.test.ts", "test/presence.public.test.ts"], testTimeout: 30_000, provide: { d1Migrations: migrations } },
 });
