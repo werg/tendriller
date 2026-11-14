@@ -3,6 +3,7 @@ import type { SensorTracker } from "./sensors";
 
 export type CaptureMode = "local" | null;
 export interface CaptureHandlers {
+  onConsent(): Promise<boolean>;
   onInterim(text: string): void;
   onFinal(text: string): void;
   onState(listening: boolean): void;
@@ -20,6 +21,7 @@ export class SpeechCapture {
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private cancelled = false;
   private maxTimer: number | null = null;
+  private consented = false;
 
   constructor(private h: CaptureHandlers, private sensors: SensorTracker, private lang: () => string,
     private base: string, private speech: { model: string; url: string; sha256: string }) {
@@ -37,10 +39,14 @@ export class SpeechCapture {
 
   private async load(): Promise<void> {
     if (this.ready) return this.ready;
-    if (!window.confirm("Download 18 MB for private, on-device speech transcription? Audio stays on this device.")) throw new Error("Download declined. You can type instead.");
+    if (!this.consented) {
+      if (!await this.h.onConsent()) throw new Error("Speech setup cancelled. You can type instead.");
+      this.consented = true;
+    }
     this.worker = new Worker(this.base + "_tendril/speech-worker.js");
     this.worker.onmessage = (event: MessageEvent) => {
-      const { id, error, ...result } = event.data ?? {};
+      const { id, error, progress, ...result } = event.data ?? {};
+      if (progress) { this.h.onInterim(progress); return; }
       const pending = this.pending.get(id);
       if (!pending) return;
       this.pending.delete(id);
@@ -65,6 +71,8 @@ export class SpeechCapture {
     if (this.listening || !this.mode) return;
     this.cancelled = false;
     try {
+      const language = this.lang().slice(0, 2).toLowerCase();
+      if (!["en", "de", "fr", "es", "it", "nl", "pl"].includes(language)) throw new Error("Speech currently supports English, German, French, Spanish, Italian, Dutch and Polish. Choose one in page settings or type instead.");
       await this.load();
       if (this.cancelled) return;
       this.stream = await this.sensors.getUserMedia({ audio: true });

@@ -9,6 +9,7 @@ The repository uses one public-service code path. New D1 environments initialize
 - External and page reports, Turnstile validation, abuse Email Routing handler, static version screening, Web Risk lookup, automatic holds and suspension, appeals, admin actions with a static preview, and D1 audit log. The owner dashboard shows per-device page sensor history.
 - On-device Cactus Whistle runtime with pinned model and engine hashes, R2 asset installation script, provisioning script, CI workflow, and operational runbooks.
 - Public service tests and TypeScript checks pass locally. A new browser isolation suite is ready for staging; it cannot run until the real domains, OAuth apps, and owner key exist. The prior browser suite assumes anonymous page access and device pairing and is excluded. The deployed service and real provider, email, domain, and browser flows have not been exercised.
+- Experience follow-ups implemented locally: cohesive landing, claim and first-version waiting screens; account page cards with direct actions and one-time key reveal; guest request polling with approve/decline; private speech setup with streamed progress and language guidance; and a runnable create/publish/event/reply example. These browser-facing changes still need staging verification on real page origins.
 
 ## Launch blockers and incomplete plan items
 

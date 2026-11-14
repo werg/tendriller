@@ -4,10 +4,25 @@ declare const createCactus: (options: Record<string, unknown>) => Promise<any>;
 let engine: any = null;
 const scope = self as any;
 
-async function verified(url: string, expected: string): Promise<Uint8Array> {
+async function verified(url: string, expected: string, id: number, label: string): Promise<Uint8Array> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Model download failed (${response.status})`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const total = Number(response.headers.get("Content-Length")) || 0;
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  if (!response.body) throw new Error("Speech download unavailable");
+  const reader = response.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    scope.postMessage({ id, progress: `Downloading ${label}… ${total ? `${Math.min(100, Math.round(received / total * 100))}%` : `${(received / 1048576).toFixed(1)} MB`}` });
+  }
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  scope.postMessage({ id, progress: `Verifying ${label}…` });
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map(b => b.toString(16).padStart(2, "0")).join("");
   if (hash !== expected) throw new Error("Speech asset hash mismatch");
@@ -22,10 +37,11 @@ scope.onmessage = async (event: MessageEvent) => {
       const js = `${base}_tendril/speech/cactus.js`;
       const wasmUrl = `${base}_tendril/speech/cactus.wasm`;
       const [wasm, model] = await Promise.all([
-        verified(wasmUrl, "4198b30795ded7739fe6c9e80bf26d5a844767c081574d40c8dc0487cde8b4b6"),
-        verified(modelUrl, modelSha256),
+        verified(wasmUrl, "4198b30795ded7739fe6c9e80bf26d5a844767c081574d40c8dc0487cde8b4b6", id, "speech engine"),
+        verified(modelUrl, modelSha256, id, "speech model"),
       ]);
       scope.importScripts(js);
+      scope.postMessage({ id, progress: "Preparing on-device speech…" });
       engine = await createCactus({ wasmBinary: wasm.buffer });
       const ptr = engine._malloc(model.byteLength);
       if (!ptr) throw new Error("Could not allocate speech model memory");

@@ -2,6 +2,10 @@
 
 The application has one service model: `https://tendriller.dev` for accounts and the API, and one page origin per tendril under `tendriller.site`. The repository is not ready for production deployment until the launch checks below pass.
 
+## Why `workers.dev` cannot host the public page service
+
+Cloudflare assigns one `<worker>.<account>.workers.dev` hostname to each Worker. Tendriller's page isolation requires a different browser origin for every `<id>.tendriller.site` page. The `workers.dev` namespace does not provide the dynamic wildcard hostnames needed here. Putting every page under a path on one Worker hostname would merge their browser origins and violate the isolation design. Do not deploy a path-based public preview or change `pageUrl` to use one shared hostname. The service Worker alone could be previewed on `workers.dev`, but OAuth callbacks, claim links, and page navigation would remain unusable until the pages zone exists. Wait for the domain setup, then deploy staging with a certificate covering its page hostnames. See [Cloudflare's workers.dev routing](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/) and [route documentation](https://developers.cloudflare.com/workers/configuration/routing/routes/).
+
 ## One-time external setup
 
 1. Register `tendriller.dev` and `tendriller.site` and activate their Cloudflare zones. Create a certificate that covers `*.staging.tendriller.site` if using the default staging pages domain. Production pages use the one-level wildcard `*.tendriller.site`.

@@ -179,6 +179,14 @@ export class Tendril extends DurableObject<Env> {
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
+        if (url.pathname === "/account/summary" && req.method === "GET") return json({
+          name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
+          version: this.db.get("current", 0), held: this.db.get("disabled", false),
+          bytes: this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0,
+          agents: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")?.n ?? 0,
+          guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
+          last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
+        });
         if (url.pathname === "/account/sensors" && req.method === "GET") return json({
           devices: this.listDevices(),
           events: this.db.all("SELECT ts, device, summary FROM activity WHERE kind = 'sensor' ORDER BY seq DESC LIMIT 200"),
@@ -427,6 +435,13 @@ export class Tendril extends DurableObject<Env> {
       return json({ claimed: !!this.db.get<string | null>("owner_account", null),
         expected: maskOwner(this.db.get<string | null>("intended_owner", null)), role: link.role });
     }
+    if (url.pathname === "/claim/guest-status" && req.method === "GET") {
+      if (link.role !== "guest") throw new HttpError(403, "forbidden");
+      const account = req.headers.get("x-account-id");
+      if (!account) throw new HttpError(403, "forbidden");
+      const row = this.db.one<{ approved: number }>("SELECT approved FROM guest_accounts WHERE account_id = ? AND link_id = ?", account, link.id);
+      return json({ status: row?.approved === 1 ? "approved" : row?.approved === -1 ? "declined" : row ? "pending" : "none" });
+    }
     if (url.pathname === "/claim/check" && req.method === "GET") {
       if (link.role === "display" && !link.created_by_agent && this.db.get<string | null>("owner_account", null)) {
         await this.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
@@ -455,7 +470,8 @@ export class Tendril extends DurableObject<Env> {
       const row = this.db.one<{ approved: number }>("SELECT approved FROM guest_accounts WHERE account_id = ? AND link_id = ?", b.account_id, link.id);
       await this.recordVisitorSignal("guest", b.account_id);
       if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
-      return json({ approved: !!row?.approved });
+      if (row?.approved === -1) throw new HttpError(403, "declined", "The owner declined this invitation");
+      return json({ approved: row?.approved === 1 });
     }
     if (url.pathname === "/claim/owner" && req.method === "POST") {
       const b = await readJson(req, 8192);

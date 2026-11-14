@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>A little hello</title>
+  <style>
+    :root{color-scheme:light dark;font:18px/1.6 system-ui,sans-serif}body{max-width:42rem;margin:10vh auto;padding:1.25rem;background:#f3f8f2;color:#1b3324}h1{font-size:clamp(2.4rem,7vw,4rem);line-height:1.1}button{background:#26724a;color:white;border:0;padding:.8rem 1.2rem;border-radius:.7rem;font:inherit;cursor:pointer}#reply{min-height:2rem} @media(prefers-color-scheme:dark){body{background:#14231a;color:#e9f4e9}}
+  </style>
+</head>
+<body>
+  <main>
+    <p>✦ Made together with an agent</p>
+    <h1>Hello from your new page.</h1>
+    <p>This is a tiny working example. Press the button to send a page event to the agent.</p>
+    <button id="hello" type="button">Say hello to the agent</button>
+    <p id="reply" role="status" aria-live="polite"></p>
+  </main>
+  <script>
+    document.querySelector('#hello').addEventListener('click', async () => {
+      const reply = document.querySelector('#reply');
+      reply.textContent = 'Sending…';
+      try {
+        await tendril.send({ type: 'hello' });
+        reply.textContent = 'Sent. Watch for the agent’s reply in the page control.';
+      } catch {
+        reply.textContent = 'Could not send yet. Check your connection and try again.';
+      }
+    });
+  </script>
+</body>
+</html>

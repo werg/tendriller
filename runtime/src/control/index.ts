@@ -60,6 +60,7 @@ class Control {
   private pageErrors = 0;
   private reattaches = 0;
   private capture: SpeechCapture | null = null;
+  private guestPoll: number | null = null;
   private hintMsg = "";
   private noticeSig = "";
   private transcriptSig = "";
@@ -217,6 +218,7 @@ class Control {
     document.body.appendChild(this.host);
     this.watchRemoval();
     this.capture = new SpeechCapture({
+      onConsent: () => this.confirmSpeechDownload(),
       onInterim: (t) => this.showInterim(t),
       onFinal: (t) => { this.showInterim(""); void this.submit(t, "voice"); },
       onState: (on) => this.renderMic(on),
@@ -298,6 +300,20 @@ class Control {
     });
     b.addEventListener("contextmenu", (e) => e.preventDefault());
     return b;
+  }
+
+  private confirmSpeechDownload(): Promise<boolean> {
+    return new Promise(resolve => {
+      const dialog = h("div", { class: "speech-consent", role: "dialog", "aria-modal": "true", "aria-label": "Set up private speech" },
+        h("div", { class: "speech-consent-card glass" },
+          h("h2", { text: "Set up private speech" }),
+          h("p", { text: "Download about 18 MB once to transcribe on this device. Audio stays here. You can always type instead." }),
+          h("div", { class: "actions" },
+            h("button", { type: "button", class: "btn primary", onclick: () => { dialog.remove(); resolve(true); } }, "Download and continue"),
+            h("button", { type: "button", class: "btn", onclick: () => { dialog.remove(); resolve(false); } }, "Use typing"))));
+      this.root.appendChild(dialog);
+      (dialog.querySelector("button") as HTMLButtonElement).focus();
+    });
   }
 
   private buildSheet() {
@@ -834,6 +850,8 @@ class Control {
   }
 
   private async loadGuestInvites(panel: HTMLElement): Promise<void> {
+    if (this.guestPoll !== null) window.clearTimeout(this.guestPoll);
+    this.guestPoll = null;
     clear(panel, h("p", { class: "muted", text: "Loading invitations…" }));
     try {
       const base = this.core.config.base + "_tendril/guests";
@@ -846,9 +864,19 @@ class Control {
           const approved = await fetch(`${base}/${encodeURIComponent(guest.account_id)}/${encodeURIComponent(guest.link_id)}/approve`, { method: "POST", credentials: "same-origin" });
           if (approved.ok) { this.announce("Guest approved."); await this.loadGuestInvites(panel); }
           else this.announce("Couldn't approve guest.");
-        } }, "Approve")))) : h("p", { class: "muted", text: "No guests are waiting for approval." }));
+        } }, "Approve"),
+        h("button", { type: "button", class: "btn small", onclick: async () => {
+          const declined = await fetch(`${base}/${encodeURIComponent(guest.account_id)}/${encodeURIComponent(guest.link_id)}/decline`, { method: "POST", credentials: "same-origin" });
+          if (declined.ok) { this.announce("Invitation declined."); await this.loadGuestInvites(panel); }
+          else this.announce("Couldn't decline invitation.");
+        } }, "Decline")))) : h("p", { class: "muted", text: "No guests are waiting for approval." }));
     } catch (e: any) {
       clear(panel, h("p", { class: "error", text: `Couldn't load invitations: ${e?.message || "error"}` }));
+    } finally {
+      this.guestPoll = window.setTimeout(() => {
+        if (panel.closest("details")?.open && this.host.isConnected) void this.loadGuestInvites(panel);
+        else this.guestPoll = null;
+      }, 5000);
     }
   }
 

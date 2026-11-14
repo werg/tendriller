@@ -131,7 +131,7 @@ it("requires an explicit matching claim and a page session", async () => {
   const claimUrl = page.headers.get("Location")!;
   expect(claimUrl).toContain("/auth/page?");
   const signIn = await req(claimUrl);
-  expect(await signIn.text()).toContain("Sign in with GitHub");
+  expect(await signIn.text()).toContain("Continue with GitHub");
 
   const account = crypto.randomUUID();
   const rawSession = "test-session-" + crypto.randomUUID();
@@ -160,7 +160,7 @@ it("requires an explicit matching claim and a page session", async () => {
   expect(pageCookie).toMatch(/^__Host-tendril=/);
   const opened = await req(h.page_url, { headers: { Cookie: pageCookie } });
   expect(opened.status).toBe(200);
-  expect(await opened.text()).toContain("Waiting for the agent");
+  expect(await opened.text()).toContain("is getting ready");
   expect(await (await api(h, "GET", "")).json()).toMatchObject({ owner: { provider: "google", login: "Ana" } });
   const without = await req(h.page_url, { redirect: "manual" });
   expect(without.status).toBe(302);
@@ -185,21 +185,35 @@ it("requires an explicit matching claim and a page session", async () => {
   expect(guestNonce).toBeTruthy();
   const guestJoin = await req(guestClaimUrl, { method: "POST", headers: { Cookie: guestCookie, Origin: BASE,
     "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ nonce: guestNonce! }) });
-  expect(await guestJoin.text()).toContain("Waiting for the owner's approval");
+  expect(await guestJoin.text()).toContain("Waiting for the owner");
+  expect(await (await req(`${guestClaimUrl}&status=1`, { headers: { Cookie: guestCookie } })).json()).toMatchObject({ status: "pending" });
   const pending = await (await req(h.page_url + "_tendril/guests", { headers: { Cookie: pageCookie } })).json<{ guests: { account_id: string; link_id: string }[] }>();
   expect(pending.guests).toHaveLength(1);
   const approval = await req(h.page_url + `_tendril/guests/${guestAccount}/${pending.guests[0].link_id}/approve`, {
     method: "POST", headers: { Cookie: pageCookie, Origin: new URL(h.page_url).origin },
   });
   expect(approval.status).toBe(200);
-  const retryScreen = await req(guestClaimUrl, { headers: { Cookie: guestCookie } });
-  const retryNonce = /name="nonce" value="([^"]+)"/.exec(await retryScreen.text())?.[1];
-  const retry = await req(guestClaimUrl, { method: "POST", redirect: "manual", headers: { Cookie: guestCookie, Origin: BASE,
-    "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ nonce: retryNonce! }) });
+  expect(await (await req(`${guestClaimUrl}&status=1`, { headers: { Cookie: guestCookie } })).json()).toMatchObject({ status: "approved" });
+  const retry = await req(guestClaimUrl, { redirect: "manual", headers: { Cookie: guestCookie } });
   expect(retry.status).toBe(303);
   const guestExchange = await req(retry.headers.get("Location")!, { redirect: "manual" });
   const guestPageCookie = guestExchange.headers.get("Set-Cookie")!.split(";")[0];
   expect((await req(invite.url, { headers: { Cookie: guestPageCookie } })).status).toBe(200);
+  const secondInvite = await (await api(h, "POST", "links", { role: "guest" })).json<{ url: string }>();
+  const secondClaim = (await req(secondInvite.url, { redirect: "manual" })).headers.get("Location")!;
+  const secondScreen = await (await req(secondClaim, { headers: { Cookie: guestCookie } })).text();
+  const secondNonce = /name="nonce" value="([^"]+)"/.exec(secondScreen)?.[1];
+  expect(secondNonce).toBeTruthy();
+  await req(secondClaim, { method: "POST", headers: { Cookie: guestCookie, Origin: BASE,
+    "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ nonce: secondNonce! }) });
+  const secondPending = await (await req(h.page_url + "_tendril/guests", { headers: { Cookie: pageCookie } })).json<{ guests: { account_id: string; link_id: string }[] }>();
+  expect(secondPending.guests).toHaveLength(1);
+  const decline = await req(h.page_url + `_tendril/guests/${guestAccount}/${secondPending.guests[0].link_id}/decline`, {
+    method: "POST", headers: { Cookie: pageCookie, Origin: new URL(h.page_url).origin },
+  });
+  expect(decline.status).toBe(200);
+  expect(await (await req(`${secondClaim}&status=1`, { headers: { Cookie: guestCookie } })).json()).toMatchObject({ status: "declined" });
+  expect((await req(secondClaim, { headers: { Cookie: guestCookie } })).status).toBe(403);
   expect((await api(h, "POST", "release")).status).toBe(403);
   expect((await req(invite.url + "_tendril/agents", { headers: { Cookie: guestPageCookie } })).status).toBe(403);
   const reportForm = await req(invite.url + "_tendril/report", { headers: { Cookie: guestPageCookie } });
@@ -279,6 +293,10 @@ it("creates named account keys and claimed resident tendrils with an exact cap",
     expect(res.status).toBe(201);
     created.push(await res.json<Handle>());
   }
+  const populatedDashboard = await (await req("/dashboard", { headers: { Cookie: cookie } })).text();
+  expect(populatedDashboard).toContain("resident 0");
+  expect(populatedDashboard).toContain(created[0].page_url);
+  expect(populatedDashboard).toContain("Copy link");
   const fourth = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` },
     body: JSON.stringify({ lifetime: "resident" }) });
   expect(fourth.status).toBe(429);

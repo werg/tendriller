@@ -1,4 +1,5 @@
 export const CSS = `
+.speech-consent{position:fixed;inset:0;width:100vw;height:100dvh;z-index:9999;background:rgba(5,20,12,.68);display:flex;align-items:center;justify-content:center;padding:1rem;box-sizing:border-box}.speech-consent-card{width:min(100%,28rem);padding:1.5rem;border-radius:1rem;color:var(--fg);box-sizing:border-box}.speech-consent-card h2{margin:0 0 .5rem}.speech-consent-card p{line-height:1.5}.speech-consent-card .actions{display:flex;flex-wrap:wrap;gap:.5rem}
 .root {
   --bg: rgba(255,255,255,.88); --solid: #ffffff; --fg: #1b1e25; --muted: #5a6070;
   --line: rgba(17,22,33,.12); --soft: rgba(17,22,33,.05); --soft2: rgba(17,22,33,.09);

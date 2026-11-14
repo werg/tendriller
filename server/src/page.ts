@@ -109,6 +109,14 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     t.db.run("UPDATE guest_accounts SET approved = 1 WHERE account_id = ? AND link_id = ?", approveGuest[1], approveGuest[2]);
     return json({ ok: true });
   }
+  const declineGuest = /^guests\/([^/]+)\/([^/]+)\/decline$/.exec(sub);
+  if (declineGuest && m === "POST") {
+    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    const exists = t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 0", declineGuest[1], declineGuest[2]);
+    if (!exists) throw new HttpError(404, "not_found", "No pending guest");
+    t.db.run("UPDATE guest_accounts SET approved = -1 WHERE account_id = ? AND link_id = ?", declineGuest[1], declineGuest[2]);
+    return json({ ok: true });
+  }
 
   if (sub === "ws") {
     if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required", "Expected a WebSocket upgrade");
