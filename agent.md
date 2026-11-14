@@ -56,7 +56,7 @@ curl -sS -X POST "$A/say" -H "Authorization: Bearer $TENDRIL_TOKEN" \
   -H 'Content-Type: application/json' -d '{"text":"Your notebook is ready. Tap Share my location when you want me to use it."}'
 ```
 
-Keep polling `GET A/events?after=<cursor>&wait=25` and save each returned `cursor`. Handle owner `instruction` events as requests. Handle page `event` data according to the interface you wrote, and tell the person what you did with `POST A/say`. Build a new version when the interface should change. A runnable Node example is at [`examples/first-page`](https://github.com/werg/tendriller/tree/master/examples/first-page): run it with `TENDRILLER_OWNER=ana@example.com node examples/first-page/run.mjs` and optionally set `TENDRILLER_SERVICE_BASE` for staging.
+**Keep your agent running or arrange a wake.** `tendril.send` queues an event; Tendriller does not execute your agent code or wake a chat session by itself. A live agent process should keep polling `GET A/events?after=<cursor>&wait=25` and save each returned `cursor`. If your agent host accepts webhooks, configure `PUT A/wake` so new activity can wake that process. Handle owner `instruction` events as requests. Handle page `event` data according to the interface you wrote, and tell the person what you did with `POST A/say`. Build a new version when the interface should change. A runnable Node example is at [`examples/first-page`](https://github.com/werg/tendriller/tree/master/examples/first-page): run it with `TENDRILLER_OWNER=ana@example.com node examples/first-page/run.mjs` and optionally set `TENDRILLER_SERVICE_BASE` for staging.
 
 ## Useful endpoints
 
