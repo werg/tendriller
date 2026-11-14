@@ -79,7 +79,7 @@ export interface Waiter {
 function pollReminder(t: Tendril, cursor: number) {
   return {
     next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=300`,
-    agent_reminder: "Poll next_poll immediately, even when events is empty. The receiver must wake this same agent conversation; a background poll or accepted webhook alone is not proof. After handling, reply with POST A/say, acknowledge only on success, and keep the listener armed while the page is in use. Test two page events before promising live replies.",
+    agent_reminder: "Poll next_poll immediately, even when events is empty. The receiver must wake this same agent conversation; a background poll or accepted webhook alone is not proof. For real requests, reply with POST A/say; for delivery_probe, acknowledge its diagnostic endpoint without messaging the owner. Acknowledge host notices only after handling, and keep the listener armed while the page is in use. Run two POST A/wake/probe diagnostics before promising live replies.",
   };
 }
 

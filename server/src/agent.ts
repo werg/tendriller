@@ -2,20 +2,20 @@
 import type { Tendril } from "./tendril";
 import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
-import { getEvents } from "./events";
+import { addEvent, getEvents } from "./events";
 import { validSecret } from "./mcpEvents";
 import {
   createVersion, latestFileMap, listVersions, pointers, rollback, servedVersion, storeContent, versionFile, versionFiles,
   fileKey, type VersionFile,
 } from "./files";
 import { HttpError, intParam, isPlainObject, json, readBody, readJson } from "./http";
-import { BLOB_ID_RE, fromBase64, newPageKey, sha256Hex } from "./ids";
+import { BLOB_ID_RE, fromBase64, newPageKey, randomB32, sha256Hex } from "./ids";
 import {
-  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, LONGPOLL_MAX_WAIT_S, MAX_BLOB, MAX_EVAL_CODE, MAX_FILE, MAX_STATE,
+  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_BLOB, MAX_EVAL_CODE, MAX_FILE, MAX_STATE,
 } from "./limits";
 import { resolveType } from "./mime";
 import { mergePatchToOps, replaceToOps, validateOps } from "./state";
-import { normalizeFilePath } from "./urls";
+import { apiUrl, normalizeFilePath } from "./urls";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -73,7 +73,7 @@ function deliveryFeedback(t: Tendril) {
     mode,
     live_listener: facts.longPollHeld,
     reminder: mode === "none"
-      ? "No event listener or wake endpoint is active. Attach a receiver that resumes this same agent conversation, then verify two page events reach it before promising live replies."
+      ? "No event listener or wake endpoint is active. Attach a receiver that resumes this same agent conversation, then run two POST A/wake/probe diagnostics in this conversation before promising live replies."
       : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
   };
 }
@@ -83,7 +83,7 @@ function requireFirstPageReceiver(t: Tendril): void {
   const facts = t.presenceFacts();
   if (facts.longPollHeld || facts.webhook) return;
   throw new HttpError(428, "listener_required",
-    "Attach this conversation with a verified host wake path: continuous GET A/events?after=<cursor>&wait=300 plus same-session delivery, or PUT A/wake with a persistent receiver. A one-off poll or agent token is not a listener; test two taps before promising live replies.");
+    "Attach this conversation with a verified host wake path: continuous GET A/events?after=<cursor>&wait=300 plus same-session delivery, or PUT A/wake with a persistent receiver. A one-off poll or agent token is not a listener; run two POST A/wake/probe diagnostics before promising live replies.");
 }
 
 export function tendrilMeta(t: Tendril) {
@@ -430,6 +430,40 @@ route("POST", /^links\/([^/]+)\/rotate$/, async (t, req, url, by, [id]) => {
 // ------------------------------------------------------------------ wake, activity, tokens, rules, notify
 
 route("GET", /^wake$/, (t) => json(t.renderWake()));
+
+// Diagnostic only: a token holder can exercise the real wake path without
+// impersonating an owner. The resumed agent acknowledges after reading it.
+interface DeliveryProbe { nonce: string; seq: number; created_at: number; ack_at: number | null }
+function probe(t: Tendril, nonce: string): DeliveryProbe {
+  const p = t.db.get<DeliveryProbe | null>("delivery_probe", null);
+  if (!p || p.nonce !== nonce || t.now() - p.created_at > 10 * 60_000)
+    throw new HttpError(404, "not_found", "Delivery probe is unknown or expired");
+  return p;
+}
+route("POST", /^wake\/probe$/, (t) => {
+  const now = t.now();
+  const old = t.db.get<{ window: number; count: number }>("delivery_probe_budget", { window: now, count: 0 });
+  const budget = now - old.window >= HOUR ? { window: now, count: 0 } : old;
+  if (budget.count >= 5) throw new HttpError(429, "rate_limited", "At most five delivery probes per page per hour");
+  budget.count++;
+  t.db.set("delivery_probe_budget", budget);
+  const nonce = randomB32(20);
+  const event = addEvent(t, {
+    type: "event", data: { kind: "delivery_probe", nonce }, role: null,
+    by: "agent_probe", wake: true, cls: "page", force: true,
+  });
+  const p: DeliveryProbe = { nonce, seq: event.seq, created_at: now, ack_at: null };
+  t.db.set("delivery_probe", p);
+  const base = apiUrl(t.env, t.tid);
+  return json({ ...p, status_url: `${base}/wake/probe/${nonce}`, ack_url: `${base}/wake/probe/${nonce}/ack` }, 201);
+});
+route("GET", /^wake\/probe\/([a-z2-7]{20})$/, (t, _req, _url, _by, [nonce]) => json(probe(t, nonce)));
+route("POST", /^wake\/probe\/([a-z2-7]{20})\/ack$/, (t, _req, _url, _by, [nonce]) => {
+  const p = probe(t, nonce);
+  if (t.db.get<number>("agent_cursor", 0) < p.seq) throw new HttpError(409, "not_read", "Read the diagnostic event before acknowledging it");
+  if (p.ack_at === null) { p.ack_at = t.now(); t.db.set("delivery_probe", p); }
+  return json(p);
+});
 
 route("PUT", /^wake$/, async (t, req) => {
   const b = await readJson(req, 16 * 1024);

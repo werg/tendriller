@@ -93,6 +93,29 @@ it("configures only valid signed wake receivers and never returns their secret",
   expect(JSON.stringify(hermes)).not.toContain("private-secret");
 });
 
+it("lets an agent test wake delivery without forging an owner instruction", async () => {
+  const h = await createPublic("probe@example.com", "192.0.2.89");
+  const created = await api(h, "POST", "wake/probe");
+  expect(created.status).toBe(201);
+  const first = await created.json<{ nonce: string; seq: number; ack_at: number | null }>();
+  expect(first.ack_at).toBeNull();
+  expect((await api(h, "POST", `wake/probe/${first.nonce}/ack`)).status).toBe(409);
+  const batch = await (await api(h, "GET", "events?after=0")).json<{ events: Array<{ seq: number; type: string; role: string | null; wake: boolean; by: string; data: { kind: string; nonce: string } }> }>();
+  expect(batch.events).toContainEqual(expect.objectContaining({
+    seq: first.seq, type: "event", role: null, wake: true, by: "agent_probe",
+    data: { kind: "delivery_probe", nonce: first.nonce },
+  }));
+  const ack = await (await api(h, "POST", `wake/probe/${first.nonce}/ack`)).json<{ ack_at: number }>();
+  expect(ack.ack_at).toBeGreaterThan(0);
+  const status = await (await api(h, "GET", `wake/probe/${first.nonce}`)).json<{ ack_at: number }>();
+  expect(status.ack_at).toBe(ack.ack_at);
+  const second = await (await api(h, "POST", "wake/probe")).json<{ nonce: string }>();
+  expect(second.nonce).not.toBe(first.nonce);
+  expect((await api(h, "GET", `wake/probe/${first.nonce}`)).status).toBe(404);
+  for (let n = 0; n < 3; n++) expect((await api(h, "POST", "wake/probe")).status).toBe(201);
+  expect((await api(h, "POST", "wake/probe")).status).toBe(429);
+});
+
 it("signs exact webhook bytes for Standard Webhooks and Hermes V2", async () => {
   const body = '{"waiting":2}';
   const stamp = 1_700_000_000;

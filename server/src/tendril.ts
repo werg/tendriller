@@ -311,7 +311,7 @@ export class Tendril extends DurableObject<Env> {
       expires_at: this.expiresAt(),
       agent_setup: {
         event_delivery: "not_configured",
-        next_step: `Attach this agent conversation to a wake path: continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=300 polling that resumes this session, or PUT ${apiUrl(this.env, this.tid)}/wake with a persistent receiver. Store the cursor, poll after every response, and test two page events before promising live replies. A token or background poll alone does not wake a conversation.`,
+        next_step: `Attach this agent conversation to a wake path: continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=300 polling that resumes this session, or PUT ${apiUrl(this.env, this.tid)}/wake with a persistent receiver. Store the cursor, poll after every response, and run two POST A/wake/probe diagnostics before promising live replies. A token or background poll alone does not wake a conversation.`,
       },
     };
   }

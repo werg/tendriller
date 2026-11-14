@@ -55,7 +55,7 @@ test('Claude channel attaches the current session, sends count-only wake, reads 
     assert.equal(JSON.parse(ack.content[0].text).acknowledged, 1);
     await pause(200);
     assert.equal(notifications.length, 1);
-    current.push({ seq: 2, role: 'owner', type: 'event', data: { type: 'button', payload: 'SECOND_PRIVATE_EVENT' } });
+    current.push({ seq: 2, role: null, wake: true, by: 'agent_probe', type: 'event', data: { kind: 'delivery_probe', payload: 'SECOND_PRIVATE_EVENT' } });
     const second = await until(() => notifications[1]);
     assert.match(second.content, /sequence 2/);
     assert.doesNotMatch(JSON.stringify(second), /SECOND_PRIVATE_EVENT/);

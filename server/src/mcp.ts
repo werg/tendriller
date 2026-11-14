@@ -139,6 +139,24 @@ const TOOLS: Tool[] = [
     inputSchema: obj({ title: { type: "string" }, body: { type: "string" } }, ["title"]),
     call: (a) => ({ method: "POST", rest: "notify", body: a }),
   },
+  {
+    name: "probe_delivery",
+    description: "Send a synthetic diagnostic through the real event wake path. It is not an owner instruction. End this turn and wait for this host to wake the same conversation; then read_events, acknowledge_delivery_probe, and check_delivery_probe.",
+    inputSchema: obj({}),
+    call: () => ({ method: "POST", rest: "wake/probe" }),
+  },
+  {
+    name: "check_delivery_probe",
+    description: "Check whether a diagnostic event was acknowledged by a resumed agent turn.",
+    inputSchema: obj({ nonce: { type: "string" } }, ["nonce"]),
+    call: (a) => ({ method: "GET", rest: `wake/probe/${a.nonce}` }),
+  },
+  {
+    name: "acknowledge_delivery_probe",
+    description: "After reading the diagnostic event in this resumed conversation, mark its wake test complete. Never acknowledge before reading it.",
+    inputSchema: obj({ nonce: { type: "string" } }, ["nonce"]),
+    call: (a) => ({ method: "POST", rest: `wake/probe/${a.nonce}/ack` }),
+  },
 ];
 
 /** Routes `A/mcp` and `A/mcp/<token>` (a capability URL for hosts that cannot send headers). */
