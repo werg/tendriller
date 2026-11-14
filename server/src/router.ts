@@ -125,7 +125,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/auth/page") return routePageAuth(req, env, url);
   if (path === "/report") return reportPage(req, env, url);
   if (path === "/internal/budget") return budgetWebhook(req, env);
-  if (path === "/appeal") return appealPage(req, env, url);
+  if (path === "/appeal" || path === "/appeal/account") return appealPage(req, env, url);
   if (path === "/admin" || path === "/admin/action" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
   if (path === "/device") return devicePage(req, env, url);

@@ -20,7 +20,6 @@
     "wrangler": "^4.161.0"
   },
   "dependencies": {
-    "ipaddr.js": "^2.5.0",
-    "postal-mime": "^2.7.6"
+    "ipaddr.js": "^2.5.0"
   }
 }

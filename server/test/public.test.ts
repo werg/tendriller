@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
-import { beforeAll, expect, inject, it } from "vitest";
+import { beforeAll, expect, inject, it, vi } from "vitest";
 import { sha256Hex } from "../src/ids";
-import { abuseEmail } from "../src/abuse/mail";
+import { routeAuth } from "../src/accounts/auth";
 import { reconcileSuspensions } from "../src/abuse/reconcile";
 import { api, BASE, inDO, PageClient, req, type Handle } from "./helpers";
 
@@ -19,20 +19,6 @@ async function createPublic(owner?: string, ip = "192.0.2.10"): Promise<Handle> 
   expect(res.status).toBe(201);
   return res.json<Handle>();
 }
-
-it("turns abuse email URLs into reports without granting ordinary senders an automatic hold", async () => {
-  const h = await createPublic(undefined, "192.0.2.222");
-  const message = {
-    to: "abuse@tendriller.dev", from: "someone@example.net", rawSize: 400,
-    raw: new Response(`From: someone@example.net\r\nTo: abuse@tendriller.dev\r\nSubject: Page report\r\nContent-Type: text/plain\r\n\r\nPlease inspect ${h.page_url}`).body!,
-    setReject: () => { throw new Error("Unexpected rejection"); },
-  } as unknown as ForwardableEmailMessage;
-  await abuseEmail(message, env);
-  const report = await db.prepare("SELECT source FROM reports WHERE tendril_id = ?").bind(h.id).first<{ source: string }>();
-  expect(report?.source).toBe("mail");
-  const stillLive = await db.prepare("SELECT id FROM tendrils WHERE id = ?").bind(h.id).first();
-  expect(stillLive).toBeTruthy();
-});
 
 it("blocks keyless creation from a configured CIDR range", async () => {
   await db.prepare("INSERT INTO blocks (kind, value, reason) VALUES ('cidr', '198.51.100.0/24', 'test')").run();
@@ -99,29 +85,77 @@ it("keeps concurrent reservations across two account pages under the exact accou
   await db.prepare("DELETE FROM accounts WHERE id = ?").bind(account).run();
 });
 
-it("allows a suspended owner to appeal through an expiring one-use token", async () => {
+it("keeps suspended owners on an appeal-only session with in-app notices", async () => {
   const account = crypto.randomUUID();
   const key = "ak_appeal_" + crypto.randomUUID();
+  const token = "session_" + crypto.randomUUID();
+  const cookie = `__Host-tendriller=${token}`;
   await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_at, email, suspended_at) VALUES (?, ?, 'appeal@example.com', NULL)").bind(account, Date.now()),
+    db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'appeal@example.com')").bind(account, Date.now()),
     db.prepare("INSERT INTO api_keys (hash, name, account_id, created_at) VALUES (?, 'appeal', ?, ?)")
       .bind(await sha256Hex(key), account, Date.now()),
+    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .bind(await sha256Hex(token), account, Date.now(), Date.now() + 60000),
   ]);
   const created = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" });
   expect(created.status).toBe(201);
   const h = await created.json<Handle>();
   await inDO(h.id, t => t.hold("test hold"));
   await db.prepare("UPDATE accounts SET suspended_at = ? WHERE id = ?").bind(Date.now(), account).run();
-  const raw = "x".repeat(43);
-  await db.prepare("INSERT INTO appeal_tokens (hash, account_id, tendril_id, expires_at) VALUES (?, ?, ?, ?)")
-    .bind(await sha256Hex(raw), account, h.id, Date.now() + 60_000).run();
-  const path = `/appeal?tendril=${h.id}&token=${raw}`;
-  expect((await req(path)).status).toBe(200);
-  const posted = await req(path, { method: "POST", headers: { Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" },
+  const dashboard = await req("/dashboard", { headers: { Cookie: cookie } });
+  expect(dashboard.status).toBe(200);
+  const dashboardHtml = await dashboard.text();
+  expect(dashboardHtml).toContain("Appeal account suspension");
+  expect(dashboardHtml).toContain("test hold");
+  expect((await req(`/appeal?tendril=${h.id}`, { headers: { Cookie: cookie } })).status).toBe(200);
+  const posted = await req(`/appeal?tendril=${h.id}`, { method: "POST", headers: { Cookie: cookie, Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ reason: "Wrongful hold" }) });
   expect(posted.status).toBe(200);
   expect((await db.prepare("SELECT reason FROM appeals WHERE tendril_id = ?").bind(h.id).first<{ reason: string }>())?.reason).toBe("Wrongful hold");
-  expect(await db.prepare("SELECT 1 FROM appeal_tokens WHERE tendril_id = ?").bind(h.id).first()).toBeNull();
+  const accountAppeal = await req("/appeal/account", { method: "POST", headers: { Cookie: cookie, Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ reason: "Please review suspension" }) });
+  expect(accountAppeal.status).toBe(200);
+  expect((await db.prepare("SELECT reason FROM account_appeals WHERE account_id = ?").bind(account).first<{ reason: string }>())?.reason).toBe("Please review suspension");
+  expect((await req("/auth/me", { headers: { Cookie: cookie } })).status).toBe(401);
+  expect((await req("/dashboard/keys", { method: "POST", headers: { Cookie: cookie, Origin: BASE, "Content-Type": "application/json" }, body: '{"name":"blocked"}' })).status).toBe(403);
+  expect((await req("/dashboard/export", { headers: { Cookie: cookie } })).status).toBe(401);
+  expect((await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: `Bearer ${key}` }, body: "{}" })).status).toBe(401);
+});
+
+it("lets a suspended identity sign in again and redirects it to restricted dashboard", async () => {
+  const account = crypto.randomUUID();
+  const subject = "987654321";
+  await db.batch([
+    db.prepare("INSERT INTO accounts (id, created_at, suspended_at) VALUES (?, ?, ?)").bind(account, Date.now(), Date.now()),
+    db.prepare("INSERT INTO identities (provider, subject, account_id, login, created_at) VALUES ('github', ?, ?, 'suspended', ?)")
+      .bind(subject, account, Date.now()),
+    db.prepare("INSERT INTO blocks (kind, value, reason) VALUES ('identity', ?, 'automatic suspension')")
+      .bind(`github:${subject}`),
+  ]);
+  const testEnv = { ...env, GITHUB_CLIENT_ID: "test-id", GITHUB_CLIENT_SECRET: "test-secret", AUTH_RATE: undefined };
+  const begin = await routeAuth(new Request(`${BASE}/auth/github`), testEnv, new URL(`${BASE}/auth/github`));
+  expect(begin.status).toBe(302);
+  const state = new URL(begin.headers.get("Location")!).searchParams.get("state")!;
+  const oauthCookie = begin.headers.get("Set-Cookie")!.split(";")[0];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("access_token")) return Response.json({ access_token: "test-token" });
+    if (url.endsWith("/user/emails")) return Response.json([{ email: "suspended@example.com", verified: true, primary: true }]);
+    if (url.endsWith("/user")) return Response.json({ id: Number(subject), login: "suspended" });
+    throw new Error(`Unexpected OAuth fetch: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const callback = new URL(`${BASE}/auth/callback/github?state=${state}&code=test-code`);
+    const response = await routeAuth(new Request(callback, { headers: { Cookie: oauthCookie } }), testEnv, callback);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe("/dashboard");
+    const cookie = response.headers.get("Set-Cookie")!.split(";")[0];
+    expect((await req("/dashboard", { headers: { Cookie: cookie } })).status).toBe(200);
+    expect((await req("/auth/me", { headers: { Cookie: cookie } })).status).toBe(401);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it("requires an explicit matching claim and a page session", async () => {

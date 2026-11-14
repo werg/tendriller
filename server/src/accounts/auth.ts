@@ -4,7 +4,7 @@ import { sha256Hex } from "../ids";
 import { publicBase } from "../urls";
 
 type Provider = "github" | "google";
-export interface AccountSession { accountId: string; email: string | null; createdAt: number }
+export interface AccountSession { accountId: string; email: string | null; createdAt: number; suspendedAt: number | null }
 
 function randomUrlToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -28,15 +28,15 @@ function safeReturn(value: string | null): string {
   return value;
 }
 
-export async function serviceSession(req: Request, env: Env): Promise<AccountSession | null> {
+export async function serviceSession(req: Request, env: Env, includeSuspended = false): Promise<AccountSession | null> {
   if (!env.ACCOUNTS) return null;
   const cookie = /(?:^|;\s*)__Host-tendriller=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
   if (!cookie) return null;
   const hash = await sha256Hex(cookie);
-  const row = await env.ACCOUNTS.prepare(`SELECT a.id AS accountId, a.email, a.created_at AS createdAt
+  const row = await env.ACCOUNTS.prepare(`SELECT a.id AS accountId, a.email, a.created_at AS createdAt, a.suspended_at AS suspendedAt
     FROM sessions s JOIN accounts a ON a.id = s.account_id
-    WHERE s.hash = ? AND s.expires_at > ? AND a.suspended_at IS NULL`).bind(hash, Date.now()).first<AccountSession>();
-  return row ?? null;
+    WHERE s.hash = ? AND s.expires_at > ? AND a.deleting_at IS NULL`).bind(hash, Date.now()).first<AccountSession>();
+  return row && (includeSuspended || !row.suspendedAt) ? row : null;
 }
 
 export async function routeAuth(req: Request, env: Env, url: URL): Promise<Response> {
@@ -105,15 +105,15 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     if (!token.access_token) return errorResponse(502, "oauth_failed", "Provider did not issue a token");
     const profile = await providerProfile(provider, token.access_token);
     if (!profile) return errorResponse(502, "oauth_failed", "Could not verify provider identity");
-    const blocked = await db.prepare("SELECT 1 FROM blocks WHERE kind = 'identity' AND value = ? AND (expires_at IS NULL OR expires_at > ?)")
-      .bind(`${provider}:${profile.subject}`, Date.now()).first();
-    if (blocked) return errorResponse(403, "blocked", "This identity cannot sign in");
     const existing = await db.prepare("SELECT account_id FROM identities WHERE provider = ? AND subject = ?")
       .bind(provider, profile.subject).first<{ account_id: string }>();
+    const account = existing ? await db.prepare("SELECT suspended_at, deleting_at FROM accounts WHERE id = ?").bind(existing.account_id)
+      .first<{ suspended_at: number | null; deleting_at: number | null }>() : null;
+    const blocked = await db.prepare("SELECT 1 FROM blocks WHERE kind = 'identity' AND value = ? AND (expires_at IS NULL OR expires_at > ?)")
+      .bind(`${provider}:${profile.subject}`, Date.now()).first();
+    if (blocked && !account?.suspended_at) return errorResponse(403, "blocked", "This identity cannot sign in");
     if (existing) {
-      const suspended = await db.prepare("SELECT suspended_at, deleting_at FROM accounts WHERE id = ?").bind(existing.account_id)
-        .first<{ suspended_at: number | null; deleting_at: number | null }>();
-      if (suspended?.suspended_at || suspended?.deleting_at) return errorResponse(403, "unavailable", "This account is unavailable");
+      if (!account || account.deleting_at) return errorResponse(403, "unavailable", "This account is unavailable");
     }
     if (pending.link_account && existing && pending.link_account !== existing.account_id) {
       return errorResponse(409, "identity_in_use", "That provider account belongs to another Tendriller account");
@@ -137,7 +137,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     const session = randomUrlToken();
     await db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .bind(await sha256Hex(session), accountId, Date.now(), Date.now() + 30 * 86_400_000).run();
-    return redirect(safeReturn(pending.return_to), `__Host-tendriller=${session}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+    return redirect(account?.suspended_at ? "/dashboard" : safeReturn(pending.return_to), `__Host-tendriller=${session}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000`);
   }
 
   if (path === "/auth/me" && req.method === "GET") {

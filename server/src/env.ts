@@ -12,7 +12,6 @@ export interface Env {
   FAILED_AUTH_RATE?: RateLimit;
   REPORT_RATE?: RateLimit;
   FILES: R2Bucket;
-  EMAIL?: SendEmail;
   ASSETS: Fetcher;
   PUBLIC_BASE: string;
   PAGE_BASE_DOMAIN: string;
@@ -29,7 +28,6 @@ export interface Env {
   BUDGET_WEBHOOK_SECRET?: string;
   BUDGET_PAUSE_POLICY_ID?: string;
   BUDGET_READ_ONLY_POLICY_ID?: string;
-  ABUSE_FORWARD_ADDRESS?: string;
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;

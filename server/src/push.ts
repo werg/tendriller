@@ -77,7 +77,7 @@ export async function vapidAuthorization(env: Env, audience: string, nowSec = Ma
   const hit = jwtCache.get(cacheKey);
   if (hit && hit.exp - nowSec > 3600) return hit.header;
   const exp = nowSec + 12 * 3600; // RFC 8292: no more than 24 h
-  const jwt = await createVapidJwt(priv, pub, { aud: audience, exp, sub: env.VAPID_SUBJECT || "mailto:admin@example.com" });
+  const jwt = await createVapidJwt(priv, pub, { aud: audience, exp, sub: env.VAPID_SUBJECT || env.PUBLIC_BASE });
   const header = `vapid t=${jwt}, k=${pub}`;
   jwtCache.set(cacheKey, { header, exp });
   return header;

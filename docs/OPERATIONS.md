@@ -2,6 +2,8 @@
 
 The application has one service model: `https://tendriller.dev` for accounts and the API, and one page origin per tendril under `tendriller.site`. The repository is not ready for production deployment until the launch checks below pass.
 
+Tendriller does not require Email Routing or Email Sending. Public reports use `/report`; owner notices and appeals appear in the authenticated dashboard, including a restricted view for suspended owners.
+
 ## Why `workers.dev` cannot host the public page service
 
 Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **each Worker**, and preview versions receive additional prefixed hostnames. Tendriller's current design serves dynamically created pages from one Worker and requires a different browser origin for every page. `workers.dev` does not offer arbitrary wildcard page hostnames routed to that one Worker. Putting every page under a path on its hostname would merge their browser origins and violate the isolation design. A fixed preview with one separate Worker per page could preserve origins, but it would require a different deployment and routing model from the dynamic public service. Do not change `pageUrl` to use one shared hostname. The service Worker alone could be previewed on `workers.dev`, but OAuth callbacks, claim links, and page navigation would remain unusable until the pages zone exists. Wait for the domain setup, then deploy staging with a certificate covering its page hostnames. See [Cloudflare's workers.dev routing](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), [preview hostname formats](https://developers.cloudflare.com/workers/previews/custom-domains/), and [route documentation](https://developers.cloudflare.com/workers/configuration/routing/routes/).
@@ -11,10 +13,8 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 1. Register `tendriller.dev` and `tendriller.site` and activate their Cloudflare zones. Create a certificate that covers `*.staging.tendriller.site` if using the default staging pages domain. Production pages use the one-level wildcard `*.tendriller.site`.
 2. Create GitHub and Google OAuth apps. Production callbacks are `https://tendriller.dev/auth/callback/github` and `/auth/callback/google`. Staging callbacks use its service hostname. GitHub needs `read:user user:email`; Google needs `openid email profile`.
 3. Create Turnstile widgets for the service hostnames. Record each site key and secret separately.
-4. Configure Email Routing for `abuse@tendriller.dev` to invoke the production Worker. Create a separate, hard-to-guess forwarding recipient on the same domain, route it to the Worker, and set its full address as the `ABUSE_FORWARD_ADDRESS` secret. Give that private recipient to Cloudflare for forwarded complaints; keep it out of public pages. The handler parses up to 256 KB of MIME and records page URLs. Mail to the public address is intake evidence; mail to the private recipient causes an immediate hold. Test both paths before launch and rotate the private recipient if it leaks.
-5. Set HSTS on the pages zone, submit `tendriller.site` to the HSTS preload list, and submit it to the Public Suffix List. The Worker sends the preload header on page responses; verify the apex separately.
-6. On Workers Free, monitor the included usage and its hard limits. If you enable pay-as-you-go billing, configure separate Workers and Durable Objects spending limits and account-wide email budget alerts in Cloudflare Billing. Account-wide budget alerts currently notify by email and do not provide the policy webhooks expected by `/internal/budget`; do not configure that endpoint or claim automatic pause is active until a supported notification policy and payload have been verified in staging.
-7. Enable Cloudflare Email Sending for `tendriller.dev` and verify `notices@tendriller.dev` can send through the generated `EMAIL` binding. The Worker sends hold/restoration notices to owner emails and one acknowledgement per signed-in reporter per page per day.
+4. Set HSTS on the pages zone, submit `tendriller.site` to the HSTS preload list, and submit it to the Public Suffix List. The Worker sends the preload header on page responses; verify the apex separately.
+5. On Workers Free, monitor the included usage and its hard limits. If you enable pay-as-you-go billing, configure separate Workers and Durable Objects spending limits and account-wide email budget alerts in Cloudflare Billing. Account-wide budget alerts currently notify by email and do not provide the policy webhooks expected by `/internal/budget`; do not configure that endpoint or claim automatic pause is active until a supported notification policy and payload have been verified in staging.
 
 ## Provision and deploy
 
@@ -37,7 +37,7 @@ After creating the OAuth apps and Turnstile widgets, export their credentials lo
 
 GitHub Actions runs typecheck and tests on pull requests. Once staging launch checks pass, set repository variable `STAGING_READY=true`, the scoped `CLOUDFLARE_API_TOKEN` secret, and `CLOUDFLARE_ACCOUNT_ID` variable in the staging environment. A push to `main` applies migrations and deploys staging. Production tags `v*` deploy only with `PRODUCTION_READY=true` and the corresponding production environment values.
 
-Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner receives a 30-day, one-use appeal link by email; verify delivery before launch.
+Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that normal keys, exports, and page access remain denied.
 
 ## Launch checks
 
@@ -46,7 +46,7 @@ Each deployed Worker has a 15-minute cron that retries suspended-account page sh
 - With staging open and an owner key created, set `E2E_SERVICE_BASE` and `E2E_ACCOUNT_KEY`, run `node scripts/capture-e2e-auth.mjs` to save a local OAuth session, then `npm run test:e2e`. The test creates two claimed pages, checks distinct browser origins and blocked cross-origin actions, and deletes them afterward. Keep `.e2e-auth.json` private.
 - Create and claim pages, approve an agent guest invite, revoke all agent tokens, create a display link, and release a claim before a guest is approved.
 - Exercise each rate and quota boundary, including concurrent writes to two tendrils of one account. Check D1 reserved bytes against Durable Object file ledgers.
-- Submit page, external, and forwarded-email reports; verify automatic holds, account suspension, appeals, restore, notices, and audit entries.
+- Submit page and external reports; verify automatic holds, account suspension, appeals, restore, notices, and audit entries.
 - Verify speech on a mid-range phone. Download occurs only after a deliberate microphone tap; confirm model hash, 30-second limit, transcription time, and that audio never leaves the browser.
 - Put legally reviewed `terms.html`, `privacy.html`, `acceptable-use.html`, `copyright.html`, and `law-enforcement.html` in `legal/`. Run `node scripts/check-legal.mjs` before deploy. The claim screen's terms and privacy links must resolve to those published pages. Verify the minimum age and rights process in the reviewed text.
 - Monitor Free-tier limits or, if paid usage is enabled, verify spending limits and email budget alerts. Automatic `service_state` budget transitions require a compatible webhook policy and staging test before they can be relied upon.

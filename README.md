@@ -59,7 +59,7 @@ Secrets (`npx wrangler secret put <NAME> --config server/wrangler.jsonc`):
 | Secret | Purpose |
 |---|---|
 | `CREATE_KEY` | If set, `POST /api/tendrils` requires `Authorization: Bearer <CREATE_KEY>`. Set it on any public deployment. |
-| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web push notifications. Generate the keys with `node scripts/vapid-keys.mjs`. The subject is e.g. `mailto:you@example.com`. |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web push notifications. Generate the keys with `node scripts/vapid-keys.mjs`. The optional subject defaults to the service URL. |
 | `OPENAI_API_KEY`, `VOICE_PROVIDER`, `VOICE_MODEL` | The fast voice layer. `VOICE_PROVIDER=openai-realtime` is the default when an OpenAI key is present. `VOICE_MODEL` is optional. |
 
 Optional bindings and modes:

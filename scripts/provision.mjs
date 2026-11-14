@@ -73,7 +73,6 @@ const config = {
   migrations: [{ tag: "v1", new_sqlite_classes: ["Tendril"] }, { tag: "v2", new_sqlite_classes: ["Admission"] }],
   d1_databases: [{ binding: "ACCOUNTS", database_name: dbName, database_id: databaseId, migrations_dir: "migrations" }],
   r2_buckets: [{ binding: "FILES", bucket_name: bucketName }],
-  send_email: [{ name: "EMAIL" }],
   triggers: { crons: ["*/15 * * * *"] },
   ratelimits: [
     ["CREATE_RATE", "101", 5], ["KEY_CREATE_RATE", "107", 30], ["AGENT_RATE", "102", 300],

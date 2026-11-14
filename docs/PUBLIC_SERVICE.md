@@ -234,9 +234,8 @@ and the page's control says so.
     writes answer `507 {"code":"service_full"}`.
 - **Automatic stop for request costs**, which cannot be capped exactly (page traffic,
   API calls): Cloudflare usage notifications post to a webhook on the service, which sets
-  `creation_paused` at a first threshold and `read_only` at a second, and emails the
-  operator. Unauthenticated traffic to a claimed page only reaches the sign-in redirect,
-  so it is cheap.
+  `creation_paused` at a first threshold and `read_only` at a second.
+  Unauthenticated traffic to a claimed page only reaches the sign-in redirect, so it is cheap.
 
 ## 6. Abuse handling
 
@@ -270,11 +269,7 @@ storage or as an outbound request relay.
 
 ### 6.3 Detection
 
-- Reports: from the page, from `<service>/report` (URL plus reason, Turnstile protected),
-  and by email to `abuse@<service domain>` (also the address Cloudflare forwards its own
-  abuse complaints to).
-- Complaints Cloudflare forwards, and mail to `abuse@`, go through Email Routing to a
-  Worker that extracts tendril URLs and files them as reports, so no inbox needs watching.
+- Reports: from the page and from `<service>/report` (URL plus reason, Turnstile protected).
 - Signals: version checks (6.2); a burst of distinct signed-in guests,
   or of display-link visitors from many IPs, on a young tendril; many tendrils created and
   then claimed by different accounts from one IP (one sender, many victims); repeated
@@ -292,7 +287,6 @@ appeals, when they can. The terms say so: no promised review time, and an appeal
 restores a page that was wrongly held.
 
 - **Automatic hold** (the tendril is disabled pending appeal) when any of these happens:
-  - a forwarded complaint naming the tendril;
   - reports from 3 different signed-in accounts within 24 hours. Only accounts at least
     7 days old count, accounts that reported pages later restored on appeal stop
     counting, and an owner's own invitees count once together, so a group cannot take
@@ -300,7 +294,7 @@ restores a page that was wrongly held.
   - a high version-check score on an account younger than 7 days;
   - a signal from 6.3 that crosses its threshold.
 - **Automatic account suspension:** an account with 3 holds not reversed on appeal within
-  30 days is suspended (all tendrils disabled, keys revoked, identity blocked).
+  30 days is suspended (all tendrils disabled and keys revoked; sign-in is restricted to notices and appeals).
 - **Unclaimed tendrils** that are reported are deleted outright, and their creator IP
   loses keyless creation for 24 hours.
 - **Admin console** at `<service>/admin` for accounts on an allowlist of GitHub or Google
@@ -310,13 +304,10 @@ restores a page that was wrongly held.
   - **Disable a tendril:** the Durable Object marks itself disabled, pages show a takedown
     notice, the API answers 403 `{"code":"disabled"}`. Files are kept as evidence for
     90 days, then deleted.
-  - **Suspend an account:** all its tendrils disabled, keys revoked, sign-in refused; the
-    identity goes into `blocks` so a new account cannot be made with it.
+  - **Suspend an account:** all its tendrils disabled and keys revoked; the owner may sign in only to review notices and appeal.
   - **Block an IP or range** for unauthenticated creation.
   - **Restore**, with a reason.
-- **Notices:** the owner gets an email at the address the identity provider gave
-  (GitHub primary email or Google email) with the reason and an appeal link. Reporters get
-  an acknowledgement.
+- **Notices:** D1 stores hold, restoration, suspension, and reporter acknowledgement notices. Signed-in owners see them on the dashboard. Suspended owners retain restricted sign-in for notices and page/account appeals.
 - **Audit log** of every automatic and manual action, with what triggered it.
 - **Known weakness:** with no human queue, a page that passes the checks stays up until
   three established accounts report it, and a wrongful hold lasts until someone reads the
@@ -388,7 +379,6 @@ the privacy policy.
   anything, the first-visit notice, report routes.
 - Runtime control: sign-in state, the sensor indicator, invite and approve, display links,
   the report menu, and on-device speech (section 7).
-- An Email Routing Worker for `abuse@` and forwarded complaints.
 - `PROTOCOL.md` sections 1, 2, 6 and 8 and `agent.md` rewritten for the new model; `agent.md`
   gains the device flow and the `owner` field.
 
@@ -413,11 +403,11 @@ creation-key fallback or path-host route.
    Durable Object, the service state switch and the usage-notification webhook. Check:
    concurrent uploads to two tendrils of one account cannot exceed its quota; load tests
    at each limit.
-4. **Abuse tooling.** Reports, the abuse mail Worker, automatic holds and suspensions,
+4. **Abuse tooling.** Reports, automatic holds and suspensions,
    version checks, notices and appeals, admin console, audit log.
 5. **On-device speech.** Whistle in the runtime, hosted copy, hash check, fallbacks.
 6. **Keys and device flow.** Dashboard, `ak_…` keys, device flow, higher limits.
-7. **Launch.** Terms, privacy policy, abuse contact, status page, budget alerts, Public
+7. **Launch.** Terms, privacy policy, web report form, status page, budget alerts, Public
    Suffix List submission (started in phase 1), runbooks.
 
 ## 12. Decisions (2026-11-13)

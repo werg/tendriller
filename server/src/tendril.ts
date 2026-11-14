@@ -156,7 +156,7 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "claim") return await this.handleClaim(req, url);
       if (kind === "abuse" && url.pathname === "/abuse/report" && req.method === "POST") {
         const body = await readJson(req, 4096);
-        if ((body.source !== "external" && body.source !== "page" && body.source !== "email" && body.source !== "mail") ||
+        if ((body.source !== "external" && body.source !== "page") ||
           (body.account_id !== null && typeof body.account_id !== "string") ||
           typeof body.reason !== "string" || !body.reason.trim() || body.reason.length > 2000) throw new HttpError(400, "bad_request");
         await this.recordReport(body.source, body.account_id, body.reason.trim());
@@ -336,11 +336,11 @@ export class Tendril extends DurableObject<Env> {
     return active ? session : null;
   }
 
-  async recordReport(source: "page" | "external" | "email" | "mail", accountId: string | null, reason: string): Promise<void> {
+  async recordReport(source: "page" | "external", accountId: string | null, reason: string): Promise<void> {
     const now = this.now();
     await this.env.ACCOUNTS.prepare("INSERT INTO reports (id, tendril_id, account_id, source, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(crypto.randomUUID(), this.tid, accountId, source, reason, now).run();
-    if (accountId && source !== "mail") {
+    if (accountId) {
       const count = await this.env.ACCOUNTS.prepare("SELECT COUNT(*) AS n FROM reports WHERE tendril_id = ? AND account_id = ? AND created_at > ?")
         .bind(this.tid, accountId, now - DAY).first<{ n: number }>();
       if (count?.n === 1) this.ctx.waitUntil(reporterAcknowledgement(this.env, accountId, this.tid));
@@ -348,9 +348,6 @@ export class Tendril extends DurableObject<Env> {
     const index = await this.env.ACCOUNTS.prepare("SELECT owner_account, creator_ip FROM tendrils WHERE id = ?")
       .bind(this.tid).first<{ owner_account: string | null; creator_ip: string | null }>();
     if (!index) return;
-    // Unverified email is intake evidence, not a takedown trigger. Otherwise
-    // anyone could delete an unclaimed page merely by mailing its URL.
-    if (source === "mail") return;
     if (!index.owner_account) {
       if (index.creator_ip) await this.env.ACCOUNTS.prepare("INSERT OR REPLACE INTO blocks (kind, value, reason, expires_at) VALUES ('ip', ?, 'reported unclaimed tendril', ?)")
         .bind(index.creator_ip, now + DAY).run();
@@ -369,8 +366,7 @@ export class Tendril extends DurableObject<Env> {
       const invited = this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ?", row.account_id);
       reporters.add(invited ? "owner_invitees" : row.account_id);
     }
-    if (reporters.size >= 3 || source === "email") await this.hold(
-      source === "email" ? "Forwarded abuse complaint" : "Three established-account reports within 24 hours");
+    if (reporters.size >= 3) await this.hold("Three established-account reports within 24 hours");
   }
 
   async hold(reason: string): Promise<void> {
@@ -398,14 +394,11 @@ export class Tendril extends DurableObject<Env> {
       .bind(now, owner).first();
     if (!suspended) return;
     await this.env.ACCOUNTS.batch([
-      this.env.ACCOUNTS.prepare("DELETE FROM sessions WHERE account_id = ?").bind(owner),
       this.env.ACCOUNTS.prepare("DELETE FROM api_keys WHERE account_id = ?").bind(owner),
-      this.env.ACCOUNTS.prepare("INSERT OR IGNORE INTO blocks (kind, value, reason) SELECT 'identity', provider || ':' || subject, 'automatic suspension' FROM identities WHERE account_id = ?")
-        .bind(owner),
       this.env.ACCOUNTS.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, 'automatic', 'suspend', ?, ?, ?)")
         .bind(crypto.randomUUID(), owner, "Three unreversed holds within 30 days", now),
     ]);
-    this.ctx.waitUntil(accountSuspendedNotice(this.env, owner, "Three unreversed holds within 30 days", this.tid));
+    this.ctx.waitUntil(accountSuspendedNotice(this.env, owner, "Three unreversed holds within 30 days"));
     // The D1 trigger queues every page. Reconciliation retries Durable Object closure.
   }
 

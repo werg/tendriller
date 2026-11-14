@@ -9,7 +9,7 @@ This is a drafting brief, not published terms. A qualified reviewer must provide
 - The service stores provider subjects and verified emails, hashed sessions and API keys, account and page indexes, content and blobs in R2 and Durable Objects, activity and events, device information, report reasons, appeal reasons, and audit records. Cloudflare processes requests and stores data.
 - Whistle transcription runs in the browser after a deliberate model download. Audio is not sent to the Worker for transcription. Agent page code may itself choose to upload audio or other sensor data, which must be disclosed separately.
 - Unclaimed pages expire after 24 hours. Claimed ad hoc pages expire after 30 days idle; resident pages persist until deletion. Held pages are scheduled for deletion after 90 days; verify that alarm behavior in staging before promising this retention in legal text.
-- Automatic holds can happen from reports; an account may be suspended after three unreversed holds. Admins can restore pages and disqualify the reports that caused a wrongful hold. No review response time is promised.
+- Automatic holds can happen from reports; an account may be suspended after three unreversed holds. Owners see notices and can appeal from their authenticated dashboard, including while suspended. Admins can restore pages and disqualify the reports that caused a wrongful hold. No review response time is promised.
 - There is no durable backup of a page's Durable Object data beyond Cloudflare platform recovery; D1 Time Travel is used for the account index. Verify the final backup claim with Cloudflare settings.
 
 ## Text to prepare and approve
