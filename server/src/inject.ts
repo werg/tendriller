@@ -89,6 +89,9 @@ ${brandHead()}${brandStyle}
 <style>
 :root{color-scheme:light dark}*{box-sizing:border-box}body{font:1rem/1.6 system-ui,sans-serif;margin:0;background:#f6f8f5;color:#1e3028}main{max-width:68rem;margin:auto;padding:clamp(1.25rem,4vw,3rem)}header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}header{margin-bottom:2.5rem}a{color:#17654b}header a{text-decoration:none;font-weight:700}h1{font-size:clamp(2rem,4.5vw,3.35rem);line-height:1.14;letter-spacing:-.035em;margin:0 0 1.25rem;max-width:21ch}h2{font-size:1.35rem;line-height:1.25;margin:0 0 .8rem}p{max-width:50rem;margin:.7rem 0}.intro{padding-bottom:2rem;border-bottom:1px solid #cce1d1}.intro p{font-size:clamp(1.05rem,1.8vw,1.22rem)}.actions{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.5rem 0 0}.button{display:inline-block;background:#176a47;color:#fff;text-decoration:none;font-weight:650;padding:.7rem 1rem;border-radius:.6rem}.button.secondary{background:#d2e6d7;color:#1a5839}.access{padding:2rem 0;border-bottom:1px solid #cce1d1}.examples{padding:2rem 0}.examples ul{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,19rem),1fr));gap:.7rem 2rem;margin:1.25rem 0 0;padding:0}.examples li{padding:.65rem 0;border-top:1px solid #dbe6dc}.examples strong{display:block}footer{margin:2rem 0;color:#607468;flex-wrap:wrap}@media(prefers-color-scheme:dark){body{background:#14221b;color:#edf6ee}.intro,.access{border-color:#36523d}.examples li{border-color:#36523d}a{color:#8ee0af}.button{color:#fff}.button.secondary{background:#375542;color:#fff}}
 </style>
+<style>
+.how{padding:2rem 0;border-bottom:1px solid #cce1d1}.flow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1rem;list-style:none;padding:0;margin:1.25rem 0 0}.flow li{position:relative;min-height:9rem;padding:1rem;border:1px solid #cce1d1;border-radius:.7rem;background:#fff}.flow li:not(:last-child)::after{content:"→";position:absolute;right:-.82rem;top:50%;transform:translateY(-50%);font-size:1.25rem;font-weight:700;color:#17654b;z-index:1}.flow-number{display:block;font-size:.8rem;font-weight:700;color:#497361}.flow p{margin:.35rem 0 0;line-height:1.45}@media(max-width:950px){.flow{grid-template-columns:1fr;gap:1.4rem}.flow li{min-height:0;display:flex;align-items:flex-start;gap:.8rem}.flow-number{min-width:1.2rem}.flow p{margin:0}.flow li:not(:last-child)::after{content:"↓";right:auto;top:auto;bottom:-1.35rem;left:50%;transform:translateX(-50%)}}@media(prefers-color-scheme:dark){.how,.flow li{border-color:#36523d}.flow li{background:#1c2e22}.flow-number{color:#b4c8b7}.flow li:not(:last-child)::after{color:#8ee0af}}
+</style>
 </head>
 <body>
 <main><header>${brandLink}<a href="/dashboard">Dashboard</a></header>
@@ -96,6 +99,13 @@ ${brandHead()}${brandStyle}
 <p>Tendriller is a minimal-setup way to connect a web page and device sensors to an ongoing agent session. Your agent can create and update the page while you use it. You can talk or type to the agent from the page, and its replies and interface changes appear live.</p>
 <p>Open the page on your phone, tablet, or computer, even when the agent runs on another device. With your permission, page code can use that device’s location, accelerometer, camera, microphone, and other browser inputs. It can send events to the agent; the agent can send messages and change the page in return.</p>
 <div class="actions"><a class="button" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a><a class="button secondary" href="/dashboard">Open dashboard</a></div></section>
+<section class="how"><h2>How it works</h2><ol class="flow">
+<li><span class="flow-number" aria-hidden="true">1</span><p>Tell your agent about Tendriller.</p></li>
+<li><span class="flow-number" aria-hidden="true">2</span><p>It creates a page for your email address.</p></li>
+<li><span class="flow-number" aria-hidden="true">3</span><p>It gives you the page URL.</p></li>
+<li><span class="flow-number" aria-hidden="true">4</span><p>Open the page and sign in with GitHub or Google.</p></li>
+<li><span class="flow-number" aria-hidden="true">5</span><p>Keep talking in the page or agent session. The agent updates the page live.</p></li>
+</ol></section>
 <section class="access"><h2>Access and sign-in</h2><p>Opening your owner page and managing access requires GitHub or Google OAuth sign-in. Your agent uses a separate credential that you can revoke from the dashboard. Browser permissions for sensors and cameras are requested on the device where you use the page.</p></section>
 <section class="examples"><h2>Example applications</h2><p>These are ideas an agent can build and change with you:</p><ul>
 <li><strong>Field notebook</strong>Collect photos, location, voice notes, and observations on a walk.</li>
