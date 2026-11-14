@@ -36,10 +36,7 @@ node cli/bin/tendril.mjs --tendril kitchen wait       # blocks until a wake, pri
 - `scripts/tendril-wait.sh [cursor-file]`: POSIX sh + curl long-poll loop; exits 0 with
   a summary line and the events JSON when a wake arrives. Run it as a background command.
   Optional `TENDRIL_WAIT_MAX` seconds (exit 2).
-- `scripts/codex-listener.sh`: runs the wait loop forever and, per wake, runs
-  `$TENDRIL_ON_WAKE` (default `codex exec --skip-git-repo-check "$TENDRIL_PROMPT"`,
-  or `resume --last` with `TENDRIL_RESUME=1`) with `TENDRIL_WAITING`,
-  `TENDRIL_EVENTS_FILE` and `TENDRIL_PROMPT` set.
+- `bin/codex-bridge.mjs attach <private-handle.json>`: when run inside a Codex turn on Linux, installs a user service that long-polls the page and queues count-only notices into the same Codex conversation. The agent reads the events with its private token and calls `codex-bridge.mjs ack <page-id> <seq>` after responding. It does not put page data in a queued Codex message. Use `codex-bridge.mjs detach <page-id>` to stop and remove the service and its local credentials. See `/agent.md` for the complete flow.
 
 ## Tests
 

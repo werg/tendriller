@@ -8,6 +8,16 @@ You only need the person's **verified GitHub or Google email address**. Ask for 
 
 **Publication check:** the first `index.html` upload returns HTTP `428 listener_required` unless a long poll is currently waiting or a wake receiver is configured. A one-off `GET A/events` does not pass this check. If the receiver later stops, the page shows **Away** and keeps the person's input for later. Use the runnable example below as the simplest complete setup.
 
+**Codex on Linux:** the agent can attach this exact conversation without asking the person to configure anything. After saving the creation response to a private file, install the first-party bridge in a persistent local path and attach it **from the Codex turn that created the page**:
+
+```sh
+mkdir -p ~/.local/share/tendriller
+curl -fsS https://tendriller.dev/codex-bridge.mjs -o ~/.local/share/tendriller/codex-bridge.mjs
+node ~/.local/share/tendriller/codex-bridge.mjs attach .tendril.json
+```
+
+Use `https://staging.tendriller.dev/codex-bridge.mjs` for staging. The command reads `CODEX_THREAD_ID`, installs a user service, waits until its long poll is live, and prints the page URL. It queues only a count-only notice into that conversation; the agent reads the actual events with its private page token. After handling through `A/say`, state or files, the agent acknowledges the last event sequence with `node ~/.local/share/tendriller/codex-bridge.mjs ack <page-id> <seq>`. The bridge retries unacknowledged wakes. Codex displays the notice as a user message, so the notice explicitly says it came from the bridge and contains no page content. This adapter currently requires Linux with systemd and an available Codex CLI; other hosts need their own verified wake path.
+
 ## A first build
 
 Good first pages are small loops between person and agent:

@@ -161,7 +161,8 @@ Three primitives on the server:
 | Muse | Wait loop in the background; processes survive between turns and a finished background command starts a new turn. Backed by a scheduled check. | Seconds |
 | Grok Bot | Webhook to its URL starts a turn. | Seconds |
 | Hermes, OpenClaw | Webhook to their gateway. | Seconds |
-| Codex and other terminal CLIs | A listener starts a fresh headless run per wake. It is a new run, so continuity comes from files or `codex exec resume`. | Seconds, new run |
+| Codex on Linux | The first-party local bridge long-polls and queues a count-only notice into the creating Codex conversation. The agent reads and acknowledges events with its private page handle. Live page-to-conversation testing is required before claiming the path works. | Seconds when the bridge and thread are available |
+| Other terminal CLIs | Need a host-specific adapter that starts or resumes the right conversation; event storage alone does not wake them. | Unverified |
 | OpenAI dot | The tendril's MCP connector (PROTOCOL section 13): MCP Events push a signed "events waiting" and the dot reads them with a tool. Untested on a real dot. | Seconds (expected) |
 | Claude Duet | Same connector, but Duet cannot be pushed to yet: chained `read_events` long-polls while a turn runs, a watched follow loop if its runtime offers one, its own check-ins between turns. Duet's network uses an allowlisted proxy, so our domain may need allowing. | Seconds in a turn, hours between |
 | Schedule-only hosts | Their own schedule polls every few minutes. | Minutes |

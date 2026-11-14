@@ -2,7 +2,7 @@ name: Public service
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ["v*"]
   pull_request:
 
@@ -18,9 +18,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:cli
 
   staging:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.STAGING_READY == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true'
     needs: check
     runs-on: ubuntu-latest
     environment: staging

@@ -10,72 +10,37 @@ camera, GPS and other sensors back into the agent's session. Each such page is a
 **tendril**.
 
 - The **server** is a Cloudflare Worker with one Durable Object per tendril, plus R2. It
-  serves the agent's HTML directly, queues events, keeps versions and state, and wakes
-  the agent.
+  serves the agent's HTML directly, queues events, and sends wakes through configured
+  host adapters.
 - The **runtime**, `tendril.js`, is injected into every page. It provides `window.tendril`,
   the WebSocket, script execution and health reporting, plus an always-present control
   for push-to-talk, status and undo.
-- **Agents** need only `curl`. They read [`agent.md`](agent.md), which the server serves at
-  `/agent.md`.
+- **Agents** can create and control a page with HTTP. Live replies require a verified
+  path that wakes their particular conversation. [`agent.md`](agent.md) explains the
+  setup; Codex on Linux has a first-party same-conversation bridge.
 
 The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
-## Quick start (local)
+## Get started
 
-```sh
-npm install
-npm run dev                       # builds runtime/snippets/agent.md, then wrangler dev on :8787
+For the public beta, give your agent `https://tendriller.dev/agent.md` and your verified
+GitHub or Google email address. The agent creates a page, attaches a working event
+receiver for its host, publishes it, and gives you the page URL. A page is not live
+merely because it has an agent token or an event poll happened once.
 
-# in another shell: create a tendril
-curl -sS -X POST http://localhost:8787/api/tendrils \
-  -H 'Content-Type: application/json' -d '{"name":"Hello"}'
-# → {"id":"…","page_url":"http://localhost:8787/t/<id>/s/<key>/","api":"http://localhost:8787/api/t/<id>","token":"tk_…",…}
+For local development, run `npm ci` and `npm run dev`. Use the local browser suite with
+`npm run test:e2e`; it starts an isolated HTTPS Worker and temporary accounts. See
+[docs/E2E_TESTING.md](docs/E2E_TESTING.md). The optional API CLI is in
+[cli/README.md](cli/README.md).
 
-export TENDRIL_API=<api> TENDRIL_TOKEN=<token>
-curl -sS -X PUT "$TENDRIL_API/files/index.html" -H "Authorization: Bearer $TENDRIL_TOKEN" \
-  -H 'Content-Type: text/html' --data-binary '<button onclick="tendril.send({hi:1})">Hi</button>'
-# open page_url in a browser, tap the button, then:
-curl -sS "$TENDRIL_API/events?after=0" -H "Authorization: Bearer $TENDRIL_TOKEN"
-```
-
-To use it from an agent, point the agent at `http://localhost:8787/agent.md`. Phones
-need HTTPS for sensors, so for real devices deploy the server or use a tunnel.
-
-The optional CLI wraps the same API: `node cli/bin/tendril.mjs new Hello` (see
-[cli/README.md](cli/README.md)).
-
-Each tendril is also an MCP server at `<api>/mcp` (tools for the whole API, plus an MCP
-Event that pushes "events waiting" to hosts that support MCP Events, such as OpenAI
-dots). See `agent.md` section 5.2 and `docs/PROTOCOL.md` section 13.
+Each tendril also exposes an MCP server at `<api>/mcp`, with an MCP Event for hosts
+that support subscriptions. Connecting MCP tools alone does not establish a wake path.
 
 ## Deploy to Cloudflare
 
-```sh
-npx wrangler login
-npx wrangler r2 bucket create tendriller-files
-# set PUBLIC_BASE (and optionally PAGE_HOST_MODE / PAGE_BASE_DOMAIN) in server/wrangler.jsonc vars
-npm run build && npx wrangler deploy --config server/wrangler.jsonc
-```
-
-Secrets (`npx wrangler secret put <NAME> --config server/wrangler.jsonc`):
-
-| Secret | Purpose |
-|---|---|
-| `CREATE_KEY` | If set, `POST /api/tendrils` requires `Authorization: Bearer <CREATE_KEY>`. Set it on any public deployment. |
-| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web push notifications. Generate the keys with `node scripts/vapid-keys.mjs`. The optional subject defaults to the service URL. |
-| `OPENAI_API_KEY`, `VOICE_PROVIDER`, `VOICE_MODEL` | The fast voice layer. `VOICE_PROVIDER=openai-realtime` is the default when an OpenAI key is present. `VOICE_MODEL` is optional. |
-
-Optional bindings and modes:
-
-- **Server-side transcription.** Add a Workers AI binding, `"ai": {"binding": "AI"}`, in
-  `server/wrangler.jsonc`. Pages can then POST audio to `_tendril/transcribe`.
-- **Subdomain mode** gives each tendril its own origin, so tendrils cannot read each
-  other's storage. Set `PAGE_HOST_MODE=subdomain` and
-  `PAGE_BASE_DOMAIN=tendril.example.com`, and add a wildcard route
-  (`*.tendril.example.com/*`) with a matching wildcard certificate (a proxied wildcard
-  DNS record on a zone you control). The server accepts both URL shapes on every
-  deployment.
+Follow [docs/OPERATIONS.md](docs/OPERATIONS.md) for the two domains, OAuth providers,
+isolated staging and production resources, secrets, migrations, and deployment steps.
 
 ## Repository layout
 
@@ -84,7 +49,7 @@ server/        Worker + Durable Object (src/), tests (test/), wrangler.jsonc; pu
 runtime/       tendril.js (core, control, voice, push, rules, offline) and the service worker
 snippets/      copyable page pieces (camera, probe, ptt, screenshot, glance, vad, wakeword, pose, objects, …)
 agent.md       instructions served to agents at /agent.md
-cli/           optional zero-dependency CLI, wait-loop and listener scripts
+cli/           optional zero-dependency API CLI and Codex conversation bridge
 scripts/       build.mjs (bundles runtime, copies snippets and agent.md), vapid-keys.mjs
 test/e2e/      end-to-end Playwright tests
 docs/          PROTOCOL.md
@@ -102,7 +67,7 @@ npx playwright test --config runtime/test/control/playwright.config.ts  # contro
 npx playwright test --config runtime/test/voice/playwright.config.ts    # voice layer
 npx playwright test --config runtime/test/push/playwright.config.ts     # push and rules
 npx playwright test --config snippets/test/playwright.config.ts         # snippets
-node --test cli/test/*.test.mjs                                         # CLI and wait script
+node --test cli/test/*.test.mjs                                         # CLI, bridge, and wait script
 ```
 
 Playwright needs browsers once: `npx playwright install chromium`.

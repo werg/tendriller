@@ -35,6 +35,7 @@ for (const f of readdirSync(join(root, "snippets"))) {
   if (f.endsWith(".js")) copyFileSync(join(root, "snippets", f), join(out, "snippets", f));
 }
 if (existsSync(join(root, "agent.md"))) copyFileSync(join(root, "agent.md"), join(out, "agent.md"));
+copyFileSync(join(root, "cli/bin/codex-bridge.mjs"), join(out, "codex-bridge.mjs"));
 for (const name of ["terms", "privacy", "acceptable-use", "copyright", "law-enforcement"]) {
   const source = join(root, "legal", `${name}.html`);
   if (existsSync(source)) copyFileSync(source, join(out, "legal", `${name}.html`));
