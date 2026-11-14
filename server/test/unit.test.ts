@@ -63,7 +63,7 @@ describe("helpers", () => {
   });
 
   it("presence precedence", () => {
-    const base: PresenceFacts = { now: 1_000_000_000, tokens: 1, lastCheckin: 1_000_000_000 - 1000, longPollHeld: false, webhook: false, scheduleMinutes: null, wakePendingSince: null, graceSeconds: 120, status: null, withheld: 0 };
+    const base: PresenceFacts = { now: 1_000_000_000, tokens: 1, lastCheckin: 1_000_000_000 - 1000, longPollHeld: false, agentSocket: false, webhook: false, scheduleMinutes: null, wakePendingSince: null, graceSeconds: 120, status: null, withheld: 0 };
     expect(computePresence(base).state).toBe("working");
     expect(computePresence({ ...base, longPollHeld: true }).state).toBe("listening");
     expect(computePresence({ ...base, wakePendingSince: base.now - 200_000, longPollHeld: true }).state).toBe("not_responding");

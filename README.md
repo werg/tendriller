@@ -13,14 +13,14 @@ The name combines **tendrils** and a **drill**: the agent extends into other
 interfaces and sensors, and Tendriller makes the opening for each connection.
 
 - The **server** is a Cloudflare Worker with one Durable Object per tendril, plus R2. It
-  serves the agent's HTML directly, queues events, and sends wakes through configured
-  host adapters.
+  serves the agent's HTML directly, queues events, and sends wakes through hibernating
+  agent WebSockets, webhooks, or MCP Events.
 - The **runtime**, `tendril.js`, is injected into every page. It provides `window.tendril`,
   the WebSocket, script execution and health reporting, plus an always-present control
   for push-to-talk, status and undo.
 - **Agents** can create and control a page with HTTP. Live replies require a verified
   path that wakes their particular conversation. [`agent.md`](agent.md) explains the
-  setup; Codex on Linux has a verified same-conversation bridge. Claude Code has a
+  setup; Codex on Linux has a verified same-conversation WebSocket bridge. Claude Code has a
   first-party channel adapter tested in a live Claude Code session against a local API.
   OpenClaw and Hermes have Linux bridges awaiting real host tests. The guide also covers
   Muse, Grok Bot, OpenAI dots and Claude Duet, with their respective setup and limits.

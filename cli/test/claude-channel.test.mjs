@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { WebSocketServer } from 'ws';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,12 +25,14 @@ test('Claude channel attaches the current session, sends count-only wake, reads 
     response.setHeader('Content-Type', 'application/json');
     if (url.pathname.endsWith('/events')) {
       const after = Number(url.searchParams.get('after') || 0);
-      assert.ok(['0', '300'].includes(url.searchParams.get('wait')));
-      if (url.searchParams.get('wait') === '300') await pause(60);
+      assert.equal(url.searchParams.get('wait'), '0');
       const events = current.filter(e => e.seq > after);
       response.end(JSON.stringify({ events, cursor: events.at(-1)?.seq || after }));
-    } else response.end(JSON.stringify({ agent_delivery: { mode: 'live_poll' } }));
+    } else response.end(JSON.stringify({ agent_delivery: { mode: 'live_socket' } }));
   });
+  const wss = new WebSocketServer({ server: http });
+  let socket;
+  wss.on('connection', ws => { socket = ws; });
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve));
   const api = `http://localhost:${http.address().port}/api/t/${id}`;
   const handle = join(dir, 'handle.json');
@@ -49,6 +52,7 @@ test('Claude channel attaches the current session, sends count-only wake, reads 
     await pause(200);
     assert.equal(notifications.length, 0, 'non-waking owner telemetry must not start an agent turn');
     current.push({ seq: 2, role: 'owner', type: 'instruction', wake: true, data: { text: 'DO_NOT_LEAK_PAGE_TEXT' } });
+    socket.send(JSON.stringify({ t: 'wake', seq: 2 }));
     const notice = await until(() => notifications[0]);
     assert.match(notice.content, /1 page event/);
     assert.doesNotMatch(JSON.stringify(notice), /DO_NOT_LEAK_PAGE_TEXT|secret_token/);
@@ -59,6 +63,7 @@ test('Claude channel attaches the current session, sends count-only wake, reads 
     await pause(200);
     assert.equal(notifications.length, 1);
     current.push({ seq: 3, role: null, wake: true, by: 'agent_probe', type: 'event', data: { kind: 'delivery_probe', payload: 'SECOND_PRIVATE_EVENT' } });
+    socket.send(JSON.stringify({ t: 'wake', seq: 3 }));
     const second = await until(() => notifications[1]);
     assert.match(second.content, /sequence 3/);
     assert.doesNotMatch(JSON.stringify(second), /SECOND_PRIVATE_EVENT/);
@@ -69,7 +74,7 @@ test('Claude channel attaches the current session, sends count-only wake, reads 
     const detach = await client.callTool({ name: 'tendriller_detach', arguments: { page_id: id } });
     assert.equal(JSON.parse(detach.content[0].text).detached, true);
   } finally {
-    await client.close(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve));
+    await client.close(); socket?.terminate(); await new Promise(resolve => wss.close(resolve)); http.closeAllConnections(); await new Promise(resolve => http.close(resolve));
     if (old === undefined) delete process.env.TENDRIL_CHANNEL_DIR; else process.env.TENDRIL_CHANNEL_DIR = old;
   }
 });

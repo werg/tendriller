@@ -6,6 +6,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { waitForAgentWake } from './agent-socket.mjs';
 
 const root = process.env.TENDRIL_CHANNEL_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tendril', 'claude');
 const attached = new Map();
@@ -36,7 +37,7 @@ function handle(path) {
 async function api(h, suffix, { method = 'GET', body } = {}) {
   const response = await fetch(h.api + suffix, {
     method, headers: { Authorization: `Bearer ${h.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(suffix.includes('wait=300') ? 330000 : 40000),
+    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(40000),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) throw Error(`${method} ${suffix}: HTTP ${response.status} ${data?.error?.message || response.statusText}`);
@@ -57,18 +58,23 @@ async function poll(h, state) {
   let backoff = 1000;
   while (!state.stopped) {
     try {
-      const ack = read(ackPath(h.id), { cursor: 0 }).cursor || 0;
-      const batch = await api(h, `/events?after=${state.cursor}&wait=300`);
-      state.cursor = Math.max(state.cursor, Number(batch.cursor) || 0);
-      const pending = await api(h, `/events?after=${ack}&wait=0`);
-      const n = counts(pending.events || []);
-      if (!n.events) { state.pending = 0; state.pendingAt = 0; }
-      else if (!state.pending || ack >= state.pending || Date.now() - state.pendingAt > 5 * 60_000) {
-        await notify(h, Number(pending.cursor), n);
-        state.pending = Number(pending.cursor); state.pendingAt = Date.now();
-      }
+      const processPending = async () => {
+        const ack = read(ackPath(h.id), { cursor: 0 }).cursor || 0;
+        const pending = await api(h, `/events?after=${ack}&wait=0`);
+        state.cursor = Math.max(state.cursor, Number(pending.cursor) || 0);
+        const n = counts(pending.events || []);
+        if (!n.events) { state.pending = 0; state.pendingAt = 0; }
+        else if (!state.pending || ack >= state.pending || Date.now() - state.pendingAt > 5 * 60_000) {
+          await notify(h, Number(pending.cursor), n);
+          state.pending = Number(pending.cursor); state.pendingAt = Date.now();
+        }
+      };
+      await waitForAgentWake(h, processPending, async () => {
+        if (state.pending && Date.now() - state.pendingAt > 5 * 60_000) await processPending();
+      }, state.abort.signal);
       backoff = 1000;
     } catch (error) {
+      if (state.stopped) break;
       process.stderr.write(`tendriller channel ${h.id}: ${error.message}; retrying\n`);
       await sleep(backoff); backoff = Math.min(backoff * 2, 30000);
     }
@@ -88,17 +94,18 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     if (name === 'tendriller_attach') {
       const h = handle(args.handle_path);
       if (attached.has(h.id)) throw Error('This page is already attached in this session');
-      const state = { cursor: read(ackPath(h.id), { cursor: 0 }).cursor || 0, pending: 0, pendingAt: 0, stopped: false };
+      const state = { cursor: read(ackPath(h.id), { cursor: 0 }).cursor || 0, pending: 0, pendingAt: 0,
+        stopped: false, abort: new AbortController() };
       attached.set(h.id, { h, state });
       void poll(h, state);
       // The live poll must be visible to the Worker before first publication.
       let live = false;
       for (let i = 0; i < 40; i++) {
         const info = await api(h, '');
-        if (info.agent_delivery?.mode === 'live_poll') { live = true; break; }
+        if (info.agent_delivery?.mode === 'live_socket') { live = true; break; }
         await sleep(250);
       }
-      if (!live) { state.stopped = true; attached.delete(h.id); throw Error('Channel did not establish a live event poll'); }
+      if (!live) { state.stopped = true; state.abort.abort(); attached.delete(h.id); throw Error('Channel did not establish a live agent socket'); }
       result = { attached: true, page_id: h.id, page_url: h.page_url, reminder: 'This session now receives count-only channel notices. Read events, respond on the page, and acknowledge each batch.' };
     } else if (name === 'tendriller_events') {
       const item = attached.get(args.page_id); if (!item) throw Error('Page is not attached to this session');
@@ -113,7 +120,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       result = { acknowledged: Math.max(prior, seq) };
     } else if (name === 'tendriller_detach') {
       const item = attached.get(args.page_id); if (!item) throw Error('Page is not attached to this session');
-      item.state.stopped = true; attached.delete(args.page_id); result = { detached: true };
+      item.state.stopped = true; item.state.abort.abort(); attached.delete(args.page_id); result = { detached: true };
     } else throw Error('Unknown tool');
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   } catch (error) { return { isError: true, content: [{ type: 'text', text: error.message }] }; }

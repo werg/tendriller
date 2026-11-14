@@ -68,22 +68,24 @@ async function tendrilInfo(t: Tendril) {
 
 function deliveryFeedback(t: Tendril) {
   const facts = t.presenceFacts();
-  const mode = facts.longPollHeld ? "live_poll" : facts.webhook ? "wake_configured" : "none";
+  const mode = facts.agentSocket ? "live_socket" : facts.longPollHeld ? "live_poll" : facts.webhook ? "wake_configured" : "none";
   return {
     mode,
-    live_listener: facts.longPollHeld,
+    live_listener: facts.agentSocket || facts.longPollHeld,
     reminder: mode === "none"
       ? "No event listener or wake endpoint is active. Attach a receiver that resumes this same agent conversation, then run two POST A/wake/probe diagnostics in this conversation before promising live replies."
-      : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
+      : mode === "live_socket"
+        ? "Keep the agent socket connected and the host adapter running. Read events on each wake, reply in this conversation, and acknowledge after handling."
+        : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
   };
 }
 
 function requireFirstPageReceiver(t: Tendril): void {
   if (latestFileMap(t).has("index.html")) return;
   const facts = t.presenceFacts();
-  if (facts.longPollHeld || facts.webhook) return;
+  if (facts.agentSocket || facts.longPollHeld || facts.webhook) return;
   throw new HttpError(428, "listener_required",
-    "Attach this conversation with a verified host wake path: continuous GET A/events?after=<cursor>&wait=300 plus same-session delivery, or PUT A/wake with a persistent receiver. A one-off poll or agent token is not a listener; run two POST A/wake/probe diagnostics before promising live replies.");
+    "Attach this conversation with a verified host wake path: a persistent agent WebSocket at A/events/socket, continuous GET A/events?after=<cursor>&wait=300 plus same-session delivery, or PUT A/wake with a persistent receiver. A one-off poll or agent token is not a listener; run two POST A/wake/probe diagnostics before promising live replies.");
 }
 
 export function tendrilMeta(t: Tendril) {
@@ -97,6 +99,22 @@ export function tendrilMeta(t: Tendril) {
 }
 
 route("GET", /^$/, async (t) => json(await tendrilInfo(t)));
+
+route("GET", /^events\/socket$/, async (t, req) => {
+  if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required");
+  if (!(req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim()).includes("tendriller.agent.v1"))
+    throw new HttpError(400, "bad_request", "Unsupported agent socket protocol");
+  const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
+  if (!token) throw new HttpError(401, "unauthorized");
+  const pair = new WebSocketPair();
+  const [client, server] = [pair[0], pair[1]];
+  t.ctx.acceptWebSocket(server, ["agent"]);
+  server.serializeAttachment({ kind: "agent", tokenHash: await sha256Hex(token) });
+  t.refreshPresence();
+  t.scheduleAlarm();
+  return new Response(null, { status: 101, webSocket: client,
+    headers: { "Sec-WebSocket-Protocol": "tendriller.agent.v1" } });
+});
 
 route("PATCH", /^$/, async (t, req) => {
   const b = await readJson(req, 64 * 1024);

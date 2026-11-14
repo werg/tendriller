@@ -261,7 +261,14 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (m) {
       if (!TENDRIL_ID_RE.test(m[1])) return errorResponse(404, "not_found", "No such tendril");
       const agentRest = safeDecode(m[2] ?? "");
-      const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
+      // Node's dependency-free WebSocket client cannot set Authorization. Keep the
+      // private token in a TLS-protected subprotocol header, never in the URL.
+      const socket = agentRest === "events/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
+      const socketToken = socket && protocols.includes("tendriller.agent.v1")
+        ? protocols.find((s) => /^tk_[a-z2-7]{32}$/.test(s)) : undefined;
+      if (socket && !socketToken) return errorResponse(401, "unauthorized", "Agent socket needs its private token");
+      const token = socketToken || /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
       if (token && env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: await sha256Hex(token) })).success) {
         throw new HttpError(429, "rate_limited", "Agent request rate limit reached");
       }
@@ -270,7 +277,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       }
       if (req.method === "GET" && /^(?:files|blobs)\//.test(agentRest) && env.FILE_READ_RATE &&
         !(await env.FILE_READ_RATE.limit({ key: m[1] })).success) throw new HttpError(429, "rate_limited", "File read rate limit reached");
-      const res = await forward(env, m[1], "agent", req, url, { "x-tendril-rest": encodeURIComponent(agentRest) });
+      const res = await forward(env, m[1], "agent", req, url, { "x-tendril-rest": encodeURIComponent(agentRest),
+        ...(socketToken ? { Authorization: `Bearer ${socketToken}` } : {}) });
       if (res.status === 401 && env.FAILED_AUTH_RATE &&
         !(await env.FAILED_AUTH_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
         await res.body?.cancel();

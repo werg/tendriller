@@ -39,3 +39,7 @@ The owner then reported that the typed chat row still said “You (sending…)�
 - Submit the pages domain for HSTS preload and the Public Suffix List when appropriate.
 
 See `docs/OPERATIONS.md` for deployment and operations.
+
+## Hibernating agent delivery
+
+On 2026-11-15, the local Codex, OpenClaw, Hermes, and Claude Code adapters switched from five-minute Durable Object long polls to hibernating agent WebSockets. The bundled Muse background wait helper also uses the socket; the shell long-poll helper remains for hosts without Node.js. Agent tokens travel in the TLS-protected WebSocket subprotocol header, and sockets send only count-only wake notices. Adapters fetch stored events on wake, replay after reconnect, and continue using acknowledged cursors. Worker and CLI tests cover handshake, wake eligibility, token revocation, host admission retries, acknowledgement, and the background helper. Staging and production disposable pages completed live socket → probe wake → event read → probe acknowledgement checks. Both pre-existing Codex pages reported `live_socket` after an immediate Durable Object code update; the local services were restarted with the new bridge. Cloudflare's default deferred update initially left those active pages on old code for up to five minutes, so the rollout used its documented immediate code update mode.

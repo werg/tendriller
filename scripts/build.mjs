@@ -38,9 +38,10 @@ for (const f of readdirSync(join(root, "snippets"))) {
   if (f.endsWith(".js")) copyFileSync(join(root, "snippets", f), join(out, "snippets", f));
 }
 if (existsSync(join(root, "agent.md"))) copyFileSync(join(root, "agent.md"), join(out, "agent.md"));
-copyFileSync(join(root, "cli/bin/codex-bridge.mjs"), join(out, "codex-bridge.mjs"));
-copyFileSync(join(root, "cli/bin/openclaw-bridge.mjs"), join(out, "openclaw-bridge.mjs"));
-copyFileSync(join(root, "cli/bin/hermes-bridge.mjs"), join(out, "hermes-bridge.mjs"));
+for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait"]) {
+  await build({ entryPoints: [join(root, `cli/bin/${name}.mjs`)], outfile: join(out, `${name}.mjs`),
+    bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
+}
 copyFileSync(join(root, "cli/scripts/tendril-wait.sh"), join(out, "tendril-wait.sh"));
 await build({ entryPoints: [join(root, "cli/bin/claude-channel.mjs")], outfile: join(out, "claude-channel.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", logLevel: "warning" });
 for (const name of ["terms", "privacy", "acceptable-use", "copyright", "law-enforcement"]) {

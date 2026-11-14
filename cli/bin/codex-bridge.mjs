@@ -7,6 +7,7 @@ import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { waitForAgentWake } from './agent-socket.mjs';
 
 const exec = promisify(execFile);
 const script = fileURLToPath(import.meta.url);
@@ -47,7 +48,7 @@ function systemctl(...a) {
   return r.stdout.trim();
 }
 async function api(cfg, rest, {method='GET',body}={}) {
-  const r=await fetch(cfg.api+rest,{method,headers:{Authorization:`Bearer ${cfg.token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(rest.includes('wait=300')?330000:40000)});
+  const r=await fetch(cfg.api+rest,{method,headers:{Authorization:`Bearer ${cfg.token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(40000)});
   const data=await r.json().catch(()=>null);
   if(!r.ok) fail(`${method} ${rest}: HTTP ${r.status} ${data?.error?.message||r.statusText}`);
   return data;
@@ -73,25 +74,21 @@ async function run(configPath) {
   const cfg=readJson(resolve(configPath));
   if(!cfg?.api||!cfg?.token||!cfg?.thread) fail('Invalid bridge config');
   let state=readJson(cfg.state_path,{poll_cursor:0,pending_seq:0,pending_at:0,attempts:0});
+  async function processPending() {
+    const ack=readJson(cfg.ack_path,{cursor:0}).cursor||0;
+    const pending=await api(cfg,`/events?after=${ack}&wait=0`);
+    state.poll_cursor=Math.max(state.poll_cursor,Number(pending.cursor)||0);
+    if(ack>=state.pending_seq) {state.pending_seq=0;state.pending_at=0;state.attempts=0;}
+    saveJson(cfg.state_path,state);
+    const n=counts(pending.events||[]);
+    if(n.events && (!state.pending_seq || Date.now()-state.pending_at>5*60_000))
+      await queue(cfg,state,pending.cursor,n);
+  }
   for(let backoff=1000;;){
     try {
-      const batch=await api(cfg,`/events?after=${state.poll_cursor}&wait=300`);
-      const max=Number(batch.cursor)||state.poll_cursor;
-      const ack=readJson(cfg.ack_path,{cursor:0}).cursor||0;
-      if(ack>=state.pending_seq) {state.pending_seq=0;state.pending_at=0;state.attempts=0;}
-      state.poll_cursor=max;
-      saveJson(cfg.state_path,state);
-      if(!state.pending_seq){
-        const pending=await api(cfg,`/events?after=${ack}&wait=0`);
-        const n=counts(pending.events||[]);
-        if(n.events) await queue(cfg,state,pending.cursor,n);
-      }
-      // A queued notice starts a Codex turn. Re-notify if no acknowledgement arrives.
-      if(state.pending_seq && Date.now()-state.pending_at>5*60_000) {
-        const pending=await api(cfg,`/events?after=${ack}&wait=0`);
-        const count=counts(pending.events||[]);
-        if(count.events) await queue(cfg,state,pending.cursor,count);
-      }
+      await waitForAgentWake(cfg,processPending,async()=>{
+        if(state.pending_seq && (readJson(cfg.ack_path,{cursor:0}).cursor>=state.pending_seq || Date.now()-state.pending_at>5*60_000)) await processPending();
+      });
       backoff=1000;
     } catch(error) {
       process.stderr.write(`bridge: ${error.message}; retrying in ${backoff}ms\n`);
@@ -117,8 +114,8 @@ async function attach(handlePath) {
   writeFileSync(unitPath,`[Unit]\nDescription=Tendriller Codex bridge for ${h.id}\nAfter=network-online.target\n\n[Service]\nExecStart=${quote(process.execPath)} ${quote(script)} run ${quote(p.config)}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`,{mode:0o600});
   systemctl('daemon-reload');systemctl('enable',p.unit);systemctl('restart',p.unit);
   let live=false;
-  for(let i=0;i<50;i++){const info=await api(cfg,'');if(info.agent_delivery?.mode==='live_poll'){live=true;break;}await sleep(200);}
-  if(!live) fail('Bridge did not establish a live event poll; check systemctl --user status '+p.unit);
+  for(let i=0;i<50;i++){const info=await api(cfg,'');if(info.agent_delivery?.mode==='live_socket'){live=true;break;}await sleep(200);}
+  if(!live) fail('Bridge did not establish a live agent socket; check systemctl --user status '+p.unit);
   process.stdout.write(JSON.stringify({attached:true,thread,page_url:h.page_url,unit:p.unit,config:p.config})+'\n');
 }
 function ack(id,seq) {

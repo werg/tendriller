@@ -218,6 +218,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (this.isAgentSocket(ws)) { ws.close(1008, "Agent socket is receive-only"); return; }
     await handleWsMessage(this, ws, message);
   }
 
@@ -227,11 +228,13 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
-    handleWsClose(this, ws);
+    if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
+    else handleWsClose(this, ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
-    handleWsClose(this, ws);
+    if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
+    else handleWsClose(this, ws);
   }
 
   // ---------------------------------------------------------------- create / adopt
@@ -311,7 +314,7 @@ export class Tendril extends DurableObject<Env> {
       expires_at: this.expiresAt(),
       agent_setup: {
         event_delivery: "not_configured",
-        next_step: `Attach this agent conversation to a wake path: continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=300 polling that resumes this session, or PUT ${apiUrl(this.env, this.tid)}/wake with a persistent receiver. Store the cursor, poll after every response, and run two POST A/wake/probe diagnostics before promising live replies. A token or background poll alone does not wake a conversation.`,
+        next_step: `Attach this agent conversation to a wake path: the bundled host bridge using a hibernating WebSocket at ${apiUrl(this.env, this.tid)}/events/socket, a verified webhook at ${apiUrl(this.env, this.tid)}/wake, or a continuous long poll when the host has no socket client. Store the event cursor and run two POST A/wake/probe diagnostics before promising live replies. A token or background receiver alone does not wake a conversation.`,
       },
     };
   }
@@ -520,7 +523,7 @@ export class Tendril extends DurableObject<Env> {
       return this.db.get<number>("unclaimed_since", this.db.get<number>("created_at", 0)) + DAY;
     }
     if (this.db.get<string>("lifetime", "ad_hoc") === "resident") return null;
-    const alive = this.connectedSockets().length > 0 ? this.now() : 0;
+    const alive = this.connectedSockets().length > 0 || this.agentSockets().length > 0 ? this.now() : 0;
     const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_checkin", 0), this.db.get<number>("last_device_seen", 0), alive);
     return last + AD_HOC_IDLE;
   }
@@ -589,6 +592,7 @@ export class Tendril extends DurableObject<Env> {
       tokens: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")!.n,
       lastCheckin: this.db.get<number | null>("last_checkin", null),
       longPollHeld: this.waiters.size > 0,
+      agentSocket: this.agentSockets().length > 0,
       webhook: !!w.webhook || mcpSubs(this).length > 0,
       scheduleMinutes: w.schedule_minutes,
       wakePendingSince: this.db.get<number | null>("wake_pending_since", null),
@@ -617,6 +621,26 @@ export class Tendril extends DurableObject<Env> {
   }
 
   // ---------------------------------------------------------------- sockets
+
+  isAgentSocket(ws: WebSocket): boolean {
+    return (ws.deserializeAttachment() as { kind?: string } | null)?.kind === "agent";
+  }
+
+  agentSockets(): WebSocket[] {
+    return this.ctx.getWebSockets("agent").filter((ws) => {
+      if (ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
+      const att = ws.deserializeAttachment() as { tokenHash?: string } | null;
+      const valid = !!att?.tokenHash && !!this.db.one("SELECT 1 AS x FROM tokens WHERE hash = ?", att.tokenHash);
+      if (!valid) { ws.close(4003, "Agent token revoked"); return false; }
+      return true;
+    });
+  }
+
+  notifyAgentSockets(seq: number): boolean {
+    const sockets = this.agentSockets();
+    for (const ws of sockets) this.send(ws, { t: "wake", seq });
+    return sockets.length > 0;
+  }
 
   att(ws: WebSocket): Att | null {
     try {
@@ -1029,7 +1053,7 @@ export class Tendril extends DurableObject<Env> {
     const sockets = this.connectedSockets().length > 0;
     if (sockets) times.push(now + PRESENCE_TICK);
     const facts = this.presenceFacts();
-    if (sockets || facts.webhook) {
+    if (sockets || facts.agentSocket || facts.webhook) {
       const pc = nextPresenceChange(facts);
       if (pc !== null) times.push(pc);
     }

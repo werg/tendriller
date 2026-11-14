@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { advance, api, apiJson, create, inDO, PageClient, runAlarm, sleep } from "./helpers";
+import { advance, api, apiJson, create, inDO, PageClient, req, runAlarm, sleep } from "./helpers";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -12,6 +12,35 @@ async function setup(body: Record<string, unknown> = {}) {
 }
 
 describe("events and long-poll", () => {
+  it("agent socket listens without a held poll and receives only wake-eligible events", async () => {
+    const h = await create();
+    const denied = await req(h.api + "/events/socket", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "tendriller.agent.v1" } });
+    expect(denied.status).toBe(401);
+    const res = await req(h.api + "/events/socket", { headers: {
+      Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}`,
+    } });
+    expect(res.status).toBe(101);
+    expect(res.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v1");
+    const ws = res.webSocket!;
+    ws.accept();
+    const notices: any[] = [];
+    ws.addEventListener("message", (e) => notices.push(JSON.parse(String(e.data))));
+    expect((await apiJson(h, "GET", "")).agent_delivery.mode).toBe("live_socket");
+    const page = await PageClient.connect(h.page_url);
+    await page.request({ t: "send", data: { passive: true }, wake: false });
+    await sleep(100);
+    expect(notices).toEqual([]);
+    await page.request({ t: "send", data: { tapped: true } });
+    for (let i = 0; i < 40 && !notices.length; i++) await sleep(25);
+    expect(notices).toMatchObject([{ t: "wake", seq: expect.any(Number) }]);
+    const events = await apiJson(h, "GET", "events");
+    expect(events.events.some((e: any) => e.data?.passive && !e.wake)).toBe(true);
+    expect(events.events.some((e: any) => e.data?.tapped && e.wake)).toBe(true);
+    expect((await api(h, "DELETE", "tokens/main")).status).toBe(204);
+    for (let i = 0; i < 40 && ws.readyState !== WebSocket.CLOSED; i++) await sleep(25);
+    expect(ws.readyState).toBe(WebSocket.CLOSED);
+    page.close();
+  });
   it("wait=0 returns stored events immediately with cursor", async () => {
     const { h, page } = await setup();
     const a = await page.request({ t: "send", data: { type: "tap", n: 1 }, wake: false });

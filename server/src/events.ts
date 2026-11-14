@@ -79,7 +79,7 @@ export interface Waiter {
 function pollReminder(t: Tendril, cursor: number) {
   return {
     next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=300`,
-    agent_reminder: "Poll next_poll immediately, even when events is empty. The receiver must wake this same agent conversation; a background poll or accepted webhook alone is not proof. For real requests, reply with POST A/say; for delivery_probe, acknowledge its diagnostic endpoint without messaging the owner. Acknowledge host notices only after handling, and keep the listener armed while the page is in use. Run two POST A/wake/probe diagnostics before promising live replies.",
+    agent_reminder: "Keep the host receiver armed. Agent WebSocket receivers read on each wake and reconnect; long-poll receivers request next_poll after every response, even when empty. The receiver must wake this same agent conversation. For real requests, reply with POST A/say; for delivery_probe, acknowledge its diagnostic endpoint without messaging the owner. Acknowledge host notices only after handling. Run two POST A/wake/probe diagnostics before promising live replies.",
   };
 }
 
@@ -171,10 +171,15 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
 
 /** Delivery path 1 (held long-polls) or 2 (webhook and MCP Events). Never affects storage of the event. */
 function deliverWake(t: Tendril, seq: number): void {
-  if (t.waiters.size > 0) {
-    scheduleRelease(t);
-    return;
+  const agentSocket = t.notifyAgentSockets(seq);
+  const heldPoll = t.waiters.size > 0;
+  if (heldPoll) scheduleRelease(t);
+  if (agentSocket) {
+    if (t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
+    t.refreshPresence();
+    t.scheduleAlarm();
   }
+  if (agentSocket || heldPoll) return;
   const hook = t.wakeConfig().webhook;
   if (hook) {
     const job = t.db.get<WebhookJob | null>("webhook_job", null);

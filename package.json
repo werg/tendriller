@@ -24,7 +24,8 @@
     "qrcode-generator": "^2.0.4",
     "typescript": "^7.0.2",
     "vitest": "4.1",
-    "wrangler": "^4.161.0"
+    "wrangler": "^4.161.0",
+    "ws": "^8.21.0"
   },
   "dependencies": {
     "ipaddr.js": "^2.5.0",

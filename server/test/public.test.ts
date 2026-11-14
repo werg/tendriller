@@ -47,15 +47,15 @@ it("reminds agents at setup, upload, and every event poll to keep a receiver run
   const h = await createPublic("listener@example.com", "192.0.2.51");
   const setup = h as Handle & { agent_setup: { event_delivery: string; next_step: string } };
   expect(setup.agent_setup.event_delivery).toBe("not_configured");
-  expect(setup.agent_setup.next_step).toContain("continuous GET");
+  expect(setup.agent_setup.next_step).toContain("events/socket");
   const first = await (await api(h, "GET", "events?after=0")).json<{ cursor: number; next_poll: string; agent_reminder: string }>();
   expect(first.next_poll).toBe(`${h.api}/events?after=${first.cursor}&wait=300`);
   expect((await api(h, "GET", "events?wait=301")).status).toBe(400);
-  expect(first.agent_reminder).toContain("Poll next_poll immediately");
+  expect(first.agent_reminder).toContain("WebSocket receivers read on each wake");
   const timeout = await (await api(h, "GET", `events?after=${first.cursor}&wait=1`)).json<{ timeout: boolean; next_poll: string; agent_reminder: string }>();
   expect(timeout.timeout).toBe(true);
   expect(timeout.next_poll).toBe(first.next_poll);
-  expect(timeout.agent_reminder).toContain("even when events is empty");
+  expect(timeout.agent_reminder).toContain("after every response, even when empty");
   const blocked = await api(h, "PUT", "files/index.html", "<h1>Hello</h1>");
   expect(blocked.status).toBe(428);
   expect(await blocked.json()).toMatchObject({ error: { code: "listener_required" } });
@@ -112,7 +112,9 @@ it("records a reply only after a connected page reports rendering it", async () 
 it("serves the Hermes bridge and long-poll helper from the service origin", async () => {
   const bridge = await req("/hermes-bridge.mjs");
   expect(bridge.status).toBe(200);
-  expect(await bridge.text()).toContain("['wake','now',text]");
+  const script = await bridge.text();
+  expect(script).toContain("/events/socket");
+  expect(script).toContain('"wake", "now"');
   const wait = await req("/tendril-wait.sh");
   expect(wait.status).toBe(200);
   expect(await wait.text()).toContain("wait_s=300");
@@ -180,7 +182,35 @@ it("serves the first-party OpenClaw bridge from the service origin", async () =>
   const response = await req("/openclaw-bridge.mjs");
   expect(response.status).toBe(200);
   expect(response.headers.get("Content-Type")).toContain("text/javascript");
-  expect(await response.text()).toContain("system','event'");
+  const body = await response.text();
+  expect(body).toContain("/events/socket");
+  expect(body).toContain("system");
+  expect(body).toContain("event");
+});
+
+it("authenticates a hibernating agent socket and delivers a count-only probe wake", async () => {
+  const h = await createPublic("socket@example.com", "192.0.2.190");
+  const denied = await req(h.api + "/events/socket", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "tendriller.agent.v1" } });
+  expect(denied.status).toBe(401);
+  const response = await req(h.api + "/events/socket", { headers: {
+    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}`,
+  } });
+  expect(response.status).toBe(101);
+  expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v1");
+  const socket = response.webSocket!;
+  socket.accept();
+  const wakes: any[] = [];
+  socket.addEventListener("message", (e) => wakes.push(JSON.parse(String(e.data))));
+  expect((await (await api(h, "GET", "")).json<any>()).agent_delivery.mode).toBe("live_socket");
+  const probe = await (await api(h, "POST", "wake/probe")).json<{ seq: number }>();
+  for (let i = 0; i < 40 && !wakes.length; i++) await new Promise((r) => setTimeout(r, 25));
+  expect(wakes).toEqual([{ t: "wake", seq: probe.seq }]);
+  expect(JSON.stringify(wakes)).not.toContain(h.token);
+  const events = await (await api(h, "GET", "events")).json<any>();
+  expect(events.events.some((e: any) => e.seq === probe.seq && e.data.kind === "delivery_probe")).toBe(true);
+  expect((await api(h, "DELETE", "tokens/main")).status).toBe(204);
+  for (let i = 0; i < 40 && socket.readyState !== WebSocket.CLOSED; i++) await new Promise((r) => setTimeout(r, 25));
+  expect(socket.readyState).toBe(WebSocket.CLOSED);
 });
 
 it("requires an owner email and refuses a different verified account", async () => {
