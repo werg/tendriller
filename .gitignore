@@ -3,6 +3,7 @@ node_modules/
 server/public/_tendril/
 server/public/snippets/
 server/public/agent.md
+server/public/legal/
 test-results/
 playwright-report/
 .dev.vars

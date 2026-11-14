@@ -245,11 +245,11 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   }
   if (risk >= 5 && role === "owner" && accountId &&
     !t.db.one("SELECT 1 AS x FROM trusted_versions WHERE account_id = ? AND version = ?", accountId, version)) {
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Review this version · Tendriller</title></head><body><main>
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review this version · Tendriller</title><link rel="icon" href="${base}_tendril/brand/icon-64.png"><style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1.25rem}img{vertical-align:middle;margin-right:.5rem}button{padding:.7rem 1rem;background:#17654b;color:white;border:0;border-radius:.6rem;font:inherit}</style></head><body><main><p><img src="${base}_tendril/brand/icon-64.png" alt="" width="32" height="32">Tendriller</p>
       <h1>Review this page before opening it</h1><p>This version asks for passwords, sends data elsewhere, or contains another risky pattern. Tendriller never asks for passwords. Continue only if you trust the agent that made it.</p>
       <form method="post" action="${base}_tendril/trust-version"><input type="hidden" name="version" value="${version}"><button>Continue to page</button></form></main></body></html>`;
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
-      "Content-Security-Policy": "default-src 'none'; form-action 'self'; base-uri 'none'" } });
+      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
 
   let path = rest === "" ? "index.html" : rest;

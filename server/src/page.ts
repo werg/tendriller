@@ -65,9 +65,9 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "report" && m === "GET") {
-    return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Report page</title></head><body><main><h1>Report this page</h1><p>Tell us what is wrong with this tendril.</p><form method="post"><textarea name="reason" required maxlength="2000"></textarea><button type="submit">Send report</button></form></main></body></html>`,
+    return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Report page · Tendriller</title><link rel="icon" href="${base}_tendril/brand/icon-64.png"><style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1.25rem}img{vertical-align:middle;margin-right:.5rem}textarea{display:block;width:100%;min-height:8rem;font:inherit}button{margin-top:1rem;padding:.7rem 1rem;background:#17654b;color:white;border:0;border-radius:.6rem;font:inherit}a{color:#17654b}</style></head><body><main><p><img src="${base}_tendril/brand/icon-64.png" alt="" width="32" height="32">Tendriller</p><h1>Report this page</h1><p>Tell us what is wrong with this tendril.</p><form method="post"><textarea name="reason" required maxlength="2000"></textarea><button type="submit">Send report</button></form></main></body></html>`,
       { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
+        "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
   if (sub === "report" && m === "POST") {
     if (!t.env.ACCOUNTS) throw new HttpError(503, "unavailable");

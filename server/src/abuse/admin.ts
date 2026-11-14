@@ -5,10 +5,10 @@ import { TENDRIL_ID_RE } from "../ids";
 import { publicBase } from "../urls";
 import { accountSuspendedNotice, ownerNotice } from "./notices";
 import ipaddr from "ipaddr.js";
+import { servicePage } from "../accounts/ui";
 
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const page = (body: string, status = 200) => new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Tendriller</title></head><body><main>${body}</main></body></html>`,
-  { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
+const page = (body: string, status = 200) => servicePage("Review", body, "", status);
 const form = async (req: Request) => new URLSearchParams(new TextDecoder().decode(await readBody(req, 8192)));
 
 export async function appealPage(req: Request, env: Env, url: URL): Promise<Response> {
