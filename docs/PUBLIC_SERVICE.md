@@ -141,7 +141,7 @@ A new tendril needs nothing: the wildcard record and route cover every id. A scr
 ## 4. Accounts and sign-in
 
 - **Storage:** D1, with tables `accounts`, `identities (provider, subject)`, `sessions`,
-  `api_keys (hash, name, account, created, last_used)`, `tendrils (id, owner, created,
+  `identity_emails`, `tendrils (id, owner, created,
   claimed, state, bytes)`, `reports`, `audit_log`, `blocks`. Per-tendril data stays in
   each Durable Object. D1 is the index across tendrils and the place quotas are checked.
 - **Sign-in:** OAuth authorization code flow with PKCE for GitHub and Google (OIDC), done
