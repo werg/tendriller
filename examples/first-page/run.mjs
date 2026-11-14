@@ -39,7 +39,7 @@ const api = created.api;
 const auth = { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" };
 let cursor = saved.cursor;
 async function listenForever() {
-  let next = `${api}/events?after=${cursor}&wait=25`;
+  let next = `${api}/events?after=${cursor}&wait=300`;
   for (;;) {
     try {
       const batch = await request(next, { headers: { Authorization: auth.Authorization } });
@@ -59,7 +59,7 @@ async function listenForever() {
     } catch (error) {
       console.error(error);
       await new Promise(resolve => setTimeout(resolve, 3000));
-      next = `${api}/events?after=${cursor}&wait=25`;
+      next = `${api}/events?after=${cursor}&wait=300`;
     }
   }
 }

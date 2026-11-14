@@ -201,10 +201,10 @@ const commands = {
       save(r.cursor);
       return out(r);
     }
-    const w = Math.min(25, intFlag(f.wait, "wait", 5));
+    const w = Math.min(300, intFlag(f.wait, "wait", 300));
     for (let backoff = 1000; ;) {
       try {
-        let r = await api.get(`/events?after=${after}&wait=${w}${limit}`);
+        let r = await api.get(`/events?after=${after}&wait=${w}${limit}`, { signal: AbortSignal.timeout(w * 1000 + 30000) });
         if (!r.events?.length) r = await api.get(`/events?after=${after}&wait=0${limit}`);
         for (const e of r.events || []) if (!f.wakes || e.wake) out(e);
         if (typeof r.cursor === "number") { after = r.cursor; save(after); }
@@ -222,10 +222,11 @@ const commands = {
     const cpath = cursorPath(cfg, f);
     const deadline = f.timeout ? Date.now() + Number(f.timeout) * 1000 : Infinity;
     for (let backoff = 2000; ;) {
-      if (Date.now() > deadline) { out({ timeout: true, cursor: readCursor(cpath) }); process.exitCode = 2; return; }
+      if (Date.now() >= deadline) { out({ timeout: true, cursor: readCursor(cpath) }); process.exitCode = 2; return; }
       const after = readCursor(cpath);
       try {
-        const r = await api.get(`/events?after=${after}&wait=25`);
+        const waitSeconds = Math.min(300, Math.max(1, Math.ceil((deadline - Date.now()) / 1000)));
+        const r = await api.get(`/events?after=${after}&wait=${waitSeconds}`, { signal: AbortSignal.timeout(waitSeconds * 1000 + 30000) });
         backoff = 2000;
         if (r.events && r.events.length && !r.timeout) {
           writeCursor(cpath + ".prev", after);

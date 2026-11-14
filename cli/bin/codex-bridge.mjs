@@ -47,7 +47,7 @@ function systemctl(...a) {
   return r.stdout.trim();
 }
 async function api(cfg, rest, {method='GET',body}={}) {
-  const r=await fetch(cfg.api+rest,{method,headers:{Authorization:`Bearer ${cfg.token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(40000)});
+  const r=await fetch(cfg.api+rest,{method,headers:{Authorization:`Bearer ${cfg.token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(rest.includes('wait=300')?330000:40000)});
   const data=await r.json().catch(()=>null);
   if(!r.ok) fail(`${method} ${rest}: HTTP ${r.status} ${data?.error?.message||r.statusText}`);
   return data;
@@ -75,7 +75,7 @@ async function run(configPath) {
   let state=readJson(cfg.state_path,{poll_cursor:0,pending_seq:0,pending_at:0,attempts:0});
   for(let backoff=1000;;){
     try {
-      const batch=await api(cfg,`/events?after=${state.poll_cursor}&wait=25`);
+      const batch=await api(cfg,`/events?after=${state.poll_cursor}&wait=300`);
       const max=Number(batch.cursor)||state.poll_cursor;
       const ack=readJson(cfg.ack_path,{cursor:0}).cursor||0;
       if(ack>=state.pending_seq) {state.pending_seq=0;state.pending_at=0;state.attempts=0;}

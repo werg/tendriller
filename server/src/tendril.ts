@@ -311,7 +311,7 @@ export class Tendril extends DurableObject<Env> {
       expires_at: this.expiresAt(),
       agent_setup: {
         event_delivery: "not_configured",
-        next_step: `Start a continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=25 loop or configure PUT ${apiUrl(this.env, this.tid)}/wake with a persistent handler before telling the person this page can answer them live. Store the returned cursor and poll again after every response, including empty timeouts. A token alone does not listen for events.`,
+        next_step: `Start a continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=300 loop or configure PUT ${apiUrl(this.env, this.tid)}/wake with a persistent handler before telling the person this page can answer them live. Store the returned cursor and poll again after every response, including empty timeouts. A token alone does not listen for events.`,
       },
     };
   }

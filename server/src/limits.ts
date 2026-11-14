@@ -23,7 +23,7 @@ export const DEDUPE_RETENTION = DAY;
 export const AD_HOC_IDLE = DAY;
 
 export const HEALTH_TIMEOUT = 15 * SECOND;
-export const LONGPOLL_MAX_WAIT_S = 25;
+export const LONGPOLL_MAX_WAIT_S = 300;
 export const LONGPOLL_DEBOUNCE = 300;
 export const WAKE_MERGE_WINDOW = 3 * SECOND;
 export const WEBHOOK_DEBOUNCE = 2 * SECOND;

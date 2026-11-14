@@ -72,7 +72,7 @@ function deliveryFeedback(t: Tendril) {
     mode,
     live_listener: facts.longPollHeld,
     reminder: mode === "none"
-      ? "No event listener or wake endpoint is active. Start continuous GET A/events?after=<cursor>&wait=25 polling or configure PUT A/wake before promising live replies."
+      ? "No event listener or wake endpoint is active. Start continuous GET A/events?after=<cursor>&wait=300 polling or configure PUT A/wake before promising live replies."
       : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
   };
 }
@@ -82,7 +82,7 @@ function requireFirstPageReceiver(t: Tendril): void {
   const facts = t.presenceFacts();
   if (facts.longPollHeld || facts.webhook) return;
   throw new HttpError(428, "listener_required",
-    "Start a continuous GET A/events?after=<cursor>&wait=25 poll or configure PUT A/wake with a persistent receiver before publishing index.html. A one-off poll or agent token is not a listener.");
+    "Start a continuous GET A/events?after=<cursor>&wait=300 poll or configure PUT A/wake with a persistent receiver before publishing index.html. A one-off poll or agent token is not a listener.");
 }
 
 export function tendrilMeta(t: Tendril) {
@@ -261,6 +261,9 @@ route("POST", /^rollback$/, async (t, req, url, by) => {
 
 route("GET", /^events$/, (t, req, url) => {
   const after = intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER);
+  if (Number(url.searchParams.get("wait")) > LONGPOLL_MAX_WAIT_S) {
+    throw new HttpError(400, "bad_request", `wait may be at most ${LONGPOLL_MAX_WAIT_S} seconds`);
+  }
   const wait = intParam(url, "wait", 0, 0, LONGPOLL_MAX_WAIT_S);
   const limit = intParam(url, "limit", 100, 1, 500);
   return getEvents(t, url, req.signal, after, wait, limit);

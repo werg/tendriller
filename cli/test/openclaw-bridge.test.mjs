@@ -28,6 +28,7 @@ if(previous===0){process.exitCode=1;}else console.log('ok');
     assert.equal(req.headers.authorization,'Bearer tk_secret');
     res.setHeader('Content-Type','application/json');
     const after=Number(u.searchParams.get('after')||0);
+    assert.ok(['0','300'].includes(u.searchParams.get('wait')));
     if(after>=1) await pause(70);
     const all=[{seq:1,type:'event',role:'owner',data:{type:'challenge',secret:'DO_NOT_QUEUE_PAGE_DATA'}}];
     if(secondEvent) all.push({seq:2,type:'instruction',role:'owner',data:{text:'another request'}});

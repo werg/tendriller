@@ -24,7 +24,8 @@ test('Claude channel attaches the current session, sends count-only wake, reads 
     response.setHeader('Content-Type', 'application/json');
     if (url.pathname.endsWith('/events')) {
       const after = Number(url.searchParams.get('after') || 0);
-      if (url.searchParams.get('wait') === '25') await pause(60);
+      assert.ok(['0', '300'].includes(url.searchParams.get('wait')));
+      if (url.searchParams.get('wait') === '300') await pause(60);
       const events = current.filter(e => e.seq > after);
       response.end(JSON.stringify({ events, cursor: events.at(-1)?.seq || after }));
     } else response.end(JSON.stringify({ agent_delivery: { mode: 'live_poll' } }));

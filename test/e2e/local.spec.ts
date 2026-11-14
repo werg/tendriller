@@ -36,7 +36,7 @@ test("agent reminder and each event poll point to the next continuous poll", asy
     const next = await agent(h, `/events?after=${first.data.cursor}&wait=1`);
     expect(next.status).toBe(200);
     expect(next.data.events).toEqual([]);
-    expect(next.data.next_poll).toContain("wait=25");
+    expect(next.data.next_poll).toContain("wait=300");
     expect(next.data.agent_reminder).toMatch(/poll|listen/i);
   } finally { await deletePage(h); }
 });
@@ -60,7 +60,7 @@ test("page tap reaches a held poll and agent speech reply reaches the page", asy
     await signInFixture(context);
     await openClaimed(page, h);
     const initial = await agent(h, "/events?wait=0");
-    const poll = agent(h, `/events?after=${initial.data.cursor}&wait=10`);
+    const poll = agent(h, `/events?after=${initial.data.cursor}&wait=300`);
     await expect.poll(async () => (await agent(h)).data.presence.state).toBe("listening");
     await page.locator("#send").click();
     const events = await poll;

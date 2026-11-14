@@ -36,7 +36,7 @@ function handle(path) {
 async function api(h, suffix, { method = 'GET', body } = {}) {
   const response = await fetch(h.api + suffix, {
     method, headers: { Authorization: `Bearer ${h.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(40000),
+    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(suffix.includes('wait=300') ? 330000 : 40000),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) throw Error(`${method} ${suffix}: HTTP ${response.status} ${data?.error?.message || response.statusText}`);
@@ -58,7 +58,7 @@ async function poll(h, state) {
   while (!state.stopped) {
     try {
       const ack = read(ackPath(h.id), { cursor: 0 }).cursor || 0;
-      const batch = await api(h, `/events?after=${state.cursor}&wait=25`);
+      const batch = await api(h, `/events?after=${state.cursor}&wait=300`);
       state.cursor = Math.max(state.cursor, Number(batch.cursor) || 0);
       const pending = await api(h, `/events?after=${ack}&wait=0`);
       const n = counts(pending.events || []);

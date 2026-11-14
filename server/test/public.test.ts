@@ -47,7 +47,8 @@ it("reminds agents at setup, upload, and every event poll to keep a receiver run
   expect(setup.agent_setup.event_delivery).toBe("not_configured");
   expect(setup.agent_setup.next_step).toContain("continuous GET");
   const first = await (await api(h, "GET", "events?after=0")).json<{ cursor: number; next_poll: string; agent_reminder: string }>();
-  expect(first.next_poll).toBe(`${h.api}/events?after=${first.cursor}&wait=25`);
+  expect(first.next_poll).toBe(`${h.api}/events?after=${first.cursor}&wait=300`);
+  expect((await api(h, "GET", "events?wait=301")).status).toBe(400);
   expect(first.agent_reminder).toContain("Poll next_poll immediately");
   const timeout = await (await api(h, "GET", `events?after=${first.cursor}&wait=1`)).json<{ timeout: boolean; next_poll: string; agent_reminder: string }>();
   expect(timeout.timeout).toBe(true);

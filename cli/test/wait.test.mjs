@@ -54,7 +54,7 @@ for (const noPy of ["", "1"]) {
     assert.equal(readFileSync(cursor + ".prev", "utf8").trim(), "7");
     assert.equal(seen.length, 3);
     assert.deepEqual(seen.map((s) => s.after), ["7", "7", "7"]);
-    assert.ok(seen.every((s) => s.wait === "25" && s.path === "/api/t/abc234abc234/events"));
+    assert.ok(seen.every((s) => s.wait === "300" && s.path === "/api/t/abc234abc234/events"));
   });
 }
 

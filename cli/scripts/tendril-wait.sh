@@ -64,8 +64,15 @@ while :; do
   after=$(cat "$CURSOR_FILE" 2>/dev/null | tr -dc '0-9')
   [ -n "$after" ] || after=0
 
-  code=$(curl -sS -o "$TMP" -w '%{http_code}' --max-time 45 \
-    -H "Authorization: Bearer $TOKEN" "$API/events?after=$after&wait=25" 2>/dev/null)
+  wait_s=300
+  if [ "$MAX" -gt 0 ]; then
+    remaining=$(( MAX - ($(date +%s) - start) ))
+    [ "$remaining" -gt 0 ] || { echo "tendril: no wake within ${MAX}s"; exit 2; }
+    [ "$remaining" -ge "$wait_s" ] || wait_s=$remaining
+  fi
+
+  code=$(curl -sS -o "$TMP" -w '%{http_code}' --max-time "$((wait_s + 30))" \
+    -H "Authorization: Bearer $TOKEN" "$API/events?after=$after&wait=$wait_s" 2>/dev/null)
   [ $? -eq 0 ] || code=000
 
   case $code in

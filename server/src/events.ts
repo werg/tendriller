@@ -65,7 +65,7 @@ export interface Waiter {
 
 function pollReminder(t: Tendril, cursor: number) {
   return {
-    next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=25`,
+    next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=300`,
     agent_reminder: "Poll next_poll immediately, even when events is empty. Keep the listener running while the page is in use. If this agent session can end, configure PUT A/wake to reach a persistent handler. Do not promise live replies without an active listener.",
   };
 }

@@ -94,7 +94,7 @@ Nothing else is required. No declarations, no handshake, no packaging.
 ```
 POST   /new                      create a tendril → page URL, agent token
 PUT    files/<path>              upload a file; `index.html` is the page
-GET    events?after=<cursor>     long-poll, held up to 25 s
+GET    events?after=<cursor>     long-poll, held up to 300 s
 POST   eval                      run JavaScript in the page → JSON result
 ```
 

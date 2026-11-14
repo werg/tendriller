@@ -36,6 +36,17 @@ describe("events and long-poll", () => {
     page.close();
   });
 
+  it("accepts a five-minute wait and rejects longer waits", async () => {
+    const { h, page } = await setup();
+    await page.request({ t: "send", data: { ready: true } });
+    const accepted = await api(h, "GET", "events?wait=300");
+    expect(accepted.status).toBe(200);
+    expect((await accepted.json() as any).events.some((e: any) => e.data?.ready)).toBe(true);
+    const rejected = await api(h, "GET", "events?wait=301");
+    expect(rejected.status).toBe(400);
+    page.close();
+  });
+
   it("holds a long-poll and releases it on a wake event (after a debounce)", async () => {
     const { h, page } = await setup();
     const { cursor } = await apiJson(h, "GET", "events");

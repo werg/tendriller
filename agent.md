@@ -8,6 +8,8 @@ You only need the person's **verified GitHub or Google email address**. Ask for 
 
 **Publication check:** the first `index.html` upload returns HTTP `428 listener_required` unless a long poll is currently waiting or a wake receiver is configured. A one-off `GET A/events` does not pass this check. If the receiver later stops, the page shows **Away** and keeps the person's input for later. Use the runnable example below as the simplest complete setup.
 
+`GET A/events?after=<cursor>&wait=300` can remain open for up to five minutes when nothing happens. A waking event returns immediately; after an empty timeout, reconnect using `next_poll`. A shorter wait is allowed. The agent's host must still resume its conversation when the wait completes.
+
 **Codex on Linux:** the agent can attach this exact conversation without asking the person to configure anything. After saving the creation response to a private file, install the first-party bridge in a persistent local path and attach it **from the Codex turn that created the page**:
 
 ```sh
@@ -104,7 +106,7 @@ curl -sS -X POST "$A/say" -H "Authorization: Bearer $TENDRIL_TOKEN" \
 | --- | --- |
 | `GET`, `PATCH`, `DELETE A` | Inspect, rename, make resident after claim, or delete. |
 | `PUT A/files/<path>`, `POST A/files` | Publish or replace page files; each upload creates a version. |
-| `GET A/events?after=<cursor>&wait=25` | Read owner instructions and page events. |
+| `GET A/events?after=<cursor>&wait=300` | Read owner instructions and page events; returns sooner when an event wakes the listener. |
 | `POST A/say`, `POST A/status` | Talk to the person and show working status. |
 | `GET`, `PUT`, `PATCH A/state` | Keep shared page state. |
 | `POST A/eval` | Inspect or interact with a connected page. |
