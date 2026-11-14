@@ -5,6 +5,7 @@ import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
 import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
+import { createSpeechOutput } from "./speech-output";
 
 export type { Bus, Core } from "./types";
 
@@ -311,17 +312,14 @@ export function createCore(cfg: TendrilConfig): Internal {
     bus.emit("transcript", e);
   };
 
-  const speak = (text: string) => {
-    try {
-      const prefs = (local && local._prefs) || {};
-      if (prefs.audio === false || !text) return;
-      const ss = window.speechSynthesis;
-      if (!ss || typeof SpeechSynthesisUtterance === "undefined") return;
-      const u = new SpeechSynthesisUtterance(String(text));
-      if (prefs.language) u.lang = prefs.language;
-      ss.speak(u);
-    } catch { /* ignore */ }
-  };
+  const tts = createSpeechOutput(cfg.base, bus, () => local?._prefs || {});
+  let speechPrefs = JSON.stringify([local?._prefs?.audio, local?._prefs?.language]);
+  state.on(() => {
+    const next = JSON.stringify([local?._prefs?.audio, local?._prefs?.language]);
+    if (next !== speechPrefs) { tts.stop(); speechPrefs = next; }
+  });
+  bus.on("role", () => { if (device.role !== "owner" || device.pending) tts.stop(); });
+  const speak = (text: string) => tts.speak(text);
 
   const maybeReload = (version: any, guard: boolean) => {
     if (version == null || version === cfg.version) return;
@@ -494,7 +492,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       case "say": {
         addTranscript({ ts: m.ts || Date.now(), from: "agent", text: String(m.text ?? "") });
         bus.emit("say", m);
-        if (device.role === "owner" && m.speak !== false) speak(m.text);
+        if (device.role === "owner" && !device.pending && m.speak !== false) speak(m.text);
         break;
       }
       case "instruction_echo": {
@@ -580,6 +578,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       return out;
     },
     async instruction(text: string, via: "voice" | "text") {
+      tts.stop();
       const entry: any = { ts: Date.now(), from: "user", text, _local: true };
       addTranscript(entry);
       await sendAcked({ t: "send", cid: newCid(), kind: "instruction", text, via, data: { text, via }, wake: true });
@@ -614,6 +613,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       });
     },
     speak,
+    tts,
     ready: () => health.ready(),
     readyManual: () => health.manual(),
   };

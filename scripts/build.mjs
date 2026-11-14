@@ -11,6 +11,9 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "server/public");
 mkdirSync(join(out, "_tendril"), { recursive: true });
+// Preserve native ES-module/worker paths and third-party license notices.
+rmSync(join(out, "_tendril/tts"), { recursive: true, force: true });
+cpSync(join(root, "node_modules/phonon-tts"), join(out, "_tendril/tts"), { recursive: true });
 mkdirSync(join(out, "snippets"), { recursive: true });
 mkdirSync(join(out, "_tendril/brand"), { recursive: true });
 for (const [source, target] of [

@@ -105,6 +105,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     const rest = page.rest;
     const speech = /^_tendril\/speech\/(cactus\.js|cactus\.wasm|whistle\.cact)$/.exec(rest);
     if (speech) return speechAsset(env, speech[1]);
+    if (/^_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(rest)) return asset(env, url, `/${rest}`);
     if (/^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest)) return asset(env, url, `/${rest}`);
     if (rest === "_tendril/tendril.js") return asset(env, url, "/_tendril/tendril.js");
     if (rest === "_tendril/speech-worker.js") return asset(env, url, "/_tendril/speech-worker.js");
@@ -137,6 +138,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     return new Response(landingPage(publicBase(env)), { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
+  if (/^\/_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(path)) return asset(env, url, path);
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") return json({ ok: true });
   if (path === "/status") {

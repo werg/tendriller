@@ -16,6 +16,14 @@ const presence: Presence | null = opts.presence === undefined
   : opts.presence;
 
 const core: Core = {
+  tts: {
+    status: { enabled: true, state: "idle", message: "Neural voice is used for English replies." },
+    async enable() { this.status = { enabled: true, state: "ready", message: "Neural voice is ready." }; core.bus.emit("tts", this.status); },
+    disable() { this.status = { enabled: false, state: "idle", message: "Using the browser voice." }; core.bus.emit("tts", this.status); },
+    stop() { calls.emitted.push({t:"tts:stop",p:null}); },
+    speak() {},
+  },
+  speak(text: string) { calls.utterances.push({text, via:"tts"}); },
   bus: {
     on(t, fn) { if (!handlers.has(t)) handlers.set(t, new Set()); handlers.get(t)!.add(fn); return () => handlers.get(t)!.delete(fn); },
     emit(t, p) { calls.emitted.push({ t, p }); for (const f of handlers.get(t) || []) f(p); },

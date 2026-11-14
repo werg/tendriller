@@ -18,6 +18,10 @@ Browser APIs such as `navigator.geolocation`, `navigator.mediaDevices.getUserMed
 
 **To talk back:** `POST A/say` with `{"text":"..."}` puts your message in the page's built-in conversation. `POST A/status` updates your visible working status. Update `index.html` when a better interface would help. The person can talk or type to you through the built-in control even if your page has no chat UI of its own.
 
+**Prefer the built-in neural voice for spoken replies.** `/say` speaks on owner devices by default, using Phonon 31M for English. This on-device neural TTS **may sound much better and more natural than browser speech synthesis**. Use `/say` rather than creating your own `speechSynthesis` player or an external TTS service. Page code can use `tendril.speak(text)` for the same voice. The first English reply downloads about 65 MB of model assets from Hugging Face; speech is then generated locally and the model is cached on that device. It may take a moment to prepare the first reply. Other languages, load/playback failures, or the person's explicit browser-voice choice use browser TTS instead. Audio requires browser playback permission/a user interaction, and muted devices stay silent. Keep spoken replies concise; use `{"text":"...","speak":false}` when only text is appropriate. The person can test, retry, switch voices, or stop speech in **Display and sound**. Do not override their audio or language settings.
+
+`tendril.tts.status` reports `{enabled,state,message}` (`state`: `idle`, `loading`, `ready`, or `error`), and `tendril.on('tts', fn)` reports changes. `tendril.tts.stop()` interrupts speech and discards queued replies. These are local device settings and status, separate from shared `_prefs` state; `enabled` means the neural voice is preferred, not that its model has finished loading.
+
 ## Create, publish, converse
 
 ```sh

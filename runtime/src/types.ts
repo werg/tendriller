@@ -38,8 +38,9 @@ export interface Core {
   welcome: any | null;
   /** Current device rules (from welcome / `rules`). */
   rules: any[];
-  /** Local speech synthesis honoring `_prefs.audio` / `_prefs.language`. */
+  /** Neural English speech by default, with browser fallback; honors audio/language preferences. */
   speak(text: string): void;
+  tts: import("./speech-output").SpeechOutput;
   /** Health signal (PROTOCOL 4): report now / defer the automatic report until ready(). */
   ready(): void;
   readyManual(): void;

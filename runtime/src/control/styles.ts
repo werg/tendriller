@@ -223,6 +223,7 @@ legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
   min-height: 44px; padding: 0 .6em; border-radius: 10px; border: var(--bw) solid var(--line); background: var(--solid);
 }
 .field input[type="number"] { width: 6em; }
+.field select { max-width: 100%; min-width: 0; }
 .error { color: var(--danger); font-size: .88em; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

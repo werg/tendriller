@@ -96,6 +96,7 @@ docs/          PROTOCOL.md
 npm test                    # build + server tests (vitest with the Workers pool)
 npm run test:e2e            # build + end-to-end Playwright suite (test/e2e)
 npm run typecheck
+npm run test:tts             # neural speech, fallback, cancellation, and device preference tests
 npx playwright test --config runtime/test/playwright.config.ts          # runtime core
 npx playwright test --config runtime/test/control/playwright.config.ts  # control
 npx playwright test --config runtime/test/voice/playwright.config.ts    # voice layer

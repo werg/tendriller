@@ -105,7 +105,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "say",
-    description: "Show a message in the page's control on every device, and speak it on owner devices unless speak is false.",
+    description: "Show a message in the conversation on every device and speak on owner devices unless speak is false. Prefer this for spoken replies: English uses on-device Phonon neural TTS by default, which may sound much better than browser speech synthesis. First use downloads/caches the model; browser TTS is the fallback. Respects the user's audio settings.",
     inputSchema: obj({ text: { type: "string" }, speak: { type: "boolean" } }, ["text"]),
     call: (a) => ({ method: "POST", rest: "say", body: a }),
   },

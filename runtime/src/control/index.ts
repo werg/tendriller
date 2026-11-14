@@ -154,6 +154,14 @@ class Control {
     });
     on("presence", (p: Presence) => this.onPresence(p || this.core.presence));
     on("say", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "agent", text: String(m.text) }); });
+    on("tts", (s: { enabled: boolean; state: string; message: string }) => {
+      if (this.ui.ttsStatus) this.ui.ttsStatus.textContent = s.message;
+      if (this.ui.ttsVoice) (this.ui.ttsVoice as HTMLSelectElement).value = s.enabled ? "neural" : "browser";
+      if (this.ui.speechStatus) {
+        this.ui.speechStatus.textContent = s.message;
+        this.ui.speechStatus.hidden = !["loading", "error"].includes(s.state);
+      }
+    });
     on("instruction_echo", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "user", text: String(m.text) }); });
     on("role", () => { this.applyPrefs(); this.render(); });
     on("control:go_back", (m: any) => { void this.goBack(m?.version); });
@@ -276,6 +284,7 @@ class Control {
       pointerHandled = true;
       downAt = Date.now();
       if (this.capture.listening) return; // second tap stops (handled on up)
+      this.core.tts?.stop();
       try { b.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       void this.capture.start(true);
     });
@@ -296,7 +305,8 @@ class Control {
       // Keyboard and switch access: click toggles.
       e.preventDefault();
       if (!this.capture?.mode) return;
-      if (this.capture.listening) this.capture.stop(); else void this.capture.start(false);
+      if (this.capture.listening) this.capture.stop();
+      else { this.core.tts?.stop(); void this.capture.start(false); }
     });
     b.addEventListener("contextmenu", (e) => e.preventDefault());
     return b;
@@ -330,6 +340,8 @@ class Control {
     ));
     u.notices = h("div", null);
     u.sheet.appendChild(u.notices);
+    u.speechStatus = h("p", { class: "muted", role: "status", hidden: true });
+    u.sheet.appendChild(u.speechStatus);
 
     u.transcript = h("ol", { class: "log", role: "log", "aria-label": "Conversation", "aria-live": "off" });
     u.sheet.appendChild(u.transcript);
@@ -609,6 +621,14 @@ class Control {
       langSel.appendChild(h("option", { value: l, text: n === l ? l : `${n} (${l})` }));
     }
     langSel.value = this.lang;
+    const tts = this.core.tts;
+    this.ui.ttsStatus = h("p", { class: "muted", role: "status", "aria-live": "polite", text: tts?.status.message || "Browser voice" });
+    const voice = h("select", { id: "tendril-voice", onchange: (e: Event) => {
+      if ((e.target as HTMLSelectElement).value === "browser") tts?.disable();
+      else void tts?.enable().catch(() => {});
+    } }, h("option", { value: "neural", text: "Neural voice (recommended, English)" }), h("option", { value: "browser", text: "Browser voice" })) as HTMLSelectElement;
+    voice.value = tts?.status.enabled === false ? "browser" : "neural";
+    this.ui.ttsVoice = voice;
     clear(panel,
       seg("tendril-size", "Text size", [["normal", "Normal"], ["large", "Large"], ["x-large", "Larger"]], size, (v) => this.setPref("text_size", v)),
       h("label", { class: "switch" },
@@ -618,7 +638,14 @@ class Control {
         h("input", { type: "checkbox", checked: p.audio !== false, onchange: (e: Event) => this.setPref("audio", (e.target as HTMLInputElement).checked) }),
         "Sounds and spoken replies"),
       h("div", { class: "field" }, h("label", { for: "tendril-lang", text: "Language" }), langSel),
-      h("p", { class: "muted", text: "These settings are shared with the agent's page, which is asked to follow them." }),
+      h("div", { class: "field" }, h("label", { for: "tendril-voice", text: "Spoken voice" }), voice),
+      h("p", { text: "The neural voice can sound much more natural than browser speech. English replies use it by default; other languages use the browser voice. Text is spoken on your device. The model downloads from Hugging Face and is cached here." }),
+      this.ui.ttsStatus,
+      h("div", { class: "actions" },
+        h("button", { type: "button", class: "btn", onclick: () => this.core.speak?.("Hello! I'm your Tendriller voice.") }, "Test voice"),
+        h("button", { type: "button", class: "btn", onclick: () => { void tts?.enable().catch(() => {}); } }, "Try neural voice"),
+        h("button", { type: "button", class: "btn", onclick: () => tts?.stop() }, "Stop speaking")),
+      h("p", { class: "muted", text: "Text size, contrast, audio and language settings are shared with the agent's page. Your voice choice is saved only on this device." }),
     );
   }
 
@@ -633,6 +660,7 @@ class Control {
   }
 
   private async submit(raw: string, via: "voice" | "text") {
+    this.core.tts?.stop();
     const text = raw.trim();
     if (!text || !this.canInput) return;
     this.lastSendAt = Date.now();

@@ -35,6 +35,25 @@ const live = (page: Page) => page.locator("tendril-control [aria-live=polite][ro
 const openSheet = async (page: Page) => { await presenceBtn(page).click(); await expect(page.locator("#tendril-sheet")).toBeVisible(); };
 const calls = (page: Page) => page.evaluate(() => (window as any).__fake.calls);
 
+test("neural voice is recommended and voice controls update device settings", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await load(page);
+  await openSheet(page);
+  await page.getByText("Display and sound", { exact: true }).click();
+  const voice = page.getByLabel("Spoken voice", { exact: true });
+  await expect(voice).toHaveValue("neural");
+  await voice.selectOption("browser");
+  await expect(page.getByText("Using the browser voice.", { exact: true }).last()).toBeVisible();
+  await page.getByRole("button", { name: "Try neural voice", exact: true }).click();
+  await expect(voice).toHaveValue("neural");
+  await page.getByRole("button", { name: "Test voice", exact: true }).click();
+  expect((await calls(page)).utterances).toEqual([{text:"Hello! I'm your Tendriller voice.",via:"tts"}]);
+  await page.getByRole("button", { name: "Stop speaking", exact: true }).click();
+  expect((await calls(page)).emitted.some((e: any) => e.t === "tts:stop")).toBe(true);
+  expect((await calls(page)).state).toEqual([]);
+  expect(await page.locator("#tendril-sheet").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
+
 test("renders without touching page layout", async ({ page }) => {
   // Same page without the control, for comparison.
   await page.setContent(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${PAGE_BODY}</body></html>`);

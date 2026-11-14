@@ -51,6 +51,7 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
     upload: (blob: Blob, opts?: { name?: string }) => core.upload(blob, opts),
     ready,
     speak: (text: string) => core.speak(text),
+    tts: core.tts,
     /** Headers proving this device to page HTTP routes. */
     deviceHeaders: () => core.deviceHeaders(),
     device: core.device, // live object: role/pending update in place

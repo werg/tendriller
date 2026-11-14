@@ -180,13 +180,7 @@ export function startRules(core: Core): void {
   }
 
   function say(text: string) {
-    if (!text || typeof speechSynthesis === "undefined") return;
-    let prefs: any;
-    try { prefs = core.state.get(["_prefs"]); } catch { prefs = null; }
-    if (prefs?.audio === false) return;
-    const u = new SpeechSynthesisUtterance(text);
-    if (prefs?.language) u.lang = prefs.language;
-    speechSynthesis.speak(u);
+    core.speak(text);
   }
 
   core.bus.on("welcome", (w: any) => apply(w?.rules));

@@ -10,6 +10,26 @@ async function open(page: Page, t: MockTendril) {
   await page.waitForFunction(() => (window as any).tendril && (window as any).tendril.connected);
 }
 
+test("agent replies auto-speak only for approved owners and respect speak:false", async ({ page }) => {
+  const t = mock.create();
+  await open(page, t);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.autoSpeech = [];
+    w.tendril.tts.speak = (text: string) => w.autoSpeech.push(text);
+  });
+  mock.broadcast(t, { t: "say", text: "owner reply", speak: true });
+  mock.broadcast(t, { t: "say", text: "text only", speak: false });
+  mock.broadcast(t, { t: "role", role: "guest", pending: false });
+  mock.broadcast(t, { t: "say", text: "guest reply", speak: true });
+  mock.broadcast(t, { t: "role", role: "owner", pending: true });
+  mock.broadcast(t, { t: "say", text: "pending reply", speak: true });
+  mock.broadcast(t, { t: "role", role: "owner", pending: false });
+  mock.broadcast(t, { t: "say", text: "default speech" });
+  await expect.poll(() => page.evaluate(() => (window as any).autoSpeech)).toEqual(["owner reply", "default speech"]);
+  expect(await page.evaluate(() => (window as any).tendril._core.transcript.map((e: any) => e.text))).toEqual(["owner reply", "text only", "guest reply", "pending reply", "default speech"]);
+});
+
 test("window.tendril exists synchronously; hello and welcome", async ({ page }) => {
   const t = mock.create({
     html: `<script>
