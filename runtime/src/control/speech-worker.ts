@@ -47,7 +47,9 @@ scope.onmessage = async (event: MessageEvent) => {
       if (!ptr) throw new Error("Could not allocate speech model memory");
       try {
         engine.HEAPU8.set(model, ptr);
-        const code = engine._cactus_load(ptr, model.byteLength);
+        // The pinned WASM export takes (i32 pointer, i64 length). WebAssembly i64
+        // arguments require a JS bigint; passing a number throws before loading.
+        const code = engine._cactus_load(ptr, BigInt(model.byteLength));
         if (code < 0) throw new Error(engine.UTF8ToString(engine._cactus_last_error()));
       } finally { engine._free(ptr); }
       scope.postMessage({ id, ready: true });

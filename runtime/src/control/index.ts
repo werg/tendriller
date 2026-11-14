@@ -669,19 +669,19 @@ class Control {
     this.lines = this.lines.slice(-TRANSCRIPT_MAX);
     this.renderTranscript();
     try {
-      await this.core.instruction(text, via);
+      const result = await this.core.instruction(text, via);
+      this.showBubble(result.queued ? "Saved on this device. It will send when the connection returns." : this.ackText(via), true);
     } catch {
       this.showBubble("Couldn't send that. It will be retried when the connection returns.", true);
       return;
     }
-    this.showBubble(this.ackText(via), true);
   }
 
   private ackText(via: "voice" | "text"): string {
     if (this.role === "guest") return "Sent to the page as a guest message.";
     if (!this.core.connected) return "Saved. It will be sent when the connection returns.";
     const s = this.core.presence?.state;
-    if (s === "no_agent" || s === "away") return "Saved for later. No agent is attached right now.";
+    if (s === "no_agent" || s === "away") return "Saved for later. No agent is listening right now.";
     if (s === "not_responding") return "Sent. The agent hasn't responded yet; it will see this when it checks in.";
     if (s === "scheduled") return "The agent will see this at its next check.";
     if ((this.core.presence?.withheld ?? 0) > this.lastWithheld) return "The agent will see this at its next check.";

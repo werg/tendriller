@@ -279,9 +279,12 @@ export function createCore(cfg: TendrilConfig): Internal {
   const sendAcked = (msg: any): Promise<any | null> => {
     const p = new Promise<any | null>((res) => {
       let done = false;
-      const finish = (a: any | null) => { if (done) return; done = true; ackWaiters.delete(msg.cid); res(a); };
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = (a: any | null) => { if (done) return; done = true; clearTimeout(timer); ackWaiters.delete(msg.cid); res(a); };
       ackWaiters.set(msg.cid, finish);
-      if (!ready) setTimeout(() => finish(null), SEND_WAIT_OFFLINE_MS);
+      // A socket can stay open while its acknowledgement is lost. Keep the message
+      // in offline storage, but never leave the person's UI waiting indefinitely.
+      timer = setTimeout(() => finish(null), ready ? 8000 : SEND_WAIT_OFFLINE_MS);
     });
     enqueue(msg);
     return p;
@@ -581,7 +584,9 @@ export function createCore(cfg: TendrilConfig): Internal {
       tts.stop();
       const entry: any = { ts: Date.now(), from: "user", text, _local: true };
       addTranscript(entry);
-      await sendAcked({ t: "send", cid: newCid(), kind: "instruction", text, via, data: { text, via }, wake: true });
+      const ack = await sendAcked({ t: "send", cid: newCid(), kind: "instruction", text, via, data: { text, via }, wake: true });
+      if (ack?.error) throw new Error(typeof ack.error === "string" ? ack.error : "Message rejected");
+      return { queued: !ack };
     },
     request(msg) {
       const m: any = { ...msg, cid: msg.cid || newCid() };

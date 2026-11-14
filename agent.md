@@ -2,7 +2,11 @@
 
 Tendriller lets an agent make a small, changeable web page for a person. Think of it as an extra set of eyes, ears, and controls: a place to show what the agent is doing, collect input, and keep a conversation going. Start with something useful and simple; reshape the page as the person's needs become clearer.
 
-You only need the person's **verified GitHub or Google email address**. Ask for it if you don't know it, along with what they want the page to do. Create the page for that email and give them its `page_url`. When they open the link, Tendriller signs them in if needed and opens the page automatically. They do not need to create or copy an account key, enter a code, or press Claim. Their browser never shares OAuth credentials with you.
+You only need the person's **verified GitHub or Google email address**. Ask for it if you don't know it, along with what they want the page to do. Create the page for that email, establish event delivery, then give them its `page_url`. When they open the link, Tendriller signs them in if needed and opens the page automatically. They do not need to create or copy an account key, enter a code, or press Claim. Their browser never shares OAuth credentials with you.
+
+**Before you give them the link, arrange event delivery.** Start a long-running `GET A/events?after=<cursor>&wait=25` loop and keep it alive, or configure `PUT A/wake` to reach an agent host that will actually resume you. A single poll, an agent token, a published page, and a message sent with `POST A/say` do **not** keep you listening. If your environment cannot run a listener or accept wakes, tell the person the page saves their input for later and do not promise immediate replies. The creation response's `agent_setup`, every event poll's `agent_reminder` and `next_poll`, and file upload responses repeat this requirement.
+
+**Publication check:** the first `index.html` upload returns HTTP `428 listener_required` unless a long poll is currently waiting or a wake receiver is configured. A one-off `GET A/events` does not pass this check. If the receiver later stops, the page shows **Away** and keeps the person's input for later. Use the runnable example below as the simplest complete setup.
 
 ## A first build
 
@@ -31,9 +35,9 @@ curl -sS -X POST https://tendriller.dev/api/tendrils \
 chmod 600 .tendril.json
 ```
 
-The response has `page_url`, `api`, and `token`. Give the person **only** `page_url`. Save `api` as `A` and the token as `TENDRIL_TOKEN` in your private storage; never put the token in a page or shared link. Reuse this page across conversations. It is initially `ad_hoc` and must be opened by its intended owner within 24 hours. After they open it, you can make it persistent with `PATCH A` and `{"lifetime":"resident"}` if that suits their request.
+The response has `page_url`, `api`, `token`, and `agent_setup`. Save `api` as `A` and the token as `TENDRIL_TOKEN` in your private storage; never put the token in a page or shared link. Give the person **only** `page_url` after arranging event delivery, or clearly say that replies will wait until your next session. Reuse this page across conversations. It is initially `ad_hoc` and must be opened by its intended owner within 24 hours. After they open it, you can make it persistent with `PATCH A` and `{"lifetime":"resident"}` if that suits their request.
 
-Publish a page. The first `index.html` replaces the waiting screen automatically:
+Start a persistent listener (or configure a working wake endpoint), then publish a page. The first `index.html` replaces the waiting screen automatically:
 
 ```html
 <!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -52,15 +56,15 @@ document.querySelector('#here').onclick = () => {
 ```
 
 ```sh
+# Run these in a separate process while your event listener is active.
 curl -sS -X PUT "$A/files/index.html" \
   -H "Authorization: Bearer $TENDRIL_TOKEN" \
   -H 'Content-Type: text/html' --data-binary @index.html
-curl -sS "$A/events?after=0&wait=25" -H "Authorization: Bearer $TENDRIL_TOKEN"
 curl -sS -X POST "$A/say" -H "Authorization: Bearer $TENDRIL_TOKEN" \
   -H 'Content-Type: application/json' -d '{"text":"Your notebook is ready. Tap Share my location when you want me to use it."}'
 ```
 
-**Keep your agent running or arrange a wake.** `tendril.send` queues an event; Tendriller does not execute your agent code or wake a chat session by itself. A live agent process should keep polling `GET A/events?after=<cursor>&wait=25` and save each returned `cursor`. If your agent host accepts webhooks, configure `PUT A/wake` so new activity can wake that process. Handle owner `instruction` events as requests. Handle page `event` data according to the interface you wrote, and tell the person what you did with `POST A/say`. Build a new version when the interface should change. A runnable Node example is at [`examples/first-page`](https://github.com/werg/tendriller/tree/master/examples/first-page): run it with `TENDRILLER_OWNER=ana@example.com node examples/first-page/run.mjs` and optionally set `TENDRILLER_SERVICE_BASE` for staging.
+`tendril.send` queues an event; Tendriller does not execute your agent code or wake a chat session by itself. On **every** poll response, save `cursor`, handle the events, then immediately request `next_poll`, including after an empty timeout. Persist the cursor across restarts. If your agent host accepts webhooks, configure `PUT A/wake` so new activity can wake that process. Handle owner `instruction` events as requests. Handle page `event` data according to the interface you wrote, and tell the person what you did with `POST A/say`. Build a new version when the interface should change. A runnable Node example that starts its listener before announcing the page is at [`examples/first-page`](https://github.com/werg/tendriller/tree/master/examples/first-page): run it with `TENDRILLER_OWNER=ana@example.com node examples/first-page/run.mjs` and optionally set `TENDRILLER_SERVICE_BASE` for staging.
 
 ## Useful endpoints
 

@@ -39,7 +39,9 @@ const CUES: Record<Cue, { f: number; at: number; d: number }[]> = {
 };
 
 export function playCue(cue: Cue): void {
-  const c = getCtx();
+  // Presence can change before the first user gesture. Only the unlock handler may
+  // create an AudioContext, otherwise browsers warn about blocked autoplay.
+  const c = ctx;
   if (!c || c.state !== "running") return;
   const t0 = c.currentTime + 0.02;
   const master = c.createGain();

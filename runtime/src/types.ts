@@ -26,7 +26,7 @@ export interface Core {
   transcript: TranscriptEntry[];
   state: StateApi;
   send(data: any, opts?: { wake?: boolean }): Promise<{ seq?: number; queued: boolean }>;
-  instruction(text: string, via: "voice" | "text"): Promise<void>;
+  instruction(text: string, via: "voice" | "text"): Promise<{ queued: boolean }>;
   request(msg: { t: string; [k: string]: any }): Promise<any>;
   raw(msg: object): void;
   upload(blob: Blob, opts?: { name?: string }): Promise<{ id: string; url: string }>;

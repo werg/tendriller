@@ -60,8 +60,29 @@ async function tendrilInfo(t: Tendril) {
     devices: t.listDevices(),
     presence: t.presence(),
     wake: t.renderWake(),
+    agent_delivery: deliveryFeedback(t),
     meta: tendrilMeta(t),
   };
+}
+
+function deliveryFeedback(t: Tendril) {
+  const facts = t.presenceFacts();
+  const mode = facts.longPollHeld ? "live_poll" : facts.webhook ? "wake_configured" : "none";
+  return {
+    mode,
+    live_listener: facts.longPollHeld,
+    reminder: mode === "none"
+      ? "No event listener or wake endpoint is active. Start continuous GET A/events?after=<cursor>&wait=25 polling or configure PUT A/wake before promising live replies."
+      : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
+  };
+}
+
+function requireFirstPageReceiver(t: Tendril): void {
+  if (latestFileMap(t).has("index.html")) return;
+  const facts = t.presenceFacts();
+  if (facts.longPollHeld || facts.webhook) return;
+  throw new HttpError(428, "listener_required",
+    "Start a continuous GET A/events?after=<cursor>&wait=25 poll or configure PUT A/wake with a persistent receiver before publishing index.html. A one-off poll or agent token is not a listener.");
 }
 
 export function tendrilMeta(t: Tendril) {
@@ -162,18 +183,20 @@ route("POST", /^release$/, async (t) => {
 route("PUT", /^files\/(.+)$/, async (t, req, url, by, [raw]) => {
   const path = normalizeFilePath(raw);
   if (!path) throw new HttpError(400, "bad_path", "Invalid file path (no '..', no leading '_tendril/', no trailing '/')");
+  if (path === "index.html") requireFirstPageReceiver(t);
   const body = await readBody(req, t.fileLimit());
   const type = resolveType(path, req.headers.get("Content-Type"));
   const { hash, size } = await storeContent(t, body, type);
   const files = latestFileMap(t);
   files.set(path, { path, hash, type, size });
   const version = await createVersion(t, files, url.searchParams.get("message"), by);
-  return json({ version, files: [...files.keys()].sort() });
+  return json({ version, files: [...files.keys()].sort(), agent_delivery: deliveryFeedback(t) });
 });
 
 route("POST", /^files$/, async (t, req, url, by) => {
   const b = await readJson(req, t.fileLimit() * 4);
   if (b.files !== undefined && !isPlainObject(b.files)) throw new HttpError(400, "bad_request", "files must be an object of path → content");
+  if (isPlainObject(b.files) && Object.hasOwn(b.files, "index.html")) requireFirstPageReceiver(t);
   const files = b.replace ? new Map<string, VersionFile>() : latestFileMap(t);
   if (b.delete !== undefined) {
     if (!Array.isArray(b.delete)) throw new HttpError(400, "bad_request", "delete must be an array of paths");
@@ -200,7 +223,7 @@ route("POST", /^files$/, async (t, req, url, by) => {
     files.set(path, { path, hash, type, size });
   }
   const version = await createVersion(t, files, typeof b.message === "string" ? b.message.slice(0, 500) : null, by);
-  return json({ version, files: [...files.keys()].sort() });
+  return json({ version, files: [...files.keys()].sort(), agent_delivery: deliveryFeedback(t) });
 });
 
 function requestedVersion(t: Tendril, url: URL): number {

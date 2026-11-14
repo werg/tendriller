@@ -25,7 +25,7 @@ export class SpeechCapture {
 
   constructor(private h: CaptureHandlers, private sensors: SensorTracker, private lang: () => string,
     private base: string, private speech: { model: string; url: string; sha256: string }) {
-    this.mode = typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!window.AudioContext && !!window.Worker ? "local" : null;
+    this.mode = typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!window.OfflineAudioContext && !!window.Worker ? "local" : null;
   }
 
   private call(action: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<any> {
@@ -107,10 +107,11 @@ export class SpeechCapture {
     this.h.onState(false);
     if (this.cancelled || !blob.size) return;
     this.h.onInterim("Transcribing on this device…");
-    let context: AudioContext | null = null;
     try {
-      context = new AudioContext();
-      const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+      // Decoding needs no playback device. An AudioContext created from MediaRecorder's
+      // async stop callback may be blocked by autoplay rules after the tap has ended.
+      const decoder = new OfflineAudioContext(1, 1, 16000);
+      const decoded = await decoder.decodeAudioData(await blob.arrayBuffer());
       const channels = decoded.numberOfChannels;
       const length = Math.min(decoded.length, decoded.sampleRate * 30);
       const mono = new Float32Array(length);
@@ -131,7 +132,6 @@ export class SpeechCapture {
     } catch {
       this.h.onError("On-device transcription failed. You can type instead.");
     } finally {
-      await context?.close();
       this.h.onInterim("");
     }
   }

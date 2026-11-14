@@ -63,6 +63,13 @@ export interface Waiter {
   timer: ReturnType<typeof setTimeout>;
 }
 
+function pollReminder(t: Tendril, cursor: number) {
+  return {
+    next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=25`,
+    agent_reminder: "Poll next_poll immediately, even when events is empty. Keep the listener running while the page is in use. If this agent session can end, configure PUT A/wake to reach a persistent handler. Do not promise live replies without an active listener.",
+  };
+}
+
 export function renderEvent(r: Record<string, any>): StoredEvent {
   return {
     seq: r.seq,
@@ -201,7 +208,7 @@ function withheldTotal(t: Tendril): number {
 }
 
 /** Returns events after `after`; reports and resets the withheld counters; advances the agent cursor. */
-export function readEvents(t: Tendril, after: number, limit: number): { events: StoredEvent[]; cursor: number; withheld: number } {
+export function readEvents(t: Tendril, after: number, limit: number) {
   const events = t.db.all("SELECT * FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?", after, limit).map(renderEvent);
   const cursor = events.length ? events[events.length - 1].seq : after;
   const withheld = withheldTotal(t);
@@ -210,7 +217,7 @@ export function readEvents(t: Tendril, after: number, limit: number): { events: 
     t.refreshPresence();
   }
   if (cursor > t.db.get<number>("agent_cursor", 0)) t.db.set("agent_cursor", cursor);
-  return { events, cursor, withheld };
+  return { events, cursor, withheld, ...pollReminder(t, cursor) };
 }
 
 export function getEvents(t: Tendril, url: URL, signal: AbortSignal | undefined, after: number, wait: number, limit: number): Promise<Response> | Response {
@@ -223,7 +230,7 @@ export function getEvents(t: Tendril, url: URL, signal: AbortSignal | undefined,
       resolve,
       timer: setTimeout(() => {
         t.waiters.delete(w);
-        resolve(json({ events: [], cursor: after, timeout: true, withheld: withheldTotal(t) }));
+        resolve(json({ events: [], cursor: after, timeout: true, withheld: withheldTotal(t), ...pollReminder(t, after) }));
         t.refreshPresence();
       }, wait * 1000),
     };
@@ -232,7 +239,7 @@ export function getEvents(t: Tendril, url: URL, signal: AbortSignal | undefined,
       if (!t.waiters.has(w)) return;
       t.waiters.delete(w);
       clearTimeout(w.timer);
-      resolve(json({ events: [], cursor: after, timeout: true, withheld: withheldTotal(t) }));
+      resolve(json({ events: [], cursor: after, timeout: true, withheld: withheldTotal(t), ...pollReminder(t, after) }));
       t.refreshPresence();
     });
     t.refreshPresence();

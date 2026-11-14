@@ -20,6 +20,11 @@ async function createPublic(owner = "person@example.com", ip = "192.0.2.10"): Pr
   return res.json<Handle>();
 }
 
+async function enableWake(h: Handle): Promise<void> {
+  const result = await api(h, "PUT", "wake", { webhook: { url: "https://example.org/tendriller-test" } });
+  expect(result.status).toBe(200);
+}
+
 async function claimAs(h: Handle, account: string, email: string, rawSession = `test-${crypto.randomUUID()}`): Promise<string> {
   const now = Date.now();
   await db.batch([
@@ -35,6 +40,26 @@ async function claimAs(h: Handle, account: string, email: string, rawSession = `
   expect(auth.status).toBe(303);
   return cookie;
 }
+
+it("reminds agents at setup, upload, and every event poll to keep a receiver running", async () => {
+  const h = await createPublic("listener@example.com", "192.0.2.51");
+  const setup = h as Handle & { agent_setup: { event_delivery: string; next_step: string } };
+  expect(setup.agent_setup.event_delivery).toBe("not_configured");
+  expect(setup.agent_setup.next_step).toContain("continuous GET");
+  const first = await (await api(h, "GET", "events?after=0")).json<{ cursor: number; next_poll: string; agent_reminder: string }>();
+  expect(first.next_poll).toBe(`${h.api}/events?after=${first.cursor}&wait=25`);
+  expect(first.agent_reminder).toContain("Poll next_poll immediately");
+  const timeout = await (await api(h, "GET", `events?after=${first.cursor}&wait=1`)).json<{ timeout: boolean; next_poll: string; agent_reminder: string }>();
+  expect(timeout.timeout).toBe(true);
+  expect(timeout.next_poll).toBe(first.next_poll);
+  expect(timeout.agent_reminder).toContain("even when events is empty");
+  const blocked = await api(h, "PUT", "files/index.html", "<h1>Hello</h1>");
+  expect(blocked.status).toBe(428);
+  expect(await blocked.json()).toMatchObject({ error: { code: "listener_required" } });
+  await enableWake(h);
+  const upload = await (await api(h, "PUT", "files/index.html", "<h1>Hello</h1>")).json<{ agent_delivery: { mode: string } }>();
+  expect(upload.agent_delivery).toMatchObject({ mode: "wake_configured" });
+});
 
 it("requires an owner email and refuses a different verified account", async () => {
   const missing = await req("/api/tendrils", { method: "POST", headers: creatorHeaders, body: "{}" });
@@ -381,6 +406,7 @@ it("holds a high-risk version on a young account before serving it", async () =>
   await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), "screen@example.com").run();
   const h = await createPublic("screen@example.com", "192.0.2.46");
   await claimAs(h, account, "screen@example.com");
+  await enableWake(h);
   const upload = await api(h, "PUT", "files/index.html", "<html><input type=password></html>");
   expect(upload.status).toBe(200);
   expect((await db.prepare("SELECT state FROM tendrils WHERE id = ?").bind(h.id).first<{ state: string }>())?.state).toBe("held");
@@ -391,6 +417,7 @@ it("holds a high-risk version on a young account before serving it", async () =>
 
 it("accepts pages with many outbound URLs without a reputation service", async () => {
   const h = await createPublic("person@example.com", "192.0.2.223");
+  await enableWake(h);
   const links = Array.from({ length: 60 }, (_, i) => `<a href="https://example.org/${i}">link</a>`).join("");
   const upload = await api(h, "PUT", "files/index.html", `<html>${links}</html>`);
   expect(upload.status).toBe(200);
@@ -402,6 +429,7 @@ it("accepts pages with many outbound URLs without a reputation service", async (
 
 it("retains local static screening for external form actions", async () => {
   const h = await createPublic("person@example.com", "192.0.2.224");
+  await enableWake(h);
   const upload = await api(h, "PUT", "files/index.html", '<form action="https://example.org/collect"><p>Google sign in</p></form>');
   expect(upload.status).toBe(200);
   const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(
