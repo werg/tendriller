@@ -141,6 +141,9 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (/^\/_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(path)) return asset(env, url, path);
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") return json({ ok: true });
+  if (path === "/codex-bridge.mjs" && req.method === "GET") {
+    return asset(env, url, path, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
+  }
   if (path === "/status") {
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
     return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);

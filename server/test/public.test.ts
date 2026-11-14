@@ -61,6 +61,13 @@ it("reminds agents at setup, upload, and every event poll to keep a receiver run
   expect(upload.agent_delivery).toMatchObject({ mode: "wake_configured" });
 });
 
+it("serves the first-party Codex bridge from the service origin", async () => {
+  const response = await req("/codex-bridge.mjs");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Type")).toContain("text/javascript");
+  expect(await response.text()).toContain("codex");
+});
+
 it("requires an owner email and refuses a different verified account", async () => {
   const missing = await req("/api/tendrils", { method: "POST", headers: creatorHeaders, body: "{}" });
   expect(missing.status).toBe(400);
