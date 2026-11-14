@@ -53,7 +53,7 @@ async function api(cfg, rest, {method='GET',body}={}) {
   return data;
 }
 function counts(events) {
-  const relevant=events.filter(e=>e.wake===true||(e.role==='owner'&&(e.type==='event'||e.type==='instruction')));
+  const relevant=events.filter(e=>e.wake===true);
   return {events:relevant.length,instructions:relevant.filter(e=>e.type==='instruction').length};
 }
 async function queue(cfg, state, latest, n) {

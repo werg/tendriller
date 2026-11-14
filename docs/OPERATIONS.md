@@ -38,6 +38,8 @@ GitHub Actions runs typecheck, Worker tests, and CLI bridge tests on pull reques
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
+**Idle delivery cost:** The bundled local host bridges hold five-minute HTTP long polls against each page's Durable Object even when no browser has the page open. Empty polls do not invoke an agent model, but the pending request and timer prevent the Durable Object from hibernating, so duration usage continues. Watch the [Durable Objects duration and Free-tier limits](https://developers.cloudflare.com/durable-objects/platform/pricing/) as attached pages grow. Webhook and MCP Events receivers avoid this held poll. A hibernating agent WebSocket would be the lower-cost persistent transport for local bridges, but is not implemented yet.
+
 ## Launch checks
 
 - Both OAuth providers sign in and link accounts through real callbacks. Verify a named owner against verified provider email and provider subject.

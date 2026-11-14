@@ -44,7 +44,7 @@ async function api(h, suffix, { method = 'GET', body } = {}) {
 }
 const ackPath = id => join(root, `${id}.ack.json`);
 const counts = events => {
-  const relevant = events.filter(e => e.wake === true || (e.role === 'owner' && (e.type === 'event' || e.type === 'instruction')));
+  const relevant = events.filter(e => e.wake === true);
   return { events: relevant.length, instructions: relevant.filter(e => e.type === 'instruction').length };
 };
 async function notify(h, latest, n) {

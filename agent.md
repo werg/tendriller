@@ -10,6 +10,8 @@ You only need the person's **verified GitHub or Google email address**. Ask for 
 
 `GET A/events?after=<cursor>&wait=300` can remain open for up to five minutes when nothing happens. A waking event returns immediately; after an empty timeout, reconnect using `next_poll`. A shorter wait is allowed. The agent's host must still resume its conversation when the wait completes.
 
+The bundled bridges reconnect quietly after those empty timeouts: they do not invoke the model for each poll. They notify the conversation only for events the server marks `wake:true`. Page events sent with `{wake:false}` remain in the queue and are included when a later waking event is read. An unloaded page has no browser socket or sensor work, but the attached bridge continues listening.
+
 **Codex on Linux:** the agent can attach this exact conversation without asking the person to configure anything. After saving the creation response to a private file, install the first-party bridge in a persistent local path and attach it **from the Codex turn that created the page**:
 
 ```sh

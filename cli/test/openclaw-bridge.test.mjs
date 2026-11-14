@@ -31,7 +31,7 @@ if(previous===0){process.exitCode=1;}else console.log('ok');
     assert.ok(['0','300'].includes(u.searchParams.get('wait')));
     if(after>=1) await pause(70);
     const all=[{seq:1,type:'event',role:null,wake:true,by:'agent_probe',data:{kind:'delivery_probe',secret:'DO_NOT_QUEUE_PAGE_DATA'}}];
-    if(secondEvent) all.push({seq:2,type:'instruction',role:'owner',data:{text:'another request'}});
+    if(secondEvent) all.push({seq:2,type:'instruction',role:'owner',wake:true,data:{text:'another request'}});
     const events=all.filter(e=>e.seq>after);
     res.end(JSON.stringify({events,cursor:events.at(-1)?.seq||after}));
   });
