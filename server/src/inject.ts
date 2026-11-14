@@ -109,9 +109,9 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <header>${brandLink}<a href="/dashboard">Dashboard</a></header>
 <section class="hero" aria-labelledby="hero-title">
 <div class="hero-art">${brandLogo}</div>
-<div class="hero-copy"><h1 id="hero-title">A live page for your agent session</h1>
-<p>Your agent builds and changes this page live. Talk or type to it here, even when the agent runs on another device.</p>
-<p>With your permission, the page sends that device’s camera, location, motion, microphone, and other inputs back to the agent.</p>
+<div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
+<p>Your agent creates an ad-hoc page connected to your ongoing session. Talk or type to the agent from that page while it updates the interface live.</p>
+<p>Open it on any of your devices. With your permission, it can send that device’s camera, location, motion, microphone, and other inputs back to the agent.</p>
 <div class="actions"><a class="button" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a><a class="button secondary" href="/dashboard">Open dashboard</a></div></div>
 </section>
 <section class="how" aria-labelledby="how-title"><h2 id="how-title">How it works</h2><p>Setup starts in the agent session you already use.</p>
