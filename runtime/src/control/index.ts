@@ -2,7 +2,7 @@
 // Rendered into a Shadow DOM on a fixed, zero-size host so it never affects page layout.
 //
 // Bus events this module listens to (from core): connect, disconnect, welcome, presence,
-// say, instruction_echo, role, state.
+// say, instruction_echo, instruction_ack, role, state.
 // Bus events it handles for other modules:
 //   control:go_back   {version?}  → rollback (owner only); replies with control:go_back_result {ok, version?, error?}
 //   control:open / control:close  → open or close the sheet
@@ -144,7 +144,15 @@ class Control {
     on("welcome", (w: any) => {
       if (w?.budget) this.budget = { ...w.budget };
       const tr: TranscriptEntry[] = this.core.transcript?.length ? this.core.transcript : (w?.transcript || []);
-      const locals = this.lines.filter((l) => l.local);
+      // A reconnect can receive the server transcript after the original echo or
+      // ack was lost. Do not append the old optimistic row a second time.
+      const unmatched = tr.filter((l) => l.from === "user" && !(l as any)._local);
+      const locals = this.lines.filter((l) => l.local && !(() => {
+        const i = unmatched.findIndex((server) => server.text === l.text && server.ts >= l.ts - 60_000);
+        if (i < 0) return false;
+        unmatched.splice(i, 1);
+        return true;
+      })());
       this.lines = [...tr.map((l) => ({ ...l })), ...locals].slice(-TRANSCRIPT_MAX);
       this.prevPresenceState = (w?.presence || this.core.presence)?.state ?? this.prevPresenceState;
       this.lastWithheld = (w?.presence || this.core.presence)?.withheld ?? this.lastWithheld;
@@ -163,6 +171,10 @@ class Control {
       }
     });
     on("instruction_echo", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "user", text: String(m.text) }); });
+    on("instruction_ack", (m: any) => {
+      const i = this.lines.findIndex((l) => l.local && l.from === "user" && l.text === m?.text);
+      if (i >= 0) { this.lines[i] = { ...this.lines[i], local: false }; this.renderTranscript(); }
+    });
     on("role", () => { this.applyPrefs(); this.render(); });
     on("control:go_back", (m: any) => { void this.goBack(m?.version); });
     on("control:open", () => this.setOpen(true));
@@ -665,12 +677,17 @@ class Control {
     if (!text || !this.canInput) return;
     this.lastSendAt = Date.now();
     this.lastWithheld = this.core.presence?.withheld ?? this.lastWithheld;
-    this.lines.push({ ts: Date.now(), from: "user", text, local: true });
+    const line: Line = { ts: Date.now(), from: "user", text, local: true };
+    this.lines.push(line);
     this.lines = this.lines.slice(-TRANSCRIPT_MAX);
     this.renderTranscript();
     try {
       const result = await this.core.instruction(text, via);
-      this.showBubble(result.queued ? "Saved on this device. It will send when the connection returns." : this.ackText(via), true);
+      if (!result?.queued) {
+        const i = this.lines.indexOf(line);
+        if (i >= 0) { this.lines[i] = { ...line, local: false }; this.renderTranscript(); }
+      }
+      this.showBubble(result?.queued ? "Saved on this device. It will send when the connection returns." : this.ackText(via), true);
     } catch {
       this.showBubble("Couldn't send that. It will be retried when the connection returns.", true);
       return;

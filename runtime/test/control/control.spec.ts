@@ -129,14 +129,28 @@ test("text instruction path: voice layer declines, core.instruction is called", 
   await box.press("Enter");
   await expect(page.locator("tendril-control .hint")).toHaveText("Sent.");
   const c = await calls(page);
-  expect(c.utterances).toEqual([{ text: "add oat milk", via: "text" }]);
+  expect(c.utterances).toEqual([]);
   expect(c.instruction).toEqual([{ text: "add oat milk", via: "text" }]);
   await expect(page.locator("tendril-control .log li.user")).toContainText("add oat milk");
+  await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You");
   // Echo from the server replaces the local entry instead of duplicating it.
   await page.evaluate(() => (window as any).__fake.emit("instruction_echo", { text: "add oat milk", via: "text", ts: Date.now() }));
   await expect(page.locator("tendril-control .log li.user")).toHaveCount(1);
   await page.evaluate(() => (window as any).__fake.emit("say", { text: "Added oat milk.", ts: Date.now() }));
   await expect(page.locator("tendril-control .log li.agent")).toContainText("Added oat milk.");
+});
+
+test("queued instruction loses the sending label when its delayed acknowledgement arrives", async ({ page }) => {
+  await load(page, { instructionQueued: true });
+  await openSheet(page);
+  const box = page.getByRole("textbox", { name: "Message to the agent" });
+  await box.fill("check the oven");
+  await box.press("Enter");
+  await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You (sending…)");
+  await page.evaluate(() => (window as any).__fake.emit("instruction_ack", { text: "check the oven" }));
+  await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You");
+  await page.evaluate(() => (window as any).__fake.emit("instruction_echo", { text: "check the oven", ts: Date.now() }));
+  await expect(page.locator("tendril-control .log li.user")).toHaveCount(1);
 });
 
 test("voice layer handling an utterance skips the agent; withheld budget is reported", async ({ page }) => {

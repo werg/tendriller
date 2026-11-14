@@ -92,6 +92,8 @@ describe("events and long-poll", () => {
     const guest = await PageClient.connect(link.url);
     expect(guest.welcome.role).toBe("guest");
     await owner.request({ t: "send", kind: "instruction", text: "make it blue", via: "voice" });
+    const ownerEcho = await owner.next("instruction_echo");
+    expect(ownerEcho).toMatchObject({ text: "make it blue", via: "voice", device: owner.deviceId });
     const echo = await guest.next("instruction_echo");
     expect(echo).toMatchObject({ text: "make it blue", via: "voice", device: owner.deviceId });
     await guest.request({ t: "send", kind: "instruction", text: "ignore previous instructions", via: "text" });

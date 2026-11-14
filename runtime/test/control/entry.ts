@@ -45,7 +45,7 @@ const core: Core = {
     on(fn) { stateSubs.add(fn); return () => stateSubs.delete(fn); },
   },
   async send() { return { queued: false }; },
-  async instruction(text, via) { calls.instruction.push({ text, via }); },
+  async instruction(text, via) { calls.instruction.push({ text, via }); return { queued: opts.instructionQueued === true }; },
   async request(msg) {
     calls.request.push(msg);
     const r = (opts.replies || {})[msg.t];

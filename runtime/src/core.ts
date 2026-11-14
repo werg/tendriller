@@ -454,6 +454,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         break;
       }
       case "ack": {
+        const sent = m.cid ? store.items.find((item) => item.cid === m.cid)?.msg : null;
         const idx = pendingState.findIndex((p) => p.cid === m.cid);
         if (idx >= 0) {
           const [p] = pendingState.splice(idx, 1);
@@ -467,6 +468,11 @@ export function createCore(cfg: TendrilConfig): Internal {
           persistSoon();
         }
         if (m.cid) store.remove(m.cid);
+        if (sent?.t === "send" && sent.kind === "instruction" && !m.error) {
+          const mine = transcript.find((e: any) => e._local && e.from === "user" && e.text === sent.text);
+          if (mine) { delete (mine as any)._local; persistSoon(); }
+          bus.emit("instruction_ack", { cid: m.cid, text: sent.text, seq: m.seq });
+        }
         ackWaiters.get(m.cid)?.(m);
         break;
       }

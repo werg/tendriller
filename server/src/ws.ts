@@ -407,7 +407,8 @@ function instruction(c: Ctx, text: string, via: string): number {
   const { t, dev, ws } = c;
   const isOwner = dev.role === "owner" && !dev.pending;
   const ts = t.addTranscript("user", text);
-  t.broadcast({ t: "instruction_echo", text, via, device: dev.id, ts }, undefined, ws);
+  // Include the sender so its optimistic chat row can become a delivered row.
+  t.broadcast({ t: "instruction_echo", text, via, device: dev.id, ts });
   if (isOwner) {
     const ev = addEvent(t, { type: "instruction", data: { text, via }, device: dev.id, role: dev.role, wake: true, cls: "owner" });
     addActivity(t, { kind: "instruction", summary: `Instruction (${via}): ${preview(text, 300)}`, device: dev.id });

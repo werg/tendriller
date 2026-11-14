@@ -71,6 +71,33 @@ test("page tap reaches a held poll and agent speech reply reaches the page", asy
   } finally { await deletePage(h); }
 });
 
+test("owner chat message becomes sent and stays single after reply and reload", async ({ page, context }) => {
+  const h = await createPage();
+  try {
+    await publish(h, "<h1>Chat delivery check</h1>");
+    await signInFixture(context);
+    await openClaimed(page, h);
+    await page.locator("tendril-control .presence").click();
+    const box = page.getByRole("textbox", { name: "Message to the agent" });
+    await box.fill("production chat check");
+    await box.press("Enter");
+    const userRow = page.locator("tendril-control .log li.user");
+    await expect(userRow).toHaveCount(1);
+    await expect(userRow.locator(".who")).toHaveText("You");
+    const events = await agent(h, "/events?after=0&wait=0");
+    expect(events.data.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      type: "instruction", role: "owner", data: { text: "production chat check", via: "text" },
+    })]));
+    await agent(h, "/say", "POST", { text: "I heard your message", speak: false });
+    await expect(page.locator("tendril-control .log li.agent")).toContainText("I heard your message");
+    await page.reload();
+    await page.waitForFunction(() => (window as any).tendril?.connected === true);
+    await page.locator("tendril-control .presence").click();
+    await expect(page.locator("tendril-control .log li.user")).toHaveCount(1);
+    await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You");
+  } finally { await deletePage(h); }
+});
+
 test("presence distinguishes active polling from away and explicit working", async ({ page, context }) => {
   const h = await createPage();
   try {
