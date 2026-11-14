@@ -1,4 +1,4 @@
-import { brandHead, brandLink, brandLogo, brandStyle } from "./brand";
+import { brandHead, brandLink, brandStyle } from "./brand";
 
 // Runtime injection into served HTML (PROTOCOL section 5) and built-in pages.
 
@@ -83,13 +83,34 @@ export function landingPage(publicBase: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tendriller</title>
-<meta name="description" content="A place for people and agents to build useful, live pages together.">
-<meta property="og:type" content="website"><meta property="og:title" content="Tendriller"><meta property="og:description" content="Pages that grow with the conversation."><meta property="og:image" content="${escapeHtml(publicBase)}/_tendril/brand/logo.png">
+<meta name="description" content="Connect a live web page and device sensors to an ongoing agent session. Talk to your agent from the page and see its updates live.">
+<meta property="og:type" content="website"><meta property="og:title" content="Tendriller"><meta property="og:description" content="Connect a live web page and device sensors to an ongoing agent session."><meta property="og:image" content="${escapeHtml(publicBase)}/_tendril/brand/logo.png">
 ${brandHead()}${brandStyle}
-<style>:root{color-scheme:light dark}*{box-sizing:border-box}body{font:1rem/1.6 system-ui,sans-serif;margin:0;background:#f6f8f5;color:#1e3028}main{max-width:70rem;margin:auto;padding:clamp(1.25rem,4vw,3rem)}header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}header{margin-bottom:4rem}a{color:#17654b}header a{text-decoration:none;font-weight:700}.hero{background:#e7f2e9;border:1px solid #cce1d1;border-radius:1.5rem;padding:clamp(1.5rem,5vw,4rem)}.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:.8rem;color:#43805c;font-weight:700}h1{font-size:clamp(2.7rem,7vw,5rem);line-height:1.04;letter-spacing:-.055em;max-width:12ch;margin:.7rem 0 1.5rem}h2{line-height:1.2}.lead{font-size:clamp(1.1rem,2vw,1.35rem);max-width:38rem}.button{display:inline-block;background:#176a47;color:#fff;text-decoration:none;font-weight:700;padding:.8rem 1.2rem;border-radius:.7rem;margin:.7rem .7rem .7rem 0}.button.secondary{background:#d2e6d7;color:#1a5839}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1rem;margin:2rem 0}.card{padding:1.5rem;background:#fff;border:1px solid #dbe6dc;border-radius:1rem}.card h3{margin-top:0}footer{margin:3rem 0;color:#607468;flex-wrap:wrap}@media(prefers-color-scheme:dark){body{background:#14221b;color:#edf6ee}.hero{background:#1d3829;border-color:#355e44}.card{background:#1c2e22;border-color:#36523d}a{color:#8ee0af}.button{color:#fff}.button.secondary{background:#375542;color:#fff}}</style>
+<style>
+:root{color-scheme:light dark}*{box-sizing:border-box}body{font:1rem/1.6 system-ui,sans-serif;margin:0;background:#f6f8f5;color:#1e3028}main{max-width:68rem;margin:auto;padding:clamp(1.25rem,4vw,3rem)}header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}header{margin-bottom:2.5rem}a{color:#17654b}header a{text-decoration:none;font-weight:700}h1{font-size:clamp(2rem,4.5vw,3.35rem);line-height:1.14;letter-spacing:-.035em;margin:0 0 1.25rem;max-width:21ch}h2{font-size:1.35rem;line-height:1.25;margin:0 0 .8rem}p{max-width:50rem;margin:.7rem 0}.intro{padding-bottom:2rem;border-bottom:1px solid #cce1d1}.intro p{font-size:clamp(1.05rem,1.8vw,1.22rem)}.actions{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.5rem 0 0}.button{display:inline-block;background:#176a47;color:#fff;text-decoration:none;font-weight:650;padding:.7rem 1rem;border-radius:.6rem}.button.secondary{background:#d2e6d7;color:#1a5839}.access{padding:2rem 0;border-bottom:1px solid #cce1d1}.examples{padding:2rem 0}.examples ul{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,19rem),1fr));gap:.7rem 2rem;margin:1.25rem 0 0;padding:0}.examples li{padding:.65rem 0;border-top:1px solid #dbe6dc}.examples strong{display:block}footer{margin:2rem 0;color:#607468;flex-wrap:wrap}@media(prefers-color-scheme:dark){body{background:#14221b;color:#edf6ee}.intro,.access{border-color:#36523d}.examples li{border-color:#36523d}a{color:#8ee0af}.button{color:#fff}.button.secondary{background:#375542;color:#fff}}
+</style>
 </head>
 <body>
-<main><header>${brandLink}<a href="/dashboard">Open dashboard →</a></header><section class="hero">${brandLogo}<span class="eyebrow">A space for people and agents</span><h1>Pages that grow with the conversation.</h1><p class="lead">Give an agent a place to build something useful for you. See changes live, speak or type, and decide who can join.</p><a class="button" href="${escapeHtml(publicBase)}/agent.md">Get started with an agent</a><a class="button secondary" href="/dashboard">Your pages</a></section><div class="grid"><section class="card"><h3>Made for your task</h3><p>An agent can create a page, add files, and refine it as you work together.</p></section><section class="card"><h3>Always in the loop</h3><p>Talk from the page, see its status, and get updates without refreshing.</p></section><section class="card"><h3>Your call</h3><p>Sign in to claim ownership, review guest requests, and disconnect agents whenever you want.</p></section></div><footer><span>Every page gets its own address.</span><span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/status">Status</a></span></footer></main>
+<main><header>${brandLink}<a href="/dashboard">Dashboard</a></header>
+<section class="intro"><h1>Connect a live page to your agent session</h1>
+<p>Tendriller is a minimal-setup way to connect a web page and device sensors to an ongoing agent session. Your agent can create and update the page while you use it. You can talk or type to the agent from the page, and its replies and interface changes appear live.</p>
+<p>Open the page on your phone, tablet, or computer, even when the agent runs on another device. With your permission, page code can use that device’s location, accelerometer, camera, microphone, and other browser inputs. It can send events to the agent; the agent can send messages and change the page in return.</p>
+<div class="actions"><a class="button" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a><a class="button secondary" href="/dashboard">Open dashboard</a></div></section>
+<section class="access"><h2>Access and sign-in</h2><p>Opening your owner page and managing access requires GitHub or Google OAuth sign-in. Your agent uses a separate credential that you can revoke from the dashboard. Browser permissions for sensors and cameras are requested on the device where you use the page.</p></section>
+<section class="examples"><h2>Example applications</h2><p>These are ideas an agent can build and change with you:</p><ul>
+<li><strong>Field notebook</strong>Collect photos, location, voice notes, and observations on a walk.</li>
+<li><strong>Remote camera helper</strong>Point your phone at an object and discuss what the camera sees with an agent running elsewhere.</li>
+<li><strong>Movement companion</strong>Use motion and location readings to reflect on a walk, workout, or exercise.</li>
+<li><strong>Voice-guided task</strong>Use spoken prompts and replies while cooking, repairing something, or working with your hands.</li>
+<li><strong>Inventory scanner</strong>Scan barcodes or photograph items and let the agent update a list.</li>
+<li><strong>Collaborative sketchpad</strong>Draw, point, and make choices while the agent changes the controls and layout.</li>
+<li><strong>Workshop instrument</strong>Connect a Bluetooth, Serial, USB, or MIDI device and ask the agent to interpret its readings.</li>
+<li><strong>Accessibility controls</strong>Use a gamepad or connected switch to trigger page actions and agent instructions.</li>
+<li><strong>Screen troubleshooting</strong>Share a selected screen capture and get step-by-step help on the page.</li>
+<li><strong>Location-aware checklist</strong>Have the page show the next task or question as you move between places.</li>
+<li><strong>Multi-device workspace</strong>Use a phone for camera and sensors and a computer for a larger live display.</li>
+<li><strong>Home experiment log</strong>Track light, motion, or connected sensor readings and ask the agent to summarize changes.</li>
+</ul></section><footer><span>Tendriller</span><span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/status">Status</a></span></footer></main>
 </body>
 </html>`;
 }
