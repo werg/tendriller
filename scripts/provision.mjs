@@ -1,63 +1,54 @@
 // Provision one isolated environment after its domains are active on Cloudflare.
-// CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are read from the environment.
+// Uses the local Wrangler login. CLOUDFLARE_ACCOUNT_ID selects an account when
+// Wrangler is logged in to more than one.
 // Production: node scripts/provision.mjs production
 // Staging: STAGING_PUBLIC_BASE=https://... STAGING_PAGE_BASE_DOMAIN=... node scripts/provision.mjs staging
 import { writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 
 const stage = process.argv[2];
 if (stage !== "production" && stage !== "staging") throw new Error("Pass production or staging");
-const token = process.env.CLOUDFLARE_API_TOKEN;
-const account = process.env.CLOUDFLARE_ACCOUNT_ID;
-if (!token || !account) throw new Error("Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID");
-const service = stage === "production" ? "tendriller.dev" : process.env.STAGING_PUBLIC_BASE ? new URL(process.env.STAGING_PUBLIC_BASE).hostname : "";
-const pages = stage === "production" ? "tendriller.site" : process.env.STAGING_PAGE_BASE_DOMAIN ?? "staging.tendriller.site";
+function wrangler(...args) {
+  return execFileSync("npx", ["wrangler", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+const identity = JSON.parse(wrangler("whoami", "--json"));
+if (!identity.loggedIn) throw new Error("Run npx wrangler login before provisioning");
+const accounts = identity.accounts ?? [];
+const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? (accounts.length === 1 ? accounts[0].id : null);
+if (!account || !accounts.some(a => a.id === account)) {
+  throw new Error("Set CLOUDFLARE_ACCOUNT_ID to one of the accounts in npx wrangler whoami --json");
+}
+const service = stage === "production" ? "tendriller.dev" : new URL(process.env.STAGING_PUBLIC_BASE ?? "https://staging.tendriller.dev").hostname;
+const pages = stage === "production" ? "tendriller.site" : process.env.STAGING_PAGE_BASE_DOMAIN ?? "tendriller.dev";
 if (!service || !pages || service === pages) throw new Error("Configure separate service and pages domains for this stage");
 if (stage === "staging" && pages === "tendriller.site") throw new Error("Staging needs its own pages zone so it cannot route production pages");
-const base = `https://api.cloudflare.com/client/v4`;
-
-async function api(path, method = "GET", body) {
-  const response = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`,
-    ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
-  const data = await response.json();
-  if (!response.ok || !data.success) throw new Error(`${method} ${path}: ${JSON.stringify(data.errors ?? response.status)}`);
-  return data.result;
-}
-
-async function zone(name) {
-  const zones = await api(`/zones?name=${encodeURIComponent(name)}&per_page=50`);
-  const found = zones.find(z => z.name === name && z.status === "active");
-  if (!found) throw new Error(`Cloudflare zone ${name} must exist and be active`);
-  return found.id;
-}
-
-async function d1(name) {
-  const existing = await api(`/accounts/${account}/d1/database?name=${encodeURIComponent(name)}`);
+function d1(name) {
+  const existing = JSON.parse(wrangler("d1", "list", "--json"));
   const found = existing.find(d => d.name === name);
   if (found) return found.uuid;
-  const created = await api(`/accounts/${account}/d1/database`, "POST", { name });
+  wrangler("d1", "create", name);
+  const created = JSON.parse(wrangler("d1", "list", "--json")).find(d => d.name === name);
+  if (!created) throw new Error(`Wrangler created ${name} but did not list it`);
   return created.uuid;
 }
 
-async function bucket(name) {
-  const existing = await api(`/accounts/${account}/r2/buckets?name_contains=${encodeURIComponent(name)}`);
-  if (!existing.buckets.some(b => b.name === name)) await api(`/accounts/${account}/r2/buckets`, "POST", { name });
-  return name;
+function bucket(name) {
+  try {
+    wrangler("r2", "bucket", "info", name, "--json");
+  } catch (error) {
+    if (!String(error.stderr ?? "").includes("10006")) throw error;
+    wrangler("r2", "bucket", "create", name);
+  }
 }
 
-const pageZoneName = "tendriller.site";
-const pageZone = await zone(pageZoneName);
-await zone(stage === "production" ? service : "tendriller.dev");
+const pageZoneName = stage === "production" ? "tendriller.site" : "tendriller.dev";
+if (pages !== pageZoneName && !pages.endsWith(`.${pageZoneName}`)) throw new Error(`Page domain must be in ${pageZoneName}`);
 const dbName = `tendriller-${stage}-accounts`;
 const bucketName = `tendriller-${stage}-files`;
-const [databaseId] = await Promise.all([d1(dbName), bucket(bucketName)]);
+const databaseId = d1(dbName);
+bucket(bucketName);
 const wildcard = `*.${pages}`;
-const dns = await api(`/zones/${pageZone}/dns_records?type=AAAA&name=${encodeURIComponent(wildcard)}`);
-const record = dns.find(record => record.name === wildcard);
-if (record && !record.proxied) {
-  await api(`/zones/${pageZone}/dns_records/${record.id}`, "PATCH", { proxied: true });
-} else if (!record) {
-  await api(`/zones/${pageZone}/dns_records`, "POST", { type: "AAAA", name: wildcard, content: "100::", proxied: true, ttl: 1 });
-}
 
 const worker = `tendriller-${stage}`;
 const config = {
@@ -88,4 +79,4 @@ const config = {
 };
 const path = `server/wrangler.${stage}.jsonc`;
 await writeFile(path, JSON.stringify(config, null, 2) + "\n");
-console.log(`Wrote ${path}. Run migrations, install speech assets, set secrets, then deploy after launch checks.`);
+console.log(`Wrote ${path}. In Cloudflare DNS for ${pageZoneName}, add a proxied AAAA record for ${wildcard} with value 100:: before deployment. Run migrations, install speech assets, set secrets, then deploy after launch checks.`);

@@ -52,7 +52,8 @@ async function speechAsset(env: Env, name: string): Promise<Response> {
 export async function route(req: Request, env: Env): Promise<Response> {
   const host = new URL(req.url).hostname.toLowerCase();
   const pagesDomain = env.PAGE_BASE_DOMAIN?.toLowerCase();
-  const onPagesDomain = !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
+  const serviceHost = new URL(publicBase(env)).hostname.toLowerCase();
+  const onPagesDomain = host !== serviceHost && !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
   let res: Response;
   try { res = await routeInner(req, env, onPagesDomain); }
   catch (err) { res = toErrorResponse(err); }

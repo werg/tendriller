@@ -10,7 +10,7 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 
 ## One-time external setup
 
-1. Register `tendriller.dev` and `tendriller.site` and activate their Cloudflare zones. Create a certificate that covers `*.staging.tendriller.site` if using the default staging pages domain. Production pages use the one-level wildcard `*.tendriller.site`.
+1. Register `tendriller.dev` and `tendriller.site` and activate their Cloudflare zones. Staging pages use `*.tendriller.dev` and production pages use `*.tendriller.site`, both covered by the zones' one-level wildcard certificates. Staging service runs at `staging.tendriller.dev`.
 2. Create GitHub and Google OAuth apps. Production callbacks are `https://tendriller.dev/auth/callback/github` and `/auth/callback/google`. Staging callbacks use its service hostname. GitHub needs `read:user user:email`; Google needs `openid email profile`.
 3. Create Turnstile widgets for the service hostnames. Record each site key and secret separately.
 4. Set HSTS on the pages zone, submit `tendriller.site` to the HSTS preload list, and submit it to the Public Suffix List. The Worker sends the preload header on page responses; verify the apex separately.
@@ -18,11 +18,9 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 
 ## Provision and deploy
 
-Use a scoped Cloudflare API token with Zone Read, DNS Edit, D1 Edit, R2 Edit, Workers Scripts Edit, Workers Routes Edit, and Custom Domains Edit. Keep the token and OAuth secrets out of the repository.
+For local provisioning, sign in with `npx wrangler login`. `provision.mjs` uses that Wrangler session to create or reuse D1 databases and R2 buckets. If Wrangler shows multiple accounts, set `CLOUDFLARE_ACCOUNT_ID` to select one. Keep OAuth secrets out of the repository.
 
 ```sh
-export CLOUDFLARE_ACCOUNT_ID=...
-export CLOUDFLARE_API_TOKEN=...
 node scripts/provision.mjs staging
 node scripts/provision.mjs production
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
@@ -31,11 +29,11 @@ node scripts/install-speech.mjs tendriller-staging-files --remote
 node scripts/install-speech.mjs tendriller-production-files --remote
 ```
 
-`provision.mjs` is idempotent. It writes Wrangler configs with the resource IDs. Review and commit those configs before enabling CI. The default staging page host is `<id>.staging.tendriller.site`; its certificate needs to cover two subdomain levels. Use `STAGING_PUBLIC_BASE` and `STAGING_PAGE_BASE_DOMAIN` to change staging hostnames.
+`provision.mjs` is idempotent. It writes Wrangler configs with the resource IDs. In Cloudflare DNS, add a proxied `AAAA` record with content `100::` for `*.tendriller.dev` (staging) and `*.tendriller.site` (production) before deploying. The default staging page host is `<id>.tendriller.dev`, separate from its service host `staging.tendriller.dev`; the Worker uses the service hostname to route service requests. Use `STAGING_PUBLIC_BASE` and `STAGING_PAGE_BASE_DOMAIN` to change staging hostnames within the `tendriller.dev` zone. Review and commit the configs before enabling CI.
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
-GitHub Actions runs typecheck and tests on pull requests. Once staging launch checks pass, set repository variable `STAGING_READY=true`, the scoped `CLOUDFLARE_API_TOKEN` secret, and `CLOUDFLARE_ACCOUNT_ID` variable in the staging environment. A push to `main` applies migrations and deploys staging. Production tags `v*` deploy only with `PRODUCTION_READY=true` and the corresponding production environment values.
+GitHub Actions runs typecheck and tests on pull requests. Automatic deployment later needs a scoped Cloudflare API token because CI cannot use an interactive Wrangler login. Once staging launch checks pass, set repository variable `STAGING_READY=true`, the `CLOUDFLARE_API_TOKEN` secret, and `CLOUDFLARE_ACCOUNT_ID` variable in the staging environment. A push to `main` applies migrations and deploys staging. Production tags `v*` deploy only with `PRODUCTION_READY=true` and the corresponding production environment values.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that normal keys, exports, and page access remain denied.
 

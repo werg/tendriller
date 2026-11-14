@@ -13,7 +13,7 @@ The repository uses one public-service code path. New D1 environments initialize
 
 ## Launch blockers and incomplete plan items
 
-- Register and activate both domains, issue certificates (including the deeper staging wildcard if used), create OAuth apps and Turnstile widgets, configure DNS and secrets.
+- Register and activate both domains, verify one-level wildcard certificates for staging on `*.tendriller.dev` and production on `*.tendriller.site`, create OAuth apps and Turnstile widgets, and configure DNS and secrets.
 - Provision isolated staging and production D1/R2, apply migrations, install speech assets, deploy staging, and run end-to-end browser and provider checks. Submit the pages domain to HSTS preload and Public Suffix List.
 - Legally review and supply terms, acceptable use, privacy, DMCA/abuse contact, minimum age, and request process under `legal/`. The routes and deploy gate are wired, but the pages are absent until approved text is supplied.
 - Verify Whistle on a mid-range phone and its privacy/performance behavior. The model has not been benchmarked in a browser.

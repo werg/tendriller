@@ -14,6 +14,15 @@ describe("public routes", () => {
     expect(await nf.json()).toMatchObject({ error: { code: "not_found" } });
   });
 
+  it("serves a staging service host within its page zone", async () => {
+    const staging = { ...env, PUBLIC_BASE: "https://staging.tendriller.dev", PAGE_BASE_DOMAIN: "tendriller.dev" };
+    const health = await route(new Request("https://staging.tendriller.dev/health"), staging);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ ok: true });
+    const invalidPage = await route(new Request("https://not-a-page.tendriller.dev/health"), staging);
+    expect(invalidPage.status).toBe(404);
+  });
+
   it("serves the runtime bundle as a static asset", async () => {
     const res = await req("/_tendril/tendril.js");
     expect(res.status).toBe(200);
