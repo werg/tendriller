@@ -15,6 +15,20 @@ export interface SpeechOutput {
 }
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+const readyMessage = "Neural voice is ready. English speech is generated on this device.";
+
+/** Stop waiting even if a worker never acknowledges cancellation or completes a request. */
+function waitFor<T>(task: Promise<T>, signal?: AbortSignal, timeoutMs = 0): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clean = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); };
+    const abort = () => { clean(); reject(new DOMException("Speech stopped", "AbortError")); };
+    task.then(value => { clean(); resolve(value); }, error => { clean(); reject(error); });
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener("abort", abort, { once: true });
+    if (timeoutMs) timer = setTimeout(() => { clean(); reject(new Error("Speech worker timed out")); }, timeoutMs);
+  });
+}
 
 /** Neural English speech by default; the user's browser voice remains the fallback. */
 export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?: boolean; language?: string }): SpeechOutput {
@@ -57,6 +71,7 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     // stays native/lazy so browser-only users do not download the neural runtime.
     const url = new URL(base + "_tendril/tts/index.js", location.href).href;
     let timer: ReturnType<typeof setTimeout>;
+    let expired = false;
     const task = (async () => {
       if (typeof Worker === "undefined" || typeof WebAssembly === "undefined" || typeof AudioContext === "undefined") {
         throw new Error("Neural speech is not supported by this browser");
@@ -77,16 +92,18 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     // A failed or stalled download must never leave the speech queue stuck forever.
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        expired = true;
         if (token === loadEpoch) ++loadEpoch;
         reject(new Error("Voice download timed out"));
       }, 120_000);
     });
     const pending = Promise.race([task, timeout]).then(loaded => {
+      if (token !== loadEpoch || !enabled) { loaded.dispose(); throw new Error("Voice setup cancelled"); }
       model = loaded;
-      report("ready", "Neural voice is ready. English speech is generated on this device.");
+      report("ready", readyMessage);
       return loaded;
     }).catch(error => {
-      if (enabled && token >= loadEpoch - 1) report("error", "Neural voice could not load. Using the browser voice; choose Try neural voice to retry.");
+      if (enabled && (token === loadEpoch || (expired && token + 1 === loadEpoch))) report("error", "Neural voice could not load. Using the browser voice; choose Try neural voice to retry.");
       throw error;
     }).finally(() => {
       clearTimeout(timer);
@@ -100,7 +117,6 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     ++epoch;
     generation?.abort();
     generation = null;
-    queue = Promise.resolve();
     for (const source of sources) { try { source.stop(); } catch { /* already ended */ } }
     sources.clear();
     try { window.speechSynthesis?.cancel(); } catch { /* unavailable */ }
@@ -118,19 +134,29 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     const active = () => token === epoch && prefs().audio !== false;
     if (!active()) return;
     if (!enabled || !/^en(?:-|$)/i.test(language()) || status.state === "error") { browserSpeak(text); return; }
+    const abort = new AbortController();
+    generation = abort;
     try {
-      const tts = await load();
+      const tts = await waitFor(load(), abort.signal);
       if (!active()) return;
       const ctx = audioContext();
-      if (ctx.state !== "running") await Promise.race([ctx.resume(), pause(1000)]);
+      if (ctx.state !== "running") await Promise.race([ctx.resume().catch(() => {}), pause(1000)]);
       if (!active()) return;
-      if (ctx.state !== "running") throw new Error("Audio needs a user gesture");
-      const abort = new AbortController();
-      generation = abort;
+      if (ctx.state !== "running") {
+        // Autoplay permission is independent of the model: keep it ready for the
+        // next reply after a tap rather than permanently switching to browser TTS.
+        report("ready", "Neural voice is ready. Tap the page to allow audio; using the browser voice for this reply.");
+        browserSpeak(text);
+        return;
+      }
       const stream = tts.stream(text, { signal: abort.signal });
+      const iterator = stream[Symbol.asyncIterator]();
       let at = ctx.currentTime + .04;
       try {
-        for await (const pcm of stream) {
+        for (;;) {
+          const item = await waitFor(iterator.next(), abort.signal, 30_000);
+          if (item.done) break;
+          const pcm = item.value;
           if (!active()) break;
           // Limit scheduled audio so Stop and new user input interrupt promptly.
           while (at - ctx.currentTime > 1 && active() && ctx.state === "running") await pause(25);
@@ -152,9 +178,17 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
         while (active() && ctx.currentTime < at && ctx.state === "running") await pause(25);
       } finally {
         abort.abort();
-        // Drain cancellation before the next utterance reuses the worker.
-        await stream.done.catch(() => {});
-        if (generation === abort) generation = null;
+        // Keep the queue ordered until cancellation settles. An unresponsive
+        // worker is discarded, so a fresh reply can start with a fresh model.
+        try { await waitFor(stream.done.catch(() => {}), undefined, 1000); }
+        catch {
+          tts.dispose();
+          if (model === tts) {
+            model = null;
+            if (enabled) report("idle", "Neural voice stopped. It will reload from cache for the next reply.");
+          }
+        }
+        void iterator.return?.().catch(() => {});
       }
     } catch {
       if (!active()) return;
@@ -162,14 +196,16 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
       report("error", "Neural voice is unavailable. Using the browser voice; tap Try neural voice to retry.");
       // Do not repeat a partially played reply in a second voice.
       if (!played) browserSpeak(text);
+    } finally {
+      if (generation === abort) generation = null;
     }
   };
   const api: SpeechOutput = {
     get status() { return { ...status }; },
     async enable() {
       stop(); enabled = true; remember(); unlock();
-      report("idle", "Preparing neural voice…");
-      await load();
+      if (model) report("ready", readyMessage);
+      else await load();
     },
     disable() {
       stop(); enabled = false; remember(); ++loadEpoch;
@@ -186,7 +222,8 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     },
   };
   window.addEventListener("pagehide", () => {
-    stop(); ++loadEpoch; model?.dispose(); model = null;
+    stop(); ++loadEpoch; loading = null; model?.dispose(); model = null;
+    report("idle", enabled ? "Neural voice will reload from cache for the next reply." : "Using the browser voice.");
     if (context) void context.close().catch(() => {});
   });
   return api;

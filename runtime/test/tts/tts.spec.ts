@@ -12,6 +12,7 @@ const module = `
 window.loads = (window.loads || 0) + 1;
 export class PhononTTS {
   static async load(options) {
+    window.initializations = (window.initializations || 0) + 1;
     window.loadOptions = options;
     options.onProgress({file:'weights',loaded:30e6,total:65e6,cached:false});
     if (window.holdLoad) await new Promise(resolve => window.releaseLoad = resolve);
@@ -21,8 +22,12 @@ export class PhononTTS {
   sampleRate = 24000;
   stream(text, {signal}) {
     window.spoken.push(text);
+    const stalled = text === 'stall';
+    const done = stalled ? new Promise(resolve => window.releaseDone = resolve) : Promise.resolve({});
+    signal.addEventListener('abort', () => window.cancelSeen = true, {once:true});
     const stream = (async function*() {
       try {
+        if (stalled) await new Promise(resolve => window.releaseStall = resolve);
         for(let i=0;i<(text==='empty'?0:text==='long'?200:1);i++) {
           if(signal.aborted) break;
           yield new Float32Array(2400).fill(0.01);
@@ -30,10 +35,10 @@ export class PhononTTS {
         }
       } finally { window.completed.push(text); }
     })();
-    stream.done = Promise.resolve({});
+    stream.done = done;
     return stream;
   }
-  dispose() { window.disposals++; }
+  dispose() { window.disposals++; window.releaseStall?.(); window.releaseDone?.({}); }
 }`;
 
 async function open(page: Page) {
@@ -129,4 +134,66 @@ test("unsupported browsers use browser speech without downloading a model", asyn
   });
   await expect.poll(() => page.evaluate(() => (window as any).browserSpoken)).toEqual(['fallback']);
   expect(await page.evaluate(() => (window as any).loads || 0)).toBe(0);
+});
+
+test("retrying a ready voice preserves the ready status and reuses its model", async ({page}) => {
+  await open(page);
+  await page.evaluate(async () => { const w=window as any; await w.tts.enable(); await w.tts.enable(); });
+  expect(await page.evaluate(() => (window as any).tts.status.state)).toBe('ready');
+  expect(await page.evaluate(() => (window as any).initializations)).toBe(1);
+});
+
+test("autoplay rejection preserves the model and neural speech recovers after interaction", async ({page}) => {
+  await open(page);
+  await page.evaluate(() => {
+    const w=window as any;
+    const state = Object.getOwnPropertyDescriptor(BaseAudioContext.prototype, 'state')!;
+    Object.defineProperty(AudioContext.prototype, 'state', {get() { return w.blockAudio ? 'suspended' : state.get!.call(this); }});
+    const resume = AudioContext.prototype.resume;
+    AudioContext.prototype.resume = function() { return w.blockAudio ? Promise.reject(Error('autoplay blocked')) : resume.call(this); };
+    w.blockAudio = true;
+    w.tts.speak('blocked');
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).browserSpoken)).toEqual(['blocked']);
+  expect(await page.evaluate(() => (window as any).tts.status.state)).toBe('ready');
+  await page.evaluate(() => { const w=window as any; w.blockAudio=false; w.tts.speak('unblocked'); });
+  await expect.poll(() => page.evaluate(() => (window as any).completed)).toEqual(['unblocked']);
+  expect(await page.evaluate(() => (window as any).initializations)).toBe(1);
+  expect(await page.evaluate(() => (window as any).disposals)).toBe(0);
+});
+
+test("stop releases an unresponsive worker before the next reply starts", async ({page}) => {
+  await open(page);
+  await page.clock.install();
+  await page.evaluate(() => (window as any).tts.speak('stall'));
+  await page.waitForFunction(() => !!(window as any).releaseStall);
+  await page.evaluate(() => { const w=window as any; w.tts.stop(); w.tts.speak('fresh'); });
+  await page.waitForFunction(() => !!(window as any).cancelSeen);
+  await page.clock.fastForward(1100);
+  await expect.poll(() => page.evaluate(() => (window as any).spoken)).toEqual(['stall','fresh']);
+  expect(await page.evaluate(() => (window as any).disposals)).toBe(1);
+  expect(await page.evaluate(() => (window as any).initializations)).toBe(2);
+});
+
+test("a stalled synthesis falls back instead of blocking the reply queue forever", async ({page}) => {
+  await open(page);
+  await page.clock.install();
+  await page.evaluate(() => { const w=window as any; w.tts.speak('stall'); w.tts.speak('next'); });
+  await page.waitForFunction(() => !!(window as any).releaseStall);
+  await page.clock.fastForward(30_001);
+  await page.waitForFunction(() => !!(window as any).cancelSeen);
+  await page.clock.fastForward(1100);
+  await expect.poll(() => page.evaluate(() => (window as any).browserSpoken)).toEqual(['stall','next']);
+  expect(await page.evaluate(() => (window as any).tts.status.state)).toBe('error');
+});
+
+test("returning to a page does not reuse an invalidated in-flight model load", async ({page}) => {
+  await open(page);
+  await page.evaluate(() => { const w=window as any; w.holdLoad=true; w.tts.speak('old'); });
+  await page.waitForFunction(() => !!(window as any).releaseLoad);
+  await page.evaluate(() => { const w=window as any; window.dispatchEvent(new Event('pagehide')); w.releaseLoad(); });
+  await expect.poll(() => page.evaluate(() => (window as any).disposals)).toBe(1);
+  expect(await page.evaluate(() => (window as any).tts.status.state)).toBe('idle');
+  await page.evaluate(async () => { const w=window as any; w.holdLoad=false; await w.tts.enable(); w.tts.speak('fresh'); });
+  await expect.poll(() => page.evaluate(() => (window as any).spoken)).toEqual(['fresh']);
 });
