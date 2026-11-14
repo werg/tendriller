@@ -1,24 +1,22 @@
 # Public service implementation status
 
-The repository uses one public-service code path. New D1 environments initialize `creation_paused`; the service has not been launched. The user has registered both domains and created OAuth applications; deployment and live verification remain pending.
+Updated 2026-11-14. The repository has one public-service code path. Both domains, OAuth providers, Turnstile, D1 and R2 resources, secrets, legal pages, and Workers are deployed. Staging creation is **open** for testing with friends. Production creation remains **paused** until its real sign-in and page-opening flow has been checked.
 
-## Implemented locally
+## Implemented and checked
 
-- Service and page host split, page sessions, page `Origin` checks, HSTS, GitHub/Google OAuth with PKCE, verified identity matching, named or first-person claim, invited guests, owner-only display links, and owner agent revocation.
-- Account dashboard, automatic verified-email claim, data export, deletion, D1 account index, per-account and service byte reservations, Admission object, rate bindings, state switch, and budget webhook.
-- External and page reports, Turnstile validation, static version screening, automatic holds and suspension, D1-backed owner notices, authenticated page/account appeals (including restricted suspended sign-in), admin actions with a static preview, and D1 audit log. The owner dashboard shows per-device page sensor history.
-- On-device Cactus Whistle runtime with pinned model and engine hashes, R2 asset installation script, provisioning script, CI workflow, and operational runbooks.
-- Public service tests and TypeScript checks pass locally. A new browser isolation suite is ready for staging; it cannot run until the real domains, OAuth apps, and owner account exists. The prior browser suite assumes anonymous page access and device pairing and is excluded. The deployed service and real provider, domain, and browser flows have not been exercised.
-- Experience follow-ups implemented locally: cohesive landing, sign-in and first-version waiting screens; account page cards with direct actions ; guest request polling with approve/decline; private speech setup with streamed progress and language guidance; and a runnable create/publish/event/reply example. These browser-facing changes still need staging verification on real page origins.
+- Service and per-page origins, page sessions, Origin checks, HSTS, GitHub/Google OAuth with PKCE, verified email matching, automatic owner claim on page open, guest approval, owner-only display links, and agent revocation.
+- Account dashboard, provider linking, export, deletion, page-scoped agent tokens, per-account and service byte reservations, global creation admission, rate limits, and service state controls. Account keys and the device authorization flow have been removed.
+- Reports, Turnstile, static version screening, automatic holds and suspension, in-app notices, page/account appeals, admin actions, audit log, and sensor history.
+- On-device speech runtime with pinned model assets in R2, provisioning scripts, CI, legal pages, and operational runbooks.
+- Local TypeScript checks and 17 tests pass. Tests cover required owner email, refusal of a different verified account, automatic claim and page session, resident promotion after opening, and browser-origin routing checks. The live staging API created, published, redirected, and deleted a temporary page successfully. The user confirmed staging GitHub sign-in and linking Google to that account. The staging and production guides, health endpoints, and retired routes were checked live.
+- The agent guide now starts with page ideas and the create/publish/converse loop. The page sends UI and sensor data with `tendril.send`; the agent replies through the built-in conversation with `POST A/say`.
 
-## Launch blockers and incomplete plan items
+## Further launch checks
 
-- Register and activate both domains, verify one-level wildcard certificates for staging on `*.tendriller.dev` and production on `*.tendriller.site`, create OAuth apps and Turnstile widgets, and configure DNS and secrets.
-- Provision isolated staging and production D1/R2, apply migrations, install speech assets, deploy staging, and run end-to-end browser and provider checks. Submit the pages domain to HSTS preload and Public Suffix List.
-- Legally review and supply terms, acceptable use, privacy, DMCA/abuse contact, minimum age, and request process under `legal/`. The routes and deploy gate are wired, but the pages are absent until approved text is supplied.
-- Verify Whistle on a mid-range phone and its privacy/performance behavior. The model has not been benchmarked in a browser.
-- Verify in-app notices and that suspended owners can sign in to appeal without regaining normal account or page access. Held tendrils retain files for 90 days before the alarm deletes them; exercise that timer in staging. Visitor bursts, creator-IP claim patterns, and repeated releases trigger holds at the documented thresholds. Suspension and restoration enqueue every affected page for retry by a 15-minute scheduled reconciler; verify the cron in staging.
-- The local test suite now checks concurrent D1 account reservations. Perform real two-subdomain browser isolation tests, load tests, alert delivery checks, and incident exercises before opening `service_state`.
-- Cloudflare's current account-wide budget alerts are email-only, so the existing generic webhook auto-pause endpoint is not a configured Free-plan control. The setup script no longer requires its secret. Use Free-tier hard limits or paid Workers/Durable Objects spending limits; a compatible webhook policy needs separate verification before automatic pause is claimed.
+- Test the complete automatic claim in a real signed-in browser on staging, including a different verified email being refused, then test production GitHub and Google sign-in and page opening before opening production creation.
+- Run the Playwright two-origin isolation suite with an authenticated staging browser session and `E2E_OWNER_EMAIL`.
+- Verify speech on a mid-range phone, in-app notices and suspended-account appeals, the 90-day held-page deletion alarm, and the suspension reconciliation cron in staging.
+- Exercise rate and storage limits under load and confirm budget monitoring. Cloudflare's account-wide budget alerts are email-only; the generic webhook auto-pause endpoint is not a configured Free-plan control.
+- Submit the pages domain for HSTS preload and the Public Suffix List when appropriate.
 
-See `docs/OPERATIONS.md` for the setup and launch checklist.
+See `docs/OPERATIONS.md` for deployment and operations.
