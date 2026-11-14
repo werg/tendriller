@@ -1,6 +1,6 @@
 # Public service implementation status
 
-Updated 2026-11-14. The repository has one public-service code path. Both domains, OAuth providers, Turnstile, D1 and R2 resources, secrets, legal pages, and Workers are deployed. Staging creation is **open** for testing with friends. Production creation is **open** as of 2026-11-14. Real production GitHub and Google sign-in completion and automatic owner claim still need browser verification.
+Updated 2026-11-14. The repository has one public-service code path. Both domains, OAuth providers, Turnstile, D1 and R2 resources, secrets, legal pages, and Workers are deployed. Staging creation is **open** for testing with friends. Production creation is **open** as of 2026-11-14. Production GitHub sign-in, automatic owner claim, and page-to-agent replies have passed a live browser test. Google linking and sign-in still need a production browser check.
 
 ## Implemented and checked
 
@@ -23,12 +23,14 @@ Updated 2026-11-14. The repository has one public-service code path. Both domain
 
 ## Production activation
 
-On 2026-11-14, the operator explicitly authorized opening production creation. The production D1 `service_state` changed from `creation_paused` to `open`. Both `/auth/github` and `/auth/google` returned redirects with production callback URLs, and `/health` returned OK. A disposable page was created through `https://tendriller.dev/api/tendrils`; its returned hostname was under `tendriller.site`. Its long poll woke on a diagnostic delivery probe, the probe acknowledgement was recorded, and the page was deleted. This verifies server-side creation and routing. Real browser completion of both production OAuth providers and automatic claim remains to be checked.
+On 2026-11-14, the operator explicitly authorized opening production creation. The production D1 `service_state` changed from `creation_paused` to `open`. Both `/auth/github` and `/auth/google` returned redirects with production callback URLs, and `/health` returned OK. A disposable page was created through `https://tendriller.dev/api/tendrils`; its returned hostname was under `tendriller.site`. Its long poll woke on a diagnostic delivery probe, the probe acknowledgement was recorded, and the page was deleted. This verifies server-side creation and routing. A subsequent live browser test completed production GitHub sign-in and automatic owner claim. Google linking and sign-in remain to be checked.
+
+On the production page `5nu6qaz3hr7s.tendriller.site`, the intended owner signed in with GitHub and claimed it automatically. The first page version became healthy and the Codex bridge held a live poll. An owner button pulse (event sequence 3) woke this same conversation; the agent posted a reply with `POST A/say` and acknowledged it. A typed owner instruction (sequence 4, “it worked!”) woke the conversation again; the agent answered on the page and acknowledged it. This proves the production GitHub claim and page → agent → page loop. Google is still untested in production.
 
 ## Further launch checks
 
 - Repeat the page → idle conversation → agent reply proof on each advertised host and on staging. Do not describe an unverified host as live. Codex queue notices appear as user messages; keep them count-only and read page content through the agent API. Claude Code has a real host wake test against a local mock API, not yet a staging page tap.
-- Test a different verified email being refused in a real staging browser, then complete production GitHub and Google sign-in and page-opening checks now that creation is open; pause creation promptly if either path fails.
+- Test a different verified email being refused in a real staging browser, then complete production Google linking and sign-in on the already claimed test page; pause creation promptly if that path fails.
 - Run the optional Playwright staging origin-isolation suite with an authenticated staging browser session and `E2E_OWNER_EMAIL`; the local two-origin suite passes without external credentials.
 - Verify speech on a mid-range phone, in-app notices and suspended-account appeals, the 90-day held-page deletion alarm, and the suspension reconciliation cron in staging.
 - Exercise rate and storage limits under load and confirm budget monitoring. Cloudflare's account-wide budget alerts are email-only; the generic webhook auto-pause endpoint is not a configured Free-plan control.
