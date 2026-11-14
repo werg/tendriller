@@ -19,5 +19,6 @@ The repository uses one public-service code path. New D1 environments initialize
 - Verify Whistle on a mid-range phone and its privacy/performance behavior. The model has not been benchmarked in a browser.
 - Verify Email Sending for automatic owner notices, reporter acknowledgements, and expiring appeal links for suspended owners. Held tendrils retain files for 90 days before the alarm deletes them; exercise that timer in staging. Visitor bursts, creator-IP claim patterns, and repeated releases trigger holds at the documented thresholds. Suspension and restoration enqueue every affected page for retry by a 15-minute scheduled reconciler; verify the cron in staging.
 - The local test suite now checks concurrent D1 account reservations. Perform real two-subdomain browser isolation tests, load tests, alert delivery checks, and incident exercises before opening `service_state`.
+- Cloudflare's current account-wide budget alerts are email-only, so the existing generic webhook auto-pause endpoint is not a configured Free-plan control. The setup script no longer requires its secret. Use Free-tier hard limits or paid Workers/Durable Objects spending limits; a compatible webhook policy needs separate verification before automatic pause is claimed.
 
 See `docs/OPERATIONS.md` for the setup and launch checklist.

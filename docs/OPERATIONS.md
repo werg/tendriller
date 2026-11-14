@@ -13,7 +13,7 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 3. Create Turnstile widgets for the service hostnames. Record each site key and secret separately.
 4. Configure Email Routing for `abuse@tendriller.dev` to invoke the production Worker. Create a separate, hard-to-guess forwarding recipient on the same domain, route it to the Worker, and set its full address as the `ABUSE_FORWARD_ADDRESS` secret. Give that private recipient to Cloudflare for forwarded complaints; keep it out of public pages. The handler parses up to 256 KB of MIME and records page URLs. Mail to the public address is intake evidence; mail to the private recipient causes an immediate hold. Test both paths before launch and rotate the private recipient if it leaks.
 5. Set HSTS on the pages zone, submit `tendriller.site` to the HSTS preload list, and submit it to the Public Suffix List. The Worker sends the preload header on page responses; verify the apex separately.
-6. Create Cloudflare budget notification policies and a generic webhook destination at `https://tendriller.dev/internal/budget`. Set a destination secret; its value must equal `BUDGET_WEBHOOK_SECRET`. Configure one policy ID for creation pause and one for read only. Also set account spending limits for Workers and Durable Objects in Cloudflare Billing.
+6. On Workers Free, monitor the included usage and its hard limits. If you enable pay-as-you-go billing, configure separate Workers and Durable Objects spending limits and account-wide email budget alerts in Cloudflare Billing. Account-wide budget alerts currently notify by email and do not provide the policy webhooks expected by `/internal/budget`; do not configure that endpoint or claim automatic pause is active until a supported notification policy and payload have been verified in staging.
 7. Enable Google Web Risk and create a restricted API key for `WEB_RISK_API_KEY`. Page versions with outbound URLs need the lookup service.
 8. Enable Cloudflare Email Sending for `tendriller.dev` and verify `notices@tendriller.dev` can send through the generated `EMAIL` binding. The Worker sends hold/restoration notices to owner emails and one acknowledgement per signed-in reporter per page per day.
 
@@ -34,7 +34,7 @@ node scripts/install-speech.mjs tendriller-production-files --remote
 
 `provision.mjs` is idempotent. It writes Wrangler configs with the resource IDs. Review and commit those configs before enabling CI. The default staging page host is `<id>.staging.tendriller.site`; its certificate needs to cover two subdomain levels. Use `STAGING_PUBLIC_BASE` and `STAGING_PAGE_BASE_DOMAIN` to change staging hostnames.
 
-After creating the OAuth apps, Turnstile widgets, and budget destination, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. Configure `BUDGET_PAUSE_POLICY_ID` and `BUDGET_READ_ONLY_POLICY_ID` as secrets too.
+After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
 GitHub Actions runs typecheck and tests on pull requests. Once staging launch checks pass, set repository variable `STAGING_READY=true`, the scoped `CLOUDFLARE_API_TOKEN` secret, and `CLOUDFLARE_ACCOUNT_ID` variable in the staging environment. A push to `main` applies migrations and deploys staging. Production tags `v*` deploy only with `PRODUCTION_READY=true` and the corresponding production environment values.
 
@@ -50,7 +50,7 @@ Each deployed Worker has a 15-minute cron that retries suspended-account page sh
 - Submit page, external, and forwarded-email reports; verify automatic holds, account suspension, appeals, restore, notices, and audit entries.
 - Verify speech on a mid-range phone. Download occurs only after a deliberate microphone tap; confirm model hash, 30-second limit, transcription time, and that audio never leaves the browser.
 - Put legally reviewed `terms.html`, `privacy.html`, `acceptable-use.html`, `copyright.html`, and `law-enforcement.html` in `legal/`. Run `node scripts/check-legal.mjs` before deploy. The claim screen's terms and privacy links must resolve to those published pages. Verify the minimum age and rights process in the reviewed text.
-- Verify budget notifications change `service_state` at both thresholds, test recovery, configure Cloudflare spending limits, and check alert delivery.
+- Monitor Free-tier limits or, if paid usage is enabled, verify spending limits and email budget alerts. Automatic `service_state` budget transitions require a compatible webhook policy and staging test before they can be relied upon.
 
 ## Runbooks
 
