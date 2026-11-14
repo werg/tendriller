@@ -126,15 +126,18 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Each is a starting point your agent can adapt while you use it.</p><ul class="ideas">
 <li><h3>Field notebook</h3><p>Collect photos, location, voice notes, and observations on a walk.</p></li>
 <li><h3>Remote camera helper</h3><p>Point your phone at an object and discuss it with an agent running elsewhere.</p></li>
-<li><h3>Movement companion</h3><p>Use motion and location readings to reflect on a walk or workout.</p></li>
+<li><h3>Sports and activity companion</h3><p>Build your own experience for sailing, cycling, geocaching, or any physical activity using location and motion.</p></li>
 <li><h3>Voice-guided task</h3><p>Get spoken prompts and replies while cooking or working with your hands.</p></li>
+<li><h3>Kitchen assistant</h3><p>Keep a shopping list, look inside the fridge with your camera, show recipes, and follow along as you cook.</p></li>
 <li><h3>Inventory scanner</h3><p>Scan barcodes or photograph items while the agent updates a list.</p></li>
 <li><h3>Collaborative sketchpad</h3><p>Draw and make choices as the agent changes the controls and layout.</p></li>
 <li><h3>Workshop instrument</h3><p>Connect a Bluetooth, Serial, USB, or MIDI device and interpret its readings.</p></li>
 <li><h3>Accessibility controls</h3><p>Use a gamepad or connected switch to trigger page actions.</p></li>
 <li><h3>Screen troubleshooting</h3><p>Share a selected screen capture and get help on the page.</p></li>
+<li><h3>Hands-on repair helper</h3><p>Point your camera at a car repair or other physical task while the agent shows diagrams, images, and next steps.</p></li>
 <li><h3>Location-aware checklist</h3><p>Show the next task or question as you move between places.</p></li>
 <li><h3>Multi-device workspace</h3><p>Use a phone for sensors and a computer for a larger live display.</p></li>
+<li><h3>Interactive office dashboard</h3><p>Bring tasks, notes, status, and controls into a dashboard the agent can update as your work changes.</p></li>
 <li><h3>Home experiment log</h3><p>Track light, motion, or connected sensors and summarize changes.</p></li>
 </ul></section>
 <footer><span>Tendriller</span><span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/status">Status</a></span></footer>
