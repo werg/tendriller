@@ -9,3 +9,14 @@ declare global {
     }
   }
 }
+
+declare module "*.sql?raw" {
+  const sql: string;
+  export default sql;
+}
+
+declare module "vitest" {
+  export interface ProvidedContext {
+    d1Migrations: import("cloudflare:test").D1Migration[];
+  }
+}

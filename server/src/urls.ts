@@ -3,15 +3,12 @@ import type { Env } from "./env";
 import { PAGE_KEY_RE, TENDRIL_ID_RE } from "./ids";
 
 export function publicBase(env: Env): string {
-  return (env.PUBLIC_BASE || "http://localhost:8787").replace(/\/+$/, "");
+  return env.PUBLIC_BASE.replace(/\/+$/, "");
 }
 
-/** Absolute page URL `P` for a page key, in the deployment's configured mode. */
+/** Absolute page URL `P` for a page key. */
 export function pageUrl(env: Env, id: string, key: string): string {
-  if (env.PAGE_HOST_MODE === "subdomain" && env.PAGE_BASE_DOMAIN) {
-    return `https://${id}.${env.PAGE_BASE_DOMAIN}/s/${key}/`;
-  }
-  return `${publicBase(env)}/t/${id}/s/${key}/`;
+  return `https://${id}.${env.PAGE_BASE_DOMAIN}/s/${key}/`;
 }
 
 export function apiUrl(env: Env, id: string): string {
@@ -28,9 +25,7 @@ export interface PageRoute {
 }
 
 /**
- * Recognises both page URL shapes:
- *   path mode:      /t/<id>/s/<key>/<rest>
- *   subdomain mode: <id>.<PAGE_BASE_DOMAIN> + /s/<key>/<rest>
+ * Recognises a page URL at <id>.<PAGE_BASE_DOMAIN>.
  */
 export function parsePageRoute(url: URL, env: Env): PageRoute | null {
   const domain = (env.PAGE_BASE_DOMAIN || "").toLowerCase();
@@ -45,9 +40,7 @@ export function parsePageRoute(url: URL, env: Env): PageRoute | null {
       return null;
     }
   }
-  const m = /^\/t\/([a-z2-7]{12})\/s\/([a-z2-7]{26})(\/.*)?$/.exec(url.pathname);
-  if (!m) return null;
-  return { id: m[1], key: m[2], base: `/t/${m[1]}/s/${m[2]}/`, rest: m[3] === undefined ? null : decodeRest(m[3].slice(1)) };
+  return null;
 }
 
 function decodeRest(s: string): string {

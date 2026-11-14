@@ -1,5 +1,5 @@
 // Agent API (PROTOCOL section 2.2), executed inside the Tendril Durable Object.
-import type { Role, Tendril } from "./tendril";
+import type { Tendril } from "./tendril";
 import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
 import { getEvents } from "./events";
@@ -45,14 +45,17 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
 
 // ------------------------------------------------------------------ tendril
 
-function tendrilInfo(t: Tendril) {
+async function tendrilInfo(t: Tendril) {
+  const ownerId = t.db.get<string | null>("owner_account", null);
+  const owner = ownerId && t.env.ACCOUNTS ? await t.env.ACCOUNTS.prepare("SELECT provider, login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
+    .bind(ownerId).first<{ provider: string; login: string }>() : null;
   return {
     id: t.tid,
     name: t.db.get("name", "Tendril"),
     page_url: t.mainPageUrl(),
     lifetime: t.db.get("lifetime", "ad_hoc"),
     expires_at: t.expiresAt(),
-    pairing: t.db.get("pairing", "open"),
+    owner,
     version: pointers(t),
     devices: t.listDevices(),
     presence: t.presence(),
@@ -71,18 +74,24 @@ export function tendrilMeta(t: Tendril) {
   };
 }
 
-route("GET", /^$/, (t) => json(tendrilInfo(t)));
+route("GET", /^$/, async (t) => json(await tendrilInfo(t)));
 
 route("PATCH", /^$/, async (t, req) => {
   const b = await readJson(req, 64 * 1024);
   if (b.name !== undefined) t.db.set("name", validName(b.name));
   if (b.lifetime !== undefined) {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
+    if (b.lifetime === "resident" && !t.db.get<string | null>("owner_account", null)) throw new HttpError(403, "account_required", "Resident tendrils require an account key");
+    try {
+      await t.env.ACCOUNTS.prepare("UPDATE tendrils SET lifetime = ? WHERE id = ?").bind(b.lifetime, t.tid).run();
+    } catch (err) {
+      if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
+      throw err;
+    }
     t.db.set("lifetime", b.lifetime);
   }
   if (b.pairing !== undefined) {
-    if (b.pairing !== "open" && b.pairing !== "required") throw new HttpError(400, "bad_request", "pairing must be open or required");
-    t.db.set("pairing", b.pairing);
+    throw new HttpError(400, "bad_request", "Device pairing is unavailable");
   }
   if (b.short_name !== undefined) t.db.set("short_name", b.short_name === null ? null : validName(b.short_name).slice(0, 30));
   for (const k of ["theme_color", "background_color"] as const) {
@@ -100,7 +109,7 @@ route("PATCH", /^$/, async (t, req) => {
     t.db.set("icon", b.icon);
   }
   t.scheduleAlarm();
-  return json(tendrilInfo(t));
+  return json(await tendrilInfo(t));
 });
 
 route("DELETE", /^$/, async (t) => {
@@ -108,22 +117,62 @@ route("DELETE", /^$/, async (t) => {
   return new Response(null, { status: 204 });
 });
 
+route("POST", /^release$/, async (t) => {
+  const owner = t.db.get<string | null>("owner_account", null);
+  if (!owner) throw new HttpError(409, "unclaimed", "This tendril is not claimed");
+  t.db.run("DELETE FROM release_events WHERE at < ?", t.now() - 24 * 60 * 60_000);
+  const releases = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM release_events")?.n ?? 0;
+  if (releases >= 2) {
+    await t.hold("Three claim release attempts within 24 hours");
+    throw new HttpError(403, "held", "Repeated releases held this tendril for review");
+  }
+  if (t.db.one("SELECT 1 AS x FROM guest_accounts WHERE approved = 1")) {
+    throw new HttpError(403, "forbidden", "A tendril with an approved guest cannot be released");
+  }
+  if (t.storageUsed() > 2 * 1024 * 1024) throw new HttpError(413, "quota", "Reduce storage below the unclaimed limit before release", { limit: 2 * 1024 * 1024, used: t.storageUsed() });
+  if (!t.env.ACCOUNTS || !t.env.ADMISSION) throw new HttpError(503, "unavailable");
+  const admission = t.env.ADMISSION.get(t.env.ADMISSION.idFromName("global"));
+  const reopened = await admission.fetch(new Request("https://admission.internal/reopen", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+  if (!reopened.ok) {
+    await reopened.body?.cancel();
+    const reserved = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+    if (!reserved.ok) return reserved;
+  }
+  try {
+    const row = await t.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = NULL, claimed_at = NULL WHERE id = ? AND owner_account = ? RETURNING id")
+      .bind(t.tid, owner).first();
+    if (!row) throw new HttpError(409, "owner_changed", "Owner changed during release");
+  } catch (err) {
+    await admission.fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+    throw err;
+  }
+  t.db.del("owner_account");
+  t.db.del("claimed_at");
+  t.db.del("owner_label");
+  t.db.set("unclaimed_since", t.now());
+  t.db.run("INSERT INTO release_events (at) VALUES (?)", t.now());
+  t.db.run("DELETE FROM page_sessions");
+  for (const { ws } of t.connectedSockets()) ws.close(4003, "claim released");
+  t.scheduleAlarm();
+  return json({ released: true, expires_at: t.expiresAt() });
+});
+
 // ------------------------------------------------------------------ files and versions
 
 route("PUT", /^files\/(.+)$/, async (t, req, url, by, [raw]) => {
   const path = normalizeFilePath(raw);
   if (!path) throw new HttpError(400, "bad_path", "Invalid file path (no '..', no leading '_tendril/', no trailing '/')");
-  const body = await readBody(req, MAX_FILE);
+  const body = await readBody(req, t.fileLimit());
   const type = resolveType(path, req.headers.get("Content-Type"));
   const { hash, size } = await storeContent(t, body, type);
   const files = latestFileMap(t);
   files.set(path, { path, hash, type, size });
-  const version = createVersion(t, files, url.searchParams.get("message"), by);
+  const version = await createVersion(t, files, url.searchParams.get("message"), by);
   return json({ version, files: [...files.keys()].sort() });
 });
 
 route("POST", /^files$/, async (t, req, url, by) => {
-  const b = await readJson(req, MAX_FILE * 2);
+  const b = await readJson(req, t.fileLimit() * 4);
   if (b.files !== undefined && !isPlainObject(b.files)) throw new HttpError(400, "bad_request", "files must be an object of path → content");
   const files = b.replace ? new Map<string, VersionFile>() : latestFileMap(t);
   if (b.delete !== undefined) {
@@ -144,13 +193,13 @@ route("POST", /^files$/, async (t, req, url, by) => {
       }
       given = typeof v.type === "string" ? v.type : null;
     } else throw new HttpError(400, "bad_request", `File ${raw} must be a string or {"base64","type"?}`);
-    if (bytes.byteLength > MAX_FILE) throw new HttpError(413, "too_large", `File ${raw} exceeds 25 MB`);
+    if (bytes.byteLength > t.fileLimit()) throw new HttpError(413, "too_large", `File ${raw} exceeds ${t.fileLimit()} bytes`);
     const type = resolveType(path, given);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     const { hash, size } = await storeContent(t, buf, type);
     files.set(path, { path, hash, type, size });
   }
-  const version = createVersion(t, files, typeof b.message === "string" ? b.message.slice(0, 500) : null, by);
+  const version = await createVersion(t, files, typeof b.message === "string" ? b.message.slice(0, 500) : null, by);
   return json({ version, files: [...files.keys()].sort() });
 });
 
@@ -283,7 +332,7 @@ route("GET", /^logs$/, (t, req, url) => {
 });
 
 route("PUT", /^blobs$/, async (t, req) => {
-  const body = await readBody(req, MAX_BLOB);
+  const body = await readBody(req, t.blobLimit());
   const name = req.headers.get("X-Tendril-Name");
   const type = req.headers.get("Content-Type") || "application/octet-stream";
   return json(await t.storeBlob(body, type, name ? name.slice(0, 200) : null, null, "agent"));
@@ -305,8 +354,7 @@ route("PATCH", /^devices\/([^/]+)$/, async (t, req, url, by, [id]) => {
   if (!d) throw new HttpError(404, "not_found", "No such device");
   if (b.name !== undefined) t.db.run("UPDATE devices SET name = ? WHERE id = ?", b.name === null ? null : validName(b.name), id);
   if (b.role !== undefined) {
-    if (!ROLES.has(b.role)) throw new HttpError(400, "bad_request", "role must be owner, guest or display");
-    t.setDeviceRole(id, b.role as Role, by);
+    throw new HttpError(403, "forbidden", "Agent tokens cannot change device roles");
   }
   return json(t.listDevices().find((x) => x.id === id));
 });
@@ -320,25 +368,30 @@ route("DELETE", /^devices\/([^/]+)$/, (t, req, url, by, [id]) => {
 route("POST", /^links$/, async (t, req) => {
   const b = await readJson(req, 4096);
   if (!ROLES.has(b.role)) throw new HttpError(400, "bad_request", "role must be owner, guest or display");
+  if (b.role !== "guest") throw new HttpError(403, "forbidden", "Agents can only create guest invites");
   const expiresIn = b.expires_in === undefined || b.expires_in === null ? null : Number(b.expires_in);
   if (expiresIn !== null && !(expiresIn > 0)) throw new HttpError(400, "bad_request", "expires_in must be a positive number of seconds");
   const label = typeof b.label === "string" ? b.label.slice(0, 100) : null;
-  return json(t.renderLink(await t.createLink(b.role, label, expiresIn)), 201);
+  return json(t.renderLink(await t.createLink(b.role, label, expiresIn, true)), 201);
 });
 
-route("GET", /^links$/, (t) => json({ links: t.listLinks() }));
+route("GET", /^links$/, (t) => json({ links: t.listLinks().filter((l) => l.role !== "display") }));
 
 route("DELETE", /^links\/([^/]+)$/, (t, req, url, by, [id]) => {
   if (id === "l_main") throw new HttpError(400, "cannot_delete", "The main link cannot be deleted; rotate it instead");
-  if (!t.db.one("SELECT 1 AS x FROM links WHERE id = ?", id)) throw new HttpError(404, "not_found", "No such link");
+  const link = t.db.one<{ role: string }>("SELECT role FROM links WHERE id = ?", id);
+  if (!link) throw new HttpError(404, "not_found", "No such link");
+  if (link.role === "display") throw new HttpError(403, "forbidden", "Only the owner can manage display links");
   t.db.run("DELETE FROM links WHERE id = ?", id);
+  t.db.run("DELETE FROM guest_accounts WHERE link_id = ?", id);
   t.closeLinkSockets(id);
   return new Response(null, { status: 204 });
 });
 
 route("POST", /^links\/([^/]+)\/rotate$/, async (t, req, url, by, [id]) => {
-  const l = t.db.one<{ id: string }>("SELECT id FROM links WHERE id = ?", id);
+  const l = t.db.one<{ id: string; role: string }>("SELECT id, role FROM links WHERE id = ?", id);
   if (!l) throw new HttpError(404, "not_found", "No such link");
+  if (l.role === "display") throw new HttpError(403, "forbidden", "Only the owner can manage display links");
   const key = newPageKey();
   t.db.run("UPDATE links SET key = ?, key_hash = ? WHERE id = ?", key, await sha256Hex(key), id);
   t.closeLinkSockets(id);

@@ -4,13 +4,9 @@ import { addActivity } from "./activity";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles } from "./files";
 import { HttpError, json, readBody } from "./http";
-import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, toBase64 } from "./ids";
+import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex } from "./ids";
 import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
-import { MAX_BLOB } from "./limits";
-import { handleVoiceSession } from "./voice";
-
-export const WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -29,26 +25,98 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const key = req.headers.get("x-tendril-key") ?? "";
   const base = req.headers.get("x-tendril-base") ?? "/";
   const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
+  // Before PSL acceptance sibling tendrils are same-site. Check the actual
+  // browser origin for every mutation and WebSocket upgrade; cookies alone
+  // cannot distinguish a hostile sibling origin.
+  if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    const expected = req.headers.get("x-tendril-origin");
+    if (!expected || req.headers.get("Origin") !== expected) throw new HttpError(403, "bad_origin", "Request must originate from this tendril");
+  }
   const link = await t.linkForKey(key);
   if (!link) {
     if (rest.startsWith("_tendril/")) throw new HttpError(404, "not_found", "Unknown or expired link");
     return new Response("This link is not valid (it may have expired or been revoked).", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
+  const session = await t.pageSession(req);
+  {
+    const owner = link.role === "owner" && session?.role === "owner" && session.account_id === t.db.get<string | null>("owner_account", null);
+    const guest = link.role === "guest" && session?.role === "guest" && !!t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", session.account_id, link.id);
+    const display = link.role === "display" && !link.created_by_agent && !!t.db.get<string | null>("owner_account", null);
+    if (!owner && !guest && !display) throw new HttpError(401, "unauthorized", "Page sign-in required");
+  }
 
   if (!rest.startsWith("_tendril/")) {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method_not_allowed");
-    return servePageFile(t, req, base, rest);
+    return servePageFile(t, req, base, rest, link.role, session?.account_id ?? null);
   }
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+
+  if (sub === "trust-version" && m === "POST") {
+    if (link.role !== "owner" || !session?.account_id) throw new HttpError(403, "forbidden");
+    const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
+    const version = Number(form.get("version"));
+    if (!Number.isInteger(version) || !t.db.one("SELECT 1 AS x FROM versions WHERE version = ? AND risk_score >= 5", version)) {
+      throw new HttpError(400, "bad_request", "Invalid version");
+    }
+    t.db.run("INSERT OR IGNORE INTO trusted_versions (account_id, version) VALUES (?, ?)", session.account_id, version);
+    return new Response(null, { status: 303, headers: { Location: base, "Cache-Control": "no-store" } });
+  }
+
+  if (sub === "report" && m === "GET") {
+    return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Report page</title></head><body><main><h1>Report this page</h1><p>Tell us what is wrong with this tendril.</p><form method="post"><textarea name="reason" required maxlength="2000"></textarea><button type="submit">Send report</button></form></main></body></html>`,
+      { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
+  }
+  if (sub === "report" && m === "POST") {
+    if (!t.env.ACCOUNTS) throw new HttpError(503, "unavailable");
+    if (t.env.REPORT_RATE && !(await t.env.REPORT_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
+      throw new HttpError(429, "rate_limited", "Too many reports");
+    }
+    const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 8192)));
+    const reason = form.get("reason");
+    if (!reason || !reason.trim() || reason.length > 2000) throw new HttpError(400, "bad_request", "Reason must be 1–2000 characters");
+    await t.recordReport("page", session?.account_id ?? null, reason.trim());
+    return new Response("Report received. Thank you.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+
+  if (sub === "agents" && m === "GET") {
+    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    return json({ agents: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at") ,
+      webhook: t.renderWake().webhook });
+  }
+  const disconnect = /^agents\/([A-Za-z0-9_.@-]{1,64})\/disconnect$/.exec(sub);
+  if (disconnect && m === "POST") {
+    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    if (!t.db.one("SELECT 1 AS x FROM tokens WHERE name = ?", disconnect[1])) throw new HttpError(404, "not_found", "No such agent token");
+    t.db.run("DELETE FROM tokens WHERE name = ?", disconnect[1]);
+    return json({ ok: true });
+  }
+  if (sub === "guests" && m === "GET") {
+    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    const pending = t.db.all<{ account_id: string; link_id: string; created_at: number }>("SELECT account_id, link_id, created_at FROM guest_accounts WHERE approved = 0 ORDER BY created_at");
+    const guests = await Promise.all(pending.map(async (row) => ({ ...row,
+      email: (await t.env.ACCOUNTS?.prepare("SELECT email FROM accounts WHERE id = ?").bind(row.account_id).first<{ email: string | null }>())?.email ?? null,
+    })));
+    return json({ guests });
+  }
+  const approveGuest = /^guests\/([^/]+)\/([^/]+)\/approve$/.exec(sub);
+  if (approveGuest && m === "POST") {
+    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    const exists = t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 0", approveGuest[1], approveGuest[2]);
+    if (!exists) throw new HttpError(404, "not_found", "No pending guest");
+    t.db.run("UPDATE guest_accounts SET approved = 1 WHERE account_id = ? AND link_id = ?", approveGuest[1], approveGuest[2]);
+    return json({ ok: true });
+  }
 
   if (sub === "ws") {
     if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required", "Expected a WebSocket upgrade");
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     t.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ linkId: link.id, deviceId: null, version: 0, at: t.now() });
+    server.serializeAttachment({ linkId: link.id, deviceId: null, version: 0, at: t.now(),
+      accountId: session?.account_id ?? null, sessionRole: link.role });
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -59,7 +127,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "blob" && m === "POST") {
     if (link.role === "display") throw new HttpError(403, "forbidden", "Display links are read-only");
-    const body = await readBody(req, MAX_BLOB);
+    const body = await readBody(req, t.blobLimit());
     const type = req.headers.get("Content-Type") || "application/octet-stream";
     const name = req.headers.get("X-Tendril-Name");
     const device = (await verifiedDevice(t, req))?.id ?? null;
@@ -101,32 +169,6 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (icon && /^https:\/\//.test(icon)) return Response.redirect(icon, 302);
     const svg = iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? "#2d6a4f");
     return new Response(svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache" } });
-  }
-
-  if (sub === "transcribe" && m === "POST") {
-    if (!t.env.AI) throw new HttpError(501, "unavailable", "Server-side transcription is not configured");
-    const dev = await verifiedDevice(t, req);
-    if (!dev || dev.role === "display" || link.role === "display") throw new HttpError(403, "forbidden", "Transcription needs a connected, non-display device");
-    const body = await readBody(req, MAX_BLOB);
-    if (body.byteLength === 0) throw new HttpError(400, "bad_request", "Empty audio body");
-    const lang = url.searchParams.get("language");
-    const input: Record<string, unknown> = { audio: toBase64(body) };
-    if (lang) input.language = lang.slice(0, 2);
-    try {
-      const out = await t.env.AI.run(WHISPER_MODEL, input);
-      return json({ text: typeof out?.text === "string" ? out.text.trim() : "" });
-    } catch (err) {
-      throw new HttpError(502, "transcription_failed", err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  if (sub === "voice/session" && m === "POST") {
-    // Voice sessions bill the server's provider account: owners only.
-    const dev = await verifiedDevice(t, req);
-    if (link.role !== "owner" || !dev || dev.role !== "owner" || dev.pending) {
-      throw new HttpError(403, "forbidden", "The voice layer is available to the owner's paired devices only");
-    }
-    return handleVoiceSession(req, t.env, { tendrilId: t.tid, name: t.db.get("name", "Tendril") });
   }
 
   throw new HttpError(404, "not_found", `No route _tendril/${sub}`);

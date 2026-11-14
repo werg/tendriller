@@ -1,2 +1,2 @@
-import type { Voice, Push } from "./types";
-export const registry: { voice?: Voice; push?: Push } = {};
+import type { Push } from "./types";
+export const registry: { push?: Push } = {};

@@ -150,6 +150,19 @@ describe("page URLs", () => {
     expect(html).toContain(`"base":"/s/${key}/"`);
     const redirect = await route(new Request(`https://${h.id}.pages.example.com/s/${key}`), e);
     expect(redirect.status).toBe(308);
+    expect(redirect.headers.get("Strict-Transport-Security")).toContain("includeSubDomains");
+    const servicePath = await route(new Request(`http://localhost:8787/t/${h.id}/s/${key}/`), e);
+    expect(servicePath.status).toBe(404);
+    const serviceApiOnPage = await route(new Request(`https://${h.id}.pages.example.com/api/tendrils`, { method: "POST" }), e);
+    expect(serviceApiOnPage.status).toBe(404);
+    const sibling = await route(new Request(`https://${h.id}.pages.example.com/s/${key}/_tendril/blob`, {
+      method: "POST", headers: { Origin: "https://other.pages.example.com" }, body: "attack",
+    }), e);
+    expect(sibling.status).toBe(403);
+    const socket = await route(new Request(`https://${h.id}.pages.example.com/s/${key}/_tendril/ws`, {
+      headers: { Upgrade: "websocket", Origin: "https://other.pages.example.com" },
+    }), e);
+    expect(socket.status).toBe(403);
   });
 
   it("serves info, manifest and a generated icon", async () => {

@@ -9,7 +9,7 @@ import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } f
 export type { Bus, Core } from "./types";
 
 /** Messages kept in the persistent outbox while offline and replayed in order. */
-const QUEUED = new Set(["send", "state", "log", "upload", "rule_fired", "voice_event"]);
+const QUEUED = new Set(["send", "state", "log", "upload", "rule_fired"]);
 /** Outbox messages that stay queued until the server acks their cid (others leave once written). */
 const ACKED = new Set(["send", "state"]);
 /** Never queued: pointless after a reconnect. */
@@ -51,7 +51,9 @@ class HttpError extends Error { constructor(public status: number, msg: string) 
 type Internal = Core & { readonly rev: number; health: ReturnType<typeof createHealth> };
 
 export function createCore(cfg: TendrilConfig): Internal {
-  cfg.features = cfg.features || { transcribe: false, voice: false, push: false, vapid: null };
+  cfg.features = cfg.features || { push: false, vapid: null, shared_by: "Tendriller user",
+    speech: { model: "cactus-whistle-v4", url: "_tendril/speech/whistle.cact",
+      sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" } };
   const bus = createBus();
   const stored = loadDevice(cfg.id);
   if (!stored.name) { stored.name = guessName(); saveDevice(cfg.id, stored); }
@@ -507,9 +509,6 @@ export function createCore(cfg: TendrilConfig): Internal {
         setRole(m.role, !!m.pending, m.pair_code);
         bus.emit("role", { role: device.role, pending: device.pending });
         break;
-      case "pair_request":
-        bus.emit("pair_request", m);
-        break;
       case "rules":
         rules = Array.isArray(m.rules) ? m.rules : [];
         bus.emit("rules", rules);
@@ -580,7 +579,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (ack.error) out.error = ack.error;
       return out;
     },
-    async instruction(text: string, via: "voice" | "text" | "voice_layer") {
+    async instruction(text: string, via: "voice" | "text") {
       const entry: any = { ts: Date.now(), from: "user", text, _local: true };
       addTranscript(entry);
       await sendAcked({ t: "send", cid: newCid(), kind: "instruction", text, via, data: { text, via }, wake: true });

@@ -1,6 +1,8 @@
 // The Tendril Durable Object: owns all per-tendril state and logic.
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
+import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from "./abuse/notices";
+import { requireWritesOpen } from "./service-state";
 import { addActivity, preview, pruneActivity } from "./activity";
 import { handleAgent } from "./agent";
 import { handleMcp } from "./mcp";
@@ -14,14 +16,13 @@ import type { Features } from "./inject";
 import {
   ACTIVITY_RETENTION, KEEP_VERSIONS,
   AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, DEDUPE_RETENTION, DEFAULT_GRACE_S, DEFAULT_PAGE_STREAK,
-  MAX_STATE, MAX_TRANSCRIPT, PRESENCE_TICK,
+  MAX_STATE, MAX_TRANSCRIPT, PRESENCE_TICK, MB, HOUR,
 } from "./limits";
 import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
 import { pushAvailable, sendWebPush, vapidPublicKey } from "./push";
 import { applyOps, type StateOp } from "./state";
 import { apiUrl, pageUrl, publicBase } from "./urls";
-import { voiceAvailable } from "./voice";
 import { handleWsClose, handleWsMessage } from "./ws";
 
 export type Role = "owner" | "guest" | "display";
@@ -32,6 +33,9 @@ export interface Att {
   deviceId: string | null;
   version: number;
   at: number;
+  accountId?: string | null;
+  sessionRole?: Role | null;
+  checkedAt?: number;
 }
 
 export interface DeviceRow {
@@ -82,6 +86,7 @@ export interface Link {
   label: string | null;
   created_at: number;
   expires_at: number | null;
+  created_by_agent?: number;
 }
 
 export const DEFAULT_WAKE: WakeConfig = {
@@ -98,6 +103,7 @@ export class Tendril extends DurableObject<Env> {
   waiters = new Set<Waiter>();
   releaseTimer: ReturnType<typeof setTimeout> | null = null;
   calls = new Map<string, PendingCall>();
+  pendingFileWrites = new Map<string, Promise<void>>();
   /** Test hook: milliseconds added to the clock. */
   skew = 0;
   private lastPresence: string | null = null;
@@ -130,12 +136,73 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "create") return await this.create(req);
       if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) throw new HttpError(404, "not_found", "No such tendril");
+      if (kind === "agent" || kind === "page" || kind === "claim") {
+        const owner = this.db.get<string | null>("owner_account", null);
+        if (owner) {
+          const status = await this.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at FROM tendrils t
+            JOIN accounts a ON a.id = t.owner_account WHERE t.id = ? AND t.owner_account = ?`)
+            .bind(this.tid, owner).first<{ state: string; suspended_at: number | null }>();
+          if (!status || status.state === "held" || status.suspended_at) {
+            this.db.set("disabled", true);
+            this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
+            this.scheduleAlarm();
+            throw new HttpError(403, "disabled", "This tendril is unavailable");
+          }
+        }
+      }
+      if (this.db.get<boolean>("disabled", false) && (kind === "agent" || kind === "page")) {
+        throw new HttpError(403, "disabled", "This tendril is unavailable");
+      }
+      if (kind === "claim") return await this.handleClaim(req, url);
+      if (kind === "abuse" && url.pathname === "/abuse/report" && req.method === "POST") {
+        const body = await readJson(req, 4096);
+        if ((body.source !== "external" && body.source !== "page" && body.source !== "email" && body.source !== "mail") ||
+          (body.account_id !== null && typeof body.account_id !== "string") ||
+          typeof body.reason !== "string" || !body.reason.trim() || body.reason.length > 2000) throw new HttpError(400, "bad_request");
+        await this.recordReport(body.source, body.account_id, body.reason.trim());
+        return json({ ok: true });
+      }
+      if (kind === "abuse" && url.pathname === "/abuse/state" && req.method === "POST") {
+        const body = await readJson(req, 4096);
+        if (body.disabled !== true && body.disabled !== false) throw new HttpError(400, "bad_request");
+        this.db.set("disabled", body.disabled);
+        if (body.disabled) this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
+        else this.db.del("disabled_at");
+        if (body.disabled) for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
+        this.scheduleAlarm();
+        return json({ ok: true });
+      }
+      if (kind === "abuse" && url.pathname === "/abuse/preview" && req.method === "GET") {
+        return json({ id: this.tid, name: this.db.get("name", "Tendril"),
+          versions: this.db.all("SELECT version, created_at, status, risk_score, risk_flags FROM versions ORDER BY version DESC LIMIT 20"),
+          files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
+          activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
+      }
+      if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
+        if (url.pathname === "/account/sensors" && req.method === "GET") return json({
+          devices: this.listDevices(),
+          events: this.db.all("SELECT ts, device, summary FROM activity WHERE kind = 'sensor' ORDER BY seq DESC LIMIT 200"),
+        });
+        if (url.pathname === "/account/export" && req.method === "GET") return json({
+          id: this.tid, name: this.db.get("name", "Tendril"), lifetime: this.db.get("lifetime", "ad_hoc"),
+          state: this.db.get("state", {}),
+          versions: this.db.all("SELECT version, created_at, status, message FROM versions ORDER BY version"),
+          version_files: this.db.all("SELECT version, path, hash, type, size FROM version_files ORDER BY version, path"),
+          blobs: this.db.all("SELECT id, type, size, name, ts FROM blobs ORDER BY ts"),
+          stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
+        });
+        if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
+      }
       if (kind === "agent") {
+        if (req.method !== "GET" && req.method !== "HEAD") await requireWritesOpen(this.env);
         const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
         if (rest === "mcp" || rest.startsWith("mcp/")) return await handleMcp(this, req, rest);
         return await handleAgent(this, req, url);
       }
-      if (kind === "page") return await handlePage(this, req, url);
+      if (kind === "page") {
+        if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") await requireWritesOpen(this.env);
+        return await handlePage(this, req, url);
+      }
       throw new HttpError(404, "not_found");
     } catch (err) {
       return toErrorResponse(err);
@@ -166,15 +233,25 @@ export class Tendril extends DurableObject<Env> {
     const id = req.headers.get("x-tendril-id")!;
     const body = await readJson(req, 64 * 1024);
     const name = body.name === undefined ? "Tendril" : validName(body.name);
+    const owner = body.owner === undefined ? null : validIntendedOwner(body.owner);
+    const ownerAccount = req.headers.get("x-tendril-owner-account");
     const lifetime = body.lifetime ?? "ad_hoc";
     if (lifetime !== "ad_hoc" && lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-    const pairing = body.pairing ?? "open";
-    if (pairing !== "open" && pairing !== "required") throw new HttpError(400, "bad_request", "pairing must be open or required");
+    if (lifetime === "resident" && !ownerAccount) throw new HttpError(403, "account_required", "Resident tendrils require an account key");
+    if (ownerAccount && owner) throw new HttpError(400, "bad_request", "owner cannot be set when using an account key");
+    if (body.pairing !== undefined) throw new HttpError(400, "bad_request", "Device pairing is unavailable");
     const now = this.now();
     this.db.set("id", id);
     this.db.set("name", name);
+    if (owner) this.db.set("intended_owner", owner);
+    if (ownerAccount) {
+      this.db.set("owner_account", ownerAccount);
+      this.db.set("claimed_at", now);
+      const identity = await this.env.ACCOUNTS?.prepare("SELECT provider, login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
+        .bind(ownerAccount).first<{ provider: string; login: string }>();
+      if (identity) this.db.set("owner_label", `${identity.provider}:${identity.login}`);
+    }
     this.db.set("lifetime", lifetime);
-    this.db.set("pairing", pairing);
     this.db.set("created_at", now);
     this.db.set("rev", 0);
     this.db.set("state", {});
@@ -241,11 +318,204 @@ export class Tendril extends DurableObject<Env> {
     return pageUrl(this.env, this.tid, l!.key);
   }
 
+  async pageSession(req: Request): Promise<{ account_id: string; role: Role } | null> {
+    const token = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
+    if (!token) return null;
+    const session = this.db.one<{ account_id: string; role: Role }>("SELECT account_id, role FROM page_sessions WHERE hash = ? AND expires_at > ?", await sha256Hex(token), this.now());
+    if (!session) return null;
+    const active = await this.env.ACCOUNTS.prepare("SELECT 1 FROM accounts WHERE id = ? AND suspended_at IS NULL AND deleting_at IS NULL")
+      .bind(session.account_id).first();
+    return active ? session : null;
+  }
+
+  async recordReport(source: "page" | "external" | "email" | "mail", accountId: string | null, reason: string): Promise<void> {
+    const now = this.now();
+    await this.env.ACCOUNTS.prepare("INSERT INTO reports (id, tendril_id, account_id, source, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(crypto.randomUUID(), this.tid, accountId, source, reason, now).run();
+    if (accountId && source !== "mail") {
+      const count = await this.env.ACCOUNTS.prepare("SELECT COUNT(*) AS n FROM reports WHERE tendril_id = ? AND account_id = ? AND created_at > ?")
+        .bind(this.tid, accountId, now - DAY).first<{ n: number }>();
+      if (count?.n === 1) this.ctx.waitUntil(reporterAcknowledgement(this.env, accountId, this.tid));
+    }
+    const index = await this.env.ACCOUNTS.prepare("SELECT owner_account, creator_ip FROM tendrils WHERE id = ?")
+      .bind(this.tid).first<{ owner_account: string | null; creator_ip: string | null }>();
+    if (!index) return;
+    // Unverified email is intake evidence, not a takedown trigger. Otherwise
+    // anyone could delete an unclaimed page merely by mailing its URL.
+    if (source === "mail") return;
+    if (!index.owner_account) {
+      if (index.creator_ip) await this.env.ACCOUNTS.prepare("INSERT OR REPLACE INTO blocks (kind, value, reason, expires_at) VALUES ('ip', ?, 'reported unclaimed tendril', ?)")
+        .bind(index.creator_ip, now + DAY).run();
+      await this.env.ACCOUNTS.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, 'automatic', 'delete_unclaimed', ?, ?, ?)")
+        .bind(crypto.randomUUID(), this.tid, `Reported via ${source}`, now).run();
+      await this.destroy();
+      return;
+    }
+    if (this.db.get<boolean>("disabled", false)) return;
+    const rows = await this.env.ACCOUNTS.prepare(`SELECT DISTINCT r.account_id FROM reports r
+      JOIN accounts a ON a.id = r.account_id WHERE r.tendril_id = ? AND r.disqualified = 0 AND r.created_at > ?
+      AND a.created_at < ? AND r.account_id != ?`)
+      .bind(this.tid, now - DAY, now - 7 * DAY, index.owner_account).all<{ account_id: string }>();
+    const reporters = new Set<string>();
+    for (const row of rows.results) {
+      const invited = this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ?", row.account_id);
+      reporters.add(invited ? "owner_invitees" : row.account_id);
+    }
+    if (reporters.size >= 3 || source === "email") await this.hold(
+      source === "email" ? "Forwarded abuse complaint" : "Three established-account reports within 24 hours");
+  }
+
+  async hold(reason: string): Promise<void> {
+    if (this.db.get<boolean>("disabled", false)) return;
+    const now = this.now();
+    const owner = this.db.get<string | null>("owner_account", null);
+    await this.env.ACCOUNTS.batch([
+      this.env.ACCOUNTS.prepare("UPDATE tendrils SET state = 'held' WHERE id = ?").bind(this.tid),
+      this.env.ACCOUNTS.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, 'automatic', 'hold', ?, ?, ?)")
+        .bind(crypto.randomUUID(), this.tid, reason, now),
+    ]);
+    this.db.set("disabled", true);
+    this.db.set("disabled_at", now);
+    for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
+    this.scheduleAlarm();
+    addActivity(this, { kind: "disabled", summary: `Page held: ${reason}` });
+    if (!owner) return;
+    this.ctx.waitUntil(ownerNotice(this.env, owner, this.tid, "held", reason));
+    const holds = await this.env.ACCOUNTS.prepare(`SELECT COUNT(DISTINCT a.subject) AS n FROM audit_log a
+      JOIN tendrils t ON t.id = a.subject WHERE a.action = 'hold' AND a.created_at > ?
+      AND t.owner_account = ? AND t.state = 'held'`)
+      .bind(now - 30 * DAY, owner).first<{ n: number }>();
+    if ((holds?.n ?? 0) < 3) return;
+    const suspended = await this.env.ACCOUNTS.prepare("UPDATE accounts SET suspended_at = ? WHERE id = ? AND suspended_at IS NULL RETURNING id")
+      .bind(now, owner).first();
+    if (!suspended) return;
+    await this.env.ACCOUNTS.batch([
+      this.env.ACCOUNTS.prepare("DELETE FROM sessions WHERE account_id = ?").bind(owner),
+      this.env.ACCOUNTS.prepare("DELETE FROM api_keys WHERE account_id = ?").bind(owner),
+      this.env.ACCOUNTS.prepare("INSERT OR IGNORE INTO blocks (kind, value, reason) SELECT 'identity', provider || ':' || subject, 'automatic suspension' FROM identities WHERE account_id = ?")
+        .bind(owner),
+      this.env.ACCOUNTS.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, 'automatic', 'suspend', ?, ?, ?)")
+        .bind(crypto.randomUUID(), owner, "Three unreversed holds within 30 days", now),
+    ]);
+    this.ctx.waitUntil(accountSuspendedNotice(this.env, owner, "Three unreversed holds within 30 days", this.tid));
+    // The D1 trigger queues every page. Reconciliation retries Durable Object closure.
+  }
+
+  /** Count distinct visitors on young pages without retaining raw IP addresses. */
+  async recordVisitorSignal(kind: "guest" | "display", value: string): Promise<void> {
+    if (!value || !this.db.get<string | null>("owner_account", null) ||
+      this.db.get<number>("created_at", 0) <= this.now() - 7 * DAY) return;
+    const salt = this.db.get<string | null>("signal_salt", null) ?? newPageKey();
+    if (!this.db.get<string | null>("signal_salt", null)) this.db.set("signal_salt", salt);
+    const hash = await sha256Hex(`${salt}:${value}`);
+    const since = this.now() - 10 * 60_000;
+    this.db.run("DELETE FROM visitor_signals WHERE first_seen < ?", since);
+    this.db.run("INSERT OR IGNORE INTO visitor_signals (kind, value_hash, first_seen) VALUES (?, ?, ?)", kind, hash, this.now());
+    const count = this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM visitor_signals WHERE kind = ? AND first_seen >= ?", kind, since)?.n ?? 0;
+    const limit = kind === "guest" ? 8 : 20;
+    if (count >= limit) await this.hold(kind === "guest"
+      ? "Eight distinct guest sign-ins within ten minutes on a young tendril"
+      : "Twenty distinct display visitors within ten minutes on a young tendril");
+  }
+
+  private async handleClaim(req: Request, url: URL): Promise<Response> {
+    if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled", "This tendril is unavailable");
+    const key = req.headers.get("x-tendril-key") ?? "";
+    const link = await this.linkForKey(key);
+    if (!link) throw new HttpError(404, "not_found", "Unknown or expired link");
+    if (url.pathname === "/claim/info" && req.method === "GET") {
+      return json({ claimed: !!this.db.get<string | null>("owner_account", null),
+        expected: maskOwner(this.db.get<string | null>("intended_owner", null)), role: link.role });
+    }
+    if (url.pathname === "/claim/check" && req.method === "GET") {
+      if (link.role === "display" && !link.created_by_agent && this.db.get<string | null>("owner_account", null)) {
+        await this.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
+        if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
+        return json({ role: "display" });
+      }
+      const session = await this.pageSession(req);
+      if (session && link.role === "owner" && session.role === "owner" && session.account_id === this.db.get<string | null>("owner_account", null)) return json({ role: "owner" });
+      if (session && link.role === "guest" && session.role === "guest" && this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", session.account_id, link.id)) return json({ role: "guest" });
+      throw new HttpError(401, "unauthorized", "Page sign-in required");
+    }
+    if (url.pathname === "/claim/session" && req.method === "POST") {
+      const b = await readJson(req, 4096);
+      if (typeof b.account_id !== "string" || typeof b.hash !== "string" || !/^[a-f0-9]{64}$/.test(b.hash)) throw new HttpError(403, "forbidden");
+      if (b.role === "owner" && (link.role !== "owner" || b.account_id !== this.db.get<string | null>("owner_account", null))) throw new HttpError(403, "forbidden");
+      if (b.role === "guest" && (link.role !== "guest" || !this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", b.account_id, link.id))) throw new HttpError(403, "forbidden");
+      if (b.role !== "owner" && b.role !== "guest") throw new HttpError(403, "forbidden");
+      this.db.run("INSERT INTO page_sessions (hash, account_id, role, expires_at) VALUES (?, ?, ?, ?)", b.hash, b.account_id, b.role, this.now() + 30 * DAY);
+      return json({ ok: true });
+    }
+    if (url.pathname === "/claim/guest" && req.method === "POST") {
+      const b = await readJson(req, 4096);
+      if (link.role !== "guest" || !this.db.get<string | null>("owner_account", null) || typeof b.account_id !== "string") throw new HttpError(403, "forbidden");
+      this.db.run("INSERT OR IGNORE INTO guest_accounts (account_id, link_id, approved, created_at) VALUES (?, ?, ?, ?)",
+        b.account_id, link.id, link.created_by_agent ? 0 : 1, this.now());
+      const row = this.db.one<{ approved: number }>("SELECT approved FROM guest_accounts WHERE account_id = ? AND link_id = ?", b.account_id, link.id);
+      await this.recordVisitorSignal("guest", b.account_id);
+      if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
+      return json({ approved: !!row?.approved });
+    }
+    if (url.pathname === "/claim/owner" && req.method === "POST") {
+      const b = await readJson(req, 8192);
+      if (link.role !== "owner" || typeof b.account_id !== "string" || !Array.isArray(b.identities)) throw new HttpError(403, "forbidden");
+      const current = this.db.get<string | null>("owner_account", null);
+      if (current && current !== b.account_id) throw new HttpError(403, "claimed", "Another account owns this tendril");
+      const expected = this.db.get<string | null>("intended_owner", null);
+      if (!current && expected && !ownerMatches(expected, b.identities)) throw new HttpError(403, "wrong_owner", "This tendril was made for another account");
+      if (!current) {
+        let row: unknown;
+        try {
+          row = await this.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = ?, claimed_at = ? WHERE id = ? AND owner_account IS NULL RETURNING id")
+            .bind(b.account_id, this.now(), this.tid).first();
+        } catch (err) {
+          if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
+          if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+          throw err;
+        }
+        if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
+        this.db.set("owner_account", b.account_id);
+        this.db.set("claimed_at", this.now());
+        const label = (b.identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
+        if (typeof label === "string") this.db.set("owner_label", label.slice(0, 80));
+        const creator = await this.env.ACCOUNTS.prepare("SELECT creator_ip FROM tendrils WHERE id = ?")
+          .bind(this.tid).first<{ creator_ip: string | null }>();
+        if (creator?.creator_ip) {
+          const pattern = await this.env.ACCOUNTS.prepare(`SELECT COUNT(DISTINCT owner_account) AS n FROM tendrils
+            WHERE creator_ip = ? AND claimed_at > ? AND owner_account IS NOT NULL`)
+            .bind(creator.creator_ip, this.now() - DAY).first<{ n: number }>();
+          if ((pattern?.n ?? 0) >= 10) await this.hold("Ten different accounts claimed pages from one creator address within 24 hours");
+        }
+        const risk = this.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", this.db.get("current", 0))?.risk_score ?? 0;
+        if (risk >= 5) {
+          const account = await this.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(b.account_id)
+            .first<{ created_at: number }>();
+          if (account && account.created_at > this.now() - 7 * DAY) {
+            await this.hold("High static screening score on claim");
+          }
+        }
+      }
+      await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
+        .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
+      this.scheduleAlarm();
+      if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "held", "This page was held after screening. The owner can appeal.");
+      return json({ role: "owner" });
+    }
+    throw new HttpError(404, "not_found");
+  }
+
   linkUrl(key: string): string {
     return pageUrl(this.env, this.tid, key);
   }
 
   expiresAt(): number | null {
+    if (this.db.get<boolean>("disabled", false)) {
+      return (this.db.get<number | null>("disabled_at", null) ?? this.db.get<number>("created_at", this.now())) + 90 * DAY;
+    }
+    if (!this.db.get<string | null>("owner_account", null)) {
+      return this.db.get<number>("unclaimed_since", this.db.get<number>("created_at", 0)) + DAY;
+    }
     if (this.db.get<string>("lifetime", "ad_hoc") === "resident") return null;
     const alive = this.connectedSockets().length > 0 ? this.now() : 0;
     const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_checkin", 0), this.db.get<number>("last_device_seen", 0), alive);
@@ -282,7 +552,10 @@ export class Tendril extends DurableObject<Env> {
   // ---------------------------------------------------------------- configuration
 
   features(): Features {
-    return { transcribe: !!this.env.AI, voice: voiceAvailable(this.env), push: pushAvailable(this.env), vapid: vapidPublicKey(this.env) };
+    return { push: pushAvailable(this.env), vapid: vapidPublicKey(this.env),
+      shared_by: this.db.get<string>("owner_label", "Tendriller user"),
+      speech: { model: "cactus-whistle-v4", url: "_tendril/speech/whistle.cact",
+        sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" } };
   }
 
   wakeConfig(): WakeConfig {
@@ -386,8 +659,10 @@ export class Tendril extends DurableObject<Env> {
     for (const { ws, att } of this.connectedSockets(except)) {
       if (filter) {
         if (!devCache.has(att.deviceId)) devCache.set(att.deviceId, this.device(att.deviceId));
-        const dev = devCache.get(att.deviceId);
-        if (!dev || !filter(dev)) continue;
+        const stored = devCache.get(att.deviceId);
+        if (!stored) continue;
+        const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
+        if (!filter(dev)) continue;
       }
       try {
         ws.send(s);
@@ -435,15 +710,6 @@ export class Tendril extends DurableObject<Env> {
     const connected = new Set(this.deviceSockets().keys());
     const primary = this.primaryDevice();
     return this.db.all<DeviceRow>("SELECT * FROM devices ORDER BY created_at ASC").map((d) => this.renderDevice(d, connected, primary));
-  }
-
-  /** Sets a device's role (approving a pairing = role owner). Notifies its sockets. */
-  setDeviceRole(id: string, role: Role, by: string | null): void {
-    const d = this.device(id);
-    if (!d) throw new HttpError(404, "not_found", "No such device");
-    this.db.run("UPDATE devices SET role = ?, pending = 0, pair_code = NULL WHERE id = ?", role, id);
-    for (const { ws, att } of this.connectedSockets()) if (att.deviceId === id) this.send(ws, { t: "role", role, pending: false });
-    addActivity(this, { kind: "device", summary: `Device ${d.name ?? id} set to ${role}`, device: id, by });
   }
 
   forgetDevice(id: string): void {
@@ -549,10 +815,74 @@ export class Tendril extends DurableObject<Env> {
     return `t/${this.tid}/blobs/${id}`;
   }
 
+  fileLimit(): number {
+    return this.db.get<string | null>("owner_account", null) ? 5 * MB : MB;
+  }
+
+  blobLimit(): number {
+    return this.db.get<string | null>("owner_account", null) ? 5 * MB : MB;
+  }
+
+  storageUsed(): number {
+    const files = this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0;
+    const blobs = this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM blobs")?.n ?? 0;
+    return files + blobs;
+  }
+
+  checkLocalStorage(additional: number): void {
+    const limit = this.db.get<string | null>("owner_account", null) ? 25 * MB : 2 * MB;
+    const used = this.storageUsed();
+    if (used + additional > limit) throw new HttpError(413, "quota", "Tendril storage limit reached", { limit, used });
+  }
+
+  reserveStoredFile(hash: string, size: number, riskScore: number, riskUrls: string[]): boolean {
+    if (this.db.one("SELECT 1 AS x FROM stored_files WHERE hash = ?", hash)) return false;
+    this.checkLocalStorage(size);
+    this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score, risk_urls) VALUES (?, ?, ?, ?, ?)",
+      hash, size, this.now(), riskScore, JSON.stringify(riskUrls));
+    return true;
+  }
+
+  async reserveGlobalBytes(bytes: number): Promise<void> {
+    if (!this.env.ACCOUNTS) throw new HttpError(503, "unavailable", "Accounts database is not configured");
+    try {
+      const row = await this.env.ACCOUNTS.prepare("UPDATE tendrils SET reserved = reserved + ? WHERE id = ? RETURNING reserved")
+        .bind(bytes, this.tid).first();
+      if (!row) throw new HttpError(503, "unavailable", "Tendril index is missing");
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("service_full")) throw new HttpError(507, "service_full", "Service storage is full");
+      if (message.includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+      throw err;
+    }
+  }
+
+  async releaseGlobalBytes(bytes: number): Promise<void> {
+    await this.env.ACCOUNTS.prepare("UPDATE tendrils SET reserved = MAX(0, reserved - ?) WHERE id = ?")
+      .bind(bytes, this.tid).run();
+  }
+
+  async reconcileStorage(): Promise<void> {
+    const actual = this.storageUsed();
+    await this.env.ACCOUNTS.prepare("UPDATE tendrils SET reserved = ? WHERE id = ? AND reserved != ?")
+      .bind(actual, this.tid, actual).run();
+  }
+
   async storeBlob(body: ArrayBuffer, type: string, name: string | null, device: string | null, source: "page" | "agent") {
     const id = newBlobId();
-    await this.env.FILES.put(this.blobKey(id), body, { httpMetadata: { contentType: type } });
+    this.checkLocalStorage(body.byteLength);
     this.db.run("INSERT INTO blobs (id, type, size, name, ts, device, source) VALUES (?, ?, ?, ?, ?, ?, ?)", id, type, body.byteLength, name, this.now(), device, source);
+    let globalReserved = false;
+    try {
+      await this.reserveGlobalBytes(body.byteLength);
+      globalReserved = true;
+      await this.env.FILES.put(this.blobKey(id), body, { httpMetadata: { contentType: type } });
+    } catch (err) {
+      this.db.run("DELETE FROM blobs WHERE id = ?", id);
+      if (globalReserved) await this.releaseGlobalBytes(body.byteLength);
+      throw err;
+    }
     return { id, url: `_tendril/blob/${id}` };
   }
 
@@ -565,8 +895,10 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async deleteBlob(id: string): Promise<void> {
+    const size = this.db.one<{ size: number }>("SELECT size FROM blobs WHERE id = ?", id)?.size ?? 0;
     this.db.run("DELETE FROM blobs WHERE id = ?", id);
     await this.env.FILES.delete(this.blobKey(id));
+    if (size) await this.releaseGlobalBytes(size);
   }
 
   // ---------------------------------------------------------------- transcript, say, notify
@@ -591,6 +923,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async notify(n: { title: string; body?: string; url?: string; device?: string; tag?: string }, by: string | null) {
+    if (!this.db.get<string | null>("owner_account", null)) throw new HttpError(403, "unclaimed", "Unclaimed tendrils cannot send notifications");
+    const hour = Math.floor(this.now() / HOUR);
+    const allowed = this.db.one<{ count: number }>(`INSERT INTO notify_rate (hour, count) VALUES (?, 1)
+      ON CONFLICT(hour) DO UPDATE SET count = count + 1 WHERE count < 20 RETURNING count`, hour);
+    if (!allowed) throw new HttpError(429, "quota", "Notification limit reached", { limit: 20, used: 20 });
     const payload = { title: n.title, body: n.body ?? "", url: n.url ?? this.mainPageUrl(), tag: n.tag ?? null, tendril: this.tid };
     const subs = this.db.all<{ device: string; sub: string }>(
       "SELECT p.device, p.sub FROM push_subs p JOIN devices d ON d.id = p.device WHERE d.role = 'owner' AND d.pending = 0" + (n.device ? " AND d.id = ?" : ""),
@@ -629,13 +966,17 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- links
 
-  async createLink(role: Role, label: string | null, expiresIn: number | null): Promise<Link> {
+  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false): Promise<Link> {
+    if (role === "display") {
+      const n = this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links WHERE role = 'display'")?.n ?? 0;
+      if (n >= 3) throw new HttpError(413, "quota", "At most three display links are allowed", { limit: 3, used: n });
+    }
     const id = newLinkId();
     const key = newPageKey();
     const now = this.now();
     const expires = expiresIn ? now + expiresIn * 1000 : null;
-    this.db.run("INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", id, key, await sha256Hex(key), role, label, now, expires);
-    return { id, key, role, label, created_at: now, expires_at: expires };
+    this.db.run("INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at, created_by_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, key, await sha256Hex(key), role, label, now, expires, fromAgent ? 1 : 0);
+    return { id, key, role, label, created_at: now, expires_at: expires, created_by_agent: fromAgent ? 1 : 0 };
   }
 
   renderLink(l: Link) {
@@ -736,8 +1077,14 @@ export class Tendril extends DurableObject<Env> {
     pruneMcpSubs(this);
     await this.pruneBlobs(now);
     await this.pruneVersions();
+    await this.pruneOrphanFiles(now);
+    await this.reconcileStorage();
     this.db.run("DELETE FROM dedupe WHERE ts < ?", now - DEDUPE_RETENTION);
     this.db.run("DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at < ?", now);
+    this.db.run("DELETE FROM guest_accounts WHERE link_id NOT IN (SELECT id FROM links)");
+    this.db.run("DELETE FROM ws_rate WHERE second < ?", Math.floor(now / 1000) - 60);
+    this.db.run("DELETE FROM notify_rate WHERE hour < ?", Math.floor(now / HOUR) - 24);
+    this.db.run("DELETE FROM web_risk_cache WHERE expires_at < ?", now);
     const a = this.db.get<{ expires_at: number } | null>("adopt", null);
     if (a && a.expires_at < now) this.db.del("adopt");
     this.db.set("next_cleanup", now + DAY);
@@ -769,13 +1116,30 @@ export class Tendril extends DurableObject<Env> {
     }
     const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     const gone = [...before].filter((h) => !after.has(h));
-    for (const hash of gone) await this.env.FILES.delete(fileKey(this, hash));
+    for (const hash of gone) {
+      await this.env.FILES.delete(fileKey(this, hash));
+      const size = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash = ?", hash)?.size ?? 0;
+      this.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
+      if (size) await this.releaseGlobalBytes(size);
+    }
+  }
+
+  async pruneOrphanFiles(now: number): Promise<void> {
+    const rows = this.db.all<{ hash: string }>(`SELECT s.hash FROM stored_files s
+      WHERE s.created_at < ? AND NOT EXISTS (SELECT 1 FROM version_files v WHERE v.hash = s.hash)`, now - HOUR);
+    for (const { hash } of rows) {
+      await this.env.FILES.delete(fileKey(this, hash));
+      const size = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash = ?", hash)?.size ?? 0;
+      this.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
+      if (size) await this.releaseGlobalBytes(size);
+    }
   }
 
   // ---------------------------------------------------------------- deletion
 
   async destroy(): Promise<void> {
     const id = this.tid;
+    const releaseAdmission = !!id && !this.db.get<string | null>("owner_account", null);
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.close(4004, "tendril deleted");
@@ -802,6 +1166,14 @@ export class Tendril extends DurableObject<Env> {
       } while (cursor);
     }
     await this.ctx.storage.deleteAlarm();
+    if (id) {
+      await this.env.ACCOUNTS.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
+    }
+    if (releaseAdmission) {
+      await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global")).fetch(new Request("https://admission.internal/release", {
+        method: "POST", headers: { "x-tendril-id": id },
+      }));
+    }
     await this.ctx.storage.deleteAll();
     this.db.clearCache();
     this.db.init();
@@ -812,5 +1184,34 @@ export class Tendril extends DurableObject<Env> {
 export function validName(v: unknown): string {
   if (typeof v !== "string" || !v.trim() || v.length > 100) throw new HttpError(400, "bad_request", "name must be a non-empty string of at most 100 characters");
   return v.trim();
+}
+
+function validIntendedOwner(value: unknown): string {
+  if (typeof value !== "string" || value.length > 254) throw new HttpError(400, "bad_request", "Invalid owner");
+  const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (email.test(value)) return value.toLowerCase();
+  if (/^github:[A-Za-z0-9-]{1,39}$/i.test(value)) return `github:${value.slice(7).toLowerCase()}`;
+  if (value.startsWith("google:") && email.test(value.slice(7))) return `google:${value.slice(7).toLowerCase()}`;
+  throw new HttpError(400, "bad_request", "Owner must be an email, github:login, or google:email");
+}
+
+function maskOwner(owner: string | null): string | null {
+  if (!owner) return null;
+  const i = owner.indexOf("@");
+  if (i > 0) return `${owner[0]}***${owner.slice(i)}`;
+  return `${owner.slice(0, owner.indexOf(":"))}:${owner[owner.indexOf(":") + 1]}***`;
+}
+
+function ownerMatches(owner: string, identities: unknown[]): boolean {
+  return identities.some((raw) => {
+    if (!raw || typeof raw !== "object") return false;
+    const identity = raw as { provider?: unknown; login?: unknown; emails?: unknown };
+    const provider = identity.provider;
+    const login = typeof identity.login === "string" ? identity.login.toLowerCase() : "";
+    const emails = Array.isArray(identity.emails) ? identity.emails.filter((v): v is string => typeof v === "string").map((v) => v.toLowerCase()) : [];
+    if (owner.startsWith("github:")) return provider === "github" && login === owner.slice(7);
+    if (owner.startsWith("google:")) return provider === "google" && emails.includes(owner.slice(7));
+    return emails.includes(owner);
+  });
 }
 

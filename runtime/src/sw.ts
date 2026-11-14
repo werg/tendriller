@@ -4,7 +4,7 @@
 // - Navigations: network first (falls back to the cache when offline or very slow).
 // - Other GETs in scope: cache first for the version the requesting page loaded, else network
 //   (with `?v=<n>` so the server returns that version's file); tendril.js is revalidated.
-// - Never cached: `_tendril/ws`, `_tendril/info`, blobs, voice/transcribe, POSTs, `/api/`.
+// - Never cached: `_tendril/ws`, `_tendril/info`, blobs, POSTs, `/api/`.
 import { registerPushHandlers } from "./sw-push";
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -89,8 +89,6 @@ function bypass(rel: string, url: URL): boolean {
     rel.startsWith("_tendril/ws") ||
     rel.startsWith("_tendril/info") ||
     rel.startsWith("_tendril/blob") ||
-    rel.startsWith("_tendril/voice") ||
-    rel.startsWith("_tendril/transcribe") ||
     rel === "_tendril/sw.js"
   );
 }

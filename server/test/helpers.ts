@@ -3,7 +3,7 @@ import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { Tendril } from "../src/tendril";
 
-export const BASE = "http://localhost:8787";
+export const BASE = "https://tendriller.dev";
 
 export function req(path: string, init?: RequestInit): Promise<Response> {
   return exports.default.fetch(path.startsWith("http") ? path : BASE + path, init);
@@ -87,6 +87,7 @@ export class PageClient {
   welcome: any;
   /** Auto-answer eval messages with this function. */
   onEval: ((code: string, msg: any) => any) | null = null;
+  headers: Record<string, string> = {};
 
   constructor(
     public pageUrl: string,
@@ -94,15 +95,16 @@ export class PageClient {
     public secret = rb32(32),
   ) {}
 
-  static async connect(pageUrl: string, opts: { deviceId?: string; secret?: string; name?: string; version?: number; rev?: number } = {}): Promise<PageClient> {
+  static async connect(pageUrl: string, opts: { deviceId?: string; secret?: string; name?: string; version?: number; rev?: number; headers?: Record<string, string> } = {}): Promise<PageClient> {
     const c = new PageClient(pageUrl, opts.deviceId, opts.secret);
+    c.headers = opts.headers ?? {};
     await c.open();
     c.welcome = await c.hello(opts);
     return c;
   }
 
   async open(): Promise<void> {
-    const res = await req(this.pageUrl + "_tendril/ws", { headers: { Upgrade: "websocket" } });
+    const res = await req(this.pageUrl + "_tendril/ws", { headers: { Upgrade: "websocket", ...this.headers } });
     if (res.status !== 101 || !res.webSocket) throw new Error(`ws upgrade failed: ${res.status} ${await res.text()}`);
     this.ws = res.webSocket;
     this.ws.accept();

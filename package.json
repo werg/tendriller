@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "npm run build && wrangler dev --config server/wrangler.jsonc",
-    "test": "npm run build && vitest run --config server/vitest.config.ts",
-    "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
+    "dev": "npm run build && wrangler d1 migrations apply ACCOUNTS --local --config server/wrangler.jsonc && wrangler dev --config server/wrangler.jsonc",
+    "test": "npm run build && vitest run --config server/vitest.public.config.ts",
+    "test:e2e": "npm run build && playwright test --config test/e2e/public.playwright.config.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit"
   },
   "devDependencies": {
@@ -18,5 +18,9 @@
     "typescript": "^7.0.2",
     "vitest": "4.1",
     "wrangler": "^4.161.0"
+  },
+  "dependencies": {
+    "ipaddr.js": "^2.5.0",
+    "postal-mime": "^2.7.6"
   }
 }

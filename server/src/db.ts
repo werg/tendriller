@@ -4,7 +4,9 @@ export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, last_used INTEGER);
 CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, key TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
-  label TEXT, created_at INTEGER NOT NULL, expires_at INTEGER);
+  label TEXT, created_at INTEGER NOT NULL, expires_at INTEGER, created_by_agent INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS guest_accounts (account_id TEXT NOT NULL, link_id TEXT NOT NULL, approved INTEGER NOT NULL,
+  created_at INTEGER NOT NULL, PRIMARY KEY (account_id, link_id));
 CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, name TEXT, role TEXT NOT NULL,
   pending INTEGER NOT NULL DEFAULT 0, pair_code TEXT, link TEXT, ua TEXT, caps TEXT,
   created_at INTEGER NOT NULL, last_seen INTEGER, last_active INTEGER);
@@ -19,6 +21,17 @@ CREATE TABLE IF NOT EXISTS logs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEG
   level TEXT NOT NULL, message TEXT NOT NULL, stack TEXT);
 CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT, size INTEGER NOT NULL, name TEXT, ts INTEGER NOT NULL,
   device TEXT, source TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS trusted_versions (account_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (account_id, version));
+CREATE TABLE IF NOT EXISTS web_risk_cache (url_hash TEXT PRIMARY KEY, unsafe INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS page_sessions (hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, role TEXT NOT NULL,
+  expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ws_rate (device_id TEXT PRIMARY KEY, second INTEGER NOT NULL, count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS notify_rate (hour INTEGER PRIMARY KEY, count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS visitor_signals (kind TEXT NOT NULL, value_hash TEXT NOT NULL,
+  first_seen INTEGER NOT NULL, PRIMARY KEY (kind, value_hash));
+CREATE INDEX IF NOT EXISTS visitor_signals_time ON visitor_signals (kind, first_seen);
+CREATE TABLE IF NOT EXISTS release_events (at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS activity (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
   summary TEXT NOT NULL, device TEXT, blob TEXT, by TEXT, source TEXT NOT NULL, agg_key TEXT, agg TEXT);
 CREATE INDEX IF NOT EXISTS activity_agg ON activity (agg_key);
@@ -43,6 +56,19 @@ export class Db {
 
   init(): void {
     this.sql.exec(SCHEMA);
+    const columns = this.sql.exec("PRAGMA table_info(links)").toArray() as { name: string }[];
+    if (!columns.some((c) => c.name === "created_by_agent")) {
+      this.sql.exec("ALTER TABLE links ADD COLUMN created_by_agent INTEGER NOT NULL DEFAULT 0");
+      // Existing guest/display links have no provenance. Treat them as agent
+      // links on migration so they cannot silently gain owner-only privileges.
+      this.sql.exec("UPDATE links SET created_by_agent = 1 WHERE role IN ('guest', 'display')");
+    }
+    const fileColumns = this.sql.exec("PRAGMA table_info(stored_files)").toArray() as { name: string }[];
+    if (!fileColumns.some(c => c.name === "risk_score")) this.sql.exec("ALTER TABLE stored_files ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0");
+    if (!fileColumns.some(c => c.name === "risk_urls")) this.sql.exec("ALTER TABLE stored_files ADD COLUMN risk_urls TEXT NOT NULL DEFAULT '[]'");
+    const versionColumns = this.sql.exec("PRAGMA table_info(versions)").toArray() as { name: string }[];
+    if (!versionColumns.some(c => c.name === "risk_score")) this.sql.exec("ALTER TABLE versions ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0");
+    if (!versionColumns.some(c => c.name === "risk_flags")) this.sql.exec("ALTER TABLE versions ADD COLUMN risk_flags TEXT NOT NULL DEFAULT '[]'");
   }
 
   all<T = Record<string, any>>(query: string, ...args: unknown[]): T[] {

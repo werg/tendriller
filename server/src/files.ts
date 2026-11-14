@@ -8,6 +8,38 @@ import { holdingPage, injectRuntime } from "./inject";
 import { HEALTH_TIMEOUT, MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 
+function scanContent(body: ArrayBuffer, type: string): { score: number; urls: string[] } {
+  if (!/(text|javascript|json|xml|svg)/i.test(type)) return { score: 0, urls: [] };
+  const text = new TextDecoder().decode(body.slice(0, 1024 * 1024));
+  let score = 0;
+  if (/<input\b[^>]*type\s*=\s*["']?password\b/i.test(text)) score += 5;
+  if (/<form\b[^>]*action\s*=\s*["']?https?:\/\//i.test(text)) score += 4;
+  if (/(?:github|google|microsoft|paypal|bank|openai)[\s\S]{0,100}(?:sign\s*in|log\s*in|password|verify\s+account)/i.test(text)) score += 4;
+  if (/(?:coinhive|cryptonight|cryptominer|stratum\+tcp)/i.test(text)) score += 5;
+  const urls = [...text.matchAll(/(?:href|src|action)\s*=\s*["'](https?:\/\/[^"'\s<>]+)|(?:fetch|WebSocket)\s*\(\s*["'](https?:\/\/[^"'\s<>]+)/gi)]
+    .map(m => m[1] ?? m[2]).filter(Boolean);
+  return { score, urls: [...new Set(urls)].slice(0, 50) };
+}
+
+async function webRisk(t: Tendril, url: string): Promise<boolean> {
+  if (!t.env.WEB_RISK_API_KEY) throw new HttpError(503, "unavailable", "URL screening is not configured");
+  const hash = await sha256Hex(url);
+  const cached = t.db.one<{ unsafe: number }>("SELECT unsafe FROM web_risk_cache WHERE url_hash = ? AND expires_at > ?", hash, t.now());
+  if (cached) return !!cached.unsafe;
+  const target = new URL("https://webrisk.googleapis.com/v1/uris:search");
+  target.searchParams.set("uri", url);
+  for (const type of ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"]) target.searchParams.append("threatTypes", type);
+  target.searchParams.set("key", t.env.WEB_RISK_API_KEY);
+  const response = await fetch(target);
+  if (!response.ok) throw new HttpError(503, "unavailable", "URL screening is unavailable");
+  const result = await response.json() as { threat?: { threatTypes?: string[]; expireTime?: string } };
+  const unsafe = !!result.threat?.threatTypes?.length;
+  const expires = result.threat?.expireTime ? Date.parse(result.threat.expireTime) : t.now() + 60 * 60_000;
+  t.db.run("INSERT OR REPLACE INTO web_risk_cache (url_hash, unsafe, expires_at) VALUES (?, ?, ?)", hash, unsafe ? 1 : 0,
+    Number.isFinite(expires) ? expires : t.now() + 60 * 60_000);
+  return unsafe;
+}
+
 export type VersionStatus = "pending" | "healthy" | "failed";
 
 export interface VersionFile {
@@ -35,9 +67,33 @@ export function fileKey(t: Tendril, hash: string): string {
 /** Stores the bytes content-addressed in R2 (skipped if already present). */
 export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
-  const key = fileKey(t, hash);
-  const head = await t.env.FILES.head(key);
-  if (!head) await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } });
+  const pending = t.pendingFileWrites.get(hash);
+  if (pending) {
+    await pending;
+    return { hash, size: body.byteLength };
+  }
+  const job = (async () => {
+    const risk = scanContent(body, type);
+    const reserved = t.reserveStoredFile(hash, body.byteLength, risk.score, risk.urls);
+    let globalReserved = false;
+    try {
+      if (reserved) {
+        await t.reserveGlobalBytes(body.byteLength);
+        globalReserved = true;
+      }
+      const key = fileKey(t, hash);
+      const head = await t.env.FILES.head(key);
+      if (!head) await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } });
+    } catch (err) {
+      if (reserved) {
+        t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
+        if (globalReserved) await t.releaseGlobalBytes(body.byteLength);
+      }
+      throw err;
+    }
+  })();
+  t.pendingFileWrites.set(hash, job);
+  try { await job; } finally { t.pendingFileWrites.delete(hash); }
   return { hash, size: body.byteLength };
 }
 
@@ -54,10 +110,38 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 }
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
-export function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null): number {
+export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null): Promise<number> {
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
+  let riskScore = 0;
+  let webRiskMatch = false;
+  const riskFlags: string[] = [];
+  const urls = new Set<string>();
+  for (const file of files.values()) {
+    const scan = t.db.one<{ risk_score: number; risk_urls: string }>("SELECT risk_score, risk_urls FROM stored_files WHERE hash = ?", file.hash);
+    if (scan) {
+      riskScore += scan.risk_score;
+      for (const url of JSON.parse(scan.risk_urls) as string[]) urls.add(url);
+    }
+    if (/\.(?:exe|dll|apk|dmg|msi|bat|scr)$/i.test(file.path) && file.size > 256 * 1024) {
+      riskScore += 5;
+      riskFlags.push("large_executable");
+    }
+  }
+  if (urls.size > 50) throw new HttpError(413, "too_many_urls", "Version has too many external URLs");
+  for (const url of urls) {
+    if (await webRisk(t, url)) { webRiskMatch = true; riskFlags.push("web_risk_match"); }
+  }
+  if (riskScore >= 5) riskFlags.push("static_screening");
+  if (webRiskMatch) riskScore = Math.max(riskScore, 10);
+  const owner = t.db.get<string | null>("owner_account", null);
+  const account = owner ? await t.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(owner).first<{ created_at: number }>() : null;
+  const shouldHold = webRiskMatch || (riskScore >= 5 && !!account && account.created_at > t.now() - 7 * 24 * 60 * 60_000);
+  if (shouldHold) {
+    await t.hold(webRiskMatch ? "Web Risk match" : "High static screening score on young account");
+  }
   const n = t.db.get<number>("latest", 0) + 1;
-  t.db.run("INSERT INTO versions (version, created_at, status, message, by) VALUES (?, ?, 'pending', ?, ?)", n, t.now(), message, by);
+  t.db.run("INSERT INTO versions (version, created_at, status, message, by, risk_score, risk_flags) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
+    n, t.now(), message, by, riskScore, JSON.stringify(riskFlags));
   for (const f of files.values()) {
     t.db.run("INSERT INTO version_files (version, path, hash, type, size) VALUES (?, ?, ?, ?, ?)", n, f.path, f.hash, f.type, f.size);
   }
@@ -180,11 +264,24 @@ export function listVersions(t: Tendril) {
 }
 
 /** Serves `P<rest>` for a page request. */
-export async function servePageFile(t: Tendril, req: Request, base: string, rest: string): Promise<Response> {
+export async function servePageFile(t: Tendril, req: Request, base: string, rest: string,
+  role: "owner" | "guest" | "display", accountId: string | null): Promise<Response> {
   const url = new URL(req.url);
   const vq = Number(url.searchParams.get("v"));
   let version = servedVersion(t);
   if (rest !== "" && Number.isInteger(vq) && vq > 0 && t.db.one("SELECT 1 AS x FROM versions WHERE version = ?", vq)) version = vq;
+  const risk = version > 0 ? t.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", version)?.risk_score ?? 0 : 0;
+  if (risk >= 5 && role !== "owner") {
+    version = t.db.one<{ version: number }>("SELECT MAX(version) AS version FROM versions WHERE risk_score < 5 AND status != 'failed' AND version <= ?", version)?.version ?? 0;
+  }
+  if (risk >= 5 && role === "owner" && accountId &&
+    !t.db.one("SELECT 1 AS x FROM trusted_versions WHERE account_id = ? AND version = ?", accountId, version)) {
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Review this version · Tendriller</title></head><body><main>
+      <h1>Review this page before opening it</h1><p>This version asks for passwords, sends data elsewhere, or contains another risky pattern. Tendriller never asks for passwords. Continue only if you trust the agent that made it.</p>
+      <form method="post" action="${base}_tendril/trust-version"><input type="hidden" name="version" value="${version}"><button>Continue to page</button></form></main></body></html>`;
+    return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+      "Content-Security-Policy": "default-src 'none'; form-action 'self'; base-uri 'none'" } });
+  }
 
   let path = rest === "" ? "index.html" : rest;
   let file = version > 0 ? versionFile(t, version, path) : null;

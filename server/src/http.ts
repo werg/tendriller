@@ -25,7 +25,7 @@ export function errorResponse(status: number, code: string, message?: string, ex
 export function toErrorResponse(err: unknown): Response {
   if (err instanceof HttpError) return errorResponse(err.status, err.code, err.message, err.extra);
   console.error("internal error", err);
-  return errorResponse(500, "internal", err instanceof Error ? err.message : String(err));
+  return errorResponse(500, "internal", "Internal server error");
 }
 
 export const CORS_HEADERS: Record<string, string> = {

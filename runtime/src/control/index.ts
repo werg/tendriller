@@ -2,7 +2,7 @@
 // Rendered into a Shadow DOM on a fixed, zero-size host so it never affects page layout.
 //
 // Bus events this module listens to (from core): connect, disconnect, welcome, presence,
-// say, instruction_echo, role, pair_request, state.
+// say, instruction_echo, role, state.
 // Bus events it handles for other modules:
 //   control:go_back   {version?}  → rollback (owner only); replies with control:go_back_result {ok, version?, error?}
 //   control:open / control:close  → open or close the sheet
@@ -21,13 +21,12 @@ type Pos = "bottom-right" | "bottom-left" | "top-right" | "top-left";
 type View = "connecting" | "offline" | "pending" | "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent";
 interface Prefs { text_size?: "normal" | "large" | "x-large"; contrast?: "normal" | "high"; audio?: boolean; language?: string; mode?: string }
 interface Line extends TranscriptEntry { local?: boolean }
-interface PairReq { id: string; name: string; ua?: string; code: string }
 
 const TRANSCRIPT_MAX = 6;
 const DONE_MS = 8000;
 const MAX_REATTACH = 5;
 const SENSOR_LABEL: Record<SensorKind, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion sensors" };
-const LANGS = ["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "nl-NL", "pt-BR", "pl-PL", "sv-SE", "ja-JP", "ko-KR", "zh-CN", "hi-IN"];
+const LANGS = ["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "nl-NL", "pl-PL"];
 
 let mounted: ControlApi | null = null;
 
@@ -53,7 +52,6 @@ class Control {
   private doneUntil = 0;
   private doneTimer: any = 0;
   private lines: Line[] = [];
-  private pairReqs: PairReq[] = [];
   private budget: { page_streak?: number } = {};
   private lastSendAt = 0;
   private lastWithheld = 0;
@@ -66,8 +64,14 @@ class Control {
   private noticeSig = "";
   private transcriptSig = "";
   private sensorSig = "";
+  private firstPublicVisit = false;
 
   constructor(private core: Core, private sensors: SensorTracker) {
+    try {
+      const key = `tendril:${core.config.id}:seen-notice`;
+      this.firstPublicVisit = localStorage.getItem(key) !== "1";
+      localStorage.setItem(key, "1");
+    } catch { this.firstPublicVisit = true; }
     this.api = {
       hide: () => { this.hiddenByPage = true; this.render(); },
       show: () => { this.hiddenByPage = false; this.render(); },
@@ -77,7 +81,7 @@ class Control {
     this.lastWithheld = core.presence?.withheld ?? 0;
     this.prevPresenceState = core.presence?.state ?? null;
     this.subscribe();
-    sensors.onChange(() => this.renderSensors());
+    sensors.onChange(() => { this.renderSensors(); this.reportSensorUse(); });
     window.addEventListener("error", () => { this.pageErrors++; this.renderNotices(); });
     window.addEventListener("unhandledrejection", () => { this.pageErrors++; this.renderNotices(); });
     if (document.body) this.build();
@@ -145,19 +149,12 @@ class Control {
       this.lastWithheld = (w?.presence || this.core.presence)?.withheld ?? this.lastWithheld;
       this.applyPrefs();
       this.render();
+      this.reportSensorUse();
     });
     on("presence", (p: Presence) => this.onPresence(p || this.core.presence));
     on("say", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "agent", text: String(m.text) }); });
     on("instruction_echo", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "user", text: String(m.text) }); });
     on("role", () => { this.applyPrefs(); this.render(); });
-    on("pair_request", (m: any) => {
-      const d = m?.device || {};
-      if (!d.id || this.pairReqs.some((r) => r.id === d.id)) return;
-      this.pairReqs.push({ id: d.id, name: d.name || "New device", ua: d.ua, code: String(m.code ?? "") });
-      this.announce(`A new device, ${d.name || "unnamed"}, wants to join. Open the control to approve it.`);
-      this.cue("attention");
-      this.render();
-    });
     on("control:go_back", (m: any) => { void this.goBack(m?.version); });
     on("control:open", () => this.setOpen(true));
     on("control:close", () => this.setOpen(false));
@@ -224,8 +221,7 @@ class Control {
       onFinal: (t) => { this.showInterim(""); void this.submit(t, "voice"); },
       onState: (on) => this.renderMic(on),
       onError: (m) => { this.showInterim(""); this.showBubble(m, true); },
-    }, this.sensors, () => this.lang, this.core.config?.features?.transcribe ? this.core.config.base + "_tendril/transcribe" : null,
-      () => this.core.deviceHeaders?.() ?? {});
+    }, this.sensors, () => this.lang, this.core.config.base, this.core.config.features.speech);
     this.view = this.computeView();
     this.applyPrefs();
     this.render();
@@ -352,12 +348,18 @@ class Control {
       this.section("devices", "Devices", icon("device"), (p) => this.loadDevices(p)),
       this.section("add", "Add a device", icon("device"), (p) => this.renderAddDevice(p)),
       this.section("adopt", "Connect an agent", icon("link"), (p) => this.renderAdopt(p)),
+      this.section("agents", "Agents", icon("device"), (p) => void this.loadAgents(p)),
+      this.section("guest-invites", "Guest invitations", icon("link"), (p) => void this.loadGuestInvites(p)),
       this.section("budget", "Wake limits", icon("scheduled"), (p) => this.renderBudget(p)),
       this.section("notify", "Notifications", icon("bell"), (p) => void this.renderNotify(p)),
     );
     u.sheet.appendChild(u.ownerSections);
     u.prefsSection = this.section("prefs", "Display and sound", icon("text"), (p) => this.renderPrefs(p));
     u.sheet.appendChild(u.prefsSection);
+    u.sheet.appendChild(this.section("report", "Report this page", icon("bell"), (p) => {
+      clear(p, h("p", { text: "If this page is deceptive, harmful, or abusive, send a report." }),
+        h("a", { href: this.core.config.base + "_tendril/report", target: "_blank", rel: "noopener noreferrer" }, "Open report form"));
+    }));
     this.root.appendChild(u.sheet);
   }
 
@@ -385,10 +387,8 @@ class Control {
     u.label.textContent = label;
     u.title.textContent = label;
     u.detail.textContent = detail;
-    const reqs = this.isOwner ? this.pairReqs.length : 0;
-    u.badge.hidden = !reqs;
-    u.badge.textContent = String(reqs);
-    u.presenceBtn.setAttribute("aria-label", `Agent status: ${label}.${reqs ? ` ${reqs} device${reqs > 1 ? "s" : ""} waiting for approval.` : ""} ${this.open ? "Close" : "Open"} the control.`);
+    u.badge.hidden = true;
+    u.presenceBtn.setAttribute("aria-label", `Agent status: ${label}. ${this.open ? "Close" : "Open"} the control.`);
     if (prevView !== this.view) this.announce(`${label}. ${detail}`);
 
     // Visibility by role
@@ -416,31 +416,18 @@ class Control {
   private renderNotices() {
     if (!this.ready) return;
     const n = this.ui.notices;
-    const sig = JSON.stringify([this.pending, this.core.device?.pairCode, this.isOwner, this.pairReqs.map((r) => r.id), this.pageErrors > 0]);
+    const sig = JSON.stringify([this.isOwner, this.pageErrors > 0,
+      this.core.config.features?.shared_by, this.displayMode, this.firstPublicVisit]);
     if (sig === this.noticeSig) return;
     this.noticeSig = sig;
     clear(n);
-    if (this.pending) {
-      const code = this.core.device?.pairCode || "";
-      n.appendChild(h("div", { class: "card", role: "group", "aria-label": "Pairing" },
-        h("h3", { text: "Waiting for approval" }),
-        h("p", { text: "To control the agent from this device, approve it on a device that is already an owner. Check that the code there matches this one:" }),
-        code ? h("div", { class: "code", "aria-label": `Pairing code ${code.split("").join(" ")}`, text: code }) : null,
-        h("p", { class: "muted", text: "Until then you can use the page as a guest." }),
-      ));
+    if (this.displayMode) {
+      n.appendChild(h("div", { class: "card", text: `Shared by ${this.core.config.features.shared_by || "a Tendriller user"}` }));
+    }
+    if (this.firstPublicVisit) {
+      n.appendChild(h("div", { class: "card warn", text: "Made by an AI agent. Tendriller never asks for passwords in a page." }));
     }
     if (this.isOwner) {
-      for (const r of this.pairReqs) {
-        n.appendChild(h("div", { class: "card", role: "group", "aria-label": `Pairing request from ${r.name}` },
-          h("h3", { text: `${r.name} wants to join as an owner` }),
-          h("p", { text: "Approve only if this code matches the one shown on that device:" }),
-          h("div", { class: "code", "aria-label": `Code ${r.code.split("").join(" ")}`, text: r.code }),
-          h("div", { class: "row" },
-            h("button", { type: "button", class: "btn primary", "data-action": "approve", onclick: () => void this.answerPair(r, true) }, "Approve"),
-            h("button", { type: "button", class: "btn", "data-action": "deny", onclick: () => void this.answerPair(r, false) }, "Keep as guest"),
-          ),
-        ));
-      }
       if (this.pageErrors > 0) {
         n.appendChild(h("div", { class: "card warn", role: "group", "aria-label": "Page problem" },
           h("h3", { text: "This page ran into a problem" }),
@@ -494,6 +481,11 @@ class Control {
       this.sensorSig = sig;
       this.announce(act.length ? text : "No sensors in use");
     }
+  }
+
+  private reportSensorUse() {
+    if (!this.core.connected) return;
+    this.core.raw({ t: "sensor_usage", active: this.sensors.active() });
   }
 
   private renderMic(on: boolean) {
@@ -623,9 +615,6 @@ class Control {
   private async submit(raw: string, via: "voice" | "text") {
     const text = raw.trim();
     if (!text || !this.canInput) return;
-    let handled = false;
-    try { handled = !!(await registry.voice?.handleUtterance(text, via)); } catch { handled = false; }
-    if (handled) { this.showBubble(`Done: “${text}”`, true); return; }
     this.lastSendAt = Date.now();
     this.lastWithheld = this.core.presence?.withheld ?? this.lastWithheld;
     this.lines.push({ ts: Date.now(), from: "user", text, local: true });
@@ -756,30 +745,16 @@ class Control {
         h("span", { class: "grow" },
           d.name || d.id, d.id === me ? h("span", { class: "tag", text: "this device" }) : null,
           h("span", { class: "sub", text: [d.pending ? "waiting for approval" : roleName(d.role), d.connected ? "connected" : d.last_seen ? `seen ${relTime(d.last_seen, this.lang)}` : ""].filter(Boolean).join(" · ") })),
-        d.pending || (d.role === "guest" && this.pairReqs.some((p) => p.id === d.id))
-          ? h("button", { type: "button", class: "btn small primary", onclick: () => void this.answerPair({ id: d.id, name: d.name, code: "" }, true).then(() => this.loadDevices(panel)) }, "Approve")
-          : null,
+        null,
       ))) : h("p", { class: "muted", text: "No devices yet." }));
     } catch (e: any) {
       clear(panel, h("p", { class: "error", text: `Couldn't load devices: ${e?.message || "error"}` }));
     }
   }
 
-  private async answerPair(r: PairReq, approve: boolean) {
-    try {
-      await this.req({ t: "pair_approve", device_id: r.id, role: approve ? "owner" : "guest" });
-      this.announce(approve ? `${r.name} is now an owner device.` : `${r.name} stays a guest.`);
-    } catch (e: any) {
-      this.announce(`Couldn't update ${r.name}: ${e?.message || "error"}`);
-      return;
-    }
-    this.pairReqs = this.pairReqs.filter((x) => x.id !== r.id);
-    this.render();
-  }
-
   private renderAddDevice(panel: HTMLElement) {
     const out = h("div", { "aria-live": "polite" });
-    const make = async (role: "owner" | "guest" | "display") => {
+    const make = async (role: "guest" | "display") => {
       clear(out, h("p", { class: "muted", text: "Creating a link…" }));
       try {
         const r = await this.req({ t: "links", create: { role, label: `${roleName(role)} (added from this device)` } });
@@ -802,10 +777,9 @@ class Control {
       h("div", { class: "actions" },
         h("button", { type: "button", class: "btn", "data-role": "display", onclick: () => void make("display") }, "Big screen (display)"),
         h("button", { type: "button", class: "btn", "data-role": "guest", onclick: () => void make("guest") }, "Guest"),
-        h("button", { type: "button", class: "btn", "data-role": "owner", onclick: () => void make("owner") }, "Another of my devices"),
       ),
       out,
-      h("p", { class: "muted", text: "This page's own address (gives owner access; keep it private):" }),
+      h("p", { class: "muted", text: "This page's own address (sign-in required):" }),
       h("div", { class: "url", text: location.href }),
       copyBtn(location.href, () => this.announce("Link copied.")),
     );
@@ -834,6 +808,48 @@ class Control {
       }, "Get a code"),
       out,
     );
+  }
+
+  private async loadAgents(panel: HTMLElement): Promise<void> {
+    clear(panel, h("p", { class: "muted", text: "Loading agents…" }));
+    try {
+      const base = this.core.config.base + "_tendril/agents";
+      const res = await fetch(base, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as { agents: { name: string; last_used: number | null }[]; webhook?: { url: string } | null };
+      const entries = data.agents.map((agent) => h("li", null,
+        icon("device"), h("span", { class: "grow" }, agent.name,
+          h("span", { class: "sub", text: agent.last_used ? `Last used ${relTime(agent.last_used, this.lang)}` : "Not used yet" })),
+        h("button", { type: "button", class: "btn small danger", onclick: async () => {
+          const stopped = await fetch(`${base}/${encodeURIComponent(agent.name)}/disconnect`, { method: "POST", credentials: "same-origin" });
+          if (stopped.ok) { this.announce(`${agent.name} disconnected.`); await this.loadAgents(panel); }
+          else this.announce(`Couldn't disconnect ${agent.name}.`);
+        } }, "Disconnect agent")));
+      clear(panel,
+        data.webhook ? h("p", { class: "muted", text: `Webhook: ${data.webhook.url}` }) : null,
+        entries.length ? h("ul", { class: "list" }, entries) : h("p", { text: "No agents are connected. The page keeps working." }));
+    } catch (e: any) {
+      clear(panel, h("p", { class: "error", text: `Couldn't load agents: ${e?.message || "error"}` }));
+    }
+  }
+
+  private async loadGuestInvites(panel: HTMLElement): Promise<void> {
+    clear(panel, h("p", { class: "muted", text: "Loading invitations…" }));
+    try {
+      const base = this.core.config.base + "_tendril/guests";
+      const res = await fetch(base, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as { guests: { account_id: string; link_id: string; email: string | null }[] };
+      clear(panel, data.guests.length ? h("ul", { class: "list" }, data.guests.map((guest) => h("li", null,
+        icon("device"), h("span", { class: "grow", text: guest.email ?? guest.account_id }),
+        h("button", { type: "button", class: "btn small primary", onclick: async () => {
+          const approved = await fetch(`${base}/${encodeURIComponent(guest.account_id)}/${encodeURIComponent(guest.link_id)}/approve`, { method: "POST", credentials: "same-origin" });
+          if (approved.ok) { this.announce("Guest approved."); await this.loadGuestInvites(panel); }
+          else this.announce("Couldn't approve guest.");
+        } }, "Approve")))) : h("p", { class: "muted", text: "No guests are waiting for approval." }));
+    } catch (e: any) {
+      clear(panel, h("p", { class: "error", text: `Couldn't load invitations: ${e?.message || "error"}` }));
+    }
   }
 
   private renderBudget(panel: HTMLElement) {

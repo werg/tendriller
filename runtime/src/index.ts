@@ -1,7 +1,6 @@
-// tendril.js entry: wires core → voice → push → control → rules and defines window.tendril
+// tendril.js entry: wires core → push → control → rules and defines window.tendril
 // synchronously (PROTOCOL 5, 11).
 import { createCore } from "./core";
-import { createVoice } from "./voice";
 import { setupPush } from "./push";
 import { mountControl } from "./control";
 import { startRules } from "./rules";
@@ -10,7 +9,9 @@ import type { ControlApi, TendrilConfig } from "./types";
 
 function fallbackConfig(): TendrilConfig {
   const base = location.pathname.replace(/[^/]*$/, "");
-  return { id: "local", base, version: 0, ws: base + "_tendril/ws", features: { transcribe: false, voice: false, push: false, vapid: null } };
+  return { id: "local", base, version: 0, ws: base + "_tendril/ws", features: { push: false, vapid: null,
+    shared_by: "Tendriller user", speech: { model: "cactus-whistle-v4", url: "_tendril/speech/whistle.cact",
+      sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" } } };
 }
 
 function guard<T>(what: string, fn: () => T): T | undefined {
@@ -49,17 +50,8 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
     on: (type: string, fn: (p: any) => void) => core.bus.on(type, fn),
     upload: (blob: Blob, opts?: { name?: string }) => core.upload(blob, opts),
     ready,
-    expose: (name: string, opts: any, fn: (args: any) => any) => {
-      if (typeof opts === "function" && fn === undefined) { fn = opts; opts = {}; }
-      return registry.voice ? registry.voice.expose(name, opts || {}, fn) : () => {};
-    },
-    voice: {
-      start: () => (registry.voice ? registry.voice.start() : Promise.resolve()),
-      stop: () => registry.voice?.stop(),
-      get state() { return registry.voice ? registry.voice.state : "unavailable"; },
-    },
     speak: (text: string) => core.speak(text),
-    /** Headers proving this device to page HTTP routes such as `_tendril/transcribe`. */
+    /** Headers proving this device to page HTTP routes. */
     deviceHeaders: () => core.deviceHeaders(),
     device: core.device, // live object: role/pending update in place
     version: cfg.version,
@@ -74,7 +66,6 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
   Object.defineProperty(api, "_core", { value: core, enumerable: false }); // internal: control + e2e tests
   Object.defineProperty(w, "tendril", { value: api, configurable: true, enumerable: true, writable: false });
 
-  registry.voice = guard("voice", () => createVoice(core));
   registry.push = guard("push", () => setupPush(core));
   control = guard("control", () => mountControl(core));
   guard("rules", () => startRules(core));

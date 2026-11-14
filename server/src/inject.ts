@@ -1,10 +1,10 @@
 // Runtime injection into served HTML (PROTOCOL section 5) and built-in pages.
 
 export interface Features {
-  transcribe: boolean;
-  voice: boolean;
   push: boolean;
   vapid: string | null;
+  shared_by: string;
+  speech: { model: string; url: string; sha256: string };
 }
 
 export interface InjectConfig {

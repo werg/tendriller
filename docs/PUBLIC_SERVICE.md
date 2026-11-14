@@ -1,7 +1,6 @@
 # Tendriller as a public service: plan
 
-Status: proposal, 2026-11-13, with the decisions in section 12. Nothing here is built yet. It changes the trust model in
-`docs/PROTOCOL.md` (sections 1, 2, 6) and is meant to be agreed before those change.
+Status: repository implementation in progress, 2026-11-13. See `docs/PUBLIC_SERVICE_PROGRESS.md` for tested scope and launch blockers. The public trust model is the sole code path and is documented in `docs/PROTOCOL.md`.
 
 ## 1. Goals
 
@@ -280,6 +279,11 @@ storage or as an outbound request relay.
   then claimed by different accounts from one IP (one sender, many victims); repeated
   releases of claims.
 
+Initial signal thresholds: on a tendril under 7 days old, 8 distinct guest sign-ins or
+20 distinct display visitor IPs in 10 minutes; 10 different claiming accounts for
+tendrils from one creator IP in 24 hours; or a third claim-release attempt for the
+same tendril in 24 hours. Visitor IPs are hashed with a per-tendril random salt.
+
 ### 6.4 Response
 
 Nobody reviews reports as they come in. Takedowns are automatic; a person looks only at
@@ -336,8 +340,9 @@ The runtime transcribes on the device with a small downloadable model:
 - **Interface:** the same `listen()` and microphone button as today, so the model can be
   swapped for a newer one without changing pages. The model choice is a runtime setting
   (`speech: {model, url, sha256}`), checked by hash before use.
-- **Fallbacks:** the browser's own speech recognition where present, for languages Whistle
-  does not cover or when the download is declined; typing always works.
+- **Fallback:** typing works when the model cannot load or the download is declined.
+  Browser speech recognition is excluded because its processing location cannot be
+  guaranteed by this service's on-device privacy promise.
 - **Privacy:** audio never leaves the device, and there is no speech processor to list in
   the privacy policy.
 
@@ -388,10 +393,10 @@ the privacy policy.
 
 ## 11. Phases
 
-Phases 1-6 ship to staging only. Production keeps today's model until launch: creating
-a tendril needs `CREATE_KEY`, so it is not open to the public. Phase 7 opens production,
-and only once quotas and ceilings, reporting, automatic takedowns, appeals and the legal
-pages are all live on staging.
+The repository has one public-service model. Creation begins paused in each new D1
+environment. Do not open production until quotas, reporting, automatic takedowns,
+appeals, and legally reviewed pages pass the staging launch checks. There is no
+creation-key fallback or path-host route.
 
 1. **Domains and isolation.** Register `tendriller.dev` and `tendriller.site` (Cloudflare
    Registrar puts the zones on Cloudflare directly), provisioning script, subdomain mode by default,

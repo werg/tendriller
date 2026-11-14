@@ -1,0 +1,30 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tendriller-public-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+  "durable_objects": { "bindings": [
+    { "name": "TENDRIL", "class_name": "Tendril" },
+    { "name": "ADMISSION", "class_name": "Admission" }
+  ] },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Tendril"] },
+    { "tag": "v2", "new_sqlite_classes": ["Admission"] }
+  ],
+  "d1_databases": [{ "binding": "ACCOUNTS", "database_name": "tendriller-public-test",
+    "database_id": "00000000-0000-4000-8000-000000000001", "migrations_dir": "migrations" }],
+  "ratelimits": [
+    { "name": "CREATE_RATE", "namespace_id": "101", "simple": { "limit": 5, "period": 60 } },
+    { "name": "KEY_CREATE_RATE", "namespace_id": "107", "simple": { "limit": 30, "period": 60 } },
+    { "name": "AGENT_RATE", "namespace_id": "102", "simple": { "limit": 300, "period": 60 } },
+    { "name": "EVAL_RATE", "namespace_id": "103", "simple": { "limit": 60, "period": 60 } },
+    { "name": "FILE_READ_RATE", "namespace_id": "108", "simple": { "limit": 120, "period": 60 } },
+    { "name": "AUTH_RATE", "namespace_id": "104", "simple": { "limit": 20, "period": 60 } },
+    { "name": "FAILED_AUTH_RATE", "namespace_id": "105", "simple": { "limit": 20, "period": 60 } },
+    { "name": "REPORT_RATE", "namespace_id": "106", "simple": { "limit": 5, "period": 60 } }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "tendriller-public-test-files" }],
+  "vars": { "PUBLIC_BASE": "https://tendriller.dev", "PAGE_BASE_DOMAIN": "tendriller.site" }
+}

@@ -1,5 +1,6 @@
 // Shared runtime types. Owned by the runtime-core agent (others import, don't edit).
-export interface Features { transcribe: boolean; voice: boolean; push: boolean; vapid: string | null }
+export interface Features { push: boolean; vapid: string | null; shared_by: string;
+  speech: { model: string; url: string; sha256: string } }
 export interface TendrilConfig { id: string; base: string; version: number; ws: string; features: Features }
 export type Role = "owner" | "guest" | "display";
 export interface Presence {
@@ -25,11 +26,11 @@ export interface Core {
   transcript: TranscriptEntry[];
   state: StateApi;
   send(data: any, opts?: { wake?: boolean }): Promise<{ seq?: number; queued: boolean }>;
-  instruction(text: string, via: "voice" | "text" | "voice_layer"): Promise<void>;
+  instruction(text: string, via: "voice" | "text"): Promise<void>;
   request(msg: { t: string; [k: string]: any }): Promise<any>;
   raw(msg: object): void;
   upload(blob: Blob, opts?: { name?: string }): Promise<{ id: string; url: string }>;
-  /** Headers proving this device to page HTTP routes (transcribe, voice session, blob). */
+  /** Headers proving this device to page HTTP routes. */
   deviceHeaders(): Record<string, string>;
   // Additions (runtime-core). Bus also emits: "transcript" (entry), "notify_local" ({title,body}) when no
   // Notification permission, "reload" ({version}), "welcome" (the raw welcome message).
@@ -42,12 +43,6 @@ export interface Core {
   /** Health signal (PROTOCOL 4): report now / defer the automatic report until ready(). */
   ready(): void;
   readyManual(): void;
-}
-export interface Voice {
-  expose(name: string, opts: { description?: string; phrases?: string[]; params?: object }, fn: (args: any) => any): () => void;
-  start(): Promise<void>; stop(): void;
-  readonly state: "idle" | "listening" | "thinking" | "unavailable";
-  handleUtterance(text: string, via: "voice" | "text"): Promise<boolean>;
 }
 export interface Push { available: boolean; subscribed(): Promise<boolean>; subscribe(): Promise<boolean>; unsubscribe(): Promise<void> }
 export interface ControlApi { hide(): void; show(): void; position(p: "bottom-right" | "bottom-left" | "top-right" | "top-left"): void }

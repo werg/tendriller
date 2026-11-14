@@ -10,3 +10,4 @@ playwright-report/
 .build/
 .results/
 .preview.png
+.e2e-auth.json

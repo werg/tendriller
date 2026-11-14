@@ -49,6 +49,14 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
   }
   const att = t.att(ws);
   if (!att) return;
+  if (att.deviceId) {
+    const second = Math.floor(t.now() / 1000);
+    t.db.run(`INSERT INTO ws_rate (device_id, second, count) VALUES (?, ?, 1)
+      ON CONFLICT(device_id) DO UPDATE SET second = excluded.second,
+      count = CASE WHEN ws_rate.second = excluded.second THEN ws_rate.count + 1 ELSE 1 END`, att.deviceId, second);
+    const count = t.db.one<{ count: number }>("SELECT count FROM ws_rate WHERE device_id = ?", att.deviceId)?.count ?? 0;
+    if (count > 50) { t.send(ws, { t: "error", code: "rate_limited", message: "Too many messages" }); return; }
+  }
   if (msg.t === "ping") {
     t.send(ws, { t: "pong" });
     return;
@@ -62,11 +70,30 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
       t.send(ws, { t: "error", code: "not_ready", message: "Send hello first", cid: msg.cid });
       return;
     }
-    const dev = t.device(att.deviceId);
-    if (!dev) {
+    const stored = t.device(att.deviceId);
+    if (!stored) {
       ws.close(4003, "device removed");
       return;
     }
+    if (!att.sessionRole || (att.sessionRole === "owner" && att.accountId !== t.db.get<string | null>("owner_account", null))
+      || (att.sessionRole === "guest" && !t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", att.accountId, att.linkId))) {
+      ws.close(4003, "page role revoked");
+      return;
+    }
+    if (t.db.get<boolean>("disabled", false)) { ws.close(4003, "page held"); return; }
+    if (!att.checkedAt || t.now() - att.checkedAt > 1000) {
+      const status = await t.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at AS owner_suspended,
+        v.suspended_at AS viewer_suspended, v.deleting_at AS viewer_deleting
+        FROM tendrils t LEFT JOIN accounts a ON a.id = t.owner_account
+        LEFT JOIN accounts v ON v.id = ? WHERE t.id = ?`)
+        .bind(att.accountId ?? null, t.tid).first<{ state: string; owner_suspended: number | null;
+          viewer_suspended: number | null; viewer_deleting: number | null }>();
+      if (!status || status.state !== "active" || status.owner_suspended || status.viewer_suspended || status.viewer_deleting) {
+        ws.close(4003, "page unavailable"); return;
+      }
+      ws.serializeAttachment({ ...att, checkedAt: t.now() });
+    }
+    const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
     t.db.run("UPDATE devices SET last_active = ? WHERE id = ?", t.now(), dev.id);
     const handler = HANDLERS[msg.t];
     if (!handler) {
@@ -138,24 +165,15 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
     t.db.run("UPDATE devices SET name = COALESCE(?, name), ua = COALESCE(?, ua), caps = COALESCE(?, caps), last_seen = ?, last_active = ? WHERE id = ?", name, ua, caps, now, now, id);
   } else {
     isNew = true;
-    let role: Role = link.role;
-    let pending = false;
-    let pairCode: string | null = null;
-    if (link.role === "owner" && t.db.get<string>("pairing", "open") === "required") {
-      const hadOwner = t.db.get<boolean>("had_owner", false) || !!t.db.one("SELECT 1 AS x FROM devices WHERE role = 'owner'");
-      if (hadOwner) {
-        role = "guest";
-        pending = true;
-        pairCode = sixDigits();
-      }
-    }
+    const role: Role = att.sessionRole ?? link.role;
     t.db.run(
-      "INSERT INTO devices (id, secret_hash, name, role, pending, pair_code, link, ua, caps, created_at, last_seen, last_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      id, hash, name, role, pending, pairCode, link.id, ua, caps, now, now, now,
+      "INSERT INTO devices (id, secret_hash, name, role, pending, link, ua, caps, created_at, last_seen, last_active) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+      id, hash, name, role, link.id, ua, caps, now, now, now,
     );
     if (role === "owner") t.db.set("had_owner", true);
   }
   dev = t.device(id)!;
+  if (att.sessionRole) dev = { ...dev, role: att.sessionRole, pending: 0 };
   const wasConnected = t.connectedSockets(ws).some((s) => s.att.deviceId === id);
   const version = Number.isInteger(msg.version) ? msg.version : 0;
   ws.serializeAttachment({ ...att, deviceId: id, version, at: now } satisfies Att);
@@ -177,7 +195,6 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
     features: t.features(),
     budget: t.wakeConfig().budget,
   };
-  if (dev.pending && dev.pair_code) welcome.pair_code = dev.pair_code;
   t.send(ws, welcome);
   if (typeof msg.rev === "number" && msg.rev > rev) {
     // The page claims a revision the server never issued (e.g. after a reset): resync it.
@@ -185,11 +202,7 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
   }
 
   if (version > 0 && versionStatus(t, version) === "pending") markServed(t, version);
-  if (isNew && dev.pending) {
-    t.broadcastOwners({ t: "pair_request", device: { id, name: dev.name ?? null, ua: dev.ua ?? null }, code: dev.pair_code }, ws);
-    addEvent(t, { type: "device", data: { action: "pair_request", device: deviceInfo(dev) }, device: id, role: dev.role, wake: true, cls: "owner" });
-    addActivity(t, { kind: "device", summary: `New device ${dev.name ?? id} asks to pair (code ${dev.pair_code})`, device: id });
-  } else if (isNew) {
+  if (isNew) {
     addActivity(t, { kind: "device", summary: `New ${dev.role} device ${dev.name ?? id} joined`, device: id });
   }
   if (!wasConnected) addEvent(t, { type: "device", data: { action: "joined", device: deviceInfo(dev) }, device: id, role: dev.role, wake: false });
@@ -198,11 +211,22 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
 
 // ------------------------------------------------------------------ handlers
 
-const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete", "adopt_code", "pair_approve", "devices", "links", "budget"]);
+const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete", "adopt_code", "devices", "links", "budget"]);
 
 const ack = (c: Ctx, extra: Msg = {}) => c.t.send(c.ws, { t: "ack", cid: c.msg.cid, ...extra });
 
 const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
+  sensor_usage(c) {
+    const allowed = new Set(["camera", "microphone", "screen", "location", "motion"]);
+    const input = c.msg.active;
+    if (!Array.isArray(input) || input.length > 5 || input.some(k => typeof k !== "string" || !allowed.has(k))) return;
+    const active = [...new Set(input)].sort();
+    const sig = active.join(",");
+    const key = `sensor:${c.dev.id}`;
+    if (c.t.db.get<string>(key, "") === sig) return;
+    c.t.db.set(key, sig);
+    addActivity(c.t, { kind: "sensor", summary: active.length ? `Page used ${active.join(", ")}` : "Page stopped using sensors", device: c.dev.id });
+  },
   async send(c) {
     const { t, dev, msg } = c;
     const result = await t.dedupe(dev.id, msg.cid, () => {
@@ -312,17 +336,6 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     t.send(c.ws, { t: "adopt_code", cid: c.msg.cid, code, expires_at });
   },
 
-  pair_approve(c) {
-    const { t, msg, dev } = c;
-    const role: Role = ["owner", "guest", "display"].includes(msg.role) ? msg.role : "owner";
-    if (typeof msg.device_id !== "string" || !t.device(msg.device_id)) {
-      ack(c, { error: "not_found", message: "No such device" });
-      return;
-    }
-    t.setDeviceRole(msg.device_id, role, `device:${dev.id}`);
-    ack(c, { device_id: msg.device_id, role });
-  },
-
   devices(c) {
     c.t.send(c.ws, { t: "devices", cid: c.msg.cid, devices: c.t.listDevices() });
   },
@@ -387,23 +400,6 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     ack(c, result);
   },
 
-  async voice_event(c) {
-    const { t, dev, msg } = c;
-    const result = await t.dedupe(dev.id, msg.cid, () => {
-      if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot send" };
-      const text = typeof msg.text === "string" ? msg.text.slice(0, 8000) : "";
-      if (msg.handled) {
-        const data = { text, function: msg.function ?? null, args: msg.args ?? null };
-        if (JSON.stringify(data).length > MAX_EVENT_DATA) return { error: "too_large", message: "voice event exceeds 64 KB" };
-        const ev = addEvent(t, { type: "voice", data, device: dev.id, role: dev.role, wake: false });
-        addActivity(t, { kind: "voice", summary: `Voice layer handled "${preview(text, 80)}"${data.function ? ` with ${String(data.function)}` : ""}`, device: dev.id });
-        return { seq: ev.seq };
-      }
-      if (!text.trim()) return { error: "bad_request", message: "voice_event needs text" };
-      return { seq: instruction(c, text, "voice_layer") };
-    });
-    ack(c, result);
-  },
 };
 
 /** Speech or text from the control/voice layer: an instruction from owners, data from anyone else. */
