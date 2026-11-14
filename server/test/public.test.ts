@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
 import { beforeAll, expect, inject, it, vi } from "vitest";
 import { sha256Hex } from "../src/ids";
+import { hermesV2Headers } from "../src/events";
+import { signedHeaders } from "../src/mcpEvents";
 import { routeAuth } from "../src/accounts/auth";
 import { reconcileSuspensions } from "../src/abuse/reconcile";
 import { api, BASE, inDO, PageClient, req, type Handle } from "./helpers";
@@ -67,6 +69,43 @@ it("serves the first-party Codex bridge from the service origin", async () => {
   expect(response.status).toBe(200);
   expect(response.headers.get("Content-Type")).toContain("text/javascript");
   expect(await response.text()).toContain("codex");
+});
+
+it("serves the Hermes bridge and long-poll helper from the service origin", async () => {
+  const bridge = await req("/hermes-bridge.mjs");
+  expect(bridge.status).toBe(200);
+  expect(await bridge.text()).toContain("['wake','now',text]");
+  const wait = await req("/tendril-wait.sh");
+  expect(wait.status).toBe(200);
+  expect(await wait.text()).toContain("wait_s=300");
+});
+
+it("configures only valid signed wake receivers and never returns their secret", async () => {
+  const h = await createPublic("signed@example.com", "192.0.2.88");
+  expect((await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", auth: "hermes_v2" } })).status).toBe(400);
+  expect((await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: "bad", auth: "standard_webhooks" } })).status).toBe(400);
+  const secret = `whsec_${btoa("a".repeat(32))}`;
+  const configured = await (await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: secret, auth: "standard_webhooks" } })).json<{ webhook: { auth: string; has_token: boolean } }>();
+  expect(configured.webhook).toMatchObject({ auth: "standard_webhooks", has_token: true });
+  expect(JSON.stringify(configured)).not.toContain(secret);
+  const hermes = await (await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: "private-secret", auth: "hermes_v2" } })).json<{ webhook: { auth: string; has_token: boolean } }>();
+  expect(hermes.webhook).toMatchObject({ auth: "hermes_v2", has_token: true });
+  expect(JSON.stringify(hermes)).not.toContain("private-secret");
+});
+
+it("signs exact webhook bytes for Standard Webhooks and Hermes V2", async () => {
+  const body = '{"waiting":2}';
+  const stamp = 1_700_000_000;
+  const hermes = await hermesV2Headers("secret", body, stamp);
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("secret"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const hex = hermes["X-Webhook-Signature-V2"];
+  const mac = Uint8Array.from(hex.match(/../g)!, (pair) => parseInt(pair, 16));
+  expect(await crypto.subtle.verify("HMAC", key, mac, new TextEncoder().encode(`${stamp}.${body}`))).toBe(true);
+  const secret = `whsec_${btoa("a".repeat(32))}`;
+  const standard = await signedHeaders(secret, "msg_123", body, stamp);
+  const standardKey = await crypto.subtle.importKey("raw", new TextEncoder().encode("a".repeat(32)), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const sig = Uint8Array.from(atob(standard["webhook-signature"].slice(3)), (ch) => ch.charCodeAt(0));
+  expect(await crypto.subtle.verify("HMAC", standardKey, sig, new TextEncoder().encode(`msg_123.${stamp}.${body}`))).toBe(true);
 });
 
 it("serves the bundled Claude Code channel from the service origin", async () => {

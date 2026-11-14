@@ -67,7 +67,7 @@ interface PendingCall {
 }
 
 export interface WakeConfig {
-  webhook: { url: string; token: string | null } | null;
+  webhook: { url: string; token: string | null; auth?: "bearer" | "standard_webhooks" | "hermes_v2" } | null;
   schedule_minutes: number | null;
   budget: { page_streak: number };
   grace_seconds: number;
@@ -311,7 +311,7 @@ export class Tendril extends DurableObject<Env> {
       expires_at: this.expiresAt(),
       agent_setup: {
         event_delivery: "not_configured",
-        next_step: `Start a continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=300 loop or configure PUT ${apiUrl(this.env, this.tid)}/wake with a persistent handler before telling the person this page can answer them live. Store the returned cursor and poll again after every response, including empty timeouts. A token alone does not listen for events.`,
+        next_step: `Attach this agent conversation to a wake path: continuous GET ${apiUrl(this.env, this.tid)}/events?after=0&wait=300 polling that resumes this session, or PUT ${apiUrl(this.env, this.tid)}/wake with a persistent receiver. Store the cursor, poll after every response, and test two page events before promising live replies. A token or background poll alone does not wake a conversation.`,
       },
     };
   }
@@ -570,7 +570,7 @@ export class Tendril extends DurableObject<Env> {
   renderWake() {
     const w = this.wakeConfig();
     return {
-      webhook: w.webhook ? { url: w.webhook.url, has_token: !!w.webhook.token } : null,
+      webhook: w.webhook ? { url: w.webhook.url, has_token: !!w.webhook.token, auth: w.webhook.auth ?? "bearer" } : null,
       schedule_minutes: w.schedule_minutes,
       budget: w.budget,
       grace_seconds: w.grace_seconds,

@@ -1,5 +1,7 @@
 // Events, wake budget, long-poll and webhook delivery (PROTOCOL section 8).
 import type { Tendril } from "./tendril";
+import { signedHeaders } from "./mcpEvents";
+import { randomB32 } from "./ids";
 import { addActivity, bumpAggregate } from "./activity";
 import { json } from "./http";
 import {
@@ -10,6 +12,17 @@ import { apiUrl } from "./urls";
 import { queueMcpWake } from "./mcpEvents";
 
 export type EventType = "event" | "instruction" | "version_failed" | "version_healthy" | "device" | "rule" | "voice";
+
+/** Hermes generic V2: a replay-bounded HMAC of timestamp and exact JSON bytes. */
+export async function hermesV2Headers(secret: string, payload: string, timestamp: number): Promise<Record<string, string>> {
+  const stamp = String(timestamp);
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${stamp}.${payload}`));
+  return {
+    "X-Webhook-Timestamp": stamp,
+    "X-Webhook-Signature-V2": Array.from(new Uint8Array(mac), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  };
+}
 export type WakeClass = "owner" | "page";
 
 export interface NewEvent {
@@ -66,7 +79,7 @@ export interface Waiter {
 function pollReminder(t: Tendril, cursor: number) {
   return {
     next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=300`,
-    agent_reminder: "Poll next_poll immediately, even when events is empty. Keep the listener running while the page is in use. If this agent session can end, configure PUT A/wake to reach a persistent handler. Do not promise live replies without an active listener.",
+    agent_reminder: "Poll next_poll immediately, even when events is empty. The receiver must wake this same agent conversation; a background poll or accepted webhook alone is not proof. After handling, reply with POST A/say, acknowledge only on success, and keep the listener armed while the page is in use. Test two page events before promising live replies.",
   };
 }
 
@@ -265,12 +278,19 @@ export async function runWebhook(t: Tendril): Promise<void> {
     text: `${waiting} tendril event(s) waiting on ${t.db.get("name", "Tendril")}. Read them with GET ${A}/events?after=${cursor}`,
     events_url: `${A}/events`,
   };
+  const payload = JSON.stringify(body);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (hook.token) headers.Authorization = `Bearer ${hook.token}`;
+  if ((hook.auth ?? "bearer") === "bearer" && hook.token) headers.Authorization = `Bearer ${hook.token}`;
+  if (hook.auth === "standard_webhooks") {
+    Object.assign(headers, await signedHeaders(hook.token!, `msg_${randomB32(20)}`, payload, Math.floor(t.now() / 1000)));
+  }
+  if (hook.auth === "hermes_v2") {
+    Object.assign(headers, await hermesV2Headers(hook.token!, payload, Math.floor(t.now() / 1000)));
+  }
   let ok = false;
   let detail = "";
   try {
-    const res = await fetch(hook.url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(WEBHOOK_TIMEOUT) });
+    const res = await fetch(hook.url, { method: "POST", headers, body: payload, redirect: "manual", signal: AbortSignal.timeout(WEBHOOK_TIMEOUT) });
     ok = res.ok;
     detail = `HTTP ${res.status}`;
     await res.body?.cancel();

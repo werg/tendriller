@@ -19,7 +19,8 @@ camera, GPS and other sensors back into the agent's session. Each such page is a
   path that wakes their particular conversation. [`agent.md`](agent.md) explains the
   setup; Codex on Linux has a verified same-conversation bridge. Claude Code has a
   first-party channel adapter tested in a live Claude Code session against a local API.
-  OpenClaw has a session-targeted bridge awaiting a real host test.
+  OpenClaw and Hermes have Linux bridges awaiting real host tests. The guide also covers
+  Muse, Grok Bot, OpenAI dots and Claude Duet, with their respective setup and limits.
 
 The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md).

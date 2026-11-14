@@ -161,7 +161,7 @@ Three primitives on the server:
 | Muse | Wait loop in the background; processes survive between turns and a finished background command starts a new turn. Backed by a scheduled check. | Seconds |
 | Grok Bot | Webhook to its URL starts a turn. | Seconds |
 | OpenClaw on Linux | A first-party bridge polls the page and submits count-only system events to an explicit OpenClaw session key. Local fault-injection test passes; a real OpenClaw turn remains unverified. | Seconds when Gateway and service are available (expected) |
-| Hermes | Webhook to its gateway; no first-party adapter or real turn proof yet. | Unverified |
+| Hermes | A first-party Linux bridge long-polls and submits count-only notes through the externally maintained Wake plugin into its bound chat. Signed generic webhook delivery is also available, but starts a fresh run. The bridge has fault-injection tests; a real turn remains unverified. | Seconds with a working gateway and plugin (expected) |
 | Codex on Linux | The first-party local bridge long-polls and queues a count-only notice into the creating Codex conversation. The agent reads and acknowledges events with its private page handle. A live staging tap woke the idle conversation; the agent changed the page and replied. | Seconds when the bridge and thread are available |
 | Other terminal CLIs | Need a host-specific adapter that starts or resumes the right conversation; event storage alone does not wake them. | Unverified |
 | OpenAI dot | The tendril's MCP connector (PROTOCOL section 13): MCP Events push a signed "events waiting" and the dot reads them with a tool. Untested on a real dot. | Seconds (expected) |

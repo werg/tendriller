@@ -3,6 +3,7 @@ import type { Tendril } from "./tendril";
 import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
 import { getEvents } from "./events";
+import { validSecret } from "./mcpEvents";
 import {
   createVersion, latestFileMap, listVersions, pointers, rollback, servedVersion, storeContent, versionFile, versionFiles,
   fileKey, type VersionFile,
@@ -72,7 +73,7 @@ function deliveryFeedback(t: Tendril) {
     mode,
     live_listener: facts.longPollHeld,
     reminder: mode === "none"
-      ? "No event listener or wake endpoint is active. Start continuous GET A/events?after=<cursor>&wait=300 polling or configure PUT A/wake before promising live replies."
+      ? "No event listener or wake endpoint is active. Attach a receiver that resumes this same agent conversation, then verify two page events reach it before promising live replies."
       : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
   };
 }
@@ -82,7 +83,7 @@ function requireFirstPageReceiver(t: Tendril): void {
   const facts = t.presenceFacts();
   if (facts.longPollHeld || facts.webhook) return;
   throw new HttpError(428, "listener_required",
-    "Start a continuous GET A/events?after=<cursor>&wait=300 poll or configure PUT A/wake with a persistent receiver before publishing index.html. A one-off poll or agent token is not a listener.");
+    "Attach this conversation with a verified host wake path: continuous GET A/events?after=<cursor>&wait=300 plus same-session delivery, or PUT A/wake with a persistent receiver. A one-off poll or agent token is not a listener; test two taps before promising live replies.");
 }
 
 export function tendrilMeta(t: Tendril) {
@@ -439,7 +440,12 @@ route("PUT", /^wake$/, async (t, req) => {
       if (!isPlainObject(b.webhook) || typeof b.webhook.url !== "string" || !/^https?:\/\/\S+$/.test(b.webhook.url)) {
         throw new HttpError(400, "bad_request", "webhook must be {url, token?} with an http(s) URL, or null");
       }
-      w.webhook = { url: b.webhook.url, token: typeof b.webhook.token === "string" && b.webhook.token ? b.webhook.token : null };
+      const auth = b.webhook.auth ?? "bearer";
+      if (!["bearer", "standard_webhooks", "hermes_v2"].includes(auth)) throw new HttpError(400, "bad_request", "webhook.auth must be bearer, standard_webhooks, or hermes_v2");
+      const token = typeof b.webhook.token === "string" && b.webhook.token ? b.webhook.token : null;
+      if (auth !== "bearer" && !token) throw new HttpError(400, "bad_request", "Signed webhooks require a secret in webhook.token");
+      if (auth === "standard_webhooks" && !validSecret(token)) throw new HttpError(400, "bad_request", "Standard Webhooks secret must be whsec_ plus base64 of 24–64 bytes");
+      w.webhook = { url: b.webhook.url, token, auth };
     }
   }
   if (b.schedule_minutes !== undefined) {

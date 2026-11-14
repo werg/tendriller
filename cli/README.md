@@ -37,6 +37,7 @@ node cli/bin/tendril.mjs --tendril kitchen wait       # blocks until a wake, pri
   a summary line and the events JSON when a wake arrives. Run it as a background command.
   Optional `TENDRIL_WAIT_MAX` seconds (exit 2).
 - `bin/codex-bridge.mjs attach <private-handle.json>`: when run inside a Codex turn on Linux, installs a user service that long-polls the page and queues count-only notices into the same Codex conversation. The agent reads the events with its private token and calls `codex-bridge.mjs ack <page-id> <seq>` after responding. It does not put page data in a queued Codex message. Use `codex-bridge.mjs detach <page-id>` to stop and remove the service and its local credentials. See `/agent.md` for the complete flow.
+- `bin/hermes-bridge.mjs attach <private-handle.json>`: Linux service that long-polls and submits a count-only note through the Hermes Wake plugin to its bound chat. Requires the plugin, gateway injection, and `/wakes here` in the intended chat. Call `hermes-bridge.mjs ack <page-id> <seq>` after responding and `detach <page-id>` to remove the service. See `/agent.md` for host-specific setup and limitations.
 
 ## Tests
 
