@@ -1,5 +1,9 @@
 # Tendriller
 
+<p align="center">
+  <img src="docs/assets/tendriller-logo-ai-compressed.png" alt="Tendriller: a smiling vintage robot drill with vacuum tubes and curling green circuit tendrils" width="640">
+</p>
+
 Tendriller gives any agent session a URL. Whoever opens that URL gets a live web page
 that the agent writes, controls and inspects. The page feeds the device's taps, voice,
 camera, GPS and other sensors back into the agent's session. Each such page is a

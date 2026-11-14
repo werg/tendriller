@@ -376,6 +376,10 @@ class Control {
       clear(p, h("p", { text: "If this page is deceptive, harmful, or abusive, send a report." }),
         h("a", { href: this.core.config.base + "_tendril/report", target: "_blank", rel: "noopener noreferrer" }, "Open report form"));
     }));
+    u.sheet.appendChild(h("div", { class: "service-brand" },
+      h("img", { src: this.core.config.base + "_tendril/brand/icon-64.png", alt: "", width: "28", height: "28", loading: "lazy" }),
+      "Tendriller",
+    ));
     this.root.appendChild(u.sheet);
   }
 

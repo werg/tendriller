@@ -1,3 +1,4 @@
+import { servicePage } from "./ui";
 import type { Env } from "../env";
 import { errorResponse, json } from "../http";
 import { sha256Hex } from "../ids";
@@ -45,8 +46,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
   const path = url.pathname;
   if (path === "/auth" && req.method === "GET") {
     const back = encodeURIComponent(safeReturn(url.searchParams.get("return_to")));
-    return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Sign in · Tendriller</title></head><body><main><h1>Sign in to Tendriller</h1><p>Choose an account to open your tendrils.</p><a href="/auth/github?return_to=${back}">Continue with GitHub</a><br><a href="/auth/google?return_to=${back}">Continue with Google</a></main></body></html>`,
-      { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+    return servicePage("Sign in", `<h1>Sign in to Tendriller</h1><p>Choose an account to open your tendrils.</p><div class="actions"><a class="button" href="/auth/github?return_to=${back}">Continue with GitHub</a><a class="button secondary" href="/auth/google?return_to=${back}">Continue with Google</a></div>`);
   }
   const begin = /^\/auth\/(link\/)?(github|google)$/.exec(path);
   if (begin && req.method === "GET") {

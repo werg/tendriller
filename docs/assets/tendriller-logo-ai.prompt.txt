@@ -1,0 +1,4 @@
+Generated with the built-in image_gen tool.
+Reference: docs/assets/tendriller-logo.png
+
+Create an oldschool AI-themed variant of the supplied Tendriller logo. Keep its warm orange, olive green and cream colors, bold hand-inked vintage cartoon look, friendly drill mascot, leafy curling tendrils, and large retro TENDRILLER lettering. Give the drill a cheerful mid-century robot face, a little transparent dome showing vacuum tubes and wires, and a small ball-tipped radio antenna. Add a few simple electronic circuit junctions along the leafy tendrils. Preserve the recognizable drill shape and spiral drill bit, playful cartoon gloves, dynamic pose and excellent wordmark. A charming vintage electronic inventor mascot with botanical flourishes. Text exactly: TENDRILLER. One polished cohesive logo, transparent background, clear padding.

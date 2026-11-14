@@ -1,3 +1,4 @@
+import { servicePage } from "./ui";
 import type { Env } from "../env";
 import { errorResponse, HttpError, json, readBody, readJson } from "../http";
 import { sha256Hex } from "../ids";
@@ -9,8 +10,7 @@ function random(length = 32): string {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 function escape(s: string): string { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
-const html = (body: string, status = 200) => new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Authorize agent · Tendriller</title></head><body><main>${body}</main></body></html>`,
-  { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
+const html = (body: string, status = 200) => servicePage("Authorize agent", body, "", status);
 
 export async function apiDevice(req: Request, env: Env, url: URL): Promise<Response> {
   const db = env.ACCOUNTS;

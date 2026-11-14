@@ -1,3 +1,4 @@
+import { servicePage } from "./accounts/ui";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
@@ -105,6 +106,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     const rest = page.rest;
     const speech = /^_tendril\/speech\/(cactus\.js|cactus\.wasm|whistle\.cact)$/.exec(rest);
     if (speech) return speechAsset(env, speech[1]);
+    if (/^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest)) return asset(env, url, `/${rest}`);
     if (rest === "_tendril/tendril.js") return asset(env, url, "/_tendril/tendril.js");
     if (rest === "_tendril/speech-worker.js") return asset(env, url, "/_tendril/speech-worker.js");
     if (rest === "_tendril/sw.js") return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
@@ -136,11 +138,12 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
     return new Response(landingPage(publicBase(env)), { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
+  if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
+  if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") return json({ ok: true });
   if (path === "/status") {
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
-    return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Tendriller status</title></head><body><main><h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p></main></body></html>`,
-      { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+    return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
   }
   if (path === "/agent.md") return asset(env, url, "/agent.md", { "Content-Type": "text/markdown; charset=utf-8" });
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {

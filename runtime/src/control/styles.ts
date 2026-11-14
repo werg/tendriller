@@ -55,6 +55,8 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .icon { display: inline-flex; width: 1.25em; height: 1.25em; flex: none; }
 .icon svg { width: 100%; height: 100%; }
+.service-brand { display: flex; align-items: center; justify-content: center; gap: .4em; margin-top: 1em; color: var(--muted); font-size: .8em; }
+.service-brand img { display: block; object-fit: contain; }
 .sr { position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* ---- dock (pill + chips) ---- */

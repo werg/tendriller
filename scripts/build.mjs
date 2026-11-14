@@ -12,6 +12,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "server/public");
 mkdirSync(join(out, "_tendril"), { recursive: true });
 mkdirSync(join(out, "snippets"), { recursive: true });
+mkdirSync(join(out, "_tendril/brand"), { recursive: true });
+for (const [source, target] of [
+  ["tendriller-logo-ai-compressed.png", "logo.png"],
+  ["tendriller-logo-ai.webp", "logo.webp"],
+  ["tendriller-icon-64.png", "icon-64.png"],
+  ["tendriller-icon-180.png", "icon-180.png"],
+  ["tendriller-favicon.ico", "favicon.ico"],
+]) copyFileSync(join(root, "docs/assets", source), join(out, "_tendril/brand", target));
 rmSync(join(out, "legal"), { recursive: true, force: true });
 mkdirSync(join(out, "legal"), { recursive: true });
 
