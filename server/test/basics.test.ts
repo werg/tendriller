@@ -8,7 +8,10 @@ describe("public routes", () => {
     expect(await (await req("/health")).json()).toEqual({ ok: true });
     const landing = await req("/");
     expect(landing.headers.get("Content-Type")).toContain("text/html");
-    expect(await landing.text()).toContain("/agent.md");
+    const html = await landing.text();
+    expect(html).toContain("/agent.md");
+    expect(html).toContain("https://github.com/werg/tendriller");
+    expect(html).toContain("Why Tendriller?");
     const nf = await req("/nope");
     expect(nf.status).toBe(404);
     expect(await nf.json()).toMatchObject({ error: { code: "not_found" } });

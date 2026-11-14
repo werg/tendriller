@@ -9,6 +9,9 @@ that the agent writes, controls and inspects. The page feeds the device's taps, 
 camera, GPS and other sensors back into the agent's session. Each such page is a
 **tendril**.
 
+The name combines **tendrils** and a **drill**: the agent extends into other
+interfaces and sensors, and Tendriller makes the opening for each connection.
+
 - The **server** is a Cloudflare Worker with one Durable Object per tendril, plus R2. It
   serves the agent's HTML directly, queues events, and sends wakes through configured
   host adapters.

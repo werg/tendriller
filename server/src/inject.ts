@@ -90,11 +90,12 @@ ${brandHead()}${brandStyle}
 :root{color-scheme:light dark;--paper:#f8f5ec;--ink:#20332c;--muted:#52685c;--line:#d8e0d5;--green:#195d46;--orange:#e87442;--cream:#fff9ea}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.55 system-ui,sans-serif}
 a{color:var(--green)}a:focus-visible{outline:3px solid var(--orange);outline-offset:4px}main{max-width:76rem;margin:auto;padding:clamp(1rem,3vw,2.5rem)}
-header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}header{padding:.35rem 0 1.5rem}header a{text-decoration:none;font-weight:700}header .brand img{width:44px;height:44px}header>a:last-child{font-size:.94rem}
+header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}header{padding:.35rem 0 1.5rem}header a{text-decoration:none;font-weight:700}header .brand img{width:44px;height:44px}header nav{display:flex;align-items:center;gap:clamp(.8rem,2vw,1.5rem);font-size:.94rem}
 h1,h2,h3,p{margin-top:0}h1{font-size:clamp(2.15rem,4vw,3.65rem);line-height:1.08;letter-spacing:-.045em;margin-bottom:1.15rem}h2{font-size:clamp(1.5rem,2.5vw,2rem);line-height:1.2;letter-spacing:-.025em;margin-bottom:.5rem}h3{font-size:1.04rem;line-height:1.25;margin-bottom:.4rem}p{margin-bottom:1rem}
 .hero{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);align-items:center;overflow:hidden;background:radial-gradient(circle at 25% 45%,#3d311e 0,#29291e 54%,#182a24 100%);color:#fff8ea;border-radius:1.5rem;box-shadow:0 20px 50px #20332c20}
 .hero-art{min-width:0}.hero .brand-art{display:block;width:100%;max-width:none;margin:0}.hero .brand-art img{display:block;width:100%;height:auto}.hero-copy{padding:2.5rem clamp(1.5rem,3vw,3rem) 2.5rem 0}.hero-copy p{font-size:clamp(1.04rem,1.5vw,1.2rem);line-height:1.55;max-width:30rem;color:#f1ebd9}.hero-copy p:last-of-type{color:#d7dfcc}.actions{display:flex;flex-wrap:wrap;gap:.65rem;margin-top:1.6rem}.button{display:inline-flex;align-items:center;justify-content:center;min-height:2.9rem;padding:.7rem 1.1rem;border-radius:.65rem;background:#ef8150;color:#241e19;text-decoration:none;font-weight:750}.button.secondary{background:#f7eed8;color:#263b2e}.button:hover{filter:brightness(1.06)}
 .how,.access,.examples{padding:clamp(2.7rem,5vw,4.5rem) 0}.how{border-bottom:1px solid var(--line)}.how>p,.examples>p{color:var(--muted);max-width:45rem}
+.namesake{padding:1.4rem 0 2rem;color:var(--muted)}.namesake p{max-width:48rem;margin:0}.namesake strong{color:var(--ink)}
 .flow{position:relative;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));list-style:none;margin:2.2rem 0 0;padding:0}.flow::before{content:"";position:absolute;top:1.45rem;left:10%;right:10%;height:2px;background:#a9c4ac}.flow li{position:relative;z-index:1;text-align:center;padding:0 .55rem}.flow-number{display:grid;place-items:center;width:3rem;height:3rem;margin:0 auto 1rem;border-radius:50%;background:var(--green);border:3px solid var(--paper);color:#fff;font-weight:800;box-shadow:0 0 0 1px #8bae98}.flow li:last-child .flow-number{background:var(--orange);color:#241e19;box-shadow:0 0 0 1px #d47046}.flow p{max-width:12rem;margin:0 auto;line-height:1.4;font-weight:600}
 .access{display:grid;grid-template-columns:minmax(0,.4fr) minmax(0,.6fr);gap:2rem;align-items:start;border-bottom:1px solid var(--line)}.access p{max-width:41rem;margin:0;font-size:1.08rem}.access strong{color:var(--green)}
 .examples>p{margin-bottom:1.7rem}.ideas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.9rem;list-style:none;padding:0;margin:0}.ideas li{padding:1.2rem 1.3rem 1.35rem;background:#fffdf7;border:1px solid #e3e7dc;border-radius:.9rem;box-shadow:0 3px 12px #20332c08}.ideas li p{color:var(--muted);margin:0;line-height:1.45}
@@ -106,7 +107,7 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 </head>
 <body>
 <main>
-<header>${brandLink}<a href="/dashboard">Dashboard</a></header>
+<header>${brandLink}<nav aria-label="Main navigation"><a href="/dashboard">Dashboard</a><a href="https://github.com/werg/tendriller">GitHub</a></nav></header>
 <section class="hero" aria-labelledby="hero-title">
 <div class="hero-art">${brandLogo}</div>
 <div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
@@ -140,6 +141,7 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <li><h3>Interactive office dashboard</h3><p>Bring tasks, notes, status, and controls into a dashboard the agent can update as your work changes.</p></li>
 <li><h3>Home experiment log</h3><p>Track light, motion, or connected sensors and summarize changes.</p></li>
 </ul></section>
+<aside class="namesake" aria-label="About the name"><p><strong>Why Tendriller?</strong> An agent can extend its tendrils into other devices’ interfaces and sensors. Tendriller makes the opening for each new connection, like a drill.</p></aside>
 <footer><span>Tendriller</span><span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/status">Status</a></span></footer>
 </main>
 </body>
