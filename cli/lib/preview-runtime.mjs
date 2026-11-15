@@ -37,7 +37,7 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
   const uploads = new Map();
   const events = [], messages = [], activity = [], transcript = [];
   let shared = structuredClone({ _prefs: { audio: false }, ...state }), rev = 0, seq = 0, online = true;
-  let focus = null;
+  let focus = null, closing = false, closePromise;
   let presence = { state: "listening", text: "Preview agent ready", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" };
   const send = (ws, message) => { if (ws.readyState === 1) ws.send(JSON.stringify(message)); };
   const broadcast = (message, except) => { for (const ws of sockets) if (ws !== except) send(ws, message); };
@@ -71,6 +71,7 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
       broadcast({ t: "device_config", ...api.configuration() }); return api.configuration();
     },
     setOnline(value) {
+      if (closing) return;
       online = !!value;
       if (!online) for (const ws of sockets) ws.close();
     },
@@ -106,19 +107,25 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
       if (cid) uploads.set(cid, value);
       return value;
     },
-    async close() {
-      for (const ws of sockets) ws.terminate();
-      await new Promise(resolve => wss.close(resolve));
+    close() {
+      if (closePromise) return closePromise;
+      closing = true;
+      online = false;
+      closePromise = new Promise((resolve, reject) => wss.close(error => error ? reject(error) : resolve()));
+      for (const ws of wss.clients) ws.terminate();
+      return closePromise;
     },
   };
 
   server.on("upgrade", (request, socket, head) => {
-    if (!online || new URL(request.url, "http://preview").pathname !== "/_tendril/ws") { socket.destroy(); return; }
+    if (closing || !online || new URL(request.url, "http://preview").pathname !== "/_tendril/ws") { socket.destroy(); return; }
     wss.handleUpgrade(request, socket, head, ws => {
+      if (closing) { ws.terminate(); return; }
       sockets.add(ws);
       let device;
       ws.on("close", () => sockets.delete(ws));
       ws.on("message", async buffer => {
+        if (closing) return;
         let m;
         try { m = JSON.parse(String(buffer)); } catch { return; }
         messages.push(m);

@@ -41,7 +41,8 @@ export async function startServer(dir, initialState, fixture = {}) {
     const file = resolve(base, "." + pathname);
     return (file === base || file.startsWith(base + sep)) && existsSync(file) && statSync(file).isFile() ? file : null;
   };
-  let adapter, httpFixtures = structuredClone(fixture.http || []);
+  let adapter, stopPromise, stopping = false, httpFixtures = structuredClone(fixture.http || []);
+  const connections = new Set();
   const mockedHttp = [];
   const installHttp = routes => {
     for (const route of routes) {
@@ -50,7 +51,11 @@ export async function startServer(dir, initialState, fixture = {}) {
     }
   };
   const server = createServer(async (req, res) => {
-    const send = (code, type, body, extra = {}) => { res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...extra }); res.end(body); };
+    if (stopping) { req.socket.destroy(); return; }
+    const send = (code, type, body, extra = {}) => {
+      if (stopping || res.destroyed) return;
+      res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...extra }); res.end(body);
+    };
     const json = (status, value) => send(status, "application/json", JSON.stringify(value));
     try {
       const url = new URL(req.url, "http://preview");
@@ -120,12 +125,34 @@ export async function startServer(dir, initialState, fixture = {}) {
         type === "text/html" ? injectRuntime(readFileSync(file, "utf8")) : readFileSync(file));
     } catch (error) { json(400, { error: { code: error.code || "bad_request", message: error.message } }); }
   });
+  // Own every TCP connection, including browser preconnects, incomplete HTTP
+  // requests and sockets later upgraded to WebSocket. HTTP close alone can wait
+  // for peers that have not finished sending a request.
+  server.on("connection", socket => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+    if (stopping) socket.destroy();
+  });
   adapter = await attachRuntime(server, { root: repo, state: initialState, role: fixture.role || "owner",
     onEvent: fixture.reply ? (event, api) => api.say({ text: String(fixture.reply), in_reply_to: event.seq, speak: false }) : undefined });
   server.preview = adapter;
   server.mockedHttp = mockedHttp;
   server.setHttpFixtures = installHttp;
-  server.stopPreview = async () => { await adapter.close(); await new Promise(resolve => server.close(resolve)); };
+  server.stopPreview = () => {
+    if (stopPromise) return stopPromise;
+    stopping = true;
+    // Stop admission before awaiting WebSocket shutdown: the still-open page
+    // can otherwise reconnect while afterEach is waiting for its server.
+    const httpClosed = new Promise((resolve, reject) => server.close(error => {
+      if (error && error.code !== "ERR_SERVER_NOT_RUNNING") reject(error); else resolve();
+    }));
+    const runtimeClosed = adapter.close();
+    // This is an explicit stop of an ephemeral preview, so abort in-flight
+    // uploads and partial handshakes instead of waiting for client timeouts.
+    for (const socket of connections) socket.destroy();
+    stopPromise = Promise.all([httpClosed, runtimeClosed]).then(() => {});
+    return stopPromise;
+  };
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   return server;
 }
