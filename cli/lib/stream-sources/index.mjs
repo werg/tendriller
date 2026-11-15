@@ -1,6 +1,7 @@
 import { createHostSource } from './host.mjs';
 import { createFileSource } from './file.mjs';
 import { createSshSource } from './ssh.mjs';
+import { createCommandSource } from './command.mjs';
 
 /**
  * Source adapter contract (independent of the destination stream's durability):
@@ -23,6 +24,7 @@ export function createSourceAdapter(source) {
     case 'jsonl':
     case 'log': return createFileSource(source);
     case 'ssh': return createSshSource(source);
+    case 'command': return createCommandSource(source);
     default: throw Error('Unknown collector source type.');
   }
 }

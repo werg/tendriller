@@ -20,6 +20,7 @@ before(async () => {
     if (req.url === "/api/tendrils") {
       res.statusCode = 201;
       res.end(JSON.stringify({ id: "abcdefghijkl", name: "Contract page", lifetime: "ad_hoc", token: "tk_private",
+        mode: body ? JSON.parse(body).mode || "interactive" : "interactive",
         api: `${origin}/api/t/abcdefghijkl`, page_url: `${origin}/page/`, agent_setup: { event_delivery: "not_configured" } }));
     } else res.end(JSON.stringify({ ok: true, role: "guest", id: "l_test", url: `${origin}/guest/` }));
   });
@@ -55,6 +56,22 @@ test("new creates ad_hoc with owner and never sends a retired creation key", asy
   assert.match(result.stderr, /verifying the live listener/);
   assert.equal((await cli(["new", "Environment owner"], { TENDRIL_OWNER: "owner@example.com" })).code, 0);
   assert.equal(requests.at(-1).body.owner, "owner@example.com");
+});
+
+test("creation selects either supported mode and rejects misspelled options before creating a page", async () => {
+  for (const mode of ["interactive", "dashboard"]) {
+    const result = await cli(["new", "Mode test", "--owner", "person@example.com", "--mode", mode]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(requests.at(-1).body.mode, mode);
+    assert.equal(JSON.parse(result.stdout).mode, mode);
+    if (mode === "dashboard") assert.match(result.stderr, /Dashboard URL:/);
+  }
+  const count = requests.length;
+  for (const flags of [["--mode", "hybrid"], ["--mdoe", "dashboard"], ["--mode", "--pretty"]]) {
+    const result = await cli(["new", "--owner", "person@example.com", ...flags]);
+    assert.equal(result.code, 64, result.stderr);
+  }
+  assert.equal(requests.length, count);
 });
 
 test("retired creation, pairing, role and link options fail locally with recovery guidance", async () => {

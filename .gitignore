@@ -11,6 +11,13 @@ server/public/hermes-bridge.mjs
 server/public/tendril-wait.sh
 server/public/tendril-wait.mjs
 server/public/tendril-watch.mjs
+server/public/tendril-stream.mjs
+server/public/tendril-events.mjs
+server/public/tendril-preview.mjs
+server/public/llms.txt
+server/public/docs/
+server/public/cli/
+server/public/examples/
 server/public/legal/
 server/public/recipes/
 server/public/contract/

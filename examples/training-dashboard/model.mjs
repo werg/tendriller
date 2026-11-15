@@ -1,4 +1,4 @@
-export const sourceKey = data => JSON.stringify([String(data?.source || 'source'), String(data?.run || 'machine')]);
+export const sourceKey = data => JSON.stringify([String(data?.source ?? 'source'), String(data?.run ?? 'machine')]);
 export const sourceLabel = value => { const [source, run] = JSON.parse(value); return `${source} / ${run}`; };
 const numeric = value => typeof value === 'number' && Number.isFinite(value);
 

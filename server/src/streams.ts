@@ -5,7 +5,7 @@ import { HttpError, json, readJson } from "./http";
 import { requireWritesOpen } from "./service-state";
 import { allows, canReadStream, socketPrincipal, authenticateProducer, producerStillValid, producerMayAppend,
   recordProducerActivity, type StreamActor } from "./access";
-import { streamInfo, streamDefinitions, createStream, appendToStore, readStream, builtinSignal } from "./streams/store";
+import { streamInfo, streamDefinitions, createStream, appendToStore, readStream, latestStream, trimStream, builtinSignal } from "./streams/store";
 import { builtinRecord } from "./streams/adapters";
 import { createProducer, listProducers, deleteProducer } from "./streams/producers";
 import { deliverStreamRecords } from "./streams/broker";
@@ -70,7 +70,7 @@ export async function publishFromPage(t: Tendril, ws: WebSocket, name: string, v
   return appendRecords(t, name, value, `device:${principal.deviceId}`);
 }
 
-export const STREAM_ROUTE = /^(?:streams(?:\/[a-z][a-z0-9._-]{0,63}(?:\/records)?)?|producers(?:\/[a-z][a-z0-9._-]{0,63})?)$/;
+export const STREAM_ROUTE = /^(?:streams(?:\/[a-z][a-z0-9._-]{0,63}(?:\/(?:records|latest))?)?|producers(?:\/[a-z][a-z0-9._-]{0,63})?)$/;
 export async function handleStreams(t: Tendril, req: Request, url: URL, rest: string, actor: StreamActor): Promise<Response> {
   const parts = rest.split("/");
   if (parts[0] === "producers") {
@@ -87,6 +87,7 @@ export async function handleStreams(t: Tendril, req: Request, url: URL, rest: st
   }
   const info = streamInfo(t, parts[1]); requireReader(info, actor);
   if (parts.length === 2 && req.method === "GET") return json(info);
+  if (parts[2] === "latest" && req.method === "GET") return json(latestStream(t, info.name));
   if (parts[2] === "records" && req.method === "GET") {
     const after = url.searchParams.get("after"), limit = url.searchParams.get("limit");
     if (after === null || after.trim() === "") throw new HttpError(400, "cursor_required", "Provide an explicit after cursor");
@@ -94,5 +95,11 @@ export async function handleStreams(t: Tendril, req: Request, url: URL, rest: st
   }
   if (parts[2] === "records" && req.method === "POST" && actor.kind === "agent")
     return json(appendRecords(t, info.name, await readJson(req, MAX_STREAM_BATCH_BYTES), `agent:${actor.name}`));
+  if (parts[2] === "records" && req.method === "DELETE") {
+    if (actor.kind !== "agent") throw new HttpError(403, "forbidden", "Only an agent may trim retained stream records");
+    const through = url.searchParams.get("through");
+    if (through === null || through.trim() === "") throw new HttpError(400, "cursor_required", "Provide an explicit through cursor");
+    return json(trimStream(t, info.name, streamCursor(Number(through), "through")));
+  }
   throw new HttpError(405, "method_not_allowed");
 }

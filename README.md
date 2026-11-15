@@ -34,7 +34,9 @@ The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 ## Get started
 
 For the public beta, give your agent `https://tendriller.dev/agent.md` and your verified
-GitHub or Google email address. If your agent runs in a sandbox with limited network access,
+GitHub or Google email address. Agents can discover the API, public docs, examples,
+and standalone downloads at [`/llms.txt`](https://tendriller.dev/llms.txt); the
+core setup and collector need no repository checkout. If your agent runs in a sandbox with limited network access,
 such as Claude Duet, Cowork or another claude.ai session, first open **Settings >
 Capabilities** in Claude and add `tendriller.dev` and `tendriller.site` under **Additional
 allowed domains** (or set **Domain allowlist** to **All domains**). [agent.md](agent.md) has
@@ -58,10 +60,14 @@ are exposed as built-in streams; their existing APIs and wake behavior remain
 compatible. Custom telemetry does not wake the agent.
 
 An optional `tendril-stream` collector runs independently of the conversation. It
-samples local CPU/RAM/GPU, tails training metrics and logs, and receives data from
+samples local CPU/RAM/GPU, tails projected fields from training metrics and logs,
+runs explicitly configured local commands, and receives data from
 configured SSH hosts. Scoped publishing credentials stay on that machine; pages
-query retained history and subscribe through `tendril.streams` using their normal
-page sessions. A `mode: "dashboard"` page can publish without an agent listener.
+query retained history or latest snapshots and subscribe through `tendril.streams`
+using their normal page sessions. Interactive pages support streams alongside
+conversation. A `mode: "dashboard"` page can publish without an agent listener.
+Claim the page before starting sustained collection. Download the standalone
+collector from [`/tendril-stream.mjs`](https://tendriller.dev/tendril-stream.mjs).
 
 See [Streams](docs/STREAMS.md), [Collector](docs/COLLECTOR.md), and the
 [training dashboard example](examples/training-dashboard/).

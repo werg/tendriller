@@ -16,6 +16,11 @@ export function createStreamsClient(request) {
       info: name => request(path(name), undefined, "streamInfo"),
       append: (name, body) => request(`${path(name)}/records`, { method: "POST", body: assertValid("streamAppend", body) }, "streamAppendResult"),
       read: (name, options) => request(`${path(name)}/records?${streamReadQuery(options)}`, { signal: options?.signal }, "streamBatch"),
+      latest: (name, options = {}) => request(`${path(name)}/latest`, { signal: options.signal }, "streamLatest"),
+      trim(name, options) {
+        const { through } = assertValid("streamTrim", options);
+        return request(`${path(name)}/records?through=${through}`, { method: "DELETE" }, "streamTrimResult");
+      },
     },
     producers: {
       list: () => request("/producers", undefined, "producerList"),

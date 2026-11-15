@@ -4,7 +4,7 @@
 
 export const BOOLEAN = new Set([
   "resident", "follow", "wakes", "pretty", "help", "no-replace", "no-speak", "no-wait",
-  "yes", "peek", "off", "headed", "desktop", "all", "include-data",
+  "yes", "peek", "off", "headed", "headless", "desktop", "all", "include-data",
 ]);
 
 const SHORT = { f: "file", h: "help", p: "pretty" };
@@ -24,7 +24,7 @@ export function parseArgs(argv) {
         flags[name] = value === undefined ? true : !/^(0|false|no)$/i.test(value);
       } else {
         if (value === undefined) {
-          if (i + 1 >= argv.length) throw new Error(`--${name} needs a value`);
+          if (i + 1 >= argv.length || argv[i + 1].startsWith("--") || /^-[a-zA-Z]$/.test(argv[i + 1])) throw new Error(`--${name} needs a value`);
           value = argv[++i];
         }
         flags[name] = value;
@@ -36,7 +36,7 @@ export function parseArgs(argv) {
       if (!name) throw new Error(`unknown flag ${a}`);
       if (BOOLEAN.has(name)) flags[name] = true;
       else {
-        if (i + 1 >= argv.length) throw new Error(`${a} needs a value`);
+        if (i + 1 >= argv.length || argv[i + 1].startsWith("--") || /^-[a-zA-Z]$/.test(argv[i + 1])) throw new Error(`${a} needs a value`);
         flags[name] = argv[++i];
       }
       continue;
@@ -62,6 +62,6 @@ export function parseJsonArg(s) {
 export function intFlag(v, name, dflt) {
   if (v === undefined) return dflt;
   const n = Number(v);
-  if (!Number.isFinite(n)) throw new Error(`--${name} must be a number`);
+  if (String(v).trim() === "" || !Number.isSafeInteger(n)) throw Object.assign(new Error(`--${name} must be a safe integer`), { exit: 64 });
   return n;
 }

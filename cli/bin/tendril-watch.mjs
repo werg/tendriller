@@ -5,20 +5,27 @@
 // The private token is read from the creation-response file, so it never
 // appears on the command line, in a tool call, or in the output.
 import { readFileSync } from 'node:fs';
+import { parseArgs } from '../lib/args.mjs';
+import { readCheckpoint } from '../lib/pending-events.mjs';
 
-const file = process.argv[2];
-if (!file) {
-  process.stderr.write('Usage: tendril-watch.mjs <private creation-response file>\n');
+let parsed;
+try { parsed = parseArgs(process.argv.slice(2)); } catch (error) { process.stderr.write(error.message + '\n'); process.exit(2); }
+const { cmd: file, args, flags } = parsed;
+if (!file || args.length || Object.keys(flags).some(key => key !== 'checkpoint-file')) {
+  process.stderr.write('Usage: tendril-watch.mjs <private creation-response file> [--checkpoint-file PATH]\n');
   process.exit(2);
 }
 function load() {
-  const cfg = JSON.parse(readFileSync(file, 'utf8'));
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(file, 'utf8')); } catch { throw Error('Cannot read the private creation-response file as JSON'); }
   const api = cfg.api;
   const ok = /^https:\/\/[^/]+\/api\/t\/[a-z2-7]{12}$/.test(api || '')
     || /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/api\/t\/[a-z2-7]{12}$/.test(api || '');
   if (!ok || !/^tk_[a-z2-7]{32}$/.test(cfg.token || '')) throw Error('The file needs the creation response with api and token');
-  const after = Number(cfg.cursor ?? 0);
-  return { api, token: cfg.token, after: Number.isSafeInteger(after) && after >= 0 ? after : 0 };
+  // Once pending/ack is used, its handled checkpoint is authoritative. Never
+  // let a legacy read cursor skip unhandled application input on reconnect.
+  const saved = readCheckpoint(flags['checkpoint-file'] || `${file}.events.json`, cfg, cfg.cursor ?? 0);
+  return { api, token: cfg.token, after: saved.handled_cursor };
 }
 if (typeof WebSocket !== 'function') {
   console.log('tendril-watch: stopped, this needs Node.js 22.15 or newer');

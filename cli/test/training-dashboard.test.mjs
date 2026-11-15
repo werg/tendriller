@@ -24,6 +24,16 @@ test('mixed step availability uses timestamps consistently and ignores nonnumeri
   assert.deepEqual(model.groups.flatMap(g => g.points).map(p => p.x), [100, 200, 400]);
 });
 
+test('explicit false, zero and empty source/run values remain distinct from missing metadata', () => {
+  const records = [point(false, 0, 1, 1, 100), point('', '', 1, 2, 100), point(null, null, 1, 3, 100)];
+  const model = chartSeries(records, 'loss');
+  assert.equal(model.groups.length, 3);
+  assert.deepEqual(JSON.parse(sourceKey(records[0].data)), ['false', '0']);
+  assert.deepEqual(JSON.parse(sourceKey(records[1].data)), ['', '']);
+  assert.deepEqual(JSON.parse(sourceKey(records[2].data)), ['source', 'machine']);
+  assert.equal(chartSeries(records, 'loss', sourceKey(records[0].data)).groups[0].points[0].y, 1);
+});
+
 const appScript = buildSync({
   entryPoints: [fileURLToPath(new URL('../../examples/training-dashboard/app.js', import.meta.url))],
   bundle: true, format: 'iife', write: false,

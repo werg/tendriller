@@ -5,6 +5,9 @@ export type StreamInput = WireContracts["streamInput"];
 export type StreamAppend = WireContracts["streamAppend"];
 export type StreamRecord = WireContracts["streamRecord"];
 export type StreamBatch = WireContracts["streamBatch"];
+export type StreamLatest = WireContracts["streamLatest"];
+export type StreamTrim = WireContracts["streamTrim"];
+export type StreamTrimResult = WireContracts["streamTrimResult"];
 export type StreamHistory = WireContracts["streamHistory"];
 export type StreamAppendResult = WireContracts["streamAppendResult"];
 export type Producer = WireContracts["producer"];
@@ -22,6 +25,8 @@ export interface BrowserStreams {
   list(): Promise<{ streams: StreamInfo[] }>;
   info(stream: string): Promise<StreamInfo>;
   read(stream: string, options: StreamReadOptions): Promise<StreamBatch>;
+  /** Latest retained snapshot and a high-water cursor for subsequent subscription. */
+  latest(stream: string, options?: { signal?: AbortSignal }): Promise<StreamLatest>;
   /** Callbacks run synchronously; this is a delivery cursor, not a handled checkpoint. */
   subscribe(stream: string, handler: (record: StreamRecord) => void, options?: StreamSubscribeOptions): () => void;
   /** Requires a connected page; never silently queues stream records offline. */

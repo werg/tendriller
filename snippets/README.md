@@ -36,6 +36,8 @@ Sensor permissions are the browser's own prompts and most need a tap: call `open
 | `serial.js` | Web Serial line reader/writer, `request()` for command/reply | Chromium desktop only | `p = await serial.connect({onLine}); await p.request("STATUS")` |
 | `bluetooth.js` | Web Bluetooth: connect by service, read, write, notify | Chromium on desktop and Android; not iOS | `d = await bluetooth.connect({services: ["heart_rate"]})` |
 | `list.js` | Shared list (shopping, packing) stored in state as records keyed by id; add/tick/edit/remove; offline via `tendril.state` | All | `list.mount("#list", {path: "shopping"})` |
+| `chart.js` | Bounded numeric series with axes, gaps, legends and an accessible values table; no chart library or CDN | All current browsers | `chart.mount("#plot", {xLabel:"Step"}).update([{id:"run",points:[{x:1,y:0.8}]}])` |
+| `stream-view.js` | Coalesced rendering and explicit atomic checkpoints of a cursor plus its materialized view | All current browsers; persistence requires browser storage | `streamView.batch(render).schedule()`; `streamView.checkpoint('metrics',{key:'chart-v1'})` |
 | `input-kit.js` | User-triggered photo, audio, location, motion, and file controls with one event contract | Depends on input | `inputs.mount("#inputs", {modalities:["photo","location"]})` |
 | `playground.js` | Live capability gallery and working controls on this device | All | `playground.mount("#explore")` |
 | `connectors.js` | User-triggered screen, clipboard, contacts, directory, gamepad, MIDI, HID, USB, NFC, XR, and Generic Sensor helpers | API and hardware dependent | `const s = await connectors.hid(); await s.sendSnapshot(); await s.stop()` |
@@ -46,6 +48,131 @@ The hardware lab's send buttons are a demo policy. Agent-authored pages can call
 automatic threshold alerts and aggregated telemetry. Use `{wake:false}` for data
 that should wait for the agent's next poll. Browser permission choosers still
 require a user gesture where the browser mandates one.
+
+## Charts for streams or shared state
+
+Load `_tendril/snippets/chart.js` and give the chart numeric `{x, y}` points. The
+chart does not assume a particular stream name, training framework, or data shape:
+the page selects fields from stream records or shared state.
+
+```js
+const chart = tendrilSnippets.chart.mount('#plot', {
+  title: 'Temperature', xLabel: 'Time', yLabel: '°C', maxPoints: 500,
+  xFormat: value => new Date(value).toLocaleTimeString(),
+});
+chart.update([{ id: 'sensor', label: 'Room sensor', points: [] }]);
+const unsubscribe = tendril.streams.subscribe('sensor.temperature', record => {
+  chart.append('sensor', { x: record.ts, y: record.data.temperature });
+}, { after: 0, onGap: () => { /* show a history-gap notice in the page */ } });
+// When removing this view: unsubscribe(); chart.destroy();
+```
+
+`update(series, options?)` replaces all series; `append(id, pointOrPoints)` adds
+samples to an existing series. Both return `{series, samples, min, max}`.
+Both render immediately; use the batching recipe below for substantial stream
+replays so a callback per record does not mean a full chart render per record.
+Use one stable series id per source/run to avoid joining unrelated measurements.
+`maxPoints` bounds retained points per series (default 500, allowed 2–10,000), and
+the chart accepts at most 24 series. Points sort by x and retain the newest values.
+Invalid x values are ignored; a null or nonnumeric y leaves a visible line break.
+Values are never coerced from strings or booleans. The expandable table shows at
+most 100 recent points across all series and preserves keyboard focus across updates.
+The chart owns no network connection; the caller handles subscriptions, replay,
+retention gaps and cleanup. [The training dashboard](../examples/training-dashboard/)
+uses the same helper for training steps and timestamps.
+
+## Efficient rendering and reload checkpoints
+
+Stream subscription callbacks run synchronously for each record in a replay
+batch. Later history pages arrive asynchronously; returned promises from a
+callback are not awaited. Update a bounded in-memory model for **every** record,
+and use `stream-view.js` to coalesce rendering to one animation frame:
+
+```js
+const records = [];
+const paint = tendrilSnippets.streamView.batch(() => render(records));
+const stop = tendril.streams.subscribe('metrics', record => {
+  records.push(record);
+  if (records.length > 500) records.shift();
+  paint.schedule();
+}, { after: 0, onGap: history => showGap(history) });
+// When removing the view: stop(); paint.cancel();
+```
+
+`batch(render)` provides `schedule()`, `flush()` and `cancel()`. It queues no
+records and changes no cursors. `flush()` runs a pending render immediately;
+`cancel()` discards only that pending render. The training dashboard uses this
+helper while rebuilding its bounded view from retained history on each reload.
+
+To avoid replaying already materialized data, `checkpoint(stream, options)`
+provides explicit `load()`, `save({cursor,state})`, and `clear()` operations.
+**Restore the state and cursor together.** Saving only a cursor would make a new
+page skip the data needed to rebuild its chart or table. The required `key`
+identifies the view, filters and application state schema version (for example
+`loss-overview-v1`); change it when those assumptions change. `pageId` defaults
+to the injected Tendriller page id and must be supplied explicitly elsewhere.
+Each checkpoint uses one atomic localStorage item scoped to page, stream and key.
+
+```js
+const stream = 'metrics';
+await tendril.streams.info(stream); // Authorize this reader before showing cached data.
+const cache = tendrilSnippets.streamView.checkpoint(stream, { key: 'metrics-window-v1' });
+let saved;
+try {
+  const candidate = cache.load();
+  if (candidate && (!Array.isArray(candidate.state?.records)
+    || candidate.state.records.length > 500
+    || typeof candidate.state.historyIncomplete !== 'boolean'
+    || candidate.state.records.some(record => record?.stream !== stream
+      || !Number.isSafeInteger(record.seq) || record.seq < 1 || record.seq > candidate.cursor))) {
+    throw new Error('Saved view is incompatible; rebuilding from retained history.');
+  }
+  saved = candidate;
+}
+catch (error) { showStatus(error.message); } // Rebuild BOTH state and cursor below.
+const model = saved?.state ?? { records: [], historyIncomplete: false };
+let cursor = saved?.cursor ?? 0;
+render(model); // Show an incomplete-history notice when historyIncomplete is true.
+const paint = tendrilSnippets.streamView.batch(() => {
+  try { cache.save({ cursor, state: model }); }
+  catch (error) { showStatus(error.message); } // Previous checkpoint remains intact.
+  render(model);
+});
+const stop = tendril.streams.subscribe(stream, record => {
+  model.records.push(record);
+  if (model.records.length > 500) model.records.shift();
+  cursor = record.seq; // The synchronous model update succeeded.
+  paint.schedule();
+}, { after: cursor, onGap: () => {
+  model.historyIncomplete = true; // Preserve known gaps across reloads too.
+  paint.schedule();
+} });
+const flush = () => paint.flush();
+addEventListener('pagehide', flush);
+// Cleanup: stop(); paint.flush(); removeEventListener('pagehide', flush);
+```
+
+Use a versioned key and validate any application-specific state assumptions
+before restoring. `load()` returns `null` only when no checkpoint exists;
+corrupt/wrong-scope data, invalid cursors or state, unavailable storage, and
+size/quota failures throw with a stable `code`. State must be JSON data, not a
+Map, DOM node, function, sparse array, circular object or nonfinite number.
+Accessors and non-enumerable fields are rejected so serialization cannot silently
+change the saved view. Keep gap/incompleteness flags in the saved state too;
+restoring a cursor must not hide already reported missing history.
+`maxBytes` bounds the UTF-8 encoded checkpoint (default 1 MiB; allowed 128 bytes
+to 4 MiB). Browser quotas may be smaller. An optional `storage` object supplies
+the same `getItem`/`setItem`/`removeItem` interface for an application-owned store.
+
+These checkpoints describe a local materialized view, **not handled agent work**.
+For asynchronous processing, use explicit stream reads and save only after all
+processing succeeds. The helper does not subscribe, acknowledge, reset, or merge
+concurrent writes across tabs. Use a single writer per view key. Browser storage
+is not authorization: verify current stream access before rendering private
+cached data and clear it when the app signs out or changes reader identity.
+If a checkpoint is unusable, reset its state and cursor together and replay;
+server retention may still report a gap. For whole-table current values, use
+`streams.latest()` and its cursor instead of caching a historical view.
 
 ## Hands-free voice
 

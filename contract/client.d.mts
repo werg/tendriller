@@ -1,6 +1,6 @@
 import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
-import type { CreateRequest, PublicEvent, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
+import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, RemixRequest, Decision, DecisionCreate, DecisionUpdate, ParticipantResponse,
   ParticipantAssignment, AssignmentCreate, AssignmentUpdate, ArchiveScope, ArchivePreview, ArchiveCreate, ArchiveResult, ArchiveMetadata, SessionArchive } from "./index.mjs";
@@ -10,6 +10,9 @@ export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?:
 export interface AgentClient extends DurabilityClient, StreamsClient {
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
+  probeDelivery(): Promise<DeliveryProbe>;
+  checkDeliveryProbe(nonce?: string): Promise<DeliveryProbe>;
+  acknowledgeDeliveryProbe(nonce: string): Promise<DeliveryProbe>;
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
   state(): Promise<{ state: Record<string, unknown>; rev: number }>;
   updateState(body: Record<string, unknown> | { ops: StateOperation[] }): Promise<{ rev: number }>;

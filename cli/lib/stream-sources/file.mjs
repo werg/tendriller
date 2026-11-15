@@ -1,12 +1,13 @@
 import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { MAX_LINE_BYTES, lineRecord, recordFor } from './records.mjs';
+import { lineLimit, lineRecord, errorRecord } from './records.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const capabilities = Object.freeze({ mode: 'poll', replay: 'retained-file', checkpoint: true });
 
 /** Reads complete UTF-8 lines; stores no uncommitted partial line in memory. */
 export async function readFileBatch(source, checkpoint, maxRecords = 100, { open: openFile = open } = {}) {
+  const maxLineBytes = lineLimit(source), readBytes = Math.max(128 * 1024, maxLineBytes + 1);
   const file = await openFile(source.path, 'r');
   try {
     const stat = await file.stat();
@@ -16,11 +17,11 @@ export async function readFileBatch(source, checkpoint, maxRecords = 100, { open
     // Read the old boundary and new payload together. A separate fingerprint
     // read could observe a replacement generation after the payload was read.
     let prefix = Math.min(offset, 64);
-    let captured = Buffer.alloc(128 * 1024 + prefix);
+    let captured = Buffer.alloc(readBytes + prefix);
     let { bytesRead: capturedBytes } = await file.read(captured, 0, captured.length, offset - prefix);
     if (offset && (capturedBytes < prefix || checkpoint.anchor && digest(captured.subarray(0, prefix)) !== checkpoint.anchor)) {
       offset = 0; prefix = 0; discarding = false;
-      captured = Buffer.alloc(128 * 1024);
+      captured = Buffer.alloc(readBytes);
       ({ bytesRead: capturedBytes } = await file.read(captured, 0, captured.length, 0));
     }
     const buffer = captured.subarray(prefix, capturedBytes), bytesRead = buffer.length;
@@ -29,19 +30,19 @@ export async function readFileBatch(source, checkpoint, maxRecords = 100, { open
     while (start < bytesRead && records.length < maxRecords) {
       const newline = buffer.indexOf(10, start);
       if (newline < 0 || newline >= bytesRead) {
-        if (discarding || bytesRead - start > MAX_LINE_BYTES) {
-          if (!discarding) records.push(recordFor(source, 'collector_error', { reason: 'line_too_large', offset: offset + start }));
+        if (discarding || bytesRead - start > maxLineBytes) {
+          if (!discarding) records.push(errorRecord(source, 'line_too_large', { offset: offset + start }));
           discarding = true; consumed = bytesRead;
         }
         break;
       }
       if (!discarding) {
-        if (newline - start > MAX_LINE_BYTES) records.push(recordFor(source, 'collector_error', { reason: 'line_too_large', offset: offset + start }));
+        if (newline - start > maxLineBytes) records.push(errorRecord(source, 'line_too_large', { offset: offset + start }));
         else {
           const line = buffer.subarray(start, newline).toString('utf8').replace(/\r$/, '');
           if (line.trim()) {
             try { records.push(lineRecord(source, line)); }
-            catch { records.push(recordFor(source, 'collector_error', { reason: 'record_too_large', offset: offset + start })); }
+            catch { records.push(errorRecord(source, 'record_too_large', { offset: offset + start })); }
           }
         }
       }

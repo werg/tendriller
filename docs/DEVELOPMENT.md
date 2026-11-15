@@ -6,6 +6,15 @@ API and browser scripts do not require an application framework.
 See [Internal architecture](ARCHITECTURE.md) for transaction/effect boundaries,
 identity and activity, stream adapters, browser delivery policies and collectors.
 
+Agents using the public service can preview a local page without a checkout or
+build: download [`tendril-preview.mjs`](https://tendriller.dev/tendril-preview.mjs)
+and run `node tendril-preview.mjs ./my-page --fixture ./scenario.json`. This prints
+a loopback URL and serves the bundled production runtime and snippets. Add
+`--headless` to run scenario steps and capture a screenshot using optional
+Playwright/Chromium installed in the current project. The server itself needs
+only Node 22.15+. Its assets are included in the download; nothing is fetched
+at execution time. Optional neural voice engines and models are excluded.
+
 ## A supported loop
 
 1. Run `npm run build` once, then `npm run preview -- recipes/field-notebook`.
@@ -117,6 +126,50 @@ lists each request in `mocked_http`; mocked service responses are explicit, and
 the actual Worker suites cover their authorization and concurrency behavior.
 Capability reports come from the browser itself. Use `hardware` and `denied`
 fixtures to alter its inputs; the old `capabilities` API replacement is rejected.
+
+### Stream fixtures
+
+Declare custom streams at the fixture root and append records in ordered steps:
+
+```json
+{
+  "streams": [
+    {
+      "name": "measurements",
+      "durability": "durable",
+      "records": [{ "id": "first", "type": "sample", "data": { "value": 12 } }]
+    },
+    { "name": "live", "durability": "ephemeral", "readers": "page" }
+  ],
+  "steps": [
+    { "expect_text": "12" },
+    { "streams": [{ "name": "measurements", "records": [{ "id": "second", "type": "sample", "data": { "value": 15 } }] }] },
+    { "expect_text": "15" }
+  ]
+}
+```
+
+Definitions use the public `streamCreate` schema plus an optional `records`
+array. Inputs use `streamInput`: `id`, `type`, arbitrary JSON `data`, and optional
+epoch-millisecond `ts`. Steps accept only `{name,records}` for streams declared
+at the root. Initial records are available before the page opens; ordered steps
+run in headless scenarios. The persistent server uses the initial fixture only.
+
+The actual `tendril.streams.list`, `info`, `read`, `latest` and `subscribe` methods
+talk to the adapter's HTTP/WebSocket endpoints. Durable history uses the service's
+shared cursor/gap calculations, honors fixture retention limits, and replays on
+reconnect. `latest` returns null for an empty retained stream. Ephemeral samples
+reach current subscribers only; samples sent before a subscription or during a
+disconnect are not replayed. Reads of ephemeral history return `not_replayable`.
+Repeated durable IDs deduplicate identical records and reject changed payloads.
+Owner/page reader scopes follow the fixture role, and stream samples never create
+conversation events or agent wakes. Calls remain visible in the preview trace.
+
+This is a fixture transport, not an additional storage service. Unknown streams,
+undeclared writes and unsupported page publication return explicit errors.
+Built-in stream adapters, producer credentials, account authorization, persistence
+and production quotas remain covered by the Worker suites. The ordinary event,
+state, role and reply fixture features continue to work alongside stream data.
 
 OAuth, account claims, abuse controls, production limits, external host wake
 admission, and real push delivery require the isolated Worker E2E suite or a

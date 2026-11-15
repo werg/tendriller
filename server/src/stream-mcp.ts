@@ -29,11 +29,22 @@ export const STREAM_TOOLS: Tool[] = [
     call: args => ({ method: "GET", rest: `${path(args.stream)}/records`, query: { after: String(args.after), limit: String(args.limit ?? 100) } }),
   },
   {
+    name: "latest_stream",
+    description: "Read the latest retained record of a durable stream, or null if empty/expired, plus its high-water cursor. Useful for whole-table snapshots; deliberately skips older history and never acknowledges processing. Ephemeral streams have no retained value.",
+    inputSchema: object({ stream: name }, ["stream"]), call: args => ({ method: "GET", rest: `${path(args.stream)}/latest` }),
+  },
+  {
     name: "append_stream",
     description: "Append data records to a custom stream without waking the agent. Stable record IDs deduplicate durable retries within retained history. For built-in messages use send/say/state APIs, preserving their permission and wake semantics.",
     inputSchema: { ...object({ stream: name, ...schemas.streamAppend.properties }, ["stream", "records"]),
       $defs: { streamJson: schemas.streamJson } },
     call: ({ stream, ...body }) => ({ method: "POST", rest: `${path(stream)}/records`, body }),
+  },
+  {
+    name: "trim_stream",
+    description: "Permanently discard a custom durable stream's retained records through an explicit observed cursor. Use latest_stream to capture the bound first. Newer appends, stream policy and sequence numbers are preserved; replay exposes the missing history as a gap. Built-in and ephemeral streams cannot be trimmed. This does not clear already-rendered page state or stop producers.",
+    inputSchema: object({ stream: name, ...schemas.streamTrim.properties }, ["stream", "through"]),
+    call: args => ({ method: "DELETE", rest: `${path(args.stream)}/records`, query: { through: String(args.through) } }),
   },
   {
     name: "list_stream_producers",

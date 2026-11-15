@@ -4,7 +4,7 @@
 //   snippets/*.js         -> server/public/snippets/  (copied as-is; plain browser JS)
 //   agent.md              -> server/public/agent.md
 import { build } from "esbuild";
-import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync, watch, writeFileSync, statSync } from "node:fs";
+import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync, watch, writeFileSync, statSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -45,8 +45,21 @@ await build({ ...common, entryPoints: [join(root, "runtime/src/control/speech-wo
 for (const f of readdirSync(join(root, "snippets"))) {
   if (f.endsWith(".js")) copyFileSync(join(root, "snippets", f), join(out, "snippets", f));
 }
-if (existsSync(join(root, "agent.md"))) copyFileSync(join(root, "agent.md"), join(out, "agent.md"));
-for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait", "tendril-watch"]) {
+for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
+// Public documentation and examples must be usable without a source checkout.
+rmSync(join(out, "docs"), { recursive: true, force: true });
+mkdirSync(join(out, "docs"), { recursive: true });
+for (const name of readdirSync(join(root, "docs"))) {
+  if (name.endsWith(".md")) copyFileSync(join(root, "docs", name), join(out, "docs", name));
+}
+mkdirSync(join(out, "cli"), { recursive: true });
+copyFileSync(join(root, "cli/README.md"), join(out, "cli/README.md"));
+copyFileSync(join(root, "snippets/README.md"), join(out, "snippets/README.md"));
+rmSync(join(out, "examples"), { recursive: true, force: true });
+mkdirSync(join(out, "examples/training-dashboard"), { recursive: true });
+for (const name of ["README.md", "setup.mjs", "index.html", "app.js", "model.mjs"])
+  copyFileSync(join(root, "examples/training-dashboard", name), join(out, "examples/training-dashboard", name));
+for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait", "tendril-watch", "tendril-stream", "tendril-events"]) {
   await build({ entryPoints: [join(root, `cli/bin/${name}.mjs`)], outfile: join(out, `${name}.mjs`),
     bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
 }
@@ -59,7 +72,24 @@ for (const name of ["terms", "privacy", "acceptable-use", "copyright", "law-enfo
 mkdirSync(join(out, "contract"), { recursive: true });
 writeFileSync(join(out, "contract/v1.json"), JSON.stringify(schemaDocument, null, 2) + "\n");
 writeFileSync(join(out, "recipes/ui-schema.json"), JSON.stringify({ $schema: schemaDocument.$schema, title: "Tendriller agent-editable interface", ...schemas.interface }, null, 2) + "\n");
-await build({ entryPoints: [join(root, "server/src/state.ts")], outfile: join(out, "_preview/state.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
+await build({ stdin: { contents: 'export * from "./server/src/state.ts"; export { historyPage } from "./server/src/streams/history.ts";', resolveDir: root, loader: "js" },
+  outfile: join(out, "_preview/state.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
+// The downloaded preview contains this build's exact runtime and snippets, not
+// a second runtime or code fetched later. Optional neural engines stay out.
+const previewAssets = {};
+for (const name of ["tendril.js", "sw.js", "speech-worker.js", "axe.min.js", "axe-LICENSE.txt", "axe-LICENSE-3RD-PARTY.txt", "brand/icon-64.png"])
+  previewAssets[`/_tendril/${name}`] = readFileSync(join(out, "_tendril", name)).toString("base64");
+for (const name of readdirSync(join(root, "snippets")).filter(name => name.endsWith(".js")))
+  previewAssets[`/_tendril/snippets/${name}`] = readFileSync(join(root, "snippets", name)).toString("base64");
+await build({ entryPoints: [join(root, "cli/bin/tendril-preview.mjs")], outfile: join(out, "tendril-preview.mjs"),
+  bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning", external: ["bufferutil", "utf-8-validate"],
+  banner: { js: `import { createRequire as previewRequire } from "node:module"; const require = previewRequire(import.meta.url);\n/* ws license:\n${readFileSync(join(root, "node_modules/ws/LICENSE"), "utf8")}*/` },
+  plugins: [{ name: "embedded-preview", setup(builder) {
+    builder.onLoad({ filter: /[/\\]cli[/\\]lib[/\\]preview-bundle\.mjs$/ }, () => ({ loader: "js", resolveDir: root,
+      contents: `import { applyOps, validateOps } from "./server/src/state.ts"; import { historyPage } from "./server/src/streams/history.ts";
+        export const implementation = { applyOps, validateOps, historyPage }; export const assets = ${JSON.stringify(previewAssets)};` }));
+  } }],
+});
 console.log("built server/public");
 }
 
@@ -75,7 +105,7 @@ if (watching) {
     } while (again);
     building = false;
   }
-  const watchers = ["runtime/src", "server/src/state.ts", "server/src/http.ts", "snippets", "recipes", "contract", "cli/bin", "cli/lib", "cli/scripts", "legal", "docs/assets", "agent.md"].map(path =>
+  const watchers = ["runtime/src", "server/src/state.ts", "server/src/http.ts", "server/src/streams/history.ts", "snippets", "recipes", "contract", "cli/bin", "cli/lib", "cli/scripts", "cli/README.md", "examples", "legal", "docs", "agent.md", "llms.txt"].map(path =>
     watch(join(root, path), { recursive: true }, (_event, file) => {
       if (file && /(?:^|\/)(?:node_modules|test-results|\.preview)/.test(String(file))) return;
       clearTimeout(timer); timer = setTimeout(rebuild, 120);

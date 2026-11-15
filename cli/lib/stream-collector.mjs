@@ -5,6 +5,8 @@ import { StreamSpool, SpoolFull } from './stream-spool.mjs';
 import { createSourceAdapter } from './stream-sources/index.mjs';
 import { sampleHost } from './stream-sources/host.mjs';
 import { sshArguments } from './stream-sources/ssh.mjs';
+import { commandArguments, commandTimeout } from './stream-sources/command.mjs';
+import { validateRecordOptions } from './stream-sources/records.mjs';
 
 // Preserve the existing helper imports while adapters own their implementations.
 export { recordFor } from './stream-sources/records.mjs';
@@ -33,10 +35,11 @@ export function validateConfig(input, base = process.cwd()) {
     if (!['durable', 'ephemeral'].includes(source.durability)) throw Error('Every source must declare its stream durability.');
     if (policies.has(source.stream) && policies.get(source.stream) !== source.durability) throw Error('Sources sharing a stream must agree on durability.');
     policies.set(source.stream, source.durability);
-    if (!['host', 'jsonl', 'log', 'ssh'].includes(source.type)) throw Error('Source type must be host, jsonl, log or ssh.');
+    if (!['host', 'jsonl', 'log', 'ssh', 'command'].includes(source.type)) throw Error('Source type must be host, jsonl, log, ssh or command.');
     const interval_ms = source.interval_ms ?? (source.type === 'host' ? 5000 : 1000);
     if (!Number.isInteger(interval_ms) || interval_ms < 500 || interval_ms > 3_600_000) throw Error('interval_ms must be 500–3600000.');
     if (source.run !== undefined && (typeof source.run !== 'string' || source.run.length > 200)) throw Error('run must be a string of at most 200 characters.');
+    validateRecordOptions(source);
     const out = { ...source, interval_ms };
     if (source.type === 'jsonl' || source.type === 'log') {
       if (typeof source.path !== 'string' || !source.path) throw Error('File sources need a path.');
@@ -44,6 +47,13 @@ export function validateConfig(input, base = process.cwd()) {
       out.path = resolve(base, source.path);
     }
     if (source.type === 'ssh') sshArguments(source); // Validate before starting any process.
+    if (source.type === 'command') {
+      commandArguments(source); out.timeout_ms = commandTimeout(source);
+      if (source.cwd !== undefined) {
+        if (typeof source.cwd !== 'string' || !source.cwd || source.cwd.includes('\0')) throw Error('Command cwd must be a directory path.');
+        out.cwd = resolve(base, source.cwd);
+      }
+    }
     return out;
   });
   const max_spool_bytes = input.max_spool_bytes ?? 16 * 1024 * 1024;
@@ -76,7 +86,7 @@ export class Collector {
     status = message => process.stderr.write(JSON.stringify(message) + '\n'), sourceFactory = createSourceAdapter } = {}) {
     this.config = config; this.spool = spool; this.fetch = fetcher; this.status = status;
     this.adapters = config.sources.map(source => sourceFactory(source));
-    this.live = new Map(); this.states = new Map(); this.last = new Map();
+    this.live = new Map(); this.states = new Map(); this.last = new Map(); this.polling = new Map();
     this.abort = new AbortController(); this.tasks = []; this.stopped = false;
   }
 
@@ -96,10 +106,15 @@ export class Collector {
   }
 
   async collectOnce(now = Date.now()) {
-    await Promise.all(this.adapters.filter(adapter => adapter.capabilities.mode === 'poll').map(async adapter => {
-      const { source, capabilities } = adapter;
-      if (now - (this.last.get(source.id) ?? 0) < source.interval_ms) return;
-      this.last.set(source.id, now);
+    await Promise.all(this.adapters.filter(adapter => adapter.capabilities.mode === 'poll').map(adapter => this.collectSource(adapter, now)));
+  }
+
+  collectSource(adapter, now = Date.now()) {
+    const { source, capabilities } = adapter;
+    if (this.abort.signal.aborted || this.polling.has(source.id)
+      || now - (this.last.get(source.id) ?? 0) < source.interval_ms) return Promise.resolve();
+    this.last.set(source.id, now);
+    const collecting = (async () => {
       try {
         const previous = capabilities.checkpoint ? this.spool.checkpoint(source.id) : null;
         let maxRecords = 100;
@@ -120,7 +135,9 @@ export class Collector {
           break;
         }
       } catch (error) { this.report(source.id, adapter.failure(error)); }
-    }));
+    })();
+    this.polling.set(source.id, collecting);
+    return collecting.finally(() => this.polling.delete(source.id));
   }
 
   async post(batch) {
@@ -188,7 +205,8 @@ export class Collector {
 
   async run() {
     this.tasks = [
-      (async () => { while (!this.abort.signal.aborted) { await this.collectOnce(); await pause(250, this.abort.signal); } })(),
+      ...this.adapters.filter(adapter => adapter.capabilities.mode === 'poll').map(adapter =>
+        (async () => { while (!this.abort.signal.aborted) { await this.collectSource(adapter); await pause(250, this.abort.signal); } })()),
       (async () => {
         let backoff = 500;
         while (!this.abort.signal.aborted) {
@@ -209,7 +227,7 @@ export class Collector {
     this.stopped = true; this.abort.abort();
     const closing = this.adapters.map(adapter => Promise.resolve().then(() => adapter.close()));
     this.stopping = (async () => {
-      await Promise.allSettled([...this.tasks, ...closing]);
+      await Promise.allSettled([...this.tasks, ...closing, ...this.polling.values()]);
       this.live.clear();
       await this.spool.close();
     })();
