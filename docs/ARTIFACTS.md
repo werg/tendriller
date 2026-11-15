@@ -27,11 +27,13 @@ It is based on the agent-facing artifact interface available to Claude in Claude
 
 ## What Tendriller does that artifacts do not
 
-- Works for any agent host: Codex, Claude Code, Hermes, OpenClaw, Grok, OpenAI dots, Claude Duet.
-- Uses real device inputs: camera, microphone, motion, location, Bluetooth, Serial, USB, MIDI.
-- Speaks and transcribes on the device, and runs agent-sent code live in the page with `POST A/eval`.
+- Works for any agent host: Codex, Claude Code, Hermes, OpenClaw, Grok, OpenAI dots, Claude Duet. An artifact can only wake a Claude session, and its webhook is usable only by Anthropic's own service.
+- Lets the agent drive the open page: `POST A/eval` runs code on a connected device and returns the result, and `A/say` reaches every open device at once.
+- Knows which of the owner's devices are connected, picks one to speak, and shows the person whether the agent is listening, away or not responding.
+- Ships a voice loop: on-device transcription and speech, with no setup in the page.
+- Exposes hardware inputs beyond what artifacts list (Bluetooth, Serial, USB, HID, NFC, MIDI). Artifacts can use the camera, microphone, location, screen and motion, so those alone are not a difference.
 - Lets the owner approve guests and hand out read-only display links.
-- Runs independently of any one AI provider.
+- Runs independently of any one AI provider, with an open event API, signed webhooks and MCP Events for any receiver.
 
 ## What to borrow first
 
