@@ -71,7 +71,7 @@ export function pruneTimerHistory(t: Tendril): void {
 }
 
 function claim(t: Tendril): Job | null {
-  return t.ctx.storage.transactionSync(() => {
+  return t.transaction(() => {
     const row = t.db.one<Job>(`SELECT * FROM timer_notifications WHERE state IN ${ACTIVE} AND next_at<=? ORDER BY next_at,run_id LIMIT 1`, t.now());
     if (!row) return null;
     const timer = t.db.one<{ state: string; spec: string }>("SELECT state,spec FROM timers WHERE id=?", row.timer_id);
@@ -107,7 +107,7 @@ export async function runTimerNotifications(t: Tendril, limit = 4): Promise<void
         signal: AbortSignal.timeout(30_000),
       });
     } catch (caught) { error = caught; }
-    t.ctx.storage.transactionSync(() => {
+    t.transaction(() => {
       const current = t.db.one<Job>("SELECT * FROM timer_notifications WHERE run_id=?", job.run_id);
       if (!current || current.state !== "sending" || current.attempt_token !== job.attempt_token) return; // cancelled/reassigned while awaiting
       const sent = new Set<string>(JSON.parse(job.sent_devices)), failed = new Set<string>(JSON.parse(job.failed_devices));

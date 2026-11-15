@@ -13,6 +13,7 @@ interface Host {
 }
 interface Subscriber {
   cursor: number | null;
+  joinAfter?: number;
   handler: (record: StreamRecord) => void;
   options: StreamSubscribeOptions;
   active: boolean;
@@ -23,6 +24,8 @@ interface Channel {
   generation: number;
   durability?: "durable" | "ephemeral";
   active: boolean;
+  pending: boolean;
+  observed?: number;
   buffer: StreamRecord[];
   bufferedBytes: number;
   retry?: ReturnType<typeof setTimeout>;
@@ -52,48 +55,52 @@ export function createStreams(host: Host): BrowserStreams {
     catch { throw failure("invalid_response", `The service response does not match ${schema}`); }
   }
 
-  const report = (channel: Channel, error: unknown, only?: Subscriber) => {
+  const generationFence = (channel: Channel) => {
+    const generation = channel.generation;
+    return () => channel.generation === generation && channels.get(channel.name) === channel && host.connected();
+  };
+
+  const report = (channel: Channel, error: unknown, only?: Subscriber, current = generationFence(channel)) => {
     const err = asError(error);
     host.bus.emit("stream_error", { stream: channel.name, error: err });
     for (const subscriber of only ? [only] : [...channel.subscribers]) {
+      if (!current()) break;
       if (!subscriber.active || !subscriber.options.onError) continue;
       try { subscriber.options.onError(err); } catch { /* An error observer cannot stop another consumer. */ }
     }
   };
 
-  const deliver = (channel: Channel, record: StreamRecord, current?: () => boolean) => {
+  const deliver = (channel: Channel, record: StreamRecord, current: () => boolean) => {
     for (const subscriber of [...channel.subscribers]) {
-      if (current && !current()) return;
+      if (!current()) return false;
       if (!subscriber.active || subscriber.cursor === null || record.seq <= subscriber.cursor) continue;
       // This is a delivery checkpoint only. Applications needing handled/transactional
       // acknowledgement use explicit reads and persist their own processing checkpoint.
       subscriber.cursor = record.seq;
       try { subscriber.handler(record); }
-      catch (error) { report(channel, failure("handler_error", asError(error).message), subscriber); }
+      catch (error) { if (current()) report(channel, failure("handler_error", asError(error).message), subscriber, current); }
     }
+    return current();
   };
 
-  const applyBatch = (channel: Channel, batch: StreamBatch, current: () => boolean) => {
+  const applyBatch = (channel: Channel, batch: StreamBatch, current: () => boolean): number | null => {
     const missing = batch.history.missing_through;
     const affected = batch.history.gap && missing !== null
       ? [...channel.subscribers].filter(sub => sub.active && sub.cursor !== null && sub.cursor < missing) : [];
     if (affected.length) {
       host.bus.emit("stream_gap", { stream: channel.name, history: batch.history });
-      if (!current()) return batch.cursor;
       for (const subscriber of affected) {
-        if (!current()) return batch.cursor;
+        if (!current()) return null;
+        if (!subscriber.active) continue;
         try { subscriber.options.onGap?.(batch.history); }
-        catch (error) { report(channel, error, subscriber); }
+        catch (error) { if (current()) report(channel, error, subscriber, current); }
       }
     }
-    for (const record of batch.records) {
-      if (!current()) return batch.cursor;
-      deliver(channel, record, current);
-    }
+    if (!current()) return null;
+    for (const record of batch.records) if (!deliver(channel, record, current)) return null;
     // An entirely expired range has no record with which to advance the cursor.
     // Advance only after exposing the gap, including to the public stream_gap event.
-    if (!current()) return batch.cursor;
-    for (const subscriber of affected) subscriber.cursor = Math.max(subscriber.cursor!, missing!);
+    for (const subscriber of affected) if (subscriber.active) subscriber.cursor = Math.max(subscriber.cursor!, missing!);
     return Math.max(batch.cursor, batch.history.gap ? missing ?? 0 : 0);
   };
 
@@ -112,9 +119,10 @@ export function createStreams(host: Host): BrowserStreams {
     cancelRetry(channel);
     channel.abort?.abort();
     channel.abort = new AbortController();
-    const generation = ++channel.generation;
-    const current = () => channel.generation === generation && channels.get(channel.name) === channel && host.connected();
+    channel.generation++;
+    const current = generationFence(channel);
     channel.active = false;
+    channel.pending = true;
     channel.buffer = [];
     channel.bufferedBytes = 0;
     const cursors = [...channel.subscribers].flatMap(sub => sub.cursor === null ? [] : [sub.cursor]);
@@ -122,12 +130,17 @@ export function createStreams(host: Host): BrowserStreams {
     try {
       const ack = assertValid("streamSubscription", await host.request({ t: "stream_subscribe", stream: channel.name, ...(after === undefined ? {} : { after }) }));
       if (!current()) return;
+      channel.pending = false;
       if (ack.stream !== channel.name) throw failure("invalid_response", "The subscription response names another stream");
       channel.durability = ack.durability;
-      for (const subscriber of channel.subscribers) if (subscriber.cursor === null) subscriber.cursor = ack.cursor;
+      channel.observed = Math.max(channel.observed ?? 0, ack.cursor);
+      for (const subscriber of channel.subscribers) if (subscriber.cursor === null) {
+        subscriber.cursor = Math.max(ack.cursor, subscriber.joinAfter ?? 0);
+      }
       if (after !== undefined && ack.durability === "durable") {
         if (!ack.batch) throw failure("invalid_response", "Durable replay requires an initial stream batch");
         let cursor = applyBatch(channel, ack.batch, current);
+        if (cursor === null) return;
         // The subscription is already attached at ack.cursor. Buffer its live frames
         // while fetching any older pages; otherwise >500 pending records would be lost.
         while (current() && cursor < ack.cursor) {
@@ -135,6 +148,7 @@ export function createStreams(host: Host): BrowserStreams {
           if (!current()) return;
           if (batch.stream !== channel.name) throw failure("invalid_response", "History response names another stream");
           const next = applyBatch(channel, batch, current);
+          if (next === null) return;
           if (next <= cursor) throw failure("invalid_response", "Stream replay did not advance through its subscription boundary");
           cursor = next;
         }
@@ -145,14 +159,15 @@ export function createStreams(host: Host): BrowserStreams {
       channel.bufferedBytes = 0;
       channel.active = true;
       channel.attempts = 0;
-      for (const record of buffered) { if (!current()) break; deliver(channel, record); }
+      for (const record of buffered) if (!deliver(channel, record, current)) break;
     } catch (error) {
       if (!current()) return;
       channel.active = false;
+      channel.pending = false;
       channel.buffer = [];
       channel.bufferedBytes = 0;
-      report(channel, error);
-      if (!TERMINAL.has(asError(error).code || "")) retry(channel);
+      report(channel, error, undefined, current);
+      if (current() && !TERMINAL.has(asError(error).code || "")) retry(channel);
     }
   }
 
@@ -162,17 +177,19 @@ export function createStreams(host: Host): BrowserStreams {
     let record: StreamRecord;
     try { record = assertValid("streamRecord", value); }
     catch { report(channel, failure("invalid_response", "The service sent an invalid stream record")); return; }
+    channel.observed = Math.max(channel.observed ?? 0, record.seq);
     if (channel.active) {
       if (channel.durability === "durable" && [...channel.subscribers].some(sub => sub.active && sub.cursor !== null && record.seq > sub.cursor + 1)) {
         // Recover a dropped live frame before advancing past it. The server's
         // retained history will either supply it or expose an explicit gap.
         void start(channel);
-      } else deliver(channel, record);
+      } else deliver(channel, record, generationFence(channel));
       return;
     }
     const bytes = new TextEncoder().encode(JSON.stringify(record)).byteLength;
     if (channel.buffer.length >= MAX_BUFFER_RECORDS || channel.bufferedBytes + bytes > MAX_BUFFER_BYTES) {
       channel.generation++;
+      channel.pending = false;
       channel.abort?.abort();
       channel.buffer = [];
       channel.bufferedBytes = 0;
@@ -190,11 +207,16 @@ export function createStreams(host: Host): BrowserStreams {
     for (const channel of channels.values()) {
       channel.generation++;
       channel.active = false;
+      channel.pending = false;
+      channel.observed = undefined;
       channel.abort?.abort();
       cancelRetry(channel);
       channel.buffer = [];
       channel.bufferedBytes = 0;
-      if (channel.durability === "ephemeral") for (const subscriber of channel.subscribers) subscriber.cursor = null;
+      if (channel.durability === "ephemeral") for (const subscriber of channel.subscribers) {
+        subscriber.cursor = null;
+        subscriber.joinAfter = undefined;
+      }
     }
   });
 
@@ -207,17 +229,20 @@ export function createStreams(host: Host): BrowserStreams {
       if (typeof handler !== "function") throw new TypeError("A stream subscriber needs a callback");
       if (options.after !== undefined) streamReadQuery({ after: options.after });
       let channel = channels.get(name);
-      const existing = !!channel;
       if (channel?.durability === "ephemeral" && options.after !== undefined) throw failure("not_replayable", "Ephemeral streams do not support replay cursors");
       if (!channel) {
-        channel = { name, subscribers: new Set(), generation: 0, active: false, buffer: [], bufferedBytes: 0, attempts: 0 };
+        channel = { name, subscribers: new Set(), generation: 0, active: false, pending: false, buffer: [], bufferedBytes: 0, attempts: 0 };
         channels.set(name, channel);
       }
-      const established = channel.active && [...channel.subscribers].flatMap(sub => sub.cursor === null ? [] : [sub.cursor]);
-      const subscriber: Subscriber = { handler, options,
-        cursor: options.after ?? (established && established.length ? Math.max(...established) : null), active: true };
+      const reuseLive = channel.durability === "ephemeral" && channel.active;
+      const subscriber: Subscriber = { handler, options, active: true,
+        cursor: reuseLive ? channel.observed ?? 0 : options.after ?? null,
+        joinAfter: options.after === undefined ? channel.observed : undefined };
       channel.subscribers.add(subscriber);
-      if (!existing || channel.durability !== "ephemeral" && options.after !== undefined) void start(channel);
+      // Live consumers can share an established subscription or pending handshake.
+      // Their join boundary skips pre-join buffered frames without discarding them
+      // for existing consumers. Explicit replay cursors still start fresh catch-up.
+      if (!reuseLive && !(channel.pending && options.after === undefined)) void start(channel);
       return () => {
         if (!subscriber.active) return;
         subscriber.active = false;

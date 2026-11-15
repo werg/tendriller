@@ -1,5 +1,5 @@
 // WebSocket protocol, page ↔ Durable Object (PROTOCOL section 7).
-import type { Att, DeviceRow, Role, Tendril } from "./tendril";
+import type { Att, DeviceRow, Tendril } from "./tendril";
 import { addActivity, countEvent, deleteActivity, listActivity, preview } from "./activity";
 import { addEvent } from "./events";
 import { listVersions, markServed, pointers, reportHealth, rollback, servedVersion, versionStatus } from "./files";
@@ -11,6 +11,7 @@ import { getFocus } from "./device-roles";
 import { checkEventSession, checkStateSessions } from "./archives";
 import { emitBuiltinRecord, publishFromPage, subscribeStream, unsubscribeStream } from "./streams";
 import { ContractError } from "../../contract/index.mjs";
+import { allows, authorizeSocket } from "./access";
 
 type Msg = Record<string, any>;
 
@@ -67,49 +68,32 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
   }
   try {
     if (msg.t === "hello") {
-      await hello(t, ws, att, msg);
+      await hello(t, ws, msg);
       return;
     }
     if (!att.deviceId) {
       t.send(ws, { t: "error", code: "not_ready", message: "Send hello first", cid: msg.cid });
       return;
     }
-    const stored = t.device(att.deviceId);
-    if (!stored) {
+    if (!t.device(att.deviceId)) {
       ws.close(4003, "device removed");
       return;
     }
-    if (!att.sessionRole || (att.sessionRole === "owner" && att.accountId !== t.db.get<string | null>("owner_account", null))
-      || (att.sessionRole === "guest" && !t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", att.accountId, att.linkId))) {
-      ws.close(4003, "page role revoked");
-      return;
-    }
-    if (t.db.get<boolean>("disabled", false)) { ws.close(4003, "page held"); return; }
-    if (!att.checkedAt || t.now() - att.checkedAt > 1000 || msg.t === "stream_subscribe" || msg.t === "stream_publish") {
-      const status = await t.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at AS owner_suspended, a.deleting_at AS owner_deleting,
-        v.suspended_at AS viewer_suspended, v.deleting_at AS viewer_deleting
-        FROM tendrils t LEFT JOIN accounts a ON a.id = t.owner_account
-        LEFT JOIN accounts v ON v.id = ? WHERE t.id = ?`)
-        .bind(att.accountId ?? null, t.tid).first<{ state: string; owner_suspended: number | null; owner_deleting: number | null;
-          viewer_suspended: number | null; viewer_deleting: number | null }>();
-      if (!status || status.state !== "active" || status.owner_suspended || status.owner_deleting || status.viewer_suspended || status.viewer_deleting) {
-        ws.close(4003, "page unavailable"); return;
-      }
-      // Preserve any live stream cursor advanced while the account check yielded.
-      ws.serializeAttachment({ ...(t.att(ws) ?? att), checkedAt: t.now() });
-    }
-    const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
+    const principal = await authorizeSocket(t, ws, { fresh: msg.t === "stream_subscribe" || msg.t === "stream_publish" });
+    if (!principal) { ws.close(4003, "page access revoked"); return; }
+    const current = t.att(ws) as Att & { deviceId: string };
+    const dev = { ...t.device(current.deviceId)!, role: principal.role, pending: 0 };
     t.db.run("UPDATE devices SET last_active = ? WHERE id = ?", t.now(), dev.id);
     const handler = HANDLERS[msg.t];
     if (!handler) {
       t.send(ws, { t: "error", code: "unknown_type", message: `Unknown message type ${msg.t}`, cid: msg.cid });
       return;
     }
-    if (OWNER_ONLY.has(msg.t) && !(dev.role === "owner" && !dev.pending)) {
+    if (OWNER_ONLY.has(msg.t) && !allows(principal, "page.owner")) {
       t.send(ws, { t: "error", code: "forbidden", message: `${msg.t} needs an owner device`, cid: msg.cid });
       return;
     }
-    await handler({ t, ws, att: att as Att & { deviceId: string }, dev, msg });
+    await handler({ t, ws, att: current, dev, msg });
   } catch (err) {
     const code = err instanceof HttpError || err instanceof ContractError ? err.code : "internal";
     const message = err instanceof Error ? err.message : String(err);
@@ -141,7 +125,7 @@ function deviceInfo(d: DeviceRow) {
 
 // ------------------------------------------------------------------ hello
 
-async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<void> {
+async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
   const id = msg.device_id;
   const secret = msg.device_secret;
   if (typeof id !== "string" || !DEVICE_ID_RE.test(id) || typeof secret !== "string" || !DEVICE_SECRET_RE.test(secret)) {
@@ -149,12 +133,12 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
     ws.close(4400, "bad hello");
     return;
   }
-  const link = t.db.one<{ id: string; role: Role; expires_at: number | null }>("SELECT id, role, expires_at FROM links WHERE id = ?", att.linkId);
-  if (!link || (link.expires_at !== null && link.expires_at < t.now())) {
-    ws.close(4001, "link revoked");
-    return;
-  }
   const hash = await sha256Hex(secret);
+  // Upgrade and hello are separate requests: a session, link or account may
+  // have been revoked in between. Authorize before disclosing any snapshot.
+  const principal = await authorizeSocket(t, ws, { fresh: true, beforeHello: true });
+  if (!principal) { ws.close(4003, "page access revoked"); return; }
+  const att = t.att(ws)!;
   const now = t.now();
   const name = typeof msg.name === "string" ? msg.name.slice(0, 100) : null;
   const ua = typeof msg.ua === "string" ? msg.ua.slice(0, 400) : null;
@@ -170,15 +154,15 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
     t.db.run("UPDATE devices SET name = COALESCE(?, name), ua = COALESCE(?, ua), caps = COALESCE(?, caps), last_seen = ?, last_active = ? WHERE id = ?", name, ua, caps, now, now, id);
   } else {
     isNew = true;
-    const role: Role = att.sessionRole ?? link.role;
+    const role = principal.role;
     t.db.run(
       "INSERT INTO devices (id, secret_hash, name, role, pending, link, ua, caps, created_at, last_seen, last_active) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
-      id, hash, name, role, link.id, ua, caps, now, now, now,
+      id, hash, name, role, principal.linkId, ua, caps, now, now, now,
     );
     if (role === "owner") t.db.set("had_owner", true);
   }
   dev = t.device(id)!;
-  if (att.sessionRole) dev = { ...dev, role: att.sessionRole, pending: 0 };
+  dev = { ...dev, role: principal.role, pending: 0 };
   const wasConnected = t.connectedSockets(ws).some((s) => s.att.deviceId === id);
   const version = Number.isInteger(msg.version) ? msg.version : 0;
   ws.serializeAttachment({ ...att, deviceId: id, version, at: now } satisfies Att);

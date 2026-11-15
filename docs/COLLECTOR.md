@@ -128,6 +128,9 @@ its local producer token. A command can instead emit training JSONL, or set
 `format:"log"` for text lines. `port` is optional. Use an SSH config alias for
 ProxyJump or identity settings.
 
+SIGINT/SIGTERM cancels a blocked stdout drain and discards pending live sample
+output, so a remote reader that stops consuming cannot hold the helper open.
+
 Hosts and command arguments are configured locally, never supplied by a page.
 Arguments are individually quoted for the remote shell. SSH uses batch mode,
 strict host-key checking, connection timeout, and keepalives. Establish the host's
@@ -160,7 +163,9 @@ checkpoint. Do not pipe the training process itself through this SSH connection.
 - **Input limits:** lines above 32 KiB and malformed JSON produce explicit
   `collector_error` records. Partial UTF-8 lines wait for their newline. Rename,
   truncation, and copytruncate/regrowth are detected using file identity, size,
-  and a checkpoint boundary fingerprint.
+  and a checkpoint boundary fingerprint derived from the same captured bytes as
+  the records. A concurrent replacement cannot supply a new fingerprint for old
+  records.
 - **Retries:** requests time out after ten seconds. Transient failures retry with
   backoff up to 30 seconds. A rejected credential, missing stream, invalid data,
   or conflicting ID stops collection and preserves queued durable work for
@@ -209,7 +214,35 @@ source, state, and timestamp. Network responses, credentials, and remote stderr
 are never copied into those notices. Check `spool_full`, `buffering`,
 `waiting_for_file`, `gpu_unavailable`, and SSH gap states in the service log.
 
+## Source adapter boundary
+
+Source readers live in `cli/lib/stream-sources/`. Each adapter owns its input
+resources, parsing, and health notices. The collector coordinates scheduling,
+bounded buffering, upload acknowledgements, and retry timing.
+
+| Adapter | Collection | Replay capability | Checkpoint |
+| --- | --- | --- | --- |
+| Host | Periodic sample | None; each sample observes the current machine | None; CPU interval counters are local sampling state |
+| JSONL/text file | Bounded read | Can reread input while the source file is retained | Proposed file identity, byte offset, boundary fingerprint |
+| SSH | One live command session | None; reconnect can miss remote output | None |
+
+These capabilities describe the **input source**, independently of the
+destination stream's `durability`. A durable SSH stream stores records that
+arrive; it cannot recover output lost before arrival. An ephemeral destination
+never makes its samples enter the disk spool.
+
+The small adapter interface is documented in `stream-sources/index.mjs`:
+`read()` returns a polled batch, or `stream()` yields batches for one live session;
+both report source health, and `close()` releases active resources. Adapters do
+not own credentials, uploads, persistence, or retry loops. A file reader merely
+proposes a checkpoint. The collector commits it atomically with the records, and
+can retry a smaller prefix when a batch will not fit a small spool. Failed SSH
+input is reported as a gap rather than treated as replayable file input.
+
 Tests: `node --test cli/test/stream-collector.test.mjs` exercises lost
 acknowledgements/restart, bounded atomic checkpoints, ephemeral nonpersistence,
 UTF-8 and rotation, SSH argument safety, lock ownership, invalid acknowledgements,
-and process shutdown. It does not contact a real GPU or SSH host.
+and process shutdown. `node --test cli/test/stream-sources.test.mjs` covers adapter
+capabilities, file resume, host sampling state, bounded SSH input and cancellation,
+and live-input backpressure. Adapter tests use a fake SSH child and host sampler;
+they do not contact a real GPU or SSH host.

@@ -38,7 +38,7 @@ export function participants(t: Tendril) {
 
 export function saveAssignment(t: Tendril, body: any, by: string, id?: string): ParticipantAssignment {
   const value: Partial<AssignmentCreate & AssignmentUpdate> = assertValid(id ? "assignmentUpdate" : "assignmentCreate", body);
-  const result = t.ctx.storage.transactionSync(() => {
+  const result = t.transaction(() => {
     if (!id) {
       const active = t.getState().state.facilitation as { session_id?: string } | undefined;
       const generation = typeof active?.session_id === "string" ? active.session_id : "initial";

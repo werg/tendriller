@@ -222,7 +222,7 @@ it("never delivers a built-in record from a rolled-back transaction", async () =
   const h = await create({ listener: false }), page = await connect(h);
   await page.request({ t: "stream_subscribe", stream: "system.transcript" });
   await inDO(h.id, t => {
-    try { t.ctx.storage.transactionSync(() => { t.addTranscript("agent", "rolled back"); throw Error("rollback"); }); } catch {}
+    try { t.transaction(() => { t.addTranscript("agent", "rolled back"); throw Error("rollback"); }); } catch {}
   });
   await sleep(40); expect(page.drain().some(m => m.t === "stream_record")).toBe(false);
   const read = await apiJson(h, "GET", "streams/system.transcript/records?after=0"); expect(read.records).toEqual([]);
@@ -233,14 +233,14 @@ it("suppresses rolled-back state signals and closes on transient authorization l
   await page.request({ t: "stream_subscribe", stream: "system.state" });
   await page.request({ t: "stream_subscribe", stream: "training", after: 0 });
   await inDO(h.id, t => {
-    try { t.ctx.storage.transactionSync(() => { t.applyState([{ op: "set", path: ["phantom"], value: true }], "test"); throw Error("rollback"); }); }
+    try { t.transaction(() => { t.applyState([{ op: "set", path: ["phantom"], value: true }], "test"); throw Error("rollback"); }); }
     catch { t.db.clearCache(); }
   });
   await sleep(30); expect(page.drain().some(m => m.t === "stream_record")).toBe(false);
   await inDO(h.id, async t => {
     const prepare = t.env.ACCOUNTS.prepare;
     t.env.ACCOUNTS.prepare = function(query: string) {
-      if (query.includes("SELECT t.state,a.suspended_at")) throw Error("simulated transient authorization outage");
+      if (query.includes("FROM tendrils t") && query.includes("a.suspended_at")) throw Error("simulated transient authorization outage");
       return prepare.call(this, query);
     };
     try {

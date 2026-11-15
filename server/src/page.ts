@@ -12,6 +12,7 @@ import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { handleResponses } from "./interactions";
 import { handleAssignments } from "./assignments";
 import { STREAM_ROUTE, handleStreams } from "./streams";
+import { allows, authenticatePage } from "./access";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -42,13 +43,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (rest.startsWith("_tendril/")) throw new HttpError(404, "not_found", "Unknown or expired link");
     return new Response("This link is not valid (it may have expired or been revoked).", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
-  const session = await t.pageSession(req);
-  {
-    const owner = link.role === "owner" && session?.role === "owner" && session.account_id === t.db.get<string | null>("owner_account", null);
-    const guest = link.role === "guest" && session?.role === "guest" && !!t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", session.account_id, link.id);
-    const display = link.role === "display" && !link.created_by_agent && !!t.db.get<string | null>("owner_account", null);
-    if (!owner && !guest && !display) throw new HttpError(401, "unauthorized", "Page sign-in required");
-  }
+  const { principal, session } = await authenticatePage(t, req, link);
 
   if (!rest.startsWith("_tendril/")) {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method_not_allowed");
@@ -58,25 +53,25 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
   if (sub.startsWith("streams") && STREAM_ROUTE.test(sub))
-    return handleStreams(t, req, url, sub, { kind: "page", name: session?.account_id ?? link.id, role: link.role });
+    return handleStreams(t, req, url, sub, principal);
   if (sub === "assignments" || sub.startsWith("assignments/")) {
-    if (!session?.account_id || link.role === "display") throw new HttpError(403, "forbidden", "Sign in as a participant to view assignments");
-    const manage = link.role === "owner" && (sub !== "assignments" || req.method !== "GET");
+    if (!session?.account_id || !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Sign in as a participant to view assignments");
+    const manage = allows(principal, "page.owner") && (sub !== "assignments" || req.method !== "GET");
     return handleAssignments(t, req, sub, session.account_id, manage, "owner");
   }
   if (sub === "responses" || sub === "responses/all") {
-    if (!session?.account_id || link.role === "display") throw new HttpError(403, "forbidden", "Sign in as a participant to answer");
-    if (sub === "responses/all" && link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can view all responses");
+    if (!session?.account_id || !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Sign in as a participant to answer");
+    if (sub === "responses/all" && !allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can view all responses");
     return handleResponses(t, req, session.account_id, sub === "responses/all");
   }
   const experiencePath = sub === "resume" ? "session" : sub;
   if (EXPERIENCE_ROUTE.test(experiencePath) || sub === "devices") {
-    if (link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can manage saved work, devices, and timers");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can manage saved work, devices, and timers");
     return handleExperience(t, req, url, "owner", experiencePath, true);
   }
 
   if (sub === "trust-version" && m === "POST") {
-    if (link.role !== "owner" || !session?.account_id) throw new HttpError(403, "forbidden");
+    if (!allows(principal, "page.owner") || !session?.account_id) throw new HttpError(403, "forbidden");
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
     const version = Number(form.get("version"));
     if (!Number.isInteger(version) || !t.db.one("SELECT 1 AS x FROM versions WHERE version = ? AND risk_score >= 5", version)) {
@@ -104,19 +99,19 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "agents" && m === "GET") {
-    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     return json({ agents: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at") ,
       webhook: t.renderWake().webhook });
   }
   const disconnect = /^agents\/([A-Za-z0-9_.@-]{1,64})\/disconnect$/.exec(sub);
   if (disconnect && m === "POST") {
-    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     if (!t.db.one("SELECT 1 AS x FROM tokens WHERE name = ?", disconnect[1])) throw new HttpError(404, "not_found", "No such agent token");
     t.db.run("DELETE FROM tokens WHERE name = ?", disconnect[1]);
     return json({ ok: true });
   }
   if (sub === "guests" && m === "GET") {
-    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     const pending = t.db.all<{ account_id: string; link_id: string; created_at: number }>("SELECT account_id, link_id, created_at FROM guest_accounts WHERE approved = 0 ORDER BY created_at");
     const guests = await Promise.all(pending.map(async (row) => ({ ...row,
       email: (await t.env.ACCOUNTS?.prepare("SELECT email FROM accounts WHERE id = ?").bind(row.account_id).first<{ email: string | null }>())?.email ?? null,
@@ -125,7 +120,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
   const approveGuest = /^guests\/([^/]+)\/([^/]+)\/approve$/.exec(sub);
   if (approveGuest && m === "POST") {
-    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     const exists = t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 0", approveGuest[1], approveGuest[2]);
     if (!exists) throw new HttpError(404, "not_found", "No pending guest");
     t.db.run("UPDATE guest_accounts SET approved = 1 WHERE account_id = ? AND link_id = ?", approveGuest[1], approveGuest[2]);
@@ -133,7 +128,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
   const declineGuest = /^guests\/([^/]+)\/([^/]+)\/decline$/.exec(sub);
   if (declineGuest && m === "POST") {
-    if (link.role !== "owner") throw new HttpError(403, "forbidden");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     const exists = t.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 0", declineGuest[1], declineGuest[2]);
     if (!exists) throw new HttpError(404, "not_found", "No pending guest");
     t.db.run("UPDATE guest_accounts SET approved = -1 WHERE account_id = ? AND link_id = ?", declineGuest[1], declineGuest[2]);
@@ -145,10 +140,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     t.ctx.acceptWebSocket(server);
-    const sessionToken = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
     server.serializeAttachment({ linkId: link.id, deviceId: null, version: 0, at: t.now(),
-      accountId: session?.account_id ?? null, sessionRole: link.role,
-      sessionHash: sessionToken && session ? await sha256Hex(sessionToken) : null });
+      accountId: principal.accountId, sessionRole: principal.role, sessionHash: principal.sessionHash });
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -158,14 +151,14 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "blob" && m === "POST") {
-    if (link.role === "display") throw new HttpError(403, "forbidden", "Display links are read-only");
+    if (!allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
     const body = await readBody(req, t.blobLimit());
     const type = req.headers.get("Content-Type") || "application/octet-stream";
     const name = req.headers.get("X-Tendril-Name");
     const keepHeader = req.headers.get("X-Tendril-Keep");
     if (keepHeader !== null && keepHeader !== "true" && keepHeader !== "false") throw new HttpError(400, "bad_request", "X-Tendril-Keep must be true or false");
     const keep = keepHeader === "true";
-    if (keep && link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can keep captures beyond their default retention");
+    if (keep && !allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can keep captures beyond their default retention");
     const device = (await verifiedDevice(t, req))?.id ?? null;
     const store = async () => {
       const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page", keep);
@@ -182,7 +175,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const retention = /^blob\/(b_[a-z2-7]{20})\/retention$/.exec(sub);
   if (retention && (m === "GET" || m === "PATCH")) {
     if (m === "GET") return json(blobReference(t, retention[1]));
-    if (link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can change capture retention");
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can change capture retention");
     return json(setBlobRetention(t, retention[1], await readJson(req, 4096), null, (await verifiedDevice(t, req))?.id ?? null));
   }
 

@@ -109,6 +109,69 @@ test("multiple consumers share a server subscription but retain independent curs
   assert.equal(h.requests.filter(r => r.t === "stream_unsubscribe").length, 1);
 });
 
+test("a replay callback adding a consumer cannot deliver the old batch into the new generation", async () => {
+  const replacement = deferred(), a = [], b = [];
+  let subscribes = 0, stopB;
+  const h = setup({ request: msg => {
+    if (msg.t !== "stream_subscribe") return {};
+    assert.equal(msg.after, 0);
+    if (++subscribes > 1) return replacement.promise;
+    return { stream: msg.stream, durability: "durable", cursor: 2, batch: batch([record(1), record(2)], 0, 2) };
+  } });
+  const stopA = h.api.subscribe("training.loss", r => {
+    a.push(r.seq);
+    if (r.seq === 1) stopB = h.api.subscribe("training.loss", next => b.push(next.seq), { after: 0 });
+  }, { after: 0 });
+  try {
+    await turn();
+    assert.equal(subscribes, 2);
+    assert.deepEqual(a, [1], "the superseded replay must stop after the reentrant callback");
+    assert.deepEqual(b, [], "the new consumer must wait for its own replay boundary");
+    replacement.resolve({ stream: "training.loss", durability: "durable", cursor: 2, batch: batch([record(1), record(2)], 0, 2) });
+    await turn();
+    assert.deepEqual(a, [1, 2]);
+    assert.deepEqual(b, [1, 2], "record 2 must not advance the new consumer past record 1");
+  } finally { stopA(); stopB?.(); }
+});
+
+test("joining an established ephemeral channel preserves existing delivery without another handshake", async () => {
+  const a = [], b = [], c = [];
+  const h = setup({ request: msg => msg.t === "stream_subscribe"
+    ? { stream: msg.stream, durability: "ephemeral", cursor: 0 } : {} });
+  const stops = [h.api.subscribe("machine.live", r => a.push(r.seq))];
+  try {
+    await turn();
+    stops.push(h.api.subscribe("machine.live", r => b.push(r.seq)));
+    h.bus.emit("stream_record", record(1, "machine.live"));
+    stops.push(h.api.subscribe("machine.live", r => c.push(r.seq)));
+    h.bus.emit("stream_record", record(2, "machine.live"));
+    await turn();
+    assert.equal(h.requests.filter(r => r.t === "stream_subscribe").length, 1);
+    assert.deepEqual(a, [1, 2]);
+    assert.deepEqual(b, [1, 2]);
+    assert.deepEqual(c, [2], "a new live consumer must not receive a pre-join sample");
+  } finally { for (const stop of stops) stop(); }
+});
+
+test("joining a pending live handshake preserves buffered samples and each consumer's join boundary", async () => {
+  const ack = deferred(), a = [], b = [];
+  const h = setup({ request: msg => msg.t === "stream_subscribe" ? ack.promise : {} });
+  const stopA = h.api.subscribe("machine.live", r => a.push(r.seq));
+  h.bus.emit("stream_record", record(1, "machine.live"));
+  const stopB = h.api.subscribe("machine.live", r => b.push(r.seq));
+  h.bus.emit("stream_record", record(2, "machine.live"));
+  try {
+    ack.resolve({ stream: "machine.live", durability: "ephemeral", cursor: 0 });
+    await turn();
+    assert.equal(h.requests.filter(r => r.t === "stream_subscribe").length, 1);
+    assert.deepEqual(a, [1, 2], "joining must not clear samples buffered for the first consumer");
+    assert.deepEqual(b, [2]);
+    h.bus.emit("stream_record", record(3, "machine.live"));
+    assert.deepEqual(a, [1, 2, 3]);
+    assert.deepEqual(b, [2, 3]);
+  } finally { stopA(); stopB(); }
+});
+
 test("a consumer exception does not block other consumers, and unsubscribe cancels an outstanding handshake", async () => {
   const ack = deferred(), errors = [], received = [];
   const h = setup({ request: msg => msg.t === "stream_subscribe" ? ack.promise : {} });
@@ -169,18 +232,4 @@ test("a replay callback that disconnects the page stops stale delivery", async (
   await turn();
   assert.deepEqual(received, [1]);
   stop();
-});
-
-test("joining an ephemeral stream during its handshake keeps buffered live frames", async () => {
-  const pending = deferred(), a = [], b = [];
-  const h = setup({ request: msg => msg.t === "stream_subscribe" ? pending.promise : {} });
-  const stopA = h.api.subscribe("machine.live", item => a.push(item.seq));
-  h.bus.emit("stream_record", record(6, "machine.live"));
-  const stopB = h.api.subscribe("machine.live", item => b.push(item.seq));
-  pending.resolve({ stream: "machine.live", durability: "ephemeral", cursor: 5 });
-  await turn();
-  assert.deepEqual(a, [6]);
-  assert.deepEqual(b, [6]);
-  assert.equal(h.requests.filter(item => item.t === "stream_subscribe").length, 1);
-  stopA(); stopB();
 });

@@ -59,7 +59,7 @@ export function saveDecision(t: Tendril, body: unknown, by: string, id?: string)
 export function respondDecision(t: Tendril, id: string, body: unknown): Decision {
   if (!isPlainObject(body) || !["approve", "reject", "revise"].includes(body.decision)) throw new HttpError(400, "bad_request", "decision must be approve, reject or revise");
   const note = body.note === undefined ? "" : bounded(body.note, "note", 4000, true);
-  const decision = t.ctx.storage.transactionSync(() => {
+  const decision = t.transaction(() => {
     const current = getDecision(t, id);
     if (body.expected_version !== current.version) throw new HttpError(409, "version_conflict", "The proposal changed; review the latest version", { current_version: current.version });
     if (current.status !== "pending") throw new HttpError(409, "already_decided", "This proposal already has a decision");
@@ -97,7 +97,7 @@ export async function handleResponses(t: Tendril, req: Request, participant: str
   const body = assertValid("participantResponseWrite", await readJson(req, 16384));
   if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "Expected a response");
   const prompt = bounded(body.prompt_id, "prompt_id", 100), answer = bounded(body.answer, "answer", 8000);
-  const record = t.ctx.storage.transactionSync(() => {
+  const record = t.transaction(() => {
     const active = t.getState().state.facilitation as { session_id?: string } | undefined;
     const generation = active?.session_id ?? "initial";
     if (!prompt.startsWith("assignment:") && (body.expected_session_id !== undefined || generation !== "initial") && body.expected_session_id !== generation)

@@ -3,6 +3,9 @@
 Use Node 22.15 or newer. `npm ci` installs the repository tools. The plain HTTP
 API and browser scripts do not require an application framework.
 
+See [Internal architecture](ARCHITECTURE.md) for transaction/effect boundaries,
+identity and activity, stream adapters, browser delivery policies and collectors.
+
 ## A supported loop
 
 1. Run `npm run build` once, then `npm run preview -- recipes/field-notebook`.

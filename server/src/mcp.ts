@@ -300,7 +300,8 @@ export async function handleMcp(t: Tendril, req: Request, rest: string): Promise
   const header = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1] ?? "";
   const token = pathToken || header;
   if (!token) throw new HttpError(401, "unauthorized", "Connect with Authorization: Bearer <token> or the URL <api>/mcp/<token>");
-  await t.authToken(token);
+  const agentName = await t.authToken(token);
+  t.checkin(agentName);
   if (req.method !== "POST")
     return json({ error: { code: "method_not_allowed", message: "This MCP server takes JSON-RPC over POST and offers no event stream" } }, 405, { Allow: "POST" });
 

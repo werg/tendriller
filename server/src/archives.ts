@@ -97,35 +97,32 @@ export function createArchive(t: Tendril, body: unknown, by: string) {
     return { archive: JSON.parse(existing.data) as SessionArchive, state_revision: t.getState().rev, interaction_revision: t.db.get<number>("interaction_revision", 0) };
   }
   let ops: StateOperation[] = [];
-  let result;
-  try {
-    result = t.ctx.storage.transactionSync(() => {
-      const current = archivePreview(t, scope);
-      if (current.state_revision !== value.expected_state_revision || current.interaction_revision !== value.expected_interaction_revision)
-        throw new HttpError(409, "version_conflict", "Work changed during review. Review a fresh snapshot before starting the next session.");
-      const archive: SessionArchive = { format: "tendriller-session-archive", version: 1, id: value.request_id, scope,
-        title: value.title?.trim() || scope, created_at: t.now(), ...snapshot(t, scope) };
-      if (archive.decisions?.some(decision => decision.status === "approved" || decision.status === "working"))
-        throw new HttpError(409, "work_in_progress", "Finish or record the outcome of approved work before archiving these proposals.");
-      const serialized = JSON.stringify(archive), bytes = new TextEncoder().encode(serialized).byteLength;
-      const stored = t.db.one<{ n: number; bytes: number }>("SELECT COUNT(*) AS n,COALESCE(SUM(bytes),0) AS bytes FROM session_archives")!;
-      if (stored.n >= ARCHIVE_LIMIT || stored.bytes + bytes > ARCHIVE_BYTES)
-        throw new HttpError(429, "archive_quota", "Download and remove an older archive first. Your current session has been kept.");
-      t.db.run("INSERT INTO session_archives(id,scope,title,created_at,bytes,request,data) VALUES(?,?,?,?,?,?,?)",
-        archive.id, scope, archive.title, archive.created_at, bytes, request, serialized);
-      keepReferences(t, archive.shared_state);
-      if (scope === "decisions") t.db.run("DELETE FROM decisions");
-      if (scope === "facilitation") { t.db.run("DELETE FROM participant_responses"); t.db.run("DELETE FROM participant_assignments"); }
-      const next = structuredClone(t.getState().state), key = generationKey(scope);
-      if (scope !== "decisions") {
-        const reset = scope === "facilitation" ? { session_id: archive.id, stage: "collect", prompt: { id: crypto.randomUUID(), text: "What would you like to explore next?", description: "A new session with space for everyone." }, summary: "" } : { session_id: archive.id };
-        next[key] = reset; ops = [{ op: "set", path: [key], value: reset }];
-        t.db.set("state", next); t.db.set("rev", current.state_revision + 1);
-      }
-      const interaction_revision = interactionChanged(t);
-      return { archive, state_revision: t.getState().rev, interaction_revision };
-    });
-  } catch (error) { t.db.clearCache(); throw error; }
+  const result = t.transaction(() => {
+    const current = archivePreview(t, scope);
+    if (current.state_revision !== value.expected_state_revision || current.interaction_revision !== value.expected_interaction_revision)
+      throw new HttpError(409, "version_conflict", "Work changed during review. Review a fresh snapshot before starting the next session.");
+    const archive: SessionArchive = { format: "tendriller-session-archive", version: 1, id: value.request_id, scope,
+      title: value.title?.trim() || scope, created_at: t.now(), ...snapshot(t, scope) };
+    if (archive.decisions?.some(decision => decision.status === "approved" || decision.status === "working"))
+      throw new HttpError(409, "work_in_progress", "Finish or record the outcome of approved work before archiving these proposals.");
+    const serialized = JSON.stringify(archive), bytes = new TextEncoder().encode(serialized).byteLength;
+    const stored = t.db.one<{ n: number; bytes: number }>("SELECT COUNT(*) AS n,COALESCE(SUM(bytes),0) AS bytes FROM session_archives")!;
+    if (stored.n >= ARCHIVE_LIMIT || stored.bytes + bytes > ARCHIVE_BYTES)
+      throw new HttpError(429, "archive_quota", "Download and remove an older archive first. Your current session has been kept.");
+    t.db.run("INSERT INTO session_archives(id,scope,title,created_at,bytes,request,data) VALUES(?,?,?,?,?,?,?)",
+      archive.id, scope, archive.title, archive.created_at, bytes, request, serialized);
+    keepReferences(t, archive.shared_state);
+    if (scope === "decisions") t.db.run("DELETE FROM decisions");
+    if (scope === "facilitation") { t.db.run("DELETE FROM participant_responses"); t.db.run("DELETE FROM participant_assignments"); }
+    const next = structuredClone(t.getState().state), key = generationKey(scope);
+    if (scope !== "decisions") {
+      const reset = scope === "facilitation" ? { session_id: archive.id, stage: "collect", prompt: { id: crypto.randomUUID(), text: "What would you like to explore next?", description: "A new session with space for everyone." }, summary: "" } : { session_id: archive.id };
+      next[key] = reset; ops = [{ op: "set", path: [key], value: reset }];
+      t.db.set("state", next); t.db.set("rev", current.state_revision + 1);
+    }
+    const interaction_revision = interactionChanged(t);
+    return { archive, state_revision: t.getState().rev, interaction_revision };
+  });
   // No observers see a reset before its archive is safely committed.
   if (ops.length) t.broadcast({ t: "state", ops, rev: result.state_revision, by });
   if (scope === "decisions") t.broadcast({ t: "decisions_changed" }, device => device.role === "owner" && !device.pending);
