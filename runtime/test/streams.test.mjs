@@ -219,3 +219,17 @@ test("a missing durable live frame triggers replay before a later cursor can hid
   assert.deepEqual(received, [1, 2, 3]);
   stop();
 });
+
+test("a replay callback that disconnects the page stops stale delivery", async () => {
+  const received = [];
+  let h;
+  h = setup({ request: msg => msg.t === "stream_subscribe"
+    ? { stream: msg.stream, durability: "durable", cursor: 2, batch: batch([record(1), record(2)], 0, 2) } : {} });
+  const stop = h.api.subscribe("training.loss", item => {
+    received.push(item.seq);
+    if (item.seq === 1) h.offline();
+  }, { after: 0 });
+  await turn();
+  assert.deepEqual(received, [1]);
+  stop();
+});
