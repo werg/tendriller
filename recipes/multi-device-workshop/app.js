@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id), t = window.tendril;
 let stream = null, purpose = "general", devices = [], frameId = null, overlay = null, lastPhoto = null;
-let cameraGeneration = 0, cameraStarting = false, pageHidden = false, refreshGeneration = 0, photoSending = false, seenSession = null;
+let cameraGeneration = 0, cameraStarting = false, pageHidden = false, refreshGeneration = 0, photoSending = false, seenSession = null, pickerContext = null;
 const status = text => { $("status").textContent = text; };
 const state = () => t.state.get("workshop") || {};
 const session = () => ({ scope: "workshop", id: state().session_id || "initial" });
@@ -111,10 +111,12 @@ $("start-camera").onclick = async () => {
   }
 };
 $("stop-camera").onclick = () => { stopCamera(); render(); };
-async function sendPhoto(blob, name) {
+function photoContext() { return { sentSession: session(), step_id: state().step?.id || null }; }
+async function sendPhoto(blob, name, { sentSession, step_id }) {
+  if (sentSession.id !== session().id) { status("This photo belongs to the previous workshop. Choose it again if you want to share it here."); return; }
   if (!cameraAllowed() || photoSending) return;
   photoSending = true;
-  const sentSession = session(), at = Date.now(), step_id = state().step?.id || null;
+  const at = Date.now();
   try { const result = await t.uploadEvent(blob, { name, data: { type: "workshop.frame", session: sentSession, device: t.device.id, at, step_id } });
   lastPhoto = { capture_id: result.capture_id, session: sentSession, at, device: t.device.id, step_id };
   photoResult(result); describe(result, "Photo"); } finally { photoSending = false; }
@@ -126,10 +128,12 @@ function photoResult(result) {
 }
 $("capture").onclick = async () => {
   if (!stream || !cameraAllowed()) return;
-  try { const video = $("video"), canvas = document.createElement("canvas"); canvas.width = video.videoWidth; canvas.height = video.videoHeight; canvas.getContext("2d").drawImage(video, 0, 0); const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", .85)); if (!blob) throw Error("Could not capture this frame"); await sendPhoto(blob, "workshop.jpg"); }
+  const context = photoContext();
+  try { const video = $("video"), canvas = document.createElement("canvas"); canvas.width = video.videoWidth; canvas.height = video.videoHeight; canvas.getContext("2d").drawImage(video, 0, 0); const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", .85)); if (!blob) throw Error("Could not capture this frame"); await sendPhoto(blob, "workshop.jpg", context); }
   catch (error) { status(error.message); }
 };
-$("photo").onchange = async event => { const file = event.target.files?.[0]; if (!file) return; try { await sendPhoto(file, file.name); } catch (error) { status(error.message); } finally { event.target.value = ""; } };
+$("photo").onclick = () => { pickerContext = photoContext(); };
+$("photo").onchange = async event => { const context = pickerContext; pickerContext = null; const file = event.target.files?.[0]; if (!file || !context) return; try { await sendPhoto(file, file.name, context); } catch (error) { status(error.message); } finally { event.target.value = ""; } };
 $("frame").onclick = async event => {
   if (!writable() || state().paused || !frameId) return;
   const image = $("frame"), box = image.getBoundingClientRect(), ratio = Math.min(box.width / image.naturalWidth, box.height / image.naturalHeight), width = image.naturalWidth * ratio, height = image.naturalHeight * ratio;

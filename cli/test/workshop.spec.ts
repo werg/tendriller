@@ -130,3 +130,57 @@ test("removing a shared frame removes its image and annotations and ignores a la
   await expect(page.locator("#annotations")).toBeEmpty();
   await expect(page.locator("[data-tendril-overlay] svg")).toHaveAttribute("aria-label", "No annotations");
 });
+
+test("delayed camera capture and file selection stay in the workshop where they began", async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    (window as any).__photoUploads = [];
+    window.tendril.uploadEvent = async (_blob: Blob, options: any) => {
+      (window as any).__photoUploads.push(options.data);
+      return { status: "accepted", capture_id: "capture-test" } as any;
+    };
+    (window as any).__finishCapture = null;
+    HTMLCanvasElement.prototype.toBlob = function (callback) {
+      (window as any).__finishCapture = () => callback(new Blob(["photo"], { type: "image/jpeg" }));
+    };
+    CanvasRenderingContext2D.prototype.drawImage = function () {};
+  });
+  await startRequest(page, 1); await release(page, 0);
+  await expect(page.locator("#capture")).toBeEnabled();
+  await page.locator("#capture").click();
+  await page.waitForFunction(() => !!(window as any).__finishCapture);
+  await page.evaluate(() => (document.getElementById("photo") as HTMLInputElement).onclick?.(new MouseEvent("click")));
+  server.preview.updateState([{ op: "set", path: ["workshop"], value: { session_id: "new-session", step: { id: "new-step" } } }]);
+  await page.waitForFunction(() => window.tendril.state.get("workshop")?.session_id === "new-session");
+  await page.evaluate(() => {
+    (window as any).__finishCapture();
+    const input = document.getElementById("photo") as HTMLInputElement;
+    const files = new DataTransfer(); files.items.add(new File(["photo"], "old.jpg", { type: "image/jpeg" }));
+    input.files = files.files; input.dispatchEvent(new Event("change"));
+  });
+  await expect(page.locator("#status")).toContainText("previous workshop");
+  expect(await page.evaluate(() => (window as any).__photoUploads)).toEqual([]);
+});
+
+test("a selected photo keeps the starting step when that step changes before selection finishes", async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    (window as any).__photoUploads = [];
+    window.tendril.uploadEvent = async (_blob: Blob, options: any) => {
+      (window as any).__photoUploads.push(options.data);
+      return { status: "accepted", capture_id: "capture-test" } as any;
+    };
+    (document.getElementById("photo") as HTMLInputElement).onclick?.(new MouseEvent("click"));
+  });
+  server.preview.updateState([{ op: "set", path: ["workshop", "step"], value: { id: "next-step" } }]);
+  await page.waitForFunction(() => window.tendril.state.get("workshop")?.step?.id === "next-step");
+  await page.evaluate(() => {
+    const input = document.getElementById("photo") as HTMLInputElement;
+    const files = new DataTransfer(); files.items.add(new File(["photo"], "step.jpg", { type: "image/jpeg" }));
+    input.files = files.files; input.dispatchEvent(new Event("change"));
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__photoUploads.length)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__photoUploads[0])).toMatchObject({
+    type: "workshop.frame", session: { scope: "workshop", id: "initial" }, step_id: "fold",
+  });
+});
