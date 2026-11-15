@@ -89,7 +89,8 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 }
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
-export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null): Promise<number> {
+export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
+  options: { expectedCurrent?: number; commit?: () => void; beforeReload?: () => void } = {}): Promise<number> {
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
   let riskScore = 0;
   const riskFlags: string[] = [];
@@ -108,20 +109,31 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   if (shouldHold) {
     await t.hold("High static screening score on young account");
   }
-  const n = t.db.get<number>("latest", 0) + 1;
-  t.db.run("INSERT INTO versions (version, created_at, status, message, by, risk_score, risk_flags) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
-    n, t.now(), message, by, riskScore, JSON.stringify(riskFlags));
-  for (const f of files.values()) {
-    t.db.run("INSERT INTO version_files (version, path, hash, type, size) VALUES (?, ?, ?, ?, ?)", n, f.path, f.hash, f.type, f.size);
-  }
-  t.db.set("latest", n);
-  t.db.set("current", n);
-  addActivity(t, {
-    kind: "version",
-    summary: `Version ${n} pushed (${files.size} file${files.size === 1 ? "" : "s"})${message ? `: ${message}` : ""}`,
-    by,
-    source: "server",
-  });
+  let n: number;
+  try {
+    n = t.ctx.storage.transactionSync(() => {
+      const current = t.db.get<number>("current", 0);
+      if (options.expectedCurrent !== undefined && current !== options.expectedCurrent)
+        throw new HttpError(409, "version_conflict", "The page changed; review the current version before replacing it", { current });
+      const next = t.db.get<number>("latest", 0) + 1;
+      t.db.run("INSERT INTO versions (version, created_at, status, message, by, risk_score, risk_flags) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
+        next, t.now(), message, by, riskScore, JSON.stringify(riskFlags));
+      for (const f of files.values()) {
+        t.db.run("INSERT INTO version_files (version, path, hash, type, size) VALUES (?, ?, ?, ?, ?)", next, f.path, f.hash, f.type, f.size);
+      }
+      t.db.set("latest", next);
+      t.db.set("current", next);
+      options.commit?.();
+      addActivity(t, {
+        kind: "version",
+        summary: `Version ${next} pushed (${files.size} file${files.size === 1 ? "" : "s"})${message ? `: ${message}` : ""}`,
+        by,
+        source: "server",
+      });
+      return next;
+    });
+  } catch (error) { t.db.clearCache(); throw error; }
+  options.beforeReload?.();
   t.broadcast({ t: "reload", version: n });
   return n;
 }

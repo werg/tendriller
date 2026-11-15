@@ -4,16 +4,27 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "npm run build && wrangler d1 migrations apply ACCOUNTS --local --config server/wrangler.jsonc && wrangler dev --config server/wrangler.jsonc",
-    "test": "npm run build && vitest run --config server/vitest.public.config.ts",
+    "dev": "node scripts/dev.mjs",
+    "test": "npm run build && npm run test:server",
     "test:cli": "node --test cli/test/*.test.mjs",
     "test:snippets": "playwright test --config snippets/test/playwright.config.ts",
     "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
     "test:tts": "playwright test --config runtime/test/tts/playwright.config.ts",
-    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit",
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit && tsc -p contract/tsconfig.json --noEmit",
     "test:e2e:public": "npm run build && playwright test --config test/e2e/public.playwright.config.ts",
     "test:e2e:speech-real": "E2E_REAL_SPEECH=1 npm run test:e2e -- --grep 'pinned Cactus WASM'",
-    "test:e2e:all": "npm run test:e2e && npm run test:tts"
+    "test:e2e:all": "npm run test:e2e && npm run test:tts",
+    "build:watch": "node scripts/build.mjs --watch",
+    "contract:generate": "node scripts/contract.mjs --write",
+    "contract:check": "node scripts/contract.mjs",
+    "test:contract": "node --test contract/test/*.test.mjs",
+    "test:browser": "npm run build && node scripts/test-browser.mjs",
+    "check": "npm run contract:check && npm run typecheck && npm run build && npm run test:contract && npm run test:recipes && npm run test:runtime-unit && npm run test:server && npm run test:cli",
+    "check:release": "npm run check && npm run test:browser",
+    "preview": "npm run build && node scripts/preview.mjs",
+    "test:recipes": "node --test recipes/test/*.test.mjs",
+    "test:runtime-unit": "node --test runtime/test/*.test.mjs",
+    "test:server": "vitest run --config server/vitest.public.config.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.1",
@@ -30,5 +41,26 @@
   "dependencies": {
     "ipaddr.js": "^2.5.0",
     "phonon-tts": "0.7.1"
+  },
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "bin": {
+    "tendril": "cli/bin/tendril.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./contract/client.d.mts",
+      "import": "./contract/client.mjs"
+    },
+    "./contract": {
+      "types": "./contract/index.d.mts",
+      "import": "./contract/index.mjs"
+    },
+    "./browser": {
+      "types": "./contract/browser.d.mts"
+    },
+    "./schema": "./contract/v1.json"
   }
 }

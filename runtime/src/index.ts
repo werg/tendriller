@@ -8,6 +8,8 @@ import { registry } from "./registry";
 import { describeCapabilities, observeCapabilities } from "./capabilities";
 import { installSensorWrappers } from "./control/sensors";
 import type { ControlApi, TendrilConfig } from "./types";
+import type { CaptureOptions } from "./capture";
+import type { RuntimeApi } from "../../contract/index.mjs";
 
 function fallbackConfig(): TendrilConfig {
   const base = location.pathname.replace(/[^/]*$/, "");
@@ -43,14 +45,18 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
   const core = createCore(cfg);
   let control: ControlApi | undefined;
 
-  const ready: any = () => core.ready();
-  ready.manual = () => core.readyManual();
+  const ready = Object.assign(() => core.ready(), { manual: () => core.readyManual() });
 
-  const api: any = {
+  const api: RuntimeApi = {
     send: (data: any, opts?: { wake?: boolean }) => core.send(data, opts),
     state: core.state,
     on: (type: string, fn: (p: any) => void) => core.bus.on(type, fn),
-    upload: (blob: Blob, opts?: { name?: string }) => core.upload(blob, opts),
+    upload: (blob: Blob, opts?: { name?: string; keep?: boolean }) => core.upload(blob, opts),
+    uploadEvent: (blob: Blob, opts: CaptureOptions) => core.uploadEvent(blob, opts),
+    captures: () => core.captures(),
+    retryCapture: (id: string) => core.retryCapture(id),
+    discardCapture: (id: string) => core.discardCapture(id),
+    setBlobRetention: (id: string, opts: { keep: boolean }) => core.setBlobRetention(id, opts),
     ready,
     speak: (text: string) => core.speak(text),
     tts: core.tts,

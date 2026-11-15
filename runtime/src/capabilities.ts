@@ -1,11 +1,6 @@
 // A live, permission-aware description of this browser. Never prompts for access.
-export interface Capability {
-  available: boolean;
-  permission: "granted" | "prompt" | "denied" | "unknown";
-  needs_user_tap: boolean;
-  active: boolean | null;
-  note?: string;
-}
+import type { Capability, CapabilityReport } from "../../contract/index.mjs";
+export type { Capability, CapabilityReport } from "../../contract/index.mjs";
 
 const definitions: Record<string, { available: () => boolean; permission?: string; tap?: boolean; note?: string }> = {
   camera: { available: () => !!navigator.mediaDevices?.getUserMedia, permission: "camera", tap: true },
@@ -59,7 +54,7 @@ async function permission(name?: string): Promise<Capability["permission"]> {
   } catch { return "unknown"; }
 }
 
-export async function describeCapabilities(active: string[] = []): Promise<{ captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }> {
+export async function describeCapabilities(active: string[] = []): Promise<CapabilityReport> {
   const capabilities: Record<string, Capability> = {};
   for (const [name, definition] of Object.entries(definitions)) {
     let available = false;

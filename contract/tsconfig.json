@@ -1,0 +1,7 @@
+{
+  "compilerOptions": {
+    "target": "es2022", "module": "nodenext", "moduleResolution": "nodenext",
+    "lib": ["es2023", "dom"], "strict": true, "noEmit": true, "skipLibCheck": true
+  },
+  "include": ["*.d.mts", "test/*.mts"]
+}

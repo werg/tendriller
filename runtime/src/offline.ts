@@ -71,6 +71,41 @@ export class OfflineStore {
     return it;
   }
 
+  /** A capture is only called saved after the IndexedDB transaction commits. */
+  async addDurable(msg: any, blob?: Blob): Promise<OutboxItem> {
+    const item: OutboxItem = { key: newKey(), cid: msg.cid, msg, blob };
+    await this.commit((store) => store.put(item));
+    this.items.push(item);
+    return item;
+  }
+
+  /** Persist a capture phase before sending its dependent event. */
+  async updateDurable(item: OutboxItem, msg: any): Promise<void> {
+    const next = { ...item, msg };
+    await this.commit((store) => store.put(next));
+    item.msg = msg;
+  }
+
+  async removeDurable(cid: string): Promise<void> {
+    const item = this.items.find((entry) => entry.cid === cid);
+    if (!item) return;
+    await this.commit((store) => store.delete(item.key));
+    this.items = this.items.filter((entry) => entry.cid !== cid);
+  }
+
+  private commit(write: (store: IDBObjectStore) => void): Promise<void> {
+    if (!this.db) return Promise.reject(new Error("Browser storage is unavailable. Keep this capture open and try again."));
+    const promise = new Promise<void>((resolve, reject) => {
+      const transaction = this.db!.transaction("outbox", "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error("Could not save the capture on this device."));
+      write(transaction.objectStore("outbox"));
+    });
+    this.writes.add(promise);
+    void promise.then(() => this.writes.delete(promise), () => this.writes.delete(promise));
+    return promise;
+  }
+
   has(cid: string): boolean { return this.items.some((i) => i.cid === cid); }
 
   remove(cid: string): OutboxItem | undefined {

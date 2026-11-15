@@ -60,6 +60,7 @@ test("agent reply is displayed and played by neural voice on the owner page", as
     await signInFixture(context);
     await openClaimed(page, h);
     await page.locator("#gesture").click();
+    await page.evaluate(() => window.tendril.tts.enable());
     const reply = await agent(h, "/say", "POST", { text: "Hello from the agent", speak: true });
     expect(reply.status).toBe(200);
     await expect(page.locator("body")).toContainText("Hello from the agent");
@@ -77,6 +78,7 @@ test("voice input interrupts an agent reply, reaches the event queue, and later 
     await signInFixture(context);
     await openClaimed(page, h);
     await page.locator("#gesture").click();
+    await page.evaluate(() => window.tendril.tts.enable());
     const cursor = (await agent(h, "/events?wait=0")).data.cursor;
     expect((await agent(h, "/say", "POST", { text: "long reply", speak: true })).status).toBe(200);
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.spoken)).toEqual(["long reply"]);

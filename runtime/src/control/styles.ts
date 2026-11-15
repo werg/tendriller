@@ -3,9 +3,9 @@ export const CSS = `
 .root {
   --bg: rgba(255,255,255,.88); --solid: #ffffff; --fg: #1b1e25; --muted: #5a6070;
   --line: rgba(17,22,33,.12); --soft: rgba(17,22,33,.05); --soft2: rgba(17,22,33,.09);
-  --accent: #3550d6; --accent-fg: #ffffff; --accent-soft: rgba(53,80,214,.12);
-  --focus: #3550d6;
-  --s-listening: #0b7d8c; --s-working: #3550d6; --s-done: #2b8a3e; --s-scheduled: #5a6070;
+  --accent: #25654a; --accent-fg: #ffffff; --accent-soft: rgba(37,101,74,.12);
+  --focus: #25654a;
+  --s-listening: #0b7d8c; --s-working: #25654a; --s-done: #2b8a3e; --s-scheduled: #5a6070;
   --s-not_responding: #a85400; --s-away: #6b7180; --s-no_agent: #6b7180; --s-offline: #6b7180;
   --s-connecting: #6b7180; --s-pending: #8a5a00;
   --danger: #b42318; --warn-bg: #fff4e5; --warn-fg: #7a3d00;
@@ -21,8 +21,8 @@ export const CSS = `
   .root {
     --bg: rgba(28,30,37,.88); --solid: #1c1e25; --fg: #eceef3; --muted: #a3a9b7;
     --line: rgba(255,255,255,.13); --soft: rgba(255,255,255,.06); --soft2: rgba(255,255,255,.1);
-    --accent: #8ea2ff; --accent-fg: #0d1020; --accent-soft: rgba(142,162,255,.16); --focus: #a9b8ff;
-    --s-listening: #3cc4d4; --s-working: #8ea2ff; --s-done: #5fd07a; --s-scheduled: #a3a9b7;
+    --accent: #9bd7ae; --accent-fg: #15261b; --accent-soft: rgba(155,215,174,.16); --focus: #b9e5c5;
+    --s-listening: #3cc4d4; --s-working: #9bd7ae; --s-done: #5fd07a; --s-scheduled: #a3a9b7;
     --s-not_responding: #ffb35c; --s-away: #8f95a3; --s-no_agent: #8f95a3; --s-offline: #8f95a3;
     --s-connecting: #8f95a3; --s-pending: #ffc65c;
     --danger: #ff8a80; --warn-bg: #3a2a12; --warn-fg: #ffd59a;
@@ -137,6 +137,14 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .btn:disabled { opacity: .5; cursor: default; }
 
 /* ---- sheet ---- */
+.control-tabs { display:flex; gap:4px; padding:4px; background:var(--soft); border-radius:14px; margin:8px 0 12px; }
+.control-tab { flex:1; min-width:44px; min-height:44px; padding:.45em .5em; border:0; border-radius:10px; background:transparent; font-size:.8em; font-weight:650; }
+.control-tab[aria-selected="true"] { background:var(--accent); color:var(--accent-fg); }
+.voice-actions { gap:5px; }
+.voice-actions .btn { flex:1; padding:0 .5em; font-size:.75em; }
+.device-controls { display:grid; gap:8px; width:100%; }
+.experience-settings{display:grid;gap:.7rem}.experience-form{display:grid;gap:.65rem;margin:.7rem 0 1.1rem}.experience-field{display:grid;gap:.3rem;margin:.5rem 0}.experience-field input:not([type="checkbox"]),.experience-field select,.experience-field textarea{font:inherit;width:100%;min-height:44px;padding:.6rem;border:1px solid var(--line);border-radius:10px;background:var(--solid);color:var(--fg)}.experience-field input[type="checkbox"]{width:1.4em;height:1.4em;accent-color:var(--accent)}.experience-card{margin:.7rem 0;padding:.7rem;background:var(--soft);border-radius:12px}.experience-card p{overflow-wrap:anywhere}.device-controls input,.device-controls select { width:100%; min-height:44px; padding:.5em; border:1px solid var(--line); border-radius:10px; background:var(--solid); }
+
 .sheet {
   position: fixed; z-index: 3; right: calc(12px + env(safe-area-inset-right, 0px)); bottom: calc(68px + env(safe-area-inset-bottom, 0px));
   width: min(25em, calc(100vw - 24px)); max-height: min(78vh, 46em); overflow: auto; overscroll-behavior: contain;

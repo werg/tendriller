@@ -10,5 +10,5 @@ export default defineConfig({
   fullyParallel: true,
   reporter: "list",
   outputDir: join(tmpdir(), "tendril-push-test-results"),
-  use: { browserName: "chromium", channel: "chromium", headless: true, timezoneId: "UTC" }, // full Chromium: headless shell always reports Notification.permission "denied"
+  use: { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, browserName: "chromium", channel: "chromium", headless: true, timezoneId: "UTC" }, // full Chromium: headless shell always reports Notification.permission "denied"
 });

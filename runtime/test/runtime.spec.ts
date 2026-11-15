@@ -30,6 +30,21 @@ test("agent replies auto-speak only for approved owners and respect speak:false"
   expect(await page.evaluate(() => (window as any).tendril._core.transcript.map((e: any) => e.text))).toEqual(["owner reply", "text only", "guest reply", "pending reply", "default speech"]);
 });
 
+test("an audio-only reply speaks without adding a visible message", async ({ page }) => {
+  const t = mock.create();
+  await open(page, t);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.spoken = []; w.displayed = [];
+    w.tendril.tts.speak = (text: string) => w.spoken.push(text);
+    w.tendril.on("say", (message: any) => w.displayed.push(message.text));
+  });
+  mock.broadcast(t, { t: "say", text: "Look at the other screen", present: false, speak: true });
+  await expect.poll(() => page.evaluate(() => (window as any).spoken)).toEqual(["Look at the other screen"]);
+  expect(await page.evaluate(() => (window as any).displayed)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toEqual([]);
+});
+
 test("window.tendril exists synchronously; hello and welcome", async ({ page }) => {
   const t = mock.create({
     html: `<script>
@@ -77,6 +92,7 @@ test("send returns seq after ack; wake option", async ({ page }) => {
   await open(page, t);
   const r1 = await page.evaluate(() => (window as any).tendril.send({ a: 1 }));
   expect(r1.queued).toBe(false);
+  expect(r1.status).toBe("accepted");
   expect(typeof r1.seq).toBe("number");
   await page.evaluate(() => (window as any).tendril.send("x", { wake: false }));
   const sends = mock.messages(t, "send");
@@ -84,6 +100,178 @@ test("send returns seq after ack; wake option", async ({ page }) => {
   expect(sends[0].wake).toBe(true);
   expect(sends[0].cid).toBeTruthy();
   expect(sends[1].wake).toBe(false);
+});
+
+test("send distinguishes server rejection from accepted or queued input", async ({ page }) => {
+  const t = mock.create();
+  t.onMessage = (message, socket) => {
+    if (message.t !== "send") return;
+    socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "forbidden", message: "This display cannot send input." }));
+    return true;
+  };
+  await open(page, t);
+  expect(await page.evaluate(() => (window as any).tendril.send({ answer: "kept draft" })))
+    .toEqual({ status: "rejected", queued: false, error: "forbidden", message: "This display cannot send input." });
+  t.onMessage = (message, socket) => {
+    if (message.t !== "send") return;
+    socket.send(JSON.stringify({ t: "error", cid: message.cid, code: "rate_limited", message: "Wait a moment." }));
+    return true;
+  };
+  expect(await page.evaluate(() => (window as any).tendril.send({ answer: "retryable" })))
+    .toMatchObject({ status: "rejected", queued: false, error: "rate_limited", message: "Wait a moment." });
+});
+
+test("a late instruction rejection removes its optimistic transcript and reports the recoverable text", async ({ page }) => {
+  const t = mock.create();
+  let rejectInstruction: (() => void) | undefined;
+  t.onMessage = (message, socket) => {
+    if (message.t !== "send" || message.kind !== "instruction") return;
+    rejectInstruction = () => socket.send(JSON.stringify({ t: "ack", cid: message.cid,
+      error: "forbidden", message: "This device is no longer an owner." }));
+    return true;
+  };
+  await open(page, t);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.rejectedInstructions = [];
+    w.tendril.on("instruction_rejected", (receipt: any) => w.rejectedInstructions.push(receipt));
+  });
+  expect(await page.evaluate(() => (window as any).tendril._core.instruction("Keep this draft", "text"))).toEqual({ queued: true, cid: expect.any(String) });
+  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toHaveLength(1);
+  rejectInstruction!();
+  await expect.poll(() => page.evaluate(() => (window as any).rejectedInstructions)).toEqual([
+    { cid: expect.any(String), text: "Keep this draft", error: "forbidden", message: "This device is no longer an owner." },
+  ]);
+  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toEqual([]);
+  await page.reload();
+  await page.waitForFunction(() => (window as any).tendril.connected);
+  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toEqual([]);
+  expect(mock.messages(t, "send").filter((message) => message.kind === "instruction")).toHaveLength(1);
+});
+
+test("a replayed semantic input emits its receipt with the original data after reload", async ({ page }) => {
+  const t = mock.create({ html: '<script>window.sendResults=[];tendril.on("send_result",r=>window.sendResults.push(r));</script>' });
+  await open(page, t);
+  mock.goOffline(t);
+  await page.waitForFunction(() => !(window as any).tendril.connected);
+  expect(await page.evaluate(() => (window as any).tendril.send({ type: "observation", observation_id: "note-1", note: "Found a new trail" })))
+    .toMatchObject({ status: "queued", queued: true });
+  await page.reload();
+  await page.waitForFunction(() => typeof (window as any).tendril === "object");
+  mock.goOnline(t);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect.poll(() => page.evaluate(() => (window as any).sendResults)).toEqual([
+    { cid: expect.any(String), data: { type: "observation", observation_id: "note-1", note: "Found a new trail" },
+      status: "accepted", queued: false, seq: expect.any(Number) },
+  ]);
+});
+
+test("capture and its semantic input survive offline reload as one transaction", async ({ page }) => {
+  const t = mock.create({ html: '<script>window.receipts=[];tendril.on("upload_event",r=>window.receipts.push(r));</script>' });
+  await open(page, t);
+  mock.goOffline(t);
+  await page.waitForFunction(() => !(window as any).tendril.connected);
+  const queued = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["drawing-bytes"], { type: "image/png" }), {
+    name: "drawing.png", data: { type: "ui", block: "sketch", value: { width: 640, height: 320 } }, dataPath: ["value"], keep: true,
+  }));
+  expect(queued).toMatchObject({ status: "queued", queued: true, capture_id: expect.any(String) });
+  expect(t.blobs.size).toBe(0);
+  await page.reload();
+  await page.waitForFunction(() => (window as any).tendril.captures().length === 1);
+  expect(await page.evaluate(() => (window as any).tendril.captures()[0])).toMatchObject({ capture_id: queued.capture_id, name: "drawing.png", status: "queued", data: { type: "ui", block: "sketch" } });
+  mock.goOnline(t);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect.poll(() => page.evaluate(() => (window as any).receipts.find((result: any) => result.status === "accepted"))).toMatchObject({
+    capture_id: queued.capture_id, status: "accepted", queued: false, blob: { retention: { keep: true, expires_at: null } },
+  });
+  const sends = mock.messages(t, "send");
+  expect(sends).toHaveLength(1);
+  expect(sends[0].data).toEqual({ type: "ui", block: "sketch", capture_id: queued.capture_id, value: { width: 640, height: 320,
+    blob: expect.any(String), url: expect.stringContaining("_tendril/blob/") } });
+  expect(t.blobs.size).toBe(1);
+  expect([...t.blobs.values()][0].body.toString()).toBe("drawing-bytes");
+  expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
+});
+
+test("a lost upload response followed by reload reuses the blob and sends its input once", async ({ page }) => {
+  const t = mock.create({ dropUploadResponses: 1 });
+  await open(page, t);
+  await page.evaluate(() => {
+    (window as any).capture = (window as any).tendril.uploadEvent(new Blob(["photo"], { type: "image/jpeg" }), {
+      name: "photo.jpg", data: { type: "input", modality: "photo", note: "The loose hinge" },
+    });
+  });
+  await mock.waitFor(() => t.blobs.size === 1);
+  await page.reload();
+  await page.waitForFunction(() => (window as any).tendril.connected);
+  await mock.waitFor(() => mock.messages(t, "send").some((message) => message.data?.note === "The loose hinge"));
+  expect(t.blobs.size).toBe(1);
+  expect(mock.messages(t, "send").filter((message) => message.data?.modality === "photo")).toHaveLength(1);
+  await expect.poll(() => page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
+});
+
+test("rejected captured input remains retryable after reload without duplicating media", async ({ page }) => {
+  const t = mock.create();
+  t.onMessage = (message, socket) => {
+    if (message.t !== "send") return;
+    socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "rate_limited", message: "Try again shortly." }));
+    return true;
+  };
+  await open(page, t);
+  const rejected = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["audio"]), {
+    name: "note.webm", data: { type: "input", modality: "audio" },
+  }));
+  expect(rejected).toMatchObject({ status: "rejected", queued: false, error: "rate_limited", message: "Try again shortly." });
+  await page.reload();
+  await page.waitForFunction(() => (window as any).tendril.captures()[0]?.status === "rejected");
+  t.onMessage = undefined;
+  const accepted = await page.evaluate((id) => (window as any).tendril.retryCapture(id), rejected.capture_id);
+  expect(accepted).toMatchObject({ capture_id: rejected.capture_id, status: "accepted", seq: expect.any(Number) });
+  expect(t.blobs.size).toBe(1);
+  const sends = mock.messages(t, "send");
+  expect(sends).toHaveLength(2);
+  expect(sends[0].cid).not.toBe(sends[1].cid);
+  expect(sends[0].data.blob).toBe(sends[1].data.blob);
+});
+
+test("upload rejection retains the capture until retry or discard", async ({ page }) => {
+  const t = mock.create({ uploadFailureStatus: 413 });
+  await open(page, t);
+  const rejected = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["photo"]), {
+    data: { type: "input", modality: "photo" },
+  }));
+  expect(rejected).toMatchObject({ status: "rejected", error: "quota", message: "Capture storage is full." });
+  expect(mock.messages(t, "send")).toHaveLength(0);
+  expect(await page.evaluate(() => (window as any).tendril.captures())).toHaveLength(1);
+  await page.evaluate((id) => (window as any).tendril.discardCapture(id), rejected.capture_id);
+  expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
+  await page.reload();
+  await page.waitForFunction(() => (window as any).tendril.connected);
+  expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
+});
+
+test("capture does not claim to be saved when browser storage is unavailable", async ({ page }) => {
+  await page.addInitScript(() => { indexedDB.open = () => { throw new Error("Storage blocked"); }; });
+  const t = mock.create();
+  await open(page, t);
+  const result = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["photo"]), { data: { modality: "photo" } }));
+  expect(result).toMatchObject({ status: "rejected", queued: false, error: "storage_unavailable" });
+  expect(t.blobs.size).toBe(0);
+  expect(mock.messages(t, "send")).toHaveLength(0);
+});
+
+test("page updates can wait for a draft and their apply callback is idempotent", async ({ page }) => {
+  const t = mock.create({ html: '<textarea id="draft"></textarea><script>window.addEventListener("tendril:before-reload",e=>{e.preventDefault();window.pendingUpdate=e.detail});</script>' });
+  await open(page, t);
+  await page.locator("#draft").fill("An unfinished thought");
+  t.version = 2;
+  mock.broadcast(t, { t: "reload", version: 2 });
+  await page.waitForFunction(() => (window as any).pendingUpdate?.version === 2);
+  expect(t.pageLoads).toBe(1);
+  await expect(page.locator("#draft")).toHaveValue("An unfinished thought");
+  await page.evaluate(() => { (window as any).pendingUpdate.apply(); (window as any).pendingUpdate.apply(); });
+  await expect.poll(() => t.pageLoads).toBe(2);
+  await page.waitForFunction(() => (window as any).tendril.version === 2);
 });
 
 test("role message updates tendril.device live; connected reflects socket", async ({ page }) => {

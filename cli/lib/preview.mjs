@@ -1,13 +1,14 @@
-// Headless preview: serves a page directory locally with a fake window.tendril
-// that records calls, opens it in Chromium (fake camera/mic), and reports
-// console errors, uncaught exceptions, recorded calls and a screenshot.
+// Headless preview: serves the production runtime with a local protocol adapter.
+// Uses real control/state/offline behavior, with deterministic sensor and agent fixtures.
 // Needs `playwright` (or `@playwright/test`) resolvable from the current project.
 import { createServer } from "node:http";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, normalize, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { guessType } from "./pack.mjs";
+import { guessType, listFiles } from "./pack.mjs";
+import { attachRuntime, TRACE_RUNTIME, resolveFixture } from "./preview-runtime.mjs";
+import { schemaDocument, schemas } from "../../contract/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -21,80 +22,112 @@ export function loadPlaywright(cwd = process.cwd()) {
   return null;
 }
 
-export const STUB = String.raw`(function(){
-  var calls = window.__tendrilCalls = [];
-  var rec = function(name, args){ try { calls.push({ at: Date.now(), fn: name, args: JSON.parse(JSON.stringify(args)) }); } catch(e) { calls.push({ at: Date.now(), fn: name, args: String(args) }); } };
-  var state = window.__TENDRIL_PREVIEW_STATE__ || {};
-  var listeners = {}, stateListeners = [];
-  var path = function(p){ return Array.isArray(p) ? p.map(String) : (p == null || p === "" ? [] : String(p).split(".").filter(Boolean)); };
-  var get = function(p){ var o = state; for (var k of path(p)) { if (o == null) return undefined; o = o[k]; } return o; };
-  var set = function(p, v){ var ks = path(p), o = state; for (var i = 0; i < ks.length - 1; i++) { if (typeof o[ks[i]] !== "object" || o[ks[i]] === null) o[ks[i]] = {}; o = o[ks[i]]; } if (v === undefined || v === null) delete o[ks[ks.length-1]]; else o[ks[ks.length-1]] = v; };
-  var merge = function(t, p){ for (var k in p) { if (p[k] === null) delete t[k]; else if (typeof p[k] === "object" && !Array.isArray(p[k])) { if (typeof t[k] !== "object" || t[k] === null || Array.isArray(t[k])) t[k] = {}; merge(t[k], p[k]); } else t[k] = p[k]; } };
-  var fire = function(){ stateListeners.forEach(function(f){ try { f(state, [], "device:d_preview"); } catch(e) { setTimeout(function(){ throw e; }); } }); };
-  var ready = function(){ rec("ready", []); };
-  ready.manual = function(){ rec("ready.manual", []); };
-  var seq = 0;
-  window.tendril = {
-    send: function(data, opts){ rec("send", [data, opts]); return Promise.resolve({ seq: ++seq, queued: false }); },
-    state: {
-      get: function(p){ return get(p); },
-      set: function(p, v){ rec("state.set", [p, v]); set(p, v); fire(); },
-      delete: function(p){ rec("state.delete", [p]); set(p, null); fire(); },
-      patch: function(m){ rec("state.patch", [m]); merge(state, m); fire(); },
-      mine: function(){ return (state._device || {}).d_preview; },
-      on: function(f){ stateListeners.push(f); return function(){ stateListeners = stateListeners.filter(function(x){ return x !== f; }); }; }
-    },
-    on: function(type, f){ (listeners[type] = listeners[type] || []).push(f); return function(){}; },
-    upload: function(blob, opts){ rec("upload", [{ size: blob && blob.size, type: blob && blob.type }, opts]); return Promise.resolve({ id: "b_preview", url: "_tendril/blob/b_preview" }); },
-    ready: ready,
-    expose: function(name, opts, fn){ rec("expose", [name, opts]); return function(){}; },
-    voice: { start: function(){ rec("voice.start", []); return Promise.resolve(); }, stop: function(){ rec("voice.stop", []); }, state: "unavailable" },
-    speak: function(t){ rec("speak", [t]); },
-    capabilities: function(){ var report = window.__TENDRIL_PREVIEW_CAPABILITIES__ || {captured_at:Date.now(),secure:true,capabilities:{camera:{available:true,permission:"granted",needs_user_tap:true,active:false},microphone:{available:true,permission:"granted",needs_user_tap:true,active:false},location:{available:true,permission:"granted",needs_user_tap:true,active:false},motion:{available:true,permission:"unknown",needs_user_tap:true,active:false},file_picker:{available:true,permission:"unknown",needs_user_tap:true,active:null}}}; for(var name of window.__TENDRIL_PREVIEW_DENIED__ || []) if(report.capabilities[name]) report.capabilities[name].permission = "denied"; return Promise.resolve(report); },
-    device: { id: "d_preview", role: "owner", name: "preview", pending: false },
-    version: 1,
-    connected: true,
-    control: { hide: function(){ rec("control.hide", []); }, show: function(){ rec("control.show", []); }, position: function(p){ rec("control.position", [p]); } }
-  };
-  window.__tendrilEmit = function(type, payload){ (listeners[type] || []).forEach(function(fn){ fn(payload); }); };
-})();`;
-
 export function injectRuntime(html) {
-  const tags = `<script>window.__TENDRIL__={"id":"preview","base":"/","version":1,"ws":"/_tendril/ws","features":{"transcribe":false,"voice":false,"push":false,"vapid":null}};</script><script src="/_tendril/tendril.js"></script>`;
+  const config = { id: "preview", base: "/", version: 1, ws: "/_tendril/ws", features: {
+    push: false, vapid: null, shared_by: "Local preview", speech: { model: "preview", url: "_tendril/speech/unavailable", sha256: "" },
+  } };
+  const tags = `<script>window.__TENDRIL__=${JSON.stringify(config)};</script><script src="/_tendril/tendril.js"></script><script>${TRACE_RUNTIME}</script>`;
   const m = /<head(\s[^>]*)?>/i.exec(html);
   if (m) return html.slice(0, m.index + m[0].length) + tags + html.slice(m.index + m[0].length);
   return tags + html;
 }
 
-function snippetDirs() {
-  return [join(here, "../../snippets"), join(here, "../../server/public/snippets")];
-}
-
-export function startServer(dir, initialState) {
-  const root = resolve(dir);
-  const server = createServer((req, res) => {
-    const url = new URL(req.url, "http://x");
-    let p = decodeURIComponent(url.pathname);
-    const send = (code, type, body) => { res.writeHead(code, { "content-type": type, "cache-control": "no-store" }); res.end(body); };
-    if (p === "/_tendril/tendril.js") {
-      return send(200, "text/javascript", `window.__TENDRIL_PREVIEW_STATE__=${JSON.stringify(initialState || {})};\n${STUB}`);
+export async function startServer(dir, initialState, fixture = {}) {
+  if (fixture.capabilities) throw new Error("Preview derives capabilities from the real browser. Use denied or hardware fixtures to change browser inputs.");
+  const root = resolve(dir), repo = resolve(here, "../..");
+  const assets = join(repo, "server/public/_tendril");
+  if (!existsSync(join(assets, "tendril.js"))) throw new Error("Preview needs the built runtime. Run npm run build first.");
+  const safeFile = (base, pathname) => {
+    const file = resolve(base, "." + pathname);
+    return (file === base || file.startsWith(base + sep)) && existsSync(file) && statSync(file).isFile() ? file : null;
+  };
+  let adapter, httpFixtures = structuredClone(fixture.http || []);
+  const mockedHttp = [];
+  const installHttp = routes => {
+    for (const route of routes) {
+      const i = httpFixtures.findIndex(r => r.method === route.method && r.path === route.path);
+      if (i >= 0) httpFixtures[i] = structuredClone(route); else httpFixtures.push(structuredClone(route));
     }
-    const sn = /^\/_tendril\/snippets\/([A-Za-z0-9_-]+\.js)$/.exec(p);
-    if (sn) {
-      for (const d of snippetDirs()) {
-        const f = join(d, sn[1]);
-        if (existsSync(f)) return send(200, "text/javascript", readFileSync(f));
+  };
+  const server = createServer(async (req, res) => {
+    const send = (code, type, body, extra = {}) => { res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...extra }); res.end(body); };
+    const json = (status, value) => send(status, "application/json", JSON.stringify(value));
+    try {
+      const url = new URL(req.url, "http://preview");
+      const p = decodeURIComponent(url.pathname);
+      const mock = httpFixtures.find(r => (r.method || "GET") === req.method && r.path === p);
+      if (mock) {
+        let body = ""; for await (const chunk of req) { body += chunk; if (body.length > 1024 * 1024) throw new Error("Fixture request is too large"); }
+        const parsed = body ? JSON.parse(body) : undefined;
+        const match = !mock.expect_body || Object.entries(mock.expect_body).every(([key, value]) => JSON.stringify(parsed?.[key]) === JSON.stringify(value));
+        mockedHttp.push({ method: req.method, path: p, body: parsed, matched: match, status: match ? (mock.status || 200) : 400 });
+        if (!match) return json(400, { error: { code: "fixture_mismatch", message: "Request body did not match the scenario" } });
+        if (mock.once) httpFixtures.splice(httpFixtures.indexOf(mock), 1);
+        if (mock.update) installHttp(mock.update);
+        if (mock.broadcast) adapter.broadcast(mock.broadcast);
+        return json(mock.status || 200, resolveFixture(mock.json ?? {}, { event: adapter.events.at(-1), device: adapter.devices[0] }));
       }
-      return send(404, "text/plain", "no such snippet");
-    }
-    if (p.endsWith("/")) p += "index.html";
-    const file = normalize(join(root, p));
-    if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) return send(404, "text/plain", "not found");
-    const type = guessType(file);
-    if (type === "text/html") return send(200, "text/html; charset=utf-8", injectRuntime(readFileSync(file, "utf8")));
-    return send(200, type, readFileSync(file));
+      if (p === "/contract/v1.json") return json(200, schemaDocument);
+      if (p === "/recipes/ui-schema.json") return json(200, schemas.interface);
+      if (p === "/_tendril/info") return json(200, { id: "preview", version: 1, files: listFiles(root), features: {} });
+      if (p === "/_tendril/devices" || p === "/_tendril/focus") {
+        if (adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Owner access required" } });
+        if (req.method === "GET") return json(200, adapter.configuration());
+        if ((p.endsWith("devices") && req.method === "PATCH") || (p.endsWith("focus") && req.method === "POST")) {
+          let body = ""; for await (const chunk of req) body += chunk;
+          return json(200, p.endsWith("devices") ? adapter.updateDevice(JSON.parse(body)) : adapter.setFocus(JSON.parse(body)));
+        }
+        return json(405, { error: { code: "method_not_allowed", message: "Unsupported device action" } });
+      }
+      if (p === "/_tendril/manifest.webmanifest") return json(200, { name: "Tendriller preview", start_url: "/", display: "standalone" });
+      if (p === "/_tendril/agents") return json(200, { agents: [{ name: "preview", active: true }] });
+      if (p === "/_tendril/invites") return json(200, { invites: [] });
+      if (p === "/_tendril/blob" && req.method === "POST") {
+        if (adapter.role === "display") return json(403, { error: { code: "forbidden", message: "Display devices cannot upload" } });
+        if (req.headers["x-tendril-keep"] === "true" && adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Only owners can pin captures" } });
+        const chunks = []; let size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 5 * 1024 * 1024) return json(413, { error: { code: "too_large", message: "Blob exceeds 5 MB" } }); chunks.push(chunk); }
+        return json(201, adapter.storeBlob(Buffer.concat(chunks), req.headers["content-type"] || "application/octet-stream", req.headers["x-tendril-name"], req.headers["x-tendril-cid"], req.headers["x-tendril-keep"] === "true"));
+      }
+      if (p.startsWith("/_tendril/blob/")) {
+        const retention = p.endsWith("/retention");
+        const blob = adapter.blobs.get(p.split("/")[3]);
+        if (!blob) return json(404, { error: { code: "not_found", message: "No such blob" } });
+        if (retention && req.method === "GET") return json(200, { id: blob.id, url: blob.url, retention: blob.retention });
+        if (retention && req.method === "PATCH") {
+          if (adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Only the owner can change retention" } });
+          let body = ""; for await (const chunk of req) body += chunk;
+          const keep = JSON.parse(body).keep === true;
+          blob.retention = { keep, expires_at: keep ? null : Date.now() + 30 * 86400000, reason: keep ? "pinned" : "page_default" };
+          return json(200, { id: blob.id, url: blob.url, retention: blob.retention });
+        }
+        return send(200, blob.type, blob.data);
+      }
+      if (p.startsWith("/_tendril/snippets/")) {
+        const file = safeFile(join(repo, "snippets"), p.slice("/_tendril/snippets".length));
+        return file ? send(200, "text/javascript", readFileSync(file)) : send(404, "text/plain", "No such snippet");
+      }
+      if (p.startsWith("/_tendril/")) {
+        const file = safeFile(assets, p.slice("/_tendril".length));
+        if (file) return send(200, guessType(file), readFileSync(file), p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {});
+        return json(404, { error: { code: "preview_unavailable", message: "Use the local Worker for this service capability" } });
+      }
+      if (p === "/favicon.ico") return send(204, "image/x-icon", "");
+      const file = safeFile(root, p.endsWith("/") ? p + "index.html" : p);
+      if (!file) return send(404, "text/plain", "Not found");
+      const type = guessType(file);
+      return send(200, type === "text/html" ? "text/html; charset=utf-8" : type,
+        type === "text/html" ? injectRuntime(readFileSync(file, "utf8")) : readFileSync(file));
+    } catch (error) { json(400, { error: { code: error.code || "bad_request", message: error.message } }); }
   });
-  return new Promise((ok) => server.listen(0, "127.0.0.1", () => ok(server)));
+  adapter = await attachRuntime(server, { root: repo, state: initialState, role: fixture.role || "owner",
+    onEvent: fixture.reply ? (event, api) => api.say({ text: String(fixture.reply), in_reply_to: event.seq, speak: false }) : undefined });
+  server.preview = adapter;
+  server.mockedHttp = mockedHttp;
+  server.setHttpFixtures = installHttp;
+  server.stopPreview = async () => { await adapter.close(); await new Promise(resolve => server.close(resolve)); };
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  return server;
 }
 
 export async function preview(dir, opts = {}) {
@@ -103,7 +136,8 @@ export async function preview(dir, opts = {}) {
     return { ok: false, error: "playwright_missing",
       message: "Install Playwright in this project to use preview: npm i -D playwright && npx playwright install chromium" };
   }
-  const server = await startServer(dir, opts.state);
+  const fixture = opts.fixture || {};
+  const server = await startServer(dir, opts.state, fixture);
   const port = server.address().port;
   const errors = [], consoleMsgs = [];
   let browser;
@@ -111,13 +145,13 @@ export async function preview(dir, opts = {}) {
     try {
       browser = await pw.chromium.launch({
         headless: !opts.headed,
+        executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
         args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
       });
     } catch (e) {
       return { ok: false, error: "browser_missing", message: `Could not launch Chromium (${String(e.message).split("\n")[0]}). Try: npx playwright install chromium` };
     }
     const mobile = !opts.desktop;
-    const fixture = opts.fixture || {};
     const context = await browser.newContext({
       viewport: { width: opts.width || (mobile ? 390 : 1280), height: opts.height || (mobile ? 844 : 800) },
       deviceScaleFactor: mobile ? 2 : 1, isMobile: mobile, hasTouch: mobile,
@@ -146,7 +180,6 @@ export async function preview(dir, opts = {}) {
           value: (_ok, fail) => fail?.({ code: 1, message: "Location denied by preview fixture" }) });
       }
     }, fixture.denied);
-    if (fixture.capabilities) await page.addInitScript((caps) => { window.__TENDRIL_PREVIEW_CAPABILITIES__ = caps; }, fixture.capabilities);
     if (fixture.hardware) await page.addInitScript((hardware) => {
       const h = hardware || {};
       const define = (key, value) => Object.defineProperty(navigator, key, { configurable: true, value });
@@ -188,10 +221,20 @@ export async function preview(dir, opts = {}) {
     page.on("pageerror", (e) => errors.push({ message: e.message, stack: e.stack }));
     page.on("requestfailed", (r) => consoleMsgs.push({ level: "error", text: `request failed: ${r.url()} ${r.failure()?.errorText || ""}` }));
     const resp = await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load", timeout: 20000 });
+    await page.waitForFunction(() => window.tendril?.connected, null, { timeout: 10000 });
     const fixtureTrace = [];
-    for (const step of fixture.steps || []) {
-      if (step.wait_ms) await page.waitForTimeout(step.wait_ms);
+    for (const rawStep of fixture.steps || []) {
+      if (rawStep.wait_ms) await page.waitForTimeout(rawStep.wait_ms);
+      const step = resolveFixture(rawStep, { event: server.preview.events.at(-1), device: server.preview.devices[0] });
       try {
+        if (step.http) server.setHttpFixtures(step.http);
+        if (step.offline !== undefined) { server.preview.setOnline(!step.offline); await context.setOffline(!!step.offline); }
+        if (step.role) server.preview.setRole(step.role);
+        if (step.reply) server.preview.say(step.reply);
+        if (step.state_ops) server.preview.updateState(step.state_ops);
+        if (step.presence) server.preview.setPresence(step.presence);
+        if (step.reload) await page.reload({ waitUntil: "load" });
+        if (step.expect_connected !== undefined) await page.waitForFunction(value => window.tendril.connected === value, step.expect_connected, { timeout: 10000 });
         if (step.click) await page.locator(step.click).click();
         if (step.fill) await page.locator(step.fill).fill(String(step.value ?? ""));
         if (step.event) await page.evaluate(({event, data}) => window.__tendrilEmit(event, data), step);
@@ -200,6 +243,13 @@ export async function preview(dir, opts = {}) {
         if (step.expect_text) await page.getByText(String(step.expect_text), { exact: false }).first().waitFor({ timeout: 3000 });
         if (step.expect_send) await page.waitForFunction((expected) => (window.__tendrilCalls || []).some((call) =>
           call.fn === "send" && Object.entries(expected).every(([key, value]) => call.args?.[0]?.[key] === value)), step.expect_send, { timeout: 3000 });
+        if (step.expect_event) {
+          const deadline = Date.now() + 5000;
+          while (!server.preview.events.some(event => Object.entries(step.expect_event).every(([key, value]) => JSON.stringify(event.data?.[key]) === JSON.stringify(value)))) {
+            if (Date.now() > deadline) throw Error(`No accepted event matched ${JSON.stringify(step.expect_event)}`);
+            await page.waitForTimeout(25);
+          }
+        }
         if (step.expect_no_send && await page.evaluate(() => (window.__tendrilCalls || []).some((call) => call.fn === "send")))
           throw new Error("Expected no tendril.send call");
         fixtureTrace.push({ step, ok: true });
@@ -221,9 +271,11 @@ export async function preview(dir, opts = {}) {
       ok: errors.length === 0 && (resp?.ok() ?? false),
       status: resp?.status(), title, uncaught: errors, console_errors: consoleErrors,
       console: consoleMsgs.slice(-50), calls, fixture_trace: fixtureTrace, screenshot: shot,
+      runtime: "production", events: server.preview.events, activity: server.preview.activity, state: server.preview.state,
+      mocked_http: server.mockedHttp,
     };
   } finally {
     if (browser) await browser.close();
-    server.close();
+    await server.stopPreview();
   }
 }

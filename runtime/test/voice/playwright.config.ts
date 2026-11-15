@@ -7,5 +7,5 @@ export default defineConfig({
   testMatch: /.*\.spec\.ts$/,
   timeout: 20000,
   reporter: "list",
-  use: { browserName: "chromium", headless: true },
+  use: { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, browserName: "chromium", headless: true },
 });

@@ -113,7 +113,8 @@ describe("blobs and activity", () => {
       headers: { "Content-Type": "image/jpeg", "X-Tendril-Name": "drawer.jpg", "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
     });
     const blob = await up.json<any>();
-    expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `_tendril/blob/${blob.id}` });
+    expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `_tendril/blob/${blob.id}`,
+      retention: { keep: false, expires_at: expect.any(Number), reason: "page_default" } });
     const viaPage = await req(h.page_url + blob.url);
     expect(viaPage.headers.get("Content-Type")).toBe("image/jpeg");
     expect(new Uint8Array(await viaPage.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));

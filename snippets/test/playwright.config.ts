@@ -18,7 +18,7 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     browserName: "chromium",
     permissions: ["camera", "microphone", "geolocation"],
-    launchOptions: {
+    launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: [
         "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",

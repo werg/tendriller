@@ -9,5 +9,5 @@ export default defineConfig({
   fullyParallel: false,
   workers: 2,
   reporter: [["list"]],
-  use: { ...devices["Desktop Chrome"], headless: true },
+  use: { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, ...devices["Desktop Chrome"], headless: true },
 });
