@@ -20,7 +20,7 @@
   "workflow": {
     "file": "composition/artifacts/tendriller-workflows-0.2.0-rc.1.tgz",
     "url": "https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/tendriller-workflows-0.2.0-rc.1.tgz",
-    "sha256": "5dd7b77f0fffa96bd23d23cf35e449cc4113916c3cda5c4660d5d96a020fb8b5",
+    "sha256": "a56bf9e2d34efbf4dcf290c71c4f228595ef802cbda05738004d3c1c129e1da4",
     "version": "0.2.0-rc.1",
     "interfaces": {
       "sessions": {
@@ -28,6 +28,6 @@
         "schema_version": "1"
       }
     },
-    "source_commit": "64c1b080fa5d45aeffea0475f9858f0231e5e9db"
+    "source_commit": "33bb0d7b6a928405b8c4c18117000725be47901b"
   }
 }
