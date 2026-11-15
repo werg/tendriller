@@ -1,23 +1,49 @@
-// Retain each immutable runtime in the existing FILES bucket before deploying.
-import {readFileSync} from 'node:fs';
-import {resolve, join} from 'node:path';
-import {execFileSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
-import {verifyRuntimeManifest} from './runtime-manifest.mjs';
-const root=resolve(import.meta.dirname,'..');
-const at=process.argv.indexOf('--config');
-if(at<0||!process.argv[at+1])throw Error('Usage: node scripts/publish-runtime.mjs --config server/wrangler.<environment>.jsonc');
-const configPath=resolve(root,process.argv[at+1]);
-const config=JSON.parse(readFileSync(configPath,'utf8').replace(/^\s*\/\/.*$/gm,''));
-const bucket=config.r2_buckets?.find(binding=>binding.binding==='FILES')?.bucket_name;
-if(!bucket)throw Error('The selected deployment has no FILES bucket.');
-const directory=join(root,'dist/runtime/assets'),manifest=verifyRuntimeManifest(JSON.parse(readFileSync(join(directory,'manifest.json'),'utf8')));
-const files=[...manifest.assets,{path:'manifest.json',type:'application/json'}];
-for(const file of files){
- const path=resolve(directory,file.path);
- if(!path.startsWith(directory+'/'))throw Error('Unsafe runtime asset path.');
- const bytes=readFileSync(path);
- if(file.sha256&&createHash('sha256').update(bytes).digest('hex')!==file.sha256)throw Error(`Runtime integrity check failed: ${file.path}`);
- execFileSync(process.execPath,[join(root,'node_modules/wrangler/bin/wrangler.js'),'r2','object','put',`${bucket}/runtime/${manifest.id}/${file.path}`,'--file',path,'--content-type',file.type,'--cache-control','public, max-age=31536000, immutable','--remote','--config',configPath],{cwd:root,stdio:'inherit'});
+// Retain a complete immutable runtime graph in FILES before deploying its service.
+import { readFileSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
+import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { verifyRuntimeManifest } from './runtime-manifest.mjs';
+import { installRuntimeResources, uploadRuntimeFile } from './install-runtime-resources.mjs';
+
+const root = resolve(import.meta.dirname, '..');
+
+export async function publishRuntime({ configPath, directory = join(root, 'dist/runtime/assets'),
+  registry, fetcher, upload = uploadRuntimeFile }) {
+  configPath = resolve(configPath);
+  directory = resolve(directory);
+  const { experimental_readRawConfig } = createRequire(import.meta.url)('wrangler');
+  const { rawConfig: config } = experimental_readRawConfig({ config: configPath });
+  const bucket = config.r2_buckets?.find(binding => binding.binding === 'FILES')?.bucket_name;
+  if (!bucket) throw Error('The selected deployment has no FILES bucket.');
+  const manifest = verifyRuntimeManifest(JSON.parse(readFileSync(join(directory, 'manifest.json'), 'utf8')));
+  const paths = new Set(['manifest.json']);
+  const files = manifest.assets.map(file => {
+    const path = resolve(directory, file.path);
+    if (!path.startsWith(directory + '/') || paths.has(file.path)) throw Error('Unsafe or duplicate runtime asset path.');
+    paths.add(file.path);
+    const bytes = readFileSync(path);
+    if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw Error(`Runtime integrity check failed: ${file.path}`);
+    return { key: `runtime/${manifest.id}/${file.path}`, path, type: file.type };
+  });
+  const destination = { bucket, remote: true, configPath };
+  const resources = await installRuntimeResources({ ...destination, manifest, registry, fetcher, upload });
+  for (const file of files) await upload({ ...destination, ...file });
+  // Publish the manifest only after every declared file and dependency exists.
+  await upload({ ...destination, key: `runtime/${manifest.id}/manifest.json`,
+    path: join(directory, 'manifest.json'), type: 'application/json' });
+  return { id: manifest.id, files: files.length + 1, resources };
 }
-console.log(`Retained runtime ${manifest.id} (${files.length} immutable files).`);
+
+async function main() {
+  const { values } = parseArgs({ options: { config: { type: 'string' } } });
+  if (!values.config) throw Error('Usage: node scripts/publish-runtime.mjs --config server/wrangler.<environment>.jsonc');
+  const result = await publishRuntime({ configPath: resolve(root, values.config) });
+  console.log(`Retained runtime ${result.id} (${result.files} immutable files, ${result.resources} resources).`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+}

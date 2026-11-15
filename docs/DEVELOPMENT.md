@@ -32,7 +32,9 @@ Contrib owns component accessibility, recipe/scaffold flows, collectors, host br
 4. Generate release manifests, record the tested pair and publish release-candidate assets.
 5. Retain the immutable runtime in the existing service asset bucket, then deploy the matched composition to fresh pre-release fixtures.
 
-Release workflows publish artifacts on explicit version tags. A normal component/tool release can reuse the deployed workflow interface; deploying new trusted code requires a composition-lock change.
+Create `release/v<package-version>` at the exact source commit to publish a release candidate. Both branch creation and subsequent pushes run the release gate; core runs `npm run check:release`, and contrib requires its full Node and browser checks. The workflow creates the matching version tag and GitHub pre-release at the tested commit. Existing `v<package-version>` tags and published releases also run the same checks and publisher. Manual dispatch publishes only when its selected ref is one of those release branches or tags; other refs only build and verify artifacts.
+
+Publication requires agreement between the ref, package version, manifest version, manifest source commit and checked-out workflow commit. An existing lightweight or annotated tag must resolve to that same source. Repeated branch/tag events are serialized and verify existing asset bytes before uploading missing assets, with the manifest last. A mismatched tag or asset fails publication; choose a new version instead of moving a tag or replacing published files. A normal component/tool release can reuse the deployed workflow interface; deploying new trusted code requires a composition-lock change.
 
 ## Branch previews
 

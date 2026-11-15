@@ -3,12 +3,14 @@ name: Live branch previews
 on:
   workflow_run:
     workflows: [Public service]
+    # The default-branch controller selects only preview/** branches for
+    # automatic deployment. All other branches require workflow_dispatch.
     types: [completed]
   delete:
   workflow_dispatch:
     inputs:
       branch:
-        description: Repository branch to preview, or deleted branch to clean up
+        description: Passing repository branch to deploy explicitly, or deleted branch to clean up
         required: true
         type: string
       action:

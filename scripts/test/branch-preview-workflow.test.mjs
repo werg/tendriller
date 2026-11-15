@@ -4,7 +4,7 @@ import preview from '../../.github/scripts/branch-preview.cjs';
 
 const sha = 'a'.repeat(40);
 const newerSha = 'b'.repeat(40);
-const branch = 'feat/live-previews';
+const branch = 'preview/live-previews';
 
 function fixture({ eventName = 'workflow_run', latest = sha, run = {}, inputs = {}, ref = 'refs/heads/master', refError } = {}) {
   const calls = [];
@@ -57,7 +57,7 @@ function fixture({ eventName = 'workflow_run', latest = sha, run = {}, inputs = 
   return { github, context, core, calls, outputs };
 }
 
-test('successful trusted CI selects exactly its current non-default branch commit', async () => {
+test('successful trusted CI selects exactly its current preview branch commit', async () => {
   const f = fixture();
   await preview.select({ ...f, env: {} });
   assert.equal(f.outputs.action, 'deploy');
@@ -65,6 +65,15 @@ test('successful trusted CI selects exactly its current non-default branch commi
   assert.equal(f.outputs.sha, sha);
   assert.match(f.outputs.environment, /^preview\/[a-f0-9]{12}$/);
   assert.deepEqual(f.calls.find(call => call[0] === 'getRef')[1], { owner: 'werg', repo: 'tendriller', ref: `heads/${branch}` });
+});
+
+test('passing release and development branches do not opt into automatic deployment', async () => {
+  for (const head_branch of ['release/v0.2.0-rc.1', 'release/v3.0.0', 'feat/example', 'preview', 'previews/example', 'Preview/example']) {
+    const f = fixture({ run: { head_branch } });
+    await preview.select({ ...f, env: {} });
+    assert.deepEqual(f.outputs, {});
+    assert.deepEqual(f.calls, []);
+  }
 });
 
 test('forks and unsuccessful or unsupported CI events never access a privileged branch', async () => {
@@ -126,6 +135,23 @@ test('manual deployment requires a passing trusted CI run for the exact branch h
   assert.equal(query.head_sha, sha);
 });
 
+test('manual deployment and deleted-branch cleanup remain available outside the preview namespace', async () => {
+  for (const branch of ['release/v0.2.0-rc.1', 'feat/example']) {
+    const deploy = fixture({ eventName: 'workflow_dispatch', inputs: { branch, action: 'deploy' }, run: { head_branch: branch } });
+    deploy.github.runs = [deploy.context.payload.workflow_run];
+    await preview.select({ ...deploy, env: {} });
+    assert.equal(deploy.outputs.action, 'deploy');
+    assert.equal(deploy.outputs.branch, branch);
+    assert.equal(deploy.outputs.sha, sha);
+
+    const cleanup = fixture({ eventName: 'delete', latest: null });
+    cleanup.context.payload.ref = branch;
+    await preview.select({ ...cleanup, env: {} });
+    assert.equal(cleanup.outputs.action, 'delete');
+    assert.equal(cleanup.outputs.branch, branch);
+  }
+});
+
 test('manual controller cannot run from an arbitrary branch or deploy the default branch', async () => {
   const f = fixture({ eventName: 'workflow_dispatch', ref: `refs/heads/${branch}`, inputs: { branch, action: 'deploy' } });
   await assert.rejects(preview.select({ ...f, env: {} }), /from the default branch/);
@@ -164,7 +190,7 @@ test('GitHub ref prefix matches cannot masquerade as the requested branch', asyn
 test('branch identity preserves slash, punctuation and case without collisions', async () => {
   assert.notEqual(preview.branchKey('feat/a'), preview.branchKey('feat-a'));
   assert.notEqual(preview.branchKey('Feature'), preview.branchKey('feature'));
-  const literal = 'feat/$(id);example';
+  const literal = 'preview/$(id);example';
   const f = fixture({ run: { head_branch: literal } });
   await preview.select({ ...f, env: {} });
   assert.equal(f.outputs.branch, literal);

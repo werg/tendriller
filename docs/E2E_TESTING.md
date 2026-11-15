@@ -1,16 +1,42 @@
 # Browser E2E tests
 
-The complete shipping gate is `npm run check:release`: non-browser contract,
-type, build, unit, recipe, Worker, CLI and fresh-consumer checks, followed by the
-Chromium shipping suites and the portable Firefox/WebKit suites.
-That browser command runs current runtime/control/push/TTS tests, snippet and
-draft/capture regressions, actual-runtime preview and catalog recipe scenarios,
-then the isolated Worker flows below and the Chromium portable cases. CI runs the
-non-browser gate on Node 22.15 and 24, and tests portable flows independently in
-Firefox and WebKit. Deployment depends on all of those jobs. Failure traces and
-screenshots are uploaded as workflow artifacts.
+The core gate is `npm run check:release`: contract, type, build, unit, Worker,
+fresh-consumer and compiled composition checks, followed by the runtime, control,
+push, TTS and isolated Worker/browser suites. CI checks Node 22.15 and 24.
+Contrib owns its component, preview, recipe and portable browser suites.
+
+## Composed service and contrib
+
+Core service and release CI also run the authenticated contrib browser suite
+against the exact composed Worker:
+
+```sh
+npm run build
+npm run build:service
+npx playwright install --with-deps chromium
+node scripts/test-contrib-integration.mjs
+```
+
+The runner checks `dist/service/pairing.json` against `composition.lock.json`,
+derives the public source repository from the locked workflow release URL, and
+fetches its exact `source_commit` into a temporary checkout. That checkout
+installs its own locked dependencies and runs its own E2E tests. Playwright starts
+the core-owned local fixture with `--entry dist/service/worker.mjs`; core's normal
+local browser suite uses the engine entry. Both fixtures use fresh temporary
+storage and the same test account setup. The contrib suite communicates only
+through public HTTP and browser interfaces.
+
+This gate covers live approvals, camera/location inputs, private participant
+tasks, archive rollover, stale-generation rejection, draft recovery and display
+privacy across authenticated browser sessions. It runs before release artifact
+publication and blocks service deployment on failure. Traces and screenshots
+remain under `test-results/contrib-integration/` after the temporary source and
+service storage are removed. Deployment builds consume only the pinned trusted
+workflow archive; they do not fetch the test checkout or its dependencies.
 
 ## Portable flows and accessibility
+
+Run these commands in the independently versioned contrib repository:
 
 ```sh
 npx playwright install --with-deps chromium firefox webkit

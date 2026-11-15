@@ -51,6 +51,9 @@ async function select({ github, context, core, env = process.env }) {
   } else if (context.eventName === 'workflow_run') {
     const run = payload.workflow_run;
     if (env.BRANCH_PREVIEWS_ENABLED === 'false' || !trustedRun(run, context) || run.head_branch === defaultBranch) return;
+    // A passing build is not deployment intent. Only the preview namespace
+    // opts into automatic deployment; other branches require a manual request.
+    if (typeof run.head_branch !== 'string' || !run.head_branch.startsWith('preview/')) return;
     action = 'deploy';
     branch = run.head_branch;
     sha = run.head_sha;

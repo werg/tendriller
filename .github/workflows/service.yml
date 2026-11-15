@@ -44,9 +44,31 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  contrib-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run build:service
+      - run: npx playwright install --with-deps chromium
+      - name: Test the composed service with its pinned public contrib suite
+        run: node scripts/test-contrib-integration.mjs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: contrib-service-failure-traces
+          path: test-results/contrib-integration/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check]
+    needs: [check, contrib-integration]
     runs-on: ubuntu-latest
     environment: staging
     env:
@@ -83,7 +105,7 @@ jobs:
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, staging]
+    needs: [check, contrib-integration, staging]
     runs-on: ubuntu-latest
     environment: production
     env:

@@ -160,6 +160,14 @@ function runWrangler(source, args, input) {
   });
 }
 
+function runSourceScript(source, script, args) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn(process.execPath, [resolve(source, 'scripts', script), ...args], { cwd: source, stdio: 'inherit' });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => code === 0 ? resolveRun() : reject(new Error(`${script} failed (${signal ?? code})`)));
+  });
+}
+
 export async function smokePreview(identity, { fetcher = fetch, provenance = true, delay = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
   let lastError;
   for (let attempt = 0; attempt < 10; attempt++) {
@@ -185,6 +193,11 @@ export async function smokePreview(identity, { fetcher = fetch, provenance = tru
     }
   }
   throw lastError;
+}
+
+export async function verifyPreview(identity, source, { smoke = smokePreview } = {}) {
+  await smoke(identity);
+  await runSourceScript(source, 'check-deployment.mjs', [identity.url]);
 }
 
 export async function deletePreview(api, accountId, identity) {
@@ -262,13 +275,10 @@ async function main() {
   const config = previewConfig(identity, template, databaseId, accountId);
   await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
   await runWrangler(source, ["d1", "migrations", "apply", "ACCOUNTS", "--remote", "--config", configPath]);
-  await new Promise((resolveUpload, rejectUpload) => {
-    const child = spawn(process.execPath, [resolve(source, "scripts/publish-runtime.mjs"), "--config", configPath], {cwd: source, stdio: "inherit"});
-    child.once("error", rejectUpload); child.once("exit", code => code === 0 ? resolveUpload() : rejectUpload(new Error("Runtime publication failed")));
-  });
+  await runSourceScript(source, 'publish-runtime.mjs', ['--config', configPath]);
   await runWrangler(source, ["deploy", "--config", configPath, "--durable-objects-code-update-mode", "immediate"]);
   if (Object.keys(secrets).length) await runWrangler(source, ["secret", "bulk", "--config", configPath], JSON.stringify(secrets));
-  await smokePreview(identity);
+  await verifyPreview(identity, source);
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT,
     `url=${identity.url}\npreview_key=${identity.key}\nworker=${identity.worker}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
