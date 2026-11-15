@@ -160,6 +160,19 @@ test('sample command accepts an omitted interval with GPU flag and rejects ambig
   assert.throws(() => parseSampleArguments(['1000', '2000']), /Usage/);
 });
 
+test('sample mode stops when stdout never drains', async () => {
+  const moduleUrl = new URL('../lib/stream-collector.mjs', import.meta.url).href;
+  const script = `import { emitHostSamples } from ${JSON.stringify(moduleUrl)};
+    process.stdout.write = () => false;
+    const abort = new AbortController();
+    setTimeout(() => abort.abort(), 50);
+    await emitHostSamples({ interval: 500, signal: abort.signal });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: 'ignore' });
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 2000);
+  try { assert.equal((await once(child, 'exit'))[0], 0); }
+  finally { clearTimeout(timeout); }
+});
+
 test('spool ownership rejects competing collectors and credential reuse', async t => {
   const dir = await fixture(t);
   const first = await StreamSpool.open(dir, { api, token });

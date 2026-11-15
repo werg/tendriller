@@ -61,8 +61,9 @@ export function createStreams(host: Host): BrowserStreams {
     }
   };
 
-  const deliver = (channel: Channel, record: StreamRecord) => {
+  const deliver = (channel: Channel, record: StreamRecord, current?: () => boolean) => {
     for (const subscriber of [...channel.subscribers]) {
+      if (current && !current()) return;
       if (!subscriber.active || subscriber.cursor === null || record.seq <= subscriber.cursor) continue;
       // This is a delivery checkpoint only. Applications needing handled/transactional
       // acknowledgement use explicit reads and persist their own processing checkpoint.
@@ -72,20 +73,26 @@ export function createStreams(host: Host): BrowserStreams {
     }
   };
 
-  const applyBatch = (channel: Channel, batch: StreamBatch) => {
+  const applyBatch = (channel: Channel, batch: StreamBatch, current: () => boolean) => {
     const missing = batch.history.missing_through;
     const affected = batch.history.gap && missing !== null
       ? [...channel.subscribers].filter(sub => sub.active && sub.cursor !== null && sub.cursor < missing) : [];
     if (affected.length) {
       host.bus.emit("stream_gap", { stream: channel.name, history: batch.history });
+      if (!current()) return batch.cursor;
       for (const subscriber of affected) {
+        if (!current()) return batch.cursor;
         try { subscriber.options.onGap?.(batch.history); }
         catch (error) { report(channel, error, subscriber); }
       }
     }
-    for (const record of batch.records) deliver(channel, record);
+    for (const record of batch.records) {
+      if (!current()) return batch.cursor;
+      deliver(channel, record, current);
+    }
     // An entirely expired range has no record with which to advance the cursor.
     // Advance only after exposing the gap, including to the public stream_gap event.
+    if (!current()) return batch.cursor;
     for (const subscriber of affected) subscriber.cursor = Math.max(subscriber.cursor!, missing!);
     return Math.max(batch.cursor, batch.history.gap ? missing ?? 0 : 0);
   };
@@ -120,14 +127,14 @@ export function createStreams(host: Host): BrowserStreams {
       for (const subscriber of channel.subscribers) if (subscriber.cursor === null) subscriber.cursor = ack.cursor;
       if (after !== undefined && ack.durability === "durable") {
         if (!ack.batch) throw failure("invalid_response", "Durable replay requires an initial stream batch");
-        let cursor = applyBatch(channel, ack.batch);
+        let cursor = applyBatch(channel, ack.batch, current);
         // The subscription is already attached at ack.cursor. Buffer its live frames
         // while fetching any older pages; otherwise >500 pending records would be lost.
         while (current() && cursor < ack.cursor) {
           const batch = await get(`${path(channel.name)}/records?${streamReadQuery({ after: cursor, limit: 500 })}`, "streamBatch", channel.abort.signal);
           if (!current()) return;
           if (batch.stream !== channel.name) throw failure("invalid_response", "History response names another stream");
-          const next = applyBatch(channel, batch);
+          const next = applyBatch(channel, batch, current);
           if (next <= cursor) throw failure("invalid_response", "Stream replay did not advance through its subscription boundary");
           cursor = next;
         }
@@ -200,14 +207,17 @@ export function createStreams(host: Host): BrowserStreams {
       if (typeof handler !== "function") throw new TypeError("A stream subscriber needs a callback");
       if (options.after !== undefined) streamReadQuery({ after: options.after });
       let channel = channels.get(name);
+      const existing = !!channel;
       if (channel?.durability === "ephemeral" && options.after !== undefined) throw failure("not_replayable", "Ephemeral streams do not support replay cursors");
       if (!channel) {
         channel = { name, subscribers: new Set(), generation: 0, active: false, buffer: [], bufferedBytes: 0, attempts: 0 };
         channels.set(name, channel);
       }
-      const subscriber: Subscriber = { handler, options, cursor: options.after ?? null, active: true };
+      const established = channel.active && [...channel.subscribers].flatMap(sub => sub.cursor === null ? [] : [sub.cursor]);
+      const subscriber: Subscriber = { handler, options,
+        cursor: options.after ?? (established && established.length ? Math.max(...established) : null), active: true };
       channel.subscribers.add(subscriber);
-      void start(channel);
+      if (!existing || channel.durability !== "ephemeral" && options.after !== undefined) void start(channel);
       return () => {
         if (!subscriber.active) return;
         subscriber.active = false;

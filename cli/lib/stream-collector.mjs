@@ -141,6 +141,10 @@ export async function readFileBatch(source, checkpoint, maxRecords = 100) {
     const nextOffset = offset + consumed;
     const anchor = Buffer.alloc(Math.min(nextOffset, 64));
     const read = await file.read(anchor, 0, anchor.length, nextOffset - anchor.length);
+    const after = await file.stat();
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
+      || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs)
+      throw Error('file_changed_during_read');
     return { records, checkpoint: { identity, offset: nextOffset, anchor: digest(anchor.subarray(0, read.bytesRead)), discarding } };
   } finally { await file.close(); }
 }
@@ -362,7 +366,16 @@ export async function emitHostSamples({ interval = 5000, gpu = false, signal } =
   while (!signal?.aborted) {
     const { sample, cpu } = await sampleHost(previous, { gpu }); previous = cpu;
     if (!process.stdout.write(JSON.stringify({ ts: Date.now(), type: 'host', data: sample }) + '\n'))
-      await new Promise(resolve => process.stdout.once('drain', resolve));
+      await new Promise(resolve => {
+        const finish = () => {
+          process.stdout.off('drain', finish);
+          signal?.removeEventListener('abort', finish);
+          resolve();
+        };
+        process.stdout.once('drain', finish);
+        signal?.addEventListener('abort', finish, { once: true });
+        if (signal?.aborted) finish();
+      });
     await pause(interval, signal);
   }
 }

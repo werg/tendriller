@@ -156,3 +156,31 @@ test("a missing durable live frame triggers replay before a later cursor can hid
   assert.deepEqual(received, [1, 2, 3]);
   stop();
 });
+
+test("a replay callback that disconnects the page stops stale delivery", async () => {
+  const received = [];
+  let h;
+  h = setup({ request: msg => msg.t === "stream_subscribe"
+    ? { stream: msg.stream, durability: "durable", cursor: 2, batch: batch([record(1), record(2)], 0, 2) } : {} });
+  const stop = h.api.subscribe("training.loss", item => {
+    received.push(item.seq);
+    if (item.seq === 1) h.offline();
+  }, { after: 0 });
+  await turn();
+  assert.deepEqual(received, [1]);
+  stop();
+});
+
+test("joining an ephemeral stream during its handshake keeps buffered live frames", async () => {
+  const pending = deferred(), a = [], b = [];
+  const h = setup({ request: msg => msg.t === "stream_subscribe" ? pending.promise : {} });
+  const stopA = h.api.subscribe("machine.live", item => a.push(item.seq));
+  h.bus.emit("stream_record", record(6, "machine.live"));
+  const stopB = h.api.subscribe("machine.live", item => b.push(item.seq));
+  pending.resolve({ stream: "machine.live", durability: "ephemeral", cursor: 5 });
+  await turn();
+  assert.deepEqual(a, [6]);
+  assert.deepEqual(b, [6]);
+  assert.equal(h.requests.filter(item => item.t === "stream_subscribe").length, 1);
+  stopA(); stopB();
+});

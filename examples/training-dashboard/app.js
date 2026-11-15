@@ -108,17 +108,26 @@ function render() {
 
 $('run').addEventListener('change', schedule); $('metric').addEventListener('change', schedule);
 $('follow').addEventListener('click', () => { follow = !follow; $('follow').textContent = follow ? 'Following' : 'Paused scrolling'; $('follow').setAttribute('aria-pressed', String(follow)); schedule(); });
-t.on('connect', connection); t.on('disconnect', connection); connection();
+t.on('connect', () => { connection(); void initialize(); }); t.on('disconnect', connection); connection();
 setInterval(renderMachines, 1000);
-try {
-  const { streams } = await t.streams.list();
-  for (const name of ['machine.utilization', 'training.metrics', 'training.logs']) {
-    const stream = streams.find(item => item.name === name);
-    if (!stream) { notice(`Stream ${name} is not configured yet. Run the dashboard setup script.`); continue; }
-    t.streams.subscribe(name, add, {
-      ...(stream.durability === 'durable' ? { after: 0 } : {}),
-      onGap(history) { notice(`${name}: history before sequence ${history.missing_through + 1} is no longer available.`); },
-      onError(error) { notice(`${name}: ${error.message || 'stream unavailable'}`); },
-    });
-  }
-} catch (error) { notice(error.message || 'Could not load stream configuration.'); }
+const subscriptions = new Map();
+let initializing = false;
+async function initialize() {
+  if (initializing || subscriptions.size === 3) return;
+  initializing = true;
+  try {
+    const { streams } = await t.streams.list();
+    for (const name of ['machine.utilization', 'training.metrics', 'training.logs']) {
+      if (subscriptions.has(name)) continue;
+      const stream = streams.find(item => item.name === name);
+      if (!stream) { notice(`Stream ${name} is not configured yet. Run the dashboard setup script.`); continue; }
+      subscriptions.set(name, t.streams.subscribe(name, add, {
+        ...(stream.durability === 'durable' ? { after: 0 } : {}),
+        onGap(history) { notice(`${name}: history before sequence ${history.missing_through + 1} is no longer available.`); },
+        onError(error) { notice(`${name}: ${error.message || 'stream unavailable'}`); },
+      }));
+    }
+  } catch (error) { notice(error.message || 'Could not load stream configuration.'); }
+  finally { initializing = false; }
+}
+void initialize();

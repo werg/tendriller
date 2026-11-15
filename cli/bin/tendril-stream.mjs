@@ -8,6 +8,8 @@ try {
     const abort = new AbortController();
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => abort.abort());
     await emitHostSamples({ ...options, signal: abort.signal });
+    // A blocked stdout pipe can keep Node alive after the drain wait is aborted.
+    if (abort.signal.aborted) process.exit(0);
   } else {
     const file = process.argv[2];
     if (!file || process.argv.length !== 3) throw Error('Usage: tendril-stream <private-config.json> | tendril-stream --sample [interval_ms] [--gpu]');
