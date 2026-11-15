@@ -6,5 +6,7 @@ export default defineConfig({
   timeout: 60_000,
   workers: 1,
   reporter: [["list"]],
-  use: { browserName: "chromium", launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, storageState: ".e2e-auth.json", ignoreHTTPSErrors: false },
+  outputDir: "../../test-results/public",
+  use: { browserName: "chromium", launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, storageState: ".e2e-auth.json", ignoreHTTPSErrors: false,
+    trace: "retain-on-failure", screenshot: "only-on-failure" },
 });

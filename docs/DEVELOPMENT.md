@@ -119,7 +119,13 @@ the client, contract and browser declarations without requiring publication.
 includes runtime core, current control, push/rules, TTS, snippets, real-runtime
 preview, every catalog recipe with a `scenario` field, and the isolated public Worker lifecycle. The latter covers owner claims,
 listener-required publication, delivery, rendering, speech and cross-origin
-behavior. CI uploads retained failure traces.
+behavior. Each suite writes to its own directory under `test-results/`: `runtime`,
+`control`, `push`, `tts`, `snippets`, `preview`, and `e2e`. A later suite therefore
+cannot clear an earlier suite's diagnostics. Failures retain Playwright traces and
+screenshots; recipe preview screenshots and JSON attachments stay with their test.
+CI uploads the complete directory, including hidden diagnostic files, as
+`browser-failure-traces`. The optional staging suite uses `test-results/public`
+and the legacy voice suite uses `test-results/legacy-voice`.
 
 The old `runtime/test/real-server.spec.ts`, `test/e2e/core.spec.ts`, and
 `runtime/test/voice` files describe an earlier anonymous service/realtime voice

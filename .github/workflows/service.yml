@@ -27,10 +27,8 @@ jobs:
         if: failure()
         with:
           name: browser-failure-traces
-          path: |
-            test-results/
-            **/.results/
-            **/test-results/
+          path: test-results/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   staging:

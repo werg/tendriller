@@ -13,8 +13,10 @@ export default defineConfig({
   timeout: 30_000,
   fullyParallel: true,
   reporter: [["list"]],
-  outputDir: dir + "test-results",
+  outputDir: "../../test-results/snippets",
   use: {
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
     baseURL: `http://localhost:${PORT}`,
     browserName: "chromium",
     permissions: ["camera", "microphone", "geolocation"],

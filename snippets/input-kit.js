@@ -20,7 +20,7 @@
   function mount(target, { modalities = valid, block, context } = {}) {
     const host = typeof target === 'string' ? document.querySelector(target) : target;
     if (!host) throw Error('Input kit target was not found');
-    let camera = null, recorder = null, stream = null, motion = null, motionStart = 0, motionCount = 0;
+    let camera = null, cameraSession = null, recorder = null, stream = null, motion = null, motionStart = 0, motionCount = 0;
     let current = null, timer = null, recordingStart = 0, discardAudio = false, disposed = false, generation = 0;
     const objectUrls = new Set(), cards = new Map(), replies = new Map(), off = [];
     const section = el('section'); section.className = 'tendril-input-kit';
@@ -40,9 +40,9 @@
     };
     const objectUrl = blob => { const url = URL.createObjectURL(blob); objectUrls.add(url); return url; };
     const release = url => { if (url && objectUrls.delete(url)) URL.revokeObjectURL(url); };
-    const stopCamera = () => { camera?.close(); camera = null; };
+    const stopCamera = () => { cameraSession?.abort(); cameraSession = null; camera?.close(); camera = null; };
     const stopRecording = discard => { discardAudio = discard; if (recorder?.state === 'recording') recorder.stop(); else stream?.getTracks().forEach(t => t.stop()); clearInterval(timer); timer = null; };
-    const busy = () => !!camera || recorder?.state === 'recording' || !!current || !!motion;
+    const busy = () => !!cameraSession || !!camera || recorder?.state === 'recording' || !!current || !!motion;
     const reset = () => { ++generation; stopCamera(); stopRecording(true); if (current) release(current.preview); current = null; view.replaceChildren(); details.replaceChildren(); actionBar.replaceChildren(); review.hidden = true; };
     const checked = async data => check(await tendril.send({ type: 'input', at: Date.now(), ...(block ? { block } : {}), ...data }));
     const receiptText = r => r.status === 'rejected' ? (r.message || r.error?.message || 'Not accepted. Retry or remove this capture.') : r.queued || r.status === 'queued' ? 'Saved on this device. Waiting for connection.' : 'Received by the page. Waiting for the agent.';
@@ -123,20 +123,68 @@
 
     const cameraKit = modalities.includes('photo') ? script('camera').catch(() => null) : null;
     const motionKit = modalities.includes('motion') ? script('motion').catch(() => null) : null;
+    const waitForFrame = (video, signal) => new Promise((resolve, reject) => {
+      const events = ['loadeddata', 'canplay', 'playing', 'resize'];
+      let timeout;
+      const cleanup = () => { clearTimeout(timeout); for (const event of events) video.removeEventListener(event, checkFrame); video.removeEventListener('error', fail); signal.removeEventListener('abort', cancel); };
+      const checkFrame = () => { if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) { cleanup(); resolve(); } };
+      const fail = () => { cleanup(); reject(Error('The camera could not show a picture. Try switching again, or cancel and choose a photo.')); };
+      const cancel = () => { cleanup(); reject(new DOMException('Camera closed', 'AbortError')); };
+      if (signal.aborted) { cancel(); return; }
+      for (const event of events) video.addEventListener(event, checkFrame);
+      video.addEventListener('error', fail); signal.addEventListener('abort', cancel, { once: true });
+      // A device failure needs a retry path; the shutter is enabled by a frame
+      // event and current-data readiness, never by waiting an arbitrary delay.
+      timeout = setTimeout(fail, 12000); checkFrame();
+    });
     async function openCamera() {
       if (busy()) { say('Finish or discard your current capture first.'); return; }
-      reset(); const token = generation; const kit = await cameraKit;
-      if (!kit) throw Error('Camera is unavailable. You can choose a photo instead.');
+      reset(); const token = generation, session = new AbortController(); cameraSession = session;
+      const active = () => !disposed && token === generation && cameraSession === session && !session.signal.aborted;
+      const cancel = makeButton('Cancel camera', () => { reset(); say('Camera closed.'); });
+      actionBar.replaceChildren(cancel);
       review.hidden = false; say('Opening the camera…');
-      const opened = await kit.open(view);
-      if (disposed || generation !== token) { opened.close(); return; }
-      camera = opened;
-      actionBar.replaceChildren(makeButton('Capture photo', async () => {
-        const token = generation; const picture = await camera.capture({ upload: false });
-        if (disposed || token !== generation) return;
-        readyCapture({ ...picture, modality: 'photo', name: 'photo.jpg', preview: objectUrl(picture.blob) });
-      }), makeButton('Switch camera', async () => { await camera.switch(); }), makeButton('Cancel camera', () => { reset(); say('Camera closed.'); }));
-      say('Aim your camera, then choose Capture photo.');
+      let opened;
+      try {
+        const kit = await cameraKit; if (!active()) return;
+        if (!kit) throw Error('Camera is unavailable. You can choose a photo instead.');
+        opened = await kit.open(view);
+        if (!active()) { opened.close(); return; }
+        camera = opened;
+        let working = false, frameAvailable = false;
+        const shutter = el('button', 'Capture photo'), switcher = el('button', 'Switch camera'); shutter.type = switcher.type = 'button';
+        const updateControls = () => { shutter.disabled = working || !frameAvailable; switcher.disabled = working; };
+        const runCamera = async action => {
+          if (working || !active()) return;
+          working = true; updateControls();
+          try { await action(); }
+          catch (error) { if (active()) say(error?.message || 'Could not use the camera. Try again.'); }
+          finally { working = false; if (active()) updateControls(); else opened.close(); }
+        };
+        const showReady = async () => {
+          await waitForFrame(opened.video, session.signal);
+          if (!active()) return;
+          frameAvailable = true; say('Aim your camera, then choose Capture photo.');
+        };
+        shutter.onclick = () => void runCamera(async () => {
+          await waitForFrame(opened.video, session.signal);
+          if (!active()) return;
+          const picture = await opened.capture({ upload: false });
+          if (!active()) return;
+          readyCapture({ ...picture, modality: 'photo', name: 'photo.jpg', preview: objectUrl(picture.blob) });
+        });
+        switcher.onclick = () => void runCamera(async () => {
+          frameAvailable = false; say('Switching camera…');
+          await opened.switch();
+          if (!active()) return;
+          await showReady();
+        });
+        actionBar.replaceChildren(shutter, switcher, cancel); updateControls();
+        await runCamera(showReady);
+      } catch (error) {
+        if (!active()) { opened?.close(); return; }
+        reset(); throw error;
+      }
     }
     const picker = (accept, modality) => {
       if (busy()) { say('Finish or discard your current capture first.'); return; }

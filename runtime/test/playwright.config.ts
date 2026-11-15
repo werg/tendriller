@@ -9,5 +9,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 2,
   reporter: [["list"]],
-  use: { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, ...devices["Desktop Chrome"], headless: true },
+  outputDir: "../../test-results/runtime",
+  use: { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, ...devices["Desktop Chrome"], headless: true,
+    trace: "retain-on-failure", screenshot: "only-on-failure" },
 });

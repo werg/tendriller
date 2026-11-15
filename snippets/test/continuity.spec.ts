@@ -7,6 +7,36 @@ async function mount(page) {
   await page.evaluate(spec => { const w = window as any; w.tendril.state.set('interface', spec); w.ui = w.tendrilSnippets.ui.mount('#app'); }, interfaceSpec);
 }
 
+async function mountControlledCamera(page) {
+  await load(page);
+  await page.evaluate(() => {
+    const w = window as any; w.cameraFixture = { sessions: [] };
+    w.tendrilSnippets = { camera: { async open(host: HTMLElement) {
+      const video = document.createElement('video'); host.append(video);
+      const session: any = { ready: 2, width: 320, height: 180, active: true, captures: 0, closes: 0 };
+      Object.defineProperties(video, { readyState: { get: () => session.ready }, videoWidth: { get: () => session.width }, videoHeight: { get: () => session.height } });
+      session.showFrame = () => { session.ready = 2; session.width = 320; session.height = 180; video.dispatchEvent(new Event('loadeddata')); };
+      w.cameraFixture.sessions.push(session);
+      return {
+        video,
+        async capture() {
+          session.captures++; if (session.ready < 2) throw Error('Captured before the new frame was ready');
+          const canvas = document.createElement('canvas'); canvas.width = canvas.height = 2;
+          const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+          return { blob, width: 2, height: 2 };
+        },
+        async switch() {
+          session.ready = 0; session.width = session.height = 0; session.active = false;
+          await new Promise<void>(resolve => { session.finishSwitch = () => { session.active = true; session.ready = 1; session.width = 320; session.height = 180; resolve(); }; });
+        },
+        close() { session.active = false; session.closes++; video.remove(); },
+      };
+    } } };
+  });
+  await page.addScriptTag({ url: '/input-kit.js' });
+  await page.evaluate(() => (window as any).tendrilSnippets.inputs.mount('#app', { modalities: ['photo'] }));
+}
+
 test('adaptive blocks preserve text, focus and drawing when the agent changes a status', async ({ page }) => {
   await mount(page);
   await page.getByLabel('Your observation').fill('A half-written field note');
@@ -88,6 +118,45 @@ test('retake, switch camera and discard never upload a photo', async ({ page }) 
   await page.getByRole('button', { name: 'Capture photo', exact: true }).click();
   await page.getByRole('button', { name: 'Discard', exact: true }).click();
   expect((await calls(page)).upload).toHaveLength(0); expect((await calls(page)).send).toHaveLength(0);
+});
+
+test('the shutter waits for switch completion and a current frame, not just metadata', async ({ page }) => {
+  await mountControlledCamera(page); await page.getByRole('button', { name: 'Take photo', exact: true }).click();
+  const shutter = page.getByRole('button', { name: 'Capture photo', exact: true });
+  const switcher = page.getByRole('button', { name: 'Switch camera', exact: true });
+  await expect(shutter).toBeEnabled(); await switcher.click();
+  await expect(shutter).toBeDisabled(); await expect(switcher).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Cancel camera', exact: true })).toBeEnabled();
+  await shutter.evaluate((button: HTMLButtonElement) => button.click());
+  expect(await page.evaluate(() => (window as any).cameraFixture.sessions[0].captures)).toBe(0);
+  await page.evaluate(() => (window as any).cameraFixture.sessions[0].finishSwitch());
+  await expect(shutter).toBeDisabled();
+  await page.evaluate(() => (window as any).cameraFixture.sessions[0].showFrame());
+  await expect(shutter).toBeEnabled(); await shutter.click();
+  await expect(page.getByRole('button', { name: 'Retake photo', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).cameraFixture.sessions[0].captures)).toBe(1);
+  expect((await calls(page)).upload).toHaveLength(0);
+});
+
+test('cancelled switches and frame waits cannot reopen a camera or replace a newer capture session', async ({ page }) => {
+  await mountControlledCamera(page);
+  await page.getByRole('button', { name: 'Take photo', exact: true }).click();
+  await page.getByRole('button', { name: 'Switch camera', exact: true }).click();
+  await page.getByRole('button', { name: 'Cancel camera', exact: true }).click();
+  await page.getByRole('button', { name: 'Take photo', exact: true }).click();
+  await page.evaluate(() => (window as any).cameraFixture.sessions[0].finishSwitch());
+  await expect.poll(() => page.evaluate(() => (window as any).cameraFixture.sessions.map((s: any) => s.active))).toEqual([false, true]);
+  await page.getByRole('button', { name: 'Switch camera', exact: true }).click();
+  await page.evaluate(() => (window as any).cameraFixture.sessions[1].finishSwitch());
+  await expect(page.getByRole('button', { name: 'Capture photo', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Cancel camera', exact: true }).click();
+  await page.evaluate(() => (window as any).cameraFixture.sessions[1].showFrame());
+  await expect(page.getByRole('button', { name: 'Capture photo', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Take photo', exact: true }).click();
+  await page.getByRole('button', { name: 'Capture photo', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Retake photo', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).cameraFixture.sessions.map((s: any) => s.captures))).toEqual([0, 0, 1]);
+  expect((await calls(page)).upload).toHaveLength(0);
 });
 
 test('a storage failure with a capture id retains the local photo and question for retry', async ({ page }) => {

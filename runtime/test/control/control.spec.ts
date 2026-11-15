@@ -350,7 +350,7 @@ test("keyboard navigation keeps settings separate and restores the opener", asyn
   await page.keyboard.press("ArrowRight"); await expect(page.getByRole("tab", { name: "Share and devices" })).toBeFocused();
   await page.keyboard.press("End"); await expect(page.getByRole("tab", { name: "Settings and history" })).toBeFocused();
   await page.locator("tendril-control summary", { hasText: "Display and sound" }).focus(); await page.keyboard.press("Enter");
-  await expect(page.getByText("Text size")).toBeVisible();
+  await expect(page.getByRole("group", { name: "Text size", exact: true })).toBeVisible();
   await page.keyboard.press("Escape"); await expect(page.locator("#tendril-sheet")).toBeHidden(); await expect(presenceBtn(page)).toBeFocused();
 });
 
