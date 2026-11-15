@@ -592,6 +592,949 @@
       ],
       "additionalProperties": false
     },
+    "streamName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+    },
+    "streamCustomName": {
+      "type": "string",
+      "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+    },
+    "streamJson": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/streamJson"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/streamJson"
+          }
+        }
+      ]
+    },
+    "streamInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "durability": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ]
+        },
+        "readers": {
+          "enum": [
+            "agent",
+            "owner",
+            "page"
+          ]
+        },
+        "builtin": {
+          "type": "boolean"
+        },
+        "max_records": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_age_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "durability",
+        "readers",
+        "builtin",
+        "max_records",
+        "max_age_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "streamCreate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+            },
+            "durability": {
+              "const": "durable"
+            },
+            "readers": {
+              "enum": [
+                "owner",
+                "page"
+              ]
+            },
+            "max_records": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2592000
+            }
+          },
+          "required": [
+            "name",
+            "durability"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+            },
+            "durability": {
+              "const": "ephemeral"
+            },
+            "readers": {
+              "enum": [
+                "owner",
+                "page"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "durability"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "streamInput": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "data": {
+          "$ref": "#/$defs/streamJson"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "streamRecord": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "ts": {
+          "type": "number"
+        },
+        "received_at": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "data": {
+          "$ref": "#/$defs/streamJson"
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "stream",
+        "seq",
+        "ts",
+        "received_at",
+        "type",
+        "data",
+        "producer",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "streamHistory": {
+      "type": "object",
+      "properties": {
+        "earliest_available_seq": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "gap": {
+          "type": "boolean"
+        },
+        "missing_through": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "earliest_available_seq",
+        "latest_seq",
+        "gap",
+        "missing_through"
+      ],
+      "additionalProperties": false
+    },
+    "streamAppend": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "ts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "data": {
+                "$ref": "#/$defs/streamJson"
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "data"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "records"
+      ],
+      "additionalProperties": false
+    },
+    "streamAppendResult": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "stream": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              },
+              "seq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "ts": {
+                "type": "number"
+              },
+              "received_at": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "data": {
+                "$ref": "#/$defs/streamJson"
+              },
+              "producer": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stream",
+              "seq",
+              "ts",
+              "received_at",
+              "type",
+              "data",
+              "producer",
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "durability": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ]
+        }
+      },
+      "required": [
+        "records",
+        "cursor",
+        "durability"
+      ],
+      "additionalProperties": false
+    },
+    "streamBatch": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "durability": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ]
+        },
+        "records": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "object",
+            "properties": {
+              "stream": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              },
+              "seq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "ts": {
+                "type": "number"
+              },
+              "received_at": {
+                "type": "number"
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "data": {
+                "$ref": "#/$defs/streamJson"
+              },
+              "producer": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stream",
+              "seq",
+              "ts",
+              "received_at",
+              "type",
+              "data",
+              "producer",
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "history": {
+          "type": "object",
+          "properties": {
+            "earliest_available_seq": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "latest_seq": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "gap": {
+              "type": "boolean"
+            },
+            "missing_through": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "earliest_available_seq",
+            "latest_seq",
+            "gap",
+            "missing_through"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "stream",
+        "durability",
+        "records",
+        "cursor",
+        "history"
+      ],
+      "additionalProperties": false
+    },
+    "streamList": {
+      "type": "object",
+      "properties": {
+        "streams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              },
+              "durability": {
+                "enum": [
+                  "durable",
+                  "ephemeral"
+                ]
+              },
+              "readers": {
+                "enum": [
+                  "agent",
+                  "owner",
+                  "page"
+                ]
+              },
+              "builtin": {
+                "type": "boolean"
+              },
+              "max_records": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "max_age_seconds": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "durability",
+              "readers",
+              "builtin",
+              "max_records",
+              "max_age_seconds"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "streams"
+      ],
+      "additionalProperties": false
+    },
+    "streamSubscription": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "durability": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ]
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "batch": {
+          "type": "object",
+          "properties": {
+            "stream": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+            },
+            "durability": {
+              "enum": [
+                "durable",
+                "ephemeral"
+              ]
+            },
+            "records": {
+              "type": "array",
+              "maxItems": 500,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "stream": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "ts": {
+                    "type": "number"
+                  },
+                  "received_at": {
+                    "type": "number"
+                  },
+                  "type": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "data": {
+                    "$ref": "#/$defs/streamJson"
+                  },
+                  "producer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "stream",
+                  "seq",
+                  "ts",
+                  "received_at",
+                  "type",
+                  "data",
+                  "producer",
+                  "id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "cursor": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "history": {
+              "type": "object",
+              "properties": {
+                "earliest_available_seq": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "latest_seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "gap": {
+                  "type": "boolean"
+                },
+                "missing_through": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "earliest_available_seq",
+                "latest_seq",
+                "gap",
+                "missing_through"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "stream",
+            "durability",
+            "records",
+            "cursor",
+            "history"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "stream",
+        "durability",
+        "cursor"
+      ],
+      "additionalProperties": true
+    },
+    "producer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "streams": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+          }
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "last_seen": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "streams",
+        "created_at",
+        "last_seen"
+      ],
+      "additionalProperties": false
+    },
+    "producerCreate": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "streams": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "streams"
+      ],
+      "additionalProperties": false
+    },
+    "producerList": {
+      "type": "object",
+      "properties": {
+        "producers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              },
+              "streams": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                  "type": "string",
+                  "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+                }
+              },
+              "created_at": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "last_seen": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "streams",
+              "created_at",
+              "last_seen"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "producers"
+      ],
+      "additionalProperties": false
+    },
+    "producerResult": {
+      "type": "object",
+      "properties": {
+        "producer": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+            },
+            "streams": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^(?!system\\.)[a-z][a-z0-9._-]{0,63}$"
+              }
+            },
+            "created_at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "last_seen": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "streams",
+            "created_at",
+            "last_seen"
+          ],
+          "additionalProperties": false
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^tp_[a-z2-7]{32,64}$"
+        }
+      },
+      "required": [
+        "producer",
+        "token"
+      ],
+      "additionalProperties": false
+    },
     "error": {
       "type": "object",
       "properties": {
@@ -685,6 +1628,12 @@
         },
         "lifetime": {
           "const": "ad_hoc"
+        },
+        "mode": {
+          "enum": [
+            "interactive",
+            "dashboard"
+          ]
         }
       },
       "required": [

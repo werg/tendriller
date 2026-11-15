@@ -11,6 +11,7 @@ import {
 } from "./limits";
 import { apiUrl } from "./urls";
 import { queueMcpWake } from "./mcpEvents";
+import { emitBuiltinRecord } from "./streams";
 
 export type EventType = "event" | "instruction" | "version_failed" | "version_healthy" | "device" | "rule" | "voice";
 
@@ -147,6 +148,7 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
     ts, e.type, JSON.stringify(e.data ?? null), e.device ?? null, e.role ?? null, wake, withheld, e.by ?? null,
   );
   const seq = row!.seq;
+  emitBuiltinRecord(t, "system.events", seq);
   if (seq % 100 === 0) pruneEvents(t);
 
   if (withheld && e.cls) {

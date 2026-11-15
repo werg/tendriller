@@ -28,6 +28,7 @@ import { applyOps, type StateOp } from "./state";
 import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
 import { handleWsClose, handleWsMessage } from "./ws";
+import { emitBuiltinRecord, emitBuiltinSignal, pruneStreams } from "./streams";
 
 import type { Role, DeviceInfo } from "../../contract/index.mjs";
 export type { Role } from "../../contract/index.mjs";
@@ -41,6 +42,9 @@ export interface Att {
   accountId?: string | null;
   sessionRole?: Role | null;
   checkedAt?: number;
+  sessionHash?: string | null;
+  /** Per-stream live cursor; retained in the hibernating socket attachment. */
+  streams?: Record<string, number>;
 }
 
 export interface DeviceRow {
@@ -145,10 +149,10 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "agent" || kind === "page" || kind === "claim") {
         const owner = this.db.get<string | null>("owner_account", null);
         if (owner) {
-          const status = await this.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at FROM tendrils t
+          const status = await this.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at, a.deleting_at FROM tendrils t
             JOIN accounts a ON a.id = t.owner_account WHERE t.id = ? AND t.owner_account = ?`)
-            .bind(this.tid, owner).first<{ state: string; suspended_at: number | null }>();
-          if (!status || status.state === "held" || status.suspended_at) {
+            .bind(this.tid, owner).first<{ state: string; suspended_at: number | null; deleting_at: number | null }>();
+          if (!status || status.state === "held" || status.suspended_at || status.deleting_at) {
             this.db.set("disabled", true);
             this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
             cancelTimerNotifications(this, null, "Delivery stopped because the page or owner account is unavailable.");
@@ -254,6 +258,8 @@ export class Tendril extends DurableObject<Env> {
     const name = body.name === undefined ? "Tendril" : validName(body.name);
     const owner = validIntendedOwner(body.owner);
     const lifetime = body.lifetime ?? "ad_hoc";
+    const mode = body.mode ?? "interactive";
+    if (mode !== "interactive" && mode !== "dashboard") throw new HttpError(400, "bad_request", "mode must be interactive or dashboard");
     if (lifetime !== "ad_hoc" && lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
     if (lifetime === "resident") throw new HttpError(400, "bad_request", "Claim the page before making it resident");
     if (body.pairing !== undefined) throw new HttpError(400, "bad_request", "Device pairing is unavailable");
@@ -262,6 +268,7 @@ export class Tendril extends DurableObject<Env> {
     this.db.set("name", name);
     if (owner) this.db.set("intended_owner", owner);
     this.db.set("lifetime", lifetime);
+    this.db.set("mode", mode);
     this.db.set("created_at", now);
     this.db.set("rev", 0);
     this.db.set("state", {});
@@ -319,10 +326,13 @@ export class Tendril extends DurableObject<Env> {
       token,
       agent_md: `${publicBase(this.env)}/agent.md`,
       lifetime: this.db.get("lifetime", "ad_hoc"),
+      mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
       agent_setup: {
         event_delivery: "not_configured",
-        next_step: `Attach this agent conversation to a wake path: the bundled host bridge using a hibernating WebSocket at ${apiUrl(this.env, this.tid)}/events/socket, a verified webhook at ${apiUrl(this.env, this.tid)}/wake, or a continuous long poll when the host has no socket client. Store the event cursor and run two POST A/wake/probe diagnostics before promising live replies. A token or background receiver alone does not wake a conversation.`,
+        next_step: this.db.get<string>("mode", "interactive") === "dashboard"
+          ? "This dashboard may publish without an agent listener. Configure scoped producers and stream subscriptions; producer activity does not establish conversational agent delivery."
+          : `Attach this agent conversation to a wake path: the bundled host bridge using a hibernating WebSocket at ${apiUrl(this.env, this.tid)}/events/socket, a verified webhook at ${apiUrl(this.env, this.tid)}/wake, or a continuous long poll when the host has no socket client. Store the event cursor and run two POST A/wake/probe diagnostics before promising live replies. A token or background receiver alone does not wake a conversation.`,
       },
     };
   }
@@ -533,7 +543,8 @@ export class Tendril extends DurableObject<Env> {
     }
     if (this.db.get<string>("lifetime", "ad_hoc") === "resident") return null;
     const alive = this.connectedSockets().length > 0 || this.agentSockets().length > 0 ? this.now() : 0;
-    const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_checkin", 0), this.db.get<number>("last_device_seen", 0), alive);
+    const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_checkin", 0), this.db.get<number>("last_device_seen", 0),
+      this.db.get<string>("mode", "interactive") === "dashboard" ? this.db.get<number>("last_producer_seen", 0) : 0, alive);
     return last + AD_HOC_IDLE;
   }
 
@@ -625,6 +636,7 @@ export class Tendril extends DurableObject<Env> {
     if (key !== this.lastPresence) {
       this.lastPresence = key;
       this.broadcast({ t: "presence", ...p });
+      emitBuiltinSignal(this, "system.presence", "presence", p);
     }
     return p;
   }
@@ -847,6 +859,7 @@ export class Tendril extends DurableObject<Env> {
     this.db.set("state", next);
     this.db.set("rev", nrev);
     this.broadcast({ t: "state", ops, rev: nrev, by }, undefined, except);
+    emitBuiltinSignal(this, "system.state", "state", { ops, rev: nrev, by }, by);
     addActivity(this, { kind: "state", summary: `Shared state revision ${nrev} applied (${ops.length} changes)`, by });
     return nrev;
   }
@@ -947,8 +960,9 @@ export class Tendril extends DurableObject<Env> {
 
   addTranscript(src: "agent" | "user", text: string): number {
     const ts = this.now();
-    this.db.run("INSERT INTO transcript (ts, src, text) VALUES (?, ?, ?)", ts, src, text.slice(0, 4000));
+    const row = this.db.one<{ seq: number }>("INSERT INTO transcript (ts, src, text) VALUES (?, ?, ?) RETURNING seq", ts, src, text.slice(0, 4000));
     this.db.run("DELETE FROM transcript WHERE seq <= (SELECT seq FROM transcript ORDER BY seq DESC LIMIT 1 OFFSET ?)", MAX_TRANSCRIPT);
+    emitBuiltinRecord(this, "system.transcript", row!.seq);
     return ts;
   }
 
@@ -1142,6 +1156,7 @@ export class Tendril extends DurableObject<Env> {
   async cleanup(): Promise<void> {
     const now = this.now();
     pruneEvents(this);
+    pruneStreams(this);
     pruneActivity(this);
     pruneMcpSubs(this);
     pruneTimerHistory(this);

@@ -53,7 +53,8 @@
     "node": ">=22.15.0"
   },
   "bin": {
-    "tendril": "cli/bin/tendril.mjs"
+    "tendril": "cli/bin/tendril.mjs",
+    "tendril-stream": "cli/bin/tendril-stream.mjs"
   },
   "exports": {
     ".": {
@@ -76,6 +77,9 @@
     "cli/README.md",
     "contract",
     "recipes",
+    "examples/training-dashboard",
+    "docs/STREAMS.md",
+    "docs/COLLECTOR.md",
     "snippets/*.js",
     "server/public/_tendril",
     "server/public/_preview",

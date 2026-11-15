@@ -1,6 +1,7 @@
 /** The public wire contract. This module has no runtime dependencies and works in
  * browsers, Workers and Node. Matching declarations are in index.d.mts. */
 import { durabilitySchemas } from "./durability.mjs";
+import { streamSchemas } from "./streams.mjs";
 export const CONTRACT_VERSION = 1;
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -63,9 +64,10 @@ const archiveScope = { enum: ["notebook", "guide", "workshop", "experiment", "de
 
 const coreSchemas = {
   ...durabilitySchemas,
+  ...streamSchemas,
   error,
   errorResponse: object({ error }, ["error"]),
-  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" } }, ["owner"]),
+  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" }, mode: { enum: ["interactive", "dashboard"] } }, ["owner"]),
   say: object(sayProperties, ["text"]),
   sayMessage: object({ ...sayProperties, message_id: string, ts: integer, present: boolean }, ["text"], true),
   stateOperation,
@@ -164,16 +166,19 @@ export const schemaDocument = Object.freeze({
 
 /** Validate the JSON Schema subset used above. Unknown fields are rejected only
  * where a schema says so; event data and application state remain extensible. */
-export function validateSchema(schema, value, path = "$") {
+export function validateSchema(schema, value, path = "$", depth = 0) {
+  // Recursive JSON schemas must reject cycles and excessively nested input, not
+  // exhaust the stack before a caller can return a normal validation error.
+  if (depth > 128) return [{ path, message: "Maximum validation depth exceeded" }];
   const issues = [];
   const issue = message => issues.push({ path, message });
   if (schema.$ref) {
     const name = /^#\/\$defs\/([A-Za-z0-9]+)$/.exec(schema.$ref)?.[1];
     if (!name || !Object.hasOwn(schemas, name)) throw new TypeError(`Unknown contract reference: ${schema.$ref}`);
-    issues.push(...validateSchema(schemas[name], value, path));
+    issues.push(...validateSchema(schemas[name], value, path, depth + 1));
   }
   if (schema.anyOf) {
-    const alternatives = schema.anyOf.map(s => validateSchema(s, value, path));
+    const alternatives = schema.anyOf.map(s => validateSchema(s, value, path, depth + 1));
     if (alternatives.every(a => a.length)) issues.push(...alternatives.sort((a, b) => a.length - b.length)[0]);
   }
   if (Object.hasOwn(schema, "const") && value !== schema.const) issue(`Expected ${JSON.stringify(schema.const)}`);
@@ -198,15 +203,15 @@ export function validateSchema(schema, value, path = "$") {
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems) issue(`Minimum number of items is ${schema.minItems}`);
     if (schema.maxItems !== undefined && value.length > schema.maxItems) issue(`Maximum number of items is ${schema.maxItems}`);
-    if (schema.items) value.forEach((v, i) => issues.push(...validateSchema(schema.items, v, `${path}[${i}]`)));
+    if (schema.items) value.forEach((v, i) => issues.push(...validateSchema(schema.items, v, `${path}[${i}]`, depth + 1)));
   } else if (value !== null && typeof value === "object") {
     for (const key of schema.required || []) if (!Object.hasOwn(value, key)) issues.push({ path: `${path}.${key}`, message: "Required field" });
     for (const [key, v] of Object.entries(value)) {
       if (["__proto__", "constructor", "prototype"].includes(key)) { issues.push({ path: `${path}.${key}`, message: "Reserved key" }); continue; }
       const child = schema.properties?.[key];
-      if (child) issues.push(...validateSchema(child, v, `${path}.${key}`));
+      if (child) issues.push(...validateSchema(child, v, `${path}.${key}`, depth + 1));
       else if (schema.additionalProperties === false) issues.push({ path: `${path}.${key}`, message: "Unknown field" });
-      else if (typeof schema.additionalProperties === "object") issues.push(...validateSchema(schema.additionalProperties, v, `${path}.${key}`));
+      else if (typeof schema.additionalProperties === "object") issues.push(...validateSchema(schema.additionalProperties, v, `${path}.${key}`, depth + 1));
     }
   }
   return issues;

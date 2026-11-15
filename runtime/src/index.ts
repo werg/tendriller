@@ -50,6 +50,7 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
   const api: RuntimeApi = {
     send: (data: any, opts?: { wake?: boolean }) => core.send(data, opts),
     state: core.state,
+    streams: core.streams,
     on: (type: string, fn: (p: any) => void) => core.bus.on(type, fn),
     upload: (blob: Blob, opts?: { name?: string; keep?: boolean }) => core.upload(blob, opts),
     uploadEvent: (blob: Blob, opts: CaptureOptions) => core.uploadEvent(blob, opts),

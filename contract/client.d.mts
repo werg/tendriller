@@ -1,4 +1,5 @@
 import type { DurabilityClient } from "./durability-client.mjs";
+import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, RemixRequest, Decision, DecisionCreate, DecisionUpdate, ParticipantResponse,
@@ -6,7 +7,7 @@ import type { CreateRequest, PublicEvent, SayRequest, StateOperation, Validation
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
-export interface AgentClient extends DurabilityClient {
+export interface AgentClient extends DurabilityClient, StreamsClient {
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;

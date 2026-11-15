@@ -6,6 +6,7 @@ import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
 import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
 import { createSpeechOutput } from "./speech-output";
+import { createStreams } from "./streams";
 import { captureData, type BlobReference, type CaptureOptions, type CaptureResult, type PendingCapture, type SendResult } from "./capture";
 
 export type { Bus, Core } from "./types";
@@ -180,7 +181,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   const sentThisConn = new Set<string>();
   const memQueue: any[] = []; // non-persistent messages waiting for the socket
   const ackWaiters = new Map<string, (ack: any | null) => void>();
-  const requests = new Map<string, { res: (v: any) => void; rej: (e: any) => void; timer: ReturnType<typeof setTimeout> }>();
+  const requests = new Map<string, { kind: string; res: (v: any) => void; rej: (e: any) => void; timer: ReturnType<typeof setTimeout> }>();
   const uploadWaiters = new Map<string, { res: (v: any) => void; rej: (e: any) => void }>();
   const captureWaiters = new Map<string, Set<(result: CaptureResult) => void>>();
   const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -239,6 +240,11 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (pingTimer) { clearInterval(pingTimer); pingTimer = 0; }
       if (pongTimer) { clearTimeout(pongTimer); pongTimer = 0; }
       for (const [cid, w] of ackWaiters) { ackWaiters.delete(cid); w(null); }
+      for (const [cid, request] of requests) {
+        if (!request.kind.startsWith("stream_")) continue;
+        requests.delete(cid); clearTimeout(request.timer);
+        request.rej(Object.assign(new Error("Stream connection closed"), { code: "offline" }));
+      }
       if (was) bus.emit("disconnect");
       scheduleReconnect();
     };
@@ -545,6 +551,9 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (m.t !== "ack") return;
     }
     switch (m.t) {
+      case "stream_record":
+        bus.emit("stream_record", m.record);
+        break;
       case "welcome": {
         if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = 0; }
         welcome = m;
@@ -753,6 +762,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     get rules() { return rules; },
     get rev() { return rev; },
     state,
+    streams: createStreams({ bus, base: cfg.base, connected: () => ready, headers: deviceHeaders, request: message => core.request(message) }),
     health,
     async send(data: any, opts?: { wake?: boolean }): Promise<SendResult> {
       // Browser user activation marks a real tap or key press; page code cannot fake it. The server
@@ -781,6 +791,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     request(msg) {
       const m: any = { ...msg, cid: msg.cid || newCid() };
       return new Promise((res, rej) => {
+        if (m.t.startsWith("stream_") && !ready) {
+          rej(Object.assign(new Error("Stream requests need a connected page"), { code: "offline" }));
+          return;
+        }
         const timer = setTimeout(() => {
           requests.delete(m.cid);
           const i = memQueue.indexOf(m);
@@ -789,9 +803,14 @@ export function createCore(cfg: TendrilConfig): Internal {
           e.code = ready ? "timeout" : "offline";
           rej(e);
         }, REQUEST_TIMEOUT_MS);
-        requests.set(m.cid, { res, rej, timer });
+        requests.set(m.cid, { kind: m.t, res, rej, timer });
         if (QUEUED.has(m.t)) enqueue(m);
-        else if (!(ready && rawSend(m))) memQueue.push(m);
+        else if (!(ready && rawSend(m))) {
+          if (m.t.startsWith("stream_")) {
+            requests.delete(m.cid); clearTimeout(timer);
+            rej(Object.assign(new Error("Stream connection closed"), { code: "offline" }));
+          } else memQueue.push(m);
+        }
       });
     },
     raw,

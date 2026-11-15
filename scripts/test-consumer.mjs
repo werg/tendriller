@@ -22,12 +22,16 @@ try {
   const packed = JSON.parse(packedOutput.slice(jsonStart))[0];
   assert.ok(packed.files.some(file => file.path === "server/public/_tendril/tendril.js"), "tarball must contain built runtime assets");
   assert.ok(packed.files.some(file => file.path === "server/public/_preview/state.mjs"), "tarball must contain the compiled state implementation");
+  for (const file of ["cli/bin/tendril-stream.mjs", "cli/lib/stream-collector.mjs", "cli/lib/stream-spool.mjs", "examples/training-dashboard/setup.mjs", "examples/training-dashboard/index.html", "examples/training-dashboard/app.js", "examples/training-dashboard/model.mjs", "docs/STREAMS.md", "docs/COLLECTOR.md"])
+    assert.ok(packed.files.some(entry => entry.path === file), `tarball must contain ${file}`);
   assert.ok(!packed.files.some(file => /(?:^|\/)(?:\.env|\.dev\.vars|\.e2e-auth\.json|test-results)(?:\/|$)/.test(file.path)), "private environment/diagnostic files must not be packed");
   writeFileSync(join(workspace, "package.json"), JSON.stringify({ name: "tendriller-consumer-smoke", private: true, type: "module" }));
   run(npm, ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", join(workspace, packed.filename)]);
   const installed = join(workspace, "node_modules/tendriller");
   const bin = join(installed, "cli/bin/tendril.mjs");
   assert.match(run(process.execPath, [bin, "--help"]), /scaffold/);
+  try { run(process.execPath, [join(installed, "cli/bin/tendril-stream.mjs")]); assert.fail("collector requires its private config"); }
+  catch (error) { assert.equal(error.status, 1); assert.match(error.stderr, /Usage: tendril-stream/); }
   const catalog = JSON.parse(run(process.execPath, [bin, "recipes"]));
   const recipes = catalog.recipes || catalog;
   for (const name of ["approval-remote", "field-notebook", "hands-free-guide", "multi-device-workshop", "hardware-experiment", "facilitated-session"]) {
@@ -38,15 +42,25 @@ try {
   }
   writeFileSync(join(workspace, "consumer.mts"), `
 import { createClient } from "tendriller";
-import { assertValid, type RuntimeApi, type SendResult } from "tendriller/contract";
+import { assertValid, type RuntimeApi, type SendResult, type StreamCreate } from "tendriller/contract";
 import type {} from "tendriller/browser";
 const client = createClient({ api: "https://example.test/api/t/test", token: "private" });
 void client.readEvents({ after: 0 });
 // @ts-expect-error handling needs an explicit cursor.
 void client.readEvents({});
+const durable: StreamCreate = { name: "training.loss", durability: "durable", max_records: 1000 };
+void client.streams.create(durable);
+void client.streams.read("training.loss", { after: 0 });
+// @ts-expect-error replay requires an explicit consumer cursor.
+void client.streams.read("training.loss", {});
+// @ts-expect-error ephemeral streams cannot declare retained history.
+const invalidStream: StreamCreate = { name: "live", durability: "ephemeral", max_records: 100 };
+void invalidStream;
 declare const page: RuntimeApi<{ count: number }>;
 const count: number = page.state.get().count;
 const result: SendResult = await page.send({ count });
+const unsubscribe: () => void = page.streams.subscribe("training.loss", record => { const sequence: number = record.seq; void sequence; }, { after: 0 });
+unsubscribe();
 if (result.status === "accepted") { const seq: number = result.seq; void seq; }
 // @ts-expect-error queued inputs do not have a server sequence.
 if (result.status === "queued") result.seq;
@@ -65,6 +79,9 @@ const client = createClient({ api: "https://example.test/api/t/test", token: "pr
 assert.deepEqual(await client.readEvents({ after: 2 }), { events: [], cursor: 2, withheld: 0 });
 assert.equal(assertValid("create", { owner: "owner@example.test" }).owner, "owner@example.test");
 assert.ok(schema.$defs);
+assertValid("streamCreate", { name: "machine.live", durability: "ephemeral" });
+assert.equal(typeof client.streams.read, "function");
+assert.equal(typeof client.producers.create, "function");
 const { startServer, loadPlaywright } = await import(pathToFileURL(join(process.cwd(), "node_modules/tendriller/cli/lib/preview.mjs")));
 assert.equal(loadPlaywright(), null, "the fresh project must not silently find the checkout's browser tools");
 const server = await startServer(join(process.cwd(), "field-notebook"));
@@ -86,7 +103,7 @@ try {
   catch (error) { assert.equal(error.status, 2); missingOutput = error.stdout; }
   const missingBrowser = JSON.parse(missingOutput.trim());
   assert.equal(missingBrowser.error, "playwright_missing");
-  console.log("Consumer smoke passed: packed exports/types, CLI, six scaffolds, and HTTP preview assets; missing optional Playwright is explicit.");
+  console.log("Consumer smoke passed: packed exports/types, CLI and collector, streams, dashboard, six scaffolds, and HTTP preview assets; missing optional Playwright is explicit.");
 } catch (error) {
   if (error.stdout) process.stderr.write(error.stdout);
   if (error.stderr) process.stderr.write(error.stderr);

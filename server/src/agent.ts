@@ -21,6 +21,7 @@ import { apiUrl, normalizeFilePath } from "./urls";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { deviceConfiguration, updateDevice } from "./device-roles";
 import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
+import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -40,6 +41,10 @@ function route(method: string, pattern: RegExp, handler: Handler) {
 export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<Response> {
   const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
   const method = req.method === "HEAD" ? "GET" : req.method;
+  // Publishing machine data does not authenticate/check in a conversation.
+  // Scope producers before routing any ordinary agent API.
+  if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
+  if (STREAM_ROUTE.test(rest)) return handleStreams(t, req, url, rest, { kind: "agent", name: await t.authAgent(req) });
   if (CONSUMER_ROUTE.test(rest)) { await t.authAgent(req); return handleConsumers(t, req, url, rest); }
   if (EXPERIENCE_ROUTE.test(rest)) return handleExperience(t, req, url, await t.authAgent(req), rest);
   const matches = routes.filter((r) => r.pattern.test(rest));
@@ -64,6 +69,7 @@ async function tendrilInfo(t: Tendril) {
     name: t.db.get("name", "Tendril"),
     page_url: t.mainPageUrl(),
     lifetime: t.db.get("lifetime", "ad_hoc"),
+    mode: t.db.get("mode", "interactive"),
     expires_at: t.expiresAt(),
     owner,
     version: pointers(t),
@@ -90,6 +96,7 @@ function deliveryFeedback(t: Tendril) {
 }
 
 function requireFirstPageReceiver(t: Tendril): void {
+  if (t.db.get<string>("mode", "interactive") === "dashboard") return;
   if (latestFileMap(t).has("index.html")) return;
   const facts = t.presenceFacts();
   if (facts.agentSocket || facts.longPollHeld || facts.webhook) return;

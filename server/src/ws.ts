@@ -9,6 +9,8 @@ import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
 import { validateOps } from "./state";
 import { getFocus } from "./device-roles";
 import { checkEventSession, checkStateSessions } from "./archives";
+import { emitBuiltinRecord, publishFromPage, subscribeStream, unsubscribeStream } from "./streams";
+import { ContractError } from "../../contract/index.mjs";
 
 type Msg = Record<string, any>;
 
@@ -83,17 +85,18 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
       return;
     }
     if (t.db.get<boolean>("disabled", false)) { ws.close(4003, "page held"); return; }
-    if (!att.checkedAt || t.now() - att.checkedAt > 1000) {
-      const status = await t.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at AS owner_suspended,
+    if (!att.checkedAt || t.now() - att.checkedAt > 1000 || msg.t === "stream_subscribe" || msg.t === "stream_publish") {
+      const status = await t.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at AS owner_suspended, a.deleting_at AS owner_deleting,
         v.suspended_at AS viewer_suspended, v.deleting_at AS viewer_deleting
         FROM tendrils t LEFT JOIN accounts a ON a.id = t.owner_account
         LEFT JOIN accounts v ON v.id = ? WHERE t.id = ?`)
-        .bind(att.accountId ?? null, t.tid).first<{ state: string; owner_suspended: number | null;
+        .bind(att.accountId ?? null, t.tid).first<{ state: string; owner_suspended: number | null; owner_deleting: number | null;
           viewer_suspended: number | null; viewer_deleting: number | null }>();
-      if (!status || status.state !== "active" || status.owner_suspended || status.viewer_suspended || status.viewer_deleting) {
+      if (!status || status.state !== "active" || status.owner_suspended || status.owner_deleting || status.viewer_suspended || status.viewer_deleting) {
         ws.close(4003, "page unavailable"); return;
       }
-      ws.serializeAttachment({ ...att, checkedAt: t.now() });
+      // Preserve any live stream cursor advanced while the account check yielded.
+      ws.serializeAttachment({ ...(t.att(ws) ?? att), checkedAt: t.now() });
     }
     const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
     t.db.run("UPDATE devices SET last_active = ? WHERE id = ?", t.now(), dev.id);
@@ -108,9 +111,9 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
     }
     await handler({ t, ws, att: att as Att & { deviceId: string }, dev, msg });
   } catch (err) {
-    const code = err instanceof HttpError ? err.code : "internal";
+    const code = err instanceof HttpError || err instanceof ContractError ? err.code : "internal";
     const message = err instanceof Error ? err.message : String(err);
-    if (!(err instanceof HttpError)) console.error("ws handler error", err);
+    if (!(err instanceof HttpError) && !(err instanceof ContractError)) console.error("ws handler error", err);
     if (msg.cid !== undefined) t.send(ws, { t: "ack", cid: msg.cid, error: code, message });
     else t.send(ws, { t: "error", code, message });
   }
@@ -215,11 +218,23 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
 
 // ------------------------------------------------------------------ handlers
 
-const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete", "adopt_code", "devices", "links", "budget"]);
+const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete", "adopt_code", "devices", "links", "budget", "stream_publish"]);
 
 const ack = (c: Ctx, extra: Msg = {}) => c.t.send(c.ws, { t: "ack", cid: c.msg.cid, ...extra });
 
 const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
+  stream_subscribe(c) {
+    if (typeof c.msg.stream !== "string") throw new HttpError(400, "bad_request", "stream must be a name");
+    ack(c, subscribeStream(c.t, c.ws, c.msg.stream, c.msg.after));
+  },
+  stream_unsubscribe(c) {
+    if (typeof c.msg.stream !== "string") throw new HttpError(400, "bad_request", "stream must be a name");
+    unsubscribeStream(c.t, c.ws, c.msg.stream); ack(c, { stream: c.msg.stream });
+  },
+  async stream_publish(c) {
+    if (typeof c.msg.stream !== "string") throw new HttpError(400, "bad_request", "stream must be a name");
+    ack(c, await publishFromPage(c.t, c.ws, c.msg.stream, { records: c.msg.records }));
+  },
   say_rendered(c) {
     const id = c.msg.message_id;
     if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) { if (c.msg.cid) ack(c, { error: "bad_message" }); return; }
@@ -298,11 +313,12 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
       if (!isPlainObject(e)) continue;
       const level = LEVELS.has(e.level) ? e.level : "log";
       const message = typeof e.message === "string" ? e.message : JSON.stringify(e.message ?? "");
-      t.db.run(
-        "INSERT INTO logs (ts, device, version, level, message, stack) VALUES (?, ?, ?, ?, ?, ?)",
+      const row = t.db.one<{ seq: number }>(
+        "INSERT INTO logs (ts, device, version, level, message, stack) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq",
         typeof e.ts === "number" ? e.ts : t.now(), dev.id, att.version || null, level, message.slice(0, 10_000),
         typeof e.stack === "string" ? e.stack.slice(0, 10_000) : null,
       );
+      emitBuiltinRecord(t, "system.logs", row!.seq);
     }
     t.db.run("DELETE FROM logs WHERE seq <= (SELECT seq FROM logs ORDER BY seq DESC LIMIT 1 OFFSET ?)", MAX_LOGS);
   },

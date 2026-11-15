@@ -4,6 +4,16 @@ export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, last_used INTEGER);
 CREATE TABLE IF NOT EXISTS socket_tickets (hash TEXT PRIMARY KEY, token_hash TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS streams (name TEXT PRIMARY KEY, durability TEXT NOT NULL, readers TEXT NOT NULL,
+  max_records INTEGER, max_age_seconds INTEGER, latest_seq INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS stream_records (stream TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL,
+  received_at INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL, producer TEXT NOT NULL, producer_key TEXT NOT NULL, id TEXT NOT NULL,
+  bytes INTEGER NOT NULL, PRIMARY KEY(stream,seq), UNIQUE(stream,producer_key,id));
+CREATE INDEX IF NOT EXISTS stream_records_retention ON stream_records(stream,received_at);
+CREATE TABLE IF NOT EXISTS stream_producers (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, streams TEXT NOT NULL,
+  created_at INTEGER NOT NULL, last_seen INTEGER);
+CREATE TABLE IF NOT EXISTS stream_rate (principal TEXT PRIMARY KEY, minute INTEGER NOT NULL, requests INTEGER NOT NULL, bytes INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS stream_counters (name TEXT PRIMARY KEY, seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, key TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
   label TEXT, created_at INTEGER NOT NULL, expires_at INTEGER, created_by_agent INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS guest_accounts (account_id TEXT NOT NULL, link_id TEXT NOT NULL, approved INTEGER NOT NULL,

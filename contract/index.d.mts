@@ -1,4 +1,5 @@
 import type { WireContracts } from "./wire.mjs";
+import type { BrowserStreams, StreamRecord, StreamHistory } from "./streams.mjs";
 export type { WireContracts } from "./wire.mjs";
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface ValidationIssue { path: string; message: string }
@@ -77,6 +78,9 @@ export interface RuntimeEventMap {
   capture_queue: PendingCapture[]; capabilities: CapabilityReport; tts: SpeechStatus;
   device_config: DeviceConfigMessage; decisions_changed: { t?: "decisions_changed" };
   reload: { version: number }; [key: string]: unknown;
+  stream_record: StreamRecord;
+  stream_gap: { stream: string; history: StreamHistory };
+  stream_error: { stream: string; error: Error & { code?: string } };
 }
 export interface SpeechStatus { enabled: boolean; state: "idle" | "loading" | "ready" | "error"; message: string }
 export interface SpeechOutput {
@@ -94,6 +98,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
   setBlobRetention(id: string, options: { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
+  streams: BrowserStreams;
   on<K extends keyof RuntimeEventMap & string>(type: K, fn: (payload: RuntimeEventMap[K]) => void): () => void;
   ready: (() => void) & { manual(): void };
   speak(text: string): void; tts: SpeechOutput;
@@ -102,6 +107,8 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   control: { hide(): void; show(): void; position(p: "bottom-right" | "bottom-left" | "top-right" | "top-left"): void };
 }
 export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";
+export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord, StreamBatch, StreamHistory,
+  StreamAppendResult, StreamReadOptions, StreamSubscribeOptions, BrowserStreams, Producer, ProducerCreate, ProducerResult } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 1;
 export const ROLES: readonly Role[];
