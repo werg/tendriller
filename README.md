@@ -20,10 +20,12 @@ interfaces and sensors, and Tendriller makes the opening for each connection.
   for push-to-talk, status and undo.
 - **Agents** can create and control a page with HTTP. Live replies require a verified
   path that wakes their particular conversation. [`agent.md`](agent.md) explains the
-  setup; Codex on Linux has a verified same-conversation WebSocket bridge. Claude Code has a
-  first-party channel adapter tested in a live Claude Code session against a local API.
+  setup; Codex on Linux has a verified same-conversation WebSocket bridge. Claude Code and
+  Claude Duet run the `tendril-watch.mjs` helper under their `Monitor` tool, which resumes
+  the same session on each wake; a page tap from a phone woke an idle Duet session on
+  production. Claude Code also has a channel adapter for hosts without `Monitor`.
   OpenClaw and Hermes have Linux bridges awaiting real host tests. The guide also covers
-  Muse, Grok Bot, OpenAI dots and Claude Duet, with their respective setup and limits.
+  Muse, Grok Bot and OpenAI dots, with their respective setup and limits.
 
 The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md), with executable schemas and public types in

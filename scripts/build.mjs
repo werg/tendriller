@@ -43,7 +43,7 @@ for (const f of readdirSync(join(root, "snippets"))) {
   if (f.endsWith(".js")) copyFileSync(join(root, "snippets", f), join(out, "snippets", f));
 }
 if (existsSync(join(root, "agent.md"))) copyFileSync(join(root, "agent.md"), join(out, "agent.md"));
-for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait"]) {
+for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait", "tendril-watch"]) {
   await build({ entryPoints: [join(root, `cli/bin/${name}.mjs`)], outfile: join(out, `${name}.mjs`),
     bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
 }
