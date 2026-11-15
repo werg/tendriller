@@ -124,7 +124,7 @@ describe("health and fallback", () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", PAGE);
     const page = await PageClient.connect(h.page_url, { version: 1 });
-    page.send({ t: "health", version: 1, ok: true, errors: [] });
+    page.send({ t: "health", version: 1, visible: true, ok: true, errors: [] });
     await page.request({ t: "versions" }); // round-trip so the health message is processed
     const v = await apiJson(h, "GET", "versions");
     expect(v).toMatchObject({ current: 1, latest: 1, healthy: 1 });
@@ -139,16 +139,16 @@ describe("health and fallback", () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", "<p>good</p>");
     const page = await PageClient.connect(h.page_url, { version: 1 });
-    page.send({ t: "health", version: 1, ok: true, errors: [] });
+    page.send({ t: "health", version: 1, visible: true, ok: true, errors: [] });
     await page.request({ t: "versions" });
 
     await apiJson(h, "PUT", "files/index.html", "<p>bad</p>");
     expect((await page.next("reload")).version).toBe(2);
     expect(await (await req(h.page_url)).text()).toContain("bad");
 
-    page.send({ t: "health", version: 2, ok: false, errors: ["ReferenceError: x is not defined"] });
+    page.send({ t: "health", version: 2, visible: true, ok: false, errors: ["ReferenceError: x is not defined"] });
     expect((await page.next("reload")).version).toBe(1);
-    page.send({ t: "health", version: 2, ok: false, errors: ["again"] }); // second report ignored
+    page.send({ t: "health", version: 2, visible: true, ok: false, errors: ["again"] }); // second report ignored
     await page.request({ t: "versions" });
 
     const v = await apiJson(h, "GET", "versions");
@@ -167,7 +167,7 @@ describe("health and fallback", () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", "<p>only</p>");
     const page = await PageClient.connect(h.page_url, { version: 1 });
-    page.send({ t: "health", version: 1, ok: false, errors: ["boom"] });
+    page.send({ t: "health", version: 1, visible: true, ok: false, errors: ["boom"] });
     await page.request({ t: "versions" });
     const ev = await events(h);
     expect(ev.events.find((e: any) => e.type === "version_failed").data.rolled_back_to).toBeNull();
@@ -175,33 +175,40 @@ describe("health and fallback", () => {
     page.close();
   });
 
-  it("no report within 15 s after serving fails the version (alarm)", async () => {
+  it("a background navigation cannot roll back a pending update", async () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", "<p>good</p>");
     const page = await PageClient.connect(h.page_url, { version: 1 });
-    page.send({ t: "health", version: 1, ok: true, errors: [] });
+    page.send({ t: "health", version: 1, visible: true, ok: true, errors: [] });
     await page.request({ t: "versions" });
     await apiJson(h, "PUT", "files/index.html", "<p>hangs</p>");
-    // A browser navigation serves version 2.
+    // A browser navigation is not evidence that its tab is visible.
     const res = await req(h.page_url, { headers: { "Sec-Fetch-Mode": "navigate" } });
     expect(await res.text()).toContain("hangs");
     await advance(h.id, 16_000);
     await runAlarm(h.id);
     const v = await apiJson(h, "GET", "versions");
-    expect(v.versions[0]).toMatchObject({ version: 2, status: "failed" });
-    expect(v.current).toBe(1);
-    expect(await (await req(h.page_url)).text()).toContain("good");
+    expect(v.versions[0]).toMatchObject({ version: 2, status: "pending" });
+    expect(v.current).toBe(2);
+    expect(await (await req(h.page_url)).text()).toContain("hangs");
+    page.send({ t: "health", version: 2, visible: false, ok: false, errors: ["background error"] });
+    await page.request({ t: "versions" });
+    expect((await apiJson(h, "GET", "versions")).versions[0].status).toBe("pending");
+    page.send({ t: "health", version: 2, visible: true, ok: true, errors: [] });
+    await page.request({ t: "versions" });
+    expect((await apiJson(h, "GET", "versions")).versions[0].status).toBe("healthy");
     page.close();
   });
 
-  it("a plain fetch (curl) of the page does not start the health timer", async () => {
+  it("publishes while every device is offline and waits for visible health", async () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", "<p>x</p>");
-    await (await req(h.page_url)).text();
     await advance(h.id, 20_000);
     await runAlarm(h.id);
     const v = await apiJson(h, "GET", "versions");
+    expect(v.current).toBe(1);
     expect(v.versions[0].status).toBe("pending");
+    expect(await (await req(h.page_url)).text()).toContain("x");
   });
 });
 
@@ -212,7 +219,7 @@ describe("rollback", () => {
     for (const n of [1, 2, 3]) {
       await apiJson(h, "PUT", "files/index.html", `<p>v${n}</p>`);
       await page.next("reload");
-      page.send({ t: "health", version: n, ok: true, errors: [] });
+      page.send({ t: "health", version: n, visible: true, ok: true, errors: [] });
     }
     await page.request({ t: "versions" });
     expect(await apiJson(h, "POST", "rollback", {})).toEqual({ version: 2 });
@@ -230,7 +237,7 @@ describe("rollback", () => {
     const page = await PageClient.connect(h.page_url);
     for (const n of [1, 2]) {
       await apiJson(h, "PUT", "files/index.html", `<p>v${n}</p>`);
-      page.send({ t: "health", version: n, ok: true, errors: [] });
+      page.send({ t: "health", version: n, visible: true, ok: true, errors: [] });
     }
     const vs = await page.request({ t: "versions" });
     expect(vs).toMatchObject({ t: "versions", current: 2 });

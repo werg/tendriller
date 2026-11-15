@@ -245,7 +245,7 @@ describe("page-wake cap", () => {
     const { h, page } = await setup();
     await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
     await apiJson(h, "PUT", "files/index.html", "<p>x</p>");
-    page.send({ t: "health", version: 1, ok: false, errors: ["e"] });
+    page.send({ t: "health", version: 1, visible: true, ok: false, errors: ["e"] });
     await page.request({ t: "versions" });
     const r = await apiJson(h, "GET", "events");
     expect(r.events.find((e: any) => e.type === "version_failed")).toMatchObject({ wake: true, withheld: false });

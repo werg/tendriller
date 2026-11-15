@@ -5,7 +5,7 @@ import { addEvent } from "./events";
 import { HttpError, json } from "./http";
 import { sha256Hex } from "./ids";
 import { holdingPage, injectRuntime } from "./inject";
-import { HEALTH_TIMEOUT, MAX_FILES_PER_VERSION } from "./limits";
+import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 
 function scanContent(body: ArrayBuffer, type: string): number {
@@ -152,13 +152,6 @@ export function servedVersion(t: Tendril): number {
   return current;
 }
 
-export function markServed(t: Tendril, version: number): void {
-  const row = t.db.one<{ status: string; first_served_at: number | null }>("SELECT status, first_served_at FROM versions WHERE version = ?", version);
-  if (!row || row.status !== "pending" || row.first_served_at !== null) return;
-  t.db.run("UPDATE versions SET first_served_at = ? WHERE version = ?", t.now(), version);
-  t.scheduleAlarm();
-}
-
 export function reportHealth(t: Tendril, version: number, ok: boolean, errors: unknown[], device: string | null): void {
   if (versionStatus(t, version) !== "pending") return;
   if (ok) {
@@ -191,20 +184,6 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
   }
 }
 
-/** Fails pending versions that were served to a device but never reported within 15 s. */
-export function checkHealthTimeouts(t: Tendril): void {
-  const due = t.db.all<{ version: number }>(
-    "SELECT version FROM versions WHERE status = 'pending' AND first_served_at IS NOT NULL AND first_served_at <= ?",
-    t.now() - HEALTH_TIMEOUT,
-  );
-  for (const { version } of due) failVersion(t, version, ["No health report within 15 s of being served (the page may hang)"]);
-}
-
-export function nextHealthDeadline(t: Tendril): number | null {
-  const row = t.db.one<{ m: number | null }>("SELECT MIN(first_served_at) AS m FROM versions WHERE status = 'pending' AND first_served_at IS NOT NULL");
-  return row?.m != null ? row.m + HEALTH_TIMEOUT : null;
-}
-
 /** Makes `target` (or the newest healthy version older than current) current. */
 export function rollback(t: Tendril, target: number | null | undefined, by: string | null, device: string | null): number {
   const current = t.db.get<number>("current", 0);
@@ -223,7 +202,6 @@ export function rollback(t: Tendril, target: number | null | undefined, by: stri
     v = row.version;
   }
   t.db.set("current", v);
-  if (versionStatus(t, v) === "pending") t.db.run("UPDATE versions SET first_served_at = NULL WHERE version = ?", v);
   addActivity(t, { kind: "rollback", summary: `Rolled back from version ${current} to ${v}`, by, device });
   t.broadcast({ t: "reload", version: v });
   return v;
@@ -287,8 +265,6 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
-    const navigational = req.headers.get("Sec-Fetch-Mode") === "navigate" || req.headers.get("Sec-Fetch-Dest") === "document";
-    if (navigational || t.connectedSockets().length > 0) markServed(t, version);
     const html = injectRuntime(await obj.text(), { id: t.tid, base, version, features: t.features() });
     return new Response(req.method === "HEAD" ? null : html, { headers });
   }

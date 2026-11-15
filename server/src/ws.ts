@@ -2,7 +2,7 @@
 import type { Att, DeviceRow, Tendril } from "./tendril";
 import { addActivity, countEvent, deleteActivity, listActivity, preview } from "./activity";
 import { addEvent } from "./events";
-import { listVersions, markServed, pointers, reportHealth, rollback, servedVersion, versionStatus } from "./files";
+import { listVersions, pointers, reportHealth, rollback, servedVersion } from "./files";
 import { HttpError, isPlainObject } from "./http";
 import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from "./ids";
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
@@ -192,7 +192,6 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
     t.send(ws, { t: "state_reset", state, rev });
   }
 
-  if (version > 0 && versionStatus(t, version) === "pending") markServed(t, version);
   if (isNew) {
     addActivity(t, { kind: "device", summary: `New ${dev.role} device ${dev.name ?? id} joined`, device: id });
   }
@@ -309,6 +308,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
 
   health(c) {
     const { t, dev, msg } = c;
+    if (msg.visible !== true) return;
     const version = Number(msg.version);
     if (!Number.isInteger(version) || version <= 0) return;
     reportHealth(t, version, !!msg.ok, Array.isArray(msg.errors) ? msg.errors : [], dev.id);
