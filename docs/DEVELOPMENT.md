@@ -32,6 +32,13 @@ events, stores state using the server's compiled state implementation, stores
 uploaded bytes, deduplicates retries, records reply receipts and models roles.
 The trace wraps public methods and calls through to their real implementations.
 
+The service worker caches page assets for offline use, while live `_tendril/`
+API requests always reach the service. It removes legacy cached API responses
+and respects `no-store`. Preview files use `no-cache`, so editing an external
+JavaScript or CSS file and reloading retrieves the current file; its latest
+saved copy remains available offline. Published asset requests retain the
+loaded page's version. Explicitly immutable assets can use their cached copy.
+
 Fixtures retain click, fill, permission denial, location, motion and hardware
 steps. Additional steps are:
 

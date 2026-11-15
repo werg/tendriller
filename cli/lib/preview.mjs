@@ -110,11 +110,11 @@ export async function startServer(dir, initialState, fixture = {}) {
       }
       if (p.startsWith("/_tendril/snippets/")) {
         const file = safeFile(join(repo, "snippets"), p.slice("/_tendril/snippets".length));
-        return file ? send(200, "text/javascript", readFileSync(file)) : send(404, "text/plain", "No such snippet");
+        return file ? send(200, "text/javascript", readFileSync(file), { "cache-control": "no-cache" }) : send(404, "text/plain", "No such snippet");
       }
       if (p.startsWith("/_tendril/")) {
         const file = safeFile(assets, p.slice("/_tendril".length));
-        if (file) return send(200, guessType(file), readFileSync(file), p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {});
+        if (file) return send(200, guessType(file), readFileSync(file), { "cache-control": "no-cache", ...(p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {}) });
         return json(404, { error: { code: "preview_unavailable", message: "Use the local Worker for this service capability" } });
       }
       if (p === "/favicon.ico") return send(204, "image/x-icon", "");
@@ -122,7 +122,7 @@ export async function startServer(dir, initialState, fixture = {}) {
       if (!file) return send(404, "text/plain", "Not found");
       const type = guessType(file);
       return send(200, type === "text/html" ? "text/html; charset=utf-8" : type,
-        type === "text/html" ? injectRuntime(readFileSync(file, "utf8")) : readFileSync(file));
+        type === "text/html" ? injectRuntime(readFileSync(file, "utf8")) : readFileSync(file), { "cache-control": "no-cache" });
     } catch (error) { json(400, { error: { code: error.code || "bad_request", message: error.message } }); }
   });
   // Own every TCP connection, including browser preconnects, incomplete HTTP
