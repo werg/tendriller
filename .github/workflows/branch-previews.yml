@@ -1,0 +1,195 @@
+name: Live branch previews
+
+on:
+  workflow_run:
+    workflows: [Public service]
+    types: [completed]
+  delete:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Repository branch to preview, or deleted branch to clean up
+        required: true
+        type: string
+      action:
+        description: Deploy a passing branch or retry cleanup of a deleted branch
+        required: true
+        default: deploy
+        type: choice
+        options: [deploy, delete]
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      action: ${{ steps.select.outputs.action }}
+      branch: ${{ steps.select.outputs.branch }}
+      sha: ${{ steps.select.outputs.sha }}
+      key: ${{ steps.select.outputs.key }}
+      environment: ${{ steps.select.outputs.environment }}
+      controller_sha: ${{ steps.controller.outputs.commit }}
+    steps:
+      # workflow_run and delete use the default-branch controller, never code
+      # supplied by a fork. Pin the same controller commit in subsequent jobs.
+      - uses: actions/checkout@v4
+        id: controller
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: controller
+          persist-credentials: false
+      - id: select
+        uses: actions/github-script@v7
+        env:
+          BRANCH_PREVIEWS_ENABLED: ${{ vars.BRANCH_PREVIEWS_ENABLED }}
+        with:
+          script: |
+            const { select } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await select({ github, context, core });
+
+  deploy:
+    needs: select
+    if: needs.select.outputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: branch-preview-${{ needs.select.outputs.key }}
+      cancel-in-progress: false
+    # Reuse the existing Cloudflare deployment credential. Preview deployments
+    # have their own GitHub deployment records and do not change staging's URL.
+    environment:
+      name: staging
+      deployment: false
+    permissions:
+      contents: read
+      deployments: write
+    env:
+      PREVIEW_BRANCH: ${{ needs.select.outputs.branch }}
+      PREVIEW_SHA: ${{ needs.select.outputs.sha }}
+      PREVIEW_ENVIRONMENT: ${{ needs.select.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.select.outputs.controller_sha }}
+          path: controller
+          persist-credentials: false
+      - name: Check that this is still the branch head
+        id: before_build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { current } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await current({ github, context, core, action: 'deploy' });
+      - uses: actions/checkout@v4
+        if: steps.before_build.outputs.current == 'true'
+        with:
+          ref: ${{ needs.select.outputs.sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        if: steps.before_build.outputs.current == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Install branch dependencies
+        if: steps.before_build.outputs.current == 'true'
+        working-directory: source
+        run: npm ci
+      - name: Build branch assets
+        if: steps.before_build.outputs.current == 'true'
+        working-directory: source
+        run: npm run build
+      - name: Recheck branch immediately before deployment
+        if: steps.before_build.outputs.current == 'true'
+        id: current
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { current } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await current({ github, context, core, action: 'deploy' });
+      - name: Start preview deployment record
+        if: steps.current.outputs.current == 'true'
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { startDeployment } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await startDeployment({ github, context, core });
+      - name: Provision, deploy, and verify the branch preview
+        if: steps.current.outputs.current == 'true'
+        id: preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_GITHUB_CLIENT_ID: ${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}
+          PREVIEW_GITHUB_CLIENT_SECRET: ${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}
+          PREVIEW_GOOGLE_CLIENT_ID: ${{ secrets.PREVIEW_GOOGLE_CLIENT_ID }}
+          PREVIEW_GOOGLE_CLIENT_SECRET: ${{ secrets.PREVIEW_GOOGLE_CLIENT_SECRET }}
+          PREVIEW_TURNSTILE_SITE_KEY: ${{ secrets.PREVIEW_TURNSTILE_SITE_KEY }}
+          PREVIEW_TURNSTILE_SECRET_KEY: ${{ secrets.PREVIEW_TURNSTILE_SECRET_KEY }}
+        run: node controller/scripts/branch-preview.mjs deploy --branch "$PREVIEW_BRANCH" --sha "$PREVIEW_SHA" --source "$GITHUB_WORKSPACE/source"
+      - name: Publish preview result
+        if: always() && steps.deployment.outputs.id != ''
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+          PREVIEW_OUTCOME: ${{ steps.preview.outcome }}
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+        with:
+          script: |
+            const { finishDeployment } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await finishDeployment({ github, context, core });
+
+  cleanup:
+    needs: select
+    if: needs.select.outputs.action == 'delete'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: branch-preview-${{ needs.select.outputs.key }}
+      cancel-in-progress: false
+    environment:
+      name: staging
+      deployment: false
+    permissions:
+      contents: read
+      deployments: write
+    env:
+      PREVIEW_BRANCH: ${{ needs.select.outputs.branch }}
+      PREVIEW_ENVIRONMENT: ${{ needs.select.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.select.outputs.controller_sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check that the branch is still deleted
+        id: current
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { current } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await current({ github, context, core, action: 'delete' });
+      - name: Remove the isolated branch resources
+        if: steps.current.outputs.current == 'true'
+        working-directory: controller
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/branch-preview.mjs delete --branch "$PREVIEW_BRANCH"
+      - name: Mark preview deployments inactive
+        if: steps.current.outputs.current == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { finishCleanup } = require(`${process.env.GITHUB_WORKSPACE}/controller/.github/scripts/branch-preview.cjs`);
+            await finishCleanup({ github, context, core });

@@ -1,7 +1,6 @@
 import type { Env } from "../env";
 import { errorResponse, HttpError, readBody } from "../http";
-import { TENDRIL_ID_RE } from "../ids";
-import { publicBase } from "../urls";
+import { parsePageRoute, publicBase } from "../urls";
 import { serviceSession } from "../accounts/auth";
 import { serviceStyle } from "../accounts/ui";
 import { brandHead, brandLink, brandStyle } from "../brand";
@@ -33,9 +32,8 @@ export async function reportPage(req: Request, env: Env, url: URL): Promise<Resp
   let reported: URL;
   try { reported = new URL(form.get("url") ?? ""); }
   catch { return errorResponse(400, "bad_request", "Invalid page URL"); }
-  const domain = env.PAGE_BASE_DOMAIN.toLowerCase();
-  const id = reported.hostname.toLowerCase().endsWith(`.${domain}`) ? reported.hostname.slice(0, -(domain.length + 1)) : "";
-  if (reported.protocol !== "https:" || !TENDRIL_ID_RE.test(id) || !/^\/s\/[a-z2-7]{26}(?:\/|$)/.test(reported.pathname)) {
+  const page = parsePageRoute(reported, env);
+  if (reported.protocol !== "https:" || !page) {
     return errorResponse(400, "bad_request", "Use a Tendriller page URL");
   }
   const verified = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST",
@@ -47,7 +45,7 @@ export async function reportPage(req: Request, env: Env, url: URL): Promise<Resp
     return errorResponse(403, "verification_failed", "Verification failed");
   }
   const session = await serviceSession(req, env);
-  const stub = env.TENDRIL.get(env.TENDRIL.idFromName(id));
+  const stub = env.TENDRIL.get(env.TENDRIL.idFromName(page.id));
   const record = await stub.fetch(new Request("https://tendril.internal/abuse/report", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source: "external", account_id: session?.accountId ?? null, reason }) }));
   if (!record.ok) return record;
