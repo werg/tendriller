@@ -1,14 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { transformSync } from "esbuild";
+import { transformSync, buildSync } from "esbuild";
 
 // Compare independent browser/server implementations at their actual public
 // boundary. This prevents preview, optimistic state and replay semantics drifting.
 const source = readFileSync(new URL("../src/state.ts", import.meta.url), "utf8");
 const { code } = transformSync(source, { loader: "ts", format: "esm", target: "es2022" });
 const browser = await import("data:text/javascript;base64," + Buffer.from(code).toString("base64"));
-const server = await import("../../server/public/_preview/state.mjs");
+const built = buildSync({ entryPoints: [new URL("../../server/src/state.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", write: false });
+const server = await import("data:text/javascript;base64," + Buffer.from(built.outputFiles[0].text).toString("base64"));
 
 test("browser/server path operations agree for explicit null, subtree replacement and delete", () => {
   const operations = [

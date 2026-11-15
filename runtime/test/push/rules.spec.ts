@@ -198,7 +198,7 @@ test.describe("time and interval", () => {
       speechSynthesis.speak = (u: SpeechSynthesisUtterance) => { w.__spoken.push(u.text); };
       w.T.startRules(core);
       core.bus.emit("welcome", { rules: [{ id: "iv", when: { type: "interval", minutes: 2 }, do: [{ type: "say", text: "hi" }] }] });
-      core.state.set(["_prefs"], { audio: false });
+      core.preferences.update({ audio: false });
     });
     await page.clock.runFor(100_000);
     expect(await fired(page)).toHaveLength(0);
@@ -207,7 +207,7 @@ test.describe("time and interval", () => {
     await page.clock.runFor(2 * 60_000);
     expect(await fired(page)).toHaveLength(2);
     expect((await fired(page))[0].detail).toMatchObject({ type: "interval", minutes: 2 });
-    // say honours _prefs.audio === false.
+    // Speech respects the explicit device preference.
     expect(await page.evaluate(() => (window as any).__spoken)).toEqual([]);
   });
 });

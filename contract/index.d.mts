@@ -15,9 +15,9 @@ export type SayRequest = WireContracts["say"];
 export interface SayMessage extends SayRequest { t?: "say"; message_id?: string; ts?: number; present?: boolean }
 export type BlobReference = WireContracts["blobReference"];
 export type SendResult = WireContracts["sendResult"];
-export type CaptureOptions = WireContracts["captureOptions"];
+export type CaptureOptions = WireContracts["captureOptions"] & OperationOptions;
 export type CaptureResult = WireContracts["captureResult"];
-export interface PendingCapture { capture_id: string; name?: string; data: Record<string, unknown>; status: "queued" | "rejected"; blob?: BlobReference; error?: string; message?: string }
+export interface PendingCapture extends OperationOptions { capture_id: string; name?: string; data: Record<string, unknown>; status: "queued" | "rejected"; blob?: BlobReference; error?: string; message?: string }
 export type PublicEvent<T = unknown> = WireContracts["event"] & { data: T };
 export type DeliveryProbe = WireContracts["deliveryProbe"];
 export interface InstructionEvent extends PublicEvent<{ text: string; via: "text" | "voice" }> { type: "instruction"; role: "owner" }
@@ -33,14 +33,23 @@ export interface DeviceConfigMessage { t?: "device_config"; devices: (DeviceInfo
 export interface Presence { state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent"; text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number; wake: "long_poll" | "webhook" | "schedule" | "none" }
 export interface TranscriptEntry { ts: number; from: "agent" | "user"; text: string; message_id?: string; in_reply_to?: number }
 export interface StateApi<T = Record<string, unknown>> {
+  readonly revision: number;
   get(): T; get(path: Path): unknown;
-  set(path: Path, value: unknown): void; delete(path: Path): void;
-  patch(mergePatch: object): void; mine(): unknown;
+  set(path: Path, value: unknown, options?: OperationOptions): Promise<StateResult>;
+  delete(path: Path, options?: OperationOptions): Promise<StateResult>;
+  patch(mergePatch: object, options?: OperationOptions): Promise<StateResult>;
   on(fn: (state: T, ops: StateOperation[], by: string) => void): () => void;
 }
-export type InterfaceBlockType = "message" | "status" | "choice" | "text" | "slider" | "button" | "photo" | "location" | "file" | "drawing" | "hardware";
-export type InterfaceBlock = WireContracts["interface"]["blocks"][number];
-export type InterfaceState = WireContracts["interface"];
+/** Core presentation settings for this browser device and page, separate from shared application state. */
+export interface RuntimePreferences {
+  audio: boolean; language: string | null; voice: "browser" | "neural";
+  textSize: "normal" | "large" | "x-large"; contrast: "normal" | "high"; mode: "interactive" | "display";
+}
+export interface PreferencesApi {
+  get(): RuntimePreferences;
+  update(patch: Partial<RuntimePreferences>): void;
+  on(listener: (preferences: RuntimePreferences) => void): () => void;
+}
 export type SessionBrief = WireContracts["session"];
 export type SessionWrite = WireContracts["sessionWrite"];
 export type SessionResult = WireContracts["sessionResult"];
@@ -55,29 +64,50 @@ export type BundleStageResult = WireContracts["bundleStage"];
 export type BundlePublish = WireContracts["bundlePublish"];
 export type RemixRequest = WireContracts["remix"];
 export type RemixPageRequest = WireContracts["remixPage"];
-export type DecisionStatus = Decision["status"];
-export type Decision = WireContracts["decision"];
-export type DecisionCreate = WireContracts["decisionCreate"];
-export type DecisionUpdate = WireContracts["decisionUpdate"];
-export type DecisionResponse = WireContracts["decisionResponse"];
-export type ParticipantResponse = WireContracts["participantResponse"];
-export type ParticipantResponseWrite = WireContracts["participantResponseWrite"];
-export type ParticipantAssignment = WireContracts["assignment"];
-export type AssignmentCreate = WireContracts["assignmentCreate"];
-export type AssignmentUpdate = WireContracts["assignmentUpdate"];
-export type ArchiveScope = WireContracts["archiveScope"];
-export type ArchiveCreate = WireContracts["archiveCreate"];
-export type ArchivePreview = WireContracts["archivePreview"];
-export type SessionArchive = WireContracts["archive"];
-export type ArchiveResult = WireContracts["archiveResult"];
-export interface ArchiveMetadata { id: string; scope: ArchiveScope; title: string; created_at: number; bytes: number }
+/** Platform concurrency metadata never belongs inside application data. */
+export interface OperationOptions { scope?: string; expected_generations?: Record<string, string> }
+export interface ScopeDescriptor { id: string; generation: string; paths: string[][]; operations: string[] }
+export type StateResult = { status: "accepted"; rev: number }
+  | { status: "queued" }
+  | { status: "rejected"; error: string; message?: string };
+export type ServiceDescriptor = WireContracts["serviceDescriptor"];
+export interface PublicationAsset { path: string; sha256: string; type: string }
+export interface RuntimeArtifactFeatures {
+  speech: { model: string; url: string; sha256: string; engine: { script: string; wasm: string; wasm_sha256: string } } | null;
+}
+export interface PublicationManifest {
+  id: string; base: string; entry?: string;
+  runtime: { version: string; id?: string; base: string; assets?: PublicationAsset[]; features?: RuntimeArtifactFeatures };
+  assets: PublicationAsset[];
+}
+export interface RuntimeFrame { t: string; [key: string]: unknown }
+/** Deliberately small transport interface; fixtures use the production runtime. */
+export interface RuntimeSocket {
+  readyState: number;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: string }) => void) | null;
+  onerror: (() => void) | null;
+  onclose: (() => void) | null;
+  send(data: string): void; close(code?: number, reason?: string): void;
+}
+export interface FixtureTransport {
+  socket(url?: string): RuntimeSocket;
+  receive(frame: RuntimeFrame): void;
+  emit(event: string, data: unknown): void;
+  onSend(listener: (frame: RuntimeFrame, reply: (frame: RuntimeFrame) => void) => void): () => void;
+  disconnect(): void;
+}
 export interface RuntimeEventMap {
   connect: void; disconnect: void; role: Pick<Device, "role" | "pending">; presence: Presence;
   say: SayMessage; transcript: TranscriptEntry | null;
   upload_event: CaptureResult; error: { code?: string; message?: string };
-  send_result: SendResult & { cid: string; data: unknown };
+  send_result: SendResult & OperationOptions & { cid: string; data: unknown };
   capture_queue: PendingCapture[]; capabilities: CapabilityReport; tts: SpeechStatus;
-  device_config: DeviceConfigMessage; decisions_changed: { t?: "decisions_changed" };
+  device_config: DeviceConfigMessage;
+  scopes: ScopeDescriptor[];
+  workflow: { module: string; topic: string; [key: string]: unknown };
+  preferences: RuntimePreferences;
+  state_result: StateResult & OperationOptions & { cid: string };
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
   stream_gap: { stream: string; history: StreamHistory };
@@ -91,14 +121,20 @@ export interface SpeechOutput {
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
 export interface RuntimeApi<T = Record<string, unknown>> {
-  send(data: unknown, opts?: { wake?: boolean }): Promise<SendResult>;
+  send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
+  request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<T>;
+  scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };
+  readonly service: ServiceDescriptor | null;
+  conversation: { entries(): TranscriptEntry[]; send(text: string, options?: { via?: "text" | "voice" }): Promise<{ status: "accepted" | "queued"; cid: string }> };
+  blobUrl(id: string): string;
   upload(blob: Blob, opts?: { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
-  /** Local work retained until its acknowledgement; use before archiving a workflow. */
+  /** Durable local work retained until its acknowledgement. */
   pendingWork(): { events: number; state: number; captures: number };
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
   setBlobRetention(id: string, options: { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
+  preferences: PreferencesApi;
   streams: BrowserStreams;
   on<K extends keyof RuntimeEventMap & string>(type: K, fn: (payload: RuntimeEventMap[K]) => void): () => void;
   ready: (() => void) & { manual(): void };
@@ -112,7 +148,9 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
   StreamAppendResult, StreamReadOptions, StreamSubscribeOptions, BrowserStreams, Producer, ProducerCreate, ProducerResult } from "./streams.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
-export const CONTRACT_VERSION: 1;
+export const CONTRACT_VERSION: 2;
+export const CORE_RELEASE: "0.2.0-rc.1";
+export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
 export const ROLES: readonly Role[];
 export const DEVICE_PURPOSES: readonly DevicePurpose[];
 export const schemas: Readonly<Record<keyof Contracts, Record<string, any>>>;

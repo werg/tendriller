@@ -1,5 +1,17 @@
 // SQLite storage for the Tendril Durable Object (PROTOCOL section 3).
 
+/** Persistent storage identity, independent of runtime and workflow releases. */
+export const STORAGE_SCHEMA_REVISION = 2;
+
+export class StorageSchemaError extends Error {
+  readonly code = 'storage_schema_mismatch';
+
+  constructor(reason: string) {
+    super(`Incompatible Tendriller storage schema: ${reason}. Expected revision ${STORAGE_SCHEMA_REVISION}. Deploy this release to a fresh Durable Object namespace; existing data was not changed.`);
+    this.name = 'StorageSchemaError';
+  }
+}
+
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, last_used INTEGER);
@@ -18,15 +30,16 @@ CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, key TEXT NOT NULL, key_ha
   label TEXT, created_at INTEGER NOT NULL, expires_at INTEGER, created_by_agent INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS guest_accounts (account_id TEXT NOT NULL, link_id TEXT NOT NULL, approved INTEGER NOT NULL,
   created_at INTEGER NOT NULL, PRIMARY KEY (account_id, link_id));
-CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, name TEXT, role TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, name TEXT, role TEXT NOT NULL, purpose TEXT NOT NULL DEFAULT 'general',
   pending INTEGER NOT NULL DEFAULT 0, pair_code TEXT, link TEXT, ua TEXT, caps TEXT,
   created_at INTEGER NOT NULL, last_seen INTEGER, last_active INTEGER);
-CREATE TABLE IF NOT EXISTS versions (version INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL,
-  message TEXT, errors TEXT, by TEXT, failed_event INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS versions (version INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, runtime_id TEXT NOT NULL, runtime_version TEXT NOT NULL, runtime_features TEXT NOT NULL,
+  message TEXT, errors TEXT, by TEXT, failed_event INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, risk_flags TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE IF NOT EXISTS publication_leases (device TEXT NOT NULL, version INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(device,version));
 CREATE TABLE IF NOT EXISTS version_files (version INTEGER NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL,
   type TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (version, path));
 CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, type TEXT NOT NULL,
-  data TEXT, device TEXT, role TEXT, wake INTEGER NOT NULL, withheld INTEGER NOT NULL, by TEXT);
+  context TEXT, data TEXT, device TEXT, role TEXT, wake INTEGER NOT NULL, withheld INTEGER NOT NULL, by TEXT);
 CREATE INDEX IF NOT EXISTS events_wake ON events (wake, seq);
 CREATE TABLE IF NOT EXISTS event_consumers (name TEXT PRIMARY KEY, handled_seq INTEGER NOT NULL, delivered_seq INTEGER NOT NULL,
   gap_from INTEGER, gap_through INTEGER, holder TEXT, lease_hash TEXT, lease_expires_at INTEGER NOT NULL DEFAULT 0,
@@ -35,7 +48,8 @@ CREATE TABLE IF NOT EXISTS logs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEG
   level TEXT NOT NULL, message TEXT NOT NULL, stack TEXT);
 CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT, size INTEGER NOT NULL, name TEXT, ts INTEGER NOT NULL,
   device TEXT, source TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL, risk_score INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('writing','ready','deleting')));
 CREATE TABLE IF NOT EXISTS trusted_versions (account_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (account_id, version));
 CREATE TABLE IF NOT EXISTS page_sessions (hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, role TEXT NOT NULL,
   expires_at INTEGER NOT NULL);
@@ -54,21 +68,18 @@ CREATE TABLE IF NOT EXISTS transcript (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts
 CREATE TABLE IF NOT EXISTS timers (id TEXT PRIMARY KEY, spec TEXT NOT NULL, next_at INTEGER NOT NULL, state TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS timers_due ON timers (state, next_at);
 CREATE TABLE IF NOT EXISTS timer_runs (id TEXT PRIMARY KEY, timer_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL,
-  fired_at INTEGER NOT NULL, status TEXT NOT NULL, event_seq INTEGER, notification TEXT);
+  fired_at INTEGER NOT NULL, status TEXT NOT NULL, event_seq INTEGER);
 CREATE TABLE IF NOT EXISTS timer_notifications (run_id TEXT PRIMARY KEY, timer_id TEXT NOT NULL, payload TEXT NOT NULL,
   state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL, attempt_token TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_attempt_at INTEGER, last_error TEXT,
   pending_devices TEXT, sent_devices TEXT NOT NULL DEFAULT '[]', failed_devices TEXT NOT NULL DEFAULT '[]',
   sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS timer_notifications_due ON timer_notifications (state, next_at);
-CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS participant_responses (id TEXT PRIMARY KEY, participant TEXT NOT NULL, prompt_id TEXT NOT NULL,
-  answer TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  UNIQUE(participant, prompt_id));
-CREATE TABLE IF NOT EXISTS participant_assignments (id TEXT PRIMARY KEY, participant TEXT NOT NULL, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS assignments_participant ON participant_assignments(participant, updated_at);
-CREATE TABLE IF NOT EXISTS session_archives (id TEXT PRIMARY KEY, scope TEXT NOT NULL, title TEXT NOT NULL, created_at INTEGER NOT NULL,
-  bytes INTEGER NOT NULL, request TEXT NOT NULL, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scopes (id TEXT PRIMARY KEY, generation TEXT NOT NULL, paths TEXT NOT NULL, operations TEXT NOT NULL, retired INTEGER NOT NULL DEFAULT 0, owner TEXT);
+CREATE TABLE IF NOT EXISTS commands (actor TEXT NOT NULL, cid TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(actor,cid));
+CREATE TABLE IF NOT EXISTS command_usage (id INTEGER PRIMARY KEY CHECK(id=1), count INTEGER NOT NULL, bytes INTEGER NOT NULL);
+INSERT OR IGNORE INTO command_usage(id,count,bytes) VALUES(1,0,0);
+CREATE TABLE IF NOT EXISTS workflow_records (module TEXT NOT NULL, collection TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(module,collection,key));
 `;
 
 type Bindable = string | number | null | ArrayBuffer;
@@ -82,29 +93,35 @@ function norm(v: unknown): Bindable {
 
 export class Db {
   private cache = new Map<string, unknown>();
+  private readonly sql: SqlStorage;
 
-  constructor(private sql: SqlStorage) {}
+  constructor(private readonly storage: Pick<DurableObjectStorage, 'sql' | 'transactionSync'>) {
+    this.sql = storage.sql;
+  }
 
   init(): void {
-    this.sql.exec(SCHEMA);
-    const deviceColumns = this.sql.exec("PRAGMA table_info(devices)").toArray() as { name: string }[];
-    if (!deviceColumns.some(c => c.name === "purpose")) this.sql.exec("ALTER TABLE devices ADD COLUMN purpose TEXT NOT NULL DEFAULT 'general'");
-    const blobColumns = this.sql.exec("PRAGMA table_info(blobs)").toArray() as { name: string }[];
-    if (!blobColumns.some((column) => column.name === "pinned")) this.sql.exec("ALTER TABLE blobs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
-    const columns = this.sql.exec("PRAGMA table_info(links)").toArray() as { name: string }[];
-    if (!columns.some((c) => c.name === "created_by_agent")) {
-      this.sql.exec("ALTER TABLE links ADD COLUMN created_by_agent INTEGER NOT NULL DEFAULT 0");
-      // Existing guest/display links have no provenance. Treat them as agent
-      // links on migration so they cannot silently gain owner-only privileges.
-      this.sql.exec("UPDATE links SET created_by_agent = 1 WHERE role IN ('guest', 'display')");
-    }
-    const fileColumns = this.sql.exec("PRAGMA table_info(stored_files)").toArray() as { name: string }[];
-    if (!fileColumns.some(c => c.name === "risk_score")) this.sql.exec("ALTER TABLE stored_files ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0");
-    // Remove the retired URL lookup cache from existing Durable Objects.
-    this.sql.exec("DROP TABLE IF EXISTS web_risk_cache");
-    const versionColumns = this.sql.exec("PRAGMA table_info(versions)").toArray() as { name: string }[];
-    if (!versionColumns.some(c => c.name === "risk_score")) this.sql.exec("ALTER TABLE versions ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0");
-    if (!versionColumns.some(c => c.name === "risk_flags")) this.sql.exec("ALTER TABLE versions ADD COLUMN risk_flags TEXT NOT NULL DEFAULT '[]'");
+    this.storage.transactionSync(() => {
+      // SQLite and the storage implementation own their reserved internal objects.
+      // Every application schema must identify itself before any initialization.
+      const objects = this.all<{ name: string; type: string }>(
+        "SELECT name,type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'",
+      );
+      const identity = objects.find(object => object.name === 'storage_schema');
+      if (identity) {
+        if (identity.type !== 'table') throw new StorageSchemaError('the schema identity is not a table');
+        let rows: { id: number; revision: number }[];
+        try { rows = this.all('SELECT id,revision FROM storage_schema'); }
+        catch { throw new StorageSchemaError('the schema identity is malformed'); }
+        if (rows.length !== 1 || rows[0].id !== 1 || rows[0].revision !== STORAGE_SCHEMA_REVISION)
+          throw new StorageSchemaError('the stored schema identity does not match this release');
+        return;
+      }
+      if (objects.length) throw new StorageSchemaError('existing application tables have no schema identity');
+
+      this.sql.exec(SCHEMA);
+      this.sql.exec('CREATE TABLE storage_schema (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)');
+      this.sql.exec('INSERT INTO storage_schema(id,revision) VALUES(1,?)', STORAGE_SCHEMA_REVISION);
+    });
   }
 
   all<T = Record<string, any>>(query: string, ...args: unknown[]): T[] {

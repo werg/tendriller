@@ -1,0 +1,54 @@
+name: Core release artifacts
+on:
+  push:
+    tags: ['v*']
+    branches: ['release/v*']
+  create:
+  release:
+    types: [published]
+  workflow_dispatch:
+concurrency:
+  group: core-release
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    if: github.event_name != 'create' || (github.event.ref_type == 'branch' && startsWith(github.event.ref, 'release/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run check:release
+      - name: Test the composed service with its pinned public contrib suite
+        run: node scripts/test-contrib-integration.mjs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-contrib-service-failure-traces
+          path: test-results/contrib-integration/
+          include-hidden-files: true
+          if-no-files-found: ignore
+      - run: npm run release:artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-release
+          path: |
+            dist/tendriller-*.tgz
+            dist/manifest.json
+            dist/SHA256SUMS
+      - name: Publish immutable release candidate assets
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ github.ref }}
+        run: node scripts/publish-release.mjs "$RELEASE_REF" SHA256SUMS

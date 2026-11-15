@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tendriller-staging",
-  "main": "src/index.ts",
+  "main": "../dist/service/worker.mjs",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": [
     "nodejs_compat"

@@ -69,8 +69,8 @@ test("lease conflicts remain actionable instead of being retried with a new iden
   assert.equal(calls, 1, "a client must stop processing and explicitly reclaim after losing its lease");
 });
 
-test("timer history exposes bounded retry receipts while preserving legacy runs", () => {
-  const run = { id: "timer:1000", timer_id: "timer", scheduled_at: 1000, fired_at: 1001, status: "fired", event_seq: 1, notification: null };
+test("timer history exposes bounded retry receipts for runs with and without a notification", () => {
+  const run = { id: "timer:1000", timer_id: "timer", scheduled_at: 1000, fired_at: 1001, status: "fired", event_seq: 1, delivery: null };
   assertValid("timerRun", run);
   assertValid("timerRun", { ...run, delivery: null });
   const delivery = { state: "pending", attempts: 1, next_attempt_at: 11001, last_attempt_at: 1001, last_error: "temporary provider failure", sent: 1, failed: 1 };

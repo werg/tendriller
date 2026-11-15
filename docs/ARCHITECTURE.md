@@ -1,147 +1,78 @@
-# Internal architecture
+# Core, trusted composition, and contrib
 
-The public HTTP, WebSocket, MCP and browser contracts stay in `contract/`.
-The internal boundaries below separate storage, permissions, live delivery and
-machine collection without replacing the existing domain stores or protocols.
+This document is the architecture decision for contract **2** and release **0.2.0-rc.1**. It replaces the pre-release combined package. Existing prototypes are rebuilt; there are no old-client adapters or storage translators.
 
-## Transactions and effects
+## Ownership and dependency direction
 
-`server/src/transactions.ts` is the single wrapper around the Durable Object's
-SQLite `transactionSync`. Domain code uses `t.transaction(write)` and
-`t.afterCommit(effect)` through the Tendril facade.
+| Surface | Owner | Public dependency |
+| --- | --- | --- |
+| Authentication, authorization, state, events, blobs, streams, lifecycle | Core engine | Core contract |
+| Browser transport, durable commands, conversation, required controls | Core runtime | Core contract |
+| Workflow records and execution transaction | Core host | Narrow `WorkflowHost` interface |
+| Session workflows, decisions, assignments, private responses, archive/reset | Contrib workflows | `@tendriller/core/host` |
+| CLI, collectors, bridges, preview | Contrib tools | Released SDK/runtime artifacts |
+| Components, recipes, examples | Contrib | Pinned page assets |
+| Deployed selection of reviewed modules | Core `composition/` | Exact contrib workflow archive |
 
-- A transaction callback is synchronous. Do hashing, request-body reads and
-  external I/O before it, then revalidate any authority or state that may have
-  changed while awaiting. Network work belongs outside the database transaction.
-- Nested transactions are savepoints. Their effects join the parent's queue;
-  nothing is emitted until the outer transaction succeeds.
-- A failed savepoint discards its effects and clears the metadata cache, so the
-  next read sees SQLite's rolled-back value. An outer transaction can catch an
-  inner failure and continue with its own writes.
-- Broadcasts, targeted sends, stream fanout, presence refresh, long-poll release
-  and alarm scheduling use the shared effect boundary. Message payloads are
-  captured when registered, rather than read from mutable caller objects later.
-- An uncaught effect failure after commit is logged and does not turn a committed write
-  into an apparent rollback or prevent later effects from running.
+The engine has an empty workflow registry. Only the deployment entry calls `configureWorkflows`. Neither page JSON nor event payloads can add modules. An explicit `/workflows/<module>/<operation>` invocation selects an installed implementation; its permission and precondition checks run before the implementation.
 
-For example, a domain operation can compose existing helpers:
+`npm run build:engine` needs no contrib installation. `npm run build:service` checks the SHA-256 digest in `composition.lock.json`, extracts the Worker-compatible workflow artifact, and statically compiles it with the engine. CLI and component code never enter that graph. The import-boundary check rejects optional implementation imports in engine code and inspects both build input graphs.
 
-```ts
-return t.transaction(() => {
-  t.applyState(ops, by);
-  return addEvent(t, { type: "event", data, by, wake: false });
-});
+## One transaction boundary
+
+Platform concurrency fields are outside application data:
+
+```json
+{
+  "cid": "persisted-command-id",
+  "scope": "opaque-scope",
+  "expected_generations": { "opaque-scope": "captured-token" },
+  "data": { "type": "job.status", "session": "application value" }
+}
 ```
 
-Both writes share the outer transaction, and their live notifications wait for
-it. Use this boundary for a real atomic domain operation, not for unrelated
-requests or long-running work. Direct `ctx.storage.transactionSync` calls bypass
-effect tracking and cache invalidation and should stay inside the wrapper.
+Scopes are records in authoritative storage, separate from shared state. Each has an opaque ID and generation, protected paths, operation targets, and an optional trusted module owner. Binding registration, rebinding, rotation and retirement are explicit authorized operations. A new binding meaning receives a new token. Retired scope IDs remain tombstoned so queued work cannot silently acquire a new meaning.
 
-Post-commit effects are **not a durable queue**. A crash can lose a live frame;
-durable stream readers recover from retained history, and ephemeral readers have
-no replay guarantee. Webhook, MCP and timer delivery already have persisted retry
-jobs. Their intent must be written in the same transaction as the triggering
-event, before scheduling delivery. This does not create an atomic transaction
-across SQLite, D1, R2 or an external service, nor an exactly-once network guarantee.
+The admission function derives required scopes from operation targets and every changed state path. A protected descendant also guards writes to its ancestors and the whole document. All supplied guards are validated, including guards for a removed scope. A token is a concurrency observation, never an access grant.
 
-## Identity, permission and activity
+Browser state/events, agent HTTP/MCP, capture completion, bundle publication and workflow mutations use this admission rule inside the local transaction. Idempotency is keyed by authenticated actor and stable command ID; reuse with different content is rejected. A repeated accepted command returns its saved result, including after a generation rotation. Storage changes and the command result commit together. Broadcasts and other effects run after commit.
 
-`server/src/access.ts` resolves typed agent, producer and page principals and
-contains their permission rules. Credential lookup has no presence side effects.
-Request boundaries explicitly record the kind of activity that occurred.
+Application state and event payloads have no workflow dispatch semantics. Names such as `experiment`, `notebook`, `guide_progress`, `facilitation`, `session` and `session_id` are ordinary JSON. Validated scope/workflow context is attached separately to accepted events.
 
-| Identity | Authority | Activity |
-| --- | --- | --- |
-| Agent | Administrative API and permitted stream reads/appends | Existing authenticated API, MCP and agent-socket requests explicitly check in |
-| Producer | Append to named custom streams in its grant | Only an accepted append updates producer activity |
-| Owner page | Owner controls and allowed streams | Device connection/activity follows existing page semantics |
-| Guest page | Participant writes and page-readable streams | Same device activity rules, with approved guest membership |
-| Display page | Read-only page access and page-readable streams | Connection activity; no participant or owner authority |
+## Durable browser work
 
-Page routes, the outer page-access check, socket handshakes, socket requests and
-stream delivery share the link/session/account policy. A handshake rechecks access
-after upgrade and before sending state. Asynchronous account lookups recheck local
-session/link state afterward and retain newer socket attachment cursors. Legacy
-socket recipient selection also rejects locally revoked or expired identities.
-Stream replay/publication and live fanout freshly check account availability;
-ordinary socket operations retain the existing short account-check cache.
+The browser stores command ID, original scope and captured generation map before applying optimistic state or sending a command. Reconnect and reload reuse this record verbatim. Current authoritative scope metadata filters optimistic reconstruction; an obsolete command cannot obscure a newer session. Rejection remains an explicit result that an application can explain or discard.
 
-Existence, activity and agent attention remain different facts. `expiresAt()`
-uses lifecycle rules, while `presenceFacts()` and `presence()` describe delivery
-and conversational availability. A producer can extend an ad-hoc dashboard's
-activity but cannot claim ownership, clear an agent wake, or imply an attentive
-conversation. Resident and unclaimed-page rules are unchanged.
+A capture records this metadata with its bytes and application payload. Uploading bytes and accepting their event are distinct operations; `capture_complete` performs guarded admission. A familiar `data.type` cannot invoke that operation.
 
-## Stream core and adapters
+## Narrow trusted host
 
-`server/src/streams.ts` is a stable facade for callers and HTTP routes. It
-coordinates accepted records with post-commit delivery. Implementation lives in:
+`contract/host.d.mts` is the complete server integration interface. A module declares named operations, access policies, input schemas, affected targets and a synchronous `run` function. The host supplies authenticated identity, namespaced records, state access, generation operations, participant identities, blob pinning, event emission and post-commit notifications.
 
-| Module | Responsibility |
-| --- | --- |
-| `streams/store.ts` | Definitions, append admission, retention and durable custom history |
-| `streams/history.ts` | Sequence cursors, lazy byte-bounded pagination and history gaps |
-| `streams/adapters.ts` | Views over the original event, log and transcript stores |
-| `streams/broker.ts` | Socket subscriptions, bounded fanout and slow-reader handling |
-| `streams/producers.ts` | Producer grants and credential management |
-| `streams/limits.ts` | Stream limits and input normalization |
+Modules receive neither the Durable Object nor a database connection. They cannot import server implementation paths. Synchronous operation execution prevents yielding in the middle of the local transaction. Private workflow records do not live in shared page state, and access is checked before returning them.
 
-Storage admission cannot send a socket frame. The broker does not append records
-or create retry jobs. Custom durable records use their existing table; built-in
-event/log/transcript streams retain original tables and sequence numbers.
-State and presence streams signal changes to domain snapshots. They do not
-replace snapshot or command APIs. Ephemeral payloads never enter a durable store.
+## Public artifacts and release order
 
-`consumers.ts` shares the event history adapter and gap calculations. Consumer
-leases still own their fencing, delivered ceiling, sticky gap acknowledgement and
-explicit processing checkpoint. Reading or delivering a record never implicitly
-acknowledges that an agent handled it.
+1. Core publishes `tendriller-sdk-<version>.tgz` (`@tendriller/core`) and `tendriller-runtime-<version>.tgz` (`@tendriller/runtime`). The runtime includes compiled browser code, its content manifest, and public pure state/history primitives.
+2. Contrib installs these exact archives using its lockfile and builds tools, components/catalog and a separate workflow archive.
+3. Core composition pins the workflow archive digest. A release-pair manifest records the tested versions and hashes.
 
-## Browser transport
+`/api/service` describes deployed contract and workflow interface/schema revisions. A contrib tool release is a separate identity: changing a chart or collector does not change an installed workflow interface. Tools check this descriptor before provisioning or writing application data.
 
-The browser keeps four separate delivery decisions:
+Release assets carry source commit, filename, size, content type and SHA-256. A discovery URL may point to the latest release, but dependency records contain immutable release URLs and hashes.
 
-1. **Connection:** `runtime/src/connection.ts` owns the socket, handshake timeout,
-   heartbeat, reconnect backoff and stale-socket fencing.
-2. **Operation policy:** `delivery.ts` names whether an operation uses IndexedDB,
-   an in-memory queue or connected-only delivery, and what completion means.
-3. **Requests and receipts:** `requests.ts` owns correlation, timeout cleanup and
-   command receipt waiters. A correlated response alone never deletes an outbox
-   entry; the domain acknowledgement handler decides that.
-4. **Domain state:** `core.ts` retains state reconciliation, the durable outbox
-   pump, command acknowledgements and capture behavior. Stream subscriptions keep
-   their own replay/delivery cursors.
+## Publication and offline asset identity
 
-Known stream requests explicitly require a connection. New operation names do
-not gain a delivery policy from a string prefix. Unknown raw/control operations
-retain the existing memory-queue default. A browser command being queued or
-accepted, a stream frame being delivered and a consumer completing work remain
-distinct states. Server stream durability does not choose browser outbox policy.
+A page publication locks its core runtime ID at creation. The server manifest lists the complete page files and their hashes, served under `_publications/<publication>/`. Injected HTML has its first base URL set to that immutable directory and loads the exact runtime under `_tendril/runtime/<digest>/`. Components are ordinary vendored page files and resolve siblings within their own asset set.
 
-## Collector sources
+The service worker caches manifest-declared assets per publication and persists client associations. It verifies asset hashes; injected HTML is identified by the server's `X-Tendril-Publication` header because injection changes the source bytes. Existing tabs retain their graph when a newer publication is available. Active sockets and thirty-day publication leases preserve server files for ordinary offline recovery; local caches retain the publications still associated with clients.
 
-`cli/lib/stream-collector.mjs` coordinates source lifecycles, destination checks,
-bounded batching, spool commit, upload and retry. It constructs adapters from
-`cli/lib/stream-sources/` instead of branching on source type throughout the loop.
+Runtime archives are retained under content-addressed keys in the existing service `FILES` bucket before deployment. The currently bundled artifact is served by `ASSETS`; older publication runtime URLs resolve to the retained immutable object. This uses the existing storage service and does not retain old helper URL aliases.
 
-Each adapter exposes immutable capabilities for its mode, replay support and
-checkpoint support. A file adapter owns complete-line parsing and resumable file
-position. Host sampling and SSH output are live sources even when their accepted
-records are destined for a durable stream. The SSH adapter owns one child
-session, bounded line decoding and close/abort; the coordinator owns retry.
+## Preview boundary
 
-File checkpoints advance atomically with local spool acceptance. Destination
-durability controls whether accepted records are spooled; it does not create
-source replay that a remote command or host sampler cannot provide. Existing
-configuration, CLI options, record IDs, spool format and credential scope remain
-unchanged. See [Collector](COLLECTOR.md) for operational details and
-[Streams](STREAMS.md) for the public API.
+The contrib preview embeds the actual released runtime and imports `@tendriller/runtime/preview-support`. Its fixture socket/transport is a documented runtime boundary. It does not access a private event bus or import private server files. Fixtures explicitly reject unimplemented service operations. Real Worker tests remain authoritative for identity, authorization, quotas and transactions.
 
-## Verification
+## Resource policy
 
-`npm run check` exercises contracts, types, Worker behavior, runtime units,
-collectors and the installed package. Focused Worker suites cover nested
-rollback/effects, wake-intent atomicity, access revocation and lazy history reads.
-`npm run test:browser` and the portable browser suites cover the shipping runtime
-against its real transport and outbox. See [Development](DEVELOPMENT.md).
+`contract/limits.mjs` owns public state, file, blob, event and stream limits. Server enforcement imports those values; the descriptor exposes them to tools and preview. A larger single retained snapshot uses the same batch and total storage budgets. No policy depends on table names, metric fields or particular applications.

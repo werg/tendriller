@@ -4,10 +4,29 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { cloudflareClient, deletePreview, findDatabase, previewConfig, previewIdentity, previewSecrets,
-  provisionPreview, readPreviewTemplate, smokePreview } from "../branch-preview.mjs";
+  provisionPreview, readPreviewTemplate, smokePreview, verifyPreview } from "../branch-preview.mjs";
 
 const account = "a".repeat(32), commit = "b".repeat(40), dbId = "11111111-2222-4333-8444-555555555555";
 const identity = previewIdentity("feat/branch-previews", commit);
+
+test("preview success requires the selected source checkout's pinned deployment check", async t => {
+  const scratch = resolve(import.meta.dirname, "../../.build");
+  await mkdir(scratch, { recursive: true });
+  const source = await mkdtemp(resolve(scratch, "preview-check-"));
+  t.after(() => rm(source, { recursive: true, force: true }));
+  await mkdir(resolve(source, "scripts"));
+  const script = resolve(source, "scripts/check-deployment.mjs");
+  const output = resolve(source, "checked.json");
+  await writeFile(script, `import { writeFileSync } from 'node:fs';
+    writeFileSync('checked.json', JSON.stringify({ cwd: process.cwd(), base: process.argv[2] }));`);
+  let provenanceChecked = false;
+  const smoke = async checked => { assert.equal(checked, identity); provenanceChecked = true; };
+  await verifyPreview(identity, source, { smoke });
+  assert.equal(provenanceChecked, true);
+  assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { cwd: source, base: identity.url });
+  await writeFile(script, "process.exitCode = 1;");
+  await assert.rejects(verifyPreview(identity, source, { smoke }), /check-deployment.mjs failed/);
+});
 
 test("branch names cannot target master or collide after slug normalization", () => {
   for (const branch of ["master", "", "refs/heads/main", "../master", "-main", "a..b", "x.lock", "a\nb", "x@{1}", "a//b"]) {
@@ -176,8 +195,9 @@ test("live smoke waits for exact deployed commit and checks database-backed serv
   await smokePreview(identity, { delay: async () => {}, fetcher: async url => {
     const path = new URL(url).pathname; paths.push(path);
     if (path === "/health") return Response.json({ ok: true, preview: { commit: ++attempts === 1 ? "old" : commit } });
+    if (path === "/api/service") return Response.json({contract:2});
     return new Response(`Tendriller ${identity.url}`);
   } });
   assert.equal(attempts, 2);
-  assert.deepEqual(paths.slice(2), ["/", "/status", "/starters", "/agent.md"]);
+  assert.deepEqual(paths.slice(2), ["/", "/status", "/api/service", "/agent.md"]);
 });

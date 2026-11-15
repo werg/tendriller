@@ -12,7 +12,7 @@ export function mountReturnToWork(host: HTMLElement, core: Core, open: (action: 
     if (!core.connected || loading) return;
     const request = ++generation; loading = true;
     try {
-      const response = await fetch(core.config.base + "_tendril/resume", { credentials: "same-origin", cache: "no-store", headers: core.deviceHeaders?.() || {} });
+      const response = await fetch(core.config.base + "_tendril/session", { credentials: "same-origin", cache: "no-store", headers: core.deviceHeaders?.() || {} });
       if (!response.ok) return;
       const data = await response.json();
       if (request !== generation || !owner()) return;

@@ -1,4 +1,4 @@
-// Opt-in processing checkpoints. Legacy event readers remain independent.
+// Opt-in processing checkpoints. Direct event readers remain independent.
 import type { Tendril } from "./tendril";
 import { assertValid } from "../../contract/index.mjs";
 import type { ConsumerBatch, ConsumerLease, EventConsumer } from "../../contract/index.mjs";
@@ -6,7 +6,7 @@ import { HttpError, json, readJson } from "./http";
 import { randomB32, sha256Hex } from "./ids";
 import { renderEvent } from "./events";
 import { addActivity } from "./activity";
-import { legacyHistorySource } from "./streams/adapters";
+import { tableHistorySource } from "./streams/adapters";
 import { mergeHistoryGaps, readHistory } from "./streams/history";
 
 type ConsumerRow = { name: string; handled_seq: number; delivered_seq: number; gap_from: number | null; gap_through: number | null;
@@ -21,7 +21,7 @@ function publicConsumer(t: Tendril, row: ConsumerRow): EventConsumer {
     lease: row.holder && row.lease_expires_at > t.now() ? { holder: row.holder, expires_at: row.lease_expires_at } : null,
     created_at: row.created_at, updated_at: row.updated_at };
 }
-function eventHistory(t: Tendril) { return legacyHistorySource(t.db, "events", renderEvent); }
+function eventHistory(t: Tendril) { return tableHistorySource(t.db, "events", renderEvent); }
 function lease(t: Tendril, name: string, hash: string): ConsumerRow {
   const row = stored(t, name);
   if (!row) throw new HttpError(404, "not_found", "No such event consumer");

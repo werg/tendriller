@@ -1,6 +1,7 @@
 // End-to-end against a running server:
 //   TENDRIL_REAL=http://localhost:8702 npx playwright test --config runtime/test/playwright.config.ts real-server
 import { test, expect } from "@playwright/test";
+import { savedForOffline } from "./publication";
 
 const BASE = process.env.TENDRIL_REAL;
 test.skip(!BASE, "set TENDRIL_REAL to a running server origin");
@@ -33,7 +34,7 @@ test("real server: page loads, send, eval, state both ways, health", async ({ pa
 
   // send → event
   const r = await page.evaluate(() => (window as any).tendril.send({ hello: "world" }));
-  expect(r.queued).toBe(false);
+  expect(r.status).toBe("accepted");
   const ev = await api(`${apiBase}/events?after=0`, { token });
   expect(ev.body.events.some((e: any) => e.type === "event" && e.data && e.data.hello === "world")).toBe(true);
 
@@ -47,8 +48,10 @@ test("real server: page loads, send, eval, state both ways, health", async ({ pa
   // state page → server
   await page.evaluate(() => (window as any).tendril.state.patch({ list: { a: { text: "milk" } } }));
   await expect.poll(async () => (await api(`${apiBase}/state`, { token })).body.state.list?.a?.text).toBe("milk");
-  // state server → page (merge patch)
-  await api(`${apiBase}/state`, { method: "PATCH", token, body: JSON.stringify({ list: { b: { text: "eggs" } }, mode: "x" }), headers: { "Content-Type": "application/json" } });
+  // state server → page (explicit versioned command envelope)
+  await api(`${apiBase}/state`, { method: "PATCH", token, body: JSON.stringify({ cid: crypto.randomUUID(), expected_generations: {}, ops: [
+    { op: "set", path: ["list", "b"], value: { text: "eggs" } }, { op: "set", path: ["mode"], value: "x" },
+  ] }), headers: { "Content-Type": "application/json" } });
   await page.waitForFunction(() => (window as any).tendril.state.get("list.b.text") === "eggs");
   expect(await page.evaluate(() => (window as any).tendril.state.get("list.a.text"))).toBe("milk");
 
@@ -85,11 +88,7 @@ test("real server: service worker caches the page for offline reload", async ({ 
   await page.goto(pageUrl);
   await page.waitForFunction(() => (window as any).tendril?.connected, null, { timeout: 15000 });
   await page.evaluate(() => (window as any).tendril.state.set("x", 42));
-  await page.waitForFunction(async () => {
-    const name = (await caches.keys()).find((k) => /^tendril-.*-v\d+$/.test(k));
-    return !!name && (await (await caches.open(name)).keys()).length >= 3 && !!navigator.serviceWorker.controller;
-  }, null, { timeout: 15000 });
-  await page.waitForTimeout(500);
+  await savedForOffline(page);
   await context.setOffline(true);
   await page.reload();
   await expect(page.locator("#h")).toHaveText("Offline ok");

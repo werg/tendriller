@@ -68,7 +68,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
   const localDate = (at: number) => { const date = new Date(at); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 16); };
 
   const timerList = h("div"), history = h("div"), lifetime = h("p", { class: "muted" });
-  const title = h("input", { type: "text", required: true, maxlength: 200, placeholder: "Check the experiment", value: draft.timer?.title || "" });
+  const title = h("input", { type: "text", required: true, maxlength: 200, placeholder: "Check the page", value: draft.timer?.title || "" });
   const when = h("input", { type: "datetime-local", required: true, value: draft.timer?.when || localDate(Date.now() + 5 * 60000) });
   const repeat = h("select", null, h("option", { value: "once" }, "Once"), h("option", { value: "interval" }, "Every few minutes"), h("option", { value: "daily" }, "Every day")); repeat.value = draft.timer?.repeat || "once";
   const interval = h("input", { type: "number", min: 1, max: 525600, value: draft.timer?.interval || 30 });
@@ -90,7 +90,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
       timer.state === "scheduled" ? button("Cancel timer", async () => { await request(`timers/${timer.id}`, "PATCH", { state: "cancelled" }); await loadTimers(); status.textContent = "Timer cancelled."; })
         : button("Remove timer", async () => { await request(`timers/${timer.id}`, "DELETE"); await loadTimers(); status.textContent = "Timer removed."; }))) : [h("p", { class: "muted", text: "No timers yet." })]));
     const names = new Map(data.timers.map((timer: any) => [timer.id, timer.title]));
-    clear(history, ...(past.runs.length ? past.runs.slice(0, 10).map((r: any) => h("p", { text: `${names.get(r.timer_id) || "Timer"} · ${r.status} · ${new Date(r.fired_at).toLocaleString()}${r.delivery ? ` · notification ${r.delivery.state} · ${r.delivery.attempts} attempt${r.delivery.attempts === 1 ? "" : "s"}${r.delivery.next_attempt_at ? " · next retry " + new Date(r.delivery.next_attempt_at).toLocaleString() : ""}${r.delivery.last_error ? " · " + r.delivery.last_error : ""}` : r.notification ? " · " + r.notification : ""}` })) : [h("p", { text: "No timer runs yet." })]));
+    clear(history, ...(past.runs.length ? past.runs.slice(0, 10).map((r: any) => h("p", { text: `${names.get(r.timer_id) || "Timer"} · ${r.status} · ${new Date(r.fired_at).toLocaleString()}${r.delivery ? ` · notification ${r.delivery.state} · ${r.delivery.attempts} attempt${r.delivery.attempts === 1 ? "" : "s"}${r.delivery.next_attempt_at ? " · next retry " + new Date(r.delivery.next_attempt_at).toLocaleString() : ""}${r.delivery.last_error ? " · " + r.delivery.last_error : ""}` : ""}` })) : [h("p", { text: "No timer runs yet." })]));
   }
   const timerSubmit = h("button", { type: "submit", class: "btn primary" }, "Add timer"); actionButtons.add(timerSubmit);
   const timerForm = h("form", { class: "experience-form" }, field("Timer name", title), field("First run (this device’s time)", when), field("Repeat", repeat), minutesField, dailyField, zoneField,
@@ -134,7 +134,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
     status.textContent = "Context changed. Review the latest text; your draft has not been overwritten.";
   }
   async function loadSession() {
-    const latest = await request("resume"), before = currentBrief(), dirty = baseline ? editedFields() : [];
+    const latest = await request("session"), before = currentBrief(), dirty = baseline ? editedFields() : [];
     summary = latest;
     if (!baseline) { baseline = briefFields(latest.session); setBrief(baseline); }
     else {
@@ -155,10 +155,10 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
   const briefForm = h("form", { class: "experience-form" }, field("What this page is for", purpose), field("Where to continue", task), field("Open questions", questions), briefSubmit);
   briefForm.onsubmit = e => { e.preventDefault(); void run(async () => {
     if (!sessionLoaded || !baseline) throw new Error("Wait for the saved context to load. Your draft stays here.");
-    const values = currentBrief(), base = structuredClone(baseline), latest = await request("resume");
+    const values = currentBrief(), base = structuredClone(baseline), latest = await request("session");
     const plan = planContextSave(base, values, latest.session);
     if (plan.conflicts.length) { showConflict(latest, plan.conflicts); return; }
-    const saved = await request("resume", "PUT", { ...plan.next, expected_revision: latest.revision });
+    const saved = await request("session", "PUT", { ...plan.next, expected_revision: latest.revision });
     summary = { ...latest, session: saved.session, revision: saved.revision };
     core.bus.emit("session_saved", {});
     const duringSave = currentBrief(); baseline = briefFields(saved.session);
@@ -177,7 +177,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
   const copyName = h("input", { "data-copy-name": "", type: "text", maxlength: 100, placeholder: "Name for the copy", value: draft.copyName || "" });
   const result = h("div"), copyResult = h("div");
   const publish = button("Publish prepared copy", async () => {
-    const current = await request("resume");
+    const current = await request("session");
     if (!summary || current.version !== summary.version) throw new Error("The page changed. Refresh saved context to review its current version before publishing. Your draft stays here.");
     await request("bundle/publish", "POST", { expected_version: summary.version });
     core.bus.emit("session_saved", {});

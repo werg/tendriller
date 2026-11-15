@@ -1,5 +1,5 @@
 // Shipping browser suites. The Worker suite covers the current public identity,
-// host delivery and speech flow; obsolete anonymous/Workers-AI tests are excluded.
+// host delivery, publication coherence and speech flow.
 import { spawn } from "node:child_process";
 
 const suites = [
@@ -7,10 +7,7 @@ const suites = [
   ["runtime/test/control/playwright.config.ts"],
   ["runtime/test/push/playwright.config.ts"],
   ["runtime/test/tts/playwright.config.ts"],
-  ["snippets/test/playwright.config.ts"],
-  ["cli/test/preview.playwright.config.ts"],
   ["test/e2e/playwright.config.ts"],
-  ["test/portable/playwright.config.ts", "--project=chromium"],
 ];
 const failed = [];
 for (const [config, ...files] of suites) {

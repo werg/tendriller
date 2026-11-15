@@ -3,19 +3,25 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const asset = (p: string) => readFileSync(join(root, "server/public/_tendril", p));
+const asset = (p: string) => readFileSync(join(root, "dist/runtime/assets", p));
+const runtimeManifest = JSON.parse(asset("manifest.json").toString());
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
 export interface MockTendril {
   id: string;
   version: number;
   /** Body HTML (after the injected scripts). */
   html: string;
+  publications: Map<number, { html: string; files: MockTendril["files"]; manifest: any }>;
   files: Record<string, { type: string; body: string }>;
   noSw: boolean;
+  preview: boolean;
   state: any;
+  scopes: any[];
   rev: number;
   seq: number;
   sockets: Set<WebSocket>;
@@ -57,7 +63,7 @@ export class MockServer {
   create(over: Partial<MockTendril> = {}): MockTendril {
     const id = "t" + (++this.n).toString().padStart(11, "a");
     const t: MockTendril = {
-      id, version: 1, html: "<h1>Hello</h1>", files: {}, noSw: true, state: {}, rev: 0, seq: 0,
+      id, version: 1, html: "<h1>Hello</h1>", publications: new Map(), files: {}, noSw: true, preview: false, state: {}, scopes: [], rev: 0, seq: 0,
       sockets: new Set(), msgs: [], refuse: false, dedupe: new Set(), blobs: new Map(), pageLoads: 0, welcomeExtra: {},
       uploadReceipts: new Map(), uploadFailureStatus: 0, dropUploadResponses: 0, sendReceipts: new Map(),
       ...over,
@@ -69,13 +75,24 @@ export class MockServer {
   base(t: MockTendril) { return `/t/${t.id}/s/key/`; }
   url(t: MockTendril) { return this.origin + this.base(t); }
 
-  page(t: MockTendril): string {
-    const base = this.base(t);
-    const cfg = { id: t.id, base, version: t.version, ws: base + "_tendril/ws", features: { transcribe: false, voice: false, push: false, vapid: null } };
-    return `<!doctype html><html><head><script>window.__TENDRIL__=${JSON.stringify(cfg)};</script><script src="${base}_tendril/tendril.js"></script>` +
+  runtimeUrl(t: MockTendril) { return `${this.base(t)}_tendril/runtime/${runtimeManifest.id}/`; }
+  publication(t: MockTendril, version = t.version) {
+    const previous = t.publications.get(version);
+    if (previous) return previous;
+    const base = this.base(t), publicationBase = `${base}_publications/${version}/`;
+    const files = structuredClone(t.files);
+    const manifest = { id: String(version), base: publicationBase, entry: "index.html",
+      runtime: { version: runtimeManifest.version, id: runtimeManifest.id, base: this.runtimeUrl(t) },
+      assets: [{ path: "index.html", sha256: hash(t.html), type: "text/html" }, ...Object.entries(files).map(([path, file]) => ({ path, sha256: hash(file.body), type: file.type }))],
+    };
+    const cfg = { id: t.id, base, publication: manifest, preview: t.preview, version, ws: base + "_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: { model: "fixture", url: "model", sha256: "0".repeat(64), engine: { script: "engine.js", wasm: "engine.wasm", wasm_sha256: "0".repeat(64) } } } };
+    const html = `<!doctype html><html><head><base href="${publicationBase}"><script>window.__TENDRIL__=${JSON.stringify(cfg)};</script>` +
       (t.noSw ? "<script>window.__TENDRIL_NO_SW__=true</script>" : "") +
-      `<title>Test ${t.id} v${t.version}</title></head><body>${t.html}</body></html>`;
+      `<script src="${this.runtimeUrl(t)}tendril.js"></script><title>Test ${t.id} v${version}</title></head><body>${t.html}</body></html>`;
+    const publication = { html, files, manifest }; t.publications.set(version, publication);
+    return publication;
   }
+  page(t: MockTendril): string { return this.publication(t).html; }
 
   async start() {
     this.server = http.createServer((req, res) => this.http(req, res));
@@ -123,10 +140,26 @@ export class MockServer {
       return;
     }
     if (rel === "" || rel === "index.html") { t.pageLoads++; return send(200, "text/html; charset=utf-8", this.page(t)); }
-    if (rel === "_tendril/tendril.js") return send(200, "text/javascript", asset("tendril.js"));
-    if (rel === "_tendril/axe.min.js") return send(200, "text/javascript", asset("axe.min.js"));
+    const runtime = `_tendril/runtime/${runtimeManifest.id}/`;
+    if (rel.startsWith(runtime)) {
+      const path = rel.slice(runtime.length), entry = runtimeManifest.assets.find((item: any) => item.path === path);
+      if (path === "manifest.json") return send(200, "application/json", JSON.stringify(runtimeManifest));
+      if (entry) return send(200, entry.type, asset(path));
+      return send(404, "text/plain", "not found");
+    }
+    const publicationPath = /^_publications\/(\d+)\/(.*)$/.exec(rel);
+    if (publicationPath) {
+      const publication = t.publications.get(Number(publicationPath[1]));
+      if (!publication) return send(404, "text/plain", "not found");
+      const extra = { "X-Tendril-Publication": publicationPath[1] };
+      if (!publicationPath[2] || publicationPath[2] === "index.html") return send(200, "text/html", publication.html, extra);
+      const file = publication.files[publicationPath[2]];
+      return file ? send(200, file.type, file.body, extra) : send(404, "text/plain", "not found");
+    }
     if (rel === "_tendril/sw.js") return send(200, "text/javascript", asset("sw.js"), { "Service-Worker-Allowed": this.base(t) });
-    if (rel === "_tendril/info") return send(200, "application/json", JSON.stringify({ id: t.id, version: t.version, files: ["index.html", ...Object.keys(t.files)], features: {} }));
+    if (rel === "_tendril/devices") return send(200, "application/json", JSON.stringify({ devices: [{ id: "d_x" }] }));
+    if (rel === "_tendril/adopt_code") return send(403, "application/json", JSON.stringify({ error: { code: "forbidden", message: "no" } }));
+    if (rel === "_tendril/info") return send(200, "application/json", JSON.stringify({ id: t.id, version: t.version, publication: this.publication(t).manifest, features: {} }));
     const f = t.files[rel];
     if (f) return send(200, f.type, f.body);
     send(404, "text/plain", "not found");
@@ -146,10 +179,11 @@ export class MockServer {
           reply({
             t: "welcome", device_id: m.device_id, role: "owner", pending: false, primary: true,
             tendril: { id: t.id, name: "Test" }, version: { current: t.version, latest: t.version, healthy: t.version },
-            state: t.state, rev: t.rev, presence: { state: "listening", text: "Listening", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" },
+            state: t.state, rev: t.rev, scopes: t.scopes, presence: { state: "listening", text: "Listening", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" },
             transcript: [], rules: [], features: {}, budget: { owner_per_hour: 60, page_per_hour: 12 }, ...t.welcomeExtra,
           });
           break;
+        case "capture_complete":
         case "send":
           if (t.sendReceipts.has(m.cid)) { reply(t.sendReceipts.get(m.cid)); break; }
           t.dedupe.add(m.cid);

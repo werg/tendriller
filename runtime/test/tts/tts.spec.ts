@@ -52,7 +52,7 @@ async function open(page: Page) {
     AudioBufferSourceNode.prototype.stop = function(...args: any[]) { w.stops++; return stop.apply(this, args as any); };
   });
   await page.route("http://localhost:7789/**", route => {
-    if (route.request().url().endsWith("/_tendril/tts/index.js")) return route.fulfill({body:module, contentType:"text/javascript"});
+    if (route.request().url().endsWith("/runtime/tts/index.js")) return route.fulfill({body:module, contentType:"text/javascript"});
     return route.fulfill({body:`<!doctype html><meta charset="utf-8"><script>${entry}</script>`, contentType:"text/html"});
   });
   await page.goto("http://localhost:7789/page/");
@@ -88,8 +88,8 @@ test("prepared neural replies play sequentially and reuse the model", async ({ p
 
 test("mute and non-English preferences avoid the model download", async ({page}) => {
   await open(page);
-  await page.evaluate(() => { const w=window as any; w.prefs.audio=false; w.tts.speak('muted'); });
-  await page.evaluate(() => { const w=window as any; w.prefs={language:'de-DE'}; w.tts.speak('Guten Tag'); });
+  await page.evaluate(() => { const w=window as any; w.preferences.update({audio:false}); w.tts.speak('muted'); });
+  await page.evaluate(() => { const w=window as any; w.preferences.update({audio:true,language:'de-DE'}); w.tts.speak('Guten Tag'); });
   await expect.poll(() => page.evaluate(() => (window as any).browserSpoken)).toEqual(['Guten Tag']);
   expect(await page.evaluate(() => (window as any).loads || 0)).toBe(0);
 });

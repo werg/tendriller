@@ -9,14 +9,8 @@ import { describeCapabilities, observeCapabilities } from "./capabilities";
 import { installSensorWrappers } from "./control/sensors";
 import type { ControlApi, TendrilConfig } from "./types";
 import type { CaptureOptions } from "./capture";
-import type { RuntimeApi } from "../../contract/index.mjs";
+import type { RuntimeApi, OperationOptions } from "../../contract/index.mjs";
 
-function fallbackConfig(): TendrilConfig {
-  const base = location.pathname.replace(/[^/]*$/, "");
-  return { id: "local", base, version: 0, ws: base + "_tendril/ws", features: { push: false, vapid: null,
-    shared_by: "Tendriller user", speech: { model: "cactus-whistle-v4", url: "_tendril/speech/whistle.cact",
-      sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" } } };
-}
 
 function guard<T>(what: string, fn: () => T): T | undefined {
   try { return fn(); } catch (e) { console.error(`[tendril] ${what} failed to start`, e); return undefined; }
@@ -25,12 +19,15 @@ function guard<T>(what: string, fn: () => T): T | undefined {
 function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>) {
   const w = window as any;
   if (!("serviceWorker" in navigator)) return;
+  if (!cfg.publication) return;
   const go = () => {
     if (w.__TENDRIL_NO_SW__) return;
     navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base }).then((reg) => {
-      const ping = () => (reg.active || reg.waiting || reg.installing)?.postMessage({ t: "update", version: cfg.version });
+      const ping = () => (reg.active || reg.waiting || reg.installing)?.postMessage({ t: "publication", page: cfg.id, publication: cfg.publication });
       core.bus.on("welcome", ping);
-      if (core.connected) ping();
+      navigator.serviceWorker.addEventListener("controllerchange", ping);
+      navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") ping(); });
+      ping();
     }).catch((e) => console.info("[tendril] service worker not registered:", e && e.message ? e.message : e));
   };
   if (document.readyState === "complete") setTimeout(go, 0);
@@ -39,19 +36,32 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
 
 (function main() {
   const w = window as any;
-  if (w.tendril && w.tendril._core) return; // included twice
-  const cfg: TendrilConfig = w.__TENDRIL__ || fallbackConfig();
-  if (!w.__TENDRIL__) console.warn("[tendril] window.__TENDRIL__ missing; using defaults");
+  if (w.tendril) return;
+  const cfg: TendrilConfig = w.__TENDRIL__;
+  if (!cfg) throw new Error("The Tendriller runtime requires an explicit page configuration.");
+  // The address itself pins a live page, so browser reload/offline recovery is
+  // unambiguous even when a navigation has no initiating service-worker client.
+  if (cfg.publication && cfg.version > 0) {
+    const pinned = new URL(cfg.publication.entry || "index.html", new URL(cfg.publication.base, location.href));
+    pinned.search = location.search; pinned.hash = location.hash;
+    if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
+  }
   const core = createCore(cfg);
   let control: ControlApi | undefined;
 
   const ready = Object.assign(() => core.ready(), { manual: () => core.readyManual() });
 
   const api: RuntimeApi = {
-    send: (data: any, opts?: { wake?: boolean }) => core.send(data, opts),
+    send: (data: any, opts?: OperationOptions & { wake?: boolean }) => core.send(data, opts),
+    request: (path, options) => core.request(path, options),
     state: core.state,
+    preferences: core.preferences,
+    scopes: core.scopes,
+    get service() { return core.service; },
+    conversation: core.conversation,
     streams: core.streams,
     on: (type: string, fn: (p: any) => void) => core.bus.on(type, fn),
+    blobUrl: id => core.blobUrl(id),
     upload: (blob: Blob, opts?: { name?: string; keep?: boolean }) => core.upload(blob, opts),
     uploadEvent: (blob: Blob, opts: CaptureOptions) => core.uploadEvent(blob, opts),
     captures: () => core.captures(),
@@ -75,7 +85,6 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
       position: (p: "bottom-right" | "bottom-left" | "top-right" | "top-left") => control?.position(p),
     },
   };
-  Object.defineProperty(api, "_core", { value: core, enumerable: false }); // internal: control + e2e tests
   Object.defineProperty(w, "tendril", { value: api, configurable: true, enumerable: true, writable: false });
 
   registry.push = guard("push", () => setupPush(core));

@@ -1,3 +1,4 @@
+import runtimeRelease from "../src/runtime-release.json";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { route } from "../src/router";
@@ -27,7 +28,7 @@ describe("public routes", () => {
   });
 
   it("serves the runtime bundle as a static asset", async () => {
-    const res = await req("/_tendril/tendril.js");
+    const res = await req(`/_tendril/runtime/${runtimeRelease.id}/tendril.js`);
     expect(res.status).toBe(200);
     await res.text();
   });
@@ -45,43 +46,8 @@ describe("public routes", () => {
 });
 
 describe("create", () => {
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("creates a tendril with defaults", async () => {
-    const h = await create();
-    expect(h.id).toMatch(/^[a-z2-7]{12}$/);
-    expect(h.token).toMatch(/^tk_[a-z2-7]{32}$/);
-    expect(h.name).toBe("Tendril");
-    expect(h.lifetime).toBe("ad_hoc");
-    expect(h.page_url).toMatch(new RegExp(`^${BASE}/t/${h.id}/s/[a-z2-7]{26}/$`));
-    expect(h.api).toBe(`${BASE}/api/t/${h.id}`);
-    expect(h.agent_md).toBe(`${BASE}/agent.md`);
-    expect(h.expires_at).toBeGreaterThan(Date.now() + 23 * 3600_000);
-    const info = await apiJson(h, "GET", "");
-    expect(info).toMatchObject({ id: h.id, name: "Tendril", pairing: "open", lifetime: "ad_hoc", version: { current: null, latest: null, healthy: null } });
-    expect(info.presence.state).toBe("working"); // the GET itself was a check-in
-  });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("accepts name, lifetime and pairing; validates them", async () => {
-    const h = await create({ name: "Kitchen", lifetime: "resident", pairing: "required" });
-    expect(h).toMatchObject({ name: "Kitchen", lifetime: "resident", expires_at: null });
-    const bad = await req("/api/tendrils", { method: "POST", body: JSON.stringify({ lifetime: "forever" }) });
-    expect(bad.status).toBe(400);
-    expect(await bad.json()).toMatchObject({ error: { code: "bad_request" } });
-  });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("requires CREATE_KEY when configured", async () => {
-    const e = { ...env, CREATE_KEY: "sekrit" };
-    const no = await route(new Request(BASE + "/api/tendrils", { method: "POST", body: "{}" }), e);
-    expect(no.status).toBe(401);
-    const yes = await route(new Request(BASE + "/api/tendrils", { method: "POST", body: "{}", headers: { Authorization: "Bearer sekrit" } }), e);
-    expect(yes.status).toBe(201);
-    await yes.text();
-  });
 
   it("rejects missing or wrong tokens", async () => {
     const h = await create();
@@ -107,30 +73,6 @@ describe("create", () => {
 });
 
 describe("page URLs", () => {
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("serves the holding page with the runtime injected", async () => {
-    const h = await create({ name: "Hello <World>" });
-    const res = await req(h.page_url);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toContain("text/html");
-    const html = await res.text();
-    expect(html).toContain("Waiting for the agent");
-    expect(html).toContain("Hello &lt;World&gt;");
-    const base = new URL(h.page_url).pathname;
-    expect(html).toContain(`<script src="${base}_tendril/tendril.js"></script>`);
-    const m = /window\.__TENDRIL__=(\{.*?\});<\/script>/.exec(html)!;
-    const cfg = JSON.parse(m[1]);
-    expect(cfg).toEqual({
-      id: h.id,
-      base,
-      version: 0,
-      ws: `${base}_tendril/ws`,
-      features: { transcribe: false, voice: false, push: false, vapid: null },
-    });
-    // injected right after <head>
-    expect(html.indexOf("<script>window.__TENDRIL__")).toBe(html.indexOf("<head>") + "<head>".length);
-  });
 
   it("redirects P without trailing slash with 308", async () => {
     const h = await create();
@@ -146,9 +88,9 @@ describe("page URLs", () => {
     await res.text();
   });
 
-  it("serves runtime, service worker and snippets under P", async () => {
+  it("serves immutable runtime and scoped service worker under P", async () => {
     const h = await create();
-    const js = await req(h.page_url + "_tendril/tendril.js");
+    const js = await req(h.page_url + `_tendril/runtime/${runtimeRelease.id}/tendril.js`);
     expect(js.status).toBe(200);
     await js.text();
     const sw = await req(h.page_url + "_tendril/sw.js");
@@ -160,32 +102,6 @@ describe("page URLs", () => {
     await sn.text();
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("accepts the subdomain shape", async () => {
-    const h = await create();
-    const key = new URL(h.page_url).pathname.split("/")[4];
-    const e = { ...env, PAGE_BASE_DOMAIN: "pages.example.com", PAGE_HOST_MODE: "subdomain" as const };
-    const res = await route(new Request(`https://${h.id}.pages.example.com/s/${key}/`), e);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain(`"base":"/s/${key}/"`);
-    const redirect = await route(new Request(`https://${h.id}.pages.example.com/s/${key}`), e);
-    expect(redirect.status).toBe(308);
-    expect(redirect.headers.get("Strict-Transport-Security")).toContain("includeSubDomains");
-    const servicePath = await route(new Request(`http://localhost:8787/t/${h.id}/s/${key}/`), e);
-    expect(servicePath.status).toBe(404);
-    const serviceApiOnPage = await route(new Request(`https://${h.id}.pages.example.com/api/tendrils`, { method: "POST" }), e);
-    expect(serviceApiOnPage.status).toBe(404);
-    const sibling = await route(new Request(`https://${h.id}.pages.example.com/s/${key}/_tendril/blob`, {
-      method: "POST", headers: { Origin: "https://other.pages.example.com" }, body: "attack",
-    }), e);
-    expect(sibling.status).toBe(403);
-    const socket = await route(new Request(`https://${h.id}.pages.example.com/s/${key}/_tendril/ws`, {
-      headers: { Upgrade: "websocket", Origin: "https://other.pages.example.com" },
-    }), e);
-    expect(socket.status).toBe(403);
-  });
 
   it("serves info, manifest and a generated icon", async () => {
     const h = await create({ name: "Pantry" });
@@ -199,26 +115,5 @@ describe("page URLs", () => {
     expect(await icon.text()).toContain(">P</text>");
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("transcribe is 501 without the AI binding", async () => {
-    const h = await create();
-    const res = await req(h.page_url + "_tendril/transcribe", { method: "POST", body: new Uint8Array([1, 2, 3]) });
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({ error: { code: "unavailable" } });
-  });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("voice session delegates to voice.ts (501 stub)", async () => {
-    const h = await create();
-    const page = await PageClient.connect(h.page_url);
-    const res = await req(h.page_url + "_tendril/voice/session", {
-      method: "POST", body: "{}",
-      headers: { "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
-    });
-    page.close();
-    expect(res.status).toBe(501);
-    await res.text();
-  });
 });

@@ -26,15 +26,17 @@ node scripts/provision.mjs staging
 node scripts/provision.mjs production
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.production.jsonc
-node scripts/install-speech.mjs tendriller-staging-files --remote
-node scripts/install-speech.mjs tendriller-production-files --remote
+npm run build
+npm run build:service
+node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
+node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
 ```
 
 `provision.mjs` is idempotent. It writes Wrangler configs with the resource IDs. In Cloudflare DNS, add a proxied `AAAA` record with content `100::` for `*.tendriller.dev` (staging) and `*.tendriller.site` (production) before deploying. The default staging page host is `<id>.tendriller.dev`, separate from its service host `staging.tendriller.dev`; the Worker uses the service hostname to route service requests. Use `STAGING_PUBLIC_BASE` and `STAGING_PAGE_BASE_DOMAIN` to change staging hostnames within the `tendriller.dev` zone. Review and commit the configs before enabling CI.
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
-GitHub Actions runs typecheck, Worker tests, CLI bridge tests, and browser tests on pull requests and branch pushes. A passing `master` run applies migrations and deploys staging, verifies `/health` and `/agent.md`, then applies migrations and deploys production and verifies the same endpoints. The deployment uses immediate Durable Object code updates. Superseded commits skip deployment. The workflow can also be rerun manually from `master` with `workflow_dispatch`. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable; repository variables `STAGING_READY=true` and `PRODUCTION_READY=true` activate the respective jobs. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks or migrations.
+GitHub Actions runs typecheck, Worker tests, public artifact and composition checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. Set these variables only after selecting and verifying storage created for that schema. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
@@ -43,9 +45,12 @@ Each deployed Worker has a 15-minute cron that retries suspended-account page sh
 ## Live branch previews
 
 The **Live branch previews** workflow (`.github/workflows/branch-previews.yml`)
-deploys passing branches from this repository.
+automatically deploys passing `preview/**` branches from this repository.
 It runs from `master` after a **Public service** push or manual run completes
-successfully and checks that the tested commit is still the branch head. Pull
+successfully and checks that the tested commit is still the branch head. The
+`preview/` namespace is explicit deployment intent; a successful release or
+development branch build does not create a deployment. Other non-default
+branches can be deployed with the manual action described below. Pull
 request runs test GitHub's merge commit, so they do not authorize deploying the
 branch tip. Fork pull requests never receive
 deployment credentials. Deployment and deletion for a branch are serialized so
@@ -111,8 +116,9 @@ variables and installs them as the corresponding Worker secrets. For CI, save
 these values as GitHub Actions secrets with those names in the **staging**
 environment. Each client ID/site key must be supplied with its corresponding
 secret. Register the
-preview callbacks, install the speech model in its own bucket if needed, and
-verify sign-in before changing its service state to `open`.
+preview callbacks and verify sign-in before changing its service state to `open`.
+Runtime publication installs every declared resource into the preview's own
+bucket before deployment, including resources loaded only when a feature is used.
 [Google OAuth callbacks](https://developers.google.com/identity/protocols/oauth2/web-server#uri-validation)
 must be registered exactly; [GitHub callback compatibility](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#redirect-urls)
 must be checked against that OAuth app's settings.
@@ -126,6 +132,9 @@ support before their per-tendril page routes can work.
 Use **Actions → Live branch previews → Run workflow** on `master`, enter the full
 branch name, and choose `deploy`. The controller requires a successful **Public
 service** run for that branch's current commit; it does not bypass the checks.
+This explicit action supports any non-default branch, including branches outside
+`preview/**`. It does not verify that release archives have been published;
+complete the release checks below before requesting a release candidate preview.
 
 The lifecycle script can also be run from a trusted checkout with the same
 Cloudflare environment variables. `plan` prints the computed names without
@@ -149,9 +158,11 @@ Run `npm run test:e2e:public` with `E2E_SERVICE_BASE` set to the preview URL and
 `E2E_OWNER_EMAIL` set to a verified preview account after capturing its session
 with `scripts/capture-e2e-auth.mjs`. This checks claims and two distinct page
 origins. Return creation to `creation_paused` if these checks fail. Successful
-deployment smoke checks cover `/health`, `/`, `/starters`, `/agent.md` and `/status`.
-On branches with preview metadata support, `/health` must report the checked
-commit; the guide must point to the preview's own service URL. These checks do
+deployment smoke checks cover `/health`, `/`, `/api/service`, `/agent.md` and `/status`.
+The `/health` response must report the checked commit, and the guide must point
+to the preview's own service URL. The source checkout's shared
+`scripts/check-deployment.mjs` also requires the locked workflow implementation
+hash and runtime identity before the preview is reported successful. These checks do
 not certify OAuth, page claims, speech or push delivery.
 
 ### Cleanup and recovery
@@ -199,3 +210,71 @@ that stale deployment.
 **Storage discrepancy:** Compare `service_state.reserved` with the sum of `tendrils.reserved`. The tendril alarm reconciles each local file ledger with its D1 row. Pause writes while resolving a persistent mismatch, then recheck before reopening.
 
 **OAuth outage:** Keep creation paused if claims cannot complete. Check provider status and callback URLs. Restore only after both real sign-in paths pass.
+
+
+## Contract 2 release cutover
+
+Build and check the generic engine and the exact trusted composition before deployment. `npm run build:service` verifies `composition.lock.json`. Publish core SDK/runtime archives first, then contrib artifacts, and record the tested pairing.
+
+Run `node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc`
+before deploying staging (use the selected config for production or a named
+deployment). This shared preparation step verifies local runtime file digests
+and requires the built manifest's dependencies to match `runtime/resources.mjs`.
+It downloads and hash-checks every declared resource, uploads them under
+`assets/<sha256>/<name>`, and retains the runtime files under
+`runtime/<content-id>/` in that config's FILES bucket. Every upload uses the same
+config and account. The immutable runtime manifest is uploaded last, after all
+of its files and dependencies. Any mismatch or failed upload stops deployment.
+Branch previews use the same preparation step, including for a fresh bucket.
+Old publication URLs remain backed by these objects after a deployment changes
+ASSETS. Do not delete an artifact still referenced by retained page publications.
+
+Use fresh pre-release fixtures for contract 2. There are no schema translators, dual writers or old-client compatibility modes. All first-party examples must be rebuilt from the new contrib release.
+
+The database initializer records its storage schema identity atomically. Existing tables with no matching identity cause startup to fail before schema or data writes. Deploy this redesign into a new Worker namespace and fresh D1/R2 resources; changing code on the original Worker does not create new Durable Object storage.
+
+To prepare an isolated named deployment, choose new service and page hostnames:
+
+```sh
+STAGING_PUBLIC_BASE=https://candidate.tendriller.dev \
+STAGING_PAGE_HOST_SUFFIX=--candidate \
+node scripts/provision.mjs staging --name tendriller-candidate --fresh
+```
+
+`--fresh` rejects configured resource names, reused origins, and any already-existing Worker, D1 database, or bucket before creating resources. It writes `server/wrangler.tendriller-candidate.jsonc` and leaves canonical configs unchanged. Configure DNS, certificates and OAuth callbacks for the selected origins, apply D1 migrations with this config, and install secrets with `wrangler secret put <NAME> --config server/wrangler.tendriller-candidate.jsonc`. Build the verified composition, publish its complete runtime and resource graph with that config, then deploy and run `scripts/check-deployment.mjs` against the candidate service origin. Only after checking the matched release and fresh fixtures should the canonical deployment configs/domains and schema declaration variables be switched. This process does not delete or transform the previous storage.
+
+Branch previews are another isolated pre-release target. Their controller runs
+from the default branch, so the composition-aware controller and its explicit
+`preview/**` opt-in policy must be present there before the release cutover.
+Release branches such as `release/v0.2.0-rc.1` run **Public service** checks without
+automatically deploying a preview. The canonical staging/production jobs remain
+restricted to `master` and the matching storage-schema declarations.
+
+For a matched pre-release preview:
+
+1. Publish the core release archives, then the contrib release archives. Verify
+   that the URLs and SHA-256 digests in `composition.lock.json` identify those
+   published bytes and that the selected core commit passes the composition
+   checks with that lock.
+2. Create a never-used `preview/<candidate>` branch from that core commit only
+   after both releases are available. For example, use `preview/contract-2-rc1`
+   if that name has never had a preview. Preview resource identity is derived
+   from the complete branch name and reused across pushes; an existing preview
+   name cannot establish fresh storage for an incompatible schema.
+3. Run **Public service** on the new branch if creating it did not trigger a push
+   run. Its successful push or manual run authorizes the default-branch controller
+   to build the locked composition, provision that branch's isolated resources,
+   publish the immutable runtime files into its bucket, and deploy the composed
+   service. The branch must still point to the tested commit. A manual **Live
+   branch previews** run on `master` can retry that same checked branch.
+4. Verify the reported preview commit and health checks, then configure dedicated
+   preview identity providers and run the authenticated page checks above before
+   opening creation. The new database starts with creation paused.
+
+The preview controller validates CI and the local composition; release URL
+availability is an operator check before opting into deployment. A source push
+alone does not prove that the matching release artifacts or service were
+published. Keep the earlier deployments and their storage intact during these
+fresh-fixture checks.
+
+Runtime resource selection lives in `runtime/resources.mjs`. The resource installer verifies its declared hashes and uploads to content-addressed keys in the existing FILES bucket. A publication snapshots its runtime-dependent features, so later releases cannot replace an open page's speech engine or model. Optional large resources download on first use and remain cached with each retained publication that declares them.

@@ -1,14 +1,16 @@
+import { runtimeAsset, runtimeBase } from "../assets";
 // The one always-present control (PLAN §7, §13 features 3/6/8, §14).
 // Rendered into a Shadow DOM on a fixed, zero-size host so it never affects page layout.
 //
 // Bus events this module listens to (from core): connect, disconnect, welcome, presence,
-// say, instruction_echo, instruction_ack, instruction_rejected, role, state.
+// say, instruction_echo, instruction_ack, instruction_rejected, role, preferences.
 // Bus events it handles for other modules:
 //   control:go_back   {version?}  → rollback (owner only); replies with control:go_back_result {ok, version?, error?}
 //   control:open / control:close  → open or close the sheet
 // Bus events it emits: control:sensors_stopped {count}, control:go_back_result.
 
 import type { Core, ControlApi, Presence, TranscriptEntry } from "../types";
+import type { RuntimePreferences } from "../../../contract/index.mjs";
 import { registry } from "../registry";
 import { CSS } from "./styles";
 import { h, clear, icon, relTime } from "./dom";
@@ -21,7 +23,6 @@ import { mountReturnToWork, type ReturnAction } from "./return-to-work";
 
 type Pos = "bottom-right" | "bottom-left" | "top-right" | "top-left";
 type View = "connecting" | "offline" | "pending" | "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent";
-interface Prefs { text_size?: "normal" | "large" | "x-large"; contrast?: "normal" | "high"; audio?: boolean; language?: string; mode?: string }
 interface Line extends TranscriptEntry { local?: boolean; cid?: string; _cid?: string; _local?: boolean; awaitingEcho?: boolean }
 
 const TRANSCRIPT_MAX = 50;
@@ -100,12 +101,10 @@ class Control {
   private get pending(): boolean { return !!this.core.device?.pending; }
   private get isOwner(): boolean { return this.role === "owner" && !this.pending; }
   private get canInput(): boolean { return this.role !== "display"; }
-  private get prefs(): Prefs {
-    try { return (this.core.state?.get("_prefs") as Prefs) || {}; } catch { return {}; }
-  }
+  private get prefs(): RuntimePreferences { return this.core.preferences.get(); }
   private get lang(): string { return this.prefs.language || navigator.language || "en-US"; }
   private get displayMode(): boolean {
-    return this.role === "display" || location.hash === "#display" || this.prefs.mode === "display";
+    return this.role === "display" || this.prefs.mode === "display";
   }
   private get audioOn(): boolean { return this.prefs.audio !== false; }
   private get reducedMotion(): boolean { return !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches; }
@@ -201,7 +200,7 @@ class Control {
     on("control:go_back", (m: any) => { void this.goBack(m?.version); });
     on("control:open", () => this.setOpen(true));
     on("control:close", () => this.setOpen(false));
-    try { this.core.state?.on(() => { this.applyPrefs(); this.render(); }); } catch { /* ignore */ }
+    this.core.preferences.on(() => { this.applyPrefs(); this.render(); });
   }
 
   private onPresence(p: Presence | null) {
@@ -268,7 +267,7 @@ class Control {
       onFinal: (t) => { this.showInterim(""); void this.submit(t, "voice"); },
       onState: (on) => this.renderMic(on),
       onError: (m) => { this.showInterim(""); this.showBubble(m, true); },
-    }, this.sensors, () => this.lang, this.core.config.base, this.core.config.features.speech);
+    }, this.sensors, () => this.lang, runtimeBase(this.core.config), this.core.config.features.speech && { ...this.core.config.features.speech, url: new URL(this.core.config.features.speech.url, new URL(this.core.config.base, location.href)).href, engine: { ...this.core.config.features.speech.engine, script: new URL(this.core.config.features.speech.engine.script, new URL(this.core.config.base, location.href)).href, wasm: new URL(this.core.config.features.speech.engine.wasm, new URL(this.core.config.base, location.href)).href } });
     this.view = this.computeView();
     this.applyPrefs();
     this.render();
@@ -452,7 +451,7 @@ class Control {
       clear(p, h("p", { text: "If this page is deceptive, harmful, or abusive, send a report." }), h("a", { href: this.core.config.base + "_tendril/report", target: "_blank", rel: "noopener noreferrer" }, "Open report form"));
     }));
     u.sheet.append(u.talkPanel, u.sharePanel, u.settingsPanel, h("div", { class: "service-brand" },
-      h("img", { src: this.core.config.base + "_tendril/brand/icon-64.png", alt: "", width: "28", height: "28", loading: "lazy" }), "Tendriller"));
+      h("img", { src: runtimeAsset(this.core.config, "brand/icon-64.png"), alt: "", width: "28", height: "28", loading: "lazy" }), "Tendriller"));
     this.root.appendChild(u.sheet);
   }
 
@@ -696,7 +695,7 @@ class Control {
   // ---------- prefs ----------
   private applyPrefs() {
     const p = this.prefs;
-    const size = p.text_size === "large" || p.text_size === "x-large" ? p.text_size : "normal";
+    const size = p.textSize;
     const contrast = p.contrast === "high" ? "high" : "normal";
     const de = document.documentElement;
     if (de.dataset.tendrilTextSize !== size) de.dataset.tendrilTextSize = size;
@@ -704,15 +703,12 @@ class Control {
     if (this.root) { this.root.dataset.size = size; this.root.dataset.contrast = contrast; }
   }
 
-  private setPref(key: keyof Prefs, value: unknown) {
-    try { this.core.state.set(["_prefs", key], value); } catch { /* ignore */ }
-    this.applyPrefs();
-  }
+  private setPref<K extends keyof RuntimePreferences>(key: K, value: RuntimePreferences[K]) { this.core.preferences.update({ [key]: value }); }
 
   private renderPrefs(panel: HTMLElement) {
     const p = this.prefs;
-    const size = p.text_size || "normal";
-    const seg = (name: string, legend: string, options: [string, string][], current: string, set: (v: string) => void) =>
+    const size = p.textSize;
+    const seg = <T extends string>(name: string, legend: string, options: [T, string][], current: T, set: (v: T) => void) =>
       h("fieldset", null, h("legend", { text: legend }), h("div", { class: "seg" },
         options.map(([v, l]) => h("label", null,
           h("input", { type: "radio", name, value: v, checked: v === current, onchange: () => set(v) }),
@@ -736,7 +732,7 @@ class Control {
     voice.value = tts?.status.enabled === false ? "browser" : "neural";
     this.ui.ttsVoice = voice;
     clear(panel,
-      seg("tendril-size", "Text size", [["normal", "Normal"], ["large", "Large"], ["x-large", "Larger"]], size, (v) => this.setPref("text_size", v)),
+      seg("tendril-size", "Text size", [["normal", "Normal"], ["large", "Large"], ["x-large", "Larger"]], size, (v) => this.setPref("textSize", v)),
       h("label", { class: "switch" },
         h("input", { type: "checkbox", checked: p.contrast === "high", onchange: (e: Event) => this.setPref("contrast", (e.target as HTMLInputElement).checked ? "high" : "normal") }),
         "High contrast"),
@@ -751,7 +747,7 @@ class Control {
         h("button", { type: "button", class: "btn", onclick: () => this.core.speak?.("Hello! I'm your Tendriller voice.") }, "Test voice"),
         h("button", { type: "button", class: "btn", onclick: () => { void tts?.enable().catch(() => {}); } }, "Try neural voice"),
         h("button", { type: "button", class: "btn", onclick: () => tts?.stop() }, "Stop speaking")),
-      h("p", { class: "muted", text: "Text size, contrast, audio and language settings are shared with the agent's page. Your voice choice is saved only on this device." }),
+      h("p", { class: "muted", text: "Display, sound and language preferences are saved on this device for this page." }),
     );
   }
 
@@ -779,11 +775,11 @@ class Control {
     try {
       const result = await this.core.instruction(text, via);
       line.cid = (result as any)?.cid;
-      if (!result?.queued) {
+      if (result.status === "accepted") {
         const i = this.lines.indexOf(line);
         if (i >= 0) { this.lines[i] = { ...line, local: false }; this.renderTranscript(); }
       }
-      this.showBubble(result?.queued ? "Saved on this device. It will send when the connection returns." : this.ackText(via), true);
+      this.showBubble(result.status === "queued" ? "Saved on this device. It will send when the connection returns." : this.ackText(via), true);
     } catch (error: any) {
       const i = this.lines.indexOf(line);
       // The core also emits late rejections for queued instructions. If its event
@@ -823,7 +819,7 @@ class Control {
 
   // ---------- owner actions ----------
   private async req(msg: { t: string; [k: string]: any }): Promise<any> {
-    const r = await this.core.request(msg);
+    const r = await this.core.transportRequest(msg);
     if (r && r.error) throw new Error(typeof r.error === "string" ? r.error : r.error.message || r.error.code || "error");
     return r;
   }
@@ -970,8 +966,8 @@ class Control {
       ),
       out,
       h("p", { class: "muted", text: "This page's own address (sign-in required):" }),
-      h("div", { class: "url", text: location.href }),
-      copyBtn(location.href, () => this.announce("Link copied.")),
+      h("div", { class: "url", text: new URL(this.core.config.base, location.href).href }),
+      copyBtn(new URL(this.core.config.base, location.href).href, () => this.announce("Link copied.")),
     );
   }
 

@@ -1,3 +1,4 @@
+import runtimeRelease from "./runtime-release.json";
 // The Tendril Durable Object: owns all per-tendril state and logic.
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
@@ -5,6 +6,7 @@ import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from "./
 import { requireWritesOpen } from "./service-state";
 import { addActivity, preview, pruneActivity } from "./activity";
 import { handleAgent } from "./agent";
+import { synchronizeWorkflows } from "./workflows";
 import { handleMcp } from "./mcp";
 import { mcpJobDue, mcpSubs, pruneMcpSubs, runMcpEvents } from "./mcpEvents";
 import { Db } from "./db";
@@ -13,7 +15,7 @@ import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
-import { fileKey } from "./files";
+import { deleteUnreferencedContent } from "./files";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
@@ -25,7 +27,8 @@ import {
 import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
 import { pushAvailable, sendWebPush, vapidPublicKey, type NotifyDeliveryOptions, type NotifyDeliveryResult } from "./push";
-import { applyOps, type StateOp } from "./state";
+import { applyOps, validateOps, type StateOp } from "./state";
+import { checkGenerations, scopes, type Preconditions } from "./scopes";
 import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
 import { handleWsClose, handleWsMessage } from "./ws";
@@ -79,7 +82,7 @@ interface PendingCall {
 }
 
 export interface WakeConfig {
-  webhook: { url: string; token: string | null; auth?: "bearer" | "standard_webhooks" | "hermes_v2" } | null;
+  webhook: { url: string; token: string | null; auth?: "bearer" | "standard_webhooks" | "timestamp_hmac_sha256" } | null;
   schedule_minutes: number | null;
   budget: { page_streak: number };
   grace_seconds: number;
@@ -116,14 +119,14 @@ export class Tendril extends DurableObject<Env> {
   waiters = new Set<Waiter>();
   releaseTimer: ReturnType<typeof setTimeout> | null = null;
   calls = new Map<string, PendingCall>();
-  pendingFileWrites = new Map<string, Promise<void>>();
+  contentOperations = new Map<string, Promise<unknown>>();
   /** Test hook: milliseconds added to the clock. */
   skew = 0;
   private lastPresence: string | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.db = new Db(ctx.storage.sql);
+    this.db = new Db(ctx.storage);
     this.db.init();
     this.transactions = new Transactions(ctx.storage, () => this.db.clearCache(), work => ctx.waitUntil(work));
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping"}', '{"t":"pong"}'));
@@ -169,6 +172,7 @@ export class Tendril extends DurableObject<Env> {
       if (this.db.get<boolean>("disabled", false) && (kind === "agent" || kind === "page")) {
         throw new HttpError(403, "disabled", "This tendril is unavailable");
       }
+      synchronizeWorkflows(this);
       if (kind === "claim") return await this.handleClaim(req, url);
       if (kind === "abuse" && url.pathname === "/abuse/report" && req.method === "POST") {
         const body = await readJson(req, 4096);
@@ -572,8 +576,7 @@ export class Tendril extends DurableObject<Env> {
   features(): Features {
     return { push: pushAvailable(this.env), vapid: vapidPublicKey(this.env),
       shared_by: this.db.get<string>("owner_label", "Tendriller user"),
-      speech: { model: "cactus-whistle-v4", url: "_tendril/speech/whistle.cact",
-        sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" } };
+      ...runtimeRelease.features };
   }
 
   wakeConfig(): WakeConfig {
@@ -847,13 +850,17 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- state
 
-  getState(): { rev: number; state: Record<string, unknown> } {
-    return { rev: this.db.get<number>("rev", 0), state: this.db.get<Record<string, unknown>>("state", {}) };
+  getState() {
+    return { rev: this.db.get<number>("rev", 0), state: this.db.get<Record<string, unknown>>("state", {}), scopes: scopes(this) };
   }
 
   /** Applies ops (LWW per path, in server order), bumps rev, broadcasts. */
-  applyState(ops: StateOp[], by: string, except?: WebSocket): number {
-    return this.transaction(() => this.applyStateTransaction(ops, by, except));
+  applyState(ops: StateOp[], by: string, except?: WebSocket, guards: Pick<Preconditions, "scope" | "expected_generations"> = { expected_generations: {} }): number {
+    const checked = validateOps(ops);
+    return this.transaction(() => {
+      checkGenerations(this, guards, { paths: checked.map(op => op.path), operations: ["state"] });
+      return this.applyStateTransaction(checked, by, except);
+    });
   }
 
   private applyStateTransaction(ops: StateOp[], by: string, except?: WebSocket): number {
@@ -861,11 +868,11 @@ export class Tendril extends DurableObject<Env> {
     if (ops.length === 0) return rev;
     const next = applyOps(structuredClone(state), ops);
     const serialized = JSON.stringify(next);
-    if (serialized.length > MAX_STATE) throw new HttpError(413, "too_large", "State would exceed 1 MB");
+    if (new TextEncoder().encode(serialized).byteLength > MAX_STATE) throw new HttpError(413, "too_large", "State would exceed 1 MB");
     const nrev = rev + 1;
     this.db.set("state", next);
     this.db.set("rev", nrev);
-    this.broadcast({ t: "state", ops, rev: nrev, by }, undefined, except);
+    this.broadcast({ t: "state", ops, rev: nrev, by, scopes: scopes(this) }, undefined, except);
     emitBuiltinSignal(this, "system.state", "state", { ops, rev: nrev, by }, by);
     addActivity(this, { kind: "state", summary: `Shared state revision ${nrev} applied (${ops.length} changes)`, by });
     return nrev;
@@ -900,7 +907,7 @@ export class Tendril extends DurableObject<Env> {
   reserveStoredFile(hash: string, size: number, riskScore: number): boolean {
     if (this.db.one("SELECT 1 AS x FROM stored_files WHERE hash = ?", hash)) return false;
     this.checkLocalStorage(size);
-    this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score) VALUES (?, ?, ?, ?)",
+    this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score, status) VALUES (?, ?, ?, ?, 'writing')",
       hash, size, this.now(), riskScore);
     return true;
   }
@@ -1036,7 +1043,7 @@ export class Tendril extends DurableObject<Env> {
     }
     if (options.broadcastLocal !== false) this.broadcast({ t: "notify_local", title: n.title, body: n.body ?? "" }, (d) => d.role === "owner" && !d.pending && (!n.device || d.id === n.device));
     addActivity(this, { kind: "notify", summary: `Notification: ${preview(n.title)} (${sent} sent, ${failed} failed)`, by });
-    return { sent, failed, ...(options.includeResults ? { deliveries } : {}) };
+    return { sent, failed, deliveries };
   }
 
   // ---------------------------------------------------------------- dedupe
@@ -1203,22 +1210,24 @@ export class Tendril extends DurableObject<Env> {
   async pruneVersions(): Promise<void> {
     const keep = new Set<number>(this.db.all<{ version: number }>("SELECT version FROM versions ORDER BY version DESC LIMIT ?", KEEP_VERSIONS).map((r) => r.version));
     for (const k of ["current", "healthy", "latest"]) keep.add(this.db.get<number>(k, 0));
+    this.db.run("DELETE FROM publication_leases WHERE expires_at < ?", this.now());
+    for (const lease of this.db.all<{ version: number }>("SELECT DISTINCT version FROM publication_leases")) keep.add(lease.version);
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as {version?: number} | null;
+      if (attachment?.version) keep.add(attachment.version);
+    }
     const drop = this.db.all<{ version: number }>("SELECT version FROM versions").map((r) => r.version).filter((v) => !keep.has(v));
     if (drop.length === 0) return;
     const before = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     for (const v of drop) {
       this.db.run("DELETE FROM version_files WHERE version = ?", v);
       this.db.run("DELETE FROM versions WHERE version = ?", v);
+      this.db.run("DELETE FROM publication_leases WHERE version = ?", v);
     }
     const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);
     const gone = [...before].filter((h) => !after.has(h) && !prepared.has(h));
-    for (const hash of gone) {
-      await this.env.FILES.delete(fileKey(this, hash));
-      const size = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash = ?", hash)?.size ?? 0;
-      this.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
-      if (size) await this.releaseGlobalBytes(size);
-    }
+    for (const hash of gone) await deleteUnreferencedContent(this, hash);
   }
 
   async pruneOrphanFiles(now: number): Promise<void> {
@@ -1227,10 +1236,7 @@ export class Tendril extends DurableObject<Env> {
       WHERE s.created_at < ? AND NOT EXISTS (SELECT 1 FROM version_files v WHERE v.hash = s.hash)`, now - HOUR);
     for (const { hash } of rows) {
       if (prepared.has(hash)) continue;
-      await this.env.FILES.delete(fileKey(this, hash));
-      const size = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash = ?", hash)?.size ?? 0;
-      this.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
-      if (size) await this.releaseGlobalBytes(size);
+      await deleteUnreferencedContent(this, hash, now - HOUR);
     }
   }
 

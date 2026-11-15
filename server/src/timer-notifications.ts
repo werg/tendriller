@@ -102,7 +102,7 @@ export async function runTimerNotifications(t: Tendril, limit = 4): Promise<void
     let result: Awaited<ReturnType<Tendril["notify"]>> | null = null, error: unknown = null;
     try {
       result = await t.notify(JSON.parse(job.payload), "timer", {
-        includeResults: true, broadcastLocal: job.attempts === 1,
+        broadcastLocal: job.attempts === 1,
         ...(job.pending_devices === null ? {} : { devices: JSON.parse(job.pending_devices) }),
         signal: AbortSignal.timeout(30_000),
       });
@@ -113,7 +113,7 @@ export async function runTimerNotifications(t: Tendril, limit = 4): Promise<void
       const sent = new Set<string>(JSON.parse(job.sent_devices)), failed = new Set<string>(JSON.parse(job.failed_devices));
       let pending: string[] | null = job.pending_devices === null ? null : JSON.parse(job.pending_devices);
       let sentCount = job.sent, failedCount = job.failed, retry = false, unavailable = false, detail: string | null = null;
-      if (result?.deliveries) {
+      if (result) {
         const retriable: string[] = [];
         for (const delivery of result.deliveries) {
           if (delivery.ok) { sent.add(delivery.device); failed.delete(delivery.device); }
@@ -125,11 +125,6 @@ export async function runTimerNotifications(t: Tendril, limit = 4): Promise<void
         retry = pending.length > 0;
         unavailable = !sentCount && !retry && (!result.deliveries.length || result.deliveries.every(delivery => delivery.gone));
         if (failedCount) detail = `${failedCount} device notification${failedCount === 1 ? "" : "s"} not accepted${retry ? "; retry scheduled" : ""}.`;
-      } else if (result) {
-        // Keeps notify's existing {sent,failed} contract compatible with hosts
-        // that supply their own sender; this fallback cannot isolate devices.
-        sentCount += result.sent; failedCount = result.failed; retry = result.failed > 0; unavailable = sentCount === 0 && !retry;
-        if (retry) detail = "The notification sender reported a failed delivery.";
       } else {
         detail = (error instanceof Error ? error.message : "Notification delivery failed").slice(0, 1000);
         retry = !(error instanceof HttpError) || error.status === 429 || error.status >= 500;
@@ -142,7 +137,6 @@ export async function runTimerNotifications(t: Tendril, limit = 4): Promise<void
       if (retry && exhausted) detail = `Retry limit reached. ${detail ?? "Delivery could not be confirmed."}`;
       t.db.run(`UPDATE timer_notifications SET state=?,next_at=?,attempt_token=NULL,updated_at=?,last_error=?,pending_devices=?,sent_devices=?,failed_devices=?,sent=?,failed=? WHERE run_id=?`,
         state, Math.min(now + delay, job.created_at + MAX_AGE), now, detail, pending === null ? null : JSON.stringify(pending), JSON.stringify([...sent]), JSON.stringify([...failed]), sentCount, failedCount, job.run_id);
-      t.db.run("UPDATE timer_runs SET notification=? WHERE id=?", JSON.stringify(result ? { sent: sentCount, failed: failedCount } : { error: detail }), job.run_id);
     });
   }
   pruneTimerHistory(t); t.scheduleAlarm();

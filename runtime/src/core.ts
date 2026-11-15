@@ -1,11 +1,15 @@
 // Runtime core (PROTOCOL 7, 11.1): socket, bus, state, offline queue, eval, logs, health.
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
+import { runtimeAsset, runtimeBase } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
+import type { OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
+import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
 import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
 import { createSpeechOutput } from "./speech-output";
+import { createPreferences } from "./preferences";
 import { createStreams } from "./streams";
 import { createConnection } from "./connection";
 import { deliveryPolicy } from "./delivery";
@@ -15,7 +19,7 @@ import { captureData, type BlobReference, type CaptureOptions, type CaptureResul
 export type { Bus, Core } from "./types";
 
 const TRANSCRIPT_MAX = 200;
-const AXE_PATH = "_tendril/axe.min.js";
+
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => () => Promise<any>;
 
@@ -52,10 +56,9 @@ type Internal = Core & {
 };
 
 export function createCore(cfg: TendrilConfig): Internal {
-  cfg.features = cfg.features || { push: false, vapid: null, shared_by: "Tendriller user",
-    speech: { model: "cactus-whistle-v4", url: "_tendril/speech/whistle.cact",
-      sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" } };
   const bus = createBus();
+  const preferences = createPreferences(cfg.id);
+  preferences.on(value => bus.emit("preferences", value));
   const stored = loadDevice(cfg.id);
   if (!stored.name) { stored.name = guessName(); saveDevice(cfg.id, stored); }
   const device: Device = { id: stored.id, role: (stored.role as Role) || "owner", name: stored.name, pending: false };
@@ -66,36 +69,31 @@ export function createCore(cfg: TendrilConfig): Internal {
   let local: any = {};
   let rev = 0;
   let fullStateRev = 0;
-  type PendingState = { cid: string; ops: Op[]; sessions?: Record<string, string> };
+  type PendingState = { cid: string; ops: Op[] } & OperationContext;
+  let scopes: ScopeDescriptor[] = [];
+  let service: ServiceDescriptor | null = null;
+  let savingState = 0;
   let pendingState: PendingState[] = [];
   let transcript: TranscriptEntry[] = [];
 
   const snap = store.loadSnapshotSync();
   if (snap) {
     confirmed = snap.state && typeof snap.state === "object" ? snap.state : {};
-    rev = snap.rev || 0;
+    rev = fullStateRev = snap.rev || 0;
+    scopes = Array.isArray(snap.scopes) ? snap.scopes : [];
     pendingState = Array.isArray(snap.pending) ? snap.pending : [];
     transcript = Array.isArray(snap.transcript) ? snap.transcript : [];
   }
-  const matchesCurrentSessions = (pending: PendingState): boolean => {
-    for (const scope of ["notebook", "guide", "workshop", "experiment", "facilitation"]) {
-      const key = scope === "guide" ? "guide_progress" : scope;
-      if (!pending.ops.some(op => !op.path.length || op.path[0] === key || (scope === "guide" && op.path[0] === "guide"))) continue;
-      const current = typeof confirmed[key]?.session_id === "string" ? confirmed[key].session_id : "initial";
-      if ((pending.sessions?.[scope] ?? "initial") !== current) return false;
-    }
-    return true;
-  };
   const rebuild = () => {
     local = clone(confirmed);
     // Old work stays durable and keeps its original generation until a receipt
     // arrives, but it must not cover a newer session received from the server.
-    for (const p of pendingState) if (matchesCurrentSessions(p)) local = applyOps(local, p.ops);
+    for (const p of pendingState) if (matchesContext(scopes, p, "state", p.ops)) local = applyOps(local, p.ops);
   };
   rebuild();
 
   let snapTimer: ReturnType<typeof setTimeout> | 0 = 0;
-  const snapshot = (): any => ({ rev, state: confirmed, pending: pendingState, transcript: transcript.slice(-50) });
+  const snapshot = (): any => ({ rev, state: confirmed, scopes, pending: pendingState, transcript: transcript.slice(-50) });
   const persistSoon = () => {
     if (snapTimer) return;
     snapTimer = setTimeout(() => { snapTimer = 0; store.saveSnapshot(snapshot()); }, 300);
@@ -114,40 +112,64 @@ export function createCore(cfg: TendrilConfig): Internal {
   };
   const stateListeners = new Set<(state: any, ops: any[], by: string) => void>();
 
-  const localOps = (ops: Op[]) => {
-    if (!ops.length) return;
+  let saving = Promise.resolve();
+  const localOps = (operation: Op[] | ((state: any) => Op[]), options?: OperationOptions): Promise<StateResult> => {
+    if (Array.isArray(operation) && !operation.length) return Promise.resolve({ status: "accepted", rev });
     const cid = newCid();
-    // Freeze the generation before the optimistic write. Replayed old work must
-    // never acquire a new session merely because another device archived it.
-    const sessions: Record<string, string> = {};
-    for (const scope of ["notebook", "guide", "workshop", "experiment", "facilitation"]) {
-      const path = scope === "guide" ? "guide_progress" : scope;
-      sessions[scope] = typeof local[path]?.session_id === "string" ? local[path].session_id : "initial";
-    }
-    pendingState.push({ cid, ops, sessions });
-    local = applyOps(local, ops);
-    enqueue({ t: "state", cid, ops, sessions });
-    persistSoon();
-    emitState(ops, "device:" + device.id);
+    const capturedScopes = clone(scopes), capturedOptions = clone(options);
+    let context: OperationContext = { expected_generations: {} };
+    let empty = false;
+    savingState++;
+    // Preserve invocation order even while IndexedDB opens. No optimistic state
+    // or network delivery is visible before the command's durable commit.
+    const saved = saving.then(async () => {
+      await storeReady;
+      const ops = typeof operation === "function" ? operation(local) : operation;
+      if (!ops.length) { empty = true; return; }
+      context = captureContext(capturedScopes, "state", capturedOptions, ops);
+      const pending = { cid, ops, ...context };
+      await store.addDurable({ t: "state", ...pending });
+      pendingState.push(pending);
+      rebuild();
+      persistSoon();
+      emitState(ops, "device:" + device.id);
+    });
+    saving = saved.then(() => {}, () => {});
+    return saved.then(async () => {
+      savingState--;
+      if (empty) return { status: "accepted", rev } as StateResult;
+      const receipt = receipts.wait(cid);
+      void pump();
+      const ack = await receipt;
+      return !ack ? { status: "queued" } as StateResult
+        : ack.error ? { status: "rejected", error: String(ack.error?.code || ack.error), message: ack.message || ack.error?.message } as StateResult
+        : { status: "accepted", rev: ack.rev } as StateResult;
+    }, error => {
+      savingState--;
+      const result: StateResult = { status: "rejected", error: (error as any)?.code || "storage_unavailable", message: error instanceof Error ? error.message : "Could not save this change." };
+      bus.emit("state_result", { cid, ...context, ...result });
+      return result;
+    });
   };
 
   const state: StateApi = {
+    get revision() { return rev; },
     get(path?: Path) { return clone(getPath(local, toPath(path))); },
-    set(path: Path, value: any) {
+    set(path: Path, value: any, options?: OperationOptions) {
       const p = toPath(path);
       if (!p.length) throw new Error("tendril.state.set needs a path");
-      localOps([value === undefined ? { op: "delete", path: p } : { op: "set", path: p, value: clone(value) }]);
+      return localOps([value === undefined ? { op: "delete", path: p } : { op: "set", path: p, value: clone(value) }], options);
     },
-    delete(path: Path) {
+    delete(path: Path, options?: OperationOptions) {
       const p = toPath(path);
       if (!p.length) throw new Error("tendril.state.delete needs a path");
-      localOps([{ op: "delete", path: p }]);
+      return localOps([{ op: "delete", path: p }], options);
     },
-    patch(mergePatch: object) {
+    patch(mergePatch: object, options?: OperationOptions) {
       if (!mergePatch || typeof mergePatch !== "object" || Array.isArray(mergePatch)) throw new Error("tendril.state.patch needs an object");
-      localOps(mergePatchToOps(local, clone(mergePatch)));
+      const patch = clone(mergePatch);
+      return localOps(current => mergePatchToOps(current, patch), options);
     },
-    mine() { return clone(getPath(local, ["_device", device.id])); },
     on(fn) { stateListeners.add(fn); return () => { stateListeners.delete(fn); }; },
   };
 
@@ -196,7 +218,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       requests.disconnected();
       if (wasConnected) bus.emit("disconnect");
     },
-  });
+  }, { socket: cfg.preview ? window.__TENDRIL_TRANSPORT__ : undefined });
   const rawSend = connection.send;
   let pendingHealth: { ok: boolean; errors: string[] } | null = null;
   const sendHealth = () => {
@@ -214,6 +236,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   // ---------- outbox ----------
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
     capture_id: item.cid, name: item.msg.name, data: clone(item.msg.data),
+    scope: item.msg.scope, expected_generations: clone(item.msg.expected_generations),
     status: item.msg.failed ? "rejected" : "queued", ...(item.msg.uploaded ? { blob: item.msg.uploaded } : {}),
     ...(item.msg.failed || {}),
   }));
@@ -236,7 +259,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     // A rejected capture remains visible and retryable; it must not silently disappear.
     const msg = { ...item.msg, failed: { error, message } };
     try { await store.updateDurable(item, msg); } catch { item.msg = msg; }
-    captureReceipt({ capture_id: item.cid, status: "rejected", queued: false, error, message });
+    captureReceipt({ capture_id: item.cid, status: "rejected", error, message });
   };
   const waitForCapture = (item: OutboxItem): Promise<CaptureResult> => {
     const promise = new Promise<CaptureResult>((resolve) => {
@@ -244,7 +267,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (existing) { existing.add(resolve); return; }
       captureWaiters.set(item.cid, new Set([resolve]));
       captureTimers.set(item.cid, setTimeout(() => {
-        captureReceipt({ capture_id: item.cid, status: "queued", queued: true });
+        captureReceipt({ capture_id: item.cid, status: "queued" });
       }, connection.connected ? 8000 : 0));
     });
     captureQueueChanged();
@@ -279,7 +302,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             }
             if (!store.has(item.cid)) continue; // discarded while uploading
             const msg = item.msg;
-            if (!connection.connected || !rawSend({ t: "send", cid: msg.event_cid,
+            if (!connection.connected || !rawSend({ t: "capture_complete", cid: msg.event_cid, scope: msg.scope, expected_generations: msg.expected_generations, blob: msg.uploaded.id,
               data: { ...captureData(msg.data, msg.dataPath, msg.uploaded), capture_id: item.cid }, wake: msg.wake, gesture: msg.gesture })) {
               sentThisConn.delete(item.cid);
               break;
@@ -335,10 +358,17 @@ export function createCore(cfg: TendrilConfig): Internal {
   };
 
   /** Queue an acked message; resolves with the ack, or null if it stays queued. */
-  const sendAcked = (msg: any): Promise<any | null> => {
-    const p = receipts.wait(msg.cid);
-    enqueue(msg);
-    return p;
+  const sendAcked = async (msg: any, saved?: () => void): Promise<any | null> => {
+    try {
+      await storeReady;
+      await store.addDurable(msg);
+    } catch (error) {
+      return { error: "storage_unavailable", message: error instanceof Error ? error.message : "Could not save this input." };
+    }
+    saved?.();
+    const pending = receipts.wait(msg.cid);
+    void pump();
+    return pending;
   };
 
   /** Proves this device to page HTTP routes (PROTOCOL 2.1). */
@@ -356,7 +386,8 @@ export function createCore(cfg: TendrilConfig): Internal {
       try { const j = await r.json(); if (j?.error?.message) msg = j.error.message; if (j?.error?.code) code = j.error.code; } catch { /* ignore */ }
       throw new HttpError(r.status, msg, code);
     }
-    return r.json();
+    const reference = await r.json();
+    return { ...reference, url: new URL(reference.url, new URL(cfg.base, location.href)).href };
   };
 
   // ---------- incoming ----------
@@ -367,12 +398,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     bus.emit("transcript", e);
   };
 
-  const tts = createSpeechOutput(cfg.base, bus, () => local?._prefs || {});
-  let speechPrefs = JSON.stringify([local?._prefs?.audio, local?._prefs?.language]);
-  state.on(() => {
-    const next = JSON.stringify([local?._prefs?.audio, local?._prefs?.language]);
-    if (next !== speechPrefs) { tts.stop(); speechPrefs = next; }
-  });
+  const tts = createSpeechOutput(runtimeBase(cfg), bus, preferences);
   bus.on("role", () => { if (device.role !== "owner" || device.pending) tts.stop(); });
   const speak = (text: string) => tts.speak(text);
 
@@ -395,7 +421,11 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (guard) { try { sessionStorage.setItem(`tendril:${cfg.id}:reloaded`, String(version)); } catch { /* optional guard */ } }
       if (snapTimer) { clearTimeout(snapTimer); snapTimer = 0; }
       store.saveSnapshot(snapshot());
-      void store.flush(1000).then(() => location.reload());
+      void store.flush(1000).then(() => {
+        const latest = new URL(cfg.publication?.entry || "index.html", new URL(cfg.base, location.href));
+        latest.search = location.search; latest.hash = location.hash;
+        location.assign(latest.href);
+      });
     };
     // Page components can save their drafts and defer an update until the person is ready.
     const event = new CustomEvent("tendril:before-reload", { cancelable: true, detail: { version, apply } });
@@ -409,10 +439,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     if (!axeLoading) {
       axeLoading = new Promise((res, rej) => {
         const s = document.createElement("script");
-        s.src = cfg.base + AXE_PATH;
+        s.src = runtimeAsset(cfg, "axe.min.js");
         s.async = true;
         s.onload = () => (w.axe ? res(w.axe) : rej(new Error("axe-core did not load")));
-        s.onerror = () => { axeLoading = null; s.remove(); rej(new Error("could not load the bundled accessibility checker from " + cfg.base + AXE_PATH)); };
+        s.onerror = () => { axeLoading = null; s.remove(); rej(new Error("could not load the bundled accessibility checker from " + runtimeAsset(cfg, "axe.min.js"))); };
         (document.head || document.documentElement).appendChild(s);
       });
     }
@@ -467,6 +497,12 @@ export function createCore(cfg: TendrilConfig): Internal {
     if (stored.role !== role) { stored.role = role; saveDevice(cfg.id, stored); }
   };
 
+  const installScopes = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    scopes = clone(value);
+    bus.emit("scopes", clone(scopes));
+  };
+
   const handle = (m: any) => {
     // Rejections correlated to queued input are terminal acknowledgements too. Keeping
     // them queued would turn an explicit rejection into a misleading "saved" result.
@@ -482,6 +518,8 @@ export function createCore(cfg: TendrilConfig): Internal {
         break;
       case "welcome": {
         welcome = m;
+        installScopes(m.scopes);
+        service = m.service || null;
         setRole(m.role || device.role, !!m.pending, m.pair_code);
         if (m.device_purpose !== undefined) (device as any).purpose = m.device_purpose;
         presence = m.presence ?? presence;
@@ -490,7 +528,11 @@ export function createCore(cfg: TendrilConfig): Internal {
           persistSoon();
         }
         rules = Array.isArray(m.rules) ? m.rules : rules;
-        if (m.features) Object.assign(cfg.features, m.features);
+        if (m.features) {
+          // Service availability can evolve; dependencies selected by the
+          // executing publication keep their original configuration.
+          Object.assign(cfg.features, m.features, cfg.publication?.runtime.features);
+        }
         if (m.state && typeof m.state === "object") resetState(m.state, m.rev, "server");
         else if (typeof m.rev === "number" && m.rev > rev) rev = m.rev;
         connection.welcome();
@@ -514,7 +556,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         if (capture) {
           if (m.error) void captureFailed(capture, String(m.error?.code || m.error), m.message || m.error?.message || "The capture was rejected. You can retry it.");
           else if (typeof m.seq === "number") {
-            const receipt: CaptureResult = { capture_id: capture.cid, status: "accepted", queued: false, seq: m.seq, blob: capture.msg.uploaded };
+            const receipt: CaptureResult = { capture_id: capture.cid, status: "accepted", seq: m.seq, blob: capture.msg.uploaded };
             void store.removeDurable(capture.cid).catch(() => { store.remove(capture.cid); }).then(() => captureReceipt(receipt));
           }
           break;
@@ -535,23 +577,26 @@ export function createCore(cfg: TendrilConfig): Internal {
           // A reconnect may install a newer full snapshot before replay returns
           // a cached success for this cid. Its old ops are already accounted for
           // by that snapshot; applying them again can resurrect archived data.
-          if (!m.error && typeof m.rev === "number" && m.rev > rev && matchesCurrentSessions(p)) {
+          if (!m.error && typeof m.rev === "number" && m.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
             confirmed = applyOps(confirmed, p.ops);
             rev = m.rev;
           }
           rebuild();
+          bus.emit("state_result", { cid: p.cid, scope: p.scope, expected_generations: p.expected_generations, ...(m.error
+            ? { status: "rejected", error: String(m.error?.code || m.error), message: m.message || m.error?.message }
+            : { status: "accepted", rev: m.rev }) });
           if (m.error) emitState([], "rejected");
           else if (JSON.stringify(local) !== before) emitState([], "server");
           persistSoon();
         }
         if (sent?.t === "send" && sent.kind !== "instruction") {
           const result: SendResult = m.error
-            ? { status: "rejected", queued: false, error: String(m.error?.code || m.error),
+            ? { status: "rejected", error: String(m.error?.code || m.error),
               message: m.message || m.error?.message || "The input was rejected. Please try again." }
-            : { status: "accepted", queued: false, seq: m.seq };
+            : { status: "accepted", seq: m.seq };
           // Replayed inputs no longer have their original promise. Keep the input
           // context in the receipt so pages can reconcile their own durable cards.
-          bus.emit("send_result", { cid: m.cid, data: sent.data, ...result });
+          bus.emit("send_result", { cid: m.cid, scope: sent.scope, expected_generations: sent.expected_generations, data: sent.data, ...result });
         }
         if (m.cid) store.remove(m.cid);
         if (sent?.t === "send" && sent.kind === "instruction") {
@@ -575,6 +620,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         break;
       }
       case "state": {
+        installScopes(m.scopes);
         const ops: Op[] = Array.isArray(m.ops) ? m.ops : [];
         confirmed = applyOps(confirmed, ops);
         if (typeof m.rev === "number") rev = m.rev;
@@ -585,7 +631,17 @@ export function createCore(cfg: TendrilConfig): Internal {
         break;
       }
       case "state_reset":
+        installScopes(m.scopes);
         resetState(m.state, m.rev, "server");
+        break;
+      case "scopes":
+        installScopes(m.scopes);
+        rebuild();
+        persistSoon();
+        emitState([], "server");
+        break;
+      case "fixture_event":
+        if (cfg.preview === true && typeof m.event === "string") bus.emit(m.event, m.data);
         break;
       case "reload":
         maybeReload(m.version, false);
@@ -665,6 +721,10 @@ export function createCore(cfg: TendrilConfig): Internal {
 
   const core: Internal = {
     deviceHeaders,
+    blobUrl(id: string) {
+      if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
+      return new URL(`_tendril/blob/${id}`, new URL(cfg.base, location.href)).href;
+    },
     bus,
     config: cfg,
     device,
@@ -675,39 +735,59 @@ export function createCore(cfg: TendrilConfig): Internal {
     get rules() { return rules; },
     get rev() { return rev; },
     state,
-    streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.request(message) }),
+    preferences,
+    streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.transportRequest(message) }),
     health,
-    async send(data: any, opts?: { wake?: boolean }): Promise<SendResult> {
+    scopes: {
+      list: () => clone(scopes),
+      capture: (scope: string) => captureContext(scopes, "event", { scope }),
+    },
+    get service() { return service ? clone(service) : null; },
+    conversation: { entries: () => clone(transcript), send: (text, options) => core.instruction(text, options?.via || "text") },
+    async send(data: any, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult> {
       // Browser user activation marks a real tap or key press; page code cannot fake it. The server
       // treats such events from owner devices as human input for the page-wake cap (PROTOCOL 8.2).
       const gesture = !!(navigator as any).userActivation?.isActive;
-      const msg = { t: "send", cid: newCid(), data: data === undefined ? null : serialize(data), wake: opts?.wake !== false, gesture };
+      const msg = { t: "send", cid: newCid(), ...captureContext(scopes, "event", opts), data: data === undefined ? null : serialize(data), wake: opts?.wake !== false, gesture };
       const ack = await sendAcked(msg);
-      if (!ack) return { status: "queued", queued: true };
-      if (ack.error) return { status: "rejected", queued: false,
+      if (!ack) return { status: "queued" };
+      if (ack.error) return { status: "rejected",
         error: String(ack.error?.code || ack.error), message: ack.message || ack.error?.message || "The input was rejected. Please try again." };
-      return { status: "accepted", seq: ack.seq, queued: false };
+      return { status: "accepted", seq: ack.seq };
     },
     async instruction(text: string, via: "voice" | "text") {
       tts.stop();
       const cid = newCid();
       const entry: any = { ts: Date.now(), from: "user", text, _local: true, _cid: cid };
-      addTranscript(entry);
-      const ack = await sendAcked({ t: "send", cid, kind: "instruction", text, via, data: { text, via }, wake: true });
+      const context = captureContext(scopes, "event");
+      const ack = await sendAcked({ t: "send", cid, ...context, kind: "instruction", text, via, data: { text, via }, wake: true }, () => addTranscript(entry));
       if (ack?.error) {
         const error = new Error(ack.message || ack.error?.message || "Message rejected. Your text is kept for retry.");
         (error as any).code = ack.error?.code || ack.error;
         throw error;
       }
-      return { queued: !ack, cid };
+      return { status: ack ? "accepted" : "queued", cid };
     },
-    request: requests.request,
+    transportRequest: requests.request,
+    async request<T = unknown>(path: string, options: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown } = {}): Promise<T> {
+      let decoded: string;
+      try { decoded = decodeURIComponent(path); } catch { throw new TypeError("Invalid service path"); }
+      if (!path || /[?#\\]/.test(decoded) || decoded.startsWith("/") || decoded.split("/").some(part => !part || part === "." || part === "..") || /^[a-z]+:/i.test(decoded)) throw new TypeError("Service requests require a relative path");
+      const response = await fetch(cfg.base + "_tendril/" + path, {
+        method: options.method || "GET", credentials: "same-origin",
+        headers: { ...deviceHeaders(), ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw Object.assign(new Error(result.error?.message || `Service operation failed (${response.status})`), { code: result.error?.code || "service_error", status: response.status });
+      return result as T;
+    },
     raw,
     captures,
     pendingWork() {
       return {
         events: store.items.filter(item => item.msg.t === "send" || item.msg.t === "rule_fired").length,
-        state: new Set([...pendingState.map(item => item.cid), ...store.items.filter(item => item.msg.t === "state").map(item => item.cid)]).size,
+        state: savingState + new Set([...pendingState.map(item => item.cid), ...store.items.filter(item => item.msg.t === "state").map(item => item.cid)]).size,
         captures: store.items.filter(item => item.msg.t === "upload_event" || item.msg.t === "upload").length,
       };
     },
@@ -715,16 +795,17 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.uploadEvent needs a Blob");
       if (!opts?.data || typeof opts.data !== "object" || Array.isArray(opts.data)) throw new TypeError("uploadEvent needs a data object");
       const capture_id = newCid();
+      const context = captureContext(scopes, "capture", opts);
       const gesture = !!(navigator as any).userActivation?.isActive;
       const data = serialize(opts.data) as Record<string, unknown>;
       captureData(data, opts.dataPath, { id: "pending", url: "pending" }); // validate before saving
       await storeReady;
       try {
-        const item = await store.addDurable({ t: "upload_event", cid: capture_id, event_cid: newCid(),
+        const item = await store.addDurable({ t: "upload_event", cid: capture_id, event_cid: newCid(), ...context,
           name: opts.name, data, dataPath: opts.dataPath, keep: opts.keep === true, wake: opts.wake !== false, gesture }, blob);
         return waitForCapture(item);
       } catch (error) {
-        const result: CaptureResult = { capture_id, status: "rejected", queued: false, error: "storage_unavailable",
+        const result: CaptureResult = { capture_id, status: "rejected", error: "storage_unavailable",
           message: error instanceof Error ? error.message : "Could not save this capture. Keep it open and try again." };
         captureReceipt(result);
         return result;
@@ -733,11 +814,11 @@ export function createCore(cfg: TendrilConfig): Internal {
     async retryCapture(capture_id: string): Promise<CaptureResult> {
       await storeReady;
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
-      if (!item) return { capture_id, status: "rejected", queued: false, error: "not_found", message: "This capture is no longer in the queue." };
+      if (!item) return { capture_id, status: "rejected", error: "not_found", message: "This capture is no longer in the queue." };
       if (item.msg.failed) {
-        // A server caches rejected event acknowledgements too; a deliberate retry is a new
-        // event attempt while the upload id and the user-visible capture identity stay stable.
-        await store.updateDurable(item, { ...item.msg, event_cid: newCid(), failed: undefined });
+        // Rejected commands have no committed receipt. Retry the same command,
+        // preserving its original identity, payload and captured generations.
+        await store.updateDurable(item, { ...item.msg, failed: undefined });
       }
       sentThisConn.delete(item.cid);
       return waitForCapture(item);
@@ -747,7 +828,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
       if (!item) return;
       await store.removeDurable(capture_id);
-      captureReceipt({ capture_id, status: "rejected", queued: false, error: "discarded", message: "Capture removed from this device's queue." });
+      captureReceipt({ capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." });
     },
     async setBlobRetention(id: string, opts: { keep: boolean }): Promise<BlobReference> {
       if (!/^b_[a-z2-7]{20}$/.test(id) || typeof opts?.keep !== "boolean") throw new TypeError("setBlobRetention needs a blob id and {keep:boolean}");
@@ -756,7 +837,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       });
       const result = await response.json();
       if (!response.ok) throw new HttpError(response.status, result.error?.message || "Could not change capture retention", result.error?.code);
-      return result;
+      return { ...result, url: new URL(result.url, new URL(cfg.base, location.href)).href };
     },
     async upload(blob: Blob, opts?: { name?: string; keep?: boolean }) {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.upload needs a Blob");
@@ -780,15 +861,14 @@ export function createCore(cfg: TendrilConfig): Internal {
   const storeReady = store.init().then((idbSnap) => {
     if (idbSnap && (!snap || (idbSnap.rev || 0) > (snap.rev || 0))) {
       confirmed = idbSnap.state && typeof idbSnap.state === "object" ? idbSnap.state : {};
-      rev = idbSnap.rev || 0;
+      rev = fullStateRev = idbSnap.rev || 0;
+      scopes = Array.isArray(idbSnap.scopes) ? idbSnap.scopes : [];
       if (!transcript.length && Array.isArray(idbSnap.transcript)) transcript = idbSnap.transcript;
     }
-    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], sessions: i.msg.sessions }));
+    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], scope: i.msg.scope, expected_generations: i.msg.expected_generations }));
     const before = JSON.stringify(local);
-    // Outbox is authoritative for pending ops when IndexedDB works; otherwise keep the snapshot's
-    // pending ops and re-queue them so they are not lost.
-    if (store.persistent) pendingState = fromOutbox;
-    else for (const p of pendingState) if (!store.has(p.cid)) store.add({ t: "state", cid: p.cid, ops: p.ops, sessions: p.sessions });
+    // The durable outbox is the only source of work that may be delivered.
+    pendingState = store.persistent ? fromOutbox : [];
     rebuild();
     if (JSON.stringify(local) !== before) emitState([], "cache");
     captureQueueChanged();

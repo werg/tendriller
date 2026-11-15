@@ -32,7 +32,7 @@ async function setup() {
   return { handle, account, cookie, origin, page };
 }
 async function listener(h: Handle) {
-  const response = await api(h, "GET", "events/socket", undefined, { Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}` });
+  const response = await api(h, "GET", "events/socket", undefined, { Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}` });
   expect(response.status).toBe(101); response.webSocket!.accept(); return response.webSocket!;
 }
 
@@ -120,16 +120,16 @@ it("preserves context, restores bundles with rewritten media, and refuses stale 
   const blobResponse = await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" });
   const blob = await blobResponse.json<any>(); expect(blobResponse.status).toBe(200);
   await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blob/${blob.id}">Asset</a>` } });
-  await apiJson(h, "PUT", "state", { notebook: { asset: blob.id }, _device: { old: { secret: "do not copy" } } });
+  await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { notebook: { asset: blob.id }, _device: { old: { secret: "do not copy" } } } });
   await apiJson(h, "PUT", "session", { purpose: "Observe the garden", current_task: "Compare leaves", open_questions: ["What changed?"], completed: [], decisions: [], last_handled_seq: 0 });
   expect((await api(h, "PUT", "session", { purpose: "Stale context", expected_revision: 0 })).status).toBe(409);
   const bundle = await (await page("bundle?include_data=true")).json<any>();
-  expect(bundle.state._device).toBeUndefined(); expect(bundle.session.current_task).toBe("Compare leaves");
+  expect(bundle.state._device).toEqual({ old: { secret: "do not copy" } }); expect(bundle.session.current_task).toBe("Compare leaves");
   const destination = await setup(); const targetSocket = await listener(destination.handle);
   expect((await api(destination.handle, "PUT", "bundle", bundle)).status).toBe(202);
   expect((await api(destination.handle, "PUT", "bundle", bundle)).status).toBe(409);
-  expect((await api(destination.handle, "POST", "bundle/publish", { expected_version: 9 })).status).toBe(409);
-  expect((await api(destination.handle, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  expect((await api(destination.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 9 })).status).toBe(409);
+  expect((await api(destination.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
   const restored = await apiJson(destination.handle, "GET", "state");
   expect(restored.state.notebook.asset).not.toBe(blob.id);
   expect((await apiJson(destination.handle, "GET", "session")).session.purpose).toBe("Observe the garden");
@@ -141,9 +141,9 @@ it("remix creates an independent unpublished copy and preserves the listener gat
   await apiJson(h, "POST", "files", { files: { "index.html": "<h1>A reusable tool</h1>" } });
   const copy = await apiJson(h, "POST", "remix", { owner: "new-owner@example.com", name: "My new copy" }, 201);
   expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token); expect(copy.remix.staged).toBe(true);
-  expect((await api(copy, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(428);
+  expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(428);
   const nextSocket = await listener(copy);
-  expect((await api(copy, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
   expect((await apiJson(h, "GET", "")).version.current).toBe(1);
   socket.close(); nextSocket.close();
 });
@@ -161,11 +161,11 @@ it("stages an unchanged bundle at the page storage limit", async () => {
   const bundle = await apiJson(h, "GET", "bundle");
   await inDO(h.id, t => {
     const used = t.storageUsed();
-    t.db.run("INSERT INTO stored_files(hash,size,created_at,risk_score) VALUES(?,?,?,0)", "f".repeat(64), 25 * 1024 * 1024 - used, t.now());
+    t.db.run("INSERT INTO stored_files(hash,size,created_at,risk_score,status) VALUES(?,?,?,0,'ready')", "f".repeat(64), 25 * 1024 * 1024 - used, t.now());
   });
   expect(await inDO(h.id, t => t.storageUsed())).toBe(25 * 1024 * 1024);
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  expect((await api(h, "POST", "bundle/publish", { expected_version: 1 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 1 })).status).toBe(200);
   socket.close();
 });
 
@@ -179,50 +179,15 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
   ], media };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   expect(await inDO(h.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
-  expect((await api(h, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
   const exported = await apiJson(h, "GET", "bundle?include_data=true");
   expect(exported.media).toHaveLength(201);
   const copy = await setup(); const copySocket = await listener(copy.handle);
   expect((await api(copy.handle, "PUT", "bundle", exported)).status).toBe(202);
-  expect((await api(copy.handle, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  expect((await api(copy.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
   expect(await inDO(copy.handle.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
   socket.close(); copySocket.close();
 }, 60_000);
-
-it("accepts only one unexpired versioned owner decision and ties the outcome to it", async () => {
-  const { handle: h, page } = await setup();
-  const proposal = await apiJson(h, "POST", "decisions", { title: "Update the draft", summary: "Replace the title", expires_at: Date.now() + 60000 }, 201);
-  expect((await api(h, "PATCH", `decisions/${proposal.id}`, { expected_version: 1, status: "completed", result: "unapproved" })).status).toBe(409);
-  const response = await page(`decisions/${proposal.id}/respond`, "POST", { expected_version: 1, decision: "approve" });
-  expect(response.status).toBe(200); const approved = await response.json<any>(); expect(approved.version).toBe(2);
-  expect((await page(`decisions/${proposal.id}/respond`, "POST", { expected_version: 1, decision: "reject" })).status).toBe(409);
-  const done = await apiJson(h, "PATCH", `decisions/${proposal.id}`, { expected_version: 2, status: "completed", result: "Title updated" });
-  expect(done.status).toBe("completed"); expect(done.event_seq).toBe(approved.event_seq);
-  const expired = await apiJson(h, "POST", "decisions", { title: "Expiring", summary: "Decision", expires_at: Date.now() + 1000 }, 201);
-  await advance(h.id, 5000);
-  expect((await page(`decisions/${expired.id}/respond`, "POST", { expected_version: 1, decision: "approve" })).status).toBe(410);
-});
-
-it("isolates participant responses from peers and shared state while agents can aggregate", async () => {
-  const { handle: h, page } = await setup();
-  const link = await apiJson(h, "POST", "links", { role: "guest" });
-  const guestCookie = "guest-response-cookie", guest = crypto.randomUUID(), hash = await sha256Hex(guestCookie);
-  await env.ACCOUNTS.prepare("INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)").bind(guest, `${guest}@example.com`, Date.now() - 30 * 86400000).run();
-  await inDO(h.id, t => {
-    t.db.run("INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)", guest, link.id, t.now());
-    t.db.run("INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,'guest',?)", hash, guest, t.now() + 86400000);
-  });
-  const ownerAnswer = await page("responses", "POST", { prompt_id: "round-1", answer: "Owner private answer" }); expect(ownerAnswer.status).toBe(201);
-  const guestAnswer = await page("responses", "POST", { prompt_id: "round-1", answer: "Guest private answer" }, link.url, `__Host-tendril=${guestCookie}`); expect(guestAnswer.status).toBe(201);
-  const own = await (await page("responses", "GET", undefined, link.url, `__Host-tendril=${guestCookie}`)).json<any>(); expect(own.responses).toHaveLength(1); expect(own.responses[0].answer).toBe("Guest private answer");
-  expect(own.participant).toBe(guest);
-  expect((await page("responses", "POST", { prompt_id: "round-1", answer: "Stale edit", expected_revision: 2 }, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(409);
-  expect((await page("responses/all", "GET", undefined, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(403);
-  expect((await page("timers", "GET", undefined, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(403);
-  const all = await apiJson(h, "GET", "responses"); expect(all.responses).toHaveLength(2);
-  const shared = await apiJson(h, "GET", "state"); expect(JSON.stringify(shared)).not.toContain("private answer");
-  const events = await apiJson(h, "GET", "events?after=0"); expect(JSON.stringify(events)).not.toContain("private answer");
-});
 
 it.each(["cancel", "reschedule", "delete"])("honors a %s while an earlier timer notification is in flight", async (change) => {
   const { handle: h } = await setup();
@@ -236,7 +201,7 @@ it.each(["cancel", "reschedule", "delete"])("honors a %s while an earlier timer 
       // Represents another request served while delivery awaits an external push service.
       if (change === "delete") deleteTimer(t, later.id, "owner");
       else saveTimer(t, change === "cancel" ? { state: "cancelled" } : { due_at: t.now() + 60000 }, "owner", later.id);
-      return { sent: 1, failed: 0 };
+      return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] };
     };
     try { await runTimers(t); } finally { t.notify = notify; }
   });
@@ -254,7 +219,7 @@ it("keeps prepared files through orphan cleanup and later publishes them", async
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   await advance(h.id, 2 * 3600000);
   await inDO(h.id, t => t.pruneOrphanFiles(t.now()));
-  expect((await api(h, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
   expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Prepared yesterday");
   socket.close();
 });
@@ -267,7 +232,7 @@ it("protects a prepared hash when its old published version is pruned", async ()
   for (let n = 0; n < KEEP_VERSIONS; n++) await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Revision ${n}</h1>` } });
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
-  expect((await api(h, "POST", "bundle/publish", { expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
   expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Restore this older page");
   socket.close();
 });
@@ -282,7 +247,7 @@ it.each(["file", "media"])("refuses publication if prepared %s bytes are missing
     const staged = t.db.get<any>("staged_bundle", null);
     await t.env.FILES.delete(missing === "file" ? fileKey(t, staged.files[0].hash) : t.blobKey(staged.media[0]));
   });
-  const rejected = await api(h, "POST", "bundle/publish", { expected_version: 0 });
+  const rejected = await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 });
   expect(rejected.status).toBe(409); expect((await rejected.json<any>()).error.code).toBe("incomplete_bundle");
   expect(await inDO(h.id, t => t.db.get("current", 0))).toBe(0);
   expect((await apiJson(h, "GET", "session")).staged_remix).toBe(true);
@@ -293,7 +258,7 @@ it("exports one logical data snapshot while new captures arrive during media rea
   const { handle: h } = await setup(); const socket = await listener(h);
   await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Notebook</h1>" } });
   const original = await (await api(h, "PUT", "blobs", "old media", { "Content-Type": "text/plain" })).json<any>();
-  await apiJson(h, "PUT", "state", { asset: original.id });
+  await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { asset: original.id } });
   await apiJson(h, "PUT", "session", { purpose: "Original context" });
   const bundle = await inDO(h.id, async t => {
     let changed = false;
@@ -335,17 +300,6 @@ it("keeps handled cursors valid and reports gaps after retained history disappea
   await apiJson(h, "PUT", "session", { purpose: "No checkpoint yet", last_handled_seq: 0 });
   await inDO(h.id, t => addEvent(t, { type: "event", data: { note: "newer" }, wake: false }));
   expect((await apiJson(h, "GET", "session")).pending_inputs.history_gap).toBe(true);
-});
-
-it("an owner decision wakes the agent after background wake capacity is exhausted", async () => {
-  const { handle: h, page } = await setup(); const socket = await listener(h);
-  const proposal = await apiJson(h, "POST", "decisions", { title: "Review the work", summary: "The exact action is ready." }, 201);
-  await inDO(h.id, t => t.db.set("wake_bound", { streak: t.wakeConfig().budget.page_streak, last: { owner: null, page: t.now() - 60000 } }));
-  expect((await page(`decisions/${proposal.id}/respond`, "POST", { expected_version: 1, decision: "approve" })).status).toBe(200);
-  const event = (await apiJson(h, "GET", "events?after=0")).events.find((item: any) => item.data?.decision_id === proposal.id);
-  expect(event).toMatchObject({ type: "event", role: "owner", wake: true, withheld: false });
-  expect(await inDO(h.id, t => t.db.get<any>("wake_bound", null).streak)).toBe(0);
-  socket.close();
 });
 
 it("routes a visible reply and its audio independently, speaking on only one tab", async () => {

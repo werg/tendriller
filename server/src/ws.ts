@@ -1,3 +1,4 @@
+import { retainPublication } from "./files";
 // WebSocket protocol, page ↔ Durable Object (PROTOCOL section 7).
 import type { Att, DeviceRow, Tendril } from "./tendril";
 import { addActivity, countEvent, deleteActivity, listActivity, preview } from "./activity";
@@ -8,7 +9,9 @@ import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from 
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
 import { validateOps } from "./state";
 import { getFocus } from "./device-roles";
-import { checkEventSession, checkStateSessions } from "./archives";
+import { mutate, scopes, preconditions, type ValidatedContext } from "./scopes";
+import { synchronizeWorkflows } from "./workflows";
+import { serviceDescriptor } from "./descriptor";
 import { emitBuiltinRecord, publishFromPage, subscribeStream, unsubscribeStream } from "./streams";
 import { ContractError } from "../../contract/index.mjs";
 import { allows, authorizeSocket } from "./access";
@@ -67,6 +70,7 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
     return;
   }
   try {
+    synchronizeWorkflows(t);
     if (msg.t === "hello") {
       await hello(t, ws, msg);
       return;
@@ -109,6 +113,7 @@ export function handleWsClose(t: Tendril, ws: WebSocket): void {
   if (!att?.deviceId) return;
   const now = t.now();
   t.db.run("UPDATE devices SET last_seen = ? WHERE id = ?", now, att.deviceId);
+  retainPublication(t, att.deviceId!, att.version);
   t.db.set("last_device_seen", now);
   const stillConnected = t.connectedSockets(ws).some((s) => s.att.deviceId === att.deviceId);
   if (!stillConnected) {
@@ -166,10 +171,12 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
   const wasConnected = t.connectedSockets(ws).some((s) => s.att.deviceId === id);
   const version = Number.isInteger(msg.version) ? msg.version : 0;
   ws.serializeAttachment({ ...att, deviceId: id, version, at: now } satisfies Att);
+  retainPublication(t, id, version);
 
   const { rev, state } = t.getState();
   const welcome: Msg = {
     t: "welcome",
+    service: serviceDescriptor(t),
     device_id: id,
     role: dev.role,
     device_purpose: dev.purpose ?? "general",
@@ -180,6 +187,7 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
     version: { ...pointers(t), served: servedVersion(t) },
     state,
     rev,
+    scopes: scopes(t),
     presence: t.presence(),
     transcript: t.transcript(),
     rules: t.db.get("rules", []),
@@ -189,7 +197,7 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
   t.send(ws, welcome);
   if (typeof msg.rev === "number" && msg.rev > rev) {
     // The page claims a revision the server never issued (e.g. after a reset): resync it.
-    t.send(ws, { t: "state_reset", state, rev });
+    t.send(ws, { t: "state_reset", state, rev, scopes: scopes(t) });
   }
 
   if (isNew) {
@@ -240,43 +248,48 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   },
   async send(c) {
     const { t, dev, msg } = c;
-    const result = await t.dedupe(dev.id, msg.cid, () => {
-      if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot send" };
+    let result: Msg;
+    try {
+      if (dev.role === "display") throw new HttpError(403, "forbidden", "Display devices cannot send");
       const kind = msg.kind ?? "event";
-      if (kind === "instruction") {
-        if (typeof msg.text !== "string" || !msg.text.trim()) return { error: "bad_request", message: "instruction needs text" };
-        const via = VIA.has(msg.via) ? msg.via : "text";
-        return { seq: instruction(c, msg.text.slice(0, 8000), via) };
-      }
-      if (kind !== "event") return { error: "bad_request", message: `Unknown kind ${kind}` };
+      if (kind !== "instruction" && kind !== "event") throw new HttpError(400, "bad_request", "Unknown event kind");
       const data = msg.data === undefined ? null : msg.data;
-      if (JSON.stringify(data).length > MAX_EVENT_DATA) return { error: "too_large", message: "Event data exceeds 64 KB" };
-      try { checkEventSession(t, data); } catch (error) { return { error: error instanceof HttpError ? error.code : "bad_session", message: error instanceof Error ? error.message : "Invalid session" }; }
-      // A real user gesture on an owner device counts as a person, not a page loop (PROTOCOL 8.2).
-      const human = msg.gesture === true && dev.role === "owner" && !dev.pending;
-      const ev = addEvent(t, { type: "event", data, device: dev.id, role: dev.role, wake: msg.wake !== false, cls: "page", human });
-      countEvent(t, dev.id, data);
-      return { seq: ev.seq };
-    });
+      if (new TextEncoder().encode(JSON.stringify(data)).byteLength > MAX_EVENT_DATA) throw new HttpError(413, "too_large", "Event data exceeds 64 KB");
+      const operation = msg.t === "capture_complete" ? "capture" : "event";
+      if (operation === 'capture' && kind !== 'event') throw new HttpError(400, 'bad_capture', 'Capture completion creates an application event');
+      result = mutate(t, `device:${dev.id}`, msg, { operations: [operation] }, { kind, data, text: msg.text, via: msg.via, wake: msg.wake, gesture: msg.gesture, blob: msg.blob }, context => {
+        if (kind === "instruction") {
+          if (typeof msg.text !== "string" || !msg.text.trim()) throw new HttpError(400, "bad_request", "instruction needs text");
+          return { seq: instruction(c, msg.text.slice(0, 8000), VIA.has(msg.via) ? msg.via : "text", context) };
+        }
+        if (operation === "capture" && (typeof msg.blob !== "string" || !t.db.one("SELECT id FROM blobs WHERE id=?", msg.blob)))
+          throw new HttpError(400, "bad_capture", "Capture completion requires an uploaded blob reference");
+        const human = msg.gesture === true && dev.role === "owner" && !dev.pending;
+        const ev = addEvent(t, { type: "event", data, context, device: dev.id, role: dev.role, wake: msg.wake !== false, cls: "page", human });
+        countEvent(t, dev.id, data);
+        return { seq: ev.seq };
+      });
+    } catch (error) { result = { error: error instanceof HttpError ? error.code : "bad_command", message: error instanceof Error ? error.message : String(error) }; }
     ack(c, result);
   },
 
+  async capture_complete(c) { return HANDLERS.send(c); },
+
   async state(c) {
     const { t, dev, msg, ws } = c;
-    const result = await t.dedupe(dev.id, msg.cid, () => {
+    const result = (() => {
       if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot change state" };
       try {
         const ops = validateOps(msg.ops);
-        checkStateSessions(t, ops, msg.sessions);
-        return { rev: t.applyState(ops, `device:${dev.id}`, ws) };
+        return mutate(t, `device:${dev.id}`, msg, { paths: ops.map(op => op.path), operations: ["state"] }, ops, () => ({ rev: t.applyState(ops, `device:${dev.id}`, ws, preconditions(msg)), scopes: scopes(t) }));
       } catch (err) {
         return { error: err instanceof HttpError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };
       }
-    });
-    ack(c, result);
+    })();
+    ack(c, { ...result, scopes: scopes(t) });
     if ((result as Msg).error) {
       const { rev, state } = t.getState();
-      t.send(ws, { t: "state_reset", state, rev });
+      t.send(ws, { t: "state_reset", state, rev, scopes: scopes(t) });
     }
   },
 
@@ -407,7 +420,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     const result = await t.dedupe(dev.id, msg.cid, () => {
       if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot send" };
       const data = { rule_id: String(msg.rule_id ?? ""), detail: msg.detail ?? null };
-      if (JSON.stringify(data).length > MAX_EVENT_DATA) return { error: "too_large", message: "detail exceeds 64 KB" };
+      if (new TextEncoder().encode(JSON.stringify(data)).byteLength > MAX_EVENT_DATA) return { error: "too_large", message: "detail exceeds 64 KB" };
       const ev = addEvent(t, { type: "rule", data, device: dev.id, role: dev.role, wake: true, cls: "page" });
       addActivity(t, { kind: "rule", summary: `Device rule "${data.rule_id}" fired`, device: dev.id });
       return { seq: ev.seq };
@@ -418,18 +431,18 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
 };
 
 /** Speech or text from the control/voice layer: an instruction from owners, data from anyone else. */
-function instruction(c: Ctx, text: string, via: string): number {
+function instruction(c: Ctx, text: string, via: string, context: ValidatedContext): number {
   const { t, dev, ws } = c;
   const isOwner = dev.role === "owner" && !dev.pending;
   const ts = t.addTranscript("user", text);
   // Include the sender so its optimistic chat row can become a delivered row.
   t.broadcast({ t: "instruction_echo", text, via, device: dev.id, ts });
   if (isOwner) {
-    const ev = addEvent(t, { type: "instruction", data: { text, via }, device: dev.id, role: dev.role, wake: true, cls: "owner" });
+    const ev = addEvent(t, { type: "instruction", data: { text, via }, context, device: dev.id, role: dev.role, wake: true, cls: "owner" });
     addActivity(t, { kind: "instruction", summary: `Instruction (${via}): ${preview(text, 300)}`, device: dev.id });
     return ev.seq;
   }
-  const ev = addEvent(t, { type: "event", data: { text, via }, device: dev.id, role: dev.role, wake: c.msg.wake !== false, cls: "page" });
+  const ev = addEvent(t, { type: "event", data: { text, via }, context, device: dev.id, role: dev.role, wake: c.msg.wake !== false, cls: "page" });
   addActivity(t, { kind: "guest_text", summary: `Text from a ${dev.role} device (${via}): ${preview(text, 300)}`, device: dev.id });
   return ev.seq;
 }

@@ -28,7 +28,7 @@ export class PhononTTS {
 }`;
 
 async function setUpVoice(context: BrowserContext, page: Page, withInput = false) {
-  await context.route("**/_tendril/tts/index.js", route => route.fulfill({ status: 200, contentType: "text/javascript", body: phonon }));
+  await context.route(/\/_tendril\/runtime\/[a-f0-9]{64}\/tts\/index\.js$/, route => route.fulfill({ status: 200, contentType: "text/javascript", body: phonon }));
   await page.addInitScript((mockInput) => {
     const w = window as any;
     w.__ttsE2E = { loads: 0, spoken: [], completed: [], aborted: [], disposals: 0, fallback: [], starts: 0 };

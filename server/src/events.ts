@@ -1,5 +1,8 @@
 // Events, wake budget, long-poll and webhook delivery (PROTOCOL section 8).
 import type { Tendril } from "./tendril";
+import { renderEvent } from "./event-format";
+export { renderEvent } from "./event-format";
+import type { ValidatedContext } from "./scopes";
 import type { Role, PublicEvent } from "../../contract/index.mjs";
 import { signedHeaders } from "./mcpEvents";
 import { randomB32 } from "./ids";
@@ -15,8 +18,8 @@ import { emitBuiltinRecord } from "./streams";
 
 export type EventType = "event" | "instruction" | "version_failed" | "version_healthy" | "device" | "rule" | "voice";
 
-/** Hermes generic V2: a replay-bounded HMAC of timestamp and exact JSON bytes. */
-export async function hermesV2Headers(secret: string, payload: string, timestamp: number): Promise<Record<string, string>> {
+/** Timestamp HMAC-SHA256: a replay-bounded HMAC of timestamp and exact JSON bytes. */
+export async function timestampHmacHeaders(secret: string, payload: string, timestamp: number): Promise<Record<string, string>> {
   const stamp = String(timestamp);
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${stamp}.${payload}`));
@@ -28,6 +31,7 @@ export async function hermesV2Headers(secret: string, payload: string, timestamp
 export type WakeClass = "owner" | "page";
 
 export interface NewEvent {
+  context?: ValidatedContext;
   type: EventType;
   data: unknown;
   device?: string | null;
@@ -47,6 +51,7 @@ export interface NewEvent {
 }
 
 export interface StoredEvent extends PublicEvent {
+  context?: ValidatedContext;
   seq: number;
   ts: number;
   type: EventType;
@@ -85,19 +90,6 @@ function pollReminder(t: Tendril, cursor: number) {
   };
 }
 
-export function renderEvent(r: Record<string, any>): StoredEvent {
-  return {
-    seq: r.seq,
-    ts: r.ts,
-    type: r.type,
-    data: r.data === null || r.data === undefined ? null : JSON.parse(r.data),
-    device: r.device ?? null,
-    role: r.role ?? null,
-    wake: !!r.wake,
-    withheld: !!r.withheld,
-    by: r.by ?? null,
-  };
-}
 
 /**
  * Decides whether a wake-eligible event wakes, merges into the previous wake, or is withheld.
@@ -148,8 +140,8 @@ function appendEvent(t: Tendril, e: NewEvent): StoredEvent {
   }
   const ts = t.now();
   const row = t.db.one<{ seq: number }>(
-    "INSERT INTO events (ts, type, data, device, role, wake, withheld, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
-    ts, e.type, JSON.stringify(e.data ?? null), e.device ?? null, e.role ?? null, wake, withheld, e.by ?? null,
+    "INSERT INTO events (ts, type, data, device, role, wake, withheld, by, context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
+    ts, e.type, JSON.stringify(e.data ?? null), e.device ?? null, e.role ?? null, wake, withheld, e.by ?? null, e.context ? JSON.stringify(e.context) : null,
   );
   const seq = row!.seq;
   emitBuiltinRecord(t, "system.events", seq);
@@ -173,7 +165,7 @@ function appendEvent(t: Tendril, e: NewEvent): StoredEvent {
     addActivity(t, { kind: "wake", summary: `Agent woken (${e.cls === "owner" ? "instruction" : e.type})` });
   }
   if (wake) deliverWake(t, seq);
-  return { seq, ts, type: e.type, data: e.data ?? null, device: e.device ?? null, role: e.role ?? null, wake, withheld, by: e.by ?? null };
+  return { ...(e.context ? { context: e.context } : {}), seq, ts, type: e.type, data: e.data ?? null, device: e.device ?? null, role: e.role ?? null, wake, withheld, by: e.by ?? null };
 }
 
 /** Delivery path 1 (held long-polls) or 2 (webhook and MCP Events). Never affects storage of the event. */
@@ -309,8 +301,8 @@ export async function runWebhook(t: Tendril): Promise<void> {
   if (hook.auth === "standard_webhooks") {
     Object.assign(headers, await signedHeaders(hook.token!, `msg_${randomB32(20)}`, payload, Math.floor(t.now() / 1000)));
   }
-  if (hook.auth === "hermes_v2") {
-    Object.assign(headers, await hermesV2Headers(hook.token!, payload, Math.floor(t.now() / 1000)));
+  if (hook.auth === "timestamp_hmac_sha256") {
+    Object.assign(headers, await timestampHmacHeaders(hook.token!, payload, Math.floor(t.now() / 1000)));
   }
   let ok = false;
   let detail = "";

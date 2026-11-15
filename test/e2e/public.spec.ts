@@ -9,7 +9,7 @@ if (!base || !owner || new URL(base).protocol !== "https:") {
 
 async function makePage(name: string): Promise<Handle> {
   const created = await fetch(`${base}/api/tendrils`, { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner }) });
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner, mode: "dashboard" }) });
   expect(created.status, await created.clone().text()).toBe(201);
   const handle = await created.json() as Handle;
   const upload = await fetch(`${handle.api}/files/index.html`, { method: "PUT",

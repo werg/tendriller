@@ -1,12 +1,13 @@
 // Stream definitions, storage, retention and bounded history. No socket effects.
 import { assertValid } from "../../../contract/index.mjs";
+import { STREAM_LIMITS, streamRecordLimit } from "../../../contract/limits.mjs";
 import type { StreamInfo, StreamRecord, StreamBatch, StreamLatest, StreamTrimResult, StreamAppendResult, StreamInput } from "../../../contract/index.mjs";
 import type { Tendril } from "../tendril";
 import { HttpError } from "../http";
-import { BUILTIN_STREAMS, legacyTable, legacyHistorySource, renderBuiltinRecord } from "./adapters";
+import { BUILTIN_STREAMS, builtinTable, tableHistorySource, renderBuiltinRecord } from "./adapters";
 import { readHistory, type HistorySource } from "./history";
-import { MAX_STREAMS, MAX_STREAM_RECORD_BYTES, MAX_STREAM_SNAPSHOT_RECORD_BYTES, MAX_STREAM_BATCH_BYTES, MAX_STREAM_BYTES, MAX_STREAM_RECORDS,
-  MAX_STREAM_REPLAY_BYTES, STREAM_NAME_PATTERN, streamCursor, jsonBytes } from "./limits";
+import { MAX_STREAMS, MAX_STREAM_RECORD_BYTES, MAX_STREAM_SNAPSHOT_RECORD_BYTES, MAX_STREAM_BATCH_BYTES, MAX_STREAM_RECORDS,
+  MAX_STREAM_REPLAY_BYTES, STREAM_NAME_PATTERN, streamCursor, jsonBytes, effectiveStreamLimits } from "./limits";
 
 type StreamStoreContext = Pick<Tendril, "db" | "now" | "transaction">;
 type StreamRow = Omit<StreamInfo, "builtin"> & { latest_seq: number };
@@ -34,14 +35,14 @@ export function createStream(t: StreamStoreContext, value: unknown): StreamInfo 
   if ((t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM streams")?.n ?? 0) >= MAX_STREAMS)
     throw new HttpError(429, "quota", "At most 64 custom streams per tendril");
   t.db.run("INSERT INTO streams(name,durability,readers,max_records,max_age_seconds,latest_seq) VALUES(?,?,?,?,?,0)",
-    body.name, body.durability, body.readers ?? "owner", body.durability === "durable" ? body.max_records ?? 10_000 : null,
+    body.name, body.durability, body.readers ?? "owner", body.durability === "durable" ? body.max_records ?? STREAM_LIMITS.stream_records : null,
     body.durability === "durable" ? body.max_age_seconds ?? 86400 : null);
   return streamInfo(t, body.name);
 }
 
 
 export function streamHighWater(t: StreamStoreContext, name: string): number {
-  if (legacyTable(name)) return t.db.one<{ seq: number }>("SELECT seq FROM sqlite_sequence WHERE name=?", legacyTable(name))?.seq ?? 0;
+  if (builtinTable(name)) return t.db.one<{ seq: number }>("SELECT seq FROM sqlite_sequence WHERE name=?", builtinTable(name))?.seq ?? 0;
   if (name === "system.state") return t.db.get<number>("rev", 0);
   if (name === "system.presence") return t.db.one<{ seq: number }>("SELECT seq FROM stream_counters WHERE name=?", name)?.seq ?? 0;
   return t.db.one<{ latest_seq: number }>("SELECT latest_seq FROM streams WHERE name=?", name)?.latest_seq ?? 0;
@@ -73,8 +74,8 @@ function pruneStream(t: StreamStoreContext, info: StreamInfo): void {
 
 
 export function streamHistorySource(t: StreamStoreContext, name: string): HistorySource<StreamRecord> {
-  const table = legacyTable(name);
-  if (table) return legacyHistorySource(t.db, table, row => renderBuiltinRecord(name, row));
+  const table = builtinTable(name);
+  if (table) return tableHistorySource(t.db, table, row => renderBuiltinRecord(name, row));
   return {
     highWater: () => streamHighWater(t, name),
     earliest: () => t.db.one<{ seq: number | null }>("SELECT MIN(seq) AS seq FROM stream_records WHERE stream=?", name)?.seq ?? null,
@@ -89,7 +90,7 @@ export function readStream(t: StreamStoreContext, name: string, after: number, l
   const info = streamInfo(t, name);
   if (info.durability === "ephemeral") throw new HttpError(409, "not_replayable", "Ephemeral streams have no retained records");
   streamCursor(after);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "bad_request", "limit must be an integer from 1 to 500");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > STREAM_LIMITS.replay_records) throw new HttpError(400, "bad_request", "limit must be an integer from 1 to 500");
   if (!info.builtin) pruneStream(t, info);
   const page = readHistory(streamHistorySource(t, name), after, limit, { maxBytes: MAX_STREAM_REPLAY_BYTES, sizeOf: jsonBytes });
   if (after > page.history.latest_seq) throw new HttpError(400, "cursor_ahead", "after is beyond this stream's history", { latest_seq: page.history.latest_seq });
@@ -101,7 +102,7 @@ export function latestStream(t: StreamStoreContext, name: string): StreamLatest 
   const info = streamInfo(t, name);
   if (info.durability === "ephemeral") throw new HttpError(409, "not_replayable", "Ephemeral streams have no retained records");
   if (!info.builtin) pruneStream(t, info);
-  const table = legacyTable(name);
+  const table = builtinTable(name);
   const row = table ? t.db.one(`SELECT * FROM ${table} ORDER BY seq DESC LIMIT 1`)
     : t.db.one<RecordRow>("SELECT * FROM stream_records WHERE stream=? ORDER BY seq DESC LIMIT 1", name);
   const record = row ? table ? renderBuiltinRecord(name, row) : renderRecord(row as RecordRow) : null;
@@ -147,8 +148,7 @@ export function appendToStore(t: StreamStoreContext, name: string, value: unknow
   const body = assertValid("streamAppend", value);
   const size = jsonBytes(body);
   if (size > MAX_STREAM_BATCH_BYTES) throw new HttpError(413, "too_large", "Stream batch exceeds 256 KiB");
-  const recordLimit = info.durability === "durable" && info.max_records === 1
-    ? MAX_STREAM_SNAPSHOT_RECORD_BYTES : MAX_STREAM_RECORD_BYTES;
+  const recordLimit = streamRecordLimit(info);
   for (const record of body.records) if (jsonBytes(record) > recordLimit)
     throw new HttpError(413, "too_large", `Stream record exceeds ${recordLimit / 1024} KiB`);
   chargeRate(t, producer, size);
@@ -177,7 +177,7 @@ export function appendToStore(t: StreamStoreContext, name: string, value: unknow
     if (info.durability === "durable") {
       pruneStream(t, info);
       const usage = t.db.one<{ count: number; bytes: number }>("SELECT COUNT(*) AS count,COALESCE(SUM(bytes),0) AS bytes FROM stream_records")!;
-      const allowance = t.db.get<string | null>("owner_account", null) ? MAX_STREAM_BYTES : 1024 * 1024;
+      const allowance = effectiveStreamLimits(t).retained_bytes;
       if (usage.count > MAX_STREAM_RECORDS || usage.bytes > allowance)
         throw new HttpError(413, "quota", "Custom stream retention allowance reached", { max_records: MAX_STREAM_RECORDS, max_bytes: allowance });
     }

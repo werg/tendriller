@@ -190,7 +190,7 @@ it("commits the timer occurrence and notification intent atomically", async () =
     expect(t.db.all("SELECT * FROM timer_runs")).toHaveLength(0);
     expect(t.db.all("SELECT * FROM timer_notifications")).toHaveLength(0);
     expect(t.db.all("SELECT * FROM events WHERE type='event'")).toHaveLength(0);
-    const sender = t.notify; t.notify = async () => ({ sent: 1, failed: 0 });
+    const sender = t.notify; t.notify = async () => ({ sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] });
     try { await runTimers(t); } finally { t.notify = sender; }
     expect(timerHistory(t)).toHaveLength(1); expect(timerHistory(t)[0].delivery?.state).toBe("sent");
   });
@@ -201,7 +201,7 @@ it("recovers the crash gap after a run commits and before a notification attempt
   await inDO(h.id, async t => {
     expect(timerHistory(t)[0].delivery).toMatchObject({ state: "pending", attempts: 0 });
     const calls: any[] = [], sender = t.notify;
-    t.notify = async payload => { calls.push(payload); return { sent: 1, failed: 0 }; };
+    t.notify = async payload => { calls.push(payload); return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] }; };
     try { await runTimerNotifications(t); await runTimers(t); await runTimerNotifications(t); } finally { t.notify = sender; }
     expect(calls).toHaveLength(1); expect(calls[0].tag).toBe(`${created.id}:${created.due_at}`);
     expect(timerHistory(t)[0].delivery).toMatchObject({ state: "sent", attempts: 1 });
@@ -216,7 +216,7 @@ it("reclaims an interrupted sending attempt after its lease expires", async () =
     t.scheduleAlarm = () => { if (t.db.one("SELECT run_id FROM timer_notifications WHERE state='sending'")) throw Error("crash before transport"); schedule.call(t); };
     try { await expect(runTimerNotifications(t)).rejects.toThrow("crash before transport"); } finally { t.scheduleAlarm = schedule; }
     expect(timerHistory(t)[0].delivery).toMatchObject({ state: "sending", attempts: 1 });
-    const sender = t.notify; let calls = 0; t.notify = async () => { calls++; return { sent: 1, failed: 0 }; };
+    const sender = t.notify; let calls = 0; t.notify = async () => { calls++; return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] }; };
     try { await runTimerNotifications(t); expect(calls).toBe(0); t.skew += 61000; await runTimerNotifications(t); } finally { t.notify = sender; }
     expect(calls).toBe(1); expect(timerHistory(t)[0].delivery).toMatchObject({ state: "sent", attempts: 2 });
   });
@@ -226,7 +226,7 @@ it("retries the same run tag after acceptance is lost before receipt commit with
   const { handle: h } = await setup(); await timer(h); await crashAfterRun(h);
   await inDO(h.id, async t => {
     const run = t.db.run, sender = t.notify, tags: string[] = [];
-    t.notify = async payload => { tags.push(payload.tag!); return { sent: 1, failed: 0 }; };
+    t.notify = async payload => { tags.push(payload.tag!); return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] }; };
     t.db.run = (sql, ...args) => { if (sql.startsWith("UPDATE timer_notifications SET state=?")) throw Error("crash after provider acceptance"); run.call(t.db, sql, ...args); };
     try { await expect(runTimerNotifications(t)).rejects.toThrow("crash after provider acceptance"); } finally { t.db.run = run; }
     try { t.skew += 61000; await runTimerNotifications(t); } finally { t.notify = sender; }
@@ -282,7 +282,7 @@ it.each(["cancel", "delete", "reschedule"])("fences an in-flight notification af
     t.notify = async () => {
       if (change === "delete") deleteTimer(t, created.id, "owner");
       else saveTimer(t, change === "cancel" ? { state: "cancelled" } : { state: "scheduled", due_at: t.now() + 60000 }, "owner", created.id);
-      return { sent: 1, failed: 0 };
+      return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] };
     };
     try { await runTimerNotifications(t); } finally { t.notify = sender; }
     expect(timerHistory(t)[0].delivery).toMatchObject({ state: "cancelled", attempts: 1 });
@@ -331,7 +331,7 @@ it("cancels queued notification attempts when a page is held and does not resurr
     expect(timerHistory(t)[0].delivery).toMatchObject({ state: "cancelled", attempts: 1 });
     expect((await setHeld(false)).status).toBe(200);
     const sender = t.notify; let calls = 0;
-    t.notify = async () => { calls++; return { sent: 1, failed: 0 }; };
+    t.notify = async () => { calls++; return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] }; };
     try { t.skew += 120_000; await runTimerNotifications(t); } finally { t.notify = sender; }
     expect(calls).toBe(0);
     expect(timerHistory(t)[0].delivery?.state).toBe("cancelled");

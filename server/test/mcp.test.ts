@@ -52,7 +52,7 @@ describe("MCP connector", () => {
   it("tools call the agent API", async () => {
     const h = await create({ name: "Kitchen" });
     const page = await PageClient.connect(h.page_url);
-    await page.request({ t: "send", data: { timer: "done" } });
+    await page.request({ t: "send", expected_generations: {}, data: { timer: "done" } });
     const info = await rpc(h, "tools/call", { name: "tendril_info", arguments: {} });
     expect(info.result.structuredContent.name).toBe("Kitchen");
     const events = await rpc(h, "tools/call", { name: "read_events", arguments: {} });
@@ -73,7 +73,7 @@ describe("MCP connector", () => {
     expect(sub.result).toMatchObject({ id: expect.stringMatching(/^sub_/), cursor: null, truncated: false });
     expect((await subscribe(h)).result.id).toBe(sub.result.id); // idempotent
 
-    await page.request({ t: "send", data: { hungry: true } });
+    await page.request({ t: "send", expected_generations: {}, data: { hungry: true } });
     await advance(h.id, 2500);
     await runAlarm(h.id);
     expect(deliveries).toHaveLength(1);
@@ -105,7 +105,7 @@ describe("MCP connector", () => {
     const page = await PageClient.connect(h.page_url);
     await apiJson(h, "GET", "events");
     await subscribe(h);
-    await page.request({ t: "send", data: {} });
+    await page.request({ t: "send", expected_generations: {}, data: {} });
     await advance(h.id, 2500);
     await runAlarm(h.id);
     expect(await inDO(h.id, (t) => t.db.get("mcp_subs", null))).toBeNull();

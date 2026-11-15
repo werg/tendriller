@@ -12,18 +12,13 @@ export async function continuePage(handle: PageHandle, lastHandledSequence: numb
   return { context, batch };
 }
 
-export async function assignPrivateTask(handle: PageHandle, participantId: string) {
+export async function writeProtectedState(handle: PageHandle, scopeId: string) {
   const page = createClient(handle);
-  const { participants } = await page.participants();
-  if (!participants.some(participant => participant.id === participantId)) throw new Error("Choose an approved participant");
-  const assignment = await page.createAssignment({ participant: participantId, title: "Observer", prompt: "Describe the quietest corner." });
-  return page.updateAssignment(assignment.id, { expected_revision: assignment.revision, feedback: "You can take a moment before answering." });
-}
-
-export async function archiveFinishedNotebook(handle: PageHandle, requestId: string) {
-  const page = createClient(handle);
-  // Call only after reviewing the finished workflow and waiting for local work.
-  const preview = await page.previewArchive("notebook");
-  return page.createArchive({ scope: "notebook", title: "Completed notebook", request_id: requestId,
-    expected_state_revision: preview.state_revision, expected_interaction_revision: preview.interaction_revision });
+  const { scopes } = await page.scopes();
+  const scope = scopes.find(item => item.id === scopeId);
+  if (!scope) throw new Error("The scope is unavailable");
+  // Persist this entire command before delivery; retries retain the same token.
+  const command = {cid:crypto.randomUUID(),scope:scopeId,expected_generations:{[scopeId]:scope.generation},
+    ops:[{op:"set" as const,path:["job","status"],value:"complete"}]};
+  return page.updateState(command);
 }

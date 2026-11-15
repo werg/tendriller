@@ -1,15 +1,16 @@
 // Limits and timing constants (PROTOCOL sections 3.1, 4, 8).
+import { RESOURCE_LIMITS } from "../../contract/limits.mjs";
 
 export const MB = 1024 * 1024;
-export const MAX_FILE = 25 * MB;
-export const MAX_BLOB = 25 * MB;
-export const MAX_EVENT_DATA = 64 * 1024;
-export const MAX_STATE = 1 * MB;
+export const MAX_FILE = RESOURCE_LIMITS.file_bytes;
+export const MAX_BLOB = RESOURCE_LIMITS.blob_bytes;
+export const MAX_EVENT_DATA = RESOURCE_LIMITS.event_bytes;
+export const MAX_STATE = RESOURCE_LIMITS.state_bytes;
 export const MAX_EVAL_CODE = 256 * 1024;
 export const MAX_LOGS = 2000;
 export const MAX_EVENTS = 10_000;
-export const MAX_PATH_LEN = 512;
-export const MAX_FILES_PER_VERSION = 2000;
+export const MAX_PATH_LEN = RESOURCE_LIMITS.path_characters;
+export const MAX_FILES_PER_VERSION = RESOURCE_LIMITS.files_per_publication;
 export const MAX_TRANSCRIPT = 100;
 
 export const SECOND = 1000;

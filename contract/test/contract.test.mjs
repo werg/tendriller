@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { assertValid, validate, schemas, schemaDocument, ContractError } from "../index.mjs";
-import { createPage, createClient, ApiError } from "../client.mjs";
+import { createPage, createClient, ApiError, requireService, describeService } from "../client.mjs";
 
-test("public creation rejects the obsolete CLI contract before a request", async () => {
+test("public creation requires an owner and valid lifecycle", async () => {
   let called = false;
   const fetch = async () => { called = true; throw Error("unexpected request"); };
   await assert.rejects(createPage("https://example.test", { name: "Kitchen", lifetime: "resident" }, { fetch }), ContractError);
@@ -15,28 +15,23 @@ test("public creation rejects the obsolete CLI contract before a request", async
 });
 
 test("schemas distinguish accepted, queued and rejected results", () => {
-  for (const result of [{ status: "accepted", queued: false, seq: 1 }, { status: "queued", queued: true }, { status: "rejected", queued: false, error: "forbidden" }])
+  for (const result of [{ status: "accepted", seq: 1 }, { status: "queued" }, { status: "rejected", error: "forbidden" }])
     assert.equal(validate("sendResult", result).length, 0);
   assert.ok(validate("sendResult", { queued: false }).length);
-  assert.ok(validate("sendResult", { status: "queued", queued: true, seq: 1 }).length);
+  assert.ok(validate("sendResult", { status: "queued", seq: 1 }).length);
   const blob = { id: "b_" + "a".repeat(20), url: "_tendril/blob/photo", retention: { keep: false, expires_at: 1000 } };
-  assert.equal(validate("captureResult", { capture_id: "capture-1", status: "accepted", queued: false, seq: 1, blob }).length, 0);
-  assert.ok(validate("captureResult", { capture_id: "capture-1", status: "accepted", queued: false, seq: 1 }).length);
-  assert.ok(validate("captureResult", { status: "queued", queued: true }).length);
+  assert.equal(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1, blob }).length, 0);
+  assert.ok(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1 }).length);
+  assert.ok(validate("captureResult", { status: "queued" }).length);
 });
 
-test("set(null) and delete are distinct public operations; UI blocks are bounded", () => {
+test("set(null) and delete are distinct public operations", () => {
   assert.deepEqual(assertValid("stateOperations", [{ op: "set", path: ["reading"], value: null }]), [{ op: "set", path: ["reading"], value: null }]);
   assert.ok(validate("stateOperations", [{ op: "delete", path: ["reading"], value: 1 }]).length);
-  assert.ok(validate("interface", { blocks: [{ id: "missing", type: "unknown" }] }).length);
-  assert.ok(validate("interface", { blocks: Array.from({ length: 41 }, (_, i) => ({ id: String(i), type: "text" })) }).length);
-  assert.ok(validate("interface", { blocks: [], unrecognised: true }).length);
 });
 
 test("generated schemas match the executable and MCP-facing schema", () => {
-  assert.deepEqual(JSON.parse(readFileSync(new URL("../v1.json", import.meta.url))), schemaDocument);
-  const ui = JSON.parse(readFileSync(new URL("../../recipes/ui-schema.json", import.meta.url)));
-  assert.deepEqual(ui.properties, schemas.interface.properties);
+  assert.deepEqual(JSON.parse(readFileSync(new URL("../v2.json", import.meta.url))), schemaDocument);
 });
 
 test("client keeps explicit cursor, validates writes and returns actionable errors", async () => {
@@ -56,10 +51,6 @@ test("client keeps explicit cursor, validates writes and returns actionable erro
 test("experience write contracts preserve revision checks, roles and bounded schedules", () => {
   assert.equal(validate("sessionWrite", { current_task: "Review readings", expected_revision: 2 }).length, 0);
   assert.ok(validate("sessionWrite", { expected_revision: -1 }).length);
-  assert.equal(validate("decisionUpdate", { expected_version: 2, status: "completed", result: "Published" }).length, 0);
-  assert.ok(validate("decisionUpdate", { status: "completed" }).length);
-  assert.ok(validate("decisionUpdate", { expected_version: 1, status: "approved" }).length);
-  assert.equal(validate("decisionResponse", { expected_version: 1, decision: "approve" }).length, 0);
   assert.ok(validate("deviceUpdate", { role: "owner" }).length);
   assert.equal(validate("focusRequest", { device: null }).length, 0);
   for (const repeat of [{ at: "25:00" }, { at: "10:15", days: [] }, { every_minutes: 0 }])
@@ -82,27 +73,32 @@ test("exported bundle media can have no name and multi-file templates keep the s
   assert.ok(validate("say", { text: "Look here", present: false }).length);
 });
 
-test("typed experience client carries compare-and-set versions and encodes resource IDs", async () => {
+test("generic commands keep concurrency context outside opaque data", async () => {
+  const body = { cid: "persisted-id", expected_generations: { "opaque-scope": "generation" }, scope: "opaque-scope",
+    data: { type: "job.status", session: "application session", experiment: { session_id: "also opaque" } } };
+  assert.deepEqual(assertValid("command", body), body);
+  assert.ok(validate("command", {...body, expected_generations: undefined}).length);
+  assert.ok(validate("stateUpdate", {cid:"write-1",expected_generations:{},ops:[{op:"set",path:[],value:{notebook:1}}]}).length === 0);
+  assert.ok(validate("stateUpdate", {notebook:1}).length);
+  for (const name of ["decision", "archive", "assignment", "participantResponse", "interface"]) assert.equal(schemas[name], undefined);
   const seen = [];
-  const client = createClient({ api: "https://example.test/api/t/id", token: "tk_test" }, { fetch: async (url, options) => {
-    seen.push({ url, options });
-    const session = { purpose: "Workshop", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
-    const result = url.endsWith("/session") ? { session, revision: 3 } : url.includes("/decisions/")
-      ? { id: "decision", title: "Review", summary: "A reviewed change", version: 5, status: "working", expires_at: null, created_at: 1, updated_at: 2 }
-      : { format: "tendriller-bundle", version: 1, name: "Copy", files: [{ path: "index.html", type: "text/html", base64: "AA==" }], media: [] };
-    return new Response(JSON.stringify(result), { status: 200 });
-  } });
-  await client.updateSession({ purpose: "Workshop", expected_revision: 2 });
-  assert.equal(seen.at(-1).url, "https://example.test/api/t/id/session");
-  assert.equal(JSON.parse(seen.at(-1).options.body).expected_revision, 2);
-  await client.updateDecision("id/with space", { expected_version: 4, status: "working" });
-  assert.match(seen.at(-1).url, /decisions\/id%2Fwith%20space$/);
-  await client.exportBundle({ includeData: true });
-  assert.match(seen.at(-1).url, /bundle\?include_data=true$/);
-  const count = seen.length;
-  assert.throws(() => client.updateDecision("decision", { status: "completed" }), ContractError);
-  assert.throws(() => client.updateDevice("device", { role: "owner" }), ContractError);
-  assert.equal(seen.length, count);
+  const client = createClient({api:"https://example.test/api/t/id",token:"private"}, {fetch: async (url, options) => {
+    seen.push({url,body:JSON.parse(options.body)}); return new Response(JSON.stringify({ok:true}));
+  }});
+  await client.workflow("module/one", "write item", body);
+  assert.match(seen[0].url, /workflows\/module%2Fone\/write%20item$/);
+  assert.deepEqual(seen[0].body, body);
+});
+
+test("service requirements compare interfaces independently of contrib release", async () => {
+  const descriptor = {contract:2,core_release:"0.2.0-rc.1",limits:{},workflows:[{id:"sessions",interface_version:"1",schema_version:"1",operations:{}}]};
+  assert.equal(requireService(descriptor,{workflows:{sessions:{interface_version:"1",schema_version:"1"}}}), descriptor);
+  assert.throws(() => requireService(descriptor,{contract:3}), error => error.code === "contract_mismatch");
+  assert.throws(() => requireService(descriptor,{workflows:{sessions:{interface_version:"2",schema_version:"1"}}}), error => error.code === "workflow_mismatch");
+  const fetched = await describeService("https://service.example/",{fetch: async url => {
+    assert.equal(url,"https://service.example/api/service"); return new Response(JSON.stringify(descriptor));
+  }});
+  assert.deepEqual(fetched,descriptor);
 });
 
 test("typed clients reject successful HTTP responses that break the wire contract", async () => {

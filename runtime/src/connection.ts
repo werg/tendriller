@@ -1,3 +1,5 @@
+import type { RuntimeSocket } from "../../contract/index.mjs";
+
 export interface ConnectionClock {
   setTimeout(callback: () => void, delay: number): ReturnType<typeof setTimeout>;
   clearTimeout(timer: ReturnType<typeof setTimeout>): void;
@@ -13,7 +15,7 @@ interface ConnectionHost {
 }
 
 interface ConnectionOptions {
-  socket?: (url: string) => WebSocket;
+  socket?: (url: string) => RuntimeSocket;
   clock?: ConnectionClock;
   random?: () => number;
 }
@@ -24,10 +26,10 @@ const WELCOME_TIMEOUT_MS = 15_000;
 
 /** Socket lifecycle only. Welcomes, state, commands and stream replay stay with callers. */
 export function createConnection(host: ConnectionHost, options: ConnectionOptions = {}) {
-  const openSocket = options.socket || (url => new WebSocket(url));
+  const openSocket = options.socket || (url => new WebSocket(url) as unknown as RuntimeSocket);
   const clock = options.clock || globalThis;
   const random = options.random || Math.random;
-  let socket: WebSocket | null = null;
+  let socket: RuntimeSocket | null = null;
   let started = false, connected = false, attempts = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let welcomeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -56,7 +58,7 @@ export function createConnection(host: ConnectionHost, options: ConnectionOption
 
   const connect = () => {
     if (socket || !started) return;
-    let current: WebSocket;
+    let current: RuntimeSocket;
     try { current = openSocket(host.url()); } catch { scheduleReconnect(); return; }
     socket = current;
     current.onopen = () => {

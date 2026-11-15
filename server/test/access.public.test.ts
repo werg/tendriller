@@ -80,7 +80,7 @@ it("applies session expiry consistently to HTTP and ordinary socket writes", asy
   const response = await req(h.page_url + "_tendril/streams", { redirect: "manual" });
   expect(response.status).toBe(302);
   expect(response.headers.get("Location")).toContain("/auth/page?");
-  page.send({ t: "state", cid: "expired", ops: [{ op: "set", path: ["forbidden"], value: true }] });
+  page.send({ t: "state", expected_generations: {}, cid: "expired", ops: [{ op: "set", path: ["forbidden"], value: true }] });
   await expect.poll(() => page.closed?.code).toBe(4003);
   expect(await inDO(h.id, t => t.getState().state)).toEqual({});
   expect(page.drain().some(message => message.cid === "expired")).toBe(false);

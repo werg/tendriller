@@ -1,8 +1,0 @@
-{
-  "denied": ["camera"],
-  "steps": [
-    { "click": "text=Take photo" },
-    { "expect_text": "Camera permission was denied" },
-    { "expect_no_send": true }
-  ]
-}

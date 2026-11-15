@@ -76,6 +76,6 @@ export function normalizeFilePath(raw: string): string | null {
   if (!p || p.length > 512 || p.endsWith("/")) return null;
   const parts = p.split("/");
   if (parts.some((s) => s === "" || s === "." || s === ".." || /[\x00-\x1f]/.test(s))) return null;
-  if (parts[0] === "_tendril") return null;
+  if (parts[0] === "_tendril" || parts[0] === "_publications") return null;
   return parts.join("/");
 }

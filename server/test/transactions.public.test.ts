@@ -56,7 +56,7 @@ it("drops rolled-back metadata, legacy broadcasts, built-in signals and agent wa
   const h = await create({ listener: false });
   const page = await PageClient.connect(h.page_url);
   const response = await api(h, "GET", "events/socket", undefined,
-    { Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}` });
+    { Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}` });
   expect(response.status).toBe(101);
   const agent = response.webSocket!, wakes: any[] = [];
   agent.addEventListener("message", event => { wakes.push(JSON.parse(event.data as string)); });

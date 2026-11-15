@@ -77,7 +77,7 @@ export function setupPush(core: Core): PushWithReason {
 
   async function register(sub: PushSubscription): Promise<boolean> {
     try {
-      const reply = await core.request({ t: "push_subscribe", subscription: sub.toJSON() });
+      const reply = await core.transportRequest({ t: "push_subscribe", subscription: sub.toJSON() });
       return !reply?.error;
     } catch { return false; }
   }
@@ -121,7 +121,7 @@ export function setupPush(core: Core): PushWithReason {
     async unsubscribe() {
       const sub = staticReason ? null : await currentSub();
       if (sub) { try { await sub.unsubscribe(); } catch { /* ignore */ } }
-      try { await core.request({ t: "push_unsubscribe" }); } catch { /* offline: server drops it on the next 404/410 */ }
+      try { await core.transportRequest({ t: "push_unsubscribe" }); } catch { /* offline: server drops it on the next 404/410 */ }
       core.bus.emit("push", { subscribed: false });
     },
   };

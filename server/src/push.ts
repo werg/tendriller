@@ -11,8 +11,8 @@ import type { Env } from "./env";
 
 export interface PushSubscriptionJSON { endpoint?: string; expirationTime?: number | null; keys?: Record<string, string> }
 export type Urgency = "very-low" | "low" | "normal" | "high";
-export interface NotifyDeliveryOptions { devices?: string[]; includeResults?: boolean; broadcastLocal?: boolean; signal?: AbortSignal }
-export interface NotifyDeliveryResult { sent: number; failed: number; deliveries?: { device: string; ok: boolean; status: number; gone: boolean }[] }
+export interface NotifyDeliveryOptions { devices?: string[]; broadcastLocal?: boolean; signal?: AbortSignal }
+export interface NotifyDeliveryResult { sent: number; failed: number; deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
 
 export function pushAvailable(env: Env): boolean { return !!(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY); }
 export function vapidPublicKey(env: Env): string | null { return env.VAPID_PUBLIC_KEY ?? null; }
