@@ -32,7 +32,11 @@ The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 ## Get started
 
 For the public beta, give your agent `https://tendriller.dev/agent.md` and your verified
-GitHub or Google email address. The agent creates a page, attaches a working event
+GitHub or Google email address. If your agent runs in a sandbox with limited network access,
+such as Claude Duet, Cowork or another claude.ai session, first open **Settings >
+Capabilities** in Claude and add `tendriller.dev` and `tendriller.site` under **Additional
+allowed domains** (or set **Domain allowlist** to **All domains**). [agent.md](agent.md) has
+the full steps. The agent creates a page, attaches a working event
 receiver for its host, publishes it, and gives you the page URL. A page is not live
 merely because it has an agent token or an event poll happened once.
 

@@ -4,6 +4,23 @@ Tendriller lets an agent make a small, changeable web page for a person. Think o
 
 You only need the person's **verified GitHub or Google email address**. Ask for it if you don't know it, along with what they want the page to do. Create the page for that email, establish event delivery, then give them its `page_url`. When they open the link, Tendriller signs them in if needed and opens the page automatically. They do not need to create or copy an account key, enter a code, or press Claim. Their browser never shares OAuth credentials with you.
 
+**First, check that you can reach Tendriller.** Agents in sandboxes, such as Claude Duet, Cowork and other claude.ai sessions, often have outbound network access limited to a list of allowed domains. Run:
+
+```sh
+curl -fsS https://tendriller.dev/health
+```
+
+If it prints `{"ok":true}`, continue. If it fails with `CONNECT tunnel failed, response 403`, `Could not resolve host`, or another proxy or DNS error, your sandbox blocks the service, and nothing below will work. Do not retry or look for another route. Give the person these steps, then wait for them to say it is done:
+
+1. In Claude (web, desktop, or the Claude Duet app), open **Settings**, then **Capabilities**. On a Team or Enterprise plan, an admin does this for the whole organization under **Organization settings > Capabilities**.
+2. Make sure **Allow network egress** is turned on.
+3. If **Domain allowlist** is set to **All domains**, nothing else is needed. Otherwise, under **Additional allowed domains**, add these two domains, one per entry:
+   - `tendriller.dev` (the API, the wake socket and the helper downloads; required)
+   - `tendriller.site` (where pages are served)
+4. Save the setting, then tell the agent to try again. A session that is already running picks up the change within a minute or two; it does not need a restart.
+
+Check again with the same `curl` command. Only `tendriller.dev` is needed for everything the agent does. Pages live on per-page subdomains (`<id>.tendriller.site`), which a plain `tendriller.site` entry did not cover in testing, so an agent that wants to fetch its own page directly also needs those subdomains allowed. For the staging service, allow `staging.tendriller.dev` as well. You can read this guide with a web-fetch tool before the domains are allowed, because that tool usually runs outside the sandbox.
+
 **Before you give them the link, arrange conversation delivery.** A background poll by itself only collects events; it must wake this agent conversation. Use the host adapter below or a verified host wake endpoint. A single poll, an agent token, a published page, and a message sent with `POST A/say` do **not** keep you listening. If your host cannot resume this conversation, tell the person the page saves input for later and do not promise immediate replies. The creation response's `agent_setup`, every event poll's `agent_reminder` and `next_poll`, and file upload responses repeat this requirement.
 
 **Publication check:** the first `index.html` upload returns HTTP `428 listener_required` unless an agent WebSocket or long poll is active, or a wake receiver is configured. A one-off `GET A/events` does not pass this check. If the receiver later stops, the page shows **Away** and keeps the person's input for later. Use the runnable example below as the simplest complete setup.
@@ -93,7 +110,7 @@ The command keeps a hibernating WebSocket open and reconnects after a disconnect
 
 **OpenAI dot or Work chat:** The page exposes a Streamable HTTP MCP server at `A/mcp` with bearer authentication, or `A/mcp/<token>` for hosts that cannot send a header. The path form is a bearer capability: keep it private and rotate the page token if exposed. Connect it as an MCP plugin where that host permits custom servers. Call `events/list`, then subscribe to `tendril.events_waiting` with the host's callback URL and signing secret; on a notice, call `read_events`, `say` or `write_files`, and read again. [MCP Events](https://developers.openai.com/plugins/build/mcp-events) supports dots and Work chats, but plugin connection and event-triggered task controls are owned by the host/workspace. The per-page MCP connector is implemented and tested locally; a real dot callback has not yet been verified. Do not promise push until it has subscribed and passed two delivery probes.
 
-**Claude Duet (and Claude Code on the web):** Each session has a `Monitor` tool with a WebSocket source: every text frame becomes a notification that resumes **that same session**, also between turns. Use it on the agent socket; it needs no bridge, no local process and no polling, and the Durable Object stays hibernated while idle. The session's sandbox must be allowed to reach this service: if a request to it fails with a proxy refusal or the host does not resolve, nothing on this page works from that session, so tell the person instead of retrying. The recipe was verified against a local server; Duet sessions observed so far do not allow outside hosts.
+**Claude Duet (and Claude Code on the web):** Each session has a `Monitor` tool with a WebSocket source: every text frame becomes a notification that resumes **that same session**, also between turns. Use it on the agent socket; it needs no bridge, no local process and no polling, and the Durable Object stays hibernated while idle. Duet sessions block most outside hosts by default, so do the network check at the top of this guide first; the `Monitor` socket fails with `getaddrinfo ENOTFOUND` until `tendriller.dev` is allowed.
 
 1. Keep the creation response in the project's durable folder, for example `/mnt/project-files/.tendril/<id>.json` (mode `600`), with your last handled `cursor`. The container's other directories do not outlast the session.
 2. Exchange the page token for a single-use, listen-only ticket from a shell command, so the token never appears in a tool call:
