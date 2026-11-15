@@ -2,9 +2,9 @@
 // - Caches every file of the current version (from `_tendril/info`) plus tendril.js, in a cache
 //   named `tendril-<id>-v<version>`; older caches of the same tendril are deleted.
 // - Navigations: network first (falls back to the cache when offline or very slow).
-// - Other GETs in scope: cache first for the version the requesting page loaded, else network
-//   (with `?v=<n>` so the server returns that version's file); tendril.js is revalidated.
-// - Never cached: `_tendril/ws`, `_tendril/info`, blobs, POSTs, `/api/`.
+// - Static GETs use the requesting page's version (`?v=<n>`). Cached no-cache assets
+//   revalidate before use, with offline fallback; immutable assets stay cache first.
+// - Live `_tendril/` routes, `/api/`, POSTs and no-store responses are never cached.
 import { registerPushHandlers } from "./sw-push";
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -12,7 +12,7 @@ const SCOPE = sw.registration.scope; // ends in "/"
 const META_CACHE = "tendril-meta";
 const META_KEY = SCOPE + "_tendril/__meta";
 const RUNTIME = "_tendril/tendril.js";
-const NAV_TIMEOUT_MS = 6000;
+const NETWORK_TIMEOUT_MS = 6000;
 
 interface Meta { id: string; version: number }
 
@@ -36,6 +36,35 @@ async function setMeta(m: Meta) {
 
 const cacheName = (m: Meta, version = m.version) => `tendril-${m.id}-v${version}`;
 
+function cacheDirective(response: Response, directive: string): boolean {
+  return (response.headers.get("Cache-Control") || "").split(",")
+    .some((part) => part.trim().split("=", 1)[0].trim().toLowerCase() === directive);
+}
+
+async function saveResponse(cache: Cache, key: string, response: Response): Promise<void> {
+  // The Cache API ignores HTTP cache directives unless the worker enforces them.
+  if (cacheDirective(response, "no-store")) await cache.delete(key);
+  else if (response.ok) await cache.put(key, response);
+}
+
+async function cachedResponse(cache: Cache, key: string): Promise<Response | undefined> {
+  const response = await cache.match(key);
+  if (response && cacheDirective(response, "no-store")) {
+    await cache.delete(key);
+    return undefined;
+  }
+  return response;
+}
+
+async function withinDeadline(network: Promise<Response>): Promise<Response | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([network, new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS);
+    })]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
 /** Re-creates a response so it can be served for navigations (no `redirected` flag). */
 async function clean(r: Response): Promise<Response> {
   if (!r.redirected) return r;
@@ -57,17 +86,19 @@ async function doUpdate(): Promise<void> {
   const m: Meta = { id: String(info.id), version: Number(info.version) || 0 };
   const name = cacheName(m);
   const cache = await caches.open(name);
-  const files: string[] = (Array.isArray(info.files) ? info.files : []).filter((f: any) => typeof f === "string" && !f.startsWith("_tendril/"));
+  const files: string[] = (Array.isArray(info.files) ? info.files : []).filter((f: any) =>
+    typeof f === "string" && !f.startsWith("_tendril/") && !bypass(f, new URL(SCOPE + f)));
   const tasks = ["", ...files].map(async (rel) => {
     const key = SCOPE + rel;
-    if (rel !== "" && (await cache.match(key))) return; // version files are immutable
+    const saved = rel !== "" ? await cachedResponse(cache, key) : null;
+    if (saved && !cacheDirective(saved, "no-cache")) return;
     const url = rel === "" ? key : `${key}?v=${m.version}`;
     const r = await fetch(url, { cache: "no-store" });
-    if (r.ok) await cache.put(key, await clean(r));
+    await saveResponse(cache, key, await clean(r));
   });
   tasks.push((async () => {
     const r = await fetch(SCOPE + RUNTIME, { cache: "no-cache" });
-    if (r.ok) await cache.put(SCOPE + RUNTIME, r);
+    await saveResponse(cache, SCOPE + RUNTIME, r);
   })());
   await Promise.allSettled(tasks);
   const prev = await getMeta();
@@ -84,13 +115,32 @@ function relPath(url: URL): string | null {
 }
 
 function bypass(rel: string, url: URL): boolean {
-  return (
-    url.pathname.includes("/api/") ||
-    rel.startsWith("_tendril/ws") ||
-    rel.startsWith("_tendril/info") ||
-    rel.startsWith("_tendril/blob") ||
-    rel === "_tendril/sw.js"
-  );
+  if (url.pathname.includes("/api/")) return true;
+  // Match the server's decoded page path, including encoded reserved prefixes.
+  try { rel = decodeURIComponent(rel); } catch { /* the server keeps malformed paths as-is */ }
+  if (rel !== "_tendril" && !rel.startsWith("_tendril/")) return false;
+  // Only static routes from server/src/router.ts belong in a version cache.
+  // New internal endpoints are live by default, including owner/private reads.
+  return !(rel === RUNTIME || rel === "_tendril/speech-worker.js" ||
+    /^_tendril\/snippets\/[A-Za-z0-9_.-]+\.js$/.test(rel) ||
+    /^_tendril\/speech\/(cactus\.js|cactus\.wasm|whistle\.cact)$/.test(rel) ||
+    /^_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(rel) ||
+    /^_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(rel));
+}
+
+async function purgeLiveResponses(): Promise<void> {
+  // Older workers cached live API responses. Remove only this page's entries;
+  // shared metadata and other page scopes must survive an offline activation.
+  for (const name of await caches.keys()) {
+    if (name === META_CACHE || !name.startsWith("tendril-")) continue;
+    const cache = await caches.open(name);
+    for (const request of await cache.keys()) {
+      const url = new URL(request.url), rel = relPath(url);
+      if (rel === null) continue;
+      const saved = await cache.match(request);
+      if (bypass(rel, url) || (saved && cacheDirective(saved, "no-store"))) await cache.delete(request);
+    }
+  }
 }
 
 function offlinePage(): Response {
@@ -104,15 +154,16 @@ function offlinePage(): Response {
 async function navigate(e: FetchEvent, rel: string): Promise<Response> {
   const m = await getMeta();
   const cache = m ? await caches.open(cacheName(m)) : null;
-  const cached = cache ? (await cache.match(SCOPE + rel)) || (rel === "" || rel === "index.html" ? await cache.match(SCOPE) : undefined) : undefined;
+  const cached = cache ? (await cachedResponse(cache, SCOPE + rel)) || (rel === "" || rel === "index.html" ? await cachedResponse(cache, SCOPE) : undefined) : undefined;
   const net = fetch(e.request).then(async (r) => {
+    if (cache && cacheDirective(r, "no-store")) e.waitUntil(cache.delete(SCOPE + rel));
     if (r.ok && !r.redirected) {
       // Learn which version this page will run, so its subresources match.
       try {
         const text = await r.clone().text();
         const v = /window\.__TENDRIL__\s*=\s*\{[^<]*?"version"\s*:\s*(\d+)/.exec(text);
         if (v && e.resultingClientId) clientVersion.set(e.resultingClientId, Number(v[1]));
-        if (v && m && Number(v[1]) === m.version && cache) await cache.put(SCOPE + rel, r.clone());
+        if (v && m && Number(v[1]) === m.version && cache) await saveResponse(cache, SCOPE + rel, r.clone());
         else if (v && (!m || Number(v[1]) !== m.version)) e.waitUntil(update());
       } catch { /* ignore */ }
     }
@@ -121,9 +172,8 @@ async function navigate(e: FetchEvent, rel: string): Promise<Response> {
   if (!cached) {
     try { return await net; } catch { return offlinePage(); }
   }
-  const timeout = new Promise<Response | null>((res) => setTimeout(() => res(null), NAV_TIMEOUT_MS));
   try {
-    const r = await Promise.race([net, timeout]);
+    const r = await withinDeadline(net);
     if (r) return r;
   } catch { /* offline */ }
   if (e.resultingClientId && m) clientVersion.set(e.resultingClientId, m.version);
@@ -131,27 +181,36 @@ async function navigate(e: FetchEvent, rel: string): Promise<Response> {
 }
 
 async function subresource(e: FetchEvent, rel: string): Promise<Response> {
+  const url = new URL(e.request.url);
+  // Explicit queries identify separate resources (including a requested version).
+  // They must neither reuse nor replace the query-less version cache entry.
+  if (url.search) return fetch(e.request);
   const m = await getMeta();
   const want = clientVersion.get(e.clientId) ?? m?.version;
   if (!m || want !== m.version) {
-    const url = new URL(e.request.url);
-    if (want != null && !url.search && rel !== RUNTIME && !rel.startsWith("_tendril/")) url.searchParams.set("v", String(want));
+    if (want != null && rel !== RUNTIME && !rel.startsWith("_tendril/")) url.searchParams.set("v", String(want));
     return fetch(url.href === e.request.url ? e.request : url.href);
   }
   const cache = await caches.open(cacheName(m));
   const key = SCOPE + rel;
-  const hit = await cache.match(key);
-  if (hit) {
-    if (rel === RUNTIME) e.waitUntil(fetch(e.request, { cache: "no-cache" }).then((r) => (r.ok ? cache.put(key, r) : undefined)).catch(() => {}));
+  const hit = await cachedResponse(cache, key);
+  const revalidate = hit && cacheDirective(hit, "no-cache");
+  if (hit && !revalidate) {
+    if (rel === RUNTIME) e.waitUntil(fetch(e.request, { cache: "no-cache" }).then((r) => saveResponse(cache, key, r)).catch(() => {}));
     return hit;
   }
-  const url = new URL(e.request.url);
-  const ownQuery = !!url.search;
-  if (!ownQuery && !rel.startsWith("_tendril/")) url.searchParams.set("v", String(m.version));
-  const r = await fetch(url.href === e.request.url ? e.request : url.href);
-  // Cache only plain (query-less) requests: the cache key ignores the query.
-  if (r.ok && r.type === "basic" && !ownQuery) e.waitUntil(cache.put(key, r.clone()).catch(() => {}));
-  return r;
+  if (!rel.startsWith("_tendril/")) url.searchParams.set("v", String(m.version));
+  const net = fetch(url.href === e.request.url ? e.request : url.href, revalidate ? { cache: "no-cache" } : undefined).then((r) => {
+    if (r.type === "basic") e.waitUntil(saveResponse(cache, key, r.clone()).catch(() => {}));
+    return r;
+  });
+  if (!hit) return net;
+  // A slow connection must not strand a saved page. Let a late revalidation
+  // refresh its cache, while this request falls back within the same deadline
+  // as navigation. Live APIs never reach this path.
+  e.waitUntil(net.then(() => {}).catch(() => {}));
+  try { return (await withinDeadline(net)) ?? hit; }
+  catch { return hit; }
 }
 
 sw.addEventListener("install", (e) => {
@@ -160,7 +219,10 @@ sw.addEventListener("install", (e) => {
 });
 
 sw.addEventListener("activate", (e) => {
-  e.waitUntil(Promise.all([sw.clients.claim(), update().catch(() => {})]));
+  e.waitUntil((async () => {
+    await purgeLiveResponses().catch(() => {});
+    await Promise.all([sw.clients.claim(), update().catch(() => {})]);
+  })());
 });
 
 sw.addEventListener("message", (e: ExtendableMessageEvent) => {

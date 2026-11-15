@@ -1,5 +1,12 @@
 # Browser E2E tests
 
+The complete shipping gate is `npm run check:release`: non-browser contract,
+type, build, unit, recipe, Worker and CLI checks, followed by `npm run test:browser`.
+That browser command runs current runtime/control/push/TTS tests, snippet and
+draft/capture regressions, actual-runtime preview and catalog recipe scenarios,
+then the isolated Worker flows below. CI deployment depends on the same check
+job. Failure traces and screenshots are uploaded as workflow artifacts.
+
 Run the credential-free local suite with:
 
 ```sh
@@ -18,7 +25,7 @@ npm run test:e2e:speech-real
 
 This opt-in test downloads Cactus 4.0.0 JS/WASM and the pinned Whistle model from their public Hugging Face revision URLs, verifies all three SHA-256 hashes, caches them under `~/.cache/tendriller-e2e/speech-4.0.0`, then initializes the actual speech worker and transcribes one second of silence. It needs internet access on the first run and no Cloudflare credentials. Later runs use the verified cache. The default suite skips this test.
 
-Run `npm run test:e2e:all` to run the local Worker/browser suite and the upstream `runtime/test/tts` browser suite together. The upstream suite owns detailed speech-output tests for lazy loading, fallback, autoplay, queueing, cancellation, timeout, and recovery. `test/e2e/tts-integration.spec.ts` adds cross-layer checks: an agent `/say` response reaches the owner page and neural playback, and microphone input interrupts a long reply, reaches the agent event queue, and allows a later reply to play.
+Run `npm run test:e2e:all` to run the local Worker/browser suite and the upstream `runtime/test/tts` browser suite together. The upstream suite owns detailed speech-output tests for lazy loading, fallback, autoplay, queueing, cancellation, timeout, and recovery. `test/e2e/tts-integration.spec.ts` adds cross-layer checks after explicit neural enablement: an agent `/say` response reaches the owner page and neural playback, and microphone input interrupts a long reply, reaches the agent event queue, and allows a later reply to play. Separate policy tests verify browser speech is immediate by default and optional model preparation does not replay a reply.
 
 For a manual staging origin-isolation check using a real signed-in owner session, `npm run test:e2e:public` retains the separate public config. Set `E2E_SERVICE_BASE` and `E2E_OWNER_EMAIL`, then use `scripts/capture-e2e-auth.mjs` to save a local `.e2e-auth.json` browser session. Keep that session file private.
 

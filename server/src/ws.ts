@@ -7,6 +7,7 @@ import { HttpError, isPlainObject } from "./http";
 import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from "./ids";
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
 import { validateOps } from "./state";
+import { getFocus } from "./device-roles";
 
 type Msg = Record<string, any>;
 
@@ -55,7 +56,7 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
       ON CONFLICT(device_id) DO UPDATE SET second = excluded.second,
       count = CASE WHEN ws_rate.second = excluded.second THEN ws_rate.count + 1 ELSE 1 END`, att.deviceId, second);
     const count = t.db.one<{ count: number }>("SELECT count FROM ws_rate WHERE device_id = ?", att.deviceId)?.count ?? 0;
-    if (count > 50) { t.send(ws, { t: "error", code: "rate_limited", message: "Too many messages" }); return; }
+    if (count > 50) { t.send(ws, { t: "error", code: "rate_limited", message: "Too many messages. Wait a moment and try again.", cid: msg.cid }); return; }
   }
   if (msg.t === "ping") {
     t.send(ws, { t: "pong" });
@@ -183,6 +184,8 @@ async function hello(t: Tendril, ws: WebSocket, att: Att, msg: Msg): Promise<voi
     t: "welcome",
     device_id: id,
     role: dev.role,
+    device_purpose: dev.purpose ?? "general",
+    focus: dev.role === "owner" && !dev.pending ? getFocus(t) : null,
     pending: !!dev.pending,
     primary: t.primaryDevice() === id,
     tendril: { id: t.tid, name: t.db.get("name", "Tendril") },

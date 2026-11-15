@@ -1,6 +1,7 @@
 // Test entry: bundles the push agent's runtime modules with a fake Core.
 import { startRules, haversine } from "../../src/rules";
 import { setupPush } from "../../src/push";
+import { createSpeechOutput } from "../../src/speech-output";
 
 function makeCore(features: any = { transcribe: false, voice: false, push: false, vapid: null }) {
   const handlers = new Map<string, Set<(p: any) => void>>();
@@ -26,6 +27,10 @@ function makeCore(features: any = { transcribe: false, voice: false, push: false
     raw(m: any) { log.raw.push(m); },
     async upload() { return { id: "", url: "" }; },
   };
+  // Rules delegate speech to Core. Use the production output policy so these
+  // tests cover browser speech by default and the device's audio preference.
+  core.tts = createSpeechOutput(core.config.base, core.bus, () => state._prefs || {});
+  core.speak = (text: string) => core.tts.speak(text);
   return { core, log, state };
 }
 

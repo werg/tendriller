@@ -1,18 +1,7 @@
 import type { PhononTTS } from "phonon-tts";
 import type { Bus } from "./types";
-
-export interface SpeechStatus {
-  enabled: boolean;
-  state: "idle" | "loading" | "ready" | "error";
-  message: string;
-}
-export interface SpeechOutput {
-  readonly status: SpeechStatus;
-  enable(): Promise<void>;
-  disable(): void;
-  stop(): void;
-  speak(text: string): void;
-}
+import type { SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
+export type { SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const readyMessage = "Neural voice is ready. English speech is generated on this device.";
@@ -30,12 +19,13 @@ function waitFor<T>(task: Promise<T>, signal?: AbortSignal, timeoutMs = 0): Prom
   });
 }
 
-/** Neural English speech by default; the user's browser voice remains the fallback. */
-export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?: boolean; language?: string }): SpeechOutput {
+/** Browser speech is immediate; neural English speech is an optional device preference. */
+export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?: boolean; language?: string },
+  moduleLoader: (url: string) => Promise<typeof import("phonon-tts")> = url => import(/* @vite-ignore */ url)): SpeechOutput {
   const storageKey = "tendriller:spoken-voice";
-  let enabled = true;
-  try { enabled = localStorage.getItem(storageKey) !== "browser"; } catch { /* storage may be unavailable */ }
-  let status: SpeechStatus = { enabled, state: "idle", message: enabled ? "Neural voice is used for English replies. The first reply downloads about 65 MB, cached on this device." : "Using the browser voice." };
+  let enabled = false;
+  try { enabled = localStorage.getItem(storageKey) === "neural"; } catch { /* storage may be unavailable */ }
+  let status: SpeechStatus = { enabled, state: "idle", message: enabled ? "Natural voice is enabled. Prepare it once to cache about 65 MB on this device." : "Browser voice is ready. Natural voice is an optional download." };
   let model: PhononTTS | null = null;
   let loading: Promise<PhononTTS> | null = null;
   let context: AudioContext | null = null;
@@ -66,7 +56,7 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     if (model) return Promise.resolve(model);
     if (loading) return loading;
     const token = ++loadEpoch;
-    report("loading", "Preparing neural voice — downloading about 65 MB on first use. Replies will play when it is ready.");
+    report("loading", "Preparing natural voice — about 65 MB on first use. Browser speech is available while it downloads.");
     // Keep the upstream ES modules, workers, Wasm and notices together. This import
     // stays native/lazy so browser-only users do not download the neural runtime.
     const url = new URL(base + "_tendril/tts/index.js", location.href).href;
@@ -76,7 +66,7 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
       if (typeof Worker === "undefined" || typeof WebAssembly === "undefined" || typeof AudioContext === "undefined") {
         throw new Error("Neural speech is not supported by this browser");
       }
-      const { PhononTTS } = await import(/* @vite-ignore */ url) as typeof import("phonon-tts");
+      const { PhononTTS } = await moduleLoader(url);
       if (token !== loadEpoch || !enabled) throw new Error("Voice setup cancelled");
       const loaded = await PhononTTS.load({
         lang: "en", device: "auto", quant: "q8", threads: 1,
@@ -134,6 +124,13 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     const active = () => token === epoch && prefs().audio !== false;
     if (!active()) return;
     if (!enabled || !/^en(?:-|$)/i.test(language()) || status.state === "error") { browserSpeak(text); return; }
+    if (!model && window.speechSynthesis && typeof SpeechSynthesisUtterance !== "undefined") {
+      // Do not make a live conversation wait for a model download. This reply is
+      // spoken once now; the prepared model is used only for future replies.
+      void load().catch(() => {});
+      browserSpeak(text);
+      return;
+    }
     const abort = new AbortController();
     generation = abort;
     try {

@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS events_wake ON events (wake, seq);
 CREATE TABLE IF NOT EXISTS logs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, device TEXT, version INTEGER,
   level TEXT NOT NULL, message TEXT NOT NULL, stack TEXT);
 CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT, size INTEGER NOT NULL, name TEXT, ts INTEGER NOT NULL,
-  device TEXT, source TEXT NOT NULL);
+  device TEXT, source TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS trusted_versions (account_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (account_id, version));
 CREATE TABLE IF NOT EXISTS page_sessions (hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, role TEXT NOT NULL,
@@ -37,6 +37,14 @@ CREATE INDEX IF NOT EXISTS activity_agg ON activity (agg_key);
 CREATE TABLE IF NOT EXISTS push_subs (device TEXT PRIMARY KEY, sub TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dedupe (key TEXT PRIMARY KEY, ts INTEGER NOT NULL, result TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS transcript (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, src TEXT NOT NULL, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS timers (id TEXT PRIMARY KEY, spec TEXT NOT NULL, next_at INTEGER NOT NULL, state TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS timers_due ON timers (state, next_at);
+CREATE TABLE IF NOT EXISTS timer_runs (id TEXT PRIMARY KEY, timer_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL,
+  fired_at INTEGER NOT NULL, status TEXT NOT NULL, event_seq INTEGER, notification TEXT);
+CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS participant_responses (id TEXT PRIMARY KEY, participant TEXT NOT NULL, prompt_id TEXT NOT NULL,
+  answer TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(participant, prompt_id));
 `;
 
 type Bindable = string | number | null | ArrayBuffer;
@@ -55,6 +63,10 @@ export class Db {
 
   init(): void {
     this.sql.exec(SCHEMA);
+    const deviceColumns = this.sql.exec("PRAGMA table_info(devices)").toArray() as { name: string }[];
+    if (!deviceColumns.some(c => c.name === "purpose")) this.sql.exec("ALTER TABLE devices ADD COLUMN purpose TEXT NOT NULL DEFAULT 'general'");
+    const blobColumns = this.sql.exec("PRAGMA table_info(blobs)").toArray() as { name: string }[];
+    if (!blobColumns.some((column) => column.name === "pinned")) this.sql.exec("ALTER TABLE blobs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     const columns = this.sql.exec("PRAGMA table_info(links)").toArray() as { name: string }[];
     if (!columns.some((c) => c.name === "created_by_agent")) {
       this.sql.exec("ALTER TABLE links ADD COLUMN created_by_agent INTEGER NOT NULL DEFAULT 0");

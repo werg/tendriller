@@ -17,7 +17,7 @@ const presence: Presence | null = opts.presence === undefined
 
 const core: Core = {
   tts: {
-    status: { enabled: true, state: "idle", message: "Neural voice is used for English replies." },
+    status: { enabled: false, state: "idle", message: "Browser voice is ready." },
     async enable() { this.status = { enabled: true, state: "ready", message: "Neural voice is ready." }; core.bus.emit("tts", this.status); },
     disable() { this.status = { enabled: false, state: "idle", message: "Using the browser voice." }; core.bus.emit("tts", this.status); },
     stop() { calls.emitted.push({t:"tts:stop",p:null}); },
@@ -45,7 +45,7 @@ const core: Core = {
     on(fn) { stateSubs.add(fn); return () => stateSubs.delete(fn); },
   },
   async send() { return { queued: false }; },
-  async instruction(text, via) { calls.instruction.push({ text, via }); return { queued: opts.instructionQueued === true }; },
+  async instruction(text, via) { calls.instruction.push({ text, via }); if (opts.instructionError) throw new Error(opts.instructionError); return { queued: opts.instructionQueued === true, cid: `instruction-${calls.instruction.length}` }; },
   async request(msg) {
     calls.request.push(msg);
     const r = (opts.replies || {})[msg.t];

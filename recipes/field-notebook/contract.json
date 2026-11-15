@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Field notebook observation",
+  "type": "object",
+  "required": ["type", "observation_id", "entry"],
+  "properties": {
+    "type": { "const": "notebook.observation" },
+    "observation_id": { "type": "string" },
+    "entry": { "type": "object", "required": ["id", "created_at", "note", "tags"], "properties": {
+      "id": { "type": "string" }, "created_at": { "type": "integer" }, "note": { "type": "string", "maxLength": 4000 },
+      "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 12 },
+      "location": { "type": "object", "required": ["latitude", "longitude", "accuracy"], "properties": { "latitude": { "type": "number", "minimum": -90, "maximum": 90 }, "longitude": { "type": "number", "minimum": -180, "maximum": 180 }, "accuracy": { "type": "number", "minimum": 0 } } }
+    } },
+    "blob": { "type": "string" }, "url": { "type": "string" }, "capture_id": { "type": "string" }
+  },
+  "x-shared-state": { "notebook.entries.<observation_id>": "Entry with photo:{id,name}, status, interpretation; keyed upserts, maximum 100 entries" },
+  "x-agent-instructions": "AGENT.md"
+}

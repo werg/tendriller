@@ -1,7 +1,9 @@
 // Shared state as path operations (PROTOCOL section 3.2).
 import { HttpError, isPlainObject } from "./http";
+import { validate } from "../../contract/index.mjs";
+import type { StateOperation } from "../../contract/index.mjs";
 
-export type StateOp = { op: "set"; path: string[]; value: unknown } | { op: "delete"; path: string[] };
+export type StateOp = StateOperation & { path: string[] };
 
 const FORBIDDEN = new Set(["__proto__", "constructor", "prototype"]);
 
@@ -18,6 +20,8 @@ function normPath(p: unknown): string[] {
 
 /** Validates and normalises a list of ops from a client. */
 export function validateOps(raw: unknown): StateOp[] {
+  const issues = validate("stateOperations", raw);
+  if (issues.length) throw new HttpError(400, "bad_ops", issues.map(i => `${i.path}: ${i.message}`).join("; "), { details: issues });
   if (!Array.isArray(raw)) throw new HttpError(400, "bad_ops", "ops must be an array");
   return raw.map((o) => {
     if (!isPlainObject(o)) throw new HttpError(400, "bad_ops", "Each op must be an object");

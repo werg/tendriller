@@ -2,7 +2,7 @@
 // Rendered into a Shadow DOM on a fixed, zero-size host so it never affects page layout.
 //
 // Bus events this module listens to (from core): connect, disconnect, welcome, presence,
-// say, instruction_echo, instruction_ack, role, state.
+// say, instruction_echo, instruction_ack, instruction_rejected, role, state.
 // Bus events it handles for other modules:
 //   control:go_back   {version?}  → rollback (owner only); replies with control:go_back_result {ok, version?, error?}
 //   control:open / control:close  → open or close the sheet
@@ -16,13 +16,15 @@ import { installSensorWrappers, type SensorKind, type SensorTracker } from "./se
 import { installAudioUnlock, playCue, haptic, type Cue } from "./feedback";
 import { SpeechCapture } from "./speech";
 import { qrSvg } from "./qr";
+import { mountExperienceSettings } from "./experiences";
 
 type Pos = "bottom-right" | "bottom-left" | "top-right" | "top-left";
 type View = "connecting" | "offline" | "pending" | "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent";
 interface Prefs { text_size?: "normal" | "large" | "x-large"; contrast?: "normal" | "high"; audio?: boolean; language?: string; mode?: string }
-interface Line extends TranscriptEntry { local?: boolean }
+interface Line extends TranscriptEntry { local?: boolean; cid?: string; _cid?: string; _local?: boolean; awaitingEcho?: boolean }
 
-const TRANSCRIPT_MAX = 6;
+const TRANSCRIPT_MAX = 50;
+const RECENT_MESSAGES = 6;
 const DONE_MS = 8000;
 const MAX_REATTACH = 5;
 const SENSOR_LABEL: Record<SensorKind, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion sensors" };
@@ -66,6 +68,8 @@ class Control {
   private transcriptSig = "";
   private sensorSig = "";
   private firstPublicVisit = false;
+  private panelView: "talk" | "share" | "settings" = "talk";
+  private showHistory = false;
 
   constructor(private core: Core, private sensors: SensorTracker) {
     try {
@@ -78,7 +82,7 @@ class Control {
       show: () => { this.hiddenByPage = false; this.render(); },
       position: (p) => { if (["bottom-right", "bottom-left", "top-right", "top-left"].includes(p)) { this.pos = p; this.render(); } },
     };
-    this.lines = (core.transcript || []).slice(-TRANSCRIPT_MAX).map((l) => ({ ...l }));
+    this.lines = (core.transcript || []).slice(-TRANSCRIPT_MAX).map((l) => ({ ...l, local: !!(l as any)._local, awaitingEcho: !!((l as any)._local || (l as any)._cid) }));
     this.lastWithheld = core.presence?.withheld ?? 0;
     this.prevPresenceState = core.presence?.state ?? null;
     this.subscribe();
@@ -122,7 +126,7 @@ class Control {
       case "connecting": return { label: "Connecting", detail: "Connecting to the agent…" };
       case "offline": return { label: "Offline", detail: "No connection. What you send is kept and delivered when the connection returns." };
       case "pending": return { label: "Waiting for approval", detail: "An owner device needs to approve this one." };
-      case "listening": return { label: "Listening", detail: p?.text && p.text.toLowerCase() !== "listening" ? p.text : "The agent is ready." };
+      case "listening": return { label: "Agent ready", detail: p?.text && p.text.toLowerCase() !== "listening" ? p.text : "The agent is ready." };
       case "working": return { label: "Working", detail: p?.text && p.text.toLowerCase() !== "working" ? p.text : "The agent is working on it." };
       case "done": return { label: "Done", detail: p?.text && !/^(done|listening)$/i.test(p.text) ? p.text : "The agent has finished." };
       case "scheduled": {
@@ -146,14 +150,14 @@ class Control {
       const tr: TranscriptEntry[] = this.core.transcript?.length ? this.core.transcript : (w?.transcript || []);
       // A reconnect can receive the server transcript after the original echo or
       // ack was lost. Do not append the old optimistic row a second time.
-      const unmatched = tr.filter((l) => l.from === "user" && !(l as any)._local);
+      const unmatched = tr.filter((l) => l.from === "user");
       const locals = this.lines.filter((l) => l.local && !(() => {
         const i = unmatched.findIndex((server) => server.text === l.text && server.ts >= l.ts - 60_000);
         if (i < 0) return false;
         unmatched.splice(i, 1);
         return true;
       })());
-      this.lines = [...tr.map((l) => ({ ...l })), ...locals].slice(-TRANSCRIPT_MAX);
+      this.lines = [...tr.map((l) => ({ ...l, local: !!(l as any)._local, awaitingEcho: !!((l as any)._local || (l as any)._cid) })), ...locals].slice(-TRANSCRIPT_MAX);
       this.prevPresenceState = (w?.presence || this.core.presence)?.state ?? this.prevPresenceState;
       this.lastWithheld = (w?.presence || this.core.presence)?.withheld ?? this.lastWithheld;
       this.applyPrefs();
@@ -164,6 +168,7 @@ class Control {
     on("say", (m: any) => {
       if (!m?.text) return;
       this.addLine({ ts: m.ts || Date.now(), from: "agent", text: String(m.text) });
+      this.announce(!this.audioOn || m.speak === false ? `Agent: ${m.text}` : "New reply from the agent.");
       if (typeof m.message_id === "string") this.core.raw({ t: "say_rendered", message_id: m.message_id });
     });
     on("tts", (s: { enabled: boolean; state: string; message: string }) => {
@@ -171,13 +176,24 @@ class Control {
       if (this.ui.ttsVoice) (this.ui.ttsVoice as HTMLSelectElement).value = s.enabled ? "neural" : "browser";
       if (this.ui.speechStatus) {
         this.ui.speechStatus.textContent = s.message;
-        this.ui.speechStatus.hidden = !["loading", "error"].includes(s.state);
+        this.ui.speechStatus.hidden = false;
+      }
+      if (this.ui.voiceChip) {
+        this.ui.voiceChip.hidden = !["loading", "error"].includes(s.state);
+        this.ui.voiceChipText.textContent = s.state === "loading" ? "Preparing natural voice…" : "Using browser voice";
       }
     });
-    on("instruction_echo", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "user", text: String(m.text) }); });
+    on("instruction_echo", (m: any) => { if (m?.text) this.addLine({ ts: m.ts || Date.now(), from: "user", text: String(m.text), cid: m.cid }, !m.device || m.device === this.core.device.id); });
     on("instruction_ack", (m: any) => {
-      const i = this.lines.findIndex((l) => l.local && l.from === "user" && l.text === m?.text);
+      const i = this.lines.findIndex((l) => l.local && l.from === "user" && ((l.cid || l._cid) ? (l.cid || l._cid) === m?.cid : l.text === m?.text));
       if (i >= 0) { this.lines[i] = { ...this.lines[i], local: false }; this.renderTranscript(); }
+    });
+    on("instruction_rejected", (m: any) => {
+      if (!m?.text) return;
+      const i = this.lines.findIndex((l) => l.local && l.from === "user" && ((l.cid || l._cid) ? (l.cid || l._cid) === m.cid : l.text === m.text));
+      if (i >= 0) this.lines.splice(i, 1);
+      this.restoreRejected(String(m.text), m.message || m.error?.message || "the page did not accept the message");
+      this.renderTranscript();
     });
     on("role", () => { this.applyPrefs(); this.render(); });
     on("control:go_back", (m: any) => { void this.goBack(m?.version); });
@@ -210,9 +226,9 @@ class Control {
     if (!this.reducedMotion) haptic(c);
   }
 
-  private addLine(l: Line) {
-    if (l.from === "user") {
-      const i = this.lines.findIndex((x) => x.local && x.text === l.text);
+  private addLine(l: Line, ownEcho = true) {
+    if (l.from === "user" && ownEcho) {
+      const i = this.lines.findIndex((x) => x.from === "user" && (l.cid && (x.cid || x._cid) ? l.cid === (x.cid || x._cid) : (x.local || x.awaitingEcho) && x.text === l.text));
       if (i >= 0) { this.lines[i] = { ...l }; this.renderTranscript(); return; }
     }
     if (this.lines.some((x) => !x.local && x.from === l.from && x.text === l.text && Math.abs(x.ts - l.ts) < 2000)) return;
@@ -221,6 +237,7 @@ class Control {
     this.renderTranscript();
     if (l.from === "agent") {
       if (!this.open) this.showBubble(l.text, false, "Agent");
+
     }
   }
 
@@ -287,7 +304,10 @@ class Control {
     );
     u.mic = this.makeMic("mic");
     u.pill = h("div", { class: "pill glass" }, u.presenceBtn, u.mic);
-    u.dock.append(u.bubble, u.sensorChip, u.pill);
+    u.voiceChipText = h("span", { text: "Preparing voice…" });
+    u.voiceChip = h("div", { class: "chip glass", hidden: true, role: "status" }, u.voiceChipText,
+      h("button", { type: "button", class: "btn small", onclick: () => { this.core.tts?.disable(); this.announce("Using browser voice."); } }, "Use browser voice"));
+    u.dock.append(u.bubble, u.voiceChip, u.sensorChip, u.pill);
     this.root.appendChild(u.dock);
   }
 
@@ -330,15 +350,38 @@ class Control {
 
   private confirmSpeechDownload(): Promise<boolean> {
     return new Promise(resolve => {
-      const dialog = h("div", { class: "speech-consent", role: "dialog", "aria-modal": "true", "aria-label": "Set up private speech" },
-        h("div", { class: "speech-consent-card glass" },
-          h("h2", { text: "Set up private speech" }),
-          h("p", { text: "Download about 18 MB once to transcribe on this device. Audio stays here. You can always type instead." }),
-          h("div", { class: "actions" },
-            h("button", { type: "button", class: "btn primary", onclick: () => { dialog.remove(); resolve(true); } }, "Download and continue"),
-            h("button", { type: "button", class: "btn", onclick: () => { dialog.remove(); resolve(false); } }, "Use typing"))));
+      const previous = (this.host.shadowRoot?.activeElement || document.activeElement) as HTMLElement | null;
+      const dialog = h("div", { class: "speech-consent", role: "dialog", "aria-modal": "true", "aria-labelledby": "speech-setup-title" });
+      let closed = false;
+      const siblings = [...document.body.children].filter(node => node !== this.host) as HTMLElement[];
+      const inert = siblings.map(node => node.inert);
+      siblings.forEach(node => { node.inert = true; });
+      const finish = (accepted: boolean) => {
+        if (closed) return; closed = true;
+        document.removeEventListener("keydown", keydown, true);
+        document.removeEventListener("focusin", contain, true);
+        siblings.forEach((node, i) => { node.inert = inert[i]; });
+        dialog.remove(); previous?.focus({ preventScroll: true }); resolve(accepted);
+      };
+      const buttons = () => [...dialog.querySelectorAll<HTMLButtonElement>("button")];
+      const keydown = (e: KeyboardEvent) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); finish(false); }
+        if (e.key === "Tab") {
+          const list = buttons(); const active = this.host.shadowRoot?.activeElement;
+          const i = list.indexOf(active as HTMLButtonElement);
+          e.preventDefault(); list[(i + (e.shiftKey ? -1 : 1) + list.length) % list.length]?.focus();
+        }
+      };
+      const contain = () => { const active = this.host.shadowRoot?.activeElement; if (!active || !dialog.contains(active)) buttons()[0]?.focus(); };
+      dialog.append(h("div", { class: "speech-consent-card glass" },
+        h("h2", { id: "speech-setup-title", text: "Set up private speech" }),
+        h("p", { text: "Download about 18 MB once to transcribe on this device. Audio stays here. You can always type instead." }),
+        h("div", { class: "actions" },
+          h("button", { type: "button", class: "btn primary", onclick: () => finish(true) }, "Download and continue"),
+          h("button", { type: "button", class: "btn", onclick: () => finish(false) }, "Use typing"))));
       this.root.appendChild(dialog);
-      (dialog.querySelector("button") as HTMLButtonElement).focus();
+      document.addEventListener("keydown", keydown, true); document.addEventListener("focusin", contain, true);
+      buttons()[0].focus();
     });
   }
 
@@ -346,69 +389,84 @@ class Control {
     const u = this.ui;
     u.sheet = h("section", { class: "sheet", id: "tendril-sheet", role: "dialog", "aria-modal": "false", "aria-labelledby": "tendril-title", hidden: true });
     u.sheet.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); this.setOpen(false); } });
-    u.headOrb = h("span", { class: "orb" });
-    u.title = h("h2", { id: "tendril-title" });
-    u.detail = h("p", null);
-    u.sheet.append(h("div", { class: "head" },
-      u.headOrb,
-      h("div", { class: "titles" }, u.title, u.detail),
-      h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: () => this.setOpen(false) }, icon("close")),
-    ));
-    u.notices = h("div", null);
-    u.sheet.appendChild(u.notices);
-    u.speechStatus = h("p", { class: "muted", role: "status", hidden: true });
-    u.sheet.appendChild(u.speechStatus);
-
+    u.headOrb = h("span", { class: "orb" }); u.title = h("h2", { id: "tendril-title" }); u.detail = h("p", null);
+    u.sheet.append(h("div", { class: "head" }, u.headOrb, h("div", { class: "titles" }, u.title, u.detail),
+      h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: () => this.setOpen(false) }, icon("close"))));
+    const navigation = h("div", { class: "control-tabs", role: "tablist", "aria-label": "Tendril controls" });
+    for (const [name, label] of [["talk", "Talk"], ["share", "Share and devices"], ["settings", "Settings and history"]] as const) {
+      const tab = h("button", { type: "button", class: "control-tab", id: `tendril-tab-${name}`, role: "tab", "aria-controls": `tendril-panel-${name}`, "aria-selected": String(name === "talk"), tabindex: name === "talk" ? "0" : "-1", onclick: () => this.selectPanel(name) }, label);
+      tab.addEventListener("keydown", e => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        e.preventDefault(); const names = ["talk", ...(this.isOwner ? ["share"] : []), "settings"] as ("talk" | "share" | "settings")[];
+        const i = names.indexOf(this.panelView); const next = e.key === "Home" ? 0 : e.key === "End" ? names.length - 1 : (i + (e.key === "ArrowLeft" ? -1 : 1) + names.length) % names.length;
+        this.selectPanel(names[next], true);
+      });
+      u[`${name}Tab`] = tab; navigation.append(tab);
+      u[`${name}Panel`] = h("div", { id: `tendril-panel-${name}`, role: "tabpanel", "aria-labelledby": `tendril-tab-${name}`, hidden: name !== "talk" });
+    }
+    u.sheet.append(navigation);
+    u.notices = h("div", null); u.sheet.append(u.notices);
+    u.speechStatus = h("p", { class: "muted", role: "status", hidden: true }); u.sheet.append(u.speechStatus);
     u.transcript = h("ol", { class: "log", role: "log", "aria-label": "Conversation", "aria-live": "off" });
-    u.sheet.appendChild(u.transcript);
-
-    // Composer
+    u.historyToggle = h("button", { type: "button", class: "btn small ghost", hidden: true, onclick: () => { this.showHistory = !this.showHistory; this.renderTranscript(); } }, "Show earlier messages");
+    u.talkPanel.append(u.historyToggle, u.transcript);
     u.text = h("textarea", { rows: "1", "aria-label": "Message to the agent", placeholder: "Type a message…", enterkeyhint: "send" }) as HTMLTextAreaElement;
-    u.text.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.sendTyped(); }
-    });
-    u.text.addEventListener("input", () => { const t = u.text as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; });
+    const draftKey = `tendril:${this.core.config.id}:conversation-draft`;
+    try { (u.text as HTMLTextAreaElement).value = sessionStorage.getItem(draftKey) || ""; } catch { /* optional */ }
+    u.text.addEventListener("keydown", (e: KeyboardEvent) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.sendTyped(); } });
+    u.text.addEventListener("input", () => { const t = u.text as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; try { sessionStorage.setItem(draftKey, t.value); } catch { /* optional */ } });
     u.sheetMic = this.makeMic("mic");
-    u.composer = h("form", { class: "composer", onsubmit: (e: Event) => { e.preventDefault(); this.sendTyped(); } },
-      u.text,
-      h("button", { type: "submit", class: "btn primary send", "aria-label": "Send" }, icon("send")),
-      u.sheetMic,
-    );
-    u.hint = h("div", { class: "hint" });
-    u.sheet.append(u.composer, u.hint);
-
-    u.sheetSensors = h("div", { class: "card warn", hidden: true });
-    u.sheet.appendChild(u.sheetSensors);
-
-    // Owner quick actions
-    u.ownerActions = h("div", { class: "actions" },
-      h("button", { type: "button", class: "btn", onclick: () => void this.goBack() }, icon("undo"), "Go back"),
-    );
-    u.sheet.appendChild(u.ownerActions);
-
+    u.composer = h("form", { class: "composer", onsubmit: (e: Event) => { e.preventDefault(); this.sendTyped(); } }, u.text,
+      h("button", { type: "submit", class: "btn primary send", "aria-label": "Send" }, icon("send")), u.sheetMic);
+    u.hint = h("div", { class: "hint" }); u.talkPanel.append(u.composer, u.hint);
+    u.talkPanel.append(u.voiceActions = h("div", { class: "actions voice-actions" },
+      h("button", { type: "button", class: "btn small", onclick: () => void this.prepareVoice() }, "Prepare voice"),
+      h("button", { type: "button", class: "btn small", onclick: () => this.core.speak?.("Sound is working. You are ready to go.") }, "Test sound"),
+      h("button", { type: "button", class: "btn small", onclick: () => { this.core.tts?.stop(); this.announce("Speech stopped."); } }, "Stop speaking")));
+    u.sheetSensors = h("div", { class: "card warn", hidden: true }); u.sheet.append(u.sheetSensors);
+    u.ownerActions = h("div", { class: "actions" }, h("button", { type: "button", class: "btn", onclick: () => void this.goBack() }, icon("undo"), "Go back"));
+    u.talkPanel.append(u.ownerActions);
     u.ownerSections = h("div", null,
-      this.section("versions", "Earlier versions", icon("undo"), (p) => this.loadVersions(p)),
-      this.section("activity", "Activity record", icon("bell"), (p) => this.loadActivity(p)),
-      this.section("devices", "Devices", icon("device"), (p) => this.loadDevices(p)),
-      this.section("add", "Add a device", icon("device"), (p) => this.renderAddDevice(p)),
-      this.section("adopt", "Connect an agent", icon("link"), (p) => this.renderAdopt(p)),
-      this.section("agents", "Agents", icon("device"), (p) => void this.loadAgents(p)),
-      this.section("guest-invites", "Guest invitations", icon("link"), (p) => void this.loadGuestInvites(p)),
-      this.section("budget", "Wake limits", icon("scheduled"), (p) => this.renderBudget(p)),
-      this.section("notify", "Notifications", icon("bell"), (p) => void this.renderNotify(p)),
-    );
-    u.sheet.appendChild(u.ownerSections);
-    u.prefsSection = this.section("prefs", "Display and sound", icon("text"), (p) => this.renderPrefs(p));
-    u.sheet.appendChild(u.prefsSection);
-    u.sheet.appendChild(this.section("report", "Report this page", icon("bell"), (p) => {
-      clear(p, h("p", { text: "If this page is deceptive, harmful, or abusive, send a report." }),
-        h("a", { href: this.core.config.base + "_tendril/report", target: "_blank", rel: "noopener noreferrer" }, "Open report form"));
+      this.section("devices", "Devices", icon("device"), p => void this.loadDevices(p)),
+      this.section("add", "Add a device", icon("device"), p => this.renderAddDevice(p)),
+      this.section("adopt", "Connect an agent", icon("link"), p => this.renderAdopt(p)),
+      this.section("agents", "Agents", icon("device"), p => void this.loadAgents(p)),
+      this.section("guest-invites", "Guest invitations", icon("link"), p => void this.loadGuestInvites(p)));
+    u.sharePanel.append(u.ownerSections);
+    u.ownerSettings = h("div", null,
+      this.section("experiences", "Saved work and timers", icon("scheduled"), p => mountExperienceSettings(p, this.core)),
+      this.section("versions", "Earlier versions", icon("undo"), p => void this.loadVersions(p)),
+      this.section("activity", "Activity record", icon("bell"), p => void this.loadActivity(p)),
+      this.section("budget", "Wake limits", icon("scheduled"), p => this.renderBudget(p)),
+      this.section("notify", "Notifications", icon("bell"), p => void this.renderNotify(p)));
+    u.settingsPanel.append(u.ownerSettings);
+    u.prefsSection = this.section("prefs", "Display and sound", icon("text"), p => this.renderPrefs(p)); u.settingsPanel.append(u.prefsSection);
+    u.settingsPanel.append(this.section("report", "Report this page", icon("bell"), p => {
+      clear(p, h("p", { text: "If this page is deceptive, harmful, or abusive, send a report." }), h("a", { href: this.core.config.base + "_tendril/report", target: "_blank", rel: "noopener noreferrer" }, "Open report form"));
     }));
-    u.sheet.appendChild(h("div", { class: "service-brand" },
-      h("img", { src: this.core.config.base + "_tendril/brand/icon-64.png", alt: "", width: "28", height: "28", loading: "lazy" }),
-      "Tendriller",
-    ));
+    u.sheet.append(u.talkPanel, u.sharePanel, u.settingsPanel, h("div", { class: "service-brand" },
+      h("img", { src: this.core.config.base + "_tendril/brand/icon-64.png", alt: "", width: "28", height: "28", loading: "lazy" }), "Tendriller"));
     this.root.appendChild(u.sheet);
+  }
+
+  private selectPanel(view: "talk" | "share" | "settings", focus = false) {
+    if (view === "share" && !this.isOwner) view = "talk";
+    this.panelView = view;
+    for (const name of ["talk", "share", "settings"]) {
+      this.ui[`${name}Panel`].hidden = name !== view;
+      this.ui[`${name}Tab`].setAttribute("aria-selected", String(name === view));
+      this.ui[`${name}Tab`].tabIndex = name === view ? 0 : -1;
+    }
+    if (focus) this.ui[`${view}Tab`].focus();
+  }
+
+  private async prepareVoice() {
+    this.ui.speechStatus.hidden = false; this.ui.speechStatus.textContent = "Preparing private speech. You can keep typing.";
+    try {
+      await this.capture?.prepare();
+      this.ui.speechStatus.hidden = false; this.ui.speechStatus.textContent = "Private transcription is ready. Use Test sound for browser speech, then tap the microphone to talk. Optional natural voice is in Display and sound.";
+      this.announce("Voice is ready.");
+    } catch (error: any) { this.ui.speechStatus.textContent = error?.message || "Voice setup could not finish. You can type or use browser speech."; }
   }
 
   private section(id: string, title: string, ic: HTMLElement, onOpen: (panel: HTMLElement) => void): HTMLDetailsElement {
@@ -444,11 +502,15 @@ class Control {
     u.mic.hidden = !micOk || (this.displayMode && this.role !== "owner");
     u.sheetMic.hidden = !micOk;
     u.composer.hidden = !this.canInput;
+    u.voiceActions.hidden = !this.canInput;
     u.hint.hidden = !this.canInput;
     u.hint.textContent = this.hintMsg || (this.role === "guest" ? "You're a guest: your messages go to the page as data, not as instructions." : "");
     (u.text as HTMLTextAreaElement).placeholder = this.role === "guest" ? "Type a message (as a guest)…" : "Type a message…";
     u.ownerActions.hidden = !this.isOwner;
     u.ownerSections.hidden = !this.isOwner;
+    u.ownerSettings.hidden = !this.isOwner;
+    u.shareTab.hidden = !this.isOwner;
+    if (!this.isOwner && this.panelView === "share") this.selectPanel("talk");
     u.prefsSection.hidden = this.role === "display";
 
     // Hidden by page: keep sensor indicator visible regardless (safety).
@@ -489,15 +551,16 @@ class Control {
   private renderTranscript() {
     if (!this.ready) return;
     const t = this.ui.transcript;
-    const sig = JSON.stringify([this.canInput, this.lines]);
+    const sig = JSON.stringify([this.canInput, this.lines, this.showHistory]);
     if (sig === this.transcriptSig) return;
     this.transcriptSig = sig;
     clear(t);
+    if (this.ui.historyToggle) { this.ui.historyToggle.hidden = this.lines.length <= RECENT_MESSAGES; this.ui.historyToggle.textContent = this.showHistory ? "Show recent messages" : `Show earlier messages (${this.lines.length})`; }
     if (!this.lines.length) {
       t.appendChild(h("li", { class: "empty", text: this.canInput ? "Say or type what you'd like. Replies appear here." : "Messages from the agent appear here." }));
       return;
     }
-    for (const l of this.lines) {
+    for (const l of this.showHistory ? this.lines : this.lines.slice(-RECENT_MESSAGES)) {
       t.appendChild(h("li", { class: l.from },
         h("span", { class: "who", text: l.from === "agent" ? "Agent" : (l.local ? "You (sending…)" : "You") }),
         l.text));
@@ -595,7 +658,7 @@ class Control {
       this.render();
       // Don't pop up the on-screen keyboard on touch devices; focus the sheet's first button there.
       const fine = !!window.matchMedia?.("(pointer: fine)").matches;
-      const first = this.canInput && fine ? u.text : (u.sheet.querySelector("button") as HTMLElement);
+      const first = this.canInput && fine && this.panelView === "talk" ? u.text : u[`${this.panelView}Tab`];
       setTimeout(() => first?.focus({ preventScroll: true } as any), 0);
     } else {
       this.render();
@@ -642,7 +705,7 @@ class Control {
     const voice = h("select", { id: "tendril-voice", onchange: (e: Event) => {
       if ((e.target as HTMLSelectElement).value === "browser") tts?.disable();
       else void tts?.enable().catch(() => {});
-    } }, h("option", { value: "neural", text: "Neural voice (recommended, English)" }), h("option", { value: "browser", text: "Browser voice" })) as HTMLSelectElement;
+    } }, h("option", { value: "neural", text: "Natural voice (download, English)" }), h("option", { value: "browser", text: "Browser voice" })) as HTMLSelectElement;
     voice.value = tts?.status.enabled === false ? "browser" : "neural";
     this.ui.ttsVoice = voice;
     clear(panel,
@@ -655,7 +718,7 @@ class Control {
         "Sounds and spoken replies"),
       h("div", { class: "field" }, h("label", { for: "tendril-lang", text: "Language" }), langSel),
       h("div", { class: "field" }, h("label", { for: "tendril-voice", text: "Spoken voice" }), voice),
-      h("p", { text: "The neural voice can sound much more natural than browser speech. English replies use it by default; other languages use the browser voice. Text is spoken on your device. The model downloads from Hugging Face and is cached here." }),
+      h("p", { text: "Browser speech works immediately. Prepare natural voice for English replies with an optional 65 MB download; other languages use browser speech. Speech is generated on this device. The model downloads from Hugging Face and is cached here." }),
       this.ui.ttsStatus,
       h("div", { class: "actions" },
         h("button", { type: "button", class: "btn", onclick: () => this.core.speak?.("Hello! I'm your Tendriller voice.") }, "Test voice"),
@@ -673,6 +736,7 @@ class Control {
     t.value = "";
     t.style.height = "auto";
     void this.submit(text, "text");
+    try { sessionStorage.removeItem(`tendril:${this.core.config.id}:conversation-draft`); } catch { /* optional */ }
   }
 
   private async submit(raw: string, via: "voice" | "text") {
@@ -681,21 +745,34 @@ class Control {
     if (!text || !this.canInput) return;
     this.lastSendAt = Date.now();
     this.lastWithheld = this.core.presence?.withheld ?? this.lastWithheld;
-    const line: Line = { ts: Date.now(), from: "user", text, local: true };
+    const line: Line = { ts: Date.now(), from: "user", text, local: true, awaitingEcho: true };
     this.lines.push(line);
     this.lines = this.lines.slice(-TRANSCRIPT_MAX);
     this.renderTranscript();
     try {
       const result = await this.core.instruction(text, via);
+      line.cid = (result as any)?.cid;
       if (!result?.queued) {
         const i = this.lines.indexOf(line);
         if (i >= 0) { this.lines[i] = { ...line, local: false }; this.renderTranscript(); }
       }
       this.showBubble(result?.queued ? "Saved on this device. It will send when the connection returns." : this.ackText(via), true);
-    } catch {
-      this.showBubble("Couldn't send that. It will be retried when the connection returns.", true);
+    } catch (error: any) {
+      const i = this.lines.indexOf(line);
+      // The core also emits late rejections for queued instructions. If its event
+      // already removed this row, it has restored the draft and announced why.
+      if (i >= 0) { this.lines.splice(i, 1); this.restoreRejected(text, error?.message); this.renderTranscript(); }
       return;
     }
+  }
+
+  private restoreRejected(text: string, reason?: string) {
+    const input = this.ui.text as HTMLTextAreaElement | undefined;
+    if (!input) return;
+    if (!input.value) input.value = text;
+    else if (input.value.trim() !== text && !input.value.endsWith(`\n\n${text}`)) input.value += `\n\n${text}`;
+    try { sessionStorage.setItem(`tendril:${this.core.config.id}:conversation-draft`, input.value); } catch { /* optional */ }
+    this.showBubble(`Not sent: ${reason || "the page did not accept the message"}. Your message is ready to edit or retry.`, true);
   }
 
   private ackText(via: "voice" | "text"): string {
@@ -804,21 +881,38 @@ class Control {
   }
 
   private async loadDevices(panel: HTMLElement) {
-    clear(panel, h("p", { class: "muted", text: "Loading…" }));
+    clear(panel, h("p", { class: "muted", text: "Loading devices…" }));
     try {
-      const r = await this.req({ t: "devices" });
-      const ds: any[] = r?.devices || [];
-      const me = this.core.device?.id;
-      clear(panel, ds.length ? h("ul", { class: "list" }, ds.map((d) => h("li", null,
-        icon("device"),
-        h("span", { class: "grow" },
-          d.name || d.id, d.id === me ? h("span", { class: "tag", text: "this device" }) : null,
-          h("span", { class: "sub", text: [d.pending ? "waiting for approval" : roleName(d.role), d.connected ? "connected" : d.last_seen ? `seen ${relTime(d.last_seen, this.lang)}` : ""].filter(Boolean).join(" · ") })),
-        null,
-      ))) : h("p", { class: "muted", text: "No devices yet." }));
-    } catch (e: any) {
-      clear(panel, h("p", { class: "error", text: `Couldn't load devices: ${e?.message || "error"}` }));
-    }
+      const endpoint = this.core.config.base + "_tendril/devices";
+      const response = await fetch(endpoint, { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const { devices = [], focus } = await response.json() as { devices: any[]; focus?: { device: string; expires_at: number } };
+      const status = h("p", { role: "status", "aria-live": "polite" });
+      const list = h("ul", { class: "list" });
+      for (const device of devices) {
+        const mine = device.id === this.core.device?.id;
+        const name = h("input", { value: device.name || "", maxlength: "80", "aria-label": `Name for ${device.name || device.id}`, placeholder: "Name this device" }) as HTMLInputElement;
+        const purpose = h("select", { "aria-label": `Purpose for ${device.name || device.id}` },
+          ...["general", "camera", "controller", "display", "speaker"].map(value => h("option", { value, text: value[0].toUpperCase() + value.slice(1) }))) as HTMLSelectElement;
+        purpose.value = device.purpose || "general";
+        const save = h("button", { type: "button", class: "btn small", onclick: async () => {
+          save.disabled = true;
+          try { const r = await fetch(endpoint, { method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: device.id, name: name.value.trim(), purpose: purpose.value }) });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`); status.textContent = "Device saved.";
+          } catch (error: any) { status.textContent = `Could not save: ${error.message}`; } finally { save.disabled = false; }
+        } }, "Save device");
+        const take = h("button", { type: "button", class: "btn small", onclick: async () => {
+          try { const r = await fetch(this.core.config.base + "_tendril/focus", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device: device.id, ttl_seconds: 900 }) });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`); await this.loadDevices(panel); this.announce(`Continuing on ${device.name || "this device"}.`);
+          } catch (error: any) { status.textContent = `Could not move the conversation: ${error.message}`; }
+        } }, mine ? "Continue here" : "Continue on this device");
+        list.append(h("li", null, h("div", { class: "device-controls" },
+          h("strong", { text: device.name || device.id }),
+          h("span", { class: "sub", text: [mine ? "This device" : roleName(device.role), device.connected ? "Connected" : "Offline", focus?.device === device.id ? "Active conversation" : ""].filter(Boolean).join(" · ") }),
+          name, purpose, h("div", { class: "actions" }, save, ...(device.role === "owner" ? [take] : [])))));
+      }
+      clear(panel, h("p", { text: "Name each device and choose its job. Continue here moves spoken replies to one device without changing anyone's access." }), devices.length ? list : h("p", { text: "No devices yet." }), status);
+    } catch (error: any) { clear(panel, h("p", { class: "error", text: `Couldn't load devices: ${error?.message || "error"}` })); }
   }
 
   private renderAddDevice(panel: HTMLElement) {
@@ -866,7 +960,11 @@ class Control {
             const r = await this.req({ t: "adopt_code" });
             clear(out,
               h("div", { class: "code", "aria-label": `Code ${String(r.code).split("").join(" ")}`, text: r.code }),
-              h("p", { text: "Give this code to your agent. It calls POST /api/adopt with the code to take over this page. The previous agent's access ends." }),
+              h("p", { text: "Give this resume prompt to your new agent session. The previous agent's access ends when the new session connects." }),
+              h("button", { type: "button", class: "btn primary", onclick: async () => {
+                const prompt = `Read https://tendriller.dev/agent.md and resume my existing Tendril using the one-time adoption code ${r.code}. Read its saved resume brief, restore a verified live receiver, and continue where we left off.`;
+                try { await navigator.clipboard.writeText(prompt); this.announce("Resume prompt copied."); } catch { clear(out, h("textarea", { rows: "5", readonly: true, "aria-label": "Resume prompt", text: prompt })); }
+              } }, "Copy resume prompt"),
               copyBtn(String(r.code), () => this.announce("Code copied.")),
               r.expires_at ? h("p", { class: "muted", text: `The code works once and expires ${relTime(r.expires_at, this.lang)}.` }) : null,
             );

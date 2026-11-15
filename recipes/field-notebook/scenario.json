@@ -4,6 +4,6 @@
   "steps": [
     { "fill": "#note", "value": "A red flower beside the path." },
     { "click": "#send" },
-    { "expect_send": { "type": "input", "modality": "text" } }
+    { "expect_send": { "type": "notebook.observation" } }
   ]
 }

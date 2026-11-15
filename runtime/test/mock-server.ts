@@ -23,6 +23,10 @@ export interface MockTendril {
   refuse: boolean;
   dedupe: Set<string>;
   blobs: Map<string, { type: string; body: Buffer; name?: string }>;
+  uploadReceipts: Map<string, any>;
+  uploadFailureStatus: number;
+  dropUploadResponses: number;
+  sendReceipts: Map<string, any>;
   pageLoads: number;
   welcomeExtra: any;
   onMessage?: (m: any, ws: WebSocket) => boolean | void;
@@ -55,6 +59,7 @@ export class MockServer {
     const t: MockTendril = {
       id, version: 1, html: "<h1>Hello</h1>", files: {}, noSw: true, state: {}, rev: 0, seq: 0,
       sockets: new Set(), msgs: [], refuse: false, dedupe: new Set(), blobs: new Map(), pageLoads: 0, welcomeExtra: {},
+      uploadReceipts: new Map(), uploadFailureStatus: 0, dropUploadResponses: 0, sendReceipts: new Map(),
       ...over,
     };
     this.tendrils.set(id, t);
@@ -104,9 +109,16 @@ export class MockServer {
       const chunks: Buffer[] = [];
       req.on("data", (c) => chunks.push(c));
       req.on("end", () => {
+        if (t.uploadFailureStatus) return send(t.uploadFailureStatus, "application/json", JSON.stringify({ error: { code: "quota", message: "Capture storage is full." } }));
+        const cid = String(req.headers["x-tendril-cid"] || "");
+        if (cid && t.uploadReceipts.has(cid)) return send(200, "application/json", JSON.stringify(t.uploadReceipts.get(cid)));
         const id = "b_" + String(t.blobs.size + 1).padStart(20, "a");
         t.blobs.set(id, { type: String(req.headers["content-type"] || ""), body: Buffer.concat(chunks), name: req.headers["x-tendril-name"] as string });
-        send(200, "application/json", JSON.stringify({ id, url: "_tendril/blob/" + id }));
+        const keep = req.headers["x-tendril-keep"] === "true";
+        const receipt = { id, url: "_tendril/blob/" + id, retention: { keep, expires_at: keep ? null : Date.now() + 30 * 86_400_000 } };
+        if (cid) t.uploadReceipts.set(cid, receipt);
+        if (t.dropUploadResponses > 0) { t.dropUploadResponses--; req.socket.destroy(); return; }
+        send(200, "application/json", JSON.stringify(receipt));
       });
       return;
     }
@@ -138,9 +150,11 @@ export class MockServer {
           });
           break;
         case "send":
-          if (t.dedupe.has(m.cid)) { reply({ t: "ack", cid: m.cid }); break; }
+          if (t.sendReceipts.has(m.cid)) { reply(t.sendReceipts.get(m.cid)); break; }
           t.dedupe.add(m.cid);
-          reply({ t: "ack", cid: m.cid, seq: ++t.seq });
+          const ack = { t: "ack", cid: m.cid, seq: ++t.seq };
+          t.sendReceipts.set(m.cid, ack);
+          reply(ack);
           break;
         case "state":
           if (!t.dedupe.has(m.cid)) { t.dedupe.add(m.cid); applyOps(t.state, m.ops); t.rev++; }

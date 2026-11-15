@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+concurrency:
+  group: public-service-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -16,12 +20,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run test:cli
+      - run: npm run check
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:snippets
-      - run: node cli/bin/tendril.mjs preview recipes/explore-device --fixture recipes/explore-device/scenario.json --wait-ms 100
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-traces
+          path: test-results/
+          include-hidden-files: true
+          if-no-files-found: ignore
 
   staging:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true'

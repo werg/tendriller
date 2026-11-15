@@ -144,7 +144,7 @@ Browser APIs such as `navigator.geolocation`, `navigator.mediaDevices.getUserMed
 
 **Explore before building.** After a device opens the page, call `GET A/capabilities` (or `tendril capabilities`) for a live report of its browser features, permission state, and which inputs need a tap. On the page, `await tendril.capabilities()` returns the same current-device shape without prompting for access. A disconnected device has only its last handshake report. `unknown` permission means the browser did not expose a queryable state; do not infer a grant. To show the person an interactive tour, load `_tendril/snippets/playground.js` and call `tendrilSnippets.playground.mount('#explore')`.
 
-For a fast first page, choose one of the complete starter recipes at [`/recipes/catalog.json`](/recipes/catalog.json): field notebook, voice coach, motion companion, photo inspector, collaborative canvas, device explorer, or adaptive check-in. With the repository CLI: `tendril recipes`, `tendril scaffold field-notebook ./my-page`, `tendril preview ./my-page --fixture ./my-page/scenario.json`, then `tendril push ./my-page` after attaching the listener. The copyable `_tendril/snippets/input-kit.js` provides user-triggered photo, audio, location, motion, and file controls; its events have `{type:"input",modality,...}`. `_tendril/snippets/ui.js` renders agent-editable blocks from shared state, including choice, text, slider, button, drawing, and media inputs. Its [JSON schema](/recipes/ui-schema.json) describes the state shape. Agent changes to the state immediately reshape the page.
+For a first page, choose a workflow at [`/recipes/catalog.json`](/recipes/catalog.json): approval remote, field notebook, hands-free task guide, multi-device workshop, hardware experiment, or facilitated group session. Each includes an `AGENT.md`, input contract, and local scenario. Copy every file named by its directory, including `app.js`/`model.mjs` where present. Smaller voice, photo, motion, device-exploration, canvas and adaptive-interface starters remain available. With the repository CLI: `tendril recipes`, `tendril scaffold field-notebook ./my-page`, `tendril preview ./my-page --fixture ./my-page/scenario.json`, then `tendril push ./my-page` after attaching the listener. Preview uses the actual compiled runtime and an explicit local protocol adapter. The copyable `_tendril/snippets/input-kit.js` provides reviewed photo, audio, location, motion, and file controls; its events have `{type:"input",modality,...}`. `_tendril/snippets/ui.js` renders agent-editable blocks from shared state. Its [JSON schema](/recipes/ui-schema.json) describes the shape. Stable block IDs preserve drafts/focus; structural changes are deferred while a person is editing, drawing, or capturing.
 
 For a hands-free helper while cooking, moving, or repairing something, load `_tendril/snippets/wakeword.js` and mount `tendrilSnippets.wakeword.mount('#handsfree', {phrases:['hey coach']})`; the voice-coach recipe shows the full page. The owner taps Start hands-free, hears a ready tone when recognition starts, says the wake phrase, hears a second tone, then speaks a command (or says phrase and command together). A command not handled by an exposed page voice function arrives as `{type:"utterance",text,via:"wakeword"}` page data with `wake:true`. **Keep your host listener armed**, respond with `POST A/say`, and acknowledge delivery. The page cannot directly create an owner instruction. Browser speech recognition may use a vendor service and may pause in the background or with a locked screen; offer the conversation microphone and text as fallback. A reliable screen-off assistant requires native or OS-level voice support.
 
@@ -158,9 +158,53 @@ For delivery diagnosis, `POST A/say` returns `message_id`. The journey records `
 
 **To talk back:** `POST A/say` with `{"text":"..."}` puts your message in the page's built-in conversation. Pass `"in_reply_to":<event seq>` to link the reply to the event in the development timeline. `POST A/status` updates your visible working status. Update `index.html` when a better interface would help. The person can talk or type to you through the built-in control even if your page has no chat UI of its own.
 
-**Prefer the built-in neural voice for spoken replies.** `/say` speaks on owner devices by default, using Phonon 31M for English. This on-device neural TTS **may sound much better and more natural than browser speech synthesis**. Use `/say` rather than creating your own `speechSynthesis` player or an external TTS service. Page code can use `tendril.speak(text)` for the same voice. The first English reply downloads about 65 MB of model assets from Hugging Face; speech is then generated locally and the model is cached on that device. It may take a moment to prepare the first reply. Other languages, load/playback failures, or the person's explicit browser-voice choice use browser TTS instead. Audio requires browser playback permission/a user interaction, and muted devices stay silent. Keep spoken replies concise; use `{"text":"...","speak":false}` when only text is appropriate. The person can test, retry, switch voices, or stop speech in **Display and sound**. Do not override their audio or language settings.
+**Use the built-in speech path for spoken replies.** `/say` selects one eligible owner device to speak, using browser speech immediately. The person may explicitly prepare optional Phonon neural English voice in **Display and sound**; that downloads about 65 MB once and caches the model locally. Replies remain immediate through browser speech during preparation. Page code can use `tendril.speak(text)` for the same preferences and cancellation behavior. Audio requires browser playback permission/a user interaction, and muted devices stay silent. Keep spoken replies concise; use `{"text":"...","speak":false}` for text-only replies. The person can test, retry, switch voices, or stop speech. Do not enable a download or override audio/language preferences on their behalf.
 
 `tendril.tts.status` reports `{enabled,state,message}` (`state`: `idle`, `loading`, `ready`, or `error`), and `tendril.on('tts', fn)` reports changes. `tendril.tts.stop()` interrupts speech and discards queued replies. These are local device settings and status, separate from shared `_prefs` state; `enabled` means the neural voice is preferred, not that its model has finished loading.
+
+### Continue work and coordinate devices
+
+`GET A/session` gives the saved purpose, task, decisions, open questions, handled
+cursor, pending inputs, available-history gaps and current devices/timers. Use
+`PUT A/session` with the latest `expected_revision` to save a checkpoint after
+handling input. A new agent still needs its own private handle and verified wake
+path. Do not silently overwrite a newer brief or claim to have read expired history.
+
+Device purposes (`general`, `camera`, `controller`, `display`, `speaker`) are
+independent of owner/guest/display permissions. `PATCH A/devices/<id>` sets a
+name/purpose; `POST A/focus` with `{device,ttl_seconds}` leases attention to a
+connected owner device. `say.device` chooses presentation; `say.speak_on` can
+choose another speaker or `"none"`. The transcript remains shared: these fields
+do not provide private messaging.
+
+`POST A/timers` schedules work in the Durable Object even with every page closed.
+Use `due_at` or a zoned calendar repeat and an explicit missed-run policy. A
+claimed resident page is appropriate for long-running schedules. Timer events
+remain data, use ordinary wake budgets, and do not keep expired pages alive.
+Deduplicate external work by the occurrence's `run_id`.
+
+Use `GET A/bundle?include_data=true` for files, context, state and media bytes, or
+omit data for a template. Restore with `PUT A/bundle`, review, then
+`POST A/bundle/publish {expected_version}`. `POST A/remix {owner,name?,include_data?}`
+prepares a new independent page with a new handle. First publication still needs
+its receiver. Credentials, private answers, proposals and timers never transfer.
+
+For exact approvals use `POST A/decisions`; only the owner may respond on the
+page. Fetch the matching current proposal and recorded decision before work,
+then record a version-checked result. Private group answers use `GET A/responses`,
+not shared state. Publish only a deliberate aggregate; never echo raw private
+answers with `say`. Complete details are in
+[Experiences](https://github.com/werg/tendriller/blob/master/docs/EXPERIENCES.md)
+and each recipe's agent instructions. Equivalent named MCP tools and CLI commands
+cover these operations. The executable [public schema](/contract/v1.json) and
+repository typed client describe their request shapes.
+
+For capture inputs use `tendril.uploadEvent(blob,{data,name?,keep?})`: it persists
+media and semantic context together and returns accepted, queued, or rejected.
+Keep the draft/retry affordance on rejection; a queued result does not mean the
+agent received it. `upload_event` and `send_result` carry late replay receipts.
+The owner can explicitly keep meaningful notebook media; residency alone does
+not remove captured media's ordinary expiry.
 
 ## Create, publish, converse
 

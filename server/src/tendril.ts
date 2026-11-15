@@ -8,6 +8,8 @@ import { handleAgent } from "./agent";
 import { handleMcp } from "./mcp";
 import { mcpJobDue, mcpSubs, pruneMcpSubs, runMcpEvents } from "./mcpEvents";
 import { Db } from "./db";
+import { speechTarget, type DevicePurpose } from "./device-roles";
+import { nextTimerDeadline, runTimers } from "./timers";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
 import { checkHealthTimeouts, fileKey, nextHealthDeadline } from "./files";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
@@ -22,10 +24,12 @@ import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
 import { pushAvailable, sendWebPush, vapidPublicKey } from "./push";
 import { applyOps, type StateOp } from "./state";
+import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
 import { handleWsClose, handleWsMessage } from "./ws";
 
-export type Role = "owner" | "guest" | "display";
+import type { Role, DeviceInfo } from "../../contract/index.mjs";
+export type { Role } from "../../contract/index.mjs";
 
 /** Per-socket attachment (survives hibernation). */
 export interface Att {
@@ -43,6 +47,7 @@ export interface DeviceRow {
   secret_hash: string;
   name: string | null;
   role: Role;
+  purpose: DevicePurpose;
   pending: number;
   pair_code: string | null;
   link: string | null;
@@ -719,11 +724,12 @@ export class Tendril extends DurableObject<Env> {
     return (owner ?? rows[0])?.id ?? null;
   }
 
-  renderDevice(d: DeviceRow, connected: Set<string>, primary: string | null) {
+  renderDevice(d: DeviceRow, connected: Set<string>, primary: string | null): DeviceInfo {
     return {
       id: d.id,
       name: d.name ?? null,
       role: d.role,
+      purpose: d.purpose ?? "general",
       pending: !!d.pending,
       connected: connected.has(d.id),
       primary: d.id === primary,
@@ -733,10 +739,14 @@ export class Tendril extends DurableObject<Env> {
     };
   }
 
-  listDevices() {
-    const connected = new Set(this.deviceSockets().keys());
+  listDevices(): DeviceInfo[] {
+    const sockets = this.deviceSockets();
+    const connected = new Set(sockets.keys());
     const primary = this.primaryDevice();
-    return this.db.all<DeviceRow>("SELECT * FROM devices ORDER BY created_at ASC").map((d) => this.renderDevice(d, connected, primary));
+    return this.db.all<DeviceRow>("SELECT * FROM devices ORDER BY created_at ASC").map((d) => {
+      const socket = sockets.get(d.id), sessionRole = socket ? this.att(socket)?.sessionRole : null;
+      return this.renderDevice(sessionRole ? { ...d, role: sessionRole, pending: 0 } : d, connected, primary);
+    });
   }
 
   forgetDevice(id: string): void {
@@ -897,10 +907,10 @@ export class Tendril extends DurableObject<Env> {
       .bind(actual, this.tid, actual).run();
   }
 
-  async storeBlob(body: ArrayBuffer, type: string, name: string | null, device: string | null, source: "page" | "agent") {
+  async storeBlob(body: ArrayBuffer, type: string, name: string | null, device: string | null, source: "page" | "agent", keep = false) {
     const id = newBlobId();
     this.checkLocalStorage(body.byteLength);
-    this.db.run("INSERT INTO blobs (id, type, size, name, ts, device, source) VALUES (?, ?, ?, ?, ?, ?, ?)", id, type, body.byteLength, name, this.now(), device, source);
+    this.db.run("INSERT INTO blobs (id, type, size, name, ts, device, source, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, type, body.byteLength, name, this.now(), device, source, keep ? 1 : 0);
     let globalReserved = false;
     try {
       await this.reserveGlobalBytes(body.byteLength);
@@ -911,7 +921,7 @@ export class Tendril extends DurableObject<Env> {
       if (globalReserved) await this.releaseGlobalBytes(body.byteLength);
       throw err;
     }
-    return { id, url: `_tendril/blob/${id}` };
+    return blobReference(this, id);
   }
 
   async getBlob(id: string): Promise<Response> {
@@ -944,10 +954,20 @@ export class Tendril extends DurableObject<Env> {
       .map((r) => ({ ts: r.ts, from: r.src as "agent" | "user", text: r.text }));
   }
 
-  say(text: string, speak: boolean, by: string | null, replyTo: number | null = null): string {
+  say(text: string, speak: boolean, by: string | null, replyTo: number | null = null, routing: { device?: string; speak_on?: string } = {}): string {
+    if (routing.device && routing.device !== "all" && !this.device(routing.device)) throw new HttpError(404, "not_found", "No such destination device");
+    const origin = replyTo ? this.db.one<{ device: string | null }>("SELECT device FROM events WHERE seq=?", replyTo)?.device : null;
+    const speaker = speak ? speechTarget(this, routing.speak_on, routing.device && routing.device !== "all" ? routing.device : origin) : null;
     const ts = this.addTranscript("agent", text);
     const messageId = crypto.randomUUID();
-    this.broadcast({ t: "say", text, speak, ts, message_id: messageId, in_reply_to: replyTo });
+    const sockets = this.deviceSockets();
+    for (const { ws, att } of this.connectedSockets()) {
+      const present = !routing.device || routing.device === "all" || att.deviceId === routing.device;
+      const play = att.deviceId === speaker && sockets.get(att.deviceId) === ws;
+      if (!present && !play) continue;
+      this.send(ws, { t: "say", text, present, speak: play,
+        ts, message_id: messageId, in_reply_to: replyTo, speak_on: speaker });
+    }
     addActivity(this, { kind: "say", summary: `Message ${messageId}${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
     return messageId;
   }
@@ -1048,6 +1068,8 @@ export class Tendril extends DurableObject<Env> {
     if (job) times.push(job.due);
     const mcpDue = mcpJobDue(this);
     if (mcpDue !== null) times.push(mcpDue);
+    const timerDue = nextTimerDeadline(this);
+    if (timerDue !== null) times.push(timerDue);
     const hd = nextHealthDeadline(this);
     if (hd !== null) times.push(hd);
     const sockets = this.connectedSockets().length > 0;
@@ -1070,6 +1092,7 @@ export class Tendril extends DurableObject<Env> {
     if (!this.exists()) return;
     const now = this.now();
     checkHealthTimeouts(this);
+    await runTimers(this);
     await runWebhook(this);
     await runMcpEvents(this);
 
@@ -1121,11 +1144,11 @@ export class Tendril extends DurableObject<Env> {
 
   /**
    * Photos, clips and other page uploads expire with the activity record (30 days). Agent
-   * uploads and the install icon stay until deleted explicitly.
+   * uploads, explicitly kept captures and the install icon stay until deleted explicitly.
    */
   async pruneBlobs(now: number): Promise<void> {
     const icon = this.db.get<string | null>("icon", null);
-    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE source = 'page' AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
+    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE source = 'page' AND pinned = 0 AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
     for (const { id } of old) await this.deleteBlob(id);
   }
 
@@ -1144,7 +1167,8 @@ export class Tendril extends DurableObject<Env> {
       this.db.run("DELETE FROM versions WHERE version = ?", v);
     }
     const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
-    const gone = [...before].filter((h) => !after.has(h));
+    const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);
+    const gone = [...before].filter((h) => !after.has(h) && !prepared.has(h));
     for (const hash of gone) {
       await this.env.FILES.delete(fileKey(this, hash));
       const size = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash = ?", hash)?.size ?? 0;
@@ -1154,9 +1178,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async pruneOrphanFiles(now: number): Promise<void> {
+    const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);
     const rows = this.db.all<{ hash: string }>(`SELECT s.hash FROM stored_files s
       WHERE s.created_at < ? AND NOT EXISTS (SELECT 1 FROM version_files v WHERE v.hash = s.hash)`, now - HOUR);
     for (const { hash } of rows) {
+      if (prepared.has(hash)) continue;
       await this.env.FILES.delete(fileKey(this, hash));
       const size = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash = ?", hash)?.size ?? 0;
       this.db.run("DELETE FROM stored_files WHERE hash = ?", hash);

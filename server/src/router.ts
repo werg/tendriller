@@ -1,4 +1,5 @@
 import { servicePage } from "./accounts/ui";
+import { assertValid, schemaDocument, schemas } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
@@ -158,9 +159,11 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" },
     });
   }
-  if (path === "/recipes/catalog.json" || path === "/recipes/ui-schema.json") return asset(env, url, path);
-  if (/^\/recipes\/[a-z0-9-]+\/index\.html$/.test(path))
-    return asset(env, url, path, { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
+  if (path === "/contract/v1.json") return json(schemaDocument);
+  if (path === "/recipes/ui-schema.json") return json({ $schema: schemaDocument.$schema, title: "Tendriller agent-editable interface", ...schemas.interface });
+  if (path === "/recipes/catalog.json") return asset(env, url, path);
+  if (/^\/recipes\/[a-z0-9-]+\/(?:index\.html|app\.js|model\.mjs|styles\.css|AGENT\.md|contract\.json|scenario\.json)$/.test(path))
+    return asset(env, url, path, { "Content-Type": path.endsWith(".json") ? "application/json; charset=utf-8" : "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   }
@@ -190,6 +193,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       if (typeof createBody.owner !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(createBody.owner) || createBody.owner.length > 254)
         throw new HttpError(400, "bad_request", "owner must be a verified email address");
       if (lifetime === "resident") throw new HttpError(400, "bad_request", "Create an ad_hoc page; the agent can make it resident after the owner opens it");
+      assertValid("create", createBody);
       const releaseIp = await reserveCreationIp(env, req);
       let created = false;
       try {

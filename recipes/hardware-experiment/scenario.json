@@ -1,0 +1,10 @@
+{
+  "steps": [
+    { "click": "#simulate", "expect_text": "SIMULATED" },
+    { "wait_ms": 1200, "fill": "#note", "value": "Increased the light source" },
+    { "click": "#annotate", "expect_send": { "type": "experiment.intervention" } },
+    { "click": "#stop", "expect_text": "Stopped" },
+    { "click": "#send", "expect_event": { "type": "experiment.summary" } },
+    { "state_ops": [{ "op": "set", "path": ["experiment", "results", "$event.data.run.id"], "value": { "summary": "The simulated signal changed smoothly during this run.", "observations": ["This fixture is simulated, not an instrument reading."], "next_steps": ["Connect a real instrument and repeat the observation."] } }], "reply": "Your simulated experiment is ready to review.", "expect_text": "The simulated signal changed smoothly" }
+  ]
+}
