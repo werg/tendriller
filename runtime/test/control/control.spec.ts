@@ -94,6 +94,11 @@ test("presence states and aria-live announcements", async ({ page }) => {
   await expect(label).toHaveText("Agent ready");
   const set = (p: object) => page.evaluate((p) => (window as any).__fake.setPresence(p), p);
 
+  await set({ state: "listening", text: "Ready for messages" });
+  await expect(label).toHaveText("Agent ready");
+  await openSheet(page);
+  await expect(page.locator("tendril-control .head .titles p")).toHaveText("Ready for messages");
+
   await set({ state: "working", text: "Working" });
   await expect(label).toHaveText("Working");
   await expect(live(page)).toContainText("Working");

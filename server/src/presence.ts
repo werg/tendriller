@@ -51,7 +51,7 @@ export function computePresence(f: PresenceFacts): Presence {
   if (f.wakePendingSince !== null && f.now - f.wakePendingSince >= f.graceSeconds * 1000) {
     return p("not_responding", "Agent not responding");
   }
-  if (f.agentSocket || f.longPollHeld) return p("listening", "Listening");
+  if (f.agentSocket || f.longPollHeld) return p("listening", "Ready for messages");
 
   const status = f.status && f.now - f.status.at < STATUS_OVERRIDE_TTL ? f.status : null;
   if (status?.state === "working") return p("working", status.text || "Working");
@@ -59,7 +59,7 @@ export function computePresence(f: PresenceFacts): Presence {
   const idle = status?.state === "idle" ? status : null;
   const label = (fallback: string) => idle?.text || fallback;
 
-  if (f.webhook && since < DAY) return p("listening", label("Listening"));
+  if (f.webhook && since < DAY) return p("listening", label("Ready for messages"));
   if (f.scheduleMinutes) {
     const n = f.scheduleMinutes;
     if (since > (2 * n + 5) * MINUTE) return p("not_responding", `Agent not responding (checks every ${n} min)`);

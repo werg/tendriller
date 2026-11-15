@@ -806,7 +806,7 @@ class Control {
     if (this.role === "guest") return "Sent to the page as a guest message.";
     if (!this.core.connected) return "Saved. It will be sent when the connection returns.";
     const s = this.core.presence?.state;
-    if (s === "no_agent" || s === "away") return "Saved for later. No agent is listening right now.";
+    if (s === "no_agent" || s === "away") return "Saved for later. The agent isn't available right now.";
     if (s === "not_responding") return "Sent. The agent hasn't responded yet; it will see this when it checks in.";
     if (s === "scheduled") return "The agent will see this at its next check.";
     if ((this.core.presence?.withheld ?? 0) > this.lastWithheld) return "The agent will see this at its next check.";
