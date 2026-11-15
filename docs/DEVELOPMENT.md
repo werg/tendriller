@@ -30,7 +30,7 @@ Contrib owns component accessibility, recipe/scaffold flows, collectors, host br
 2. Build contrib against those exact bytes and run its checks.
 3. Pin the produced Worker artifact and run service integration and publication tests.
 4. Generate release manifests, record the tested pair and publish release-candidate assets.
-5. Retain the immutable runtime in the existing service asset bucket, then deploy the matched composition to fresh pre-release fixtures.
+5. Retain the immutable runtime in the existing service asset bucket. For the initial pre-release cutover, deploy the matched composition at the canonical URLs with a new page namespace and discard the old page registrations. Use fresh named fixtures only when an isolated environment is actually needed.
 
 Create `release/v<package-version>` at the exact source commit to publish a release candidate. Both branch creation and subsequent pushes run the release gate; core runs `npm run check:release`, and contrib requires its full Node and browser checks. The workflow creates the matching version tag and GitHub pre-release at the tested commit. Existing `v<package-version>` tags and published releases also run the same checks and publisher. Manual dispatch publishes only when its selected ref is one of those release branches or tags; other refs only build and verify artifacts.
 

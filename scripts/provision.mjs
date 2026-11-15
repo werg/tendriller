@@ -66,8 +66,8 @@ export function deploymentConfig(plan, databaseId, account) {
     $schema: '../node_modules/wrangler/config-schema.json', name: plan.worker,
     main: '../dist/service/worker.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],
     assets: { directory: './public', binding: 'ASSETS', run_worker_first: true },
-    durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }] },
-    migrations: [{ tag: 'v1', new_sqlite_classes: ['Tendril'] }, { tag: 'v2', new_sqlite_classes: ['Admission'] }],
+    durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'TendrilV2' }, { name: 'ADMISSION', class_name: 'Admission' }] },
+    migrations: [{ tag: 'v1', new_sqlite_classes: ['TendrilV2'] }, { tag: 'v2', new_sqlite_classes: ['Admission'] }],
     d1_databases: [{ binding: 'ACCOUNTS', database_name: plan.database, database_id: databaseId, migrations_dir: 'migrations' }],
     r2_buckets: [{ binding: 'FILES', bucket_name: plan.bucket }], triggers: { crons: ['*/15 * * * *'] },
     ratelimits: [

@@ -3,7 +3,11 @@ import type { Env } from "./env";
 import { route } from "./router";
 import { reconcileSuspensions } from "./abuse/reconcile";
 
-export { Tendril } from "./tendril";
+import { Tendril } from "./tendril";
+export { Tendril };
+// Contract 2 uses a fresh namespace under the existing Worker and public URLs.
+// The original namespace is no longer bound and cannot leak pre-release state.
+export class TendrilV2 extends Tendril {}
 export { Admission } from "./admission";
 
 export default {
