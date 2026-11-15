@@ -292,7 +292,7 @@ describe("roles, pairing and devices", () => {
     const page = await PageClient.connect(h.page_url, { name: "Phone" });
     const { devices } = await apiJson(h, "GET", "devices");
     expect(devices).toEqual([
-      { id: page.deviceId, name: "Phone", role: "owner", pending: false, connected: true, primary: true, last_seen: expect.any(Number), ua: "vitest", link: "l_main" },
+      { id: page.deviceId, name: "Phone", role: "owner", pending: false, connected: true, primary: true, last_seen: expect.any(Number), ua: "vitest", link: "l_main", purpose: "general" },
     ]);
     const del = await api(h, "DELETE", `devices/${page.deviceId}`);
     expect(del.status).toBe(204);
