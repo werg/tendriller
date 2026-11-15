@@ -137,6 +137,8 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .btn:disabled { opacity: .5; cursor: default; }
 
 /* ---- sheet ---- */
+.return-work{border:1px solid var(--line)}.return-work .return-task{white-space:pre-wrap;max-height:8em;overflow:auto;overflow-wrap:anywhere}.return-work .actions{gap:.45rem}.return-work .btn{font-size:.85em}
+
 .control-tabs { display:flex; gap:4px; padding:4px; background:var(--soft); border-radius:14px; margin:8px 0 12px; }
 .control-tab { flex:1; min-width:44px; min-height:44px; padding:.45em .5em; border:0; border-radius:10px; background:transparent; font-size:.8em; font-weight:650; }
 .control-tab[aria-selected="true"] { background:var(--accent); color:var(--accent-fg); }

@@ -17,7 +17,7 @@
   const check = result => { if (result?.status === 'rejected' || result?.error) throw Error(result.message || result.error?.message || result.error || 'The page did not accept this input.'); return result; };
   const clock = ms => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 
-  function mount(target, { modalities = valid, block, context } = {}) {
+  function mount(target, { modalities = valid, block, context, session: sessionContext } = {}) {
     const host = typeof target === 'string' ? document.querySelector(target) : target;
     if (!host) throw Error('Input kit target was not found');
     let camera = null, cameraSession = null, recorder = null, stream = null, motion = null, motionStart = 0, motionCount = 0;
@@ -44,6 +44,7 @@
     const stopRecording = discard => { discardAudio = discard; if (recorder?.state === 'recording') recorder.stop(); else stream?.getTracks().forEach(t => t.stop()); clearInterval(timer); timer = null; };
     const busy = () => !!cameraSession || !!camera || recorder?.state === 'recording' || !!current || !!motion;
     const reset = () => { ++generation; stopCamera(); stopRecording(true); if (current) release(current.preview); current = null; view.replaceChildren(); details.replaceChildren(); actionBar.replaceChildren(); review.hidden = true; };
+    const captureSession = () => { const value = typeof sessionContext === 'function' ? sessionContext() : sessionContext; return value ? { ...value } : undefined; };
     const checked = async data => check(await tendril.send({ type: 'input', at: Date.now(), ...(block ? { block } : {}), ...data }));
     const receiptText = r => r.status === 'rejected' ? (r.message || r.error?.message || 'Not accepted. Retry or remove this capture.') : r.queued || r.status === 'queued' ? 'Saved on this device. Waiting for connection.' : 'Received by the page. Waiting for the agent.';
 
@@ -80,6 +81,7 @@
 
     function readyCapture(capture) {
       capture.context = typeof context === 'function' ? context() : context;
+      capture.session ||= captureSession();
       current = capture; stopCamera(); review.hidden = false; view.replaceChildren(); details.replaceChildren(); actionBar.replaceChildren();
       if (capture.modality === 'photo') {
         const img = el('img'); img.src = capture.preview; img.alt = 'Review your photo before sending'; view.append(img);
@@ -103,7 +105,7 @@
         lock(true);
         const data = { type: 'input', modality: capture.modality, at: Date.now(), ...(block ? { block } : {}), name: capture.name, size: capture.blob.size, mime: capture.blob.type,
           ...(capture.width ? { width: capture.width, height: capture.height } : {}), ...(capture.duration_ms ? { duration_ms: capture.duration_ms } : {}),
-          ...(capture.point ? { point: capture.point } : {}), ...(note.value.trim() ? { question: note.value.trim() } : {}), ...(capture.context ? { context: capture.context } : {}) };
+          ...(capture.point ? { point: capture.point } : {}), ...(note.value.trim() ? { question: note.value.trim() } : {}), ...(capture.context ? { context: capture.context } : {}), ...(capture.session ? { session: capture.session } : {}) };
         let result;
         try {
           if (tendril.uploadEvent) result = await tendril.uploadEvent(capture.blob, { name: capture.name, data, keep: keep.checked });
@@ -139,7 +141,7 @@
     });
     async function openCamera() {
       if (busy()) { say('Finish or discard your current capture first.'); return; }
-      reset(); const token = generation, session = new AbortController(); cameraSession = session;
+      reset(); const token = generation, workflowSession = captureSession(), session = new AbortController(); cameraSession = session;
       const active = () => !disposed && token === generation && cameraSession === session && !session.signal.aborted;
       const cancel = makeButton('Cancel camera', () => { reset(); say('Camera closed.'); });
       actionBar.replaceChildren(cancel);
@@ -171,7 +173,7 @@
           if (!active()) return;
           const picture = await opened.capture({ upload: false });
           if (!active()) return;
-          readyCapture({ ...picture, modality: 'photo', name: 'photo.jpg', preview: objectUrl(picture.blob) });
+          readyCapture({ ...picture, session: workflowSession, modality: 'photo', name: 'photo.jpg', preview: objectUrl(picture.blob) });
         });
         switcher.onclick = () => void runCamera(async () => {
           frameAvailable = false; say('Switching camera…');
@@ -188,10 +190,10 @@
     }
     const picker = (accept, modality) => {
       if (busy()) { say('Finish or discard your current capture first.'); return; }
-      const input = el('input'); input.type = 'file'; if (accept) input.accept = accept;
+      const workflowSession = captureSession(), input = el('input'); input.type = 'file'; if (accept) input.accept = accept;
       input.onchange = async () => {
         const file = input.files?.[0]; if (!file) return; reset(); const preview = objectUrl(file);
-        const capture = { blob: file, preview, name: file.name, modality: modality || (file.type.startsWith('image/') ? 'photo' : 'file') };
+        const capture = { blob: file, preview, name: file.name, session: workflowSession, modality: modality || (file.type.startsWith('image/') ? 'photo' : 'file') };
         if (capture.modality === 'photo') { try { const img = new Image(); img.src = preview; await img.decode(); capture.width = img.naturalWidth; capture.height = img.naturalHeight; } catch { release(preview); say('This photo could not be opened. Choose another image.'); return; } }
         readyCapture(capture);
       }; input.click();
@@ -206,7 +208,7 @@
     if (modalities.includes('audio')) buttons.append(makeButton(names.audio, async () => {
       if (busy()) { say('Finish or discard your current capture first.'); return; }
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw Error('Audio recording is unavailable. You can type to the agent instead.');
-      reset(); const token = generation; stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      reset(); const token = generation, workflowSession = captureSession(); stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (disposed || token !== generation) { stream.getTracks().forEach(t => t.stop()); return; }
       const chunks = [], recordingStream = stream; recorder = new MediaRecorder(recordingStream); const recording = recorder; discardAudio = false; recordingStart = Date.now();
       recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
@@ -215,7 +217,7 @@
         if (recorder === recording) { stream = null; clearInterval(timer); timer = null; recorder = null; }
         if (discardAudio || disposed || token !== generation) return;
         const blob = new Blob(chunks, { type: recording.mimeType || 'audio/webm' });
-        readyCapture({ blob, preview: objectUrl(blob), modality: 'audio', name: 'voice-note.webm', duration_ms: Date.now()-recordingStart });
+        readyCapture({ blob, session: workflowSession, preview: objectUrl(blob), modality: 'audio', name: 'voice-note.webm', duration_ms: Date.now()-recordingStart });
       };
       recorder.start(); review.hidden = false; const duration = el('p', 'Recording · 0:00'); duration.setAttribute('role', 'timer'); view.append(duration);
       timer = setInterval(() => { const elapsed = Date.now()-recordingStart; duration.textContent = `Recording · ${clock(elapsed)}`; if (elapsed >= 300000) stopRecording(false); }, 250);

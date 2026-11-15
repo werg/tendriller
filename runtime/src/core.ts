@@ -23,7 +23,7 @@ const WELCOME_TIMEOUT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const SEND_WAIT_OFFLINE_MS = 3_000;
 const TRANSCRIPT_MAX = 200;
-const AXE_URL = "https://cdn.jsdelivr.net/npm/axe-core@4/axe.min.js";
+const AXE_PATH = "_tendril/axe.min.js";
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => () => Promise<any>;
 
@@ -73,7 +73,8 @@ export function createCore(cfg: TendrilConfig): Internal {
   let confirmed: any = {};
   let local: any = {};
   let rev = 0;
-  let pendingState: { cid: string; ops: Op[] }[] = [];
+  type PendingState = { cid: string; ops: Op[]; sessions?: Record<string, string> };
+  let pendingState: PendingState[] = [];
   let transcript: TranscriptEntry[] = [];
 
   const snap = store.loadSnapshotSync();
@@ -83,9 +84,20 @@ export function createCore(cfg: TendrilConfig): Internal {
     pendingState = Array.isArray(snap.pending) ? snap.pending : [];
     transcript = Array.isArray(snap.transcript) ? snap.transcript : [];
   }
+  const matchesCurrentSessions = (pending: PendingState): boolean => {
+    for (const scope of ["notebook", "guide", "workshop", "experiment", "facilitation"]) {
+      const key = scope === "guide" ? "guide_progress" : scope;
+      if (!pending.ops.some(op => !op.path.length || op.path[0] === key || (scope === "guide" && op.path[0] === "guide"))) continue;
+      const current = typeof confirmed[key]?.session_id === "string" ? confirmed[key].session_id : "initial";
+      if ((pending.sessions?.[scope] ?? "initial") !== current) return false;
+    }
+    return true;
+  };
   const rebuild = () => {
     local = clone(confirmed);
-    for (const p of pendingState) local = applyOps(local, p.ops);
+    // Old work stays durable and keeps its original generation until a receipt
+    // arrives, but it must not cover a newer session received from the server.
+    for (const p of pendingState) if (matchesCurrentSessions(p)) local = applyOps(local, p.ops);
   };
   rebuild();
 
@@ -112,9 +124,16 @@ export function createCore(cfg: TendrilConfig): Internal {
   const localOps = (ops: Op[]) => {
     if (!ops.length) return;
     const cid = newCid();
-    pendingState.push({ cid, ops });
+    // Freeze the generation before the optimistic write. Replayed old work must
+    // never acquire a new session merely because another device archived it.
+    const sessions: Record<string, string> = {};
+    for (const scope of ["notebook", "guide", "workshop", "experiment", "facilitation"]) {
+      const path = scope === "guide" ? "guide_progress" : scope;
+      sessions[scope] = typeof local[path]?.session_id === "string" ? local[path].session_id : "initial";
+    }
+    pendingState.push({ cid, ops, sessions });
     local = applyOps(local, ops);
-    enqueue({ t: "state", cid, ops });
+    enqueue({ t: "state", cid, ops, sessions });
     persistSoon();
     emitState(ops, "device:" + device.id);
   };
@@ -446,10 +465,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     if (!axeLoading) {
       axeLoading = new Promise((res, rej) => {
         const s = document.createElement("script");
-        s.src = AXE_URL;
+        s.src = cfg.base + AXE_PATH;
         s.async = true;
         s.onload = () => (w.axe ? res(w.axe) : rej(new Error("axe-core did not load")));
-        s.onerror = () => { axeLoading = null; s.remove(); rej(new Error("could not load axe-core from " + AXE_URL)); };
+        s.onerror = () => { axeLoading = null; s.remove(); rej(new Error("could not load the bundled accessibility checker from " + cfg.base + AXE_PATH)); };
         (document.head || document.documentElement).appendChild(s);
       });
     }
@@ -573,14 +592,18 @@ export function createCore(cfg: TendrilConfig): Internal {
         const sent = m.cid ? store.items.find((item) => item.cid === m.cid)?.msg : null;
         const idx = pendingState.findIndex((p) => p.cid === m.cid);
         if (idx >= 0) {
+          const before = JSON.stringify(local);
           const [p] = pendingState.splice(idx, 1);
-          if (!m.error) {
+          // A reconnect may install a newer full snapshot before replay returns
+          // a cached success for this cid. Its old ops are already accounted for
+          // by that snapshot; applying them again can resurrect archived data.
+          if (!m.error && typeof m.rev === "number" && m.rev > rev && matchesCurrentSessions(p)) {
             confirmed = applyOps(confirmed, p.ops);
-            if (typeof m.rev === "number") rev = m.rev;
-          } else {
-            rebuild();
-            emitState([], "rejected");
+            rev = m.rev;
           }
+          rebuild();
+          if (m.error) emitState([], "rejected");
+          else if (JSON.stringify(local) !== before) emitState([], "server");
           persistSoon();
         }
         if (sent?.t === "send" && sent.kind !== "instruction") {
@@ -763,6 +786,13 @@ export function createCore(cfg: TendrilConfig): Internal {
     },
     raw,
     captures,
+    pendingWork() {
+      return {
+        events: store.items.filter(item => item.msg.t === "send" || item.msg.t === "rule_fired").length,
+        state: new Set([...pendingState.map(item => item.cid), ...store.items.filter(item => item.msg.t === "state").map(item => item.cid)]).size,
+        captures: store.items.filter(item => item.msg.t === "upload_event" || item.msg.t === "upload").length,
+      };
+    },
     async uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult> {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.uploadEvent needs a Blob");
       if (!opts?.data || typeof opts.data !== "object" || Array.isArray(opts.data)) throw new TypeError("uploadEvent needs a data object");
@@ -835,12 +865,12 @@ export function createCore(cfg: TendrilConfig): Internal {
       rev = idbSnap.rev || 0;
       if (!transcript.length && Array.isArray(idbSnap.transcript)) transcript = idbSnap.transcript;
     }
-    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[] }));
+    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], sessions: i.msg.sessions }));
     const before = JSON.stringify(local);
     // Outbox is authoritative for pending ops when IndexedDB works; otherwise keep the snapshot's
     // pending ops and re-queue them so they are not lost.
     if (store.persistent) pendingState = fromOutbox;
-    else for (const p of pendingState) if (!store.has(p.cid)) store.add({ t: "state", cid: p.cid, ops: p.ops });
+    else for (const p of pendingState) if (!store.has(p.cid)) store.add({ t: "state", cid: p.cid, ops: p.ops, sessions: p.sessions });
     rebuild();
     if (JSON.stringify(local) !== before) emitState([], "cache");
     captureQueueChanged();

@@ -139,7 +139,7 @@ test("version, runtime, snippet, speech and brand files still load from cache of
     if (!online) throw new TypeError("offline");
     return basic(new Response(url.pathname, { headers: { "Cache-Control": "no-cache" } }));
   });
-  const assets = ["app.js", "styles.css", "_tendril/tendril.js", "_tendril/speech-worker.js",
+  const assets = ["app.js", "styles.css", "_tendril/tendril.js", "_tendril/speech-worker.js", "_tendril/axe.min.js",
     "_tendril/snippets/input-kit.js", "_tendril/speech/cactus.js", "_tendril/speech/cactus.wasm",
     "_tendril/speech/whistle.cact", "_tendril/tts/index.js", "_tendril/tts/dist/worker.js",
     "_tendril/brand/icon-64.png", "_tendril/brand/favicon.ico"];

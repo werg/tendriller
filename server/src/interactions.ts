@@ -3,6 +3,8 @@ import { addEvent } from "./events";
 import { addActivity } from "./activity";
 import { HttpError, isPlainObject, json, readJson } from "./http";
 import type { Decision, ParticipantResponse } from "../../contract/index.mjs";
+import { assertValid } from "../../contract/index.mjs";
+import { assignmentForAnswer, interactionChanged } from "./assignments";
 export type { Decision, ParticipantResponse } from "../../contract/index.mjs";
 function bounded(value: unknown, field: string, max: number, empty = false): string {
   if (typeof value !== "string" || (!empty && !value.trim()) || value.length > max) throw new HttpError(400, "bad_request", `${field} must be ${empty ? "0" : "1"}–${max} characters`);
@@ -18,6 +20,7 @@ function getDecision(t: Tendril, id: string): Decision {
 }
 function writeDecision(t: Tendril, decision: Decision) {
   t.db.run("INSERT INTO decisions(id,data,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at", decision.id, JSON.stringify(decision), decision.updated_at);
+  interactionChanged(t);
 }
 function changed(t: Tendril) { t.broadcast({ t: "decisions_changed" }, d => d.role === "owner" && !d.pending); }
 
@@ -77,10 +80,10 @@ export function respondDecision(t: Tendril, id: string, body: unknown): Decision
 
 export async function handleDecisions(t: Tendril, req: Request, rest: string, by: string, ownerPage: boolean): Promise<Response> {
   if (rest === "decisions" && req.method === "GET") return json({ decisions: listDecisions(t) });
-  if (rest === "decisions" && req.method === "POST" && !ownerPage) return json(saveDecision(t, await readJson(req, 32000), by), 201);
+  if (rest === "decisions" && req.method === "POST" && !ownerPage) return json(saveDecision(t, assertValid("decisionCreate", await readJson(req, 32000)), by), 201);
   const match = /^decisions\/([a-zA-Z0-9-]+)(\/respond)?$/.exec(rest);
-  if (match?.[2] && req.method === "POST" && ownerPage) return json(respondDecision(t, match[1], await readJson(req, 8192)));
-  if (match && !match[2] && req.method === "PATCH" && !ownerPage) return json(saveDecision(t, await readJson(req, 32000), by, match[1]));
+  if (match?.[2] && req.method === "POST" && ownerPage) return json(respondDecision(t, match[1], assertValid("decisionResponse", await readJson(req, 8192))));
+  if (match && !match[2] && req.method === "PATCH" && !ownerPage) return json(saveDecision(t, assertValid("decisionUpdate", await readJson(req, 32000)), by, match[1]));
   throw new HttpError(405, "method_not_allowed");
 }
 
@@ -91,10 +94,15 @@ export async function handleResponses(t: Tendril, req: Request, participant: str
       (readAll ? "" : " WHERE participant=?") + " ORDER BY updated_at DESC LIMIT 500", ...(readAll ? [] : [participant])) });
   }
   if (req.method !== "POST" || !participant || readAll) throw new HttpError(405, "method_not_allowed");
-  const body = await readJson(req, 16384);
+  const body = assertValid("participantResponseWrite", await readJson(req, 16384));
   if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "Expected a response");
   const prompt = bounded(body.prompt_id, "prompt_id", 100), answer = bounded(body.answer, "answer", 8000);
   const record = t.ctx.storage.transactionSync(() => {
+    const active = t.getState().state.facilitation as { session_id?: string } | undefined;
+    const generation = active?.session_id ?? "initial";
+    if (!prompt.startsWith("assignment:") && (body.expected_session_id !== undefined || generation !== "initial") && body.expected_session_id !== generation)
+      throw new HttpError(409, "stale_session", "This answer belongs to an archived session. Review the current question before submitting.");
+    assignmentForAnswer(t, prompt, participant, body.expected_assignment_revision);
     const previous = t.db.one<{ id: string; revision: number; answer: string }>("SELECT id, revision, answer FROM participant_responses WHERE participant=? AND prompt_id=?", participant, prompt);
     if (previous?.answer === answer) return t.db.one<ParticipantResponse>("SELECT * FROM participant_responses WHERE id=?", previous.id)!;
     if (previous && body.expected_revision !== previous.revision) throw new HttpError(409, "version_conflict", "Reload your previous response before editing it");
@@ -102,6 +110,7 @@ export async function handleResponses(t: Tendril, req: Request, participant: str
     const id = previous?.id ?? crypto.randomUUID(), now = t.now(), revision = (previous?.revision ?? 0) + 1;
     t.db.run("INSERT INTO participant_responses(id,participant,prompt_id,answer,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET answer=excluded.answer, revision=excluded.revision, updated_at=excluded.updated_at",
       id, participant, prompt, answer, revision, now, now);
+    interactionChanged(t);
     addEvent(t, { type: "event", role: null, by: "participant", wake: true, cls: "page", data: { type: "response_submitted", response_id: id, prompt_id: prompt, revision } });
     return t.db.one<ParticipantResponse>("SELECT * FROM participant_responses WHERE id=?", id)!;
   });

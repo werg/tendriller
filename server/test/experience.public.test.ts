@@ -216,7 +216,7 @@ it("isolates participant responses from peers and shared state while agents can 
   const guestAnswer = await page("responses", "POST", { prompt_id: "round-1", answer: "Guest private answer" }, link.url, `__Host-tendril=${guestCookie}`); expect(guestAnswer.status).toBe(201);
   const own = await (await page("responses", "GET", undefined, link.url, `__Host-tendril=${guestCookie}`)).json<any>(); expect(own.responses).toHaveLength(1); expect(own.responses[0].answer).toBe("Guest private answer");
   expect(own.participant).toBe(guest);
-  expect((await page("responses", "POST", { prompt_id: "round-1", answer: "Stale edit", expected_revision: 0 }, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(409);
+  expect((await page("responses", "POST", { prompt_id: "round-1", answer: "Stale edit", expected_revision: 2 }, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(409);
   expect((await page("responses/all", "GET", undefined, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(403);
   expect((await page("timers", "GET", undefined, link.url, `__Host-tendril=${guestCookie}`)).status).toBe(403);
   const all = await apiJson(h, "GET", "responses"); expect(all.responses).toHaveLength(2);

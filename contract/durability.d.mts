@@ -1,0 +1,12 @@
+import type { WireContracts } from "./wire.mjs";
+export type EventConsumer = WireContracts["consumer"];
+export type ConsumerClaim = WireContracts["consumerClaim"];
+export type ConsumerLease = WireContracts["consumerLease"];
+export type ConsumerRenew = WireContracts["consumerRenew"];
+export type ConsumerAck = WireContracts["consumerAck"];
+export type ConsumerBatch = WireContracts["consumerBatch"];
+export type TimerDelivery = WireContracts["timerDelivery"];
+export type DurabilityContracts = Pick<WireContracts, "consumerName" | "consumerLeaseToken" | "consumerList" | "consumerResult" | "consumer" | "consumerClaim" | "consumerLease" | "consumerRenew" | "consumerAck" | "consumerBatch" | "timerDelivery">;
+export const consumerName: Record<string, unknown>;
+export const consumerLeaseToken: Record<string, unknown>;
+export const durabilitySchemas: Readonly<Record<keyof DurabilityContracts, Record<string, any>>>;

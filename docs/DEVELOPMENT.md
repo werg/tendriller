@@ -94,13 +94,14 @@ staging/live-host check. Unsupported adapter messages return
 ## One public contract
 
 `contract/index.mjs` owns the executable JSON schemas and validation.
-`contract/index.d.mts` exports the browser, event, result, state, session and
-device types. The Worker uses these schemas at write boundaries, MCP advertises
+`scripts/contract.mjs` derives the wire declarations in `contract/wire.d.mts`.
+`contract/index.d.mts` exports their named aliases alongside the browser's
+methods and generic application-state interfaces. The Worker uses these schemas at write boundaries, MCP advertises
 the same schemas, and preview uses the same validators. `runtime/src/types.ts`
 imports the common identities and gives `window.tendril` a public type.
 
 After changing a schema, run `npm run contract:generate` and commit the generated
-`contract/v1.json` and `recipes/ui-schema.json`. CI checks that these files match.
+`contract/wire.d.mts`, `contract/v1.json` and `recipes/ui-schema.json`. CI checks that these files match.
 The service exposes `/contract/v1.json`; the interface schema remains at
 `/recipes/ui-schema.json`. Arbitrary application state and page event data remain
 extensible. Public request envelopes reject obsolete or misspelled fields.
@@ -111,28 +112,54 @@ The small fetch client is usable without a framework:
 import { createClient } from "./contract/client.mjs";
 const page = createClient(privateHandle);
 const batch = await page.readEvents({ after: lastHandledSequence, wait: 300 });
-await page.say({ text: "I received your measurement.", in_reply_to: batch.events.at(-1).seq });
+const latest = batch.events.at(-1);
+if (latest) await page.say({ text: "I received your measurement.", in_reply_to: latest.seq });
 ```
 
 The explicit cursor is deliberate: the caller decides when handling is complete.
 `createPage(service, { owner, name })` validates the supported creation body before
-sending it. `ApiError` preserves HTTP status, stable code and field details.
+sending it. Typed methods also validate successful response envelopes, with
+`ApiError` code `invalid_response` and field details for an incompatible service.
+The raw `request()` escape hatch leaves custom responses to its caller.
+`ApiError` preserves HTTP status, stable code and field details. Worker conformance
+tests call the actual service through this client for state, timers, context,
+assignments, decisions, archives and bundle restoration. The examples in
+`contract/test/examples.mts` compile against the same generated declarations.
 `npm link` makes the repository CLI available as `tendril`; package exports expose
 the client, contract and browser declarations without requiring publication.
 
+`npm pack` builds and includes the runtime, preview adapter, snippets, license
+notices and recipes. `npm run test:consumer` installs that actual tarball into an
+empty project with development dependencies omitted, checks imports and types,
+exercises the CLI and all six scaffolds, and serves the packaged preview assets.
+Headless preview is optional: install `playwright` in the consuming project and
+its Chromium browser when screenshots/scenarios are needed. Without it, the CLI
+returns an explicit `playwright_missing` result. The package remains private;
+these checks do not publish it to a registry.
+
 ## Shipping gates
 
-`npm run check:release` runs both non-browser and browser gates. The browser gate
+`npm run check:release` runs the non-browser gate, Chromium shipping suites and
+portable Firefox/WebKit cases. CI checks Node 22.15 and 24. The browser gate
 includes runtime core, current control, push/rules, TTS, snippets, real-runtime
 preview, every catalog recipe with a `scenario` field, and the isolated public Worker lifecycle. The latter covers owner claims,
 listener-required publication, delivery, rendering, speech and cross-origin
 behavior. Each suite writes to its own directory under `test-results/`: `runtime`,
-`control`, `push`, `tts`, `snippets`, `preview`, and `e2e`. A later suite therefore
+`control`, `push`, `tts`, `snippets`, `preview`, `e2e`, and `portable`. A later suite therefore
 cannot clear an earlier suite's diagnostics. Failures retain Playwright traces and
 screenshots; recipe preview screenshots and JSON attachments stay with their test.
 CI uploads the complete directory, including hidden diagnostic files, as
-`browser-failure-traces`. The optional staging suite uses `test-results/public`
-and the legacy voice suite uses `test-results/legacy-voice`.
+`browser-failure-traces-node-*` and `portable-failure-traces-*`. CI also captures
+actual starter screenshots in the `catalog-previews` artifact. The optional
+staging suite uses `test-results/public`, the real-model workflow uses
+`test-results/speech-real`, and the legacy voice suite uses `test-results/legacy-voice`.
+
+The portable suite checks keyboard workflows, offline recovery and capability
+fallbacks in all three engines. All six complete recipes receive local, pinned
+axe audits in light/dark themes and after a keyboard action. See
+[E2E testing](E2E_TESTING.md) for the credential-free cached model check and its
+separate workflow. Physical devices and deployed OAuth/push still need their
+corresponding environment; the local fixtures make those boundaries explicit.
 
 The old `runtime/test/real-server.spec.ts`, `test/e2e/core.spec.ts`, and
 `runtime/test/voice` files describe an earlier anonymous service/realtime voice
@@ -140,7 +167,8 @@ implementation. They are not shipping gates. Current public-service E2E and
 speech/TTS suites replace those flows. New service tests should be named
 `server/test/*.public.test.ts` so the supported gate includes them automatically.
 
-Install Chromium once with `npx playwright install chromium`. An existing local
+Install the gate's browsers once with `npx playwright install chromium firefox webkit`.
+Chromium alone is sufficient for `npm run test:browser`. An existing local
 browser can be selected explicitly with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
 If the host forbids browser processes or local sockets, run the non-browser checks
 there and let CI execute browser/Worker suites; do not mistake that environment

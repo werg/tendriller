@@ -10,12 +10,14 @@
     { "properties": { "type": { "const": "experiment.photo" } }, "required": ["run_id", "source", "blob", "url", "at"] }
   ],
   "properties": {
+    "session": {"type":"object","required":["scope","id"],"properties":{"scope":{"const":"experiment"},"id":{"type":"string","minLength":1}}},
     "type": { "enum": ["experiment.telemetry", "experiment.summary", "experiment.intervention", "experiment.threshold", "experiment.photo"] },
     "run_id": { "type": "string" }, "source": { "enum": ["serial", "simulation"] },
     "run": { "type": "object", "required": ["id", "source", "unit", "count", "series"], "properties": { "id": { "type": "string" }, "source": { "enum": ["serial", "simulation"] }, "unit": { "type": "string" }, "count": { "type": "integer", "minimum": 0 }, "series": { "type": "array", "maxItems": 300 } } },
     "note": { "type": ["object", "string"] }, "latest": { "type": "object" }, "value": { "type": "number" }, "threshold": { "type": "number" }, "unit": { "type": "string" }, "at": { "type": "integer" }, "blob": { "type": "string" }, "url": { "type": "string" }
   },
   "x-response-state": "experiment.results.<run_id> = {summary:string,observations:string[],next_steps:string[]}",
+  "x-session": "Events identify the workflow generation. Compare with the current scope session_id before applying an agent result; initial is the first session.",
   "x-agent-instructions": "AGENT.md",
   "x-bounds": { "raw_samples": 1200, "series_buckets": 300, "notes": 50, "saved_runs": 5, "telemetry_interval_ms": 5000, "threshold_wake_cooldown_ms": 30000 }
 }

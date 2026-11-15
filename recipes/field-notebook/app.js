@@ -13,6 +13,8 @@ function saveDraft() { writeLocal("draft", { note: $("note").value, tags: $("tag
 $("note").addEventListener("input", saveDraft); $("tags").addEventListener("input", saveDraft);
 function element(tag, text, cls) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; }
 function action(label, fn) { const button = element("button", label); button.type = "button"; button.onclick = fn; return button; }
+const session = () => ({ scope: "notebook", id: t.state.get("notebook.session_id") || "initial" });
+let knownSession = session().id;
 const editable = () => t.device.role === "owner" && !t.device.pending;
 const applyUpdate = action("Apply page update", () => { if (!busy && !selectedPhoto) deferredApply?.(); });
 applyUpdate.hidden = true; $("compose").append(applyUpdate);
@@ -36,7 +38,7 @@ function render() {
       const place = element("p"); place.append(link); article.append(place);
     }
     if (entry.interpretation) article.append(element("p", entry.interpretation, "interpretation"));
-    article.append(element("footer", `${(entry.tags || []).map(tag => "#" + tag).join("  ")} ${entry.status === "queued" ? "· Waiting to send" : entry.status === "rejected" ? "· Needs retry" : entry.interpretation ? "· Interpretation available" : "· Waiting for the agent’s interpretation"}`));
+    article.append(element("footer", `${(entry.tags || []).map(tag => "#" + tag).join("  ")} ${(entry.session_id || "initial") !== session().id ? "· Previous-session recovery " : ""}${entry.status === "queued" ? "· Waiting to send" : entry.status === "rejected" ? "· Needs retry" : entry.interpretation ? "· Interpretation available" : "· Waiting for the agent’s interpretation"}`));
     if (editable() && !["queued", "rejected"].includes(entry.status)) {
       const details = element("details"), summary = element("summary", "Edit the interpretation"), text = element("textarea"); text.rows = 3; text.maxLength = 4000; text.value = entry.interpretation || ""; text.setAttribute("aria-label", "Interpretation for this observation");
       const draftKey = "interpretation:" + entry.id, saved = readLocal(draftKey, null); if (typeof saved === "string") text.value = saved;
@@ -51,7 +53,11 @@ function render() {
       const previous = [...$("timeline").children].find(node => node.dataset.id === entry.id)?.querySelector("details[open]");
       article.append(previous || details);
     }
-    if (entry.status === "rejected") article.append(element("p", entry.error || "Could not send this observation."), action("Retry observation", () => void retry(entry)));
+    if (entry.status === "rejected" && editable()) {
+      article.append(element("p", entry.error || "Could not send this observation."));
+      if ((entry.session_id || "initial") === session().id) article.append(action("Retry observation", () => void retry(entry)));
+      const removal = element("details"); removal.append(element("summary", "Remove local rejected copy…"), element("p", "Export notes first if you want to keep this observation. Removing it stops its local retry; any already uploaded media stays on the page."), action("Remove this local copy", async () => { if (entry.capture_id) await t.discardCapture(entry.capture_id); delete pending[entry.id]; writeLocal("pending", pending); render(); })); article.append(removal);
+    }
     return article;
   });
   $("timeline").replaceChildren(...(nodes.length ? nodes : [element("p", "Your first observation starts the trail. A note or a photo is enough.", "empty")]));
@@ -68,11 +74,14 @@ $("locate").onclick = () => {
   }, error => status(error.code === 1 ? "Location permission was declined. Your note and photo still work." : "Could not get a location. Try again outdoors or describe the place."), { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
 };
 function resultFor(entry, result) {
+  if ((entry.session_id || 'initial') !== session().id) {
+    remember({ ...entry, capture_id: result.capture_id || entry.capture_id, status: 'rejected', error: 'This observation belongs to a previous session. Check saved archives or export this local recovery copy before removing it.' }); return false;
+  }
   if (result.status === "rejected") { remember({ ...entry, capture_id: result.capture_id || entry.capture_id, status: "rejected", error: result.message || String(result.error) }); return false; }
   const latest = t.state.get(["notebook", "entries", entry.id]) || {};
   const saved = { ...entry, ...(result.capture_id ? { capture_id: result.capture_id } : {}), ...(result.blob ? { photo: { id: result.blob.id, name: entry.photo_name || "Observation photo" } } : {}), ...latest, status: result.status };
   delete saved.error; remember(saved);
-  if (result.status === "accepted") t.state.set(["notebook", "entries", entry.id], saved);
+  if (result.status === "accepted" && (entry.session_id || "initial") === session().id) t.state.set(["notebook", "entries", entry.id], saved);
   return true;
 }
 $("observation-form").onsubmit = async event => {
@@ -84,8 +93,9 @@ $("observation-form").onsubmit = async event => {
     const entry = observation({ note: $("note").value, tags: $("tags").value, photo: selectedPhoto, location: $("include-location").checked ? locationFix : null });
     submitted = entry;
     if (selectedPhoto) entry.photo_name = selectedPhoto.name;
+    entry.session_id = session().id;
     remember({ ...entry, status: "queued" });
-    const data = { type: "notebook.observation", observation_id: entry.id, entry };
+    const data = { type: "notebook.observation", session: session(), observation_id: entry.id, entry };
     const result = selectedPhoto ? await t.uploadEvent(selectedPhoto, { name: selectedPhoto.name, keep: true, data }) : await t.send(data);
     if (resultFor(entry, result)) {
       $("note").value = $("tags").value = ""; clearPhoto(); locationFix = null; $("location-review").hidden = true; saveDraft();
@@ -95,7 +105,7 @@ $("observation-form").onsubmit = async event => {
   finally { busy = false; render(); }
 };
 async function retry(entry) {
-  try { const result = entry.capture_id ? await t.retryCapture(entry.capture_id) : await t.send({ type: "notebook.observation", observation_id: entry.id, entry }); resultFor(entry, result); status(result.status === "accepted" ? "Observation received." : result.message || "Observation is queued."); }
+  try { const result = entry.capture_id ? await t.retryCapture(entry.capture_id) : await t.send({ type: "notebook.observation", session: { scope: "notebook", id: entry.session_id || "initial" }, observation_id: entry.id, entry }); resultFor(entry, result); status(result.status === "accepted" ? "Observation received." : result.message || "Observation is queued."); }
   catch (error) { status(error.message); }
 }
 function discoverCaptures() {
@@ -131,6 +141,12 @@ t.state.on((_state, ops, by) => {
       if (typeof local === "string" && typeof entry.interpretation === "string" && local.trim() === entry.interpretation) writeLocal(`interpretation:${id}`, null);
     }
   }
+  if (knownSession !== session().id) {
+    knownSession = session().id;
+    for (const [id, entry] of Object.entries(pending)) if ((entry.session_id || 'initial') !== knownSession)
+      pending[id] = { ...entry, status: 'rejected', error: 'This local observation belongs to the previous session. Check the saved archive or export it before removing this recovery copy.' };
+    if (editable()) status('A fresh notebook session started. Any unfinished local work is kept here for recovery.');
+  }
   if (by === "rejected" && editable()) status("A shared edit was not accepted. Your observation backups and interpretation drafts are still on this device.");
   writeLocal("pending", pending); render();
 });
@@ -142,3 +158,17 @@ $("include-location").onchange = saveDraft;
 if (locationFix) { $("location-review").hidden = false; $("include-location").checked = draft.include_location !== false; $("location-detail").textContent = `${Number(locationFix.latitude).toFixed(5)}, ${Number(locationFix.longitude).toFixed(5)} · accuracy about ${Math.round(locationFix.accuracy)} metres. Saved with your draft; locate again if you have moved.`; }
 window.addEventListener("tendril:before-reload", event => { if (selectedPhoto || busy) { event.preventDefault(); deferredApply = event.detail.apply; status("An update is ready. Save or remove your photo, then apply it when ready."); render(); } });
 render(); if (t.connected) discoverCaptures();
+
+tendrilSnippets.sessionArchive.mount('#session-tools', { scope: 'notebook', title: 'field notebook',
+  guard: () => {
+    if (busy || selectedPhoto || $('note').value.trim() || $('tags').value.trim()) return 'Save or clear your unfinished observation before archiving. Your draft stays here.';
+    const shared = t.state.get('notebook.entries') || {};
+    if (Object.values(pending).some(entry => ['queued','rejected'].includes(entry.status) || !shared[entry.id])) return 'Resolve the observations waiting on this device before archiving.';
+    if (Object.values(shared).some(entry => { const draft = readLocal('interpretation:' + entry.id, null); return typeof draft === 'string' && draft.trim() !== (entry.interpretation || ''); })) return 'Save your interpretation drafts before archiving. They stay on this device.';
+    return null;
+  },
+  afterArchive: ({archive}) => {
+    for (const id of Object.keys(archive.shared_state?.notebook?.entries || {})) { delete pending[id]; writeLocal('interpretation:' + id, null); }
+    writeLocal('pending', pending); $('filter').value = ''; render();
+  }
+});

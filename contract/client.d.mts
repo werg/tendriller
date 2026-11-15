@@ -1,11 +1,13 @@
+import type { DurabilityClient } from "./durability-client.mjs";
 import type { CreateRequest, PublicEvent, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
-  PortableBundle, BundleStageResult, BundlePublish, RemixRequest, Decision, DecisionCreate, DecisionUpdate, ParticipantResponse } from "./index.mjs";
+  PortableBundle, BundleStageResult, BundlePublish, RemixRequest, Decision, DecisionCreate, DecisionUpdate, ParticipantResponse,
+  ParticipantAssignment, AssignmentCreate, AssignmentUpdate, ArchiveScope, ArchivePreview, ArchiveCreate, ArchiveResult, ArchiveMetadata, SessionArchive } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
-export interface AgentClient {
-  request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<T>;
+export interface AgentClient extends DurabilityClient {
+  request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
   state(): Promise<{ state: Record<string, unknown>; rev: number }>;
@@ -30,6 +32,15 @@ export interface AgentClient {
   createDecision(body: DecisionCreate): Promise<Decision>;
   updateDecision(decision: string, body: DecisionUpdate): Promise<Decision>;
   responses(): Promise<{ responses: ParticipantResponse[] }>;
+  assignments(): Promise<{ assignments: ParticipantAssignment[] }>;
+  participants(): Promise<{ participants: { id: string; label: string; role: "owner" | "guest" }[] }>;
+  createAssignment(body: AssignmentCreate): Promise<ParticipantAssignment>;
+  updateAssignment(id: string, body: AssignmentUpdate): Promise<ParticipantAssignment>;
+  archives(): Promise<{ archives: ArchiveMetadata[]; limit: number; byte_limit: number }>;
+  previewArchive(scope: ArchiveScope): Promise<ArchivePreview>;
+  createArchive(body: ArchiveCreate): Promise<ArchiveResult>;
+  archive(id: string): Promise<SessionArchive>;
+  deleteArchive(id: string): Promise<void>;
   readEvents(options: { after: number; wait?: number; signal?: AbortSignal }): Promise<EventBatch>;
 }
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }

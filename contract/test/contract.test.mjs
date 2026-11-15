@@ -42,7 +42,7 @@ test("generated schemas match the executable and MCP-facing schema", () => {
 test("client keeps explicit cursor, validates writes and returns actionable errors", async () => {
   const seen = [];
   const client = createClient({ api: "https://example.test/api/t/id/", token: "tk_test" }, {
-    fetch: async (url, options) => { seen.push({ url, options }); return new Response(JSON.stringify({ events: [], cursor: 7 }), { status: 200 }); },
+    fetch: async (url, options) => { seen.push({ url, options }); return new Response(JSON.stringify({ events: [], cursor: 7, withheld: 0 }), { status: 200 }); },
   });
   assert.equal((await client.readEvents({ after: 7, wait: 3 })).cursor, 7);
   assert.match(seen[0].url, /events\?after=7&wait=3$/);
@@ -86,7 +86,11 @@ test("typed experience client carries compare-and-set versions and encodes resou
   const seen = [];
   const client = createClient({ api: "https://example.test/api/t/id", token: "tk_test" }, { fetch: async (url, options) => {
     seen.push({ url, options });
-    return new Response(JSON.stringify({ session: {}, revision: 3 }), { status: 200 });
+    const session = { purpose: "Workshop", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
+    const result = url.endsWith("/session") ? { session, revision: 3 } : url.includes("/decisions/")
+      ? { id: "decision", title: "Review", summary: "A reviewed change", version: 5, status: "working", expires_at: null, created_at: 1, updated_at: 2 }
+      : { format: "tendriller-bundle", version: 1, name: "Copy", files: [{ path: "index.html", type: "text/html", base64: "AA==" }], media: [] };
+    return new Response(JSON.stringify(result), { status: 200 });
   } });
   await client.updateSession({ purpose: "Workshop", expected_revision: 2 });
   assert.equal(seen.at(-1).url, "https://example.test/api/t/id/session");
@@ -99,4 +103,10 @@ test("typed experience client carries compare-and-set versions and encodes resou
   assert.throws(() => client.updateDecision("decision", { status: "completed" }), ContractError);
   assert.throws(() => client.updateDevice("device", { role: "owner" }), ContractError);
   assert.equal(seen.length, count);
+});
+
+test("typed clients reject successful HTTP responses that break the wire contract", async () => {
+  const client = createClient({ api: "https://example.test", token: "tk_test" }, { fetch: async () => new Response(JSON.stringify({ rev: "wrong", state: [] }), { status: 200 }) });
+  await assert.rejects(client.state(), error => error instanceof ApiError && error.code === "invalid_response" && error.details.some(issue => issue.path === "$.rev"));
+  await assert.rejects(createPage("https://example.test", { owner: "owner@example.test" }, { fetch: async () => new Response('{"id":"page-with-no-credentials"}', { status: 201 }) }), error => error.code === "invalid_response");
 });

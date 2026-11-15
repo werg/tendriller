@@ -1,0 +1,65 @@
+name: Pinned speech model
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 5 * * 1"
+  push:
+    branches: [master]
+    paths:
+      - "runtime/src/control/speech-worker.ts"
+      - "scripts/e2e-speech-assets.mjs"
+      - "scripts/build.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "test/e2e/real-speech.spec.ts"
+      - "test/e2e/speech-fixture.mjs"
+      - "test/e2e/speech-real.playwright.config.ts"
+      - "test/fixtures/speech/**"
+      - ".github/workflows/speech-model.yml"
+  pull_request:
+    paths:
+      - "runtime/src/control/speech-worker.ts"
+      - "scripts/e2e-speech-assets.mjs"
+      - "scripts/build.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "test/e2e/real-speech.spec.ts"
+      - "test/e2e/speech-fixture.mjs"
+      - "test/e2e/speech-real.playwright.config.ts"
+      - "test/fixtures/speech/**"
+      - ".github/workflows/speech-model.yml"
+
+permissions:
+  contents: read
+concurrency:
+  group: pinned-speech-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/tendriller-e2e/speech-4.0.0
+          key: ${{ runner.os }}-speech-${{ hashFiles('scripts/e2e-speech-assets.mjs') }}
+      # Cache hits are still SHA-256 verified; an unavailable download fails the
+      # job instead of turning a missing real-model check into a passing skip.
+      - run: node scripts/e2e-speech-assets.mjs
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:speech-real
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pinned-speech-results
+          path: test-results/speech-real/
+          include-hidden-files: true
+          if-no-files-found: ignore

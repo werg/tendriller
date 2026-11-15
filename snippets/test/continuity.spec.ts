@@ -7,7 +7,7 @@ async function mount(page) {
   await page.evaluate(spec => { const w = window as any; w.tendril.state.set('interface', spec); w.ui = w.tendrilSnippets.ui.mount('#app'); }, interfaceSpec);
 }
 
-async function mountControlledCamera(page) {
+async function mountControlledCamera(page, session = false) {
   await load(page);
   await page.evaluate(() => {
     const w = window as any; w.cameraFixture = { sessions: [] };
@@ -34,7 +34,7 @@ async function mountControlledCamera(page) {
     } } };
   });
   await page.addScriptTag({ url: '/input-kit.js' });
-  await page.evaluate(() => (window as any).tendrilSnippets.inputs.mount('#app', { modalities: ['photo'] }));
+  await page.evaluate(withSession => { const w = window as any; w.workflowSession = { scope: 'guide', id: 'old-session' }; w.tendrilSnippets.inputs.mount('#app', { modalities: ['photo'], ...(withSession ? { session: () => w.workflowSession } : {}) }); }, session);
 }
 
 test('adaptive blocks preserve text, focus and drawing when the agent changes a status', async ({ page }) => {
@@ -194,4 +194,14 @@ test('voice note supports recording duration, playback review, discard and expli
   await page.getByRole('button', { name: 'Send voice note', exact: true }).click();
   await expect.poll(async () => (await calls(page)).send.length).toBe(1);
   expect((await calls(page)).send[0].data).toMatchObject({ modality: 'audio', duration_ms: expect.any(Number) });
+});
+
+test('reviewed capture retains the workflow session from capture time', async ({ page }) => {
+  await mountControlledCamera(page, true);
+  await page.getByRole('button', { name: 'Add photo', exact: true }).click();
+  await page.getByRole('button', { name: 'Capture photo', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Send photo', exact: true })).toBeVisible();
+  await page.evaluate(() => { (window as any).workflowSession = { scope: 'guide', id: 'new-session' }; });
+  await page.getByRole('button', { name: 'Send photo', exact: true }).click();
+  expect((await calls(page)).send[0].data.session).toEqual({ scope: 'guide', id: 'old-session' });
 });

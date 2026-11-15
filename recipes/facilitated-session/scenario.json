@@ -1,27 +1,227 @@
 {
   "http": [
-    { "method": "GET", "path": "/_tendril/responses", "json": { "participant": "preview-owner", "responses": [] } },
-    { "method": "GET", "path": "/_tendril/responses/all", "json": { "responses": [] } },
     {
-      "method": "POST", "path": "/_tendril/responses", "once": true,
-      "expect_body": { "prompt_id": "opening", "answer": "One quiet morning for focused work" },
-      "json": { "id": "private-response-1", "participant": "preview-owner", "prompt_id": "opening", "answer": "One quiet morning for focused work", "revision": 1 },
+      "method": "GET",
+      "path": "/_tendril/responses",
+      "json": {
+        "participant": "preview-owner",
+        "responses": []
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/_tendril/responses/all",
+      "json": {
+        "responses": []
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/_tendril/responses",
+      "once": true,
+      "expect_body": {
+        "prompt_id": "opening",
+        "answer": "One quiet morning for focused work"
+      },
+      "json": {
+        "id": "private-response-1",
+        "participant": "preview-owner",
+        "prompt_id": "opening",
+        "answer": "One quiet morning for focused work",
+        "revision": 1
+      },
       "update": [
-        { "method": "GET", "path": "/_tendril/responses", "json": { "participant": "preview-owner", "responses": [{ "id": "private-response-1", "participant": "preview-owner", "prompt_id": "opening", "answer": "One quiet morning for focused work", "revision": 1 }] } },
-        { "method": "GET", "path": "/_tendril/responses/all", "json": { "responses": [{ "id": "private-response-1", "participant": "preview-owner", "prompt_id": "opening", "answer": "One quiet morning for focused work", "revision": 1 }] } }
+        {
+          "method": "GET",
+          "path": "/_tendril/responses",
+          "json": {
+            "participant": "preview-owner",
+            "responses": [
+              {
+                "id": "private-response-1",
+                "participant": "preview-owner",
+                "prompt_id": "opening",
+                "answer": "One quiet morning for focused work",
+                "revision": 1
+              }
+            ]
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/_tendril/responses/all",
+          "json": {
+            "responses": [
+              {
+                "id": "private-response-1",
+                "participant": "preview-owner",
+                "prompt_id": "opening",
+                "answer": "One quiet morning for focused work",
+                "revision": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/_tendril/assignments",
+      "json": {
+        "participant": "preview-owner",
+        "assignments": []
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/_tendril/assignments/all",
+      "json": {
+        "assignments": []
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/_tendril/assignments/participants",
+      "json": {
+        "participants": [
+          {
+            "id": "preview-owner",
+            "label": "Facilitator",
+            "role": "owner"
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/_tendril/archives",
+      "json": {
+        "archives": [],
+        "limit": 20,
+        "byte_limit": 8388608
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/_tendril/assignments",
+      "status": 201,
+      "expect_body": {
+        "participant": "preview-owner",
+        "title": "Observer",
+        "prompt": "Describe the quietest corner."
+      },
+      "json": {
+        "id": "task-preview",
+        "participant": "preview-owner",
+        "prompt_id": "assignment:task-preview",
+        "title": "Observer",
+        "prompt": "Describe the quietest corner.",
+        "feedback": "",
+        "status": "open",
+        "revision": 1,
+        "created_at": 1,
+        "updated_at": 1
+      },
+      "update": [
+        {
+          "method": "GET",
+          "path": "/_tendril/assignments",
+          "json": {
+            "participant": "preview-owner",
+            "assignments": [
+              {
+                "id": "task-preview",
+                "participant": "preview-owner",
+                "prompt_id": "assignment:task-preview",
+                "title": "Observer",
+                "prompt": "Describe the quietest corner.",
+                "feedback": "",
+                "status": "open",
+                "revision": 1,
+                "created_at": 1,
+                "updated_at": 1
+              }
+            ]
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/_tendril/assignments/all",
+          "json": {
+            "assignments": [
+              {
+                "id": "task-preview",
+                "participant": "preview-owner",
+                "prompt_id": "assignment:task-preview",
+                "title": "Observer",
+                "prompt": "Describe the quietest corner.",
+                "feedback": "",
+                "status": "open",
+                "revision": 1,
+                "created_at": 1,
+                "updated_at": 1
+              }
+            ]
+          }
+        }
       ]
     }
   ],
   "steps": [
-    { "fill": "#answer", "value": "One quiet morning for focused work" },
-    { "click": "#send", "expect_text": "Private response saved" },
-    { "click": "#review", "expect_text": "One quiet morning for focused work" },
-    { "click": "#ask-summary", "expect_event": { "type": "facilitation_summary_request", "prompt_id": "opening" } },
-    { "fill": "#summary-draft", "value": "The group will try a shared period for focused work." },
-    { "click": "#summary-form button", "expect_text": "The group will try a shared period for focused work." },
-    { "fill": "#question", "value": "What should we try together next?" },
-    { "fill": "#context", "value": "Choose one small experiment." },
-    { "click": "#prompt-form button", "expect_text": "What should we try together next?" },
-    { "role": "display", "expect_text": "Private responses are never loaded here." }
+    {
+      "fill": "#answer",
+      "value": "One quiet morning for focused work"
+    },
+    {
+      "click": "#send",
+      "expect_text": "Private response saved"
+    },
+    {
+      "click": "#review",
+      "expect_text": "One quiet morning for focused work"
+    },
+    {
+      "click": "#ask-summary",
+      "expect_event": {
+        "type": "facilitation_summary_request",
+        "prompt_id": "opening"
+      }
+    },
+    {
+      "fill": "#summary-draft",
+      "value": "The group will try a shared period for focused work."
+    },
+    {
+      "click": "#summary-form button",
+      "expect_text": "The group will try a shared period for focused work."
+    },
+    {
+      "fill": "#question",
+      "value": "What should we try together next?"
+    },
+    {
+      "fill": "#context",
+      "value": "Choose one small experiment."
+    },
+    {
+      "click": "#prompt-form button",
+      "expect_text": "What should we try together next?"
+    },
+    {
+      "fill": "#assignment-title",
+      "value": "Observer"
+    },
+    {
+      "fill": "#assignment-prompt",
+      "value": "Describe the quietest corner."
+    },
+    {
+      "click": "#assignment-form button",
+      "expect_text": "Task assigned privately."
+    },
+    {
+      "role": "display",
+      "expect_text": "Private responses are never loaded here."
+    }
   ]
 }

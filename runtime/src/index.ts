@@ -54,6 +54,7 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
     upload: (blob: Blob, opts?: { name?: string; keep?: boolean }) => core.upload(blob, opts),
     uploadEvent: (blob: Blob, opts: CaptureOptions) => core.uploadEvent(blob, opts),
     captures: () => core.captures(),
+    pendingWork: () => core.pendingWork(),
     retryCapture: (id: string) => core.retryCapture(id),
     discardCapture: (id: string) => core.discardCapture(id),
     setBlobRetention: (id: string, opts: { keep: boolean }) => core.setBlobRetention(id, opts),

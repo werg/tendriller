@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS version_files (version INTEGER NOT NULL, path TEXT NO
 CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, type TEXT NOT NULL,
   data TEXT, device TEXT, role TEXT, wake INTEGER NOT NULL, withheld INTEGER NOT NULL, by TEXT);
 CREATE INDEX IF NOT EXISTS events_wake ON events (wake, seq);
+CREATE TABLE IF NOT EXISTS event_consumers (name TEXT PRIMARY KEY, handled_seq INTEGER NOT NULL, delivered_seq INTEGER NOT NULL,
+  gap_from INTEGER, gap_through INTEGER, holder TEXT, lease_hash TEXT, lease_expires_at INTEGER NOT NULL DEFAULT 0,
+  generation INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS logs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, device TEXT, version INTEGER,
   level TEXT NOT NULL, message TEXT NOT NULL, stack TEXT);
 CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT, size INTEGER NOT NULL, name TEXT, ts INTEGER NOT NULL,
@@ -41,10 +44,20 @@ CREATE TABLE IF NOT EXISTS timers (id TEXT PRIMARY KEY, spec TEXT NOT NULL, next
 CREATE INDEX IF NOT EXISTS timers_due ON timers (state, next_at);
 CREATE TABLE IF NOT EXISTS timer_runs (id TEXT PRIMARY KEY, timer_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL,
   fired_at INTEGER NOT NULL, status TEXT NOT NULL, event_seq INTEGER, notification TEXT);
+CREATE TABLE IF NOT EXISTS timer_notifications (run_id TEXT PRIMARY KEY, timer_id TEXT NOT NULL, payload TEXT NOT NULL,
+  state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL, attempt_token TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_attempt_at INTEGER, last_error TEXT,
+  pending_devices TEXT, sent_devices TEXT NOT NULL DEFAULT '[]', failed_devices TEXT NOT NULL DEFAULT '[]',
+  sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS timer_notifications_due ON timer_notifications (state, next_at);
 CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS participant_responses (id TEXT PRIMARY KEY, participant TEXT NOT NULL, prompt_id TEXT NOT NULL,
   answer TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(participant, prompt_id));
+CREATE TABLE IF NOT EXISTS participant_assignments (id TEXT PRIMARY KEY, participant TEXT NOT NULL, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS assignments_participant ON participant_assignments(participant, updated_at);
+CREATE TABLE IF NOT EXISTS session_archives (id TEXT PRIMARY KEY, scope TEXT NOT NULL, title TEXT NOT NULL, created_at INTEGER NOT NULL,
+  bytes INTEGER NOT NULL, request TEXT NOT NULL, data TEXT NOT NULL);
 `;
 
 type Bindable = string | number | null | ArrayBuffer;

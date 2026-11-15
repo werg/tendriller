@@ -122,6 +122,7 @@ function bypass(rel: string, url: URL): boolean {
   // Only static routes from server/src/router.ts belong in a version cache.
   // New internal endpoints are live by default, including owner/private reads.
   return !(rel === RUNTIME || rel === "_tendril/speech-worker.js" ||
+    /^_tendril\/axe(?:\.min\.js|-LICENSE(?:-3RD-PARTY)?\.txt)$/.test(rel) ||
     /^_tendril\/snippets\/[A-Za-z0-9_.-]+\.js$/.test(rel) ||
     /^_tendril\/speech\/(cactus\.js|cactus\.wasm|whistle\.cact)$/.test(rel) ||
     /^_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(rel) ||

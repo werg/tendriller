@@ -9,11 +9,15 @@
 <form id="answer-form"><label>Your answer<textarea id="answer" maxlength="4000" required></textarea></label><div class="actions"><button class="primary" id="send">Send private response</button><button type="button" id="refresh">Refresh my response</button></div></form>
 <p id="status" role="status" aria-live="polite"></p><small id="saved"></small><details id="saved-review" hidden><summary>Latest saved response</summary><p id="saved-response" style="white-space:pre-wrap"></p><button type="button" id="use-saved">Use this saved response</button></details></section>
 <section class="card" id="summary-card" hidden><h2>Shared summary</h2><p id="summary"></p></section>
+<section class="card" id="private-tasks" hidden aria-labelledby="private-tasks-title"><h2 id="private-tasks-title">Just for you</h2><p>Private tasks and facilitator feedback are visible to you, the facilitator and the connected agent.</p><small id="participant-code"></small><p><button type="button" id="refresh-tasks">Refresh my tasks</button></p><div id="my-tasks"></div><p id="task-status" role="status" aria-live="polite"></p></section>
 <section class="card" id="facilitator" hidden><h2>Facilitator controls</h2><p>Use Share and devices for signed-in participant invitations and a read-only room display.</p>
 <form id="prompt-form"><label>Question<input id="question" maxlength="1000" required></label><label>Optional context<textarea id="context" maxlength="2000"></textarea></label><button class="primary">Start a new question</button></form>
 <div class="actions"><button id="review">Review private responses</button><button id="ask-summary">Ask agent for a summary</button><button id="close">Close responses</button></div>
 <div id="responses" hidden></div><p id="owner-status" role="status" aria-live="polite"></p>
 <form id="summary-form"><label>Summary to share<textarea id="summary-draft" maxlength="8000"></textarea></label><button class="primary">Publish this summary</button></form></section>
+<section class="card" id="assignment-manager" hidden aria-labelledby="assignment-manager-title"><h2 id="assignment-manager-title">Private assignments</h2><p>Give participants different tasks or send individual feedback. These instructions never appear on the room display.</p><form id="assignment-form"><label>Participant<select id="assignment-participant" required></select></label><label>Task title<input id="assignment-title" maxlength="200" required></label><label>Private instructions<textarea id="assignment-prompt" maxlength="8000" required></textarea></label><button class="primary">Assign privately</button></form><p><button type="button" id="refresh-assignments">Refresh participants and tasks</button></p><div id="assignment-list"></div><p id="assignment-status" role="status" aria-live="polite"></p></section>
+<section class="card" id="session-archive" hidden></section>
+<section class="card" id="retained-drafts" hidden><h2>Drafts from earlier questions</h2><p>The session changed while you were writing. These drafts stay on this device and are not submitted to the new session.</p><div id="retained-draft-list"></div><button type="button" id="download-retained-drafts">Download private drafts</button><button type="button" id="discard-retained-drafts">Discard these drafts</button></section>
 <p id="display-note" hidden>This is the shared display. Private responses are never loaded here.</p>
 </main><script>
 (() => {
@@ -29,7 +33,7 @@
     const r=await fetch(url,{credentials:'same-origin',...options});const data=await r.json();
     if(!r.ok)throw Error(data.error?.message||`Request failed (${r.status})`);return data;
   }
-  function saveDraft(){if(display||!promptId||!participant)return;try{if(dirty)localStorage.setItem(draftKey(promptId),$('answer').value);else localStorage.removeItem(draftKey(promptId));}catch{message('This browser could not save your draft. Keep this page open until you send it.');}}
+  function saveDraft(){$('answer').dataset.dirty=String(dirty);if(display||!promptId||!participant)return;try{if(dirty)localStorage.setItem(draftKey(promptId),$('answer').value);else localStorage.removeItem(draftKey(promptId));}catch{message('This browser could not save your draft. Keep this page open until you send it.');}}
   async function loadMine(review=false) {
     if(display||!tendril.connected)return;const token=++loading,id=promptId;
     try {const data=await request(endpoint);if(token!==loading||id!==promptId)return;
@@ -53,7 +57,7 @@
     $('participate').hidden=display;$('facilitator').hidden=!owner;$('display-note').hidden=!display;
     $('role-label').textContent=owner?'Facilitator':display?'Shared display':'Your private response';
     $('send').disabled=sending||spec.stage==='closed';
-    if(prompt.id!==promptId){if(promptId&&dirty)saveDraft();promptId=prompt.id||'opening';revision=0;dirty=false;$('answer').value='';
+    if(prompt.id!==promptId){if(promptId&&dirty){saveDraft();window.dispatchEvent(new CustomEvent('tendril:private-draft-saved',{detail:{participant,prompt_id:promptId,title:'Shared question',answer:$('answer').value}}));}promptId=prompt.id||'opening';revision=0;dirty=false;$('answer').value='';
       latestAnswer=null;$('saved-review').hidden=true;$('saved-response').textContent='';$('responses').replaceChildren();$('responses').hidden=true;
       message('');void loadMine();}
   }
@@ -62,7 +66,7 @@
   $('answer-form').onsubmit=async event=>{
     event.preventDefault();if(sending||display||session().stage==='closed')return;const answer=$('answer').value.trim();if(!answer)return;
     sending=true;$('send').disabled=true;const id=promptId;message('Sending your private response…');
-    try{const data=await request(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt_id:id,answer,...(revision?{expected_revision:revision}:{})})});
+    try{const data=await request(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt_id:id,answer,expected_session_id:session().session_id||'initial',...(revision?{expected_revision:revision}:{})})});
       if(id!==promptId)return;revision=(data.response||data).revision||revision+1;latestAnswer=answer;dirty=$('answer').value.trim()!==answer;saveDraft();$('saved-review').hidden=true;message(dirty?'Your previous response was saved. Your new draft is ready to send.':'Private response saved. You can edit and send again.');$('saved').textContent=`Saved revision ${revision}`;
     }catch(error){message(`${error.message}. Your draft is kept. Choose Refresh my response to review the latest saved text before sending again.`);}finally{sending=false;$('send').disabled=session().stage==='closed';}
   };
@@ -73,10 +77,10 @@
     if(!rows.length)target.textContent='No responses for this question yet.';
     for(const [index,row] of rows.entries()){const article=document.createElement('article'),title=document.createElement('h3'),text=document.createElement('p');title.textContent=`Response ${index+1}`;text.textContent=typeof row.answer==='string'?row.answer:JSON.stringify(row.answer);article.append(title,text);target.append(article);}
   }catch(error){$('owner-status').textContent=error.message;}};
-  $('ask-summary').onclick=async()=>{if(!owner)return;const result=await tendril.send({type:'facilitation_summary_request',prompt_id:promptId});$('owner-status').textContent=result.error?'The request was not accepted. Try again.':result.queued?'Summary request saved until connected.':'Request received. The agent can read private answers and propose an aggregate summary.';};
+  $('ask-summary').onclick=async()=>{if(!owner)return;const result=await tendril.send({type:'facilitation_summary_request',prompt_id:promptId,session:{scope:'facilitation',id:session().session_id||'initial'}});$('owner-status').textContent=result.error?'The request was not accepted. Try again.':result.queued?'Summary request saved until connected.':'Request received. The agent can read private answers and propose an aggregate summary.';};
   $('summary-form').onsubmit=event=>{event.preventDefault();if(!owner)return;tendril.state.patch({facilitation:{summary:$('summary-draft').value.trim(),stage:'discuss'}});$('owner-status').textContent='Summary shared with participants and display.';};
   window.addEventListener('pagehide',saveDraft);tendril.state.on(render);
   tendril.on?.('role',()=>{saveDraft();const changed=role!==tendril.device.role;role=tendril.device.role;owner=role==='owner'&&!tendril.device.pending;display=role==='display';if(changed||display){++loading;participant=null;dirty=false;latestAnswer=null;$('answer').value='';$('saved-response').textContent='';$('saved-review').hidden=true;$('responses').replaceChildren();}render();void loadMine();});
   tendril.on?.('connect',()=>void loadMine());render();
 })();
-</script></body></html>
+</script><script src="_tendril/snippets/session-archive.js"></script><script type="module" src="./assignments.js"></script></body></html>

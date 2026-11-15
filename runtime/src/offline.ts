@@ -4,7 +4,7 @@
 // IndexedDB has opened. Everything degrades to memory-only if storage is unavailable.
 
 export interface OutboxItem { key: number; cid: string; msg: any; blob?: Blob }
-export interface Snapshot { rev: number; state: any; pending: { cid: string; ops: any[] }[]; transcript: any[] }
+export interface Snapshot { rev: number; state: any; pending: { cid: string; ops: any[]; sessions?: Record<string, string> }[]; transcript: any[] }
 
 const MAX_LOG_ITEMS = 50;
 let keySeq = 0;

@@ -13,7 +13,21 @@
       "path": "recipes/approval-remote",
       "contract": "recipes/approval-remote/contract.json",
       "agent": "recipes/approval-remote/AGENT.md",
-      "scenario": "recipes/approval-remote/scenario.json"
+      "scenario": "recipes/approval-remote/scenario.json",
+      "kind": "workflow",
+      "permissions": [
+        "Text works without device permission.",
+        "Microphone is optional for dictating a revision."
+      ],
+      "request": "Prepare one small proposal for me to review. Wait for my versioned approval before doing the work.",
+      "preview": {
+        "image": "recipes/previews/approval-remote.png",
+        "fixture": "recipes/approval-remote/starter.json",
+        "alt": "Actual local preview of the approval remote starter"
+      },
+      "files": [
+        "index.html"
+      ]
     },
     {
       "id": "field-notebook",
@@ -27,7 +41,23 @@
       "path": "recipes/field-notebook",
       "contract": "recipes/field-notebook/contract.json",
       "agent": "recipes/field-notebook/AGENT.md",
-      "scenario": "recipes/field-notebook/scenario.json"
+      "scenario": "recipes/field-notebook/scenario.json",
+      "kind": "workflow",
+      "permissions": [
+        "Photos are optional; choose a file or allow the camera.",
+        "Location is requested only when I choose Add this place."
+      ],
+      "request": "Start a notebook for observations. Help me add a note, optionally attach a reviewed photo or location, and interpret it without losing my original observation.",
+      "preview": {
+        "image": "recipes/previews/field-notebook.png",
+        "fixture": "recipes/field-notebook/starter.json",
+        "alt": "Actual local preview of the field notebook starter"
+      },
+      "files": [
+        "app.js",
+        "index.html",
+        "model.mjs"
+      ]
     },
     {
       "id": "hands-free-guide",
@@ -42,7 +72,21 @@
       "path": "recipes/hands-free-guide",
       "contract": "recipes/hands-free-guide/contract.json",
       "agent": "recipes/hands-free-guide/AGENT.md",
-      "scenario": "recipes/hands-free-guide/scenario.json"
+      "scenario": "recipes/hands-free-guide/scenario.json",
+      "kind": "workflow",
+      "permissions": [
+        "Buttons work without a microphone.",
+        "Voice recognition, camera, recording and keeping the screen awake are optional and enabled on the device."
+      ],
+      "request": "Guide me through a small task one step at a time. Keep stable checkpoints, offer spoken instructions and let me review evidence before sending it.",
+      "preview": {
+        "image": "recipes/previews/hands-free-guide.png",
+        "fixture": "recipes/hands-free-guide/starter.json",
+        "alt": "Actual local preview of the hands-free task guide starter"
+      },
+      "files": [
+        "index.html"
+      ]
     },
     {
       "id": "multi-device-workshop",
@@ -57,7 +101,22 @@
       "path": "recipes/multi-device-workshop",
       "contract": "recipes/multi-device-workshop/contract.json",
       "agent": "recipes/multi-device-workshop/AGENT.md",
-      "scenario": "recipes/multi-device-workshop/scenario.json"
+      "scenario": "recipes/multi-device-workshop/scenario.json",
+      "kind": "workflow",
+      "permissions": [
+        "Each participating device signs in or uses an owner-created display link.",
+        "Camera access begins only after an explicit tap; captured photos are shared, live video stays on the device."
+      ],
+      "request": "Help me use a phone, controller and display for one shared task. Give devices clear purposes and advance from explicit completion receipts.",
+      "preview": {
+        "image": "recipes/previews/multi-device-workshop.png",
+        "fixture": "recipes/multi-device-workshop/starter.json",
+        "alt": "Actual local preview of the multi-device workshop starter"
+      },
+      "files": [
+        "app.js",
+        "index.html"
+      ]
     },
     {
       "id": "hardware-experiment",
@@ -71,7 +130,23 @@
       "path": "recipes/hardware-experiment",
       "contract": "recipes/hardware-experiment/contract.json",
       "agent": "recipes/hardware-experiment/AGENT.md",
-      "scenario": "recipes/hardware-experiment/scenario.json"
+      "scenario": "recipes/hardware-experiment/scenario.json",
+      "kind": "workflow",
+      "permissions": [
+        "Simulation works without a device permission.",
+        "A real instrument needs a supported browser and an explicit Serial device choice; this page only reads it."
+      ],
+      "request": "Help me run a small measurement experiment. Start with clearly labelled simulated readings, then let me connect a supported instrument, record interventions and export the run.",
+      "preview": {
+        "image": "recipes/previews/hardware-experiment.png",
+        "fixture": "recipes/hardware-experiment/starter.json",
+        "alt": "Actual local preview of the hardware experiment companion starter"
+      },
+      "files": [
+        "app.js",
+        "index.html",
+        "model.mjs"
+      ]
     },
     {
       "id": "facilitated-session",
@@ -84,7 +159,21 @@
       "path": "recipes/facilitated-session",
       "contract": "recipes/facilitated-session/contract.json",
       "agent": "recipes/facilitated-session/AGENT.md",
-      "scenario": "recipes/facilitated-session/scenario.json"
+      "scenario": "recipes/facilitated-session/scenario.json",
+      "kind": "workflow",
+      "permissions": [
+        "Participants sign in; only their own private answers are loaded.",
+        "The shared display receives the deliberately published prompt and summary."
+      ],
+      "request": "Help me facilitate a small group session. Collect private participant answers and let me review the summary before sharing it with the group.",
+      "preview": {
+        "image": "recipes/previews/facilitated-session.png",
+        "fixture": "recipes/facilitated-session/starter.json",
+        "alt": "Actual local preview of the facilitated group session starter"
+      },
+      "files": [
+        "index.html"
+      ]
     },
     {
       "id": "voice-coach",
@@ -95,7 +184,9 @@
         "voice",
         "text"
       ],
-      "path": "recipes/voice-coach"
+      "path": "recipes/voice-coach",
+      "kind": "example",
+      "support": "Focused input example. Adapt it with an agent; it does not include the complete workflow contract and recovery scenario."
     },
     {
       "id": "motion-companion",
@@ -105,7 +196,9 @@
         "motion",
         "text"
       ],
-      "path": "recipes/motion-companion"
+      "path": "recipes/motion-companion",
+      "kind": "example",
+      "support": "Focused input example. Adapt it with an agent; it does not include the complete workflow contract and recovery scenario."
     },
     {
       "id": "photo-inspector",
@@ -115,7 +208,9 @@
         "photo",
         "text"
       ],
-      "path": "recipes/photo-inspector"
+      "path": "recipes/photo-inspector",
+      "kind": "example",
+      "support": "Focused input example. Adapt it with an agent; it does not include the complete workflow contract and recovery scenario."
     },
     {
       "id": "collaborative-canvas",
@@ -126,7 +221,9 @@
         "touch",
         "choice"
       ],
-      "path": "recipes/collaborative-canvas"
+      "path": "recipes/collaborative-canvas",
+      "kind": "example",
+      "support": "Focused input example. Adapt it with an agent; it does not include the complete workflow contract and recovery scenario."
     },
     {
       "id": "explore-device",
@@ -135,7 +232,9 @@
       "modalities": [
         "all available"
       ],
-      "path": "recipes/explore-device"
+      "path": "recipes/explore-device",
+      "kind": "example",
+      "support": "Focused input example. Adapt it with an agent; it does not include the complete workflow contract and recovery scenario."
     },
     {
       "id": "adaptive-checkin",
@@ -147,7 +246,9 @@
         "slider",
         "drawing"
       ],
-      "path": "recipes/adaptive-checkin"
+      "path": "recipes/adaptive-checkin",
+      "kind": "example",
+      "support": "Focused input example. Adapt it with an agent; it does not include the complete workflow contract and recovery scenario."
     }
   ]
 }

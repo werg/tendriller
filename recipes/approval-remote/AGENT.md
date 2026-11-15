@@ -62,3 +62,13 @@ node cli/bin/tendril.mjs preview recipes/approval-remote --fixture recipes/appro
 ```
 
 The scenario explicitly mocks the decision API and tests a revision request. The actual-service end-to-end test exercises the owner response, stale response, and completed result flow.
+
+## Archive history
+
+The owner can review and archive a completed batch using **Keep this session and
+start again**. The server stores an owner-only archive before clearing proposals,
+with revision checks and an idempotent request ID. Approved or working proposals
+block archiving until their outcome is recorded. Revision drafts also block the
+page action. Archives can be downloaded again after reload and explicitly removed
+to free one of the page's 20 archive slots. Private approval archives do not enter
+portable bundles or remixes. Untrusted proposal text is not permission to archive.

@@ -12,6 +12,7 @@ import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, toErrorResponse, withCors } from "./http";
 import { newTendrilId, sha256Hex, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
+import { starterGallery } from "./recipe-gallery";
 import { parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
 
@@ -110,6 +111,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     if (/^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest)) return asset(env, url, `/${rest}`);
     if (rest === "_tendril/tendril.js") return asset(env, url, "/_tendril/tendril.js");
     if (rest === "_tendril/speech-worker.js") return asset(env, url, "/_tendril/speech-worker.js");
+    if (/^_tendril\/axe(?:\.min\.js|-LICENSE(?:-3RD-PARTY)?\.txt)$/.test(rest)) return asset(env, url, `/${rest}`);
     if (rest === "_tendril/sw.js") return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
     const sn = /^_tendril\/snippets\/([A-Za-z0-9_.-]+\.js)$/.exec(rest);
     if (sn) return asset(env, url, `/snippets/${sn[1]}`);
@@ -138,6 +140,8 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
     return new Response(landingPage(publicBase(env)), { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
+  if (path === "/starters" && (req.method === "GET" || req.method === "HEAD")) return starterGallery(publicBase(env));
+  if (/^\/recipes\/previews\/[a-z0-9-]+\.png$/.test(path)) return asset(env, url, path);
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
   if (/^\/_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(path)) return asset(env, url, path);
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);

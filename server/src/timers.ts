@@ -2,7 +2,7 @@ import type { Tendril } from "./tendril";
 import { addEvent } from "./events";
 import { addActivity } from "./activity";
 import { HttpError, isPlainObject } from "./http";
-import { serviceMode } from "./service-state";
+import { cancelTimerNotifications, notificationDelivery, pruneTimerHistory, queueTimerNotification, runTimerNotifications, timerOperationsAllowed } from "./timer-notifications";
 import type { TimerRepeat, DurableTimer, TimerRun } from "../../contract/index.mjs";
 export type { TimerRepeat, DurableTimer, TimerRun } from "../../contract/index.mjs";
 type TimerRow = { id: string; spec: string; next_at: number; state: string };
@@ -37,7 +37,8 @@ export function listTimers(t: Tendril): DurableTimer[] {
   return t.db.all<TimerRow>("SELECT * FROM timers ORDER BY next_at, id").map(r => JSON.parse(r.spec));
 }
 export function timerHistory(t: Tendril): TimerRun[] {
-  return t.db.all<TimerRun>("SELECT * FROM timer_runs ORDER BY fired_at DESC, id DESC LIMIT 100");
+  return t.db.all<TimerRun>("SELECT * FROM timer_runs ORDER BY fired_at DESC, id DESC LIMIT 100")
+    .map(run => ({ ...run, delivery: notificationDelivery(t, run.id) }));
 }
 function requireClaim(t: Tendril) {
   if (!t.db.get("owner_account", null)) throw new HttpError(403, "unclaimed", "Open the page as its owner before scheduling a timer");
@@ -84,8 +85,11 @@ export function saveTimer(t: Tendril, body: unknown, by: string, id?: string): D
   const timer: DurableTimer = { id: previous?.id ?? crypto.randomUUID(), title: input.title.trim(), due_at: due, timezone,
     ...(repeat ? { repeat } : {}), missed: input.missed ?? "fire_once", ...(input.device ? { device: input.device } : {}), notify: input.notify === true,
     state: input.state ?? "scheduled", created_at: previous?.created_at ?? now, updated_at: now };
-  t.db.run("INSERT INTO timers (id, spec, next_at, state) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET spec=excluded.spec, next_at=excluded.next_at, state=excluded.state",
-    timer.id, JSON.stringify(timer), timer.due_at, timer.state);
+  t.ctx.storage.transactionSync(() => {
+    t.db.run("INSERT INTO timers (id, spec, next_at, state) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET spec=excluded.spec, next_at=excluded.next_at, state=excluded.state",
+      timer.id, JSON.stringify(timer), timer.due_at, timer.state);
+    if (previous) cancelTimerNotifications(t, timer.id);
+  });
   addActivity(t, { kind: "timer", summary: `${previous ? "Updated" : "Scheduled"} timer: ${timer.title}`, by });
   t.scheduleAlarm();
   return timer;
@@ -93,7 +97,7 @@ export function saveTimer(t: Tendril, body: unknown, by: string, id?: string): D
 
 export function deleteTimer(t: Tendril, id: string, by: string): void {
   if (!t.db.one("SELECT id FROM timers WHERE id = ?", id)) throw new HttpError(404, "not_found", "No such timer");
-  t.db.run("DELETE FROM timers WHERE id = ?", id);
+  t.ctx.storage.transactionSync(() => { cancelTimerNotifications(t, id); t.db.run("DELETE FROM timers WHERE id = ?", id); });
   addActivity(t, { kind: "timer", summary: "Timer removed", by });
   t.scheduleAlarm();
 }
@@ -106,21 +110,9 @@ export function nextTimerDeadline(t: Tendril): number | null {
 export async function runTimers(t: Tendril): Promise<void> {
   const due = nextTimerDeadline(t), expires = t.expiresAt();
   if (due === null || due > t.now() || (expires !== null && expires <= t.now())) return;
-  // Alarms run without an HTTP request, so enforce the same account and service gates here.
-  try {
-    const [mode, account] = await Promise.all([serviceMode(t.env), t.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at, a.deleting_at FROM tendrils t
-      JOIN accounts a ON a.id=t.owner_account WHERE t.id=? AND t.owner_account=?`)
-      .bind(t.tid, t.db.get("owner_account", null)).first<{ state: string; suspended_at: number | null; deleting_at: number | null }>()]);
-    if (!account || account.state === "held" || account.suspended_at !== null || account.deleting_at !== null) {
-      t.db.set("disabled", true); t.db.set("disabled_at", t.db.get("disabled_at", t.now())); return;
-    }
-    if (mode === "read_only") { t.db.set("timer_retry_at", t.now() + 60000); return; }
-  } catch {
-    // A temporary account/service lookup failure must not turn into a busy alarm loop.
-    t.db.set("timer_retry_at", t.now() + 60000); return;
-  }
-  t.db.del("timer_retry_at");
+  if (!await timerOperationsAllowed(t)) return;
   const rows = t.db.all<TimerRow>("SELECT * FROM timers WHERE state='scheduled' AND next_at <= ? ORDER BY next_at LIMIT 32", t.now());
+  let notificationBudget = 4;
   for (const candidate of rows) {
     let timer: DurableTimer | null = null;
     let runId = "", skip = false, created = false;
@@ -141,6 +133,7 @@ export async function runTimers(t: Tendril): Promise<void> {
             role: null, by: "timer", wake: true, cls: "page" });
           t.db.run("INSERT INTO timer_runs (id, timer_id, scheduled_at, fired_at, status, event_seq) VALUES (?, ?, ?, ?, ?, ?)",
             runId, timer.id, timer.due_at, now, skip ? "skipped" : "fired", event?.seq ?? null);
+          if (!skip && timer.notify) queueTimerNotification(t, timer, runId, now);
         }
         if (timer.repeat) {
           timer.due_at = "every_minutes" in timer.repeat
@@ -152,15 +145,8 @@ export async function runTimers(t: Tendril): Promise<void> {
         if (created) addActivity(t, { kind: "timer", summary: `${skip ? "Skipped missed" : "Fired"} timer: ${timer.title}`, by: "timer", device: timer.device ?? null });
       });
     } catch (error) { t.db.clearCache(); throw error; }
-    // transactionSync invokes the callback synchronously; TypeScript does not
-    // narrow assignments made by callbacks at this point.
-    const fired = timer as DurableTimer | null;
-    if (created && !skip && fired?.notify) {
-      try {
-        const result = await t.notify({ title: fired.title, body: "Your scheduled timer is ready.", device: fired.device, tag: runId }, "timer");
-        t.db.run("UPDATE timer_runs SET notification=? WHERE id=?", JSON.stringify(result), runId);
-      } catch (e) { t.db.run("UPDATE timer_runs SET notification=? WHERE id=?", JSON.stringify({ error: e instanceof Error ? e.message : "Notification unavailable" }), runId); }
-    }
+    t.scheduleAlarm();
+    if (created && !skip && notificationBudget-- > 0) await runTimerNotifications(t, 1);
   }
-  t.db.run("DELETE FROM timer_runs WHERE id NOT IN (SELECT id FROM timer_runs ORDER BY fired_at DESC LIMIT 200)");
+  pruneTimerHistory(t);
 }

@@ -5,11 +5,15 @@ import { deleteTimer, listTimers, saveTimer, timerHistory } from "./timers";
 import { discardStaged, exportBundle, publishStaged, putSession, remix, sessionSummary, stageBundle } from "./portability";
 import { HttpError, json, readJson } from "./http";
 import { handleDecisions, handleResponses } from "./interactions";
+import { handleAssignments } from "./assignments";
+import { handleArchives } from "./archives";
 
-export const EXPERIENCE_ROUTE = /^(?:focus|timers(?:\/[^/]+)?|session|bundle(?:\/(?:stage|publish))?|remix|decisions(?:\/[a-zA-Z0-9-]+(?:\/respond)?)?|responses)$/;
+export const EXPERIENCE_ROUTE = /^(?:focus|timers(?:\/[^/]+)?|session|bundle(?:\/(?:stage|publish))?|remix|decisions(?:\/[a-zA-Z0-9-]+(?:\/respond)?)?|responses|assignments(?:\/[a-zA-Z0-9-]+)?|archives(?:\/[a-zA-Z0-9-]+)?)$/;
 
 export async function handleExperience(t: Tendril, req: Request, url: URL, by: string, rest: string, ownerPage = false): Promise<Response> {
   const method = req.method === "HEAD" ? "GET" : req.method;
+  if (rest === "archives" || rest.startsWith("archives/")) return handleArchives(t, req, url, rest, by);
+  if (rest === "assignments" || rest.startsWith("assignments/")) return handleAssignments(t, req, rest, null, true, by);
   if (rest === "decisions" || rest.startsWith("decisions/")) return handleDecisions(t, req, rest, by, ownerPage);
   if (rest === "responses" && !ownerPage) return handleResponses(t, req, null, true);
   if (rest === "focus") {

@@ -1,0 +1,35 @@
+{
+  "state": {
+    "guide": {
+      "id": "paper-bridge",
+      "title": "Build a paper bridge",
+      "description": "A short, hands-on experiment. Keep your checkpoints and compare what changes.",
+      "steps": [
+        {
+          "id": "fold",
+          "title": "Fold a support",
+          "text": "Fold a sheet lengthwise. Place two books a short distance apart, then rest the paper across them."
+        },
+        {
+          "id": "test",
+          "title": "Test one change",
+          "text": "Add a small weight. Try a second fold and describe what changes."
+        },
+        {
+          "id": "finish",
+          "title": "Keep what you learned",
+          "text": "Photograph your strongest bridge and record the next thing you want to try."
+        }
+      ]
+    },
+    "guide_progress": {
+      "current": "fold",
+      "completed": {}
+    }
+  },
+  "steps": [
+    {
+      "expect_text": "Fold a support"
+    }
+  ]
+}
