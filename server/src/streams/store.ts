@@ -1,6 +1,6 @@
 // Stream definitions, storage, retention and bounded history. No socket effects.
 import { assertValid } from "../../../contract/index.mjs";
-import type { StreamInfo, StreamRecord, StreamBatch, StreamAppendResult, StreamInput } from "../../../contract/index.mjs";
+import type { StreamInfo, StreamRecord, StreamBatch, StreamLatest, StreamAppendResult, StreamInput } from "../../../contract/index.mjs";
 import type { Tendril } from "../tendril";
 import { HttpError } from "../http";
 import { BUILTIN_STREAMS, legacyTable, legacyHistorySource, renderBuiltinRecord } from "./adapters";
@@ -94,6 +94,18 @@ export function readStream(t: StreamStoreContext, name: string, after: number, l
   const page = readHistory(streamHistorySource(t, name), after, limit, { maxBytes: MAX_STREAM_REPLAY_BYTES, sizeOf: jsonBytes });
   if (after > page.history.latest_seq) throw new HttpError(400, "cursor_ahead", "after is beyond this stream's history", { latest_seq: page.history.latest_seq });
   return { stream: name, durability: info.durability, records: page.records, cursor: page.cursor, history: page.history };
+}
+
+/** A current snapshot deliberately skips history; it never acknowledges events. */
+export function latestStream(t: StreamStoreContext, name: string): StreamLatest {
+  const info = streamInfo(t, name);
+  if (info.durability === "ephemeral") throw new HttpError(409, "not_replayable", "Ephemeral streams have no retained records");
+  if (!info.builtin) pruneStream(t, info);
+  const table = legacyTable(name);
+  const row = table ? t.db.one(`SELECT * FROM ${table} ORDER BY seq DESC LIMIT 1`)
+    : t.db.one<RecordRow>("SELECT * FROM stream_records WHERE stream=? ORDER BY seq DESC LIMIT 1", name);
+  const record = row ? table ? renderBuiltinRecord(name, row) : renderRecord(row as RecordRow) : null;
+  return { stream: name, durability: "durable", record, cursor: streamHighWater(t, name) };
 }
 
 /** Bounded per-principal and aggregate budgets survive hibernation/restarts. */

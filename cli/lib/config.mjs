@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 
 export const DEFAULT_SERVER = "http://localhost:8787";
 
@@ -65,7 +66,7 @@ export function saveConfig(handle, wanted, env = process.env, server) {
   }
   const data = {
     id: handle.id, name: handle.name, page_url: handle.page_url, api: handle.api, token: handle.token,
-    lifetime: handle.lifetime, server: server || null, saved_at: new Date().toISOString(),
+    lifetime: handle.lifetime, mode: handle.mode, server: server || null, saved_at: new Date().toISOString(),
   };
   writeFileSync(p, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
   chmodSync(p, 0o600);
@@ -81,6 +82,13 @@ export function cursorPath(cfg, flags = {}, env = process.env) {
   if (flags["cursor-file"]) return flags["cursor-file"];
   if (env.TENDRIL_CURSOR_FILE) return env.TENDRIL_CURSOR_FILE;
   return join(configDir(env), "cursors", `${cfg.id || "default"}.cursor`);
+}
+
+// pending/ack checkpoints never share the legacy events/wait read cursor.
+export function checkpointPath(cfg, flags = {}, env = process.env) {
+  return flags["checkpoint-file"] || env.TENDRIL_CHECKPOINT_FILE
+    || (cfg.configFile ? `${cfg.configFile}.events.json`
+      : join(configDir(env), "checkpoints", `${cfg.id || "page"}-${createHash("sha256").update(cfg.api.replace(/\/+$/, "")).digest("hex").slice(0, 12)}.json`));
 }
 
 export function readCursor(path) {

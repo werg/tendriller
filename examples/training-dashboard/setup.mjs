@@ -68,7 +68,9 @@ for (const name of ['index.html', 'app.js', 'model.mjs']) files[name] = await re
 await request(api + '/files', { token, body: { files, replace: true, message: 'Training dashboard with typed durable and ephemeral streams' } });
 console.log(`Dashboard: ${saved.handle.page_url}`);
 console.log(`Collector configuration: ${configFile}`);
-console.log('Open the dashboard to claim it, then start:');
+console.log('First open the dashboard and sign in to claim it. Custom stream retention is 1 MiB before claim and 8 MiB after claim.');
+console.log('After claiming, start the downloaded collector:');
 const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
-console.log(`node cli/bin/tendril-stream.mjs ${shellQuote(configFile)}`);
+console.log(`node ./tendril-stream.mjs ${shellQuote(configFile)}`);
+console.log('From a source checkout, use node cli/bin/tendril-stream.mjs with the same configuration instead.');
 console.log('Edit the source paths/run name in collector.json. Keep both JSON credential files private.');

@@ -45,7 +45,7 @@ export function createStreams(host: Host): BrowserStreams {
   const path = (name: string) => `streams/${encodeURIComponent(assertValid("streamName", name))}`;
   const fetcher = host.fetch || globalThis.fetch.bind(globalThis);
 
-  async function get<K extends "streamList" | "streamInfo" | "streamBatch">(suffix: string, schema: K, signal?: AbortSignal) {
+  async function get<K extends "streamList" | "streamInfo" | "streamBatch" | "streamLatest">(suffix: string, schema: K, signal?: AbortSignal) {
     const response = await fetcher(host.base + "_tendril/" + suffix, { headers: host.headers(), cache: "no-store", signal });
     let value: any;
     try { value = await response.json(); }
@@ -224,6 +224,7 @@ export function createStreams(host: Host): BrowserStreams {
     list: () => get("streams", "streamList"),
     info: name => get(path(name), "streamInfo"),
     read: (name, options) => get(`${path(name)}/records?${streamReadQuery(options)}`, "streamBatch", options.signal),
+    latest: (name, options = {}) => get(`${path(name)}/latest`, "streamLatest", options.signal),
     subscribe(name, handler, options = {}) {
       assertValid("streamName", name);
       if (typeof handler !== "function") throw new TypeError("A stream subscriber needs a callback");

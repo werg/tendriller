@@ -211,7 +211,7 @@ it("lets an agent test wake delivery without forging an owner instruction", asyn
   const batch = await (await api(h, "GET", "events?after=0")).json<{ events: Array<{ seq: number; type: string; role: string | null; wake: boolean; by: string; data: { kind: string; nonce: string } }> }>();
   expect(batch.events).toContainEqual(expect.objectContaining({
     seq: first.seq, type: "event", role: null, wake: true, by: "agent_probe",
-    data: { kind: "delivery_probe", nonce: first.nonce },
+    data: expect.objectContaining({ kind: "delivery_probe", nonce: first.nonce }),
   }));
   const ack = await (await api(h, "POST", `wake/probe/${first.nonce}/ack`)).json<{ ack_at: number }>();
   expect(ack.ack_at).toBeGreaterThan(0);

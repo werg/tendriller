@@ -153,7 +153,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       ? { branch: env.BRANCH_PREVIEW_BRANCH, commit: env.BRANCH_PREVIEW_SHA } : undefined;
     return json(preview ? { ok: true, preview } : { ok: true });
   }
-  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs", "/tendril-watch.mjs"].includes(path) && req.method === "GET") {
+  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs", "/tendril-watch.mjs", "/tendril-stream.mjs", "/tendril-events.mjs"].includes(path) && req.method === "GET") {
     return asset(env, url, path, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
   }
   if (path === "/tendril-wait.sh" && req.method === "GET") {
@@ -163,13 +163,18 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
     return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
   }
-  if (path === "/agent.md") {
-    const guide = await asset(env, url, "/agent.md");
+  if (path === "/agent.md" || path === "/llms.txt" || /^\/docs\/[A-Z0-9_]+\.md$/.test(path)
+      || path === "/cli/README.md" || path === "/snippets/README.md" || path === "/examples/training-dashboard/README.md") {
+    const guide = await asset(env, url, path);
     if (!guide.ok) return guide;
     return new Response((await guide.text()).replaceAll("https://tendriller.dev", publicBase(env)), {
-      headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" },
+      headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
+  if (path === "/examples/training-dashboard" || path === "/examples/training-dashboard/")
+    return Response.redirect(`${publicBase(env)}/examples/training-dashboard/README.md`, 302);
+  if (/^\/examples\/training-dashboard\/(?:index\.html|app\.js|model\.mjs|setup\.mjs)$/.test(path))
+    return asset(env, url, path, { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
   if (path === "/contract/v1.json") return json(schemaDocument);
   if (path === "/recipes/ui-schema.json") return json({ $schema: schemaDocument.$schema, title: "Tendriller agent-editable interface", ...schemas.interface });
   if (path === "/recipes/catalog.json") return asset(env, url, path);

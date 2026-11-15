@@ -19,6 +19,7 @@ export type CaptureOptions = WireContracts["captureOptions"];
 export type CaptureResult = WireContracts["captureResult"];
 export interface PendingCapture { capture_id: string; name?: string; data: Record<string, unknown>; status: "queued" | "rejected"; blob?: BlobReference; error?: string; message?: string }
 export type PublicEvent<T = unknown> = WireContracts["event"] & { data: T };
+export type DeliveryProbe = WireContracts["deliveryProbe"];
 export interface InstructionEvent extends PublicEvent<{ text: string; via: "text" | "voice" }> { type: "instruction"; role: "owner" }
 export interface Device { id: string; role: Role; name: string; pending: boolean; purpose?: DevicePurpose; pairCode?: string }
 export type DeviceInfo = WireContracts["deviceInfo"];
@@ -107,7 +108,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   control: { hide(): void; show(): void; position(p: "bottom-right" | "bottom-left" | "top-right" | "top-left"): void };
 }
 export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";
-export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord, StreamBatch, StreamHistory,
+export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord, StreamBatch, StreamLatest, StreamHistory,
   StreamAppendResult, StreamReadOptions, StreamSubscribeOptions, BrowserStreams, Producer, ProducerCreate, ProducerResult } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 1;

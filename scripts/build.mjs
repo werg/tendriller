@@ -45,8 +45,21 @@ await build({ ...common, entryPoints: [join(root, "runtime/src/control/speech-wo
 for (const f of readdirSync(join(root, "snippets"))) {
   if (f.endsWith(".js")) copyFileSync(join(root, "snippets", f), join(out, "snippets", f));
 }
-if (existsSync(join(root, "agent.md"))) copyFileSync(join(root, "agent.md"), join(out, "agent.md"));
-for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait", "tendril-watch"]) {
+for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
+// Public documentation and examples must be usable without a source checkout.
+rmSync(join(out, "docs"), { recursive: true, force: true });
+mkdirSync(join(out, "docs"), { recursive: true });
+for (const name of readdirSync(join(root, "docs"))) {
+  if (name.endsWith(".md")) copyFileSync(join(root, "docs", name), join(out, "docs", name));
+}
+mkdirSync(join(out, "cli"), { recursive: true });
+copyFileSync(join(root, "cli/README.md"), join(out, "cli/README.md"));
+copyFileSync(join(root, "snippets/README.md"), join(out, "snippets/README.md"));
+rmSync(join(out, "examples"), { recursive: true, force: true });
+mkdirSync(join(out, "examples/training-dashboard"), { recursive: true });
+for (const name of ["README.md", "setup.mjs", "index.html", "app.js", "model.mjs"])
+  copyFileSync(join(root, "examples/training-dashboard", name), join(out, "examples/training-dashboard", name));
+for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait", "tendril-watch", "tendril-stream", "tendril-events"]) {
   await build({ entryPoints: [join(root, `cli/bin/${name}.mjs`)], outfile: join(out, `${name}.mjs`),
     bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
 }
@@ -75,7 +88,7 @@ if (watching) {
     } while (again);
     building = false;
   }
-  const watchers = ["runtime/src", "server/src/state.ts", "server/src/http.ts", "snippets", "recipes", "contract", "cli/bin", "cli/lib", "cli/scripts", "legal", "docs/assets", "agent.md"].map(path =>
+  const watchers = ["runtime/src", "server/src/state.ts", "server/src/http.ts", "snippets", "recipes", "contract", "cli/bin", "cli/lib", "cli/scripts", "cli/README.md", "examples", "legal", "docs", "agent.md", "llms.txt"].map(path =>
     watch(join(root, path), { recursive: true }, (_event, file) => {
       if (file && /(?:^|\/)(?:node_modules|test-results|\.preview)/.test(String(file))) return;
       clearTimeout(timer); timer = setTimeout(rebuild, 120);

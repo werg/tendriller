@@ -1,14 +1,13 @@
 import { spawn } from 'node:child_process';
-import { MAX_LINE_BYTES, lineRecord } from './records.mjs';
+import { createLineDecoder, validateRecordOptions } from './records.mjs';
+import { commandArguments } from './command.mjs';
 
 const capabilities = Object.freeze({ mode: 'stream', replay: 'none', checkpoint: false });
 
 export function sshArguments(source) {
   if (typeof source.host !== 'string' || !/^(?:[a-zA-Z0-9_.-]+@)?[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$/.test(source.host))
     throw Error('SSH host must be a host alias or hostname, optionally prefixed with user@.');
-  if (!Array.isArray(source.command) || !source.command.length || source.command.length > 32
-    || source.command.some(x => typeof x !== 'string' || !x.length || x.length > 2048 || x.includes('\0')))
-    throw Error('SSH command must be an explicit array of nonempty arguments.');
+  commandArguments(source);
   if (source.port !== undefined && (!Number.isInteger(source.port) || source.port < 1 || source.port > 65535)) throw Error('Invalid SSH port.');
   if (source.format !== undefined && !['jsonl', 'log'].includes(source.format)) throw Error('SSH format must be jsonl or log.');
   // OpenSSH joins command arguments into a shell command on the remote host.
@@ -21,6 +20,7 @@ export function sshArguments(source) {
 
 /** One bounded SSH session. The coordinator owns retry timing and upload backpressure. */
 export function createSshSource(source, { spawn: launch = spawn } = {}) {
+  validateRecordOptions(source);
   const args = sshArguments(source);
   let session;
   return {
@@ -41,23 +41,12 @@ export function createSshSource(source, { spawn: launch = spawn } = {}) {
       session = { stop, closed };
       signal.addEventListener('abort', stop, { once: true });
       if (signal.aborted) stop();
-      let buffered = Buffer.alloc(0), discarding = false;
+      const decoder = createLineDecoder(source, report);
       report('ssh_connecting');
       try {
         for await (const chunk of child.stdout) {
           if (signal.aborted) break;
-          buffered = Buffer.concat([buffered, chunk]);
-          for (;;) {
-            const newline = buffered.indexOf(10);
-            if (newline < 0) {
-              if (buffered.length > MAX_LINE_BYTES) { buffered = Buffer.alloc(0); discarding = true; report('line_too_large'); }
-              break;
-            }
-            const line = buffered.subarray(0, newline); buffered = buffered.subarray(newline + 1);
-            if (discarding || line.length > MAX_LINE_BYTES) { discarding = false; report('line_too_large'); continue; }
-            if (!line.toString('utf8').trim()) continue;
-            yield { records: [lineRecord(source, line.toString('utf8').replace(/\r$/, ''))], health: 'collecting' };
-          }
+          for (const record of decoder.push(chunk)) yield { records: [record], health: 'collecting' };
         }
       } finally {
         signal.removeEventListener('abort', stop);

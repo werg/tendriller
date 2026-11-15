@@ -1132,6 +1132,93 @@
       ],
       "additionalProperties": false
     },
+    "streamLatest": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "durability": {
+          "const": "durable"
+        },
+        "record": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "stream": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "ts": {
+                  "type": "number"
+                },
+                "received_at": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "data": {
+                  "$ref": "#/$defs/streamJson"
+                },
+                "producer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "stream",
+                "seq",
+                "ts",
+                "received_at",
+                "type",
+                "data",
+                "producer",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "stream",
+        "durability",
+        "record",
+        "cursor"
+      ],
+      "additionalProperties": false
+    },
     "streamList": {
       "type": "object",
       "properties": {
@@ -1663,6 +1750,53 @@
       },
       "required": [
         "text"
+      ],
+      "additionalProperties": false
+    },
+    "probeNonce": {
+      "type": "string",
+      "pattern": "^[a-z2-7]{20}$"
+    },
+    "deliveryProbe": {
+      "type": "object",
+      "properties": {
+        "nonce": {
+          "type": "string",
+          "pattern": "^[a-z2-7]{20}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ack_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status_url": {
+          "type": "string"
+        },
+        "ack_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "nonce",
+        "seq",
+        "created_at",
+        "ack_at",
+        "status_url",
+        "ack_url"
       ],
       "additionalProperties": false
     },

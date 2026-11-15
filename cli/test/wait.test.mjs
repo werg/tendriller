@@ -76,3 +76,31 @@ test("tendril wait (CLI) behaves the same", async () => {
   assert.equal(JSON.parse(r.stdout).events.length, 2);
   assert.equal(readFileSync(join(dir, "cursors", "abc234abc234.cursor"), "utf8").trim(), "9");
 });
+
+test("invalid polling numbers fail locally instead of starting an endless retry loop", async () => {
+  const { server, seen, base } = await mock();
+  const dir = mkdtempSync(join(tmpdir(), "tw-"));
+  try {
+    for (const args of [["wait", "--timeout", "NaN"], ["wait", "--timeout", "-1"],
+      ["events", "--follow", "--wait", "-1"], ["events", "--wait", "301"], ["events", "--limit", "0"], ["events", "--after", "1.5"]]) {
+      const r = await run("node", [cli, ...args], { TENDRIL_API: `${base}/api/t/abc234abc234`, TENDRIL_TOKEN: "tk_test", TENDRIL_CONFIG_DIR: dir });
+      assert.equal(r.code, 64, r.stderr);
+    }
+    assert.equal(seen.length, 0);
+  } finally { server.close(); }
+});
+
+test("permanent HTTP errors stop follow and wait without retrying", async () => {
+  let calls = 0;
+  const server = createServer((_req, res) => { calls++; res.writeHead(403, { "content-type": "application/json" }); res.end('{"error":{"code":"forbidden","message":"Access denied"}}'); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const dir = mkdtempSync(join(tmpdir(), "tw-"));
+  try {
+    for (const args of [["wait"], ["events", "--follow"]]) {
+      const r = await run("node", [cli, ...args], { TENDRIL_API: `http://127.0.0.1:${server.address().port}/api/t/abc234abc234`, TENDRIL_TOKEN: "tk_test", TENDRIL_CONFIG_DIR: dir });
+      assert.equal(r.code, 1, r.stderr);
+      assert.equal(JSON.parse(r.stderr).status, 403);
+    }
+    assert.equal(calls, 2);
+  } finally { server.close(); }
+});

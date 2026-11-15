@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseArgs, toPath, parseJsonArg } from "../lib/args.mjs";
+import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
 import { pack, listFiles, isText, guessType, shouldSkip } from "../lib/pack.mjs";
 import {
-  resolveConfig, saveConfig, configDir, cursorPath, readCursor, writeCursor, idFromApi, slug, serverBase,
+  resolveConfig, saveConfig, configDir, cursorPath, checkpointPath, readCursor, writeCursor, idFromApi, slug, serverBase,
 } from "../lib/config.mjs";
 import { injectRuntime } from "../lib/preview.mjs";
 import { terminalQr } from "../lib/qr.mjs";
@@ -24,7 +24,12 @@ test("parseArgs: positional, value flags, boolean flags, = form, --", () => {
   assert.deepEqual(d.args, ["--not-a-flag"]);
   assert.deepEqual(parseArgs(["events", "--follow=false"]).flags, { follow: false });
   assert.throws(() => parseArgs(["events", "--wait"]), /needs a value/);
+  assert.throws(() => parseArgs(["events", "--wait", "--peek"]), /needs a value/);
+  assert.throws(() => parseArgs(["eval", "-f", "--pretty"]), /needs a value/);
   assert.throws(() => parseArgs(["-z"]), /unknown flag/);
+  assert.equal(intFlag("3", "limit", 100), 3);
+  for (const value of ["", "NaN", "0.5", "9007199254740992"])
+    assert.throws(() => intFlag(value, "limit", 100), /safe integer/);
 });
 
 test("toPath and parseJsonArg", () => {
@@ -122,6 +127,12 @@ test("config: dirs, server base, cursor files", () => {
   writeCursor(p, 42);
   assert.equal(readCursor(p), 42);
   assert.equal(cursorPath({ id: "abc" }, { "cursor-file": "/c" }, {}), "/c");
+  const cfg = { id: "abc", api: "https://example.test/api/t/abc", configFile: "/configs/page.json" };
+  assert.equal(checkpointPath(cfg, {}, {}), "/configs/page.json.events.json");
+  assert.equal(checkpointPath(cfg, { "checkpoint-file": "/custom" }, {}), "/custom");
+  assert.equal(checkpointPath(cfg, {}, { TENDRIL_CHECKPOINT_FILE: "/env" }), "/env");
+  const withoutFile = { ...cfg, configFile: null };
+  assert.notEqual(checkpointPath(withoutFile, {}, { HOME: dir }), checkpointPath({ ...withoutFile, api: "https://other.test/api/t/abc" }, {}, { HOME: dir }));
 });
 
 test("preview: runtime injected right after <head>", () => {

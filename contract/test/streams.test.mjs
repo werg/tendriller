@@ -89,3 +89,18 @@ test("producer authorization errors and malformed stream responses remain explic
   const malformed = createClient({ api: "https://example.test", token: "tk_private" }, { fetch: async () => Response.json({ ...batch, records: [{ data: {} }] }) });
   await assert.rejects(malformed.streams.read(record.stream, { after: 0 }), error => error instanceof ApiError && error.code === "invalid_response");
 });
+
+test("latest snapshot reads validate nullable records, names, response shape and cancellation", async () => {
+  const value = { stream: record.stream, durability: "durable", record, cursor: 1 };
+  const signal = new AbortController().signal;
+  const client = createClient({ api: "https://example.test", token: "private" }, { fetch: async (url, options) => {
+    assert.equal(url, `https://example.test/streams/${record.stream}/latest`);
+    assert.equal(options.signal, signal);
+    return Response.json(value);
+  } });
+  assert.deepEqual(await client.streams.latest(record.stream, { signal }), value);
+  assertValid("streamLatest", { ...value, record: null, cursor: 12 });
+  assert.throws(() => client.streams.latest("../tokens"), ContractError);
+  const malformed = createClient({ api: "https://example.test", token: "private" }, { fetch: async () => Response.json({ ...value, record: {} }) });
+  await assert.rejects(malformed.streams.latest(record.stream), error => error instanceof ApiError && error.code === "invalid_response");
+});

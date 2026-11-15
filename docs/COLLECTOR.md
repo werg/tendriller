@@ -8,16 +8,30 @@ can append only to the custom streams granted when it was created.
 
 ## A working dashboard
 
-From a checkout, with Node 22.15 or newer:
+Install the standalone collector and example with Node 22.15 or newer. These
+files are served by Tendriller; no repository checkout or npm dependencies are
+needed:
 
 ```sh
+umask 077
+curl -fsS https://tendriller.dev/tendril-stream.mjs -o tendril-stream.mjs
+mkdir -p tendriller-dashboard
+for file in setup.mjs index.html app.js model.mjs; do
+  curl -fsS "https://tendriller.dev/examples/training-dashboard/$file" \
+    -o "tendriller-dashboard/$file"
+done
+```
+
+The downloaded page files are editable template source. The setup script
+publishes them through the authenticated API:
+
+```sh
+TENDRILLER_SERVICE_BASE=https://tendriller.dev \
 TENDRILLER_OWNER=you@example.com \
 TRAINING_METRICS=/absolute/path/metrics.jsonl \
 TRAINING_LOG=/absolute/path/training.log \
 TRAINING_RUN=experiment-42 \
-node examples/training-dashboard/setup.mjs
-
-node cli/bin/tendril-stream.mjs ./tendriller-training/collector.json
+node tendriller-dashboard/setup.mjs
 ```
 
 Use an email verified by your GitHub or Google account. The setup script creates
@@ -30,10 +44,20 @@ It creates three owner-readable streams:
 | `training.metrics` | Durable | JSONL records with training step and numeric metrics |
 | `training.logs` | Durable | Complete lines from a text log |
 
-Open the printed page URL to claim the page. The ordinary page/account lifetime
-rules still apply; a long-running dashboard should be made resident after claim
-with the existing lifetime API. A collector heartbeat does not claim a page or
-keep an AI conversation available.
+**Open the printed page URL and sign in to claim the page before starting the
+collector.** Custom streams share a 1 MiB allowance while the page is unclaimed
+and 8 MiB after claim. Starting a large backlog before claim can fill the smaller
+allowance and leave the collector buffering. Then start collection:
+
+```sh
+node ./tendril-stream.mjs ./tendriller-training/collector.json
+```
+
+The ordinary page/account lifetime rules still apply; a long-running dashboard
+should be made resident after claim with the existing lifetime API. A collector
+heartbeat does not claim a page or keep an AI conversation available. From a
+source checkout, use `node examples/training-dashboard/setup.mjs` and
+`node cli/bin/tendril-stream.mjs` instead; the configuration is the same.
 
 The dashboard displays machine freshness, a selectable training chart, and a
 bounded log tail. Durable subscriptions load retained history and resume from a
@@ -63,6 +87,45 @@ Tendriller request. `ts` may be an epoch-millisecond timestamp. The optional
 envelope `{"ts":...,"type":"metrics","data":{...}}` is also accepted. The
 collector adds the configured `source` and `run` to each record's data. It does
 not parse text logs into chart values; emit numeric metrics explicitly.
+
+### Select fields from an existing wide log
+
+A JSONL source can read the training job's existing output directly, selecting
+only the fields the dashboard needs before creating an upload record:
+
+```json
+{
+  "id": "training-metrics",
+  "type": "jsonl",
+  "path": "/work/run/train.jsonl",
+  "stream": "training.metrics",
+  "durability": "durable",
+  "max_line_bytes": 1048576,
+  "fields": {
+    "step": ["global_step"],
+    "loss": ["metrics", "train/loss"],
+    "tokens_per_second": ["throughput", "tokens_per_second"]
+  },
+  "run": "experiment-42"
+}
+```
+
+`fields` maps output names to literal key paths. `["train.loss"]` selects one
+key containing a period; `["train", "loss"]` selects a nested property. Numeric
+segments address array indexes. For an envelope with `data`, paths start inside
+`data`; otherwise they start at the whole JSON value. Missing paths are omitted,
+and JSON values retain their types, including `null`. The original `ts` and
+`type` envelope values are preserved; `source` and `run` always come from the
+configuration. Projection is selection and renaming only; it runs no expressions
+or application code. It works for file, SSH, command, and host sources.
+
+There can be 1–64 selected fields, each with at most 16 path segments. Input lines
+default to 32 KiB. Set `max_line_bytes` from 1 KiB to 1 MiB when wider input is
+expected. The selected record, including its envelope, must still fit the
+collector's 48 KiB upload limit. Increasing the input limit does not increase
+server record or storage quotas. Omit `fields` to preserve the existing complete
+record behavior. Collector-generated diagnostics retain their reason even when
+field selection is configured.
 
 ## Configuration
 
@@ -95,7 +158,7 @@ not parse text logs into chart values; emit numeric metrics explicitly.
 
 Paths are resolved relative to the configuration file. Source IDs must be unique.
 Configure at most 32 sources. Poll intervals are 500–3,600,000 milliseconds;
-defaults are five seconds for host samples and one second for files. File sources
+defaults are five seconds for host samples and one second for files and commands. File sources
 require durable streams. The configured durability must agree with the server;
 a mismatch stops the collector with queued records preserved.
 
@@ -104,6 +167,61 @@ until a second sample establishes an interval. Optional GPU sampling invokes
 `nvidia-smi` with a fixed read-only query and a three-second timeout. A missing
 driver/tool reports `gpu_status:"unavailable"`; CPU and RAM collection continues.
 This initial adapter does not collect per-process, disk, or network counters.
+
+## Periodic local commands and table snapshots
+
+Use a `command` source for an existing local program that reports data, such as
+a process inventory, disk status, job queue, or experiment summary:
+
+```json
+{
+  "id": "processes",
+  "type": "command",
+  "command": ["python3", "/work/tools/process-snapshot.py", "--json"],
+  "cwd": "/work",
+  "interval_ms": 5000,
+  "timeout_ms": 3000,
+  "stream": "machine.processes",
+  "durability": "durable",
+  "max_line_bytes": 262144,
+  "fields": {"processes": ["processes"]}
+}
+```
+
+The configured program emits JSONL, or one JSON value with no final newline.
+For a table, emit one record containing the complete current table, for example
+`{"type":"process_snapshot","data":{"processes":[{"pid":321,"cpu_percent":4.2}]}}`.
+An empty `processes` array explicitly replaces the prior table with an empty one.
+Use stable application keys such as a process identity for browser row updates.
+
+For a table that must be available when a page opens, create its ordinary
+durable stream with `max_records:1` and an appropriate `max_age_seconds`, then
+read `await tendril.streams.latest("machine.processes")` and subscribe for
+updates. Each snapshot replaces the previous retained record. This provides
+one last-known value for the whole stream, not a keyed database: include all
+current rows in each record, and use a separate stream per independent snapshot.
+Use an ephemeral stream when only currently connected subscribers need the
+table. Its next snapshot will populate the view; it has no retained initial value.
+
+The executable and every argument are passed directly to the operating system;
+there is no implicit local shell. Pipes, redirects, and variable expansion are
+literal arguments. `cwd` is optional and, like file paths, resolves relative to
+the configuration file. Keep programs/configuration on the collector machine;
+page data does not choose commands. `format:"log"` accepts text output instead.
+
+An invocation has a ten-second default timeout, configurable with `timeout_ms`
+from 100 to 300,000 milliseconds. Its stdout is limited to 1 MiB and 100 records.
+A timeout, nonzero exit, excessive output, or shutdown discards that invocation's
+partial result and reports a source status. The collector closes its stdout
+reader and stops the command, escalating to SIGKILL after two seconds if needed.
+On POSIX systems the command has its own process group, so cancellation also
+stops ordinary descendants; elsewhere it terminates the direct child. An inherited
+stdout pipe cannot prolong collector shutdown. No two invocations of
+one source overlap, and a slow command does not block other source schedules.
+The next interval obtains a fresh observation; failed command output cannot be
+replayed. Once a successful durable snapshot enters the spool, its normal upload
+retries preserve the same record ID. Command stderr is never included in records
+or collector status output.
 
 ## SSH sources
 
@@ -116,7 +234,7 @@ machine and add:
   "id": "gpu-worker-2",
   "type": "ssh",
   "host": "trainer@gpu-worker-2",
-  "command": ["node", "/opt/tendriller/cli/bin/tendril-stream.mjs", "--sample", "5000", "--gpu"],
+  "command": ["node", "/opt/tendriller/tendril-stream.mjs", "--sample", "5000", "--gpu"],
   "stream": "machine.utilization",
   "durability": "ephemeral"
 }
@@ -125,7 +243,9 @@ machine and add:
 `--sample` emits JSONL to stdout and uses no Tendriller credential on the remote
 machine. The main collector adds the source identity and publishes it through
 its local producer token. A command can instead emit training JSONL, or set
-`format:"log"` for text lines. `port` is optional. Use an SSH config alias for
+`format:"log"` for text lines. The same `fields` projection and `max_line_bytes`
+options apply. SSH is one live session, while a local `command` is one finite
+observation per interval. `port` is optional. Use an SSH config alias for
 ProxyJump or identity settings.
 
 SIGINT/SIGTERM cancels a blocked stdout drain and discards pending live sample
@@ -160,8 +280,11 @@ checkpoint. Do not pipe the training process itself through this SSH connection.
   the training job. File rotation/deletion during a prolonged outage can still
   remove data before collection. Rotated filenames are not followed after rename;
   the collector starts reading the replacement file.
-- **Input limits:** lines above 32 KiB and malformed JSON produce explicit
-  `collector_error` records. Partial UTF-8 lines wait for their newline. Rename,
+- **Input limits:** file lines above the configured `max_line_bytes` and malformed
+  JSON produce explicit `collector_error` records. SSH reports `line_too_large`
+  and discards that line; a bounded command rejects the whole observation if its
+  line or output limit is exceeded. The next complete valid line can be read.
+  Partial UTF-8 file/SSH lines wait for their newline. Rename,
   truncation, and copytruncate/regrowth are detected using file identity, size,
   and a checkpoint boundary fingerprint derived from the same captured bytes as
   the records. A concurrent replacement cannot supply a new fingerprint for old
@@ -199,7 +322,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /opt/tendriller/cli/bin/tendril-stream.mjs /home/you/tendriller-training/collector.json
+ExecStart=/usr/bin/node /opt/tendriller/tendril-stream.mjs /home/you/tendriller-training/collector.json
 Restart=on-failure
 RestartSec=10
 UMask=0077
@@ -208,11 +331,12 @@ UMask=0077
 WantedBy=default.target
 ```
 
-SIGINT/SIGTERM abort outstanding requests, stop SSH children, preserve durable
+SIGINT/SIGTERM abort outstanding requests, stop command and SSH children, preserve durable
 work, and release the spool lock. Status changes are JSON lines on stderr with
 source, state, and timestamp. Network responses, credentials, and remote stderr
 are never copied into those notices. Check `spool_full`, `buffering`,
-`waiting_for_file`, `gpu_unavailable`, and SSH gap states in the service log.
+`waiting_for_file`, `gpu_unavailable`, `command_timeout`, `command_failed`,
+`command_output_too_large`, `spool_full_command_gap`, and SSH gap states in the service log.
 
 ## Source adapter boundary
 
@@ -224,6 +348,7 @@ bounded buffering, upload acknowledgements, and retry timing.
 | --- | --- | --- | --- |
 | Host | Periodic sample | None; each sample observes the current machine | None; CPU interval counters are local sampling state |
 | JSONL/text file | Bounded read | Can reread input while the source file is retained | Proposed file identity, byte offset, boundary fingerprint |
+| Local command | Periodic finite command | None; the next invocation is a fresh observation | None |
 | SSH | One live command session | None; reconnect can miss remote output | None |
 
 These capabilities describe the **input source**, independently of the
@@ -244,5 +369,8 @@ acknowledgements/restart, bounded atomic checkpoints, ephemeral nonpersistence,
 UTF-8 and rotation, SSH argument safety, lock ownership, invalid acknowledgements,
 and process shutdown. `node --test cli/test/stream-sources.test.mjs` covers adapter
 capabilities, file resume, host sampling state, bounded SSH input and cancellation,
-and live-input backpressure. Adapter tests use a fake SSH child and host sampler;
-they do not contact a real GPU or SSH host.
+and live-input backpressure. `node --test cli/test/stream-source-options.test.mjs`
+covers large-line projection, literal field paths, split UTF-8, command argument
+boundaries, finite output/timeout/cancellation, and concurrent source scheduling
+with durable recovery. Adapter tests use a fake SSH child and host sampler, plus
+small local Node commands; they do not contact a real GPU or SSH host.

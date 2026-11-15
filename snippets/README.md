@@ -36,6 +36,7 @@ Sensor permissions are the browser's own prompts and most need a tap: call `open
 | `serial.js` | Web Serial line reader/writer, `request()` for command/reply | Chromium desktop only | `p = await serial.connect({onLine}); await p.request("STATUS")` |
 | `bluetooth.js` | Web Bluetooth: connect by service, read, write, notify | Chromium on desktop and Android; not iOS | `d = await bluetooth.connect({services: ["heart_rate"]})` |
 | `list.js` | Shared list (shopping, packing) stored in state as records keyed by id; add/tick/edit/remove; offline via `tendril.state` | All | `list.mount("#list", {path: "shopping"})` |
+| `chart.js` | Bounded numeric series with axes, gaps, legends and an accessible values table; no chart library or CDN | All current browsers | `chart.mount("#plot", {xLabel:"Step"}).update([{id:"run",points:[{x:1,y:0.8}]}])` |
 | `input-kit.js` | User-triggered photo, audio, location, motion, and file controls with one event contract | Depends on input | `inputs.mount("#inputs", {modalities:["photo","location"]})` |
 | `playground.js` | Live capability gallery and working controls on this device | All | `playground.mount("#explore")` |
 | `connectors.js` | User-triggered screen, clipboard, contacts, directory, gamepad, MIDI, HID, USB, NFC, XR, and Generic Sensor helpers | API and hardware dependent | `const s = await connectors.hid(); await s.sendSnapshot(); await s.stop()` |
@@ -46,6 +47,36 @@ The hardware lab's send buttons are a demo policy. Agent-authored pages can call
 automatic threshold alerts and aggregated telemetry. Use `{wake:false}` for data
 that should wait for the agent's next poll. Browser permission choosers still
 require a user gesture where the browser mandates one.
+
+## Charts for streams or shared state
+
+Load `_tendril/snippets/chart.js` and give the chart numeric `{x, y}` points. The
+chart does not assume a particular stream name, training framework, or data shape:
+the page selects fields from stream records or shared state.
+
+```js
+const chart = tendrilSnippets.chart.mount('#plot', {
+  title: 'Temperature', xLabel: 'Time', yLabel: '°C', maxPoints: 500,
+  xFormat: value => new Date(value).toLocaleTimeString(),
+});
+chart.update([{ id: 'sensor', label: 'Room sensor', points: [] }]);
+const unsubscribe = tendril.streams.subscribe('sensor.temperature', record => {
+  chart.append('sensor', { x: record.ts, y: record.data.temperature });
+}, { after: 0, onGap: () => { /* show a history-gap notice in the page */ } });
+// When removing this view: unsubscribe(); chart.destroy();
+```
+
+`update(series, options?)` replaces all series; `append(id, pointOrPoints)` adds
+samples to an existing series. Both return `{series, samples, min, max}`.
+Use one stable series id per source/run to avoid joining unrelated measurements.
+`maxPoints` bounds retained points per series (default 500, allowed 2–10,000), and
+the chart accepts at most 24 series. Points sort by x and retain the newest values.
+Invalid x values are ignored; a null or nonnumeric y leaves a visible line break.
+Values are never coerced from strings or booleans. The expandable table shows at
+most 100 recent points across all series and preserves keyboard focus across updates.
+The chart owns no network connection; the caller handles subscriptions, replay,
+retention gaps and cleanup. [The training dashboard](../examples/training-dashboard/)
+uses the same helper for training steps and timestamps.
 
 ## Hands-free voice
 

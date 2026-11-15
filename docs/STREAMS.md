@@ -82,6 +82,7 @@ producer grants. Stream names match `[a-z][a-z0-9._-]{0,63}`; `system.*` is rese
 | Inspect policy | `GET A/streams/<name>` |
 | Append a batch | `POST A/streams/<name>/records` |
 | Read retained records | `GET A/streams/<name>/records?after=<seq>&limit=<n>` |
+| Read the latest retained snapshot | `GET A/streams/<name>/latest` |
 | List/create producer grants | `GET/POST A/producers` |
 | Revoke a producer | `DELETE A/producers/<name>` |
 
@@ -149,7 +150,7 @@ fail with `not_replayable` instead of returning misleading empty history.
 ## Browser consumers
 
 The injected runtime exposes `tendril.streams.list()`, `.info(name)`,
-`.read(name, {after, limit})`, `.subscribe(name, handler, options)`, and
+`.read(name, {after, limit})`, `.latest(name)`, `.subscribe(name, handler, options)`, and
 `.publish(name, {records})`. HTTP reads use `_tendril/streams` and page sessions;
 the browser never needs an agent or producer token.
 
@@ -170,13 +171,55 @@ Only an owner page may publish to custom streams. Browser stream publishing
 requires a live connection; callers that need durable offline production use
 the collector. Existing `send` and shared-state offline behavior is unchanged.
 
+## Current values and whole-table snapshots
+
+For a process list, inventory, or other replaceable view, publish a **complete
+snapshot** as each record on a durable stream with `max_records: 1`. For example,
+`data: {rows: [{pid: 17, cpu: 42}]}` replaces the consumer's whole table; a missing
+row has disappeared, rather than lingering as it could with per-row updates.
+Use one stream per independently updated source, or combine sources in one
+producer. Retention counts records across the whole stream, not per producer/key.
+This does not add a new stream kind or promise keyed merge semantics.
+
+`GET A/streams/<name>/latest` returns `{stream, durability:"durable", record, cursor}`.
+`record` is the newest retained record or `null` when empty/expired. `cursor` is
+the stream's high-water sequence, including when its payload has expired.
+This read deliberately skips older history; it never acknowledges application
+processing. Ephemeral streams return `not_replayable`, since they retain no value.
+The typed client exposes `client.streams.latest(name)` and MCP exposes
+`latest_stream`; normal stream reader permissions apply to every transport.
+
+```js
+const snapshot = await tendril.streams.latest('machine.processes');
+renderRows(snapshot.record?.data.rows ?? []);
+const stop = tendril.streams.subscribe('machine.processes', record => {
+  renderRows(record.data.rows); // Replace, rather than append rows.
+}, { after: snapshot.cursor, onGap: () => showStatus('Intermediate snapshots expired') });
+```
+
+The explicit cursor catches updates between the read and subscription; retained
+gaps remain visible. Check `record.received_at`/`record.ts` for freshness and clear
+or mark stale rows when the source stops. Choose `max_age_seconds` deliberately:
+even a one-record stream expires. Use a longer retained stream when a chart or
+audit trail needs earlier samples. The optional
+[`chart.js` snippet](../snippets/README.md#charts-for-streams-or-shared-state) renders bounded numeric time series.
+
 ## Lifecycle, limits, and operational boundaries
 
-Create a telemetry-only page with `mode: "dashboard"`. It can publish without
-an agent wake receiver. The default `interactive` mode retains the receiver
-requirement. This changes readiness, not access control, page/account lifetime,
-ownership, holds, or write-pause enforcement. Use a claimed resident tendril for
-an ongoing dashboard within the account's existing resident allowance.
+**Interactive pages support streams and conversation together.** Create a
+telemetry-only page with `mode: "dashboard"` to publish without an agent wake
+receiver. The default `interactive` mode retains the receiver requirement.
+Both modes have the same stream support, access control, ownership, holds, and
+write-pause enforcement. Collector activity extends the idle lifetime of claimed
+ad-hoc dashboards; interactive pages still use browser/agent activity for idle
+expiry. Use a claimed resident tendril for an unattended long-running interactive
+dashboard within the account's existing resident allowance.
+
+Setup order is: create/configure the page, attach a receiver if interactive,
+publish, have the owner open the URL and sign in to claim it, then start collectors
+or historical backfills. The custom stream retention allowance rises from
+1 MiB unclaimed to 8 MiB claimed. A claimed page still has bounded retention;
+select limits that fit the aggregate allowance before backfilling.
 
 Producer activity is separate from conversational presence. A collector upload
 updates its own `last_seen`; it does not mark the AI as attentive or clear a

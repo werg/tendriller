@@ -575,12 +575,20 @@ route("GET", /^wake$/, (t) => json(t.renderWake()));
 // Diagnostic only: a token holder can exercise the real wake path without
 // impersonating an owner. The resumed agent acknowledges after reading it.
 interface DeliveryProbe { nonce: string; seq: number; created_at: number; ack_at: number | null }
-function probe(t: Tendril, nonce: string): DeliveryProbe {
+function probe(t: Tendril, nonce?: string): DeliveryProbe {
   const p = t.db.get<DeliveryProbe | null>("delivery_probe", null);
-  if (!p || p.nonce !== nonce || t.now() - p.created_at > 10 * 60_000)
+  if (!p || (nonce !== undefined && p.nonce !== nonce) || t.now() - p.created_at > 10 * 60_000)
     throw new HttpError(404, "not_found", "Delivery probe is unknown or expired");
   return p;
 }
+function probeUrls(t: Tendril, nonce: string) {
+  const status_url = `${apiUrl(t.env, t.tid)}/wake/probe/${nonce}`;
+  return { status_url, ack_url: `${status_url}/ack` };
+}
+route("GET", /^wake\/probe$/, (t) => {
+  const p = probe(t);
+  return json({ ...p, ...probeUrls(t, p.nonce) });
+});
 route("POST", /^wake\/probe$/, (t) => {
   const now = t.now();
   const old = t.db.get<{ window: number; count: number }>("delivery_probe_budget", { window: now, count: 0 });
@@ -590,20 +598,19 @@ route("POST", /^wake\/probe$/, (t) => {
   t.db.set("delivery_probe_budget", budget);
   const nonce = randomB32(20);
   const event = addEvent(t, {
-    type: "event", data: { kind: "delivery_probe", nonce }, role: null,
+    type: "event", data: { kind: "delivery_probe", nonce, ...probeUrls(t, nonce) }, role: null,
     by: "agent_probe", wake: true, cls: "page", force: true,
   });
   const p: DeliveryProbe = { nonce, seq: event.seq, created_at: now, ack_at: null };
   t.db.set("delivery_probe", p);
-  const base = apiUrl(t.env, t.tid);
-  return json({ ...p, status_url: `${base}/wake/probe/${nonce}`, ack_url: `${base}/wake/probe/${nonce}/ack` }, 201);
+  return json({ ...p, ...probeUrls(t, nonce) }, 201);
 });
-route("GET", /^wake\/probe\/([a-z2-7]{20})$/, (t, _req, _url, _by, [nonce]) => json(probe(t, nonce)));
+route("GET", /^wake\/probe\/([a-z2-7]{20})$/, (t, _req, _url, _by, [nonce]) => json({ ...probe(t, nonce), ...probeUrls(t, nonce) }));
 route("POST", /^wake\/probe\/([a-z2-7]{20})\/ack$/, (t, _req, _url, _by, [nonce]) => {
   const p = probe(t, nonce);
   if (t.db.get<number>("agent_cursor", 0) < p.seq) throw new HttpError(409, "not_read", "Read the diagnostic event before acknowledging it");
   if (p.ack_at === null) { p.ack_at = t.now(); t.db.set("delivery_probe", p); }
-  return json(p);
+  return json({ ...p, ...probeUrls(t, nonce) });
 });
 
 route("PUT", /^wake$/, async (t, req) => {

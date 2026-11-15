@@ -50,39 +50,18 @@ function renderMachines() {
   $('machines').replaceChildren(...cards);
 }
 
+let chart;
 function draw() {
-  const svg = $('chart'), metric = $('metric').value, run = $('run').value;
-  const { axis, groups } = chartSeries(records, metric, run), points = groups.flatMap(group => group.points);
-  svg.replaceChildren();
-  $('chart-legend').replaceChildren();
-  const node = (tag, attrs, text) => { const n = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [name, value] of Object.entries(attrs)) n.setAttribute(name, value); if (text !== undefined) n.textContent = text; svg.append(n); return n; };
-  if (!points.length) {
-    node('text', { x: 450, y: 140, 'text-anchor': 'middle' }, 'Waiting for metric samples');
-    $('chart-summary').textContent = 'No samples for this metric and source selection.';
-    svg.setAttribute('aria-label', 'No matching metric samples'); return;
-  }
-  const xs = points.map(p => p.x), ys = points.map(p => p.y), lo = Math.min(...ys), hi = Math.max(...ys), minX = Math.min(...xs), maxX = Math.max(...xs);
-  const pad = hi === lo ? Math.abs(lo) * 0.05 || 1 : 0, yMin = lo - pad, yMax = hi + pad;
-  const x = value => 72 + (value - minX) / (maxX - minX || 1) * 804, y = value => 236 - (value - yMin) / (yMax - yMin) * 212;
-  for (let i = 0; i < 5; i++) {
-    const value = yMin + (yMax - yMin) * i / 4, height = y(value);
-    node('line', { x1: 72, y1: height, x2: 876, y2: height, class: 'grid' });
-    node('text', { x: 62, y: height + 4, 'text-anchor': 'end' }, format(value));
-  }
-  const palette = matchMedia('(prefers-color-scheme:light)').matches
-    ? ['#087c55', '#2768c5', '#b1551a', '#8145ba', '#b12e69'] : ['#84e4b7', '#7ec8ff', '#ffb480', '#c6a6ff', '#f998bb'];
-  groups.forEach((group, i) => {
-    const color = palette[i % palette.length];
-    const path = node('path', { d: group.points.map((p, j) => `${j ? 'L' : 'M'}${x(p.x).toFixed(2)},${y(p.y).toFixed(2)}`).join(' '), class: 'series' });
-    path.style.stroke = color;
-    if (group.points.length === 1) node('circle', { cx: x(group.points[0].x), cy: y(group.points[0].y), r: 4, fill: color });
-    const label = element('span', `● ${group.label}: ${format(group.points.at(-1).y)}`); label.style.color = color;
-    $('chart-legend').append(label);
+  const metric = $('metric').value, run = $('run').value;
+  const { axis, groups } = chartSeries(records, metric, run);
+  chart ||= window.tendrilSnippets.chart.mount('#chart', { title: 'Metric history', maxPoints: 2000 });
+  const result = chart.update(groups.slice(0, 24).map(group => ({ id: group.key, label: group.label, points: group.points })), {
+    title: metric, xLabel: axis === 'step' ? 'Step' : 'Time', yLabel: metric,
+    xFormat: axis === 'step' ? format : value => new Date(value).toLocaleTimeString(), yFormat: format,
   });
-  const tick = value => axis === 'step' ? `Step ${format(value)}` : new Date(value).toLocaleTimeString();
-  node('text', { x: 72, y: 266 }, tick(minX)); node('text', { x: 876, y: 266, 'text-anchor': 'end' }, tick(maxX));
-  const summary = `${metric} · ${points.length} samples across ${groups.length} source/run series · min ${format(lo)} · max ${format(hi)}`;
-  svg.setAttribute('aria-label', summary); $('chart-summary').textContent = summary;
+  $('chart-summary').textContent = result.samples
+    ? `${result.samples} samples across ${result.series} source/run series${groups.length > 24 ? ' · Showing the first 24 series; select a source for the rest.' : ''}`
+    : 'No samples for this metric and source selection.';
 }
 
 function render() {

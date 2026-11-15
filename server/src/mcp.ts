@@ -282,9 +282,9 @@ const TOOLS: Tool[] = [
   },
   {
     name: "check_delivery_probe",
-    description: "Check whether a diagnostic event was acknowledged by a resumed agent turn.",
-    inputSchema: obj({ nonce: { type: "string" } }, ["nonce"]),
-    call: (a) => ({ method: "GET", rest: `wake/probe/${a.nonce}` }),
+    description: "Check whether a diagnostic event was acknowledged by a resumed agent turn. Omit nonce to recover the newest unexpired probe, including its status_url and ack_url.",
+    inputSchema: obj({ nonce: { type: "string", pattern: "^[a-z2-7]{20}$" } }),
+    call: (a) => ({ method: "GET", rest: a.nonce === undefined ? "wake/probe" : `wake/probe/${a.nonce}` }),
   },
   {
     name: "acknowledge_delivery_probe",

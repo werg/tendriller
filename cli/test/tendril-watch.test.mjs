@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +68,37 @@ test('stops with one notice when the socket keeps being refused', async () => {
     });
     assert.equal(code, 1);
     assert.match(t.out.stdout, /^tendril-watch: stopped, the socket was refused five times/);
+    assert.ok(!t.out.stdout.includes(token));
+  } finally { await t.close(); }
+});
+
+test('reconnect uses the handled checkpoint instead of an advanced legacy read cursor', async () => {
+  const t = await setup();
+  try {
+    await until(() => t.sockets.length === 1);
+    const cfg = JSON.parse(readFileSync(t.file, 'utf8'));
+    writeFileSync(t.file, JSON.stringify({ ...cfg, cursor: 100 }));
+    writeFileSync(t.file + '.events.json', JSON.stringify({ version: 1, api: cfg.api, handled_cursor: 8, delivered_cursor: 9 }));
+    t.sockets[0].terminate();
+    await until(() => t.sockets.length === 2);
+    assert.match(t.urls[1], /after=8$/);
+    writeFileSync(t.file + '.events.json', JSON.stringify({ version: 1, api: cfg.api, handled_cursor: 9, delivered_cursor: 9 }));
+    t.sockets[1].terminate();
+    await until(() => t.sockets.length === 3);
+    assert.match(t.urls[2], /after=9$/);
+  } finally { await t.close(); }
+});
+
+test('a checkpoint from another page stops the watch instead of skipping input', async () => {
+  const t = await setup();
+  try {
+    await until(() => t.sockets.length === 1);
+    writeFileSync(t.file + '.events.json', JSON.stringify({ version: 1, api: 'https://other.invalid/api/t/aaaaaaaaaaaa', handled_cursor: 999, delivered_cursor: 999 }));
+    const stopped = new Promise(resolve => t.child.on('exit', resolve));
+    t.sockets[0].terminate();
+    assert.equal(await stopped, 1);
+    assert.equal(t.urls.length, 1);
+    assert.match(t.out.stdout, /checkpoint belongs to another page API/);
     assert.ok(!t.out.stdout.includes(token));
   } finally { await t.close(); }
 });

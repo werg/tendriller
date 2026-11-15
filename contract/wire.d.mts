@@ -22,6 +22,7 @@ export interface WireContracts {
   "streamAppend": { "records": Array<{ "id": string; "ts"?: number; "type": string; "data": WireContracts["streamJson"]; }>; };
   "streamAppendResult": { "records": Array<{ "stream": string; "seq": number; "ts": number; "received_at": number; "type": string; "data": WireContracts["streamJson"]; "producer": string; "id": (string) | (null); }>; "cursor": number; "durability": "durable" | "ephemeral"; };
   "streamBatch": { "stream": string; "durability": "durable" | "ephemeral"; "records": Array<{ "stream": string; "seq": number; "ts": number; "received_at": number; "type": string; "data": WireContracts["streamJson"]; "producer": string; "id": (string) | (null); }>; "cursor": number; "history": { "earliest_available_seq": (number) | (null); "latest_seq": number; "gap": boolean; "missing_through": (number) | (null); }; };
+  "streamLatest": { "stream": string; "durability": "durable"; "record": ({ "stream": string; "seq": number; "ts": number; "received_at": number; "type": string; "data": WireContracts["streamJson"]; "producer": string; "id": (string) | (null); }) | (null); "cursor": number; };
   "streamList": { "streams": Array<{ "name": string; "durability": "durable" | "ephemeral"; "readers": "agent" | "owner" | "page"; "builtin": boolean; "max_records": (number) | (null); "max_age_seconds": (number) | (null); }>; };
   "streamSubscription": { "stream": string; "durability": "durable" | "ephemeral"; "cursor": number; "batch"?: { "stream": string; "durability": "durable" | "ephemeral"; "records": Array<{ "stream": string; "seq": number; "ts": number; "received_at": number; "type": string; "data": WireContracts["streamJson"]; "producer": string; "id": (string) | (null); }>; "cursor": number; "history": { "earliest_available_seq": (number) | (null); "latest_seq": number; "gap": boolean; "missing_through": (number) | (null); }; }; [key: string]: unknown; };
   "producer": { "name": string; "streams": Array<string>; "created_at": number; "last_seen": (number) | (null); };
@@ -32,6 +33,8 @@ export interface WireContracts {
   "errorResponse": { "error": { "code": string; "message": string; "details"?: Array<{ "path": string; "message": string; }>; [key: string]: unknown; }; };
   "create": { "name"?: string; "owner": string; "lifetime"?: "ad_hoc"; "mode"?: "interactive" | "dashboard"; };
   "say": { "text": string; "speak"?: boolean; "in_reply_to"?: number; "device"?: string; "speak_on"?: string; };
+  "probeNonce": string;
+  "deliveryProbe": { "nonce": string; "seq": number; "created_at": number; "ack_at": (number) | (null); "status_url": string; "ack_url": string; };
   "sayMessage": { "text": string; "speak"?: boolean; "in_reply_to"?: number; "device"?: string; "speak_on"?: string; "message_id"?: string; "ts"?: number; "present"?: boolean; [key: string]: unknown; };
   "stateOperation": ({ "op": "set"; "path": (string) | (Array<(string) | (number)>); "value": unknown; }) | ({ "op": "delete"; "path": (string) | (Array<(string) | (number)>); });
   "stateOperations": Array<({ "op": "set"; "path": (string) | (Array<(string) | (number)>); "value": unknown; }) | ({ "op": "delete"; "path": (string) | (Array<(string) | (number)>); })>;

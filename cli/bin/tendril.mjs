@@ -5,16 +5,17 @@ import { basename, resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
 import {
-  resolveConfig, saveConfig, removeConfig, serverBase, cursorPath, readCursor, writeCursor,
+  resolveConfig, saveConfig, removeConfig, serverBase, cursorPath, readCursor, writeCursor, checkpointPath,
 } from "../lib/config.mjs";
 import { request, client, ApiError, sleep } from "../lib/api.mjs";
+import { pendingEvents, acknowledgeEvents } from "../lib/pending-events.mjs";
 import { pack, guessType } from "../lib/pack.mjs";
 import { terminalQr } from "../lib/qr.mjs";
 
 const HELP = `tendril <command> [args] [--tendril <name>] [--pretty]
 
 Create / attach
-  new [name] --owner <verified-email> [--as <config-name>]
+  new [name] --owner <verified-email> [--mode interactive|dashboard] [--as <config-name>]
   adopt <code> [--as <config-name>]
   info                         tendril handle, versions, devices, presence, wake
   meta [--name N] [--short-name S] [--icon <blob id|https url>] [--theme-color C]
@@ -38,6 +39,8 @@ Talk to the page
   check [--device D]           accessibility audit (axe-core) in the page
 
 Hear from the page
+  pending [--limit N]          read pending input; auto-handle delivery probes only
+  ack <sequence>              save handled progress after replies/updates succeed
   events [--wait N] [--after C] [--limit N] [--peek] [--follow [--wakes]]
   wait [--timeout S]           block until a wake event, print events JSON, exit 0
   logs [--after C] [--follow]
@@ -74,6 +77,12 @@ let PRETTY = false;
 const out = (x) => process.stdout.write((PRETTY ? JSON.stringify(x, null, 2) : JSON.stringify(x)) + "\n");
 const note = (s) => process.stderr.write(s + "\n");
 const fail = (msg, code = 1) => { const e = new Error(msg); e.exit = code; throw e; };
+function boundedInteger(value, name, fallback, min, max = Number.MAX_SAFE_INTEGER) {
+  const number = intFlag(value, name, fallback);
+  if (number < min || number > max) fail(`--${name} must be an integer from ${min} to ${max}`, 64);
+  return number;
+}
+const retryable = e => !(e instanceof ApiError) || [408, 425, 429].includes(e.status) || e.status >= 500;
 
 function jsonArg(s, what) {
   if (s === undefined) fail(`missing ${what}`);
@@ -90,7 +99,7 @@ async function readStdin() {
 function printHandle(h, saved) {
   out({ ...h, config: saved ? saved.name : undefined, config_file: saved ? saved.path : undefined });
   const qr = terminalQr(h.page_url);
-  note(`\nPage URL (share after verifying the live listener): ${h.page_url}`);
+  note(h.mode === "dashboard" ? `\nDashboard URL: ${h.page_url}` : `\nPage URL (share after verifying the live listener): ${h.page_url}`);
   if (qr) note(qr);
   if (saved) note(`Saved to ${saved.path}. Use: tendril --tendril ${saved.name} <command>`);
 }
@@ -109,13 +118,16 @@ async function waitForHealth(api, version, timeoutS) {
 
 const commands = {
   async new(args, f) {
+    for (const key of Object.keys(f)) if (!["owner", "as", "name", "server", "mode", "lifetime", "resident", "create-key", "pairing", "pretty"].includes(key)) fail(`new does not support --${key}`, 64);
     const server = serverBase(process.env, f);
     if (f["create-key"] !== undefined) fail("--create-key is retired. Create with --owner <verified-email>; no creation token is used.", 64);
     if (f.pairing !== undefined) fail("--pairing is retired. The owner signs in, and approves guest invitations in the page control.", 64);
     if (f.resident || (f.lifetime !== undefined && f.lifetime !== "ad_hoc")) fail("Create an ad_hoc page first. After the owner opens it, run meta --lifetime resident.", 64);
     const owner = String(f.owner || process.env.TENDRIL_OWNER || "").trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner) || owner.length > 254) fail("new requires --owner <verified-email> (or TENDRIL_OWNER). Use an email verified by GitHub or Google.", 64);
+    if (f.mode !== undefined && !["interactive", "dashboard"].includes(f.mode)) fail("--mode must be interactive or dashboard; both support streams, and interactive requires an agent listener", 64);
     const body = { name: args[0] || f.name || undefined, owner, lifetime: "ad_hoc" };
+    if (f.mode !== undefined) body.mode = f.mode;
     const h = await request(`${server}/api/tendrils`, { method: "POST", json: body });
     const saved = saveConfig(h, f.as || args[0] || h.name, process.env, server);
     printHandle(h, saved);
@@ -222,18 +234,31 @@ const commands = {
 
   async check(args, f, api) { out(await api.post("/check", f.device ? { device: f.device } : {})); },
 
+  async pending(args, f, _api, cfg) {
+    if (args.length) fail("usage: tendril pending [--limit N] [--checkpoint-file PATH]", 64);
+    for (const key of Object.keys(f)) if (!["limit", "checkpoint-file", "tendril", "pretty"].includes(key)) fail(`pending does not support --${key}`, 64);
+    out(await pendingEvents(cfg, checkpointPath(cfg, f), { limit: intFlag(f.limit, "limit", 100), initialCursor: cfg.cursor ?? 0 }));
+  },
+
+  async ack(args, f, _api, cfg) {
+    if (args.length !== 1) fail("usage: tendril ack <sequence> [--checkpoint-file PATH]", 64);
+    for (const key of Object.keys(f)) if (!["checkpoint-file", "tendril", "pretty"].includes(key)) fail(`ack does not support --${key}`, 64);
+    out(await acknowledgeEvents(cfg, checkpointPath(cfg, f), Number(args[0]), { initialCursor: cfg.cursor ?? 0 }));
+  },
+
   async events(args, f, api, cfg) {
     const cpath = cursorPath(cfg, f);
     const explicit = f.after !== undefined;
-    let after = explicit ? Number(f.after) : readCursor(cpath);
-    const limit = f.limit ? `&limit=${Number(f.limit)}` : "";
+    let after = explicit ? boundedInteger(f.after, "after", 0, 0) : readCursor(cpath);
+    const limit = f.limit !== undefined ? `&limit=${boundedInteger(f.limit, "limit", 100, 1, 500)}` : "";
+    const wait = boundedInteger(f.wait, "wait", f.follow ? 300 : 0, 0, 300);
     const save = (c) => { if (!explicit && !f.peek) writeCursor(cpath, c); };
     if (!f.follow) {
-      const r = await api.get(`/events?after=${after}&wait=${intFlag(f.wait, "wait", 0)}${limit}`);
+      const r = await api.get(`/events?after=${after}&wait=${wait}${limit}`);
       save(r.cursor);
       return out(r);
     }
-    const w = Math.min(300, intFlag(f.wait, "wait", 300));
+    const w = wait;
     for (let backoff = 1000; ;) {
       try {
         let r = await api.get(`/events?after=${after}&wait=${w}${limit}`, { signal: AbortSignal.timeout(w * 1000 + 30000) });
@@ -242,7 +267,7 @@ const commands = {
         if (typeof r.cursor === "number") { after = r.cursor; save(after); }
         backoff = 1000;
       } catch (e) {
-        if (e instanceof ApiError && (e.status === 401 || e.status === 404)) throw e;
+        if (!retryable(e)) throw e;
         note(`events: ${e.message}; retrying in ${backoff / 1000}s`);
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 60000);
@@ -252,7 +277,7 @@ const commands = {
 
   async wait(args, f, api, cfg) {
     const cpath = cursorPath(cfg, f);
-    const deadline = f.timeout ? Date.now() + Number(f.timeout) * 1000 : Infinity;
+    const deadline = f.timeout !== undefined ? Date.now() + boundedInteger(f.timeout, "timeout", 0, 0) * 1000 : Infinity;
     for (let backoff = 2000; ;) {
       if (Date.now() >= deadline) { out({ timeout: true, cursor: readCursor(cpath) }); process.exitCode = 2; return; }
       const after = readCursor(cpath);
@@ -268,7 +293,7 @@ const commands = {
           return out(r);
         }
       } catch (e) {
-        if (e instanceof ApiError && (e.status === 401 || e.status === 404)) throw e;
+        if (!retryable(e)) throw e;
         note(`wait: ${e.message}; retrying in ${backoff / 1000}s`);
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 60000);
@@ -497,7 +522,8 @@ async function main() {
       process.stderr.write(JSON.stringify({ status: e.status, ...(e.body || { error: { message: e.message } }) }) + "\n");
       process.exit(e.status === 409 ? 4 : 1);
     }
-    note(`tendril: ${e.message}`);
+    if (e.code) process.stderr.write(JSON.stringify({ error: { code: e.code, message: e.message } }) + "\n");
+    else note(`tendril: ${e.message}`);
     process.exit(e.exit || 1);
   }
 }

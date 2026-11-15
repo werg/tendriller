@@ -44,6 +44,8 @@ export const streamSchemas = {
   streamAppend: object({ records: { type: "array", minItems: 1, maxItems: 100, items: input } }, ["records"]),
   streamAppendResult: object({ records: { type: "array", maxItems: 100, items: record }, cursor: integer, durability }, ["records", "cursor", "durability"]),
   streamBatch: batch,
+  streamLatest: object({ stream: name, durability: { const: "durable" },
+    record: { anyOf: [record, { type: "null" }] }, cursor: integer }, ["stream", "durability", "record", "cursor"]),
   streamList: object({ streams: { type: "array", items: info } }, ["streams"]),
   streamSubscription: object({ stream: name, durability, cursor: integer, batch }, ["stream", "durability", "cursor"], true),
   producer,

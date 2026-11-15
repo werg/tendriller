@@ -11,6 +11,22 @@ const record = (seq, stream = "training.loss") => ({ stream, seq, ts: seq * 10, 
 const batch = (records, after, latest, history = {}) => ({ stream: "training.loss", durability: "durable", records,
   cursor: records.at(-1)?.seq ?? after, history: { earliest_available_seq: 1, latest_seq: latest, gap: false, missing_through: null, ...history } });
 
+test("latest snapshots use the page session, preserve null and reject malformed service responses", async () => {
+  let result = { stream: "training.loss", durability: "durable", record: record(7), cursor: 7 };
+  const signal = new AbortController().signal;
+  const h = setup({ fetch: async (url, options) => {
+    assert.equal(url, "https://page.example/s/key/_tendril/streams/training.loss/latest");
+    assert.equal(options.cache, "no-store"); assert.equal(options.signal, signal);
+    assert.deepEqual(options.headers, { "X-Tendril-Device": "d_test" });
+    return Response.json(result);
+  } });
+  assert.deepEqual(await h.api.latest("training.loss", { signal }), result);
+  result = { ...result, record: null };
+  assert.deepEqual(await h.api.latest("training.loss", { signal }), result);
+  result = { ...result, record: {} };
+  await assert.rejects(h.api.latest("training.loss", { signal }), error => error.code === "invalid_response");
+});
+
 function setup({ request, fetch } = {}) {
   const listeners = new Map(), emitted = [], requests = [];
   let online = true;

@@ -1,4 +1,4 @@
-import type { StreamAppend, StreamAppendResult, StreamBatch, StreamCreate, StreamInfo, StreamReadOptions,
+import type { StreamAppend, StreamAppendResult, StreamBatch, StreamLatest, StreamCreate, StreamInfo, StreamReadOptions,
   Producer, ProducerCreate, ProducerResult } from "./streams.mjs";
 export interface StreamsClient {
   streams: {
@@ -7,6 +7,7 @@ export interface StreamsClient {
     info(stream: string): Promise<StreamInfo>;
     append(stream: string, body: StreamAppend): Promise<StreamAppendResult>;
     read(stream: string, options: StreamReadOptions): Promise<StreamBatch>;
+    latest(stream: string, options?: { signal?: AbortSignal }): Promise<StreamLatest>;
   };
   producers: {
     list(): Promise<{ producers: Producer[] }>;
