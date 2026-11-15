@@ -14,6 +14,10 @@ export interface Env {
   ASSETS: Fetcher;
   PUBLIC_BASE: string;
   PAGE_BASE_DOMAIN: string;
+  /** Optional preview suffix in the page's DNS label, e.g. --p-0123456789ab. */
+  PAGE_HOST_SUFFIX?: string;
+  BRANCH_PREVIEW_SHA?: string;
+  BRANCH_PREVIEW_BRANCH?: string;
   PUBLIC_CREATIONS_PER_HOUR?: string;
   PUBLIC_UNCLAIMED_CAP?: string;
   GITHUB_CLIENT_ID?: string;

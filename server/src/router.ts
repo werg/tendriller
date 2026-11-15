@@ -13,7 +13,7 @@ import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, 
 import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, SOCKET_TICKET_RE, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
 import { starterGallery } from "./recipe-gallery";
-import { parsePageRoute, publicBase } from "./urls";
+import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
 
 function stub(env: Env, id: string): DurableObjectStub {
@@ -60,9 +60,11 @@ export async function route(req: Request, env: Env): Promise<Response> {
   let res: Response;
   try { res = await routeInner(req, env, onPagesDomain); }
   catch (err) { res = toErrorResponse(err); }
-  if (onPagesDomain) {
+  const preview = isBranchPreview(env);
+  if (onPagesDomain || preview) {
     const headers = new Headers(res.headers);
-    headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    if (onPagesDomain) headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    if (preview) headers.set("X-Robots-Tag", "noindex, nofollow");
     if (res.status === 101) return new Response(null, { status: 101, headers, webSocket: res.webSocket });
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   }
@@ -146,7 +148,11 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
   if (/^\/_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(path)) return asset(env, url, path);
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
-  if (path === "/health") return json({ ok: true });
+  if (path === "/health") {
+    const preview = isBranchPreview(env) && /^[a-f0-9]{40}$/.test(env.BRANCH_PREVIEW_SHA ?? "")
+      ? { branch: env.BRANCH_PREVIEW_BRANCH, commit: env.BRANCH_PREVIEW_SHA } : undefined;
+    return json(preview ? { ok: true, preview } : { ok: true });
+  }
   if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs", "/tendril-watch.mjs"].includes(path) && req.method === "GET") {
     return asset(env, url, path, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
   }

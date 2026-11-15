@@ -6,9 +6,23 @@ export function publicBase(env: Env): string {
   return env.PUBLIC_BASE.replace(/\/+$/, "");
 }
 
+function pageHostSuffix(env: Env): string | null {
+  const suffix = env.PAGE_HOST_SUFFIX ?? "";
+  // Keep previews under the existing one-level wildcard certificate. Do not let
+  // a malformed setting introduce another DNS label or silently use staging.
+  return suffix === "" || /^--p-[a-f0-9]{12}$/.test(suffix) ? suffix : null;
+}
+
+export function isBranchPreview(env: Env): boolean {
+  const suffix = pageHostSuffix(env);
+  return suffix !== null && suffix !== "";
+}
+
 /** Absolute page URL `P` for a page key. */
 export function pageUrl(env: Env, id: string, key: string): string {
-  return `https://${id}.${env.PAGE_BASE_DOMAIN}/s/${key}/`;
+  const suffix = pageHostSuffix(env);
+  if (suffix === null) throw new Error("Invalid PAGE_HOST_SUFFIX");
+  return `https://${id}${suffix}.${env.PAGE_BASE_DOMAIN}/s/${key}/`;
 }
 
 export function apiUrl(env: Env, id: string): string {
@@ -25,17 +39,22 @@ export interface PageRoute {
 }
 
 /**
- * Recognises a page URL at <id>.<PAGE_BASE_DOMAIN>.
+ * Recognises a page URL at <id><PAGE_HOST_SUFFIX>.<PAGE_BASE_DOMAIN>.
+ * An isolated preview must not accept another preview's or staging's pages.
  */
 export function parsePageRoute(url: URL, env: Env): PageRoute | null {
   const domain = (env.PAGE_BASE_DOMAIN || "").toLowerCase();
   const host = url.hostname.toLowerCase();
+  const suffix = pageHostSuffix(env);
+  if (suffix === null) return null;
   if (domain && host.endsWith("." + domain)) {
     const sub = host.slice(0, -(domain.length + 1));
-    if (TENDRIL_ID_RE.test(sub)) {
+    if (!sub.endsWith(suffix)) return null;
+    const id = suffix ? sub.slice(0, -suffix.length) : sub;
+    if (TENDRIL_ID_RE.test(id)) {
       const m = /^\/s\/([a-z2-7]{26})(\/.*)?$/.exec(url.pathname);
       if (m && PAGE_KEY_RE.test(m[1])) {
-        return { id: sub, key: m[1], base: `/s/${m[1]}/`, rest: m[2] === undefined ? null : decodeRest(m[2].slice(1)) };
+        return { id, key: m[1], base: `/s/${m[1]}/`, rest: m[2] === undefined ? null : decodeRest(m[2].slice(1)) };
       }
       return null;
     }

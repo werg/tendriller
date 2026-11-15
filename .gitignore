@@ -23,3 +23,4 @@ playwright-report/
 .results/
 .preview.png
 .e2e-auth.json
+server/wrangler.branch-preview.json

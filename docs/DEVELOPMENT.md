@@ -12,7 +12,7 @@ API and browser scripts do not require an application framework.
    second terminal when editing runtime modules, snippets, recipes or assets.
 3. Run `node cli/bin/tendril.mjs preview recipes/field-notebook --fixture recipes/field-notebook/scenario.json`.
    Inspect the screenshot, actual events, public API call trace, server-side state
-   and activity. A preview is a deterministic local adapter, not a live host.
+   and activity. This recipe preview is a deterministic local adapter, not a live host.
 4. Run `npm run check` for the contract, types, Worker service and CLI checks.
    Run `npm run test:browser` for the shipping browser suites.
 5. Attach a verified host receiver before publishing to a real page. Use the
@@ -24,7 +24,36 @@ recipe changes rebuild automatically. Wrangler watches the resulting assets.
 Local public-service identity and provisioning still follow `OPERATIONS.md`;
 the isolated E2E runner seeds its own temporary identities without OAuth secrets.
 
-## What preview tests
+## Live branch previews
+
+Push a branch to this repository to run the **Public service** checks. After the
+Node and browser gates pass, the **Live branch previews** workflow deploys that exact
+commit to Cloudflare and publishes its URL in the workflow summary and GitHub
+deployment environment `preview/<key>`. The URL stays
+the same on subsequent passing commits. A failed check leaves the last passing
+preview available. Pull requests from forks run checks without a deployment.
+
+Each branch gets its own Worker, accounts database, object bucket and Durable
+Objects. Its service URL is `https://preview-<key>.tendriller.dev`, where `<key>` is
+the first 12 hexadecimal characters of SHA-256 of the complete branch name.
+Tendril pages use `<id>--p-<key>.tendriller.dev`, preserving a separate browser
+origin for each page and keeping previews separate from staging and production.
+
+The initial preview exposes the branch's live service, including the home page,
+starter gallery, agent guide, assets and API. Page creation starts paused in its
+fresh database. OAuth, Turnstile, speech model installation and real push delivery
+need their corresponding preview configuration; production credentials and data
+are not copied. See [branch preview operations](OPERATIONS.md#live-branch-previews)
+before enabling account and page flows. The existing localhost recipe preview
+and isolated Worker E2E suites remain available without external credentials.
+Branches created before this feature must merge or rebase onto a version with
+`PAGE_HOST_SUFFIX` support before their live page routes can work.
+
+Deleting the Git branch removes its preview and its temporary data. Closing a
+pull request while retaining the branch keeps the preview available. Use test
+data only; a preview is a disposable environment.
+
+## What the local recipe preview tests
 
 Preview runs the same browser code users receive. It does **not** replace
 `window.tendril` with a fake API. A local WebSocket/HTTP adapter acknowledges

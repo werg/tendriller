@@ -34,11 +34,146 @@ node scripts/install-speech.mjs tendriller-production-files --remote
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
-GitHub Actions runs typecheck, Worker tests, CLI bridge tests, and browser tests on pull requests and pushes to `master`. A passing `master` run applies migrations and deploys staging, verifies `/health` and `/agent.md`, then applies migrations and deploys production and verifies the same endpoints. The deployment uses immediate Durable Object code updates. Superseded commits skip deployment. The workflow can also be rerun manually from `master` with `workflow_dispatch`. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable; repository variables `STAGING_READY=true` and `PRODUCTION_READY=true` activate the respective jobs. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks or migrations.
+GitHub Actions runs typecheck, Worker tests, CLI bridge tests, and browser tests on pull requests and branch pushes. A passing `master` run applies migrations and deploys staging, verifies `/health` and `/agent.md`, then applies migrations and deploys production and verifies the same endpoints. The deployment uses immediate Durable Object code updates. Superseded commits skip deployment. The workflow can also be rerun manually from `master` with `workflow_dispatch`. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable; repository variables `STAGING_READY=true` and `PRODUCTION_READY=true` activate the respective jobs. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks or migrations.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
 **Idle delivery cost:** The bundled Codex, Claude Code, OpenClaw, and Hermes bridges use a hibernating agent WebSocket. An open socket does not by itself keep the Durable Object active or invoke an agent model. The bridge fetches the queue only on connect, a wake notice, an acknowledgement that releases a pending batch, or a retry. Its JSON ping/pong is answered by Cloudflare without waking the object. Each open socket still counts against Cloudflare's WebSocket and Durable Object limits. Generic five-minute long polls remain available for hosts without a WebSocket client, but their pending request and timer keep the Durable Object active. Webhook and MCP Events receivers also avoid held polls.
+
+## Live branch previews
+
+The **Live branch previews** workflow (`.github/workflows/branch-previews.yml`)
+deploys passing branches from this repository.
+It runs from `master` after a **Public service** push or manual run completes
+successfully and checks that the tested commit is still the branch head. Pull
+request runs test GitHub's merge commit, so they do not authorize deploying the
+branch tip. Fork pull requests never receive
+deployment credentials. Deployment and deletion for a branch are serialized so
+that a late run cannot recreate a deleted preview. A failed build or test retains
+the last passing deployment.
+
+Find the preview URL in the workflow summary or GitHub deployment environment
+`preview/<key>`. The service hostname is stable for
+the branch; each successful deployment updates its code and assets. The branch's
+complete, case-sensitive name is hashed with SHA-256 and shortened to 12 hexadecimal
+characters, so names containing slashes do not become DNS names directly.
+
+| Component | Preview value |
+|---|---|
+| Worker | `tendriller-preview-<key>` |
+| Service origin | `https://preview-<key>.tendriller.dev` |
+| Service route | `preview-<key>.tendriller.dev/*` |
+| Page origin | `https://<id>--p-<key>.tendriller.dev` |
+| Page route | `*--p-<key>.tendriller.dev/*` |
+| Page configuration | `PAGE_BASE_DOMAIN=tendriller.dev`, `PAGE_HOST_SUFFIX=--p-<key>` |
+| Persistent resources | A separate D1 database, R2 bucket and Durable Object namespaces per branch |
+| Rate limits | Separate namespace IDs for every branch and binding |
+
+The page suffix keeps every tendril on a distinct origin under the existing
+`*.tendriller.dev` certificate and proxied wildcard DNS record. Its route is more
+specific than staging's wildcard route. Staging and production omit
+`PAGE_HOST_SUFFIX` and retain their existing hostnames. Cloudflare's native
+Worker Previews do not currently accept zone routes, so this workflow creates a
+separate Worker for each branch. See [Cloudflare route matching](https://developers.cloudflare.com/workers/configuration/routing/routes/)
+and [Preview resource limitations](https://developers.cloudflare.com/workers/previews/resources/).
+
+### Credentials and availability
+
+The workflow uses the GitHub **staging** environment's `CLOUDFLARE_API_TOKEN` secret
+and `CLOUDFLARE_ACCOUNT_ID` variable. Its token must be allowed to create, update
+and delete preview Workers, provision and migrate D1 databases, create and empty
+R2 buckets, and manage Worker routes in the `tendriller.dev` zone. Cleanup also
+needs permission to read that zone so it can resolve and verify the route IDs.
+Permission to deploy an existing staging Worker alone is insufficient. Scope the
+token to the project account and required zone; see [Workers permissions](https://developers.cloudflare.com/workers/authorization/workers/)
+and [R2 API token permissions](https://developers.cloudflare.com/r2/api/tokens/).
+
+Preview deployments are enabled unless the repository variable
+`BRANCH_PREVIEWS_ENABLED` is set to `false`. This switch leaves cleanup enabled;
+it does not remove existing previews. Keep the existing staging credentials
+available for preview cleanup. Preview resources consume the account's Worker, D1, R2 and Durable Object
+quotas, storage and request allowance; they are ordinary deployed resources and
+remain until cleanup succeeds. Use disposable test data and inspect failed
+cleanup runs before assuming resources are gone.
+
+The initial preview is a live service for the branch's home page, starter gallery,
+agent guide, assets and API. Its fresh D1 database starts with
+`service_state.mode='creation_paused'`. The workflow never imports staging or
+production accounts, sessions, page indexes, files or secrets.
+
+Opening page creation requires dedicated preview OAuth/Turnstile settings and
+working callbacks on that preview's service hostname. Do not reuse a staging or
+production database to obtain sign-in. The lifecycle script accepts optional
+`PREVIEW_GITHUB_CLIENT_ID`, `PREVIEW_GITHUB_CLIENT_SECRET`,
+`PREVIEW_GOOGLE_CLIENT_ID`, `PREVIEW_GOOGLE_CLIENT_SECRET`,
+`PREVIEW_TURNSTILE_SITE_KEY` and `PREVIEW_TURNSTILE_SECRET_KEY` environment
+variables and installs them as the corresponding Worker secrets. For CI, save
+these values as GitHub Actions secrets with those names in the **staging**
+environment. Each client ID/site key must be supplied with its corresponding
+secret. Register the
+preview callbacks, install the speech model in its own bucket if needed, and
+verify sign-in before changing its service state to `open`.
+[Google OAuth callbacks](https://developers.google.com/identity/protocols/oauth2/web-server#uri-validation)
+must be registered exactly; [GitHub callback compatibility](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#redirect-urls)
+must be checked against that OAuth app's settings.
+Push delivery likewise needs the preview's own VAPID settings. These integrations
+are separate from a successful branch deployment and health check. Branches
+created before this feature need to merge or rebase onto `PAGE_HOST_SUFFIX`
+support before their per-tendril page routes can work.
+
+### Manual deployment and page checks
+
+Use **Actions → Live branch previews → Run workflow** on `master`, enter the full
+branch name, and choose `deploy`. The controller requires a successful **Public
+service** run for that branch's current commit; it does not bypass the checks.
+
+The lifecycle script can also be run from a trusted checkout with the same
+Cloudflare environment variables. `plan` prints the computed names without
+changing resources. For `deploy`, pass the tested commit and its source checkout:
+
+```sh
+node scripts/branch-preview.mjs plan --branch feat/example
+node scripts/branch-preview.mjs deploy --branch feat/example --sha "<tested-40-character-sha>" --source "<branch-checkout>"
+```
+
+Deployment writes `server/wrangler.branch-preview.json` inside that source
+checkout. Keep this generated config out of version control. It identifies the
+preview's own database and bucket for follow-up operations. After configuring and
+verifying its identity providers, open creation against that generated config:
+
+```sh
+npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.branch-preview.json --command "UPDATE service_state SET mode='open' WHERE id=1"
+```
+
+Run `npm run test:e2e:public` with `E2E_SERVICE_BASE` set to the preview URL and
+`E2E_OWNER_EMAIL` set to a verified preview account after capturing its session
+with `scripts/capture-e2e-auth.mjs`. This checks claims and two distinct page
+origins. Return creation to `creation_paused` if these checks fail. Successful
+deployment smoke checks cover `/health`, `/`, `/starters`, `/agent.md` and `/status`.
+On branches with preview metadata support, `/health` must report the checked
+commit; the guide must point to the preview's own service URL. These checks do
+not certify OAuth, page claims, speech or push delivery.
+
+### Cleanup and recovery
+
+Deleting a branch triggers cleanup of its Worker and preview storage. Closing or
+merging a pull request while retaining its branch does not delete the preview.
+Cleanup checks that the branch is still absent before removing resources, so a
+branch recreated under the same name is not removed by an older delete event.
+After cleanup succeeds, recreating the branch creates a fresh preview on its next
+passing run; previous preview data is not retained.
+
+For a failed deployment, inspect the **Live branch previews** run before retrying.
+Use its manual `deploy` action or rerun **Public service** for the branch's
+current commit. For failed cleanup, run **Live branch previews** manually on
+`master` with the deleted branch name and action `delete`. Cleanup refuses an
+existing branch. The corresponding local command is
+`node scripts/branch-preview.mjs delete --branch "<deleted-branch>"`; it deletes
+that preview's resources and data, so check the branch name before running it.
+Check Cloudflare authorization errors, account resource
+limits, D1 migrations, and wildcard DNS/certificate coverage as appropriate. A
+newer branch commit supersedes an older checked commit, and the controller skips
+that stale deployment.
 
 ## Launch checks
 
