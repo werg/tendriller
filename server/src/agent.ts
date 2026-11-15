@@ -176,7 +176,11 @@ async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response
   // while it was disconnected, instead of waiting for the next event.
   if (after !== null) {
     const pending = t.db.one<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE wake = 1 AND seq > ?", after)?.m ?? null;
-    if (pending !== null) t.send(server, { t: "wake", seq: pending });
+    if (pending !== null) {
+      t.send(server, { t: "wake", seq: pending });
+      // Same bookkeeping as a live wake, so presence reports a receiver that never resumes.
+      if (t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
+    }
   }
   t.refreshPresence();
   t.scheduleAlarm();
