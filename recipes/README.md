@@ -1,5 +1,12 @@
 # Build from a working page
 
+The public **Choose a starter** gallery at `/starters` uses this same catalog.
+Its six complete workflows include actual runtime previews, permission
+expectations and requests to copy into an agent conversation. Smaller entries are
+explicitly labelled **Input example**. Preview images are generated with
+`node scripts/capture-recipes.mjs`, reviewed from CI artifacts, and committed under
+`recipes/previews/`; no generated illustration stands in for a working page.
+
 Run `node cli/bin/tendril.mjs recipes` to discover the catalog, then
 `node cli/bin/tendril.mjs scaffold field-notebook ./my-page`.
 Preview with `node cli/bin/tendril.mjs preview ./my-page --fixture recipes/field-notebook/scenario.json`.
@@ -77,3 +84,35 @@ Read each workflow's agent instructions before publishing it. A page alone does 
 interpret measurements or advance a workshop; the attached agent completes that loop.
 Preview scenarios use explicit scripted responses and mock service routes, never a hidden
 in-product demo mode. Run them with the same `tendril preview <dir> --fixture <file>` command.
+
+## Keep a session before starting the next
+
+Each complete workflow includes an owner-only **Keep this session and start again**
+panel. Review the record counts, download an optional full data/media bundle, then
+archive and start a new session. The service commits the archive before resetting
+only that workflow, and refuses a stale revision or full archive store. The guide
+keeps its steps and starts new checkpoints. Approval history waits for approved
+work to finish. Group archives remain private to the owner.
+
+Unsent inputs, unfinished capture review and in-progress instruments block rollover.
+Resolve them first; a disconnected page never silently starts a fresh session.
+Archives stay available for download after reload. Removing an archive is a separate
+explicit action and does not delete its media or alter the current session.
+
+The shared helper is `_tendril/snippets/session-archive.js`:
+
+```js
+tendrilSnippets.sessionArchive.mount('#session-tools', {
+  scope: 'notebook', // guide, workshop, experiment, decisions, facilitation
+  title: 'field notebook',
+  guard: () => hasUnfinishedDraft() ? 'Save your draft first.' : null,
+  afterArchive: ({ archive }) => removeOnlyBackupsIncludedIn(archive),
+});
+```
+
+It uses authenticated page APIs, never an agent credential. `tendril.pendingWork()`
+counts local events, state edits and captures retained until acknowledgement.
+Workflow events include `data.session:{scope,id}`; offline state operations carry
+the generation captured when they were written. A new archive generation cannot
+be overwritten by late replay from an older one. Agents must also check the event's
+generation before applying an interpretation or advancing a step.

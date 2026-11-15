@@ -1,32 +1,30 @@
+import type { WireContracts } from "./wire.mjs";
+export type { WireContracts } from "./wire.mjs";
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface ValidationIssue { path: string; message: string }
-export interface PublicError { code: string; message: string; details?: ValidationIssue[]; [key: string]: unknown }
-export interface ErrorResponse { error: PublicError }
-export type Role = "owner" | "guest" | "display";
-export type DevicePurpose = "general" | "camera" | "controller" | "display" | "speaker";
+export type PublicError = WireContracts["error"];
+export type ErrorResponse = WireContracts["errorResponse"];
+export type Role = DeviceInfo["role"];
+export type DevicePurpose = DeviceInfo["purpose"];
 export type Path = string | (string | number)[];
-export type StateOperation = { op: "set"; path: Path; value: unknown } | { op: "delete"; path: Path };
-export interface CreateRequest { owner: string; name?: string; lifetime?: "ad_hoc" }
-export interface SayRequest { text: string; speak?: boolean; in_reply_to?: number; device?: string; speak_on?: string }
+export type StateOperation = WireContracts["stateOperation"];
+export type CreateRequest = WireContracts["create"];
+export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
 export interface SayMessage extends SayRequest { t?: "say"; message_id?: string; ts?: number; present?: boolean }
-export interface BlobReference { id: string; url: string; retention?: { keep: boolean; expires_at: number | null; reason?: "pinned" | "page_default" | "agent_asset" | "icon" } }
-export type SendResult = { status: "accepted"; queued: false; seq: number }
-  | { status: "queued"; queued: true }
-  | { status: "rejected"; queued: false; error: string; message?: string };
-export interface CaptureOptions { name?: string; data: Record<string, unknown>; dataPath?: string[]; keep?: boolean; wake?: boolean }
-export type CaptureResult = ({ status: "accepted"; queued: false; seq: number; blob: BlobReference }
-  | { status: "queued"; queued: true }
-  | { status: "rejected"; queued: false; error: string; message?: string }) & { capture_id: string };
+export type BlobReference = WireContracts["blobReference"];
+export type SendResult = WireContracts["sendResult"];
+export type CaptureOptions = WireContracts["captureOptions"];
+export type CaptureResult = WireContracts["captureResult"];
 export interface PendingCapture { capture_id: string; name?: string; data: Record<string, unknown>; status: "queued" | "rejected"; blob?: BlobReference; error?: string; message?: string }
-export interface PublicEvent<T = unknown> { seq: number; ts: number; type: string; role?: Role | null; device?: string | null; by?: string | null; data: T; wake?: boolean; withheld?: boolean }
+export type PublicEvent<T = unknown> = WireContracts["event"] & { data: T };
 export interface InstructionEvent extends PublicEvent<{ text: string; via: "text" | "voice" }> { type: "instruction"; role: "owner" }
 export interface Device { id: string; role: Role; name: string; pending: boolean; purpose?: DevicePurpose; pairCode?: string }
-export interface DeviceInfo { id: string; role: Role; name: string | null; pending: boolean; purpose: DevicePurpose; connected: boolean; primary: boolean; last_seen: number | null; ua: string | null; link: string | null }
-export interface DeviceUpdate { id?: string; name?: string | null; purpose?: DevicePurpose }
-export interface Focus { device: string; expires_at: number }
-export interface FocusRequest { device: string | null; ttl_seconds?: number }
-export interface DeviceConfiguration { devices: DeviceInfo[]; focus: Focus | null }
+export type DeviceInfo = WireContracts["deviceInfo"];
+export type DeviceUpdate = WireContracts["deviceUpdate"];
+export type Focus = WireContracts["focus"];
+export type FocusRequest = WireContracts["focusRequest"];
+export type DeviceConfiguration = WireContracts["deviceConfiguration"];
 /** Guest/display broadcasts expose only each device's identity and presentation. */
 export interface DevicePresentation { id: string; purpose: DevicePurpose }
 export interface DeviceConfigMessage { t?: "device_config"; devices: (DeviceInfo | DevicePresentation)[]; focus: Focus | null }
@@ -39,36 +37,38 @@ export interface StateApi<T = Record<string, unknown>> {
   on(fn: (state: T, ops: StateOperation[], by: string) => void): () => void;
 }
 export type InterfaceBlockType = "message" | "status" | "choice" | "text" | "slider" | "button" | "photo" | "location" | "file" | "drawing" | "hardware";
-export interface InterfaceBlock { id: string; type: InterfaceBlockType; connector?: string; label?: string; text?: string; options?: string[]; min?: number; max?: number; value?: number }
-export interface InterfaceState { title?: string; description?: string; blocks: InterfaceBlock[] }
-export interface SessionBrief { purpose: string; current_task: string; completed: string[]; decisions: string[]; open_questions: string[]; last_handled_seq: number; source?: string }
-export type SessionWrite = Partial<SessionBrief> & { expected_revision?: number };
-export interface SessionResult { session: SessionBrief; revision: number }
-export interface SessionSummary extends SessionResult {
-  version: number; staged_remix: boolean;
-  pending_inputs: { after: number; count: number; earliest_available_seq: number | null; history_gap: boolean };
-  timers: DurableTimer[]; devices: DeviceInfo[]; recent_activity: { ts: number; kind: string; summary: string }[];
-}
-export type TimerRepeat = { every_minutes: number } | { at: string; days?: number[] };
-export interface DurableTimer { id: string; title: string; due_at: number; timezone: string; repeat?: TimerRepeat; missed: "fire_once" | "skip"; device?: string; notify: boolean; state: "scheduled" | "cancelled" | "completed"; created_at: number; updated_at: number }
-export interface TimerWrite { title?: string; due_at?: number; timezone?: string; repeat?: TimerRepeat | null; missed?: "fire_once" | "skip"; device?: string | null; notify?: boolean; state?: DurableTimer["state"] }
-export type CreateTimer = TimerWrite & { title: string };
-export interface TimerRun { id: string; timer_id: string; scheduled_at: number; fired_at: number; status: "fired" | "skipped"; event_seq: number | null; notification: string | null }
-export interface PortableBundle { format: "tendriller-bundle"; version: 1; name: string; files: { path: string; type: string; base64: string }[]; state?: Record<string, unknown>; session?: SessionBrief; media: { id: string; type: string; name: string | null; base64: string }[] }
-export interface BundleStageResult { staged: true; files: number; media: number; expected_version: number; requires_publication: true }
-export interface BundlePublish { expected_version: number }
-export interface RemixRequest { owner: string; name?: string; include_data?: boolean }
-export type RemixPageRequest = Omit<RemixRequest, "owner">;
-export type DecisionStatus = "pending" | "approved" | "rejected" | "revision_requested" | "working" | "completed" | "failed";
-export interface Decision {
-  id: string; title: string; summary: string; version: number; proposal?: unknown; expires_at: number | null; status: DecisionStatus;
-  created_at: number; updated_at: number; responded_at?: number; event_seq?: number; note?: string; result?: string;
-}
-export interface DecisionCreate { title: string; summary: string; proposal?: unknown; expires_at?: number | null; status?: "pending" }
-export interface DecisionUpdate { expected_version: number; title?: string; summary?: string; proposal?: unknown; expires_at?: number | null; status?: "pending" | "working" | "completed" | "failed"; result?: string }
-export interface DecisionResponse { expected_version: number; decision: "approve" | "reject" | "revise"; note?: string }
-export interface ParticipantResponse { id: string; participant: string; prompt_id: string; answer: string; revision: number; created_at: number; updated_at: number }
-export interface ParticipantResponseWrite { prompt_id: string; answer: string; expected_revision?: number }
+export type InterfaceBlock = WireContracts["interface"]["blocks"][number];
+export type InterfaceState = WireContracts["interface"];
+export type SessionBrief = WireContracts["session"];
+export type SessionWrite = WireContracts["sessionWrite"];
+export type SessionResult = WireContracts["sessionResult"];
+export type SessionSummary = WireContracts["sessionSummary"];
+export type TimerRepeat = WireContracts["timerRepeat"];
+export type DurableTimer = WireContracts["timer"];
+export type TimerWrite = WireContracts["timerWrite"];
+export type CreateTimer = WireContracts["timerCreate"];
+export type TimerRun = WireContracts["timerRun"];
+export type PortableBundle = WireContracts["bundle"];
+export type BundleStageResult = WireContracts["bundleStage"];
+export type BundlePublish = WireContracts["bundlePublish"];
+export type RemixRequest = WireContracts["remix"];
+export type RemixPageRequest = WireContracts["remixPage"];
+export type DecisionStatus = Decision["status"];
+export type Decision = WireContracts["decision"];
+export type DecisionCreate = WireContracts["decisionCreate"];
+export type DecisionUpdate = WireContracts["decisionUpdate"];
+export type DecisionResponse = WireContracts["decisionResponse"];
+export type ParticipantResponse = WireContracts["participantResponse"];
+export type ParticipantResponseWrite = WireContracts["participantResponseWrite"];
+export type ParticipantAssignment = WireContracts["assignment"];
+export type AssignmentCreate = WireContracts["assignmentCreate"];
+export type AssignmentUpdate = WireContracts["assignmentUpdate"];
+export type ArchiveScope = WireContracts["archiveScope"];
+export type ArchiveCreate = WireContracts["archiveCreate"];
+export type ArchivePreview = WireContracts["archivePreview"];
+export type SessionArchive = WireContracts["archive"];
+export type ArchiveResult = WireContracts["archiveResult"];
+export interface ArchiveMetadata { id: string; scope: ArchiveScope; title: string; created_at: number; bytes: number }
 export interface RuntimeEventMap {
   connect: void; disconnect: void; role: Pick<Device, "role" | "pending">; presence: Presence;
   say: SayMessage; transcript: TranscriptEntry | null;
@@ -89,6 +89,8 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   send(data: unknown, opts?: { wake?: boolean }): Promise<SendResult>;
   upload(blob: Blob, opts?: { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
+  /** Local work retained until its acknowledgement; use before archiving a workflow. */
+  pendingWork(): { events: number; state: number; captures: number };
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
   setBlobRetention(id: string, options: { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
@@ -99,17 +101,8 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   device: Device; readonly version: number; readonly connected: boolean; readonly presence: Presence | null;
   control: { hide(): void; show(): void; position(p: "bottom-right" | "bottom-left" | "top-right" | "top-left"): void };
 }
-export interface Contracts {
-  error: PublicError; errorResponse: ErrorResponse; create: CreateRequest; say: SayRequest; sayMessage: SayMessage;
-  stateOperation: StateOperation; stateOperations: StateOperation[]; stateUpdate: Record<string, unknown> | { ops: StateOperation[] };
-  interface: InterfaceState; sendResult: SendResult; blobReference: BlobReference; captureOptions: CaptureOptions; captureResult: CaptureResult;
-  event: PublicEvent; device: Device; deviceInfo: DeviceInfo; deviceUpdate: DeviceUpdate; deviceConfiguration: DeviceConfiguration;
-  focus: Focus; focusRequest: FocusRequest; session: SessionBrief; sessionWrite: SessionWrite; sessionSummary: SessionSummary;
-  timer: DurableTimer; timerRepeat: TimerRepeat; timerWrite: TimerWrite; timerCreate: CreateTimer; timerRun: TimerRun;
-  bundle: PortableBundle; bundlePublish: BundlePublish; remix: RemixRequest; remixPage: RemixPageRequest;
-  decision: Decision; decisionCreate: DecisionCreate; decisionUpdate: DecisionUpdate; decisionResponse: DecisionResponse;
-  participantResponse: ParticipantResponse; participantResponseWrite: ParticipantResponseWrite;
-}
+export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";
+export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 1;
 export const ROLES: readonly Role[];
 export const DEVICE_PURPOSES: readonly DevicePurpose[];

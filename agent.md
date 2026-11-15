@@ -228,6 +228,23 @@ claimed resident page is appropriate for long-running schedules. Timer events
 remain data, use ordinary wake budgets, and do not keep expired pages alive.
 Deduplicate external work by the occurrence's `run_id`.
 
+Timer notification intents are durable and retry transient failures independently
+of the event. `GET A/timers/history` includes delivery state, attempt count, retry
+time and last error. A provider can accept a request before its receipt is stored,
+so notification delivery remains at least once; a `sent` receipt is not proof the
+person saw it. Editing/cancelling a timer stops its pending retries.
+
+For unattended workers, `POST A/consumers/<name>/claim` optionally establishes a
+server-stored handled checkpoint with an exclusive, renewable 30–900-second lease.
+Read with `GET A/consumers/<name>/events`, then acknowledge `through` only after
+successful handling; send the private returned token in `X-Tendril-Lease`.
+Same-name workers provide failover; different names intentionally receive the
+same inputs independently. Stop acting after lease loss and recover context
+before explicitly acknowledging a reported history gap. Existing bridges and
+their transport cursors remain unchanged. See
+[Unattended work](https://github.com/werg/tendriller/blob/master/docs/DURABILITY.md)
+for HTTP/MCP/client operations, renewal, crash recovery and limits.
+
 Use `GET A/bundle?include_data=true` for files, context, state and media bytes, or
 omit data for a template. Restore with `PUT A/bundle`, review, then
 `POST A/bundle/publish {expected_version}`. `POST A/remix {owner,name?,include_data?}`

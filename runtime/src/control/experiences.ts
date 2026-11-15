@@ -90,7 +90,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
       timer.state === "scheduled" ? button("Cancel timer", async () => { await request(`timers/${timer.id}`, "PATCH", { state: "cancelled" }); await loadTimers(); status.textContent = "Timer cancelled."; })
         : button("Remove timer", async () => { await request(`timers/${timer.id}`, "DELETE"); await loadTimers(); status.textContent = "Timer removed."; }))) : [h("p", { class: "muted", text: "No timers yet." })]));
     const names = new Map(data.timers.map((timer: any) => [timer.id, timer.title]));
-    clear(history, ...(past.runs.length ? past.runs.slice(0, 10).map((r: any) => h("p", { text: `${names.get(r.timer_id) || "Timer"} · ${r.status} · ${new Date(r.fired_at).toLocaleString()}${r.notification ? " · notification attempted" : ""}` })) : [h("p", { text: "No timer runs yet." })]));
+    clear(history, ...(past.runs.length ? past.runs.slice(0, 10).map((r: any) => h("p", { text: `${names.get(r.timer_id) || "Timer"} · ${r.status} · ${new Date(r.fired_at).toLocaleString()}${r.delivery ? ` · notification ${r.delivery.state} · ${r.delivery.attempts} attempt${r.delivery.attempts === 1 ? "" : "s"}${r.delivery.next_attempt_at ? " · next retry " + new Date(r.delivery.next_attempt_at).toLocaleString() : ""}${r.delivery.last_error ? " · " + r.delivery.last_error : ""}` : r.notification ? " · " + r.notification : ""}` })) : [h("p", { text: "No timer runs yet." })]));
   }
   const timerSubmit = h("button", { type: "submit", class: "btn primary" }, "Add timer"); actionButtons.add(timerSubmit);
   const timerForm = h("form", { class: "experience-form" }, field("Timer name", title), field("First run (this device’s time)", when), field("Repeat", repeat), minutesField, dailyField, zoneField,
@@ -160,6 +160,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
     if (plan.conflicts.length) { showConflict(latest, plan.conflicts); return; }
     const saved = await request("resume", "PUT", { ...plan.next, expected_revision: latest.revision });
     summary = { ...latest, session: saved.session, revision: saved.revision };
+    core.bus.emit("session_saved", {});
     const duringSave = currentBrief(); baseline = briefFields(saved.session);
     for (const key of Object.keys(baseline) as (keyof BriefFields)[]) if (equal(duringSave[key], values[key])) (duringSave as any)[key] = baseline[key];
     setBrief(duringSave); conflict = null; conflicts.hidden = true; saveDrafts();
@@ -169,18 +170,20 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
     const prompt = `Continue my Tendriller page. Read https://tendriller.dev/agent.md and the page's GET A/session.\nPurpose: ${purpose.value}\nCurrent task: ${task.value}\nOpen questions:\n${questions.value}\nUse Connect an agent on the page if you need a new private handle. Read queued inputs, preserve drafts, and acknowledge only work you handle.`;
     await navigator.clipboard.writeText(prompt); status.textContent = "Context prompt copied. Use Connect an agent to transfer access if needed.";
   });
-  sections.append(h("details", null, h("summary", null, "Resume this work"), resumeState, briefForm, conflicts,
+  sections.append(h("details", { "data-experience": "context" }, h("summary", null, "Resume this work"), resumeState, briefForm, conflicts,
     button("Refresh saved context", async () => { await loadSession(); if (!conflict) status.textContent = "Saved context refreshed. Your edits are kept."; }), resumePrompt));
 
   const includeData = h("input", { type: "checkbox", checked: draft.includeData === true }); includeData.style.width = "auto";
-  const copyName = h("input", { type: "text", maxlength: 100, placeholder: "Name for the copy", value: draft.copyName || "" });
+  const copyName = h("input", { "data-copy-name": "", type: "text", maxlength: 100, placeholder: "Name for the copy", value: draft.copyName || "" });
   const result = h("div"), copyResult = h("div");
   const publish = button("Publish prepared copy", async () => {
     const current = await request("resume");
     if (!summary || current.version !== summary.version) throw new Error("The page changed. Refresh saved context to review its current version before publishing. Your draft stays here.");
     await request("bundle/publish", "POST", { expected_version: summary.version });
+    core.bus.emit("session_saved", {});
     clear(result); status.textContent = pendingApply ? "Prepared copy published. Apply the page update when your drafts are ready." : "Prepared copy published.";
   }, "btn primary");
+  publish.dataset.reviewCopy = "";
   const discard = button("Discard prepared copy", async () => { await request("bundle", "DELETE"); clear(result); if (summary) summary.staged_remix = false; status.textContent = "Prepared copy discarded."; });
   const showPrepared = (text: string, details?: HTMLElement) => clear(result, h("p", { text }), details, publish, discard);
   const imported = h("input", { type: "file", accept: ".json,application/json" });
@@ -194,7 +197,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
     await loadSession();
     status.textContent = "Review the prepared contents before publishing. Your context draft is kept.";
   }); };
-  sections.append(h("details", null, h("summary", null, "Save and remix"), h("p", { class: "muted", text: "A template contains page files and its purpose. Include data to copy shared state, notes, and media. Credentials, participant answers, approvals, and running timers never transfer." }),
+  sections.append(h("details", { "data-experience": "remix" }, h("summary", null, "Save and remix"), h("p", { class: "muted", text: "A template contains page files and its purpose. Include data to copy shared state, notes, and media. Credentials, participant answers, approvals, and running timers never transfer." }),
     field("Include current data and media", includeData), button("Download bundle", async () => { download(await request(`bundle?include_data=${includeData.checked}`), "tendriller-bundle.json"); status.textContent = "Bundle downloaded."; }),
     field("Restore a bundle", imported), result, field("Copy name", copyName), button("Create independent copy", async () => {
       const data = await request("remix", "POST", { ...(copyName.value.trim() ? { name: copyName.value.trim() } : {}), include_data: includeData.checked });

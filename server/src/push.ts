@@ -11,6 +11,8 @@ import type { Env } from "./env";
 
 export interface PushSubscriptionJSON { endpoint?: string; expirationTime?: number | null; keys?: Record<string, string> }
 export type Urgency = "very-low" | "low" | "normal" | "high";
+export interface NotifyDeliveryOptions { devices?: string[]; includeResults?: boolean; broadcastLocal?: boolean; signal?: AbortSignal }
+export interface NotifyDeliveryResult { sent: number; failed: number; deliveries?: { device: string; ok: boolean; status: number; gone: boolean }[] }
 
 export function pushAvailable(env: Env): boolean { return !!(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY); }
 export function vapidPublicKey(env: Env): string | null { return env.VAPID_PUBLIC_KEY ?? null; }
@@ -23,7 +25,7 @@ export async function sendWebPush(
   env: Env,
   subscription: PushSubscriptionJSON,
   payload: unknown,
-  opts: { ttl?: number; urgency?: Urgency; topic?: string } = {},
+  opts: { ttl?: number; urgency?: Urgency; topic?: string; signal?: AbortSignal } = {},
 ): Promise<{ ok: boolean; status: number; gone: boolean }> {
   if (!pushAvailable(env)) return { ok: false, status: 501, gone: false };
   const endpoint = subscription?.endpoint;
@@ -52,7 +54,7 @@ export async function sendWebPush(
   if (topic) headers["Topic"] = topic;
 
   let res: Response;
-  try { res = await fetch(url.toString(), { method: "POST", headers, body }); }
+  try { res = await fetch(url.toString(), { method: "POST", headers, body, signal: opts.signal ?? AbortSignal.timeout(30_000) }); }
   catch { return { ok: false, status: 0, gone: false }; }
   // Drain the body so the connection can be reused.
   try { await res.arrayBuffer(); } catch { /* ignore */ }

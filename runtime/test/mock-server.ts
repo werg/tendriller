@@ -124,6 +124,7 @@ export class MockServer {
     }
     if (rel === "" || rel === "index.html") { t.pageLoads++; return send(200, "text/html; charset=utf-8", this.page(t)); }
     if (rel === "_tendril/tendril.js") return send(200, "text/javascript", asset("tendril.js"));
+    if (rel === "_tendril/axe.min.js") return send(200, "text/javascript", asset("axe.min.js"));
     if (rel === "_tendril/sw.js") return send(200, "text/javascript", asset("sw.js"), { "Service-Worker-Allowed": this.base(t) });
     if (rel === "_tendril/info") return send(200, "application/json", JSON.stringify({ id: t.id, version: t.version, files: ["index.html", ...Object.keys(t.files)], features: {} }));
     const f = t.files[rel];

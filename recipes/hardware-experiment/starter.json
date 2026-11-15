@@ -1,0 +1,15 @@
+{
+  "steps": [
+    {
+      "click": "#simulate",
+      "expect_text": "SIMULATED"
+    },
+    {
+      "wait_ms": 1200
+    },
+    {
+      "click": "#stop",
+      "expect_text": "Stopped"
+    }
+  ]
+}

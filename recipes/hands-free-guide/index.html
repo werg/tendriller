@@ -11,7 +11,7 @@
 <details><summary>All steps and checkpoints</summary><ol id="steps"></ol><button id="export">Export progress</button></details>
 <details><summary>Show the agent what you are working on</summary><p>Review a photo or voice note before sending it. Evidence is linked to the step where you captured it.</p><div id="evidence"></div></details>
 <p class="muted">Your progress stays with this page. Open Share and devices to continue on another device; Settings and history keeps your saved work.</p>
-</main><script src="_tendril/snippets/input-kit.js"></script><script src="_tendril/snippets/wakeword.js"></script><script src="_tendril/snippets/wakelock.js"></script><script>
+<div id="session-tools"></div></main><script src="_tendril/snippets/session-archive.js"></script><script src="_tendril/snippets/input-kit.js"></script><script src="_tendril/snippets/wakeword.js"></script><script src="_tendril/snippets/wakelock.js"></script><script>
 (() => {
   const $ = id => document.getElementById(id);
   const example = { id:'first-guide',title:'Make room for your next idea',description:'Try this short guide, or ask your agent to replace it with your own task.',steps:[
@@ -21,6 +21,7 @@
   const spec = () => tendril.state.get('guide') || example;
   const steps = () => (spec().steps || []).filter(step => step && typeof step.id === 'string').slice(0,100);
   const progress = () => tendril.state.get('guide_progress') || {};
+  const session = () => ({scope:'guide',id:progress().session_id || 'initial'});
   const canControl = () => tendril.device.role === 'owner' && !tendril.device.pending;
   const active = () => steps().find(step => step.id === progress().current) || steps().find(step => !progress().completed?.[step.id]) || steps().at(-1);
   const status = text => { $('status').textContent = text; };
@@ -33,7 +34,7 @@
     tendril.state.set(['guide_progress','completed',step.id],Date.now());
     if (next) setCurrent(next.id);
     status(next ? 'Checkpoint saved. You can come back to this step.' : 'Guide complete. Your checkpoints are saved.');
-    const result = await tendril.send({type:'checkpoint',guide_id:spec().id,step_id:step.id,completed:true,at:Date.now()});
+    const result = await tendril.send({type:'checkpoint',session:session(),guide_id:spec().id,step_id:step.id,completed:true,at:Date.now()});
     if (result.error || result.status==='rejected') status('The checkpoint notice was not accepted. The guide shows the latest available progress; try again or tell the agent.');
   }
   function back() { const list=steps(),index=list.findIndex(step=>step.id===active()?.id); if(index>0)setCurrent(list[index-1].id); }
@@ -60,11 +61,12 @@
     handsfree=tendrilSnippets.wakeword.mount('#handsfree',{phrases:['hey guide'],onCommand:async text=>{
       const command=text.trim().toLowerCase();
       if(/^(next|done|next step)$/.test(command))await complete(); else if(/^(repeat|read|read step)$/.test(command))read(); else if(/^(back|previous)$/.test(command))back();
-      else if(/^(stop|pause)$/.test(command)){handsfree?.stop();tendril.tts?.stop();} else {const result=await tendril.send({type:'input',modality:'voice',text,context:{guide_id:spec().id,step_id:active()?.id}});if(result.error)throw Error(result.message||result.error.message||'Could not send');}
+      else if(/^(stop|pause)$/.test(command)){handsfree?.stop();tendril.tts?.stop();} else {const result=await tendril.send({type:'input',session:session(),modality:'voice',text,context:{guide_id:spec().id,step_id:active()?.id}});if(result.error)throw Error(result.message||result.error.message||'Could not send');}
     }});
-    evidence=tendrilSnippets.inputs.mount('#evidence',{modalities:['photo','audio'],block:'guide-evidence',context:()=>({guide_id:spec().id,step_id:active()?.id})});
+    evidence=tendrilSnippets.inputs.mount('#evidence',{modalities:['photo','audio'],block:'guide-evidence',session,context:()=>({guide_id:spec().id,step_id:active()?.id})});
   } else { $('handsfree').textContent='This is a display. Use your controller device to change steps.'; $('evidence').textContent='Capture evidence on your phone.'; }
   }
+  tendrilSnippets.sessionArchive.mount('#session-tools',{scope:'guide',title:'guide run',guard:()=>evidence?.busy()?'Finish or discard your evidence capture before starting again.':null,afterArchive:()=>{handsfree?.stop();tendril.tts?.stop();render();}});
   tendrilSnippets.wakelock.button('#screen',{fullscreenButton:false});
   tendril.state.on((_state,_ops,by)=>{render();if(by==='rejected')status('A shared checkpoint could not sync. The guide has restored the latest accepted progress.');}); tendril.on?.('role',render); render();
 })();

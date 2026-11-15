@@ -10,6 +10,7 @@ import { mcpJobDue, mcpSubs, pruneMcpSubs, runMcpEvents } from "./mcpEvents";
 import { Db } from "./db";
 import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
+import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
 import { checkHealthTimeouts, fileKey, nextHealthDeadline } from "./files";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
@@ -22,7 +23,7 @@ import {
 } from "./limits";
 import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
-import { pushAvailable, sendWebPush, vapidPublicKey } from "./push";
+import { pushAvailable, sendWebPush, vapidPublicKey, type NotifyDeliveryOptions, type NotifyDeliveryResult } from "./push";
 import { applyOps, type StateOp } from "./state";
 import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
@@ -150,6 +151,7 @@ export class Tendril extends DurableObject<Env> {
           if (!status || status.state === "held" || status.suspended_at) {
             this.db.set("disabled", true);
             this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
+            cancelTimerNotifications(this, null, "Delivery stopped because the page or owner account is unavailable.");
             this.scheduleAlarm();
             throw new HttpError(403, "disabled", "This tendril is unavailable");
           }
@@ -173,6 +175,7 @@ export class Tendril extends DurableObject<Env> {
         this.db.set("disabled", body.disabled);
         if (body.disabled) this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
         else this.db.del("disabled_at");
+        if (body.disabled) cancelTimerNotifications(this, null, "Delivery stopped because this page was held.");
         if (body.disabled) for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
         this.scheduleAlarm();
         return json({ ok: true });
@@ -383,6 +386,7 @@ export class Tendril extends DurableObject<Env> {
     ]);
     this.db.set("disabled", true);
     this.db.set("disabled_at", now);
+    cancelTimerNotifications(this, null, "Delivery stopped because this page was held.");
     for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
     this.scheduleAlarm();
     addActivity(this, { kind: "disabled", summary: `Page held: ${reason}` });
@@ -972,33 +976,42 @@ export class Tendril extends DurableObject<Env> {
     return messageId;
   }
 
-  async notify(n: { title: string; body?: string; url?: string; device?: string; tag?: string }, by: string | null) {
+  async notify(n: { title: string; body?: string; url?: string; device?: string; tag?: string }, by: string | null, options: NotifyDeliveryOptions = {}): Promise<NotifyDeliveryResult> {
     if (!this.db.get<string | null>("owner_account", null)) throw new HttpError(403, "unclaimed", "Unclaimed tendrils cannot send notifications");
     const hour = Math.floor(this.now() / HOUR);
     const allowed = this.db.one<{ count: number }>(`INSERT INTO notify_rate (hour, count) VALUES (?, 1)
       ON CONFLICT(hour) DO UPDATE SET count = count + 1 WHERE count < 20 RETURNING count`, hour);
     if (!allowed) throw new HttpError(429, "quota", "Notification limit reached", { limit: 20, used: 20 });
     const payload = { title: n.title, body: n.body ?? "", url: n.url ?? this.mainPageUrl(), tag: n.tag ?? null, tendril: this.tid };
+    const selected = options.devices ? new Set(options.devices) : null;
     const subs = this.db.all<{ device: string; sub: string }>(
       "SELECT p.device, p.sub FROM push_subs p JOIN devices d ON d.id = p.device WHERE d.role = 'owner' AND d.pending = 0" + (n.device ? " AND d.id = ?" : ""),
       ...(n.device ? [n.device] : []),
-    );
+    ).filter(sub => !selected || selected.has(sub.device));
     let sent = 0;
     let failed = 0;
+    const deliveries: NonNullable<NotifyDeliveryResult["deliveries"]> = [];
+    // Revoked subscriptions and devices that lost owner access cannot receive a
+    // retry, even when they appeared in the previous attempt's target list.
+    if (selected) for (const device of selected) if (!subs.some(sub => sub.device === device)) {
+      failed++; deliveries.push({ device, ok: false, status: 410, gone: true });
+    }
     for (const s of subs) {
       let res: { ok: boolean; status: number; gone: boolean };
       try {
-        res = await sendWebPush(this.env, JSON.parse(s.sub), payload, { ttl: 86400, urgency: "high" });
+        res = options.signal?.aborted ? { ok: false, status: 0, gone: false }
+          : await sendWebPush(this.env, JSON.parse(s.sub), payload, { ttl: 86400, urgency: "high", signal: options.signal });
       } catch {
         res = { ok: false, status: 0, gone: false };
       }
       if (res.ok) sent++;
       else failed++;
-      if (res.gone) this.db.run("DELETE FROM push_subs WHERE device = ?", s.device);
+      deliveries.push({ device: s.device, ...res });
+      if (res.gone) this.db.run("DELETE FROM push_subs WHERE device = ? AND sub = ?", s.device, s.sub);
     }
-    this.broadcast({ t: "notify_local", title: n.title, body: n.body ?? "" }, (d) => d.role === "owner" && !d.pending && (!n.device || d.id === n.device));
+    if (options.broadcastLocal !== false) this.broadcast({ t: "notify_local", title: n.title, body: n.body ?? "" }, (d) => d.role === "owner" && !d.pending && (!n.device || d.id === n.device));
     addActivity(this, { kind: "notify", summary: `Notification: ${preview(n.title)} (${sent} sent, ${failed} failed)`, by });
-    return { sent, failed };
+    return { sent, failed, ...(options.includeResults ? { deliveries } : {}) };
   }
 
   // ---------------------------------------------------------------- dedupe
@@ -1070,6 +1083,8 @@ export class Tendril extends DurableObject<Env> {
     if (mcpDue !== null) times.push(mcpDue);
     const timerDue = nextTimerDeadline(this);
     if (timerDue !== null) times.push(timerDue);
+    const notificationDue = nextNotificationDeadline(this);
+    if (notificationDue !== null) times.push(notificationDue);
     const hd = nextHealthDeadline(this);
     if (hd !== null) times.push(hd);
     const sockets = this.connectedSockets().length > 0;
@@ -1093,6 +1108,7 @@ export class Tendril extends DurableObject<Env> {
     const now = this.now();
     checkHealthTimeouts(this);
     await runTimers(this);
+    await runTimerNotifications(this);
     await runWebhook(this);
     await runMcpEvents(this);
 
@@ -1128,6 +1144,7 @@ export class Tendril extends DurableObject<Env> {
     pruneEvents(this);
     pruneActivity(this);
     pruneMcpSubs(this);
+    pruneTimerHistory(this);
     await this.pruneBlobs(now);
     await this.pruneVersions();
     await this.pruneOrphanFiles(now);

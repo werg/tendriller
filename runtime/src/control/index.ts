@@ -17,6 +17,7 @@ import { installAudioUnlock, playCue, haptic, type Cue } from "./feedback";
 import { SpeechCapture } from "./speech";
 import { qrSvg } from "./qr";
 import { mountExperienceSettings } from "./experiences";
+import { mountReturnToWork, type ReturnAction } from "./return-to-work";
 
 type Pos = "bottom-right" | "bottom-left" | "top-right" | "top-left";
 type View = "connecting" | "offline" | "pending" | "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent";
@@ -70,6 +71,7 @@ class Control {
   private firstPublicVisit = false;
   private panelView: "talk" | "share" | "settings" = "talk";
   private showHistory = false;
+  private returnToWork: ReturnType<typeof mountReturnToWork> | null = null;
 
   constructor(private core: Core, private sensors: SensorTracker) {
     try {
@@ -247,7 +249,9 @@ class Control {
     this.ready = true;
     installAudioUnlock();
     this.host = document.createElement("tendril-control");
-    this.host.setAttribute("style", "all:initial!important;position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483600!important;display:block!important;overflow:visible!important;contain:none!important;");
+    // Protect the overlay's geometry without locking text spacing against a
+    // reader's accessibility stylesheet through an important `all` shorthand.
+    this.host.setAttribute("style", "all:initial;position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483600!important;display:block!important;overflow:visible!important;contain:none!important;");
     this.host.setAttribute("data-tendril", "control");
     const shadow = this.host.attachShadow({ mode: "open" });
     shadow.appendChild(h("style", { text: CSS }));
@@ -406,6 +410,9 @@ class Control {
     }
     u.sheet.append(navigation);
     u.notices = h("div", null); u.sheet.append(u.notices);
+    u.returnWork = h("section", { class: "card return-work", hidden: true, "aria-label": "Continue your work" });
+    u.sheet.append(u.returnWork);
+    this.returnToWork = mountReturnToWork(u.returnWork, this.core, action => this.openReturnAction(action));
     u.speechStatus = h("p", { class: "muted", role: "status", hidden: true }); u.sheet.append(u.speechStatus);
     u.transcript = h("ol", { class: "log", role: "log", "aria-label": "Conversation", "aria-live": "off" });
     u.historyToggle = h("button", { type: "button", class: "btn small ghost", hidden: true, onclick: () => { this.showHistory = !this.showHistory; this.renderTranscript(); } }, "Show earlier messages");
@@ -458,6 +465,25 @@ class Control {
       this.ui[`${name}Tab`].tabIndex = name === view ? 0 : -1;
     }
     if (focus) this.ui[`${view}Tab`].focus();
+  }
+
+  private openReturnAction(action: ReturnAction) {
+    if (!this.isOwner) return;
+    const adoption = action === "continue";
+    this.selectPanel(adoption ? "share" : "settings");
+    const section = this.root.querySelector<HTMLDetailsElement>(`[data-section="${adoption ? "adopt" : "experiences"}"]`);
+    if (!section) return;
+    section.open = true;
+    // The details toggle creates the panel lazily. Follow it on the next frame
+    // so keyboard focus arrives at a useful action without discarding drafts.
+    setTimeout(() => {
+      if (!this.isOwner) return;
+      if (adoption) { section.querySelector<HTMLButtonElement>('[data-action="adopt"]')?.focus(); return; }
+      const inner = section.querySelector<HTMLDetailsElement>(`[data-experience="${action === "context" ? "context" : "remix"}"]`);
+      if (inner) inner.open = true;
+      const target = action === "review" ? inner?.querySelector<HTMLElement>("[data-review-copy]") : action === "remix" ? inner?.querySelector<HTMLElement>("[data-copy-name]") : inner?.querySelector<HTMLElement>("input,textarea,button");
+      (target || inner?.querySelector<HTMLElement>("summary"))?.focus(); inner?.scrollIntoView({ block: "nearest" });
+    }, 0);
   }
 
   private async prepareVoice() {
@@ -656,6 +682,7 @@ class Control {
       this.bubbleText = "";
       u.bubble.hidden = true;
       this.render();
+      void this.returnToWork?.refresh();
       // Don't pop up the on-screen keyboard on touch devices; focus the sheet's first button there.
       const fine = !!window.matchMedia?.("(pointer: fine)").matches;
       const first = this.canInput && fine && this.panelView === "talk" ? u.text : u[`${this.panelView}Tab`];

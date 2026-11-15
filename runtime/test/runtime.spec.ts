@@ -87,6 +87,160 @@ test("double inclusion is ignored", async ({ page }) => {
   expect(mock.messages(t, "hello").length).toBe(1);
 });
 
+test("pending work stays counted until acknowledgement and keeps its original session after offline reload", async ({ page }) => {
+  const t = mock.create({ state: { notebook: { session_id: "old-session", entries: {} } } });
+  await open(page, t);
+  mock.goOffline(t);
+  await page.waitForFunction(() => !window.tendril.connected);
+  await page.evaluate(() => {
+    window.tendril.state.set(["notebook", "entries", "draft"], { id: "draft", note: "An older session observation" });
+    void window.tendril.send({ type: "notebook.observation", session: { scope: "notebook", id: "old-session" } });
+  });
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
+  await page.waitForFunction(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(`tendril:${window.__TENDRIL__.id}`);
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const request = db.transaction("outbox", "readonly").objectStore("outbox").getAll();
+        request.onsuccess = () => resolve(request.result.filter(item => ["state", "send"].includes(item.msg.t)).length === 2);
+        request.onerror = () => reject(request.error);
+      });
+    } finally { db.close(); }
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
+  // Another device archived the scope while this device was offline. Hold the
+  // replays so the test observes metadata and counts before server acknowledgement.
+  t.state = { notebook: { session_id: "new-session", entries: {} } }; t.rev++;
+  const held: any[] = [];
+  t.onMessage = (message, socket) => {
+    if (!["state", "send"].includes(message.t)) return;
+    held.push({ message, socket }); return true;
+  };
+  mock.goOnline(t);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.waitForFunction(() => window.tendril.connected);
+  await expect.poll(() => held.length).toBe(2);
+  expect(held.find(item => item.message.t === "state").message.sessions.notebook).toBe("old-session");
+  expect(held.find(item => item.message.t === "send").message.data.session.id).toBe("old-session");
+  expect(await page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
+  for (const { message, socket } of held) socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "stale_session", message: "This work belongs to an archived session." }));
+  mock.broadcast(t, { t: "state_reset", state: t.state, rev: t.rev });
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 0, state: 0, captures: 0 });
+  expect(await page.evaluate(() => window.tendril.state.get("notebook.session_id"))).toBe("new-session");
+});
+
+test("a lost state acknowledgement cannot restore an archived session after reconnect", async ({ page }) => {
+  const t = mock.create({ state: { notebook: { session_id: "old-session", entries: {} } }, rev: 4 });
+  let accepted: any;
+  t.onMessage = message => {
+    if (message.t !== "state") return;
+    // The old write really succeeded. Only its acknowledgement is lost, so the
+    // actual service's cid deduplication will replay this success, not reject it.
+    t.state.notebook = structuredClone(message.ops[0].value);
+    accepted = { message, acknowledgement: { t: "ack", cid: message.cid, rev: ++t.rev } };
+    return true;
+  };
+  await open(page, t);
+  await page.evaluate(() => window.tendril.state.set("notebook", {
+    session_id: "old-session", entries: { previous: { note: "Keep in the archive" } },
+  }));
+  await expect.poll(() => !!accepted).toBe(true);
+  expect(t.state.notebook.entries.previous.note).toBe("Keep in the archive");
+  mock.goOffline(t); await page.waitForFunction(() => !window.tendril.connected);
+  // An independent offline edit must remain optimistic even though its saved
+  // metadata also mentions the previous notebook generation.
+  await page.evaluate(() => window.tendril.state.set("unrelated", { draft: "Still waiting to sync" }));
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
+  const queuedStateCount = () => page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(`tendril:${window.__TENDRIL__.id}`);
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<number>((resolve, reject) => {
+        const request = db.transaction("outbox", "readonly").objectStore("outbox").getAll();
+        request.onsuccess = () => resolve(request.result.filter(item => item.msg.t === "state").length);
+        request.onerror = () => reject(request.error);
+      });
+    } finally { db.close(); }
+  });
+  await expect.poll(queuedStateCount).toBe(2);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
+  // Another device archives while this one is away. Hold the replay replies so
+  // the newer welcome and the preserved outbox can be examined independently.
+  t.state = { notebook: { session_id: "new-session", entries: { fresh: { note: "Current session" } } } }; t.rev++;
+  const held: { message: any; socket: any }[] = [];
+  t.onMessage = (message, socket) => { if (message.t === "state") { held.push({ message, socket }); return true; } };
+  mock.goOnline(t); await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.waitForFunction(() => window.tendril.connected);
+  await expect.poll(() => held.length).toBe(2);
+  const previous = held.find(item => item.message.cid === accepted.message.cid)!;
+  const independent = held.find(item => item !== previous)!;
+  expect(previous.message).toEqual(accepted.message);
+  expect(independent.message.sessions.notebook).toBe("old-session");
+  const current = { notebook: t.state.notebook, unrelated: { draft: "Still waiting to sync" } };
+  expect(await page.evaluate(() => window.tendril.state.get())).toEqual(current);
+  expect(await page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
+  expect(await queuedStateCount()).toBe(2);
+
+  previous.socket.send(JSON.stringify(accepted.acknowledgement));
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(1);
+  expect(await page.evaluate(() => window.tendril.state.get())).toEqual(current);
+  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  await expect.poll(queuedStateCount).toBe(1);
+
+  t.state.unrelated = structuredClone(independent.message.ops[0].value);
+  independent.socket.send(JSON.stringify({ t: "ack", cid: independent.message.cid, rev: ++t.rev }));
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(0);
+  expect(await page.evaluate(() => window.tendril.state.get())).toEqual(current);
+  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  await expect.poll(queuedStateCount).toBe(0);
+});
+
+test("an acknowledgement behind a newer delta resyncs without losing own writes or overwriting later changes", async ({ page }) => {
+  const t = mock.create({ state: { shared: "before" }, rev: 4 });
+  let accepted: { acknowledgement: any; socket: any } | undefined;
+  t.onMessage = (message, socket) => {
+    if (message.t !== "state") return;
+    if (accepted) {
+      socket.send(JSON.stringify(accepted.acknowledgement)); return true;
+    }
+    // Match the real server's apply/dedupe/ack ordering: another socket's
+    // synchronous mutation may run while the first handler awaits dedupe.
+    t.state.mine = "Accepted own write"; t.state.shared = "Own earlier value";
+    accepted = { acknowledgement: { t: "ack", cid: message.cid, rev: ++t.rev }, socket };
+    return true;
+  };
+  await open(page, t);
+  await page.evaluate(() => window.tendril.state.patch({ mine: "Accepted own write", shared: "Own earlier value" }));
+  await expect.poll(() => !!accepted).toBe(true);
+  mock.pushState(t, [{ op: "set", path: ["remote"], value: "Later independent write" }, { op: "set", path: ["shared"], value: "Later conflicting write" }]);
+  await page.waitForFunction(() => window.tendril.state.get("remote") === "Later independent write");
+  expect(await page.evaluate(() => window.tendril.pendingWork().state)).toBe(1);
+  accepted!.socket.send(JSON.stringify(accepted!.acknowledgement));
+
+  await expect.poll(() => mock.messages(t, "hello").length).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.tendril.connected && window.tendril.pendingWork().state === 0)).toBe(true);
+  expect(await page.evaluate(() => window.tendril.state.get())).toEqual({
+    mine: "Accepted own write", remote: "Later independent write", shared: "Later conflicting write",
+  });
+  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  const sends = mock.messages(t, "state");
+  expect(sends).toHaveLength(2); expect(sends[1]).toEqual(sends[0]);
+  // Once the full welcome covers the receipt, it must not trigger another
+  // reconnect. A subsequent ordinary write proves the connection remains usable.
+  t.onMessage = undefined;
+  await page.evaluate(() => window.tendril.state.set("afterResync", true));
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(0);
+  expect(await page.evaluate(() => window.tendril.state.get("afterResync"))).toBe(true);
+  expect(mock.messages(t, "hello")).toHaveLength(2);
+});
+
 test("send returns seq after ack; wake option", async ({ page }) => {
   const t = mock.create();
   await open(page, t);
@@ -541,13 +695,15 @@ test("upload posts the blob", async ({ page }) => {
   expect(b.name).toBe("a.txt");
 });
 
-test("check runs axe and replies with violations (needs network to jsdelivr)", async ({ page }) => {
+test("check runs the bundled axe with external downloads blocked and reports violations", async ({ page }) => {
+  const external: string[] = [];
+  await page.route("https://cdn.jsdelivr.net/**", route => { external.push(route.request().url()); return route.abort(); });
   const t = mock.create({ html: `<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">` });
   await open(page, t);
   mock.broadcast(t, { t: "check", call_id: "c1" });
   const r = await mock.waitFor(() => t.msgs.find((m) => m.t === "eval_result" && m.call_id === "c1"), 20000);
-  test.skip(!r.ok && /could not load/.test(r.error), "axe-core CDN not reachable");
   expect(r.ok).toBe(true);
+  expect(external).toEqual([]);
   const ids = r.value.violations.map((v: any) => v.id);
   expect(ids).toContain("image-alt");
   expect(typeof r.value.violations[0].nodes).toBe("number");

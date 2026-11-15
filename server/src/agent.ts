@@ -20,6 +20,7 @@ import { blobInfo, setBlobRetention } from "./blob-retention";
 import { apiUrl, normalizeFilePath } from "./urls";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { deviceConfiguration, updateDevice } from "./device-roles";
+import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -39,6 +40,7 @@ function route(method: string, pattern: RegExp, handler: Handler) {
 export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<Response> {
   const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
   const method = req.method === "HEAD" ? "GET" : req.method;
+  if (CONSUMER_ROUTE.test(rest)) { await t.authAgent(req); return handleConsumers(t, req, url, rest); }
   if (EXPERIENCE_ROUTE.test(rest)) return handleExperience(t, req, url, await t.authAgent(req), rest);
   const matches = routes.filter((r) => r.pattern.test(rest));
   if (matches.length === 0) throw new HttpError(404, "not_found", `No API route ${rest || "/"}`);

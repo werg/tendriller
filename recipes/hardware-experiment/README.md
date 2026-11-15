@@ -30,7 +30,10 @@ The page distinguishes a queued item, acceptance, and rejection.
 
 The current tab retains 1,200 raw samples for CSV. A report retains 300 summary
 buckets, 50 interventions and aggregate statistics for the whole run. Five recent
-reports live in shared state. **Export report JSON** includes the interpretation;
+reports live in shared state. A sixth run is blocked until the owner archives the
+experiment; reports are never silently evicted. A 51st intervention is declined
+with its draft intact. Export the current raw CSV before starting another run or
+archiving, because raw readings are local to this tab. **Export report JSON** includes the interpretation;
 **Export raw CSV** reports the retained window and does not imply complete raw
 history. Reload restores saved reports; starting another capture requires a tap.
 

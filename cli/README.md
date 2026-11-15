@@ -4,6 +4,13 @@ Reference CLI for the Tendriller agent API, using the repository's Node ≥ 22.1
 toolchain. API commands use built-in fetch; preview uses the installed repository
 runtime and Playwright. The HTTPS API is also described in `/agent.md`.
 
+`npm pack` produces an installable local tarball with the compiled preview assets
+and all starter files. Install that tarball in another project to use the CLI and
+typed fetch client without a source checkout. For headless previews, separately
+install `playwright` in that project and run `npx playwright install chromium`;
+API commands and scaffolding do not need a browser. `npm run test:consumer`
+verifies this installation path without publishing anything.
+
 ```sh
 node cli/bin/tendril.mjs --help
 export TENDRIL_SERVER=http://localhost:8787          # default

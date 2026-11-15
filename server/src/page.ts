@@ -10,6 +10,7 @@ import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { handleResponses } from "./interactions";
+import { handleAssignments } from "./assignments";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -55,6 +56,11 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (sub === "assignments" || sub.startsWith("assignments/")) {
+    if (!session?.account_id || link.role === "display") throw new HttpError(403, "forbidden", "Sign in as a participant to view assignments");
+    const manage = link.role === "owner" && (sub !== "assignments" || req.method !== "GET");
+    return handleAssignments(t, req, sub, session.account_id, manage, "owner");
+  }
   if (sub === "responses" || sub === "responses/all") {
     if (!session?.account_id || link.role === "display") throw new HttpError(403, "forbidden", "Sign in as a participant to answer");
     if (sub === "responses/all" && link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can view all responses");

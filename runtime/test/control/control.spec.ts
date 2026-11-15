@@ -18,6 +18,8 @@ async function load(page: Page, opts: Record<string, unknown> = {}, body = PAGE_
   const entry = readFileSync(join(here, ".build/entry.js"), "utf8");
   await page.route(`${ORIGIN}/**`, (route) => {
     const url = new URL(route.request().url());
+    const http = opts.http as Record<string, unknown> | undefined;
+    if (http && url.pathname in http) return route.fulfill({ json: http[url.pathname] });
     if (url.pathname === "/entry.js") return route.fulfill({ body: entry, contentType: "text/javascript" });
     if (url.pathname.includes("/_tendril/blob/")) return route.fulfill({ body: PNG, contentType: "image/png" });
     return route.fulfill({
@@ -437,4 +439,36 @@ test.describe("screenshots", () => {
     await page.getByText("Display and sound").click();
     await page.screenshot({ path: join(here, "screenshots/dark-phone-open.png") });
   });
+});
+
+const resumeRoutes = (staged = false) => ({
+  '/t/abc/s/key/_tendril/resume': { session: { purpose: 'Garden notebook', current_task: 'Compare the new leaves', completed: [], decisions: [], open_questions: [], last_handled_seq: 7 }, revision: 2, version: 3, pending_inputs: { count: 2 }, staged_remix: staged },
+  '/t/abc/s/key/_tendril/timers': { timers: [], expires_at: null },
+  '/t/abc/s/key/_tendril/timers/history': { runs: [] },
+});
+test('return-to-work card brings saved context, adoption and remix into the first panel', async ({ page }) => {
+  await load(page, { http: resumeRoutes() }); await openSheet(page);
+  const card = page.getByRole('region', { name: 'Continue your work' });
+  await expect(card).toContainText('Compare the new leaves'); await expect(card).toContainText('2 inputs since the saved checkpoint');
+  await card.getByRole('button', { name: 'Continue with a new agent', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Share and devices', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('button', { name: 'Get a code', exact: true })).toBeFocused();
+  expect((await calls(page)).request.filter((item: any) => item.t === 'adopt_code')).toHaveLength(0);
+  await card.getByRole('button', { name: 'Review saved context', exact: true }).click();
+  await expect(page.getByLabel('Where to continue', { exact: true })).toHaveValue('Compare the new leaves');
+  await card.getByRole('button', { name: 'Make a copy', exact: true }).click();
+  await expect(page.getByLabel('Copy name', { exact: true })).toBeFocused();
+  await page.getByLabel('Copy name', { exact: true }).fill('My own garden copy');
+  await card.getByRole('button', { name: 'Review saved context', exact: true }).click();
+  await card.getByRole('button', { name: 'Make a copy', exact: true }).click();
+  await expect(page.getByLabel('Copy name', { exact: true })).toHaveValue('My own garden copy');
+});
+test('prepared-copy recovery is visible and private saved context is cleared on a display role change', async ({ page }) => {
+  await load(page, { http: resumeRoutes(true) }); await openSheet(page);
+  const card = page.getByRole('region', { name: 'Continue your work', includeHidden: true });
+  await card.getByRole('button', { name: 'Review prepared copy', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Publish prepared copy', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Discard prepared copy', exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).__fake.setRole('display'));
+  await expect(card).toBeHidden(); await expect(card).toHaveText('');
 });
