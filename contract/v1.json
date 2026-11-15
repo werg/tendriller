@@ -2015,7 +2015,6 @@
         },
         "media": {
           "type": "array",
-          "maxItems": 200,
           "items": {
             "type": "object",
             "properties": {

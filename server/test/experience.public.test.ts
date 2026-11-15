@@ -155,6 +155,32 @@ it("validates bundle paths before writing and blocks publishing without review",
   expect(await inDO(h.id, t => t.storageUsed())).toBe(0);
 });
 
+it("stages an unchanged bundle at the page storage limit", async () => {
+  const { handle: h } = await setup(); const socket = await listener(h);
+  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Keep this page</h1>" } });
+  const bundle = await apiJson(h, "GET", "bundle");
+  await inDO(h.id, t => {
+    const used = t.storageUsed();
+    t.db.run("INSERT INTO stored_files(hash,size,created_at,risk_score) VALUES(?,?,?,0)", "f".repeat(64), 25 * 1024 * 1024 - used, t.now());
+  });
+  expect(await inDO(h.id, t => t.storageUsed())).toBe(25 * 1024 * 1024);
+  expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
+  expect((await api(h, "POST", "bundle/publish", { expected_version: 1 })).status).toBe(200);
+  socket.close();
+});
+
+it("accepts a portable bundle with more than 200 media entries", async () => {
+  const { handle: h } = await setup();
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  const media = Array.from({ length: 201 }, (_, i) => ({ id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32],
+    type: "application/octet-stream", name: null, base64: "AA==" }));
+  const bundle = { format: "tendriller-bundle", version: 1, name: "Capture archive", files: [
+    { path: "index.html", type: "text/html", base64: btoa("<h1>Archive</h1>") },
+  ], media };
+  expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
+  expect(await inDO(h.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
+}, 60_000);
+
 it("accepts only one unexpired versioned owner decision and ties the outcome to it", async () => {
   const { handle: h, page } = await setup();
   const proposal = await apiJson(h, "POST", "decisions", { title: "Update the draft", summary: "Replace the title", expires_at: Date.now() + 60000 }, 201);

@@ -74,6 +74,10 @@ test("exported bundle media can have no name and multi-file templates keep the s
   assert.equal(validate("bundle", bundle).length, 0);
   assert.ok(validate("bundle", { ...bundle, version: 2 }).length);
   assert.ok(validate("bundle", { ...bundle, files: [] }).length);
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  const manyCaptures = Array.from({ length: 201 }, (_, i) => ({ ...bundle.media[0],
+    id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32] }));
+  assert.equal(validate("bundle", { ...bundle, media: manyCaptures }).length, 0);
   assert.equal(validate("sayMessage", { t: "say", text: "Look here", present: false, speak: true }).length, 0);
   assert.ok(validate("say", { text: "Look here", present: false }).length);
 });

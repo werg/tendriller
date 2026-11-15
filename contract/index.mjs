@@ -100,7 +100,7 @@ export const schemas = Object.freeze({
   bundle: object({ format: { const: "tendriller-bundle" }, version: { const: 1 }, name: { type: "string", minLength: 1, maxLength: 200 },
     files: { type: "array", minItems: 1, maxItems: 2000, items: object({ path: string, type: { type: "string", maxLength: 200 }, base64: string }, ["path", "type", "base64"]) },
     state: jsonObject, session,
-    media: { type: "array", maxItems: 200, items: object({ id: blobReference.properties.id, type: { type: "string", maxLength: 200 }, name: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] }, base64: string }, ["id", "type", "name", "base64"]) },
+    media: { type: "array", items: object({ id: blobReference.properties.id, type: { type: "string", maxLength: 200 }, name: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] }, base64: string }, ["id", "type", "name", "base64"]) },
   }, ["format", "version", "name", "files", "media"]),
   bundlePublish: object({ expected_version: integer }, ["expected_version"]),
   remix: object({ owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, name: { type: "string", maxLength: 200 }, include_data: boolean }, ["owner"]),

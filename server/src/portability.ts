@@ -115,7 +115,7 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
   if (!isPlainObject(value) || value.format !== "tendriller-bundle" || value.version !== 1) throw new HttpError(400, "bad_bundle", "Unsupported bundle format or version");
   if (t.db.get("staged_bundle", null)) throw new HttpError(409, "staged_bundle_exists", "Publish or discard the prepared copy first");
   if (typeof value.name !== "string" || !value.name.trim() || value.name.length > 200) throw new HttpError(400, "bad_bundle", "Invalid bundle name");
-  if (!Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES_PER_VERSION || !Array.isArray(value.media) || value.media.length > 200)
+  if (!Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES_PER_VERSION || !Array.isArray(value.media))
     throw new HttpError(400, "bad_bundle", "Invalid bundle entries");
   const seen = new Set<string>();
   const files = value.files.map((f: any) => {
@@ -134,8 +134,8 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
   });
   if (value.state !== undefined && (!isPlainObject(value.state) || JSON.stringify(value.state).length > MAX_STATE)) throw new HttpError(400, "bad_bundle", "Invalid shared state");
   const session = value.session === undefined ? undefined : { ...validateBrief(value.session), last_handled_seq: 0 };
-  const incomingBytes = files.reduce((n: number, f: any) => n + f.bytes.byteLength, 0) + media.reduce((n: number, m: any) => n + m.bytes.byteLength, 0);
-  t.checkLocalStorage(incomingBytes);
+  // Existing content-addressed files consume no additional storage. Each write
+  // below checks the actual new bytes; failed staging rolls its writes back.
   const mapping = new Map<string, string>(), createdMedia: string[] = [];
   const originalHashes = new Set(t.db.all<{ hash: string }>("SELECT hash FROM stored_files").map(x => x.hash));
   const createdHashes: string[] = [];
