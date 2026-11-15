@@ -1,7 +1,24 @@
 import { test, expect } from "@playwright/test";
 import { agent, deletePage, openClaimed, requester, SERVICE, OWNER, signInFixture, type Handle } from "./local-helpers";
 
+type StreamTestWindow = typeof window & {
+  __streamNetwork: { blocked: boolean; sockets: Set<WebSocket> };
+};
+
 test("a passive dashboard replays training history and receives live samples from a scoped producer", async ({ page, context }) => {
+  await page.addInitScript(() => {
+    const network = { blocked: false, sockets: new Set<WebSocket>() };
+    (window as StreamTestWindow).__streamNetwork = network;
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args: ConstructorParameters<typeof NativeWebSocket>) {
+        if (network.blocked) throw new DOMException("Test network is offline", "NetworkError");
+        super(...args);
+        network.sockets.add(this);
+        this.addEventListener("close", () => network.sockets.delete(this), { once: true });
+      }
+    };
+  });
   const request = await requester();
   const created = await request.post(`${SERVICE}/api/tendrils`, { headers: { "CF-Connecting-IP": "198.19.1.23" },
     data: { owner: OWNER, name: "Training streams", mode: "dashboard" } });
@@ -42,12 +59,22 @@ test("a passive dashboard replays training history and receives live samples fro
     await append("training.metrics", "step-1", { step: 1, loss: 2.4 });
     const step2 = await append("training.metrics", "step-2", { step: 2, loss: 2.1 });
     await expect.poll(() => page.evaluate(() => (window as any).samples.map((r: any) => r.data.step))).toEqual([1, 2]);
-    await context.setOffline(true);
+    // HTTP offline emulation leaves established WebSockets connected in Chromium.
+    // Finish their close handshake before blocking HTTP, and hold reconnects.
+    await page.evaluate(() => {
+      const network = (window as StreamTestWindow).__streamNetwork;
+      network.blocked = true;
+      for (const socket of network.sockets) socket.close(1000, "Test network outage");
+    });
     await page.waitForFunction(() => !window.tendril.connected);
+    await context.setOffline(true);
     await append("training.metrics", "step-3", { step: 3, loss: 1.9 });
     await append("gpu.live", "missed", { percent: 88 });
     await context.setOffline(false);
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.evaluate(() => {
+      (window as StreamTestWindow).__streamNetwork.blocked = false;
+      window.dispatchEvent(new Event("online"));
+    });
     await expect.poll(() => page.evaluate(() => (window as any).samples.map((r: any) => r.data.step))).toEqual([1, 2, 3]);
     const replay = await page.evaluate(after => window.tendril.streams.read("training.metrics", { after }), step2.cursor);
     expect(replay.records.map(r => (r.data as any).step)).toEqual([3]);
@@ -61,5 +88,12 @@ test("a passive dashboard replays training history and receives live samples fro
     await expect(page.locator("#gpu")).toHaveText("92");
     expect(await page.evaluate(() => (window as any).samples.map((r: any) => r.data.step))).toEqual([1, 2, 3]);
     expect(await page.evaluate(() => (window as any).errors)).toEqual([]);
-  } finally { await context.setOffline(false); await deletePage(h); }
+  } finally {
+    await context.setOffline(false);
+    await page.evaluate(() => {
+      const network = (window as StreamTestWindow).__streamNetwork;
+      if (network) network.blocked = false;
+    }).catch(() => {});
+    await deletePage(h);
+  }
 });
