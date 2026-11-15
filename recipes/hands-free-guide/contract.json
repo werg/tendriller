@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Guide checkpoints and evidence",
+  "properties": {"session": {"type":"object","required":["scope","id"],"properties":{"scope":{"const":"guide"},"id":{"type":"string","minLength":1}}}},
   "anyOf": [
     { "type": "object", "required": ["type", "guide_id", "step_id", "completed", "at"], "properties": {
       "type": { "const": "checkpoint" }, "guide_id": { "type": "string" }, "step_id": { "type": "string" },
@@ -16,5 +17,6 @@
     "guide": "{id,title,description,steps:[{id,title,text}]} with stable step IDs",
     "guide_progress": "{current,completed:{[stepId]:timestamp}}"
   },
+  "x-session": "Events identify the workflow generation. Compare with the current scope session_id before applying an agent result; initial is the first session.",
   "x-agent-instructions": "AGENT.md"
 }

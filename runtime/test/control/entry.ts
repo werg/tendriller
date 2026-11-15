@@ -44,7 +44,9 @@ const core: Core = {
     delete() {}, patch() {}, mine() { return null; },
     on(fn) { stateSubs.add(fn); return () => stateSubs.delete(fn); },
   },
-  async send() { return { queued: false }; },
+  pendingWork() { return { events: 0, state: 0, captures: 0 }; },
+  deviceHeaders() { return {}; },
+  async send() { return { status: "accepted", seq: 1, queued: false }; },
   async instruction(text, via) { calls.instruction.push({ text, via }); if (opts.instructionError) throw new Error(opts.instructionError); return { queued: opts.instructionQueued === true, cid: `instruction-${calls.instruction.length}` }; },
   async request(msg) {
     calls.request.push(msg);

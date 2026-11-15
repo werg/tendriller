@@ -10,6 +10,7 @@ const suites = [
   ["snippets/test/playwright.config.ts"],
   ["cli/test/preview.playwright.config.ts"],
   ["test/e2e/playwright.config.ts"],
+  ["test/portable/playwright.config.ts", "--project=chromium"],
 ];
 const failed = [];
 for (const [config, ...files] of suites) {

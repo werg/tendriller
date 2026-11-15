@@ -9,6 +9,7 @@
     { "properties": { "type": { "const": "workshop.pause" } }, "required": ["paused", "at"] }
   ],
   "properties": {
+    "session": {"type":"object","required":["scope","id"],"properties":{"scope":{"const":"workshop"},"id":{"type":"string","minLength":1}}},
     "type": { "enum": ["workshop.frame", "workshop.point", "workshop.step_ack", "workshop.pause"] },
     "device": { "type": "string" }, "step_id": { "type": ["string", "null"] }, "at": { "type": "integer" },
     "blob": { "type": "string" }, "url": { "type": "string" }, "frame": { "type": "string" },
@@ -23,5 +24,6 @@
     "workshop.paused": "boolean"
   },
   "x-owner-http": ["GET _tendril/devices", "PATCH _tendril/devices {id,purpose}", "POST _tendril/focus {device,ttl_seconds}"],
+  "x-session": "Events identify the workflow generation. Compare with the current scope session_id before applying an agent result; initial is the first session.",
   "x-agent-instructions": "AGENT.md"
 }

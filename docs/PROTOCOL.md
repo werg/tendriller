@@ -7,6 +7,8 @@ Executable schemas are exposed at `/contract/v1.json` and owned by
 them. The runtime, API write boundaries, MCP tools and local preview use this
 contract. `docs/EXPERIENCES.md` specifies the additive device/timer/session/bundle,
 decision and private-response workflows.
+`docs/DURABILITY.md` specifies opt-in event consumer leases and durable timer
+notification retries, including their explicit retention and delivery limits.
 
 ## Origins and credentials
 
@@ -32,6 +34,15 @@ Service sign-in uses GitHub or Google authorization code and PKCE. Account ident
 
 All routes under `A` require `Authorization: Bearer tk_…`. `GET/PATCH/DELETE A` manage the tendril. Files and versions: `PUT A/files/<path>`, `POST/GET A/files`, `GET A/files/<path>`, `GET A/versions`, `POST A/rollback`. Interaction: `GET A/events?after=<cursor>`, `POST A/eval`, `POST A/say`, `POST A/status`, `POST A/check`. Data: `GET/PUT/PATCH A/state`, `GET A/logs`, `PUT/GET A/blobs`, `GET A/blobs/<id>`, `GET/POST A/activity`. Management: `GET/PATCH/DELETE A/devices`, `POST/GET/DELETE A/links`, `POST A/links/<id>/rotate`, `GET/PUT A/wake`, `POST/GET/DELETE A/tokens`, `GET/PUT A/rules`, `POST A/notify`. The agent can create guest invites only and cannot change roles. See `server/src/agent.ts` for exact request bodies.
 
+Optional handled checkpoints use `GET A/consumers` and
+`POST A/consumers/<name>/claim`, then `GET …/events` and
+`POST …/renew`, `…/ack`, `…/release` with `X-Tendril-Lease`. A name identifies one
+logical subscriber; same-name workers fail over through a 30–900-second lease,
+while different names read independently. Reads replay unacknowledged work;
+only an explicit handled acknowledgement advances the checkpoint. Missing history
+requires explicit gap acknowledgement. Legacy `/events` and host bridges retain
+their existing behavior. Full shapes and limits are in [DURABILITY.md](DURABILITY.md).
+
 ## Page API and events
 
 The page prefix `P` is the returned `page_url`. `GET P` serves the current version or a holding page. `GET P<path>` serves version files. Reserved `_tendril/` routes include runtime and speech assets, WebSocket, page info, blob upload/download, manifest, icon, agent listing and disconnect, guest approval, reporting, and owner version trust. They are all gated by the page role, except the one-time session code exchange. Static high-risk versions are withheld from guests and display links; owners see an explicit continue screen. A high-risk version on a young account holds the page.
@@ -56,7 +67,10 @@ that device's own presentation information.
 
 `A/timers` supports list/create, `A/timers/<id>` update/delete, and
 `A/timers/history` execution history. Occurrence event/run/next-schedule writes
-are atomic and deduplicated by run ID. IANA calendar recurrence, missed-run
+are atomic and deduplicated by run ID. A requested notification intent joins that
+transaction, with bounded retries and per-device results in history `delivery`.
+Provider delivery is at least once; see [DURABILITY.md](DURABILITY.md).
+IANA calendar recurrence, missed-run
 coalescing/skip, claim/hold/read-only checks, and page lifetime bounds are described
 in [EXPERIENCES.md](EXPERIENCES.md). Device rules remain browser-local.
 

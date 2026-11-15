@@ -8,6 +8,7 @@ import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from 
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
 import { validateOps } from "./state";
 import { getFocus } from "./device-roles";
+import { checkEventSession, checkStateSessions } from "./archives";
 
 type Msg = Record<string, any>;
 
@@ -252,6 +253,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
       if (kind !== "event") return { error: "bad_request", message: `Unknown kind ${kind}` };
       const data = msg.data === undefined ? null : msg.data;
       if (JSON.stringify(data).length > MAX_EVENT_DATA) return { error: "too_large", message: "Event data exceeds 64 KB" };
+      try { checkEventSession(t, data); } catch (error) { return { error: error instanceof HttpError ? error.code : "bad_session", message: error instanceof Error ? error.message : "Invalid session" }; }
       // A real user gesture on an owner device counts as a person, not a page loop (PROTOCOL 8.2).
       const human = msg.gesture === true && dev.role === "owner" && !dev.pending;
       const ev = addEvent(t, { type: "event", data, device: dev.id, role: dev.role, wake: msg.wake !== false, cls: "page", human });
@@ -267,6 +269,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
       if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot change state" };
       try {
         const ops = validateOps(msg.ops);
+        checkStateSessions(t, ops, msg.sessions);
         return { rev: t.applyState(ops, `device:${dev.id}`, ws) };
       } catch (err) {
         return { error: err instanceof HttpError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };

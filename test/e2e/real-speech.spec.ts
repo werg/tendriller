@@ -1,25 +1,33 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
+import { wordErrorRate } from "./speech-fixture.mjs";
 
-test("pinned Cactus WASM and Whistle model initialize and transcribe silence in Chromium", async ({ page }) => {
-  test.skip(process.env.E2E_REAL_SPEECH !== "1", "Run with E2E_REAL_SPEECH=1; the default suite has a deterministic WASM signature test");
-  test.setTimeout(120_000);
-  const cache = execFileSync(process.execPath, ["scripts/e2e-speech-assets.mjs"], { encoding: "utf8", timeout: 90_000 });
+test("pinned Cactus WASM and Whistle model recognize silence and a known spoken sentence", async ({ page }, info) => {
+  test.skip(process.env.E2E_REAL_SPEECH !== "1", "Use npm run test:e2e:speech-real; CI also runs the cached model workflow");
+  test.setTimeout(180_000);
+  const cache = execFileSync(process.execPath, ["scripts/e2e-speech-assets.mjs"], { encoding: "utf8", timeout: 150_000 }).trim();
+  const fixture = JSON.parse(await readFile("test/fixtures/speech/manifest.json", "utf8"));
+  const spoken = await readFile(join("test/fixtures/speech", fixture.file));
+  expect(createHash("sha256").update(spoken).digest("hex")).toBe(fixture.sha256);
   const worker = await readFile("server/public/_tendril/speech-worker.js");
   const assets = new Map([
     ["/_tendril/speech/cactus.js", { bytes: await readFile(join(cache, "cactus.js")), type: "text/javascript" }],
     ["/_tendril/speech/cactus.wasm", { bytes: await readFile(join(cache, "cactus.wasm")), type: "application/wasm" }],
     ["/_tendril/speech/whistle.cact", { bytes: await readFile(join(cache, "whistle.cact")), type: "application/octet-stream" }],
     ["/_tendril/speech-worker.js", { bytes: worker, type: "text/javascript" }],
+    ["/known-speech.wav", { bytes: spoken, type: "audio/wav" }],
   ]);
+  const sockets = new Set<import("node:net").Socket>();
   const server = createServer((req, res) => {
     const asset = assets.get(req.url ?? "");
     if (asset) { res.writeHead(200, { "Content-Type": asset.type, "Content-Length": asset.bytes.length }); res.end(asset.bytes); }
-    else { res.writeHead(200, { "Content-Type": "text/html" }); res.end("<!doctype html><title>Speech E2E</title>"); }
+    else { res.writeHead(200, { "Content-Type": "text/html" }); res.end("<!doctype html><html lang=en><title>Speech E2E</title><main>Pinned model fixture</main></html>"); }
   });
+  server.on("connection", socket => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
@@ -32,18 +40,32 @@ test("pinned Cactus WASM and Whistle model initialize and transcribe silence in 
         worker.onmessage = event => { if (event.data.id === id && (event.data.ready || event.data.text !== undefined || event.data.error)) { clearTimeout(timer); resolve(event.data); } };
         worker.onerror = event => { clearTimeout(timer); reject(new Error(event.message)); };
       });
-      const init = terminal(1);
-      worker.postMessage({ id: 1, action: "init", base: "/", modelUrl: `${location.origin}/_tendril/speech/whistle.cact`, modelSha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" });
-      const ready = await init;
-      if (ready.error) return { ready };
-      const transcribe = terminal(2);
-      const samples = new Float32Array(16000);
-      worker.postMessage({ id: 2, action: "transcribe", samples: samples.buffer, language: "en" }, [samples.buffer]);
-      const result = await transcribe;
-      worker.terminate();
-      return { ready, result };
+      const started = performance.now();
+      try {
+        const init = terminal(1);
+        worker.postMessage({ id: 1, action: "init", base: "/", modelUrl: `${location.origin}/_tendril/speech/whistle.cact`, modelSha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" });
+        const ready = await init, initialized_ms = performance.now() - started;
+        if (ready.error) return { ready, initialized_ms };
+        const silence = terminal(2), zeroes = new Float32Array(16000);
+        worker.postMessage({ id: 2, action: "transcribe", samples: zeroes.buffer, language: "en" }, [zeroes.buffer]);
+        const silenceResult = await silence;
+        const audio = await new OfflineAudioContext(1, 16000, 16000).decodeAudioData(await (await fetch("/known-speech.wav")).arrayBuffer());
+        const samples = new Float32Array(audio.getChannelData(0));
+        const transcribe = terminal(3), speakingStarted = performance.now();
+        worker.postMessage({ id: 3, action: "transcribe", samples: samples.buffer, language: "en" }, [samples.buffer]);
+        return { ready, silence: silenceResult, spoken: await transcribe, initialized_ms, transcribed_ms: performance.now() - speakingStarted, audio_seconds: audio.duration };
+      } finally { worker.terminate(); }
     });
+    const errorRate = wordErrorRate(fixture.transcript, messages.spoken?.text || "");
+    await info.attach("speech-results", { body: JSON.stringify({ ...messages, expected: fixture.transcript, word_error_rate: errorRate, fixture_sha256: fixture.sha256 }, null, 2), contentType: "application/json" });
     expect(messages.ready).toMatchObject({ ready: true });
-    expect(messages.result).toMatchObject({ text: "" });
-  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+    expect(messages.silence).toMatchObject({ text: "" });
+    expect(messages.spoken?.error).toBeUndefined();
+    expect(messages.spoken?.text?.trim()).toBeTruthy();
+    expect(errorRate, `Expected '${fixture.transcript}', received '${messages.spoken?.text}'`).toBeLessThanOrEqual(fixture.max_word_error_rate);
+  } finally {
+    const closed = new Promise<void>(resolve => server.close(() => resolve()));
+    for (const socket of sockets) socket.destroy();
+    await closed;
+  }
 });

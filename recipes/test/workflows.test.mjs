@@ -30,6 +30,14 @@ test("interventions and simulation provenance survive snapshot; report matches t
   assert.ok(validateSchema(schema, { type: "experiment.summary", run: { ...snapshot(run), source: "real" } }).length);
   assert.ok(validateSchema(schema, { type: "experiment.summary" }).length);
 });
+test("a full intervention notebook keeps every existing note and declines another", () => {
+  const run = createRun({ id: "r1", source: "simulation", unit: "C", session_id: "session-one", now: 1 });
+  for (let i = 0; i < 50; i++) assert.ok(annotate(run, `Observation ${i}`, i));
+  assert.equal(annotate(run, "Do not evict the first observation", 51), null);
+  assert.equal(run.interventions.length, 50);
+  assert.equal(run.interventions[0].text, "Observation 0");
+  assert.equal(snapshot(run).session_id, "session-one");
+});
 test("scenario references connect agent results to actual generated event/device IDs", () => {
   const actual = resolveFixture({ path: ["experiment", "results", "$event.data.run.id"], device: "$device.id" }, { event: { data: { run: { id: "run-unique" } } }, device: { id: "d_unique" } });
   assert.deepEqual(actual, { path: ["experiment", "results", "run-unique"], device: "d_unique" });

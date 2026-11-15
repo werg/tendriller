@@ -1,5 +1,6 @@
 // Events, wake budget, long-poll and webhook delivery (PROTOCOL section 8).
 import type { Tendril } from "./tendril";
+import type { Role, PublicEvent } from "../../contract/index.mjs";
 import { signedHeaders } from "./mcpEvents";
 import { randomB32 } from "./ids";
 import { addActivity, bumpAggregate } from "./activity";
@@ -29,7 +30,7 @@ export interface NewEvent {
   type: EventType;
   data: unknown;
   device?: string | null;
-  role?: string | null;
+  role?: Role | null;
   /** Requested wake (the sender's `wake` flag). Only effective with a wake class. */
   wake: boolean;
   cls?: WakeClass | null;
@@ -44,13 +45,13 @@ export interface NewEvent {
   by?: string | null;
 }
 
-export interface StoredEvent {
+export interface StoredEvent extends PublicEvent {
   seq: number;
   ts: number;
   type: EventType;
   data: unknown;
   device: string | null;
-  role: string | null;
+  role: Role | null;
   wake: boolean;
   withheld: boolean;
   by: string | null;

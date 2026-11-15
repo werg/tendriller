@@ -4,6 +4,7 @@
   "type": "object",
   "required": ["type", "observation_id", "entry"],
   "properties": {
+    "session": {"type":"object","required":["scope","id"],"properties":{"scope":{"const":"notebook"},"id":{"type":"string","minLength":1}}},
     "type": { "const": "notebook.observation" },
     "observation_id": { "type": "string" },
     "entry": { "type": "object", "required": ["id", "created_at", "note", "tags"], "properties": {
@@ -14,5 +15,6 @@
     "blob": { "type": "string" }, "url": { "type": "string" }, "capture_id": { "type": "string" }
   },
   "x-shared-state": { "notebook.entries.<observation_id>": "Entry with photo:{id,name}, status, interpretation; keyed upserts, maximum 100 entries" },
+  "x-session": "Events identify the workflow generation. Compare with the current scope session_id before applying an agent result; initial is the first session.",
   "x-agent-instructions": "AGENT.md"
 }

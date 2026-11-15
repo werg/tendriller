@@ -1,0 +1,20 @@
+{
+  "role": "display",
+  "state": {
+    "facilitation": {
+      "title": "Make space for a good idea",
+      "stage": "collect",
+      "prompt": {
+        "id": "starter-prompt",
+        "text": "What is one small thing we could improve together?",
+        "description": "Think of a concrete example. Participants answer privately on their own devices."
+      },
+      "summary": ""
+    }
+  },
+  "steps": [
+    {
+      "expect_text": "What is one small thing we could improve together?"
+    }
+  ]
+}

@@ -19,6 +19,9 @@ mkdirSync(join(out, "_tendril"), { recursive: true });
 // Preserve native ES-module/worker paths and third-party license notices.
 rmSync(join(out, "_tendril/tts"), { recursive: true, force: true });
 cpSync(join(root, "node_modules/phonon-tts"), join(out, "_tendril/tts"), { recursive: true });
+// Audit the delivered page without a third-party CDN or an unpinned runtime.
+for (const [source, target] of [["axe.min.js", "axe.min.js"], ["LICENSE", "axe-LICENSE.txt"], ["LICENSE-3RD-PARTY.txt", "axe-LICENSE-3RD-PARTY.txt"]])
+  copyFileSync(join(root, "node_modules/axe-core", source), join(out, "_tendril", target));
 mkdirSync(join(out, "snippets"), { recursive: true });
 rmSync(join(out, "recipes"), { recursive: true, force: true });
 cpSync(join(root, "recipes"), join(out, "recipes"), { recursive: true,

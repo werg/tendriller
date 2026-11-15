@@ -1,5 +1,6 @@
 /** The public wire contract. This module has no runtime dependencies and works in
  * browsers, Workers and Node. Matching declarations are in index.d.mts. */
+import { durabilitySchemas } from "./durability.mjs";
 export const CONTRACT_VERSION = 1;
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -55,8 +56,13 @@ const decision = object({ ...decisionProperties, id: string, version: { type: "i
   created_at: integer, updated_at: integer, responded_at: integer, event_seq: { type: "integer", minimum: 1 }, note: { type: "string", maxLength: 4000 }, result: { type: "string", maxLength: 8000 },
 }, ["id", "title", "summary", "version", "expires_at", "status", "created_at", "updated_at"]);
 const responseProperties = { prompt_id: { type: "string", minLength: 1, maxLength: 100 }, answer: { type: "string", minLength: 1, maxLength: 8000 } };
+const assignmentProperties = { title: shortText, prompt: { type: "string", minLength: 1, maxLength: 8000 }, feedback: { type: "string", maxLength: 8000 }, status: { enum: ["open", "closed"] } };
+const assignment = object({ ...assignmentProperties, id: string, participant: string, prompt_id: string,
+  revision: { type: "integer", minimum: 1 }, created_at: integer, updated_at: integer }, ["id", "participant", "prompt_id", "title", "prompt", "feedback", "status", "revision", "created_at", "updated_at"]);
+const archiveScope = { enum: ["notebook", "guide", "workshop", "experiment", "decisions", "facilitation"] };
 
-export const schemas = Object.freeze({
+const coreSchemas = {
+  ...durabilitySchemas,
   error,
   errorResponse: object({ error }, ["error"]),
   create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" } }, ["owner"]),
@@ -89,7 +95,9 @@ export const schemas = Object.freeze({
   timer,
   timerWrite: object(timerWriteProperties),
   timerCreate: object(timerWriteProperties, ["title"]),
-  timerRun: object({ id: string, timer_id: string, scheduled_at: integer, fired_at: integer, status: { enum: ["fired", "skipped"] }, event_seq: nullableTime, notification: nullableString }, ["id", "timer_id", "scheduled_at", "fired_at", "status", "event_seq", "notification"]),
+  timerRun: object({ id: string, timer_id: string, scheduled_at: integer, fired_at: integer, status: { enum: ["fired", "skipped"] }, event_seq: nullableTime, notification: nullableString,
+    delivery: { anyOf: [durabilitySchemas.timerDelivery, { type: "null" }] },
+  }, ["id", "timer_id", "scheduled_at", "fired_at", "status", "event_seq", "notification"]),
   session,
   sessionWrite: object({ ...sessionProperties, expected_revision: integer }),
   sessionSummary: object({ session, revision: integer, version: integer, staged_remix: boolean,
@@ -110,7 +118,41 @@ export const schemas = Object.freeze({
   decisionUpdate: object({ ...decisionProperties, expected_version: { type: "integer", minimum: 1 }, status: { enum: ["pending", "working", "completed", "failed"] }, result: { type: "string", maxLength: 8000 } }, ["expected_version"]),
   decisionResponse: object({ expected_version: { type: "integer", minimum: 1 }, decision: { enum: ["approve", "reject", "revise"] }, note: { type: "string", maxLength: 4000 } }, ["expected_version", "decision"]),
   participantResponse: object({ ...responseProperties, id: string, participant: string, revision: { type: "integer", minimum: 1 }, created_at: integer, updated_at: integer }, ["id", "participant", "prompt_id", "answer", "revision", "created_at", "updated_at"]),
-  participantResponseWrite: object({ ...responseProperties, expected_revision: { type: "integer", minimum: 1 } }, ["prompt_id", "answer"]),
+  participantResponseWrite: object({ ...responseProperties, expected_revision: { type: "integer", minimum: 1 }, expected_assignment_revision: { type: "integer", minimum: 1 }, expected_session_id: { type: "string", minLength: 1, maxLength: 100 } }, ["prompt_id", "answer"]),
+  assignment,
+  assignmentCreate: object({ ...assignmentProperties, participant: { type: "string", minLength: 1, maxLength: 200 }, expected_session_id: { type: "string", minLength: 1, maxLength: 100 } }, ["participant", "title", "prompt"]),
+  assignmentUpdate: object({ ...assignmentProperties, expected_revision: { type: "integer", minimum: 1 } }, ["expected_revision"]),
+  archiveScope,
+  archiveCreate: object({ scope: archiveScope, title: shortText, expected_state_revision: integer, expected_interaction_revision: integer,
+    request_id: { type: "string", pattern: "^[a-zA-Z0-9-]{16,80}$" } }, ["scope", "expected_state_revision", "expected_interaction_revision", "request_id"]),
+};
+const list = items => ({ type: "array", items });
+const pageHandle = object({ id: string, api: string, token: string, page_url: string, name: string }, ["id", "api", "token", "page_url"], true);
+const archiveMetadata = { id: string, scope: archiveScope, title: string, created_at: integer };
+const archive = object({ ...archiveMetadata, format: { const: "tendriller-session-archive" }, version: { const: 1 }, shared_state: jsonObject,
+  decisions: list(decision), responses: list(coreSchemas.participantResponse), assignments: list(assignment) }, ["id", "scope", "title", "created_at", "format", "version", "shared_state"]);
+export const schemas = Object.freeze({
+  ...coreSchemas,
+  pageHandle,
+  objectResponse: jsonObject,
+  sayResult: object({ ok: { const: true }, message_id: string, in_reply_to: nullableTime }, ["ok", "message_id", "in_reply_to"], true),
+  stateSnapshot: object({ state: jsonObject, rev: integer }, ["state", "rev"], true),
+  stateRevision: object({ rev: integer }, ["rev"], true),
+  eventBatch: object({ events: list(coreSchemas.event), cursor: integer, withheld: integer }, ["events", "cursor", "withheld"], true),
+  timerList: object({ timers: list(timer), execution: { const: "server" }, lifetime: { enum: ["ad_hoc", "resident"] }, expires_at: nullableTime }, ["timers", "execution", "lifetime", "expires_at"], true),
+  timerHistory: object({ runs: list(coreSchemas.timerRun) }, ["runs"], true),
+  sessionResult: object({ session, revision: integer }, ["session", "revision"], true),
+  bundleStage: object({ staged: { const: true }, files: integer, media: integer, expected_version: integer, requires_publication: { const: true } }, ["staged", "files", "media", "expected_version", "requires_publication"], true),
+  publicationResult: object({ version: integer }, ["version"], true),
+  remixResult: object({ ...pageHandle.properties, remix: object({ staged: { const: true }, requires_receiver: { const: true }, publish_url: string, expected_version: integer }, ["staged", "requires_receiver", "publish_url", "expected_version"], true) }, [...pageHandle.required, "remix"], true),
+  decisionList: object({ decisions: list(decision) }, ["decisions"], true),
+  responseList: object({ participant: string, responses: list(coreSchemas.participantResponse) }, ["responses"], true),
+  assignmentList: object({ participant: string, assignments: list(assignment) }, ["assignments"], true),
+  participantList: object({ participants: list(object({ id: string, label: string, role: { enum: ["owner", "guest"] } }, ["id", "label", "role"])) }, ["participants"], true),
+  archive,
+  archivePreview: object({ scope: archiveScope, state_revision: integer, interaction_revision: integer, counts: { type: "object", additionalProperties: integer } }, ["scope", "state_revision", "interaction_revision", "counts"]),
+  archiveResult: object({ archive, state_revision: integer, interaction_revision: integer }, ["archive", "state_revision", "interaction_revision"]),
+  archiveList: object({ archives: list(object({ ...archiveMetadata, bytes: integer }, [...Object.keys(archiveMetadata), "bytes"])), limit: integer, byte_limit: integer }, ["archives", "limit", "byte_limit"]),
 });
 
 export const schemaDocument = Object.freeze({
@@ -125,6 +167,11 @@ export const schemaDocument = Object.freeze({
 export function validateSchema(schema, value, path = "$") {
   const issues = [];
   const issue = message => issues.push({ path, message });
+  if (schema.$ref) {
+    const name = /^#\/\$defs\/([A-Za-z0-9]+)$/.exec(schema.$ref)?.[1];
+    if (!name || !Object.hasOwn(schemas, name)) throw new TypeError(`Unknown contract reference: ${schema.$ref}`);
+    issues.push(...validateSchema(schemas[name], value, path));
+  }
   if (schema.anyOf) {
     const alternatives = schema.anyOf.map(s => validateSchema(s, value, path));
     if (alternatives.every(a => a.length)) issues.push(...alternatives.sort((a, b) => a.length - b.length)[0]);

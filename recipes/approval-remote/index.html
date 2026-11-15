@@ -28,8 +28,8 @@
   <p id="notice" role="status" aria-live="polite"></p>
   <section id="decisions" aria-label="Proposals"></section>
   <aside id="update" hidden><p>A page update is ready. Your revision draft is saved on this device.</p><button id="apply-update">Apply update</button></aside>
-</main>
-<script src="_tendril/snippets/ptt.js"></script>
+<div id="session-tools"></div></main>
+<script src="_tendril/snippets/session-archive.js"></script><script src="_tendril/snippets/ptt.js"></script>
 <script>
 (() => {
   const prefix = (window.__TENDRIL__?.base || location.pathname.replace(/[^/]*$/, '')) + '_tendril/';
@@ -192,6 +192,7 @@
   }, 1000);
   const poll = setInterval(() => { if (document.visibilityState === 'visible' && tendril.connected) void refresh(); }, 30000);
   window.addEventListener('pagehide', () => { saveDrafts(); clearInterval(timer); clearInterval(poll); for (const card of cards.values()) card.voice?.destroy(); });
+  tendrilSnippets.sessionArchive.mount('#session-tools',{scope:'decisions',title:'decision history',guard:()=>busy.size?'Wait for the current decision to finish.':Object.values(drafts).some(draft=>draft.text?.trim())?'Send or clear your revision drafts before archiving.':decisions.some(item=>['approved','working'].includes(item.status))?'Wait for approved work to finish before archiving its history.':null,afterArchive:async()=>{drafts={};saveDrafts();view='pending';await refresh();}});
   connection(); void refresh();
 })();
 </script>

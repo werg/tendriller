@@ -13,6 +13,45 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.15.0", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - id: chromium
+        if: matrix.node == '24'
+        run: npx playwright install --with-deps chromium
+      - if: matrix.node == '24'
+        run: npm run test:browser
+      - if: always() && matrix.node == '24' && steps.chromium.outcome == 'success'
+        run: npm run capture:recipes
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.node == '24'
+        with:
+          name: catalog-previews
+          path: test-results/catalog/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-traces-node-${{ matrix.node }}
+          path: test-results/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  portable:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,20 +59,20 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run check
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
+      - run: npm run build
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npx playwright test --config test/portable/playwright.config.ts --project=${{ matrix.browser }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: browser-failure-traces
-          path: test-results/
+          name: portable-failure-traces-${{ matrix.browser }}
+          path: test-results/portable/
           include-hidden-files: true
           if-no-files-found: ignore
 
   staging:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true'
-    needs: check
+    needs: [check, portable]
     runs-on: ubuntu-latest
     environment: staging
     env:
@@ -53,7 +92,7 @@ jobs:
 
   production:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.PRODUCTION_READY == 'true'
-    needs: check
+    needs: [check, portable]
     runs-on: ubuntu-latest
     environment: production
     env:
