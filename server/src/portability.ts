@@ -1,6 +1,7 @@
 import type { Tendril } from "./tendril";
+import { checkGenerations, preconditions, mutate, replay, type Preconditions } from "./scopes";
 import { addActivity } from "./activity";
-import { createVersion, fileKey, latestFileMap, servedVersion, storeContent, versionFiles, type VersionFile } from "./files";
+import { assertStoredContent, createVersion, deleteUnreferencedContent, fileKey, latestFileMap, servedVersion, storeContent, versionFiles, type VersionFile } from "./files";
 import { HttpError, isPlainObject, json } from "./http";
 import { BLOB_ID_RE, fromBase64, toBase64 } from "./ids";
 import { MAX_FILES_PER_VERSION, MAX_STATE } from "./limits";
@@ -85,8 +86,6 @@ export async function exportBundle(t: Tendril, includeData: boolean): Promise<Po
     if (!data) throw new HttpError(409, "incomplete_bundle", `Missing media ${item.id}`);
     return { ...item, base64: toBase64(await data.arrayBuffer()) };
   }));
-  // Device identity and per-device presentation do not transfer to another page.
-  delete state._device;
   return { format: "tendriller-bundle", version: 1, name, files, media,
     ...(includeData ? { state, session: { ...brief, last_handled_seq: 0 } }
       : { session: { ...EMPTY_BRIEF, purpose: brief.purpose, source: brief.source } }) };
@@ -153,27 +152,28 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
       prepared.push({ path: f.path, type: f.type, ...saved });
     }
     const state = value.state === undefined ? undefined : rewrite(value.state, mapping);
-    if (state) delete state._device;
     const staged: StagedBundle = { name: value.name.trim(), files: prepared, media: createdMedia, ...(state ? { state } : {}), ...(session ? { session } : {}) };
-    t.db.set("staged_bundle", staged);
-    addActivity(t, { kind: "remix", summary: "Prepared an independent copy; waiting for publication", by });
+    t.transaction(() => {
+      assertStoredContent(t, prepared);
+      t.db.set("staged_bundle", staged);
+      addActivity(t, { kind: "remix", summary: "Prepared an independent copy; waiting for publication", by });
+    });
     return staged;
   } catch (e) {
     for (const id of createdMedia) await t.deleteBlob(id);
-    for (const hash of new Set(createdHashes)) {
-      const stored = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=?", hash);
-      if (stored && !t.db.one("SELECT hash FROM version_files WHERE hash=?", hash)) {
-        await t.env.FILES.delete(fileKey(t, hash)); t.db.run("DELETE FROM stored_files WHERE hash=?", hash); await t.releaseGlobalBytes(stored.size);
-      }
-    }
+    for (const hash of new Set(createdHashes)) await deleteUnreferencedContent(t, hash);
     throw e;
   }
 }
 
-export async function publishStaged(t: Tendril, by: string, expectedVersion: unknown) {
-  return withBundleLock(t, () => publishStagedUnlocked(t, by, expectedVersion));
+export async function publishStaged(t: Tendril, by: string, expectedVersion: unknown, command: Preconditions) {
+  return withBundleLock(t, () => publishStagedUnlocked(t, by, expectedVersion, command));
 }
-async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: unknown) {
+async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: unknown, command: Preconditions) {
+  preconditions(command);
+  const actor = `agent:${by}`, targets = { operations: ["bundle.publish"] }, payload = { expected_version: expectedVersion };
+  const previous = replay<{ version: number; restored: boolean }>(t, actor, command, targets, payload);
+  if (previous.found) return previous.result;
   const staged = t.db.get<StagedBundle | null>("staged_bundle", null);
   if (!staged) throw new HttpError(404, "not_found", "No prepared copy");
   const current = t.db.get("current", 0);
@@ -197,11 +197,13 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
   }
   const version = await createVersion(t, new Map(staged.files.map(f => [f.path, f])), "Restored from a portable bundle", by, {
     expectedCurrent: current,
-    commit: () => {
-      if (staged.state) { t.db.set("state", staged.state); t.db.set("rev", t.db.get("rev", 0) + 1); }
+    commit: () => { mutate(t, actor, command, targets, payload, () => {
+      checkGenerations(t, command, { paths: staged.state ? [[]] : [], operations: ["bundle.publish"] });
+      if (staged.state) t.applyState([{ op: "set", path: [], value: staged.state }], `agent:${by}`, undefined, command);
       if (staged.session) { t.db.set("session_brief", staged.session); t.db.set("session_revision", t.db.get("session_revision", 0) + 1); }
       t.db.del("staged_bundle");
-    },
+      return { version: t.db.get("current", 0), restored: true };
+    }); },
     beforeReload: () => { if (staged.state) t.broadcast({ t: "state_reset", ...t.getState() }); },
   });
   addActivity(t, { kind: "remix", summary: `Published prepared copy as version ${version}`, by });
@@ -214,14 +216,9 @@ export async function discardStaged(t: Tendril): Promise<void> {
 async function discardStagedUnlocked(t: Tendril): Promise<void> {
   const staged = t.db.get<StagedBundle | null>("staged_bundle", null);
   if (!staged) return;
-  for (const id of staged.media) await t.deleteBlob(id);
-  for (const file of staged.files) {
-    if (t.db.one("SELECT 1 AS x FROM version_files WHERE hash=?", file.hash)) continue;
-    const row = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=?", file.hash);
-    if (!row) continue;
-    await t.env.FILES.delete(fileKey(t, file.hash)); t.db.run("DELETE FROM stored_files WHERE hash=?", file.hash); await t.releaseGlobalBytes(row.size);
-  }
   t.db.del("staged_bundle");
+  for (const id of staged.media) await t.deleteBlob(id);
+  for (const file of staged.files) await deleteUnreferencedContent(t, file.hash);
 }
 
 export async function remix(t: Tendril, req: Request, body: unknown, by: string, ownerPage = false): Promise<Response> {
@@ -239,8 +236,8 @@ export async function remix(t: Tendril, req: Request, body: unknown, by: string,
   if (!created.ok) return created;
   const handle = await created.json<{ id: string; api: string; token: string; page_url: string }>();
   const destination = t.env.TENDRIL.get(t.env.TENDRIL.idFromName(handle.id));
-  const staged = await destination.fetch(new Request("https://tendril.internal/agent", { method: "POST", headers: {
-    Authorization: `Bearer ${handle.token}`, "Content-Type": "application/json", "x-tendril-rest": "bundle/stage" }, body: JSON.stringify(bundle) }));
+  const staged = await destination.fetch(new Request("https://tendril.internal/agent", { method: "PUT", headers: {
+    Authorization: `Bearer ${handle.token}`, "Content-Type": "application/json", "x-tendril-rest": "bundle" }, body: JSON.stringify(bundle) }));
   if (!staged.ok) {
     await destination.fetch(new Request("https://tendril.internal/agent", { method: "DELETE", headers: { Authorization: `Bearer ${handle.token}`, "x-tendril-rest": "" } }));
     return staged;

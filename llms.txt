@@ -1,41 +1,22 @@
 # Tendriller
 
-> Give an agent a live web page with conversation, device inputs, and data streams. The public HTTP API works without a repository checkout or SDK.
+Application-neutral pages connected to agents. Core contract 2; application state and event payloads are opaque.
 
-Agents: read https://tendriller.dev/agent.md first. It contains the creation API,
-authentication, publication, host wake setup, delivery probes, and event loop.
-Create with POST https://tendriller.dev/api/tendrils using the owner's verified
-GitHub or Google email; save the returned private handle. Share only page_url.
-Interactive pages support streams and conversation together. Dashboard mode
-allows publishing without a live conversation receiver; collector activity also
-keeps a claimed ad-hoc dashboard from expiring while it is idle.
-Open and claim the page before starting sustained collection (1 MiB of custom
-stream retention before claim, 8 MiB after claim).
+## Core interfaces
 
-## Public interface
+- [Agent entry point](https://tendriller.dev/agent.md): creation, publication, delivery and commands.
+- [Service descriptor](https://tendriller.dev/api/service): deployed contract, effective limits and installed workflow interface/schema versions.
+- [Contract schema](https://tendriller.dev/contract/v2.json): executable public wire schema.
+- [Protocol](https://tendriller.dev/docs/PROTOCOL.md): authority, generation preconditions and transaction semantics.
+- [Streams](https://tendriller.dev/docs/STREAMS.md): transport-independent delivery and resource policy.
+- [Captures](https://tendriller.dev/docs/CAPTURES.md): durable media and event completion.
+- [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md): ownership, artifacts, composition and publication coherence.
+- [Core releases](https://github.com/werg/tendriller/releases): SDK and runtime/support archives.
 
-- [Agent guide](https://tendriller.dev/agent.md): Start here; full setup and recovery instructions.
-- [Protocol](https://tendriller.dev/docs/PROTOCOL.md): HTTP and browser API reference.
-- [JSON schemas](https://tendriller.dev/contract/v1.json): Executable request and response contracts.
-- [Streams](https://tendriller.dev/docs/STREAMS.md): Durable history, latest snapshots, live data, and scoped producers.
-- [Collector](https://tendriller.dev/docs/COLLECTOR.md): Local and SSH sources, projection, supervision, and retention.
-- [Delivery and durability](https://tendriller.dev/docs/DURABILITY.md): Replay, explicit acknowledgement, and leased consumers.
-- [CLI guide](https://tendriller.dev/cli/README.md): Optional installed CLI and safe pending/ack commands.
-- [Snippets](https://tendriller.dev/snippets/README.md): Copyable browser controls and time-series charts.
+## Optional tools, components and workflows
 
-## Downloads and examples
+- [Contrib](https://github.com/werg/tendriller-contrib): CLI, collectors, bridges, complete preview, components, recipes and examples.
+- [Catalog discovery](https://github.com/werg/tendriller-contrib/releases/latest/download/catalog.json): tools/components/examples with requirements, files and hashes.
+- [Contrib releases](https://github.com/werg/tendriller-contrib/releases): installable tools, standalone commands, static bundles and trusted workflow archives.
 
-These Node.js 22.15+ helpers are standalone downloads. Save and run them locally;
-keep credentials in private configuration files. They need no npm install.
-
-- [Collector](https://tendriller.dev/tendril-stream.mjs): Run with a private collector configuration file.
-- [Event reader](https://tendriller.dev/tendril-events.mjs): Read pending events, acknowledge diagnostic probes, and explicitly acknowledge handled application events.
-- [Wake watcher](https://tendriller.dev/tendril-watch.mjs): Count-only wake notices for hosts with a session monitor.
-- [Local preview](https://tendriller.dev/tendril-preview.mjs): Serve a page with the bundled real runtime and stream fixtures, without npm or a build. Headless scenarios use optional Playwright and Chromium.
-- [Training dashboard](https://tendriller.dev/examples/training-dashboard/README.md): Downloadable setup and page source; usable without GitHub access.
-- [Starter catalog](https://tendriller.dev/recipes/catalog.json): Complete pages, agent instructions, and local scenarios.
-
-The optional full CLI and typed JavaScript client are available from the
-[repository](https://github.com/werg/tendriller). A checkout is useful for
-development; it is not required for the public API, local preview server,
-standalone helpers, or dashboard setup.
+Resolve discovery to an immutable release and verify its hashes before use. Browser component files belong in the page's publication; do not load release attachments as browser scripts. A catalog cannot install or upgrade trusted server workflows.

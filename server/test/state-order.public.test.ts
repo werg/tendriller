@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { inDO } from "./helpers";
 import { handleWsMessage } from "../src/ws";
 
-it("different sockets can broadcast a newer state revision before an earlier write acknowledgement", async () => {
+it("each accepted state mutation commits and acknowledges synchronously before the next mutation", async () => {
   await inDO("state-order-proof", async t => {
     t.db.set("id", "state-order-proof"); t.db.set("owner_account", "owner");
     const linkId = "l_state_order", sessionHash = "state-order-owner-session";
@@ -19,9 +19,9 @@ it("different sockets can broadcast a newer state revision before an earlier wri
       return { deserializeAttachment: () => attachment } as unknown as WebSocket;
     });
     try {
-      await Promise.all(sockets.map((ws, index) => handleWsMessage(t, ws, JSON.stringify({ t: "state", cid: `state-${index}`,
+      await Promise.all(sockets.map((ws, index) => handleWsMessage(t, ws, JSON.stringify({ t: "state", expected_generations: {}, cid: `state-${index}`,
         ops: [{ op: "set", path: [`key${index}`], value: index }] }))));
-      expect(seen).toEqual(["state:1", "state:2", "ack:1", "ack:2"]);
+      expect(seen).toEqual(["state:1", "ack:1", "state:2", "ack:2"]);
     } finally { t.broadcast = broadcast; t.send = send; }
   });
 });

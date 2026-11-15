@@ -1,0 +1,16 @@
+{
+  "id": "13eb79b1071e635cea50befc0e4c6c59db792ecdc1481b0b76945e6910aec535",
+  "version": "0.2.0-rc.1",
+  "features": {
+    "speech": {
+      "model": "cactus-whistle-v4",
+      "url": "_tendril/assets/b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb/whistle.cact",
+      "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+      "engine": {
+        "script": "_tendril/assets/bb61bcf0c48712bfb9cd0ade8f0748889dfde9944ac308220f42afbc605f82bc/cactus.js",
+        "wasm": "_tendril/assets/4198b30795ded7739fe6c9e80bf26d5a844767c081574d40c8dc0487cde8b4b6/cactus.wasm",
+        "wasm_sha256": "4198b30795ded7739fe6c9e80bf26d5a844767c081574d40c8dc0487cde8b4b6"
+      }
+    }
+  }
+}

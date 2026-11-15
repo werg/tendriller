@@ -1,4 +1,4 @@
-import { assertValid, validate } from "./index.mjs";
+import { assertValid, validate, CONTRACT_VERSION } from "./index.mjs";
 import { createDurabilityClient } from "./durability-client.mjs";
 import { createStreamsClient } from "./streams-client.mjs";
 
@@ -59,23 +59,17 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     session: () => request("/session", undefined, "sessionSummary"),
     updateSession: body => request("/session", { method: "PUT", body: assertValid("sessionWrite", body) }, "sessionResult"),
     exportBundle: ({ includeData = false } = {}) => request(`/bundle?include_data=${includeData}`, undefined, "bundle"),
-    stageBundle: body => request("/bundle/stage", { method: "POST", body: assertValid("bundle", body) }, "bundleStage"),
+    stageBundle: body => request("/bundle", { method: "PUT", body: assertValid("bundle", body) }, "bundleStage"),
     publishBundle: body => request("/bundle/publish", { method: "POST", body: assertValid("bundlePublish", body) }, "publicationResult"),
     discardBundle: () => request("/bundle", { method: "DELETE" }),
     remix: body => request("/remix", { method: "POST", body: assertValid("remix", body) }, "remixResult"),
-    decisions: () => request("/decisions", undefined, "decisionList"),
-    createDecision: body => request("/decisions", { method: "POST", body: assertValid("decisionCreate", body) }, "decision"),
-    updateDecision: (decision, body) => request(`/decisions/${id(decision)}`, { method: "PATCH", body: assertValid("decisionUpdate", body) }, "decision"),
-    responses: () => request("/responses", undefined, "responseList"),
-    assignments: () => request("/assignments", undefined, "assignmentList"),
-    participants: () => request("/assignments/participants", undefined, "participantList"),
-    createAssignment: body => request("/assignments", { method: "POST", body: assertValid("assignmentCreate", body) }, "assignment"),
-    updateAssignment: (assignment, body) => request(`/assignments/${id(assignment)}`, { method: "PATCH", body: assertValid("assignmentUpdate", body) }, "assignment"),
-    archives: () => request("/archives", undefined, "archiveList"),
-    previewArchive: scope => request(`/archives/preview?scope=${id(assertValid("archiveScope", scope))}`, undefined, "archivePreview"),
-    createArchive: body => request("/archives", { method: "POST", body: assertValid("archiveCreate", body) }, "archiveResult"),
-    archive: archive => request(`/archives/${id(archive)}`, undefined, "archive"),
-    deleteArchive: archive => request(`/archives/${id(archive)}`, { method: "DELETE" }),
+    service: () => request("/service", undefined, "serviceDescriptor"),
+    scopes: () => request("/scopes", undefined, "scopeList"),
+    putScope: (scope, body) => request(`/scopes/${id(scope)}`, { method: "PUT", body: assertValid("scopeWrite", body) }, "scopeDescriptor"),
+    rotateScope: (scope, body) => request(`/scopes/${id(scope)}/rotate`, { method: "POST", body }),
+    retireScope: (scope, body) => request(`/scopes/${id(scope)}`, { method: "DELETE", body }),
+    send: body => request("/events", { method: "POST", body: assertValid("command", body) }),
+    workflow: (module, operation, body) => request(`/workflows/${id(module)}/${id(operation)}`, { method: "POST", body: assertValid("command", body) }),
     readEvents: ({ after, wait = 0, signal }) => {
       if (!Number.isSafeInteger(after) || after < 0) throw new TypeError("readEvents requires an explicit nonnegative after cursor");
       if (!Number.isInteger(wait) || wait < 0 || wait > 300) throw new TypeError("wait must be 0..300 seconds");
@@ -93,4 +87,24 @@ export async function createPage(service, body, { fetch: fetcher = globalThis.fe
   try { result = await response.json(); } catch { throw new ApiError(response.status, { code: "invalid_response", message: "The service returned a non-JSON response" }); }
   if (!response.ok) throw new ApiError(response.status, result?.error);
   return checked("pageHandle", result, response.status);
+}
+
+/** Check capabilities before a tool creates a page or writes application data. */
+export async function describeService(service, { fetch: fetcher = globalThis.fetch } = {}) {
+  const response = await fetcher(service.replace(/\/+$/, "") + "/api/service");
+  let result;
+  try { result = await response.json(); }
+  catch { throw new ApiError(response.status, { code: "invalid_response", message: "Service descriptor is not JSON" }); }
+  if (!response.ok) throw new ApiError(response.status, result?.error);
+  return checked("serviceDescriptor", result, response.status);
+}
+
+export function requireService(descriptor, { contract = CONTRACT_VERSION, workflows = {} } = {}) {
+  if (descriptor.contract !== contract) throw new ApiError(409, { code: "contract_mismatch", message: `Core contract ${contract} required; service has ${descriptor.contract}` });
+  for (const [id, required] of Object.entries(workflows)) {
+    const installed = descriptor.workflows.find(module => module.id === id);
+    if (!installed || installed.interface_version !== required.interface_version || installed.schema_version !== required.schema_version)
+      throw new ApiError(409, { code: "workflow_mismatch", message: `Required workflow interface/schema is unavailable: ${id}` });
+  }
+  return descriptor;
 }

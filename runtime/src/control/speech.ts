@@ -1,5 +1,6 @@
 // Push-to-talk recording and in-browser Cactus Whistle transcription.
 import type { SensorTracker } from "./sensors";
+import type { Features } from "../types";
 
 export type CaptureMode = "local" | null;
 export interface CaptureHandlers {
@@ -24,8 +25,8 @@ export class SpeechCapture {
   private consented = false;
 
   constructor(private h: CaptureHandlers, private sensors: SensorTracker, private lang: () => string,
-    private base: string, private speech: { model: string; url: string; sha256: string }) {
-    this.mode = typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!window.OfflineAudioContext && !!window.Worker ? "local" : null;
+    private base: string, private speech: Features["speech"]) {
+    this.mode = !!speech && typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!window.OfflineAudioContext && !!window.Worker ? "local" : null;
   }
 
   private call(action: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<any> {
@@ -39,11 +40,12 @@ export class SpeechCapture {
 
   private async load(): Promise<void> {
     if (this.ready) return this.ready;
+    if (!this.speech) throw new Error("Speech transcription is unavailable in this environment.");
     if (!this.consented) {
       if (!await this.h.onConsent()) throw new Error("Speech setup cancelled. You can type instead.");
       this.consented = true;
     }
-    this.worker = new Worker(this.base + "_tendril/speech-worker.js");
+    this.worker = new Worker(new URL("speech-worker.js", new URL(this.base, location.href)).href);
     this.worker.onmessage = (event: MessageEvent) => {
       const { id, error, progress, ...result } = event.data ?? {};
       if (progress) { this.h.onInterim(progress); return; }
@@ -61,7 +63,7 @@ export class SpeechCapture {
       this.ready = null;
     };
     this.h.onInterim("Downloading private speech model…");
-    this.ready = this.call("init", { base: this.base, modelUrl: new URL(this.speech.url, location.origin + this.base).href,
+    this.ready = this.call("init", { engine: this.speech.engine, modelUrl: new URL(this.speech.url, new URL(this.base, location.href)).href,
       modelSha256: this.speech.sha256 }).then(() => {});
     try { await this.ready; }
     catch (error) { this.worker?.terminate(); this.worker = null; this.ready = null; throw error; }

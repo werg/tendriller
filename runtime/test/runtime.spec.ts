@@ -84,7 +84,7 @@ test("agent replies auto-speak only for approved owners and respect speak:false"
   mock.broadcast(t, { t: "role", role: "owner", pending: false });
   mock.broadcast(t, { t: "say", text: "default speech" });
   await expect.poll(() => page.evaluate(() => (window as any).autoSpeech)).toEqual(["owner reply", "default speech"]);
-  expect(await page.evaluate(() => (window as any).tendril._core.transcript.map((e: any) => e.text))).toEqual(["owner reply", "text only", "guest reply", "pending reply", "default speech"]);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries().map((e: any) => e.text))).toEqual(["owner reply", "text only", "guest reply", "pending reply", "default speech"]);
 });
 
 test("an audio-only reply speaks without adding a visible message", async ({ page }) => {
@@ -99,7 +99,7 @@ test("an audio-only reply speaks without adding a visible message", async ({ pag
   mock.broadcast(t, { t: "say", text: "Look at the other screen", present: false, speak: true });
   await expect.poll(() => page.evaluate(() => (window as any).spoken)).toEqual(["Look at the other screen"]);
   expect(await page.evaluate(() => (window as any).displayed)).toEqual([]);
-  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([]);
 });
 
 test("window.tendril exists synchronously; hello and welcome", async ({ page }) => {
@@ -128,7 +128,7 @@ test("window.tendril exists synchronously; hello and welcome", async ({ page }) 
   expect(info.device.id).toBe(hello.device_id);
   expect(info.device.role).toBe("owner");
   expect(info.version).toBe(1);
-  expect(info.core).toBe("object");
+  expect(info.core).toBe("undefined");
   expect(info.keys).not.toContain("_core");
   // device identity is stable across reloads
   await page.reload();
@@ -138,25 +138,25 @@ test("window.tendril exists synchronously; hello and welcome", async ({ page }) 
 
 test("double inclusion is ignored", async ({ page }) => {
   const t = mock.create();
-  t.html = `<script src="${mock.base(t)}_tendril/tendril.js"></script>`;
+  t.html = `<script src="${mock.runtimeUrl(t)}tendril.js"></script>`;
   await open(page, t);
   await page.waitForTimeout(300);
   expect(mock.messages(t, "hello").length).toBe(1);
 });
 
-test("pending work stays counted until acknowledgement and keeps its original session after offline reload", async ({ page }) => {
-  const t = mock.create({ state: { notebook: { session_id: "old-session", entries: {} } } });
+test("pending work stays counted until acknowledgement and keeps authoritative generations after offline reload", async ({ page }) => {
+  const t = mock.create({ state: { notebook: { session_id: "application-value", entries: {} } }, scopes: [{ id: "scope-a", generation: "old-generation", paths: [["notebook"]], operations: [] }] });
   await open(page, t);
   mock.goOffline(t);
   await page.waitForFunction(() => !window.tendril.connected);
   await page.evaluate(() => {
     window.tendril.state.set(["notebook", "entries", "draft"], { id: "draft", note: "An older session observation" });
-    void window.tendril.send({ type: "notebook.observation", session: { scope: "notebook", id: "old-session" } });
+    void window.tendril.send({ type: "notebook.observation", session: "application-value" }, { scope: "scope-a" });
   });
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
   await page.waitForFunction(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(`tendril:${window.__TENDRIL__.id}`);
+      const request = indexedDB.open(`tendril:v2:${window.__TENDRIL__.id}`);
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
     try {
@@ -171,7 +171,7 @@ test("pending work stays counted until acknowledgement and keeps its original se
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
   // Another device archived the scope while this device was offline. Hold the
   // replays so the test observes metadata and counts before server acknowledgement.
-  t.state = { notebook: { session_id: "new-session", entries: {} } }; t.rev++;
+  t.state = { notebook: { session_id: "application-value", entries: {} } }; t.rev++; t.scopes[0].generation = "new-generation";
   const held: any[] = [];
   t.onMessage = (message, socket) => {
     if (!["state", "send"].includes(message.t)) return;
@@ -181,17 +181,17 @@ test("pending work stays counted until acknowledgement and keeps its original se
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page.waitForFunction(() => window.tendril.connected);
   await expect.poll(() => held.length).toBe(2);
-  expect(held.find(item => item.message.t === "state").message.sessions.notebook).toBe("old-session");
-  expect(held.find(item => item.message.t === "send").message.data.session.id).toBe("old-session");
+  expect(held.find(item => item.message.t === "state").message.expected_generations["scope-a"]).toBe("old-generation");
+  expect(held.find(item => item.message.t === "send").message.data.session).toBe("application-value");
   expect(await page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
-  for (const { message, socket } of held) socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "stale_session", message: "This work belongs to an archived session." }));
+  for (const { message, socket } of held) socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "stale_generation", message: "The scope generation changed." }));
   mock.broadcast(t, { t: "state_reset", state: t.state, rev: t.rev });
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 0, state: 0, captures: 0 });
-  expect(await page.evaluate(() => window.tendril.state.get("notebook.session_id"))).toBe("new-session");
+  expect(await page.evaluate(() => window.tendril.state.get("notebook.session_id"))).toBe("application-value");
 });
 
-test("a lost state acknowledgement cannot restore an archived session after reconnect", async ({ page }) => {
-  const t = mock.create({ state: { notebook: { session_id: "old-session", entries: {} } }, rev: 4 });
+test("a lost state acknowledgement cannot restore work from a rotated scope after reconnect", async ({ page }) => {
+  const t = mock.create({ state: { notebook: { session_id: "old-session", entries: {} } }, rev: 4, scopes: [{ id: "scope-a", generation: "old-generation", paths: [["notebook"]], operations: [] }] });
   let accepted: any;
   t.onMessage = message => {
     if (message.t !== "state") return;
@@ -202,9 +202,9 @@ test("a lost state acknowledgement cannot restore an archived session after reco
     return true;
   };
   await open(page, t);
-  await page.evaluate(() => window.tendril.state.set("notebook", {
+  await page.evaluate(() => { void window.tendril.state.set("notebook", {
     session_id: "old-session", entries: { previous: { note: "Keep in the archive" } },
-  }));
+  }); });
   await expect.poll(() => !!accepted).toBe(true);
   expect(t.state.notebook.entries.previous.note).toBe("Keep in the archive");
   mock.goOffline(t); await page.waitForFunction(() => !window.tendril.connected);
@@ -214,7 +214,7 @@ test("a lost state acknowledgement cannot restore an archived session after reco
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
   const queuedStateCount = () => page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(`tendril:${window.__TENDRIL__.id}`);
+      const request = indexedDB.open(`tendril:v2:${window.__TENDRIL__.id}`);
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
     try {
@@ -230,7 +230,7 @@ test("a lost state acknowledgement cannot restore an archived session after reco
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
   // Another device archives while this one is away. Hold the replay replies so
   // the newer welcome and the preserved outbox can be examined independently.
-  t.state = { notebook: { session_id: "new-session", entries: { fresh: { note: "Current session" } } } }; t.rev++;
+  t.state = { notebook: { session_id: "new-session", entries: { fresh: { note: "Current session" } } } }; t.rev++; t.scopes[0].generation = "new-generation";
   const held: { message: any; socket: any }[] = [];
   t.onMessage = (message, socket) => { if (message.t === "state") { held.push({ message, socket }); return true; } };
   mock.goOnline(t); await page.evaluate(() => window.dispatchEvent(new Event("online")));
@@ -239,7 +239,7 @@ test("a lost state acknowledgement cannot restore an archived session after reco
   const previous = held.find(item => item.message.cid === accepted.message.cid)!;
   const independent = held.find(item => item !== previous)!;
   expect(previous.message).toEqual(accepted.message);
-  expect(independent.message.sessions.notebook).toBe("old-session");
+  expect(independent.message.expected_generations).toEqual({});
   const current = { notebook: t.state.notebook, unrelated: { draft: "Still waiting to sync" } };
   expect(await page.evaluate(() => window.tendril.state.get())).toEqual(current);
   expect(await page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
@@ -248,14 +248,14 @@ test("a lost state acknowledgement cannot restore an archived session after reco
   previous.socket.send(JSON.stringify(accepted.acknowledgement));
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(1);
   expect(await page.evaluate(() => window.tendril.state.get())).toEqual(current);
-  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  expect(await page.evaluate(() => (window.tendril as any).state.revision)).toBe(t.rev);
   await expect.poll(queuedStateCount).toBe(1);
 
   t.state.unrelated = structuredClone(independent.message.ops[0].value);
   independent.socket.send(JSON.stringify({ t: "ack", cid: independent.message.cid, rev: ++t.rev }));
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(0);
   expect(await page.evaluate(() => window.tendril.state.get())).toEqual(current);
-  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  expect(await page.evaluate(() => (window.tendril as any).state.revision)).toBe(t.rev);
   await expect.poll(queuedStateCount).toBe(0);
 });
 
@@ -274,7 +274,7 @@ test("an acknowledgement behind a newer delta resyncs without losing own writes 
     return true;
   };
   await open(page, t);
-  await page.evaluate(() => window.tendril.state.patch({ mine: "Accepted own write", shared: "Own earlier value" }));
+  await page.evaluate(() => { void window.tendril.state.patch({ mine: "Accepted own write", shared: "Own earlier value" }); });
   await expect.poll(() => !!accepted).toBe(true);
   mock.pushState(t, [{ op: "set", path: ["remote"], value: "Later independent write" }, { op: "set", path: ["shared"], value: "Later conflicting write" }]);
   await page.waitForFunction(() => window.tendril.state.get("remote") === "Later independent write");
@@ -286,7 +286,7 @@ test("an acknowledgement behind a newer delta resyncs without losing own writes 
   expect(await page.evaluate(() => window.tendril.state.get())).toEqual({
     mine: "Accepted own write", remote: "Later independent write", shared: "Later conflicting write",
   });
-  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  expect(await page.evaluate(() => (window.tendril as any).state.revision)).toBe(t.rev);
   const sends = mock.messages(t, "state");
   expect(sends).toHaveLength(2); expect(sends[1]).toEqual(sends[0]);
   // Once the full welcome covers the receipt, it must not trigger another
@@ -302,7 +302,7 @@ test("send returns seq after ack; wake option", async ({ page }) => {
   const t = mock.create();
   await open(page, t);
   const r1 = await page.evaluate(() => (window as any).tendril.send({ a: 1 }));
-  expect(r1.queued).toBe(false);
+  expect(r1.status).toBe("accepted");
   expect(r1.status).toBe("accepted");
   expect(typeof r1.seq).toBe("number");
   await page.evaluate(() => (window as any).tendril.send("x", { wake: false }));
@@ -322,14 +322,14 @@ test("send distinguishes server rejection from accepted or queued input", async 
   };
   await open(page, t);
   expect(await page.evaluate(() => (window as any).tendril.send({ answer: "kept draft" })))
-    .toEqual({ status: "rejected", queued: false, error: "forbidden", message: "This display cannot send input." });
+    .toEqual({ status: "rejected", error: "forbidden", message: "This display cannot send input." });
   t.onMessage = (message, socket) => {
     if (message.t !== "send") return;
     socket.send(JSON.stringify({ t: "error", cid: message.cid, code: "rate_limited", message: "Wait a moment." }));
     return true;
   };
   expect(await page.evaluate(() => (window as any).tendril.send({ answer: "retryable" })))
-    .toMatchObject({ status: "rejected", queued: false, error: "rate_limited", message: "Wait a moment." });
+    .toMatchObject({ status: "rejected", error: "rate_limited", message: "Wait a moment." });
 });
 
 test("a late instruction rejection removes its optimistic transcript and reports the recoverable text", async ({ page }) => {
@@ -347,16 +347,16 @@ test("a late instruction rejection removes its optimistic transcript and reports
     w.rejectedInstructions = [];
     w.tendril.on("instruction_rejected", (receipt: any) => w.rejectedInstructions.push(receipt));
   });
-  expect(await page.evaluate(() => (window as any).tendril._core.instruction("Keep this draft", "text"))).toEqual({ queued: true, cid: expect.any(String) });
-  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toHaveLength(1);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.send("Keep this draft", {via: "text"}))).toEqual({ status: "queued", cid: expect.any(String) });
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toHaveLength(1);
   rejectInstruction!();
   await expect.poll(() => page.evaluate(() => (window as any).rejectedInstructions)).toEqual([
     { cid: expect.any(String), text: "Keep this draft", error: "forbidden", message: "This device is no longer an owner." },
   ]);
-  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([]);
   await page.reload();
   await page.waitForFunction(() => (window as any).tendril.connected);
-  expect(await page.evaluate(() => (window as any).tendril._core.transcript)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([]);
   expect(mock.messages(t, "send").filter((message) => message.kind === "instruction")).toHaveLength(1);
 });
 
@@ -366,14 +366,14 @@ test("a replayed semantic input emits its receipt with the original data after r
   mock.goOffline(t);
   await page.waitForFunction(() => !(window as any).tendril.connected);
   expect(await page.evaluate(() => (window as any).tendril.send({ type: "observation", observation_id: "note-1", note: "Found a new trail" })))
-    .toMatchObject({ status: "queued", queued: true });
+    .toMatchObject({ status: "queued" });
   await page.reload();
   await page.waitForFunction(() => typeof (window as any).tendril === "object");
   mock.goOnline(t);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => page.evaluate(() => (window as any).sendResults)).toEqual([
-    { cid: expect.any(String), data: { type: "observation", observation_id: "note-1", note: "Found a new trail" },
-      status: "accepted", queued: false, seq: expect.any(Number) },
+    { cid: expect.any(String), scope: undefined, expected_generations: {}, data: { type: "observation", observation_id: "note-1", note: "Found a new trail" },
+      status: "accepted", seq: expect.any(Number) },
   ]);
 });
 
@@ -385,7 +385,7 @@ test("capture and its semantic input survive offline reload as one transaction",
   const queued = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["drawing-bytes"], { type: "image/png" }), {
     name: "drawing.png", data: { type: "ui", block: "sketch", value: { width: 640, height: 320 } }, dataPath: ["value"], keep: true,
   }));
-  expect(queued).toMatchObject({ status: "queued", queued: true, capture_id: expect.any(String) });
+  expect(queued).toMatchObject({ status: "queued", capture_id: expect.any(String) });
   expect(t.blobs.size).toBe(0);
   await page.reload();
   await page.waitForFunction(() => (window as any).tendril.captures().length === 1);
@@ -393,9 +393,9 @@ test("capture and its semantic input survive offline reload as one transaction",
   mock.goOnline(t);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => page.evaluate(() => (window as any).receipts.find((result: any) => result.status === "accepted"))).toMatchObject({
-    capture_id: queued.capture_id, status: "accepted", queued: false, blob: { retention: { keep: true, expires_at: null } },
+    capture_id: queued.capture_id, status: "accepted", blob: { retention: { keep: true, expires_at: null } },
   });
-  const sends = mock.messages(t, "send");
+  const sends = mock.messages(t, "capture_complete");
   expect(sends).toHaveLength(1);
   expect(sends[0].data).toEqual({ type: "ui", block: "sketch", capture_id: queued.capture_id, value: { width: 640, height: 320,
     blob: expect.any(String), url: expect.stringContaining("_tendril/blob/") } });
@@ -415,9 +415,9 @@ test("a lost upload response followed by reload reuses the blob and accepts its 
   await mock.waitFor(() => t.blobs.size === 1);
   await page.reload();
   await page.waitForFunction(() => (window as any).tendril.connected);
-  await mock.waitFor(() => mock.messages(t, "send").some((message) => message.data?.note === "The loose hinge"));
+  await mock.waitFor(() => mock.messages(t, "capture_complete").some((message) => message.data?.note === "The loose hinge"));
   expect(t.blobs.size).toBe(1);
-  const sends = mock.messages(t, "send").filter((message) => message.data?.modality === "photo");
+  const sends = mock.messages(t, "capture_complete").filter((message) => message.data?.modality === "photo");
   expect(new Set(sends.map(message => message.cid)).size).toBe(1);
   expect(t.sendReceipts.size).toBe(1);
   expect(t.seq).toBe(1);
@@ -427,7 +427,7 @@ test("a lost upload response followed by reload reuses the blob and accepts its 
 test("rejected captured input remains retryable after reload without duplicating media", async ({ page }) => {
   const t = mock.create();
   t.onMessage = (message, socket) => {
-    if (message.t !== "send") return;
+    if (message.t !== "capture_complete") return;
     socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "rate_limited", message: "Try again shortly." }));
     return true;
   };
@@ -435,16 +435,17 @@ test("rejected captured input remains retryable after reload without duplicating
   const rejected = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["audio"]), {
     name: "note.webm", data: { type: "input", modality: "audio" },
   }));
-  expect(rejected).toMatchObject({ status: "rejected", queued: false, error: "rate_limited", message: "Try again shortly." });
+  expect(rejected).toMatchObject({ status: "rejected", error: "rate_limited", message: "Try again shortly." });
   await page.reload();
   await page.waitForFunction(() => (window as any).tendril.captures()[0]?.status === "rejected");
   t.onMessage = undefined;
   const accepted = await page.evaluate((id) => (window as any).tendril.retryCapture(id), rejected.capture_id);
   expect(accepted).toMatchObject({ capture_id: rejected.capture_id, status: "accepted", seq: expect.any(Number) });
   expect(t.blobs.size).toBe(1);
-  const sends = mock.messages(t, "send");
+  const sends = mock.messages(t, "capture_complete");
   expect(sends).toHaveLength(2);
-  expect(sends[0].cid).not.toBe(sends[1].cid);
+  expect(sends[0].cid).toBe(sends[1].cid);
+  expect(sends[0].expected_generations).toEqual(sends[1].expected_generations);
   expect(sends[0].data.blob).toBe(sends[1].data.blob);
 });
 
@@ -455,7 +456,7 @@ test("upload rejection retains the capture until retry or discard", async ({ pag
     data: { type: "input", modality: "photo" },
   }));
   expect(rejected).toMatchObject({ status: "rejected", error: "quota", message: "Capture storage is full." });
-  expect(mock.messages(t, "send")).toHaveLength(0);
+  expect(mock.messages(t, "capture_complete")).toHaveLength(0);
   expect(await page.evaluate(() => (window as any).tendril.captures())).toHaveLength(1);
   await page.evaluate((id) => (window as any).tendril.discardCapture(id), rejected.capture_id);
   expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
@@ -469,7 +470,7 @@ test("capture does not claim to be saved when browser storage is unavailable", a
   const t = mock.create();
   await open(page, t);
   const result = await page.evaluate(() => (window as any).tendril.uploadEvent(new Blob(["photo"]), { data: { modality: "photo" } }));
-  expect(result).toMatchObject({ status: "rejected", queued: false, error: "storage_unavailable" });
+  expect(result).toMatchObject({ status: "rejected", error: "storage_unavailable" });
   expect(t.blobs.size).toBe(0);
   expect(mock.messages(t, "send")).toHaveLength(0);
 });
@@ -512,12 +513,12 @@ test("offline queue persists across reload and replays in order", async ({ page 
   const r = await page.evaluate(async () => {
     const tl = (window as any).tendril;
     const a = await tl.send({ n: 1 });
-    tl.state.set("list.a", { text: "milk" });
+    await tl.state.set("list.a", { text: "milk" });
     const b = await tl.send({ n: 2 });
     return [a, b];
   });
-  expect(r[0].queued).toBe(true);
-  expect(r[1].queued).toBe(true);
+  expect(r[0].status).toBe("queued");
+  expect(r[1].status).toBe("queued");
   expect(mock.messages(t, "send").length).toBe(0);
   // reload with no socket: queue and local state come back from storage
   await page.reload();
@@ -573,15 +574,16 @@ test("state: local ops, merge patch, remote ops, reset, listeners", async ({ pag
   await page.waitForFunction(() => (window as any).tendril.state.get("remote.v") === 1);
   const last = await page.evaluate(() => (window as any).__changes.at(-1));
   expect(last.by).toBe("agent:main");
-  // mine()
+  // Application device maps remain ordinary data; access uses an explicit path.
   const id = await page.evaluate(() => (window as any).tendril.device.id);
   mock.pushState(t, [{ op: "set", path: ["_device", id], value: { zoom: 3 } }]);
-  await page.waitForFunction(() => (window as any).tendril.state.mine()?.zoom === 3);
+  await page.waitForFunction(id => (window as any).tendril.state.get(["_device", id, "zoom"]) === 3, id);
+  expect(await page.evaluate(() => "mine" in window.tendril.state)).toBe(false);
   // reset
   mock.broadcast(t, { t: "state_reset", state: { fresh: true }, rev: 100 });
   await page.waitForFunction(() => (window as any).tendril.state.get("fresh") === true);
   expect(await page.evaluate(() => (window as any).tendril.state.get("remote"))).toBeUndefined();
-  expect(await page.evaluate(() => (window as any).tendril._core.rev)).toBe(100);
+  expect(await page.evaluate(() => (window as any).tendril.state.revision)).toBe(100);
 });
 
 test("pending local op survives a conflicting remote op (server order wins)", async ({ page }) => {
@@ -773,7 +775,7 @@ test("welcome with a newer current version reloads once", async ({ page }) => {
 });
 
 test("say, instruction and transcript; presence; request correlation", async ({ page }) => {
-  const t = mock.create({ state: { _prefs: { audio: false } } });
+  const t = mock.create();
   t.onMessage = (m, ws) => {
     if (m.t === "devices") { ws.send(JSON.stringify({ t: "devices", cid: m.cid, devices: [{ id: "d_x" }] })); return true; }
     if (m.t === "adopt_code") { ws.send(JSON.stringify({ t: "error", cid: m.cid, code: "forbidden", message: "no" })); return true; }
@@ -781,6 +783,7 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
   await open(page, t);
   await page.evaluate(() => {
     const tl = (window as any).tendril;
+    tl.preferences.update({audio:false});
     (window as any).__said = [];
     tl.on("say", (m: any) => (window as any).__said.push(m.text));
     tl.on("presence", (p: any) => ((window as any).__presence = p));
@@ -790,17 +793,17 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
   mock.broadcast(t, { t: "presence", state: "working", text: "Working", last_seen: 1, schedule_minutes: null, withheld: 0, wake: "long_poll" });
   await page.waitForFunction(() => (window as any).__presence?.state === "working");
   expect(await page.evaluate(() => (window as any).tendril.presence.state)).toBe("working");
-  await page.evaluate(() => (window as any).tendril._core.instruction("make it blue", "text"));
+  await page.evaluate(() => (window as any).tendril.conversation.send("make it blue", {via: "text"}));
   const ins = mock.messages(t, "send").find((m) => m.kind === "instruction");
   expect(ins).toMatchObject({ kind: "instruction", text: "make it blue", via: "text", wake: true });
   const id = await page.evaluate(() => (window as any).tendril.device.id);
   mock.broadcast(t, { t: "instruction_echo", text: "make it blue", via: "text", device: id, ts: 2 });
   await page.waitForTimeout(100);
-  const tr = await page.evaluate(() => (window as any).tendril._core.transcript.map((e: any) => `${e.from}:${e.text}`));
+  const tr = await page.evaluate(() => (window as any).tendril.conversation.entries().map((e: any) => `${e.from}:${e.text}`));
   expect(tr).toEqual(["agent:On it", "user:make it blue"]);
-  const devices = await page.evaluate(() => (window as any).tendril._core.request({ t: "devices" }));
+  const devices = await page.evaluate(() => (window as any).tendril.request("devices"));
   expect(devices.devices[0].id).toBe("d_x");
-  const err = await page.evaluate(() => (window as any).tendril._core.request({ t: "adopt_code" }).then(() => "resolved", (e: any) => e.code));
+  const err = await page.evaluate(() => (window as any).tendril.request("adopt_code").then(() => "resolved", (e: any) => e.code));
   expect(err).toBe("forbidden");
 });
 
@@ -809,7 +812,7 @@ test("upload posts the blob", async ({ page }) => {
   await open(page, t);
   const r = await page.evaluate(() => (window as any).tendril.upload(new Blob(["abc"], { type: "text/plain" }), { name: "a.txt" }));
   expect(r.id).toMatch(/^b_/);
-  expect(r.url).toBe("_tendril/blob/" + r.id);
+  expect(r.url).toBe(mock.url(t) + "_tendril/blob/" + r.id);
   const b = t.blobs.get(r.id)!;
   expect(b.body.toString()).toBe("abc");
   expect(b.type).toBe("text/plain");
@@ -830,31 +833,41 @@ test("check runs the bundled axe with external downloads blocked and reports vio
   expect(typeof r.value.violations[0].nodes).toBe("number");
 });
 
-test("service worker caches the version; offline reload shows the page with its state", async ({ page, context }) => {
-  const t = mock.create({ noSw: false, html: `<h1 id="h">Cached page</h1><script src="app.js"></script>` });
-  t.files["app.js"] = { type: "text/javascript", body: "window.__app = 'v1';" };
+for (const preview of [false, true]) test(`publication A and B retain pinned lazy assets and recover offline in both tabs (preview=${preview})`, async ({ page, context }) => {
+  const t = mock.create({ noSw: false, preview, html: `<h1 id="h">Page A</h1><script src="app.js"></script>` });
+  t.files["app.js"] = { type: "text/javascript", body: "window.__app = 'A';" };
+  t.files["lazy.js"] = { type: "text/javascript", body: "window.__lazy = 'A';" };
   await open(page, t);
-  await page.evaluate(() => (window as any).tendril.state.set("note", "kept"));
-  await mock.waitFor(() => mock.messages(t, "state").length === 1);
-  await page.waitForFunction(async () => {
-    const keys = await caches.keys();
-    const name = keys.find((k) => k.startsWith("tendril-") && k !== "tendril-meta");
-    if (!name) return false;
-    const c = await caches.open(name);
-    return (await c.keys()).length >= 3;
-  }, null, { timeout: 15000 });
-  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
-  const cached = await page.evaluate(async () => {
-    const name = (await caches.keys()).find((k) => k.startsWith("tendril-t"))!;
-    return { name, keys: (await (await caches.open(name)).keys()).map((r) => new URL(r.url).pathname) };
-  });
-  expect(cached.name).toBe(`tendril-${t.id}-v1`);
-  expect(cached.keys).toEqual(expect.arrayContaining([mock.base(t), mock.base(t) + "app.js", mock.base(t) + "_tendril/tendril.js"]));
+  await expect(page).toHaveURL(new RegExp(`/_publications/1/index.html$`));
+  await page.evaluate(() => { window.addEventListener("tendril:before-reload", event => event.preventDefault()); });
+  await page.evaluate(() => window.tendril.state.set("note", "kept"));
+  const ready = async (tab: Page, publication: string) => {
+    await tab.waitForFunction(async id => {
+      const key = `tendril-v2-publication:${encodeURIComponent(location.origin + window.__TENDRIL__.base)}:${id}`;
+      if (!(await caches.keys()).includes(key)) return false;
+      const cache = await caches.open("tendril-v2-metadata");
+      const saved = await cache.match(location.origin + window.__TENDRIL__.base + "_tendril/publications");
+      return !!saved && (await saved.json()).complete.includes(id);
+    }, publication, { timeout: 30000 });
+    await tab.waitForFunction(() => !!navigator.serviceWorker.controller);
+  };
+  await ready(page, "1");
+  t.version = 2; t.html = `<h1 id="h">Page B</h1><script src="app.js"></script>`;
+  t.files["app.js"] = { type: "text/javascript", body: "window.__app = 'B';" };
+  t.files["lazy.js"] = { type: "text/javascript", body: "window.__lazy = 'B';" };
+  const next = await context.newPage(); await open(next, t); await ready(next, "2");
+  mock.broadcast(t, { t: "reload", version: 2 });
+  expect(await page.evaluate(() => window.tendril.version)).toBe(1);
   await context.setOffline(true);
-  await page.reload();
-  await expect(page.locator("#h")).toHaveText("Cached page");
-  expect(await page.evaluate(() => (window as any).__app)).toBe("v1");
-  expect(await page.evaluate(() => (window as any).tendril.state.get("note"))).toBe("kept");
-  expect(await page.evaluate(() => (window as any).tendril.connected)).toBe(false);
+  for (const [tab, label] of [[page, "A"], [next, "B"]] as const) {
+    await tab.evaluate(() => new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script"); script.src = "lazy.js"; script.onload = () => resolve(); script.onerror = () => reject(new Error("lazy asset failed")); document.head.append(script);
+    }));
+    expect(await tab.evaluate(() => (window as any).__lazy)).toBe(label);
+    await tab.reload(); await expect(tab.locator("#h")).toHaveText(`Page ${label}`);
+    expect(await tab.evaluate(() => (window as any).__app)).toBe(label);
+    expect(await tab.evaluate(() => window.tendril.state.get("note"))).toBe("kept");
+    expect(await tab.evaluate(() => window.tendril.connected)).toBe(false);
+  }
   await context.setOffline(false);
 });

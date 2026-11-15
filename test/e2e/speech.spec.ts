@@ -6,13 +6,11 @@ import { agent, createPage, deletePage, openClaimed, signInFixture } from "./loc
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 test("speech Worker passes model length as bigint to an i64 WASM export", async ({ page }) => {
-  const source = await readFile("server/public/_tendril/speech-worker.js", "utf8");
+  const source = await readFile("dist/runtime/assets/speech-worker.js", "utf8");
   const wasm = new Uint8Array([1, 2, 3]);
   const model = new Uint8Array([4, 5, 6, 7]);
-  const fixture = source.replace("4198b30795ded7739fe6c9e80bf26d5a844767c081574d40c8dc0487cde8b4b6", hash(wasm));
-  expect(fixture).not.toBe(source);
   await page.goto("https://service.localhost:8790/health");
-  const result = await page.evaluate(async ({ script, wasmBytes, modelBytes, modelHash }) => {
+  const result = await page.evaluate(async ({ script, wasmBytes, wasmHash, modelBytes, modelHash }) => {
     const preamble = `
       var createCactus = async () => ({
         _malloc: () => 1, _free: () => {}, HEAPU8: new Uint8Array(1024),
@@ -28,11 +26,11 @@ test("speech Worker passes model length as bigint to an i64 WASM export", async 
       worker.onerror = event => reject(new Error(event.message));
       worker.onmessage = event => { messages.push(event.data); if (event.data.ready || event.data.error) resolve(event.data); };
     });
-    worker.postMessage({ id: 1, action: "init", base: "/s/test/", modelUrl: "/whistle.cact", modelSha256: modelHash });
+    worker.postMessage({ id: 1, action: "init", engine: { script: "/fixture/cactus.js", wasm: "/fixture/cactus.wasm", wasm_sha256: wasmHash }, modelUrl: "/whistle.cact", modelSha256: modelHash });
     const response = await settled;
     worker.terminate();
     return { response, messages };
-  }, { script: fixture, wasmBytes: [...wasm], modelBytes: [...model], modelHash: hash(model) });
+  }, { script: source, wasmBytes: [...wasm], wasmHash: hash(wasm), modelBytes: [...model], modelHash: hash(model) });
   expect(result.response).toMatchObject({ id: 1, ready: true });
   expect(result.messages.some((m: any) => m.progress?.includes("Verifying"))).toBe(true);
 });

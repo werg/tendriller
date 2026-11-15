@@ -13,6 +13,8 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      storage_schema: ${{ steps.storage.outputs.revision }}
     strategy:
       fail-fast: false
       matrix:
@@ -24,20 +26,16 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - name: Identify required storage schema
+        id: storage
+        run: echo "revision=$(node scripts/storage-schema.mjs)" >> "$GITHUB_OUTPUT"
       - run: npm run check
+      - run: npm run test:pair
       - id: chromium
         if: matrix.node == '24'
         run: npx playwright install --with-deps chromium
       - if: matrix.node == '24'
         run: npm run test:browser
-      - if: always() && matrix.node == '24' && steps.chromium.outcome == 'success'
-        run: npm run capture:recipes
-      - uses: actions/upload-artifact@v4
-        if: always() && matrix.node == '24'
-        with:
-          name: catalog-previews
-          path: test-results/catalog/
-          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -46,33 +44,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-  portable:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [firefox, webkit]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx playwright install --with-deps ${{ matrix.browser }}
-      - run: npx playwright test --config test/portable/playwright.config.ts --project=${{ matrix.browser }}
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: portable-failure-traces-${{ matrix.browser }}
-          path: test-results/portable/
-          include-hidden-files: true
-          if-no-files-found: ignore
-
   staging:
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true'
-    needs: [check, portable]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
+    needs: [check]
     runs-on: ubuntu-latest
     environment: staging
     env:
@@ -86,6 +60,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: npm run build:service
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
         id: current
@@ -100,13 +75,15 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
+        run: node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
+      - if: steps.current.outputs.current == 'true'
         run: npx wrangler deploy --config server/wrangler.staging.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
         run: node scripts/check-deployment.mjs https://staging.tendriller.dev
 
   production:
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true'
-    needs: staging
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
+    needs: [check, staging]
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -120,6 +97,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: npm run build:service
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
         id: current
@@ -133,6 +111,8 @@ jobs:
           fi
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.production.jsonc
+      - if: steps.current.outputs.current == 'true'
+        run: node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler deploy --config server/wrangler.production.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'

@@ -11,8 +11,8 @@ export interface DeliveryPolicy {
 const MEMORY: DeliveryPolicy = Object.freeze({ raw: "memory", request: "memory", outboxCompletion: "written", disconnect: "wait" });
 const ACKED: DeliveryPolicy = Object.freeze({ raw: "outbox", request: "outbox", outboxCompletion: "ack", disconnect: "wait" });
 const WRITTEN: DeliveryPolicy = Object.freeze({ raw: "outbox", request: "outbox", outboxCompletion: "written", disconnect: "wait" });
-// Raw diagnostic replies have always been disposable. A correlated request still
-// keeps the legacy memory-queue/timeout behavior, even for one of these names.
+// Diagnostic replies can be discarded when disconnected. Correlated control
+// RPCs wait in memory until delivery or their bounded request deadline.
 const TRANSIENT: DeliveryPolicy = Object.freeze({ ...MEMORY, raw: "drop" });
 const STREAM_REQUEST: DeliveryPolicy = Object.freeze({
   ...MEMORY, request: "connected", disconnect: "reject",
@@ -23,6 +23,7 @@ const STREAM_REQUEST: DeliveryPolicy = Object.freeze({
 /** Explicit operation names prevent new APIs accidentally inheriting a prefix policy. */
 export const DELIVERY_POLICIES = Object.freeze({
   send: ACKED,
+  capture_complete: ACKED,
   state: ACKED,
   log: WRITTEN,
   upload: WRITTEN,
@@ -35,8 +36,8 @@ export const DELIVERY_POLICIES = Object.freeze({
 } satisfies Record<string, DeliveryPolicy>);
 
 export function deliveryPolicy(kind: string): DeliveryPolicy {
-  // Unknown control messages retain the historical memory queue. Own-property
-  // lookup also keeps names such as "constructor" from becoming policy objects.
+  // Control RPCs have transient process-local lifetimes. Own-property lookup
+  // keeps names such as "constructor" from becoming policy objects.
   return Object.hasOwn(DELIVERY_POLICIES, kind)
     ? DELIVERY_POLICIES[kind as keyof typeof DELIVERY_POLICIES] : MEMORY;
 }

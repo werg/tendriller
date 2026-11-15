@@ -122,7 +122,7 @@ describe("isolated branch page hosts", () => {
     expect(claim.status).toBe(303);
     const expectedPage = pageUrl(preview, handle.id, pageKey);
     const exchange = claim.headers.get("Location")!;
-    expect(exchange).toMatch(`${expectedPage}_tendril/session?code=`);
+    expect(exchange).toMatch(`${expectedPage}_tendril/auth/session?code=`);
     expect((await route(new Request(exchange.replace(suffix, "--p-fedcba987654")), preview)).status).toBe(404);
     const redeemed = await route(new Request(exchange), preview);
     expect(redeemed.status).toBe(303);

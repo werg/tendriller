@@ -33,7 +33,7 @@ async function issuePageCode(env: Env, id: string, key: string, accountId: strin
   const code = randomToken();
   await env.ACCOUNTS!.prepare("INSERT INTO page_codes (hash, tendril_id, account_id, role, key_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(await sha256Hex(code), id, accountId, role, await sha256Hex(key), Date.now() + 60_000).run();
-  return redirect(`${pageUrl(env, id, key)}_tendril/session?code=${encodeURIComponent(code)}`);
+  return redirect(`${pageUrl(env, id, key)}_tendril/auth/session?code=${encodeURIComponent(code)}`);
 }
 
 async function verifiedIdentities(env: Env, accountId: string): Promise<{ provider: string; login: string; emails: string[] }[]> {

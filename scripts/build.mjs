@@ -1,115 +1,95 @@
-// Builds browser assets into server/public, which the Worker serves via the ASSETS binding.
-//   runtime/src/index.ts  -> server/public/_tendril/tendril.js
-//   runtime/src/sw.ts     -> server/public/_tendril/sw.js
-//   snippets/*.js         -> server/public/snippets/  (copied as-is; plain browser JS)
-//   agent.md              -> server/public/agent.md
+// Build the application-neutral engine and its public SDK/runtime artifacts.
 import { build } from "esbuild";
-import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync, watch, writeFileSync, statSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync, watch, writeFileSync, readFileSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { CORE_RELEASE, CONTRACT_VERSION } from "../contract/index.mjs";
+import { RUNTIME_FEATURES, RUNTIME_RESOURCES } from "../runtime/resources.mjs";
+import { runtimeManifest } from "./runtime-manifest.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const out = join(root, "server/public");
+const dist = join(root, "dist");
 const watching = process.argv.includes("--watch");
+const sha256 = data => createHash("sha256").update(data).digest("hex");
+export function filesUnder(directory) {
+  return readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry =>
+    entry.isDirectory() ? filesUnder(join(directory, entry.name)) : [join(directory, entry.name)]);
+}
+const contentType = path => ({ ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".css": "text/css", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".wasm": "application/wasm", ".txt": "text/plain", ".md": "text/markdown" }[path.slice(path.lastIndexOf("."))] || "application/octet-stream");
+const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 
-export async function buildAll() {
-const schemaPath = join(root, "contract/index.mjs");
-const { schemaDocument, schemas } = await import(pathToFileURL(schemaPath).href + `?mtime=${statSync(schemaPath).mtimeMs}`);
-mkdirSync(join(out, "_tendril"), { recursive: true });
-// Preserve native ES-module/worker paths and third-party license notices.
-rmSync(join(out, "_tendril/tts"), { recursive: true, force: true });
-cpSync(join(root, "node_modules/phonon-tts"), join(out, "_tendril/tts"), { recursive: true });
-// Audit the delivered page without a third-party CDN or an unpinned runtime.
-for (const [source, target] of [["axe.min.js", "axe.min.js"], ["LICENSE", "axe-LICENSE.txt"], ["LICENSE-3RD-PARTY.txt", "axe-LICENSE-3RD-PARTY.txt"]])
-  copyFileSync(join(root, "node_modules/axe-core", source), join(out, "_tendril", target));
-mkdirSync(join(out, "snippets"), { recursive: true });
-rmSync(join(out, "recipes"), { recursive: true, force: true });
-cpSync(join(root, "recipes"), join(out, "recipes"), { recursive: true,
-  filter: (source) => !basename(source).startsWith(".") });
-mkdirSync(join(out, "_tendril/brand"), { recursive: true });
-for (const [source, target] of [
-  ["tendriller-logo-ai-compressed.png", "logo.png"],
-  ["tendriller-logo-ai.webp", "logo.webp"],
-  ["tendriller-icon-64.png", "icon-64.png"],
-  ["tendriller-icon-180.png", "icon-180.png"],
-  ["tendriller-favicon.ico", "favicon.ico"],
-]) copyFileSync(join(root, "docs/assets", source), join(out, "_tendril/brand", target));
-rmSync(join(out, "legal"), { recursive: true, force: true });
-mkdirSync(join(out, "legal"), { recursive: true });
-
-const common = { bundle: true, format: "iife", target: "es2020", minify: !watching && !process.env.NO_MINIFY, sourcemap: watching ? "inline" : false, logLevel: "warning" };
-await build({ ...common, entryPoints: [join(root, "runtime/src/index.ts")], outfile: join(out, "_tendril/tendril.js") });
-await build({ ...common, entryPoints: [join(root, "runtime/src/sw.ts")], outfile: join(out, "_tendril/sw.js") });
-await build({ ...common, entryPoints: [join(root, "runtime/src/control/speech-worker.ts")], outfile: join(out, "_tendril/speech-worker.js") });
-
-for (const f of readdirSync(join(root, "snippets"))) {
-  if (f.endsWith(".js")) copyFileSync(join(root, "snippets", f), join(out, "snippets", f));
-}
-for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
-// Public documentation and examples must be usable without a source checkout.
-rmSync(join(out, "docs"), { recursive: true, force: true });
-mkdirSync(join(out, "docs"), { recursive: true });
-for (const name of readdirSync(join(root, "docs"))) {
-  if (name.endsWith(".md")) copyFileSync(join(root, "docs", name), join(out, "docs", name));
-}
-mkdirSync(join(out, "cli"), { recursive: true });
-copyFileSync(join(root, "cli/README.md"), join(out, "cli/README.md"));
-copyFileSync(join(root, "snippets/README.md"), join(out, "snippets/README.md"));
-rmSync(join(out, "examples"), { recursive: true, force: true });
-mkdirSync(join(out, "examples/training-dashboard"), { recursive: true });
-for (const name of ["README.md", "setup.mjs", "index.html", "app.js", "model.mjs"])
-  copyFileSync(join(root, "examples/training-dashboard", name), join(out, "examples/training-dashboard", name));
-for (const name of ["codex-bridge", "openclaw-bridge", "hermes-bridge", "tendril-wait", "tendril-watch", "tendril-stream", "tendril-events"]) {
-  await build({ entryPoints: [join(root, `cli/bin/${name}.mjs`)], outfile: join(out, `${name}.mjs`),
-    bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
-}
-copyFileSync(join(root, "cli/scripts/tendril-wait.sh"), join(out, "tendril-wait.sh"));
-await build({ entryPoints: [join(root, "cli/bin/claude-channel.mjs")], outfile: join(out, "claude-channel.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", logLevel: "warning" });
-for (const name of ["terms", "privacy", "acceptable-use", "copyright", "law-enforcement"]) {
-  const source = join(root, "legal", `${name}.html`);
-  if (existsSync(source)) copyFileSync(source, join(out, "legal", `${name}.html`));
-}
-mkdirSync(join(out, "contract"), { recursive: true });
-writeFileSync(join(out, "contract/v1.json"), JSON.stringify(schemaDocument, null, 2) + "\n");
-writeFileSync(join(out, "recipes/ui-schema.json"), JSON.stringify({ $schema: schemaDocument.$schema, title: "Tendriller agent-editable interface", ...schemas.interface }, null, 2) + "\n");
-await build({ stdin: { contents: 'export * from "./server/src/state.ts"; export { historyPage } from "./server/src/streams/history.ts";', resolveDir: root, loader: "js" },
-  outfile: join(out, "_preview/state.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
-// The downloaded preview contains this build's exact runtime and snippets, not
-// a second runtime or code fetched later. Optional neural engines stay out.
-const previewAssets = {};
-for (const name of ["tendril.js", "sw.js", "speech-worker.js", "axe.min.js", "axe-LICENSE.txt", "axe-LICENSE-3RD-PARTY.txt", "brand/icon-64.png"])
-  previewAssets[`/_tendril/${name}`] = readFileSync(join(out, "_tendril", name)).toString("base64");
-for (const name of readdirSync(join(root, "snippets")).filter(name => name.endsWith(".js")))
-  previewAssets[`/_tendril/snippets/${name}`] = readFileSync(join(root, "snippets", name)).toString("base64");
-await build({ entryPoints: [join(root, "cli/bin/tendril-preview.mjs")], outfile: join(out, "tendril-preview.mjs"),
-  bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning", external: ["bufferutil", "utf-8-validate"],
-  banner: { js: `import { createRequire as previewRequire } from "node:module"; const require = previewRequire(import.meta.url);\n/* ws license:\n${readFileSync(join(root, "node_modules/ws/LICENSE"), "utf8")}*/` },
-  plugins: [{ name: "embedded-preview", setup(builder) {
-    builder.onLoad({ filter: /[/\\]cli[/\\]lib[/\\]preview-bundle\.mjs$/ }, () => ({ loader: "js", resolveDir: root,
-      contents: `import { applyOps, validateOps } from "./server/src/state.ts"; import { historyPage } from "./server/src/streams/history.ts";
-        export const implementation = { applyOps, validateOps, historyPage }; export const assets = ${JSON.stringify(previewAssets)};` }));
-  } }],
-});
-console.log("built server/public");
+export async function buildPublicArtifacts() {
+  mkdirSync(dist, { recursive: true });
+  const runtime = join(dist, "runtime"), assets = join(runtime, "assets"), sdk = join(dist, "sdk");
+  rmSync(runtime, { recursive: true, force: true });
+  rmSync(sdk, { recursive: true, force: true });
+  mkdirSync(assets, { recursive: true }); mkdirSync(sdk, { recursive: true });
+  const common = { bundle: true, format: "iife", target: "es2022", minify: !watching && !process.env.NO_MINIFY, sourcemap: watching ? "inline" : false, logLevel: "warning" };
+  for (const [source, target] of [["runtime/src/index.ts", "tendril.js"], ["runtime/src/sw.ts", "sw.js"], ["runtime/src/control/speech-worker.ts", "speech-worker.js"]])
+    await build({ ...common, entryPoints: [join(root, source)], outfile: join(assets, target) });
+  cpSync(join(root, "node_modules/phonon-tts"), join(assets, "tts"), { recursive: true });
+  for (const [source, target] of [["axe.min.js", "axe.min.js"], ["LICENSE", "axe-LICENSE.txt"], ["LICENSE-3RD-PARTY.txt", "axe-LICENSE-3RD-PARTY.txt"]])
+    copyFileSync(join(root, "node_modules/axe-core", source), join(assets, target));
+  mkdirSync(join(assets, "brand"), { recursive: true });
+  for (const [source, target] of [["tendriller-logo-ai-compressed.png", "logo.png"], ["tendriller-logo-ai.webp", "logo.webp"], ["tendriller-icon-64.png", "icon-64.png"], ["tendriller-icon-180.png", "icon-180.png"], ["tendriller-favicon.ico", "favicon.ico"]])
+    copyFileSync(join(root, "docs/assets", source), join(assets, "brand", target));
+  const resources = RUNTIME_RESOURCES.map(({url,sha256,type}) => ({url,sha256,type}));
+  writeJson(join(assets, "resources.json"), { features: RUNTIME_FEATURES, resources });
+  const entries = filesUnder(assets).map(path => { const data = readFileSync(path); return { path: relative(assets, path).replaceAll("\\", "/"), sha256: sha256(data), size: data.length, type: contentType(path) }; });
+  const manifest = runtimeManifest({ version: CORE_RELEASE, contract: CONTRACT_VERSION, assets: entries, resources });
+  const { id } = manifest;
+  writeJson(join(assets, "manifest.json"), manifest);
+  // A release is copied to a content-addressed directory. Rebuilding never replaces
+  // bytes reachable by an earlier publication's runtime URL.
+  const immutable = join(out, "_tendril/runtime", id);
+  mkdirSync(immutable, { recursive: true }); cpSync(assets, immutable, { recursive: true });
+  writeJson(join(root, "server/src/runtime-release.json"), { id, version: CORE_RELEASE, features: RUNTIME_FEATURES });
+  mkdirSync(join(out, "_tendril"), { recursive: true });
+  copyFileSync(join(assets, "sw.js"), join(out, "_tendril/sw.js"));
+  cpSync(join(assets, "brand"), join(out, "_tendril/brand"), { recursive: true });
+  await build({ stdin: { contents: 'export { applyOps, validateOps } from "./server/src/state.ts"; export { historyPage, historyGap, mergeHistoryGaps } from "./server/src/streams/history.ts"; export { captureContext, matchesContext, requiredScopes } from "./runtime/src/generations.ts";', resolveDir: root, loader: "js" }, outfile: join(runtime, "preview-support.mjs"), bundle: true, platform: "neutral", format: "esm", target: "es2022", logLevel: "warning" });
+  copyFileSync(join(root, "preview-support/index.d.mts"), join(runtime, "preview-support.d.mts"));
+  const runtimeExports = { "./preview-support": { types: "./preview-support.d.mts", import: "./preview-support.mjs" }, "./manifest": "./assets/manifest.json", "./assets/*": "./assets/*" };
+  if (existsSync(join(root, "runtime/src/preview.ts"))) {
+    await build({ entryPoints: [join(root, "runtime/src/preview.ts")], outfile: join(runtime, "preview.mjs"), bundle: true, platform: "neutral", format: "esm", target: "es2022", logLevel: "warning" });
+    copyFileSync(join(root, "preview-support/preview.d.mts"), join(runtime, "preview.d.mts"));
+    runtimeExports["./preview"] = { types: "./preview.d.mts", import: "./preview.mjs" };
+  }
+  writeJson(join(runtime, "package.json"), { name: "@tendriller/runtime", version: CORE_RELEASE, type: "module", description: "Released Tendriller runtime and public preview primitives", exports: runtimeExports, files: ["assets", "preview-support.mjs", "preview-support.d.mts", "preview.mjs", "preview.d.mts"], tendriller: { contract: CONTRACT_VERSION, runtime: id } });
+  for (const file of readdirSync(join(root, "contract"))) if (/\.(mjs|mts|json)$/.test(file) && file !== "tsconfig.json") copyFileSync(join(root, "contract", file), join(sdk, file));
+  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller public client, protocol and trusted host interfaces", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./browser": { types: "./browser.d.mts" }, "./host": { types: "./host.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./scopes": { types: "./scopes.d.mts", import: "./scopes.mjs" }, "./schema": "./v2.json" }, tendriller: { contract: CONTRACT_VERSION } });
+  for (const [name, directory] of [["sdk", sdk], ["runtime", runtime]]) {
+    const result = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", dist], { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))[0];
+    const target = join(dist, `tendriller-${name}-${CORE_RELEASE}.tgz`);
+    copyFileSync(join(dist, result.filename), target);
+    if (join(dist, result.filename) !== target) rmSync(join(dist, result.filename));
+  }
+  for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
+  for (const directory of ["docs", "legal"]) {
+    const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
+    for (const name of readdirSync(join(root, directory))) if (/\.(md|html)$/.test(name)) copyFileSync(join(root, directory, name), join(target, name));
+  }
+  mkdirSync(join(out, "contract"), { recursive: true });
+  copyFileSync(join(root, "contract/v2.json"), join(out, "contract/v2.json"));
+  return manifest;
 }
 
+export async function buildEngine() {
+  mkdirSync(join(dist, "engine"), { recursive: true });
+  const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], metafile: true, logLevel: "warning" });
+  writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
+}
+export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }
 if (!process.argv.includes("--skip-initial")) await buildAll();
 if (watching) {
   let timer, building = false, again = false;
-  async function rebuild() {
-    if (building) { again = true; return; }
-    building = true;
-    do {
-      again = false;
-      try { await buildAll(); } catch (error) { console.error("Build failed; watching for a correction:", error.message); }
-    } while (again);
-    building = false;
-  }
-  const watchers = ["runtime/src", "server/src/state.ts", "server/src/http.ts", "server/src/streams/history.ts", "snippets", "recipes", "contract", "cli/bin", "cli/lib", "cli/scripts", "cli/README.md", "examples", "legal", "docs", "agent.md", "llms.txt"].map(path =>
-    watch(join(root, path), { recursive: true }, (_event, file) => {
-      if (file && /(?:^|\/)(?:node_modules|test-results|\.preview)/.test(String(file))) return;
-      clearTimeout(timer); timer = setTimeout(rebuild, 120);
-    }));
-  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { clearTimeout(timer); for (const watcher of watchers) watcher.close(); process.exit(0); });
-  console.log("Watching runtime, snippets, recipes, contract, bridges and assets.");
+  const rebuild = async () => { if (building) { again = true; return; } building = true; do { again = false; try { await buildAll(); } catch (error) { console.error(error); } } while (again); building = false; };
+  const watchers = ["runtime/src", "runtime/resources.mjs", "server/src", "contract", "preview-support", "docs", "legal", "agent.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
+    if (name === "runtime-release.json") return;
+    clearTimeout(timer); timer = setTimeout(rebuild, 120);
+  }));
+  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { clearTimeout(timer); watchers.forEach(watcher => watcher.close()); process.exit(0); });
 }

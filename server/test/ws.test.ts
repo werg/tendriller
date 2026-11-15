@@ -39,20 +39,6 @@ describe("eval relay", () => {
     b.close();
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("primary prefers the most recently active owner device", async () => {
-    const h = await create();
-    const owner = await PageClient.connect(h.page_url);
-    const link = await apiJson(h, "POST", "links", { role: "guest" }, 201);
-    const guest = await PageClient.connect(link.url);
-    owner.onEval = () => "owner";
-    guest.onEval = () => "guest";
-    await guest.request({ t: "send", data: {}, wake: false }); // guest more recently active
-    expect((await apiJson(h, "POST", "eval", { code: "1" })).value).toBe("owner");
-    owner.close();
-    guest.close();
-  });
 
   it("times out with 504 and reports offline with 409", async () => {
     const h = await create();
@@ -114,10 +100,10 @@ describe("state", () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
     expect(page.welcome).toMatchObject({ state: {}, rev: 0 });
-    expect(await apiJson(h, "PATCH", "state", { list: { a1: { text: "milk", done: false } }, title: "Shop" })).toEqual({ rev: 1 });
+    expect(await apiJson(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {}, ops: [{ op: "set", path: ["list"], value: { a1: { text: "milk", done: false } } }, { op: "set", path: ["title"], value: "Shop" }] })).toEqual({ scopes: [], rev: 1 });
     const m1 = await page.next("state");
     expect(m1).toEqual({
-      t: "state",
+      t: "state", scopes: [],
       rev: 1,
       by: "agent:main",
       ops: [
@@ -125,28 +111,28 @@ describe("state", () => {
         { op: "set", path: ["title"], value: "Shop" },
       ],
     });
-    expect(await apiJson(h, "PATCH", "state", { list: { a1: { done: true }, a2: { text: "eggs" } }, title: null })).toEqual({ rev: 2 });
+    expect(await apiJson(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {}, ops: [{ op: "set", path: ["list", "a1", "done"], value: true }, { op: "set", path: ["list", "a2"], value: { text: "eggs" } }, { op: "delete", path: ["title"] }] })).toEqual({ scopes: [], rev: 2 });
     const m2 = await page.next("state");
     expect(m2.ops).toEqual([
       { op: "set", path: ["list", "a1", "done"], value: true },
       { op: "set", path: ["list", "a2"], value: { text: "eggs" } },
       { op: "delete", path: ["title"] },
     ]);
-    expect(await apiJson(h, "GET", "state")).toEqual({ rev: 2, state: { list: { a1: { text: "milk", done: true }, a2: { text: "eggs" } } } });
+    expect(await apiJson(h, "GET", "state")).toEqual({ scopes: [], rev: 2, state: { list: { a1: { text: "milk", done: true }, a2: { text: "eggs" } } } });
     page.close();
   });
 
   it("explicit ops and PUT replace", async () => {
     const h = await create();
-    await apiJson(h, "PATCH", "state", { ops: [{ op: "set", path: ["a", "b"], value: 1 }, { op: "set", path: ["c"], value: [1, 2] }] });
-    await apiJson(h, "PATCH", "state", { ops: [{ op: "delete", path: ["a", "b"] }] });
-    expect(await apiJson(h, "GET", "state")).toEqual({ rev: 2, state: { a: {}, c: [1, 2] } });
-    expect(await apiJson(h, "PUT", "state", { x: 1 })).toEqual({ rev: 3 });
-    expect(await apiJson(h, "GET", "state")).toEqual({ rev: 3, state: { x: 1 } });
-    const bad = await api(h, "PATCH", "state", { ops: [{ op: "frob", path: ["a"] }] });
+    await apiJson(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {},  ops: [{ op: "set", path: ["a", "b"], value: 1 }, { op: "set", path: ["c"], value: [1, 2] }] });
+    await apiJson(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {},  ops: [{ op: "delete", path: ["a", "b"] }] });
+    expect(await apiJson(h, "GET", "state")).toEqual({ scopes: [], rev: 2, state: { a: {}, c: [1, 2] } });
+    expect(await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { x: 1 } })).toEqual({ scopes: [], rev: 3 });
+    expect(await apiJson(h, "GET", "state")).toEqual({ scopes: [], rev: 3, state: { x: 1 } });
+    const bad = await api(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {},  ops: [{ op: "frob", path: ["a"] }] });
     expect(bad.status).toBe(400);
     await bad.text();
-    const big = await api(h, "PUT", "state", { blob: "x".repeat(1_100_000) });
+    const big = await api(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { blob: "x".repeat(1_100_000) } });
     expect(big.status).toBe(413);
     await big.text();
   });
@@ -155,11 +141,11 @@ describe("state", () => {
     const h = await create();
     const a = await PageClient.connect(h.page_url);
     const b = await PageClient.connect(h.page_url);
-    const ack = await a.request({ t: "state", ops: [{ op: "set", path: ["n"], value: 1 }] });
+    const ack = await a.request({ t: "state", expected_generations: {}, ops: [{ op: "set", path: ["n"], value: 1 }] });
     expect(ack).toMatchObject({ t: "ack", rev: 1 });
     const seen = await b.next("state");
-    expect(seen).toEqual({ t: "state", ops: [{ op: "set", path: ["n"], value: 1 }], rev: 1, by: `device:${a.deviceId}` });
-    await b.request({ t: "state", ops: [{ op: "set", path: ["n"], value: 2 }] });
+    expect(seen).toEqual({ t: "state", scopes: [], ops: [{ op: "set", path: ["n"], value: 1 }], rev: 1, by: `device:${a.deviceId}` });
+    await b.request({ t: "state", expected_generations: {}, ops: [{ op: "set", path: ["n"], value: 2 }] });
     expect((await a.next("state")).rev).toBe(2);
     expect(a.messages.filter((m) => m.t === "state")).toHaveLength(0); // a did not get its own op back
     expect((await apiJson(h, "GET", "state")).state).toEqual({ n: 2 });
@@ -170,18 +156,18 @@ describe("state", () => {
   it("invalid page ops get an error ack and a state_reset", async () => {
     const h = await create();
     const a = await PageClient.connect(h.page_url);
-    const ack = await a.request({ t: "state", ops: [{ op: "set", path: ["__proto__"], value: 1 }] });
+    const ack = await a.request({ t: "state", expected_generations: {}, ops: [{ op: "set", path: ["__proto__"], value: 1 }] });
     expect(ack.error).toBe("bad_ops");
-    expect(await a.next("state_reset")).toEqual({ t: "state_reset", state: {}, rev: 0 });
+    expect(await a.next("state_reset")).toEqual({ t: "state_reset", scopes: [], state: {}, rev: 0 });
     a.close();
   });
 
   it("a page claiming an unknown rev gets state_reset after welcome", async () => {
     const h = await create();
-    await apiJson(h, "PATCH", "state", { a: 1 });
+    await apiJson(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {}, ops: [{ op: "set", path: ["a"], value: 1 }] });
     const page = await PageClient.connect(h.page_url, { rev: 99 });
     expect(page.welcome).toMatchObject({ state: { a: 1 }, rev: 1 });
-    expect(await page.next("state_reset")).toEqual({ t: "state_reset", state: { a: 1 }, rev: 1 });
+    expect(await page.next("state_reset")).toEqual({ t: "state_reset", scopes: [], state: { a: 1 }, rev: 1 });
     page.close();
   });
 });
@@ -190,21 +176,21 @@ describe("dedupe", () => {
   it("resending a cid does not store the event twice and replays the ack", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
-    page.send({ t: "send", cid: "same-1", data: { v: 1 }, wake: false });
+    page.send({ t: "send", expected_generations: {}, cid: "same-1", data: { v: 1 }, wake: false });
     const a1 = await page.next("ack");
-    page.send({ t: "send", cid: "same-1", data: { v: 1 }, wake: false });
+    page.send({ t: "send", expected_generations: {}, cid: "same-1", data: { v: 1 }, wake: false });
     const a2 = await page.next("ack");
     expect(a2).toEqual(a1);
-    page.send({ t: "state", cid: "st-1", ops: [{ op: "set", path: ["k"], value: 1 }] });
+    page.send({ t: "state", expected_generations: {}, cid: "st-1", ops: [{ op: "set", path: ["k"], value: 1 }] });
     const s1 = await page.next("ack");
-    page.send({ t: "state", cid: "st-1", ops: [{ op: "set", path: ["k"], value: 1 }] });
+    page.send({ t: "state", expected_generations: {}, cid: "st-1", ops: [{ op: "set", path: ["k"], value: 1 }] });
     expect(await page.next("ack")).toEqual(s1);
     const r = await apiJson(h, "GET", "events");
     expect(r.events.filter((e: any) => e.type === "event")).toHaveLength(1);
     expect((await apiJson(h, "GET", "state")).rev).toBe(1);
     // the same cid from a different device is a different message
     const other = await PageClient.connect(h.page_url);
-    other.send({ t: "send", cid: "same-1", data: { v: 2 }, wake: false });
+    other.send({ t: "send", expected_generations: {}, cid: "same-1", data: { v: 2 }, wake: false });
     await other.next("ack");
     expect((await apiJson(h, "GET", "events")).events.filter((e: any) => e.type === "event")).toHaveLength(2);
     page.close();
@@ -225,67 +211,8 @@ describe("roles, pairing and devices", () => {
     b.close();
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("required pairing: first device owner, later ones pending until approved", async () => {
-    const h = await create({ pairing: "required" });
-    const first = await PageClient.connect(h.page_url);
-    expect(first.welcome).toMatchObject({ role: "owner", pending: false });
-    const second = await PageClient.connect(h.page_url, { name: "Tablet" });
-    expect(second.welcome).toMatchObject({ role: "guest", pending: true, pair_code: expect.stringMatching(/^\d{6}$/) });
-    const pr = await first.next("pair_request");
-    expect(pr).toMatchObject({ device: { id: second.deviceId, name: "Tablet" }, code: second.welcome.pair_code });
-    const ev = (await apiJson(h, "GET", "events")).events.find((e: any) => e.type === "device" && e.data.action === "pair_request");
-    expect(ev).toMatchObject({ wake: true, device: second.deviceId });
 
-    // a pending device's text is not an instruction; owner-only ops are refused
-    const forb = await second.request({ t: "devices" });
-    expect(forb).toMatchObject({ t: "error", code: "forbidden" });
 
-    const ack = await first.request({ t: "pair_approve", device_id: second.deviceId, role: "owner" });
-    expect(ack).toMatchObject({ t: "ack", role: "owner" });
-    expect(await second.next("role")).toEqual({ t: "role", role: "owner", pending: false });
-    const devs = await first.request({ t: "devices" });
-    expect(devs.devices.find((d: any) => d.id === second.deviceId)).toMatchObject({ role: "owner", pending: false, connected: true });
-    first.close();
-    second.close();
-  });
-
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("agent approves a pairing with PATCH devices/<id>; known devices keep their role", async () => {
-    const h = await create({ pairing: "required" });
-    const first = await PageClient.connect(h.page_url);
-    const second = await PageClient.connect(h.page_url);
-    const d = await apiJson(h, "PATCH", `devices/${second.deviceId}`, { role: "owner", name: "Kitchen tablet" });
-    expect(d).toMatchObject({ id: second.deviceId, role: "owner", name: "Kitchen tablet", connected: true });
-    expect(await second.next("role")).toMatchObject({ role: "owner" });
-    second.close();
-    const again = await PageClient.connect(h.page_url, { deviceId: second.deviceId, secret: second.secret });
-    expect(again.welcome).toMatchObject({ role: "owner", pending: false });
-    // wrong secret for a known id is refused
-    const spoof = new PageClient(h.page_url, second.deviceId, "a".repeat(32));
-    await spoof.open();
-    const err = await spoof.hello();
-    expect(err).toMatchObject({ t: "error", code: "device_secret" });
-    first.close();
-    again.close();
-  });
-
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("display devices cannot send or change state", async () => {
-    const h = await create();
-    const link = await apiJson(h, "POST", "links", { role: "display", label: "wall" }, 201);
-    const disp = await PageClient.connect(link.url);
-    expect(disp.welcome.role).toBe("display");
-    expect((await disp.request({ t: "send", data: {} })).error).toBe("forbidden");
-    expect((await disp.request({ t: "state", ops: [{ op: "set", path: ["a"], value: 1 }] })).error).toBe("forbidden");
-    const blob = await req(link.url + "_tendril/blob", { method: "POST", body: "x" });
-    expect(blob.status).toBe(403);
-    await blob.text();
-    disp.close();
-  });
 
   it("devices list, delete disconnects and forgets", async () => {
     const h = await create();
@@ -315,45 +242,6 @@ describe("roles, pairing and devices", () => {
 });
 
 describe("links", () => {
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("creates, lists, expires, deletes and rotates links", async () => {
-    const h = await create();
-    const g = await apiJson(h, "POST", "links", { role: "guest", label: "back seat" }, 201);
-    expect(g).toMatchObject({ id: expect.stringMatching(/^l_/), role: "guest", label: "back seat", expires_at: null });
-    expect(g.url).toMatch(new RegExp(`/t/${h.id}/s/[a-z2-7]{26}/$`));
-    const { links } = await apiJson(h, "GET", "links");
-    expect(links.map((l: any) => l.id)).toEqual(["l_main", g.id]);
-    expect(links[0].url).toBe(h.page_url);
-
-    const guest = await PageClient.connect(g.url);
-    expect((await api(h, "DELETE", `links/${g.id}`)).status).toBe(204);
-    await sleep(50);
-    expect(guest.closed?.code).toBe(4001);
-    const gone = await req(g.url);
-    expect(gone.status).toBe(404);
-    await gone.text();
-    const main = await api(h, "DELETE", "links/l_main");
-    expect(main.status).toBe(400);
-    await main.text();
-
-    const exp = await apiJson(h, "POST", "links", { role: "guest", expires_in: 60 }, 201);
-    expect(exp.expires_at).toBeGreaterThan(Date.now());
-    expect((await req(exp.url)).status).toBe(200);
-    await inDO(h.id, (t) => {
-      t.skew += 61_000;
-    });
-    const expired = await req(exp.url);
-    expect(expired.status).toBe(404);
-    await expired.text();
-
-    const rot = await apiJson(h, "POST", "links/l_main/rotate");
-    expect(rot.url).not.toBe(h.page_url);
-    const old = await req(h.page_url);
-    expect(old.status).toBe(404);
-    await old.text();
-    expect((await apiJson(h, "GET", "")).page_url).toBe(rot.url);
-  });
 
   it("owner pages can list and create links", async () => {
     const h = await create();
@@ -371,7 +259,7 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     const page = await PageClient.connect(h.page_url);
     await apiJson(h, "POST", "say", { text: "On it", speak: false });
     expect(await page.next("say")).toMatchObject({ text: "On it", speak: false, ts: expect.any(Number) });
-    await page.request({ t: "send", kind: "instruction", text: "thanks", via: "text" });
+    await page.request({ t: "send", expected_generations: {}, kind: "instruction", text: "thanks", via: "text" });
     const again = await PageClient.connect(h.page_url);
     expect(again.welcome.transcript.map((x: any) => [x.from, x.text])).toEqual([
       ["agent", "On it"],
@@ -387,10 +275,10 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     const sub = await page.request({ t: "push_subscribe", subscription: { endpoint: "https://push.example/abc", keys: { p256dh: "x", auth: "y" } } });
     expect(sub.error).toBeUndefined();
     const r = await apiJson(h, "POST", "notify", { title: "Decision needed", body: "Approve?" });
-    expect(r).toEqual({ sent: 0, failed: 1 }); // push.ts stub returns ok:false
+    expect(r).toMatchObject({ sent: 0, failed: 1, deliveries: [{ device: page.deviceId, ok: false }] });
     expect(await page.next("notify_local")).toMatchObject({ title: "Decision needed", body: "Approve?" });
     await page.request({ t: "push_unsubscribe" });
-    expect(await apiJson(h, "POST", "notify", { title: "x" })).toEqual({ sent: 0, failed: 0 });
+    expect(await apiJson(h, "POST", "notify", { title: "x" })).toEqual({ sent: 0, failed: 0, deliveries: [] });
     page.close();
   });
 
@@ -414,18 +302,6 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     again.close();
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("voice_event: handled is a non-waking voice event, unhandled an instruction", async () => {
-    const h = await create();
-    const page = await PageClient.connect(h.page_url);
-    await page.request({ t: "voice_event", text: "next step", function: "next", args: {}, handled: true });
-    await page.request({ t: "voice_event", text: "plan a route to the coast", handled: false });
-    const evs = (await apiJson(h, "GET", "events")).events;
-    expect(evs.find((e: any) => e.type === "voice")).toMatchObject({ data: { text: "next step", function: "next", args: {} }, wake: false });
-    expect(evs.find((e: any) => e.type === "instruction")).toMatchObject({ data: { text: "plan a route to the coast", via: "voice_layer" }, wake: true });
-    page.close();
-  });
 
   it("logs are stored with device and version, newest 2000 kept", async () => {
     const h = await create();
@@ -454,7 +330,7 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     await page.open();
     page.send({ t: "ping" });
     expect(await page.next("pong")).toEqual({ t: "pong" });
-    page.send({ t: "send", cid: "x", data: {} });
+    page.send({ t: "send", expected_generations: {}, cid: "x", data: {} });
     expect(await page.next("error")).toMatchObject({ code: "not_ready" });
     page.close();
   });

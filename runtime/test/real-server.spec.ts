@@ -33,7 +33,7 @@ test("real server: page loads, send, eval, state both ways, health", async ({ pa
 
   // send → event
   const r = await page.evaluate(() => (window as any).tendril.send({ hello: "world" }));
-  expect(r.queued).toBe(false);
+  expect(r.status).toBe("accepted");
   const ev = await api(`${apiBase}/events?after=0`, { token });
   expect(ev.body.events.some((e: any) => e.type === "event" && e.data && e.data.hello === "world")).toBe(true);
 
@@ -47,8 +47,10 @@ test("real server: page loads, send, eval, state both ways, health", async ({ pa
   // state page → server
   await page.evaluate(() => (window as any).tendril.state.patch({ list: { a: { text: "milk" } } }));
   await expect.poll(async () => (await api(`${apiBase}/state`, { token })).body.state.list?.a?.text).toBe("milk");
-  // state server → page (merge patch)
-  await api(`${apiBase}/state`, { method: "PATCH", token, body: JSON.stringify({ list: { b: { text: "eggs" } }, mode: "x" }), headers: { "Content-Type": "application/json" } });
+  // state server → page (explicit versioned command envelope)
+  await api(`${apiBase}/state`, { method: "PATCH", token, body: JSON.stringify({ cid: crypto.randomUUID(), expected_generations: {}, ops: [
+    { op: "set", path: ["list", "b"], value: { text: "eggs" } }, { op: "set", path: ["mode"], value: "x" },
+  ] }), headers: { "Content-Type": "application/json" } });
   await page.waitForFunction(() => (window as any).tendril.state.get("list.b.text") === "eggs");
   expect(await page.evaluate(() => (window as any).tendril.state.get("list.a.text"))).toBe("milk");
 
@@ -86,8 +88,14 @@ test("real server: service worker caches the page for offline reload", async ({ 
   await page.waitForFunction(() => (window as any).tendril?.connected, null, { timeout: 15000 });
   await page.evaluate(() => (window as any).tendril.state.set("x", 42));
   await page.waitForFunction(async () => {
-    const name = (await caches.keys()).find((k) => /^tendril-.*-v\d+$/.test(k));
-    return !!name && (await (await caches.open(name)).keys()).length >= 3 && !!navigator.serviceWorker.controller;
+    const publication = window.__TENDRIL__.publication!;
+    const runtime = new URL(publication.runtime.base, location.origin);
+    const manifest = await caches.match(new URL("manifest.json", runtime).href);
+    if (!manifest || !navigator.serviceWorker.controller) return false;
+    const assets = (await manifest.json()).assets;
+    const urls = [...publication.assets.map(asset => new URL(asset.path, new URL(publication.base, location.origin)).href),
+      ...assets.map((asset: {path:string}) => new URL(asset.path, runtime).href)];
+    return (await Promise.all(urls.map(url => caches.match(url)))).every(Boolean);
   }, null, { timeout: 15000 });
   await page.waitForTimeout(500);
   await context.setOffline(true);

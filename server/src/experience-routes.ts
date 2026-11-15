@@ -4,18 +4,11 @@ import { deviceConfiguration, getFocus, setFocus, updateDevice } from "./device-
 import { deleteTimer, listTimers, saveTimer, timerHistory } from "./timers";
 import { discardStaged, exportBundle, publishStaged, putSession, remix, sessionSummary, stageBundle } from "./portability";
 import { HttpError, json, readJson } from "./http";
-import { handleDecisions, handleResponses } from "./interactions";
-import { handleAssignments } from "./assignments";
-import { handleArchives } from "./archives";
 
-export const EXPERIENCE_ROUTE = /^(?:focus|timers(?:\/[^/]+)?|session|bundle(?:\/(?:stage|publish))?|remix|decisions(?:\/[a-zA-Z0-9-]+(?:\/respond)?)?|responses|assignments(?:\/[a-zA-Z0-9-]+)?|archives(?:\/[a-zA-Z0-9-]+)?)$/;
+export const EXPERIENCE_ROUTE = /^(?:focus|timers(?:\/[^/]+)?|session|bundle(?:\/publish)?|remix)$/;
 
 export async function handleExperience(t: Tendril, req: Request, url: URL, by: string, rest: string, ownerPage = false): Promise<Response> {
   const method = req.method === "HEAD" ? "GET" : req.method;
-  if (rest === "archives" || rest.startsWith("archives/")) return handleArchives(t, req, url, rest, by);
-  if (rest === "assignments" || rest.startsWith("assignments/")) return handleAssignments(t, req, rest, null, true, by);
-  if (rest === "decisions" || rest.startsWith("decisions/")) return handleDecisions(t, req, rest, by, ownerPage);
-  if (rest === "responses" && !ownerPage) return handleResponses(t, req, null, true);
   if (rest === "focus") {
     if (method === "GET") return json({ focus: getFocus(t) });
     if (method === "POST") { setFocus(t, assertValid("focusRequest", await readJson(req, 4096)), by); return json(deviceConfiguration(t)); }
@@ -40,14 +33,14 @@ export async function handleExperience(t: Tendril, req: Request, url: URL, by: s
   }
   if (rest === "bundle" && method === "GET") return json(await exportBundle(t, url.searchParams.get("include_data") === "true"), 200,
     { "Content-Disposition": 'attachment; filename="tendriller-bundle.json"' });
-  if ((rest === "bundle/stage" && method === "POST") || (rest === "bundle" && method === "PUT")) {
+  if (rest === "bundle" && method === "PUT") {
     const body = assertValid("bundle", await readJson(req, 36 * 1024 * 1024));
     const staged = await stageBundle(t, body, by);
     return json({ staged: true, files: staged.files.length, media: staged.media.length, expected_version: t.db.get("current", 0), requires_publication: true }, 202);
   }
   if (rest === "bundle/publish" && method === "POST") {
     const body = assertValid("bundlePublish", await readJson(req, 4096));
-    return json(await publishStaged(t, by, body.expected_version));
+    return json(await publishStaged(t, by, body.expected_version, body));
   }
   if (rest === "bundle" && method === "DELETE") { await discardStaged(t); return new Response(null, { status: 204 }); }
   if (rest === "remix" && method === "POST") return remix(t, req, assertValid(ownerPage ? "remixPage" : "remix", await readJson(req, 4096)), by, ownerPage);

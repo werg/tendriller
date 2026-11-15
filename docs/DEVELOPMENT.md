@@ -1,260 +1,39 @@
 # Develop and verify Tendriller
 
-Use Node 22.15 or newer. `npm ci` installs the repository tools. The plain HTTP
-API and browser scripts do not require an application framework.
+Use Node 22.15 or newer. Install the locked development dependencies with `npm ci`.
 
-See [Internal architecture](ARCHITECTURE.md) for transaction/effect boundaries,
-identity and activity, stream adapters, browser delivery policies and collectors.
+## Engine and public artifacts
 
-Agents using the public service can preview a local page without a checkout or
-build: download [`tendril-preview.mjs`](https://tendriller.dev/tendril-preview.mjs)
-and run `node tendril-preview.mjs ./my-page --fixture ./scenario.json`. This prints
-a loopback URL and serves the bundled production runtime and snippets. Add
-`--headless` to run scenario steps and capture a screenshot using optional
-Playwright/Chromium installed in the current project. The server itself needs
-only Node 22.15+. Its assets are included in the download; nothing is fetched
-at execution time. Optional neural voice engines and models are excluded.
+`npm run build:engine` builds the generic engine, browser runtime and public SDK/support archives with no contrib checkout or installation. `npm run dev` builds and runs the local Worker with asset watching. `npm run build:artifacts` emits only the public archives in `dist/`.
 
-## A supported loop
+`npm run contract:generate` refreshes `contract/wire.d.mts` and `contract/v2.json` from the executable schemas. `npm run contract:check` rejects stale generated files. There is one contract and no compatibility profile.
 
-1. Run `npm run build` once, then `npm run preview -- recipes/field-notebook`.
-   Open the printed localhost URL. This loads the **production `tendril.js`**, its
-   real control, state, IndexedDB outbox, service worker and health reporting.
-2. Edit the recipe. Reload to inspect page changes. Use `npm run build:watch` in a
-   second terminal when editing runtime modules, snippets, recipes or assets.
-3. Run `node cli/bin/tendril.mjs preview recipes/field-notebook --fixture recipes/field-notebook/scenario.json`.
-   Inspect the screenshot, actual events, public API call trace, server-side state
-   and activity. This recipe preview is a deterministic local adapter, not a live host.
-4. Run `npm run check` for the contract, types, Worker service and CLI checks.
-   Run `npm run test:browser` for the shipping browser suites.
-5. Attach a verified host receiver before publishing to a real page. Use the
-   delivery probe and first real reply to confirm the intended conversation.
+`npm run test:pair` verifies the deployment lock, builds the service with its exact vendored workflow archive, and runs the pairing integration suite in the Worker runtime. The suite exercises the compiled service through public requests; it does not import contrib source. Core CI runs this separately from the application-neutral engine tests.
 
-`npm run dev` builds assets, applies local D1 migrations and supervises both
-Wrangler and a continuous asset build. Runtime, snippet, bridge, schema and
-recipe changes rebuild automatically. Wrangler watches the resulting assets.
-Local public-service identity and provisioning still follow `OPERATIONS.md`;
-the isolated E2E runner seeds its own temporary identities without OAuth secrets.
+`npm run check` runs typechecking, the independent engine build, import-boundary checks, core unit/Worker tests and a clean artifact consumer. The consumer installs the actual SDK/runtime tarballs outside the checkout and validates imports and TypeScript declarations. It receives no optional tools or private source paths.
 
-## Live branch previews
+## Trusted service composition
 
-Push a branch to this repository to run the **Public service** checks. After the
-Node and browser gates pass, the **Live branch previews** workflow deploys that exact
-commit to Cloudflare and publishes its URL in the workflow summary and GitHub
-deployment environment `preview/<key>`. The URL stays
-the same on subsequent passing commits. A failed check leaves the last passing
-preview available. Pull requests from forks run checks without a deployment.
+`composition.lock.json` records the exact trusted workflow archive, its SHA-256 digest and the supported core contract. `npm run build:service` verifies the lock and statically compiles it with the engine. Its input graph must contain no CLI, collector, preview or component implementations.
 
-Each branch gets its own Worker, accounts database, object bucket and Durable
-Objects. Its service URL is `https://preview-<key>.tendriller.dev`, where `<key>` is
-the first 12 hexadecimal characters of SHA-256 of the complete branch name.
-Tendril pages use `<id>--p-<key>.tendriller.dev`, preserving a separate browser
-origin for each page and keeping previews separate from staging and production.
+The default development Worker runs the empty generic registry. Trusted-module tests explicitly install the selected module through `configureWorkflows`; ordinary payloads cannot register one.
 
-The initial preview exposes the branch's live service, including the home page,
-starter gallery, agent guide, assets and API. Page creation starts paused in its
-fresh database. OAuth, Turnstile, speech model installation and real push delivery
-need their corresponding preview configuration; production credentials and data
-are not copied. See [branch preview operations](OPERATIONS.md#live-branch-previews)
-before enabling account and page flows. The existing localhost recipe preview
-and isolated Worker E2E suites remain available without external credentials.
-Branches created before this feature must merge or rebase onto a version with
-`PAGE_HOST_SUFFIX` support before their live page routes can work.
+## Browser and integration tests
 
-Deleting the Git branch removes its preview and its temporary data. Closing a
-pull request while retaining the branch keeps the preview available. Use test
-data only; a preview is a disposable environment.
+`npm run test:browser` runs core browser and service flows. Browser executable paths can be supplied through `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. Core tests cover actual browser transport, durable outbox semantics, conversation controls, state and publication caching. Worker tests cover identity, quotas and atomic operations.
 
-## What the local recipe preview tests
+Contrib owns component accessibility, recipe/scaffold flows, collectors, host bridges, complete local preview and portable application tests. Its consumer test runs packed tools in a fresh directory against the exact released core runtime. Preview fixtures report unsupported operations instead of claiming service behavior.
 
-Preview runs the same browser code users receive. It does **not** replace
-`window.tendril` with a fake API. A local WebSocket/HTTP adapter acknowledges
-events, stores state using the server's compiled state implementation, stores
-uploaded bytes, deduplicates retries, records reply receipts and models roles.
-The trace wraps public methods and calls through to their real implementations.
+## Release gates
 
-The service worker caches page assets for offline use, while live `_tendril/`
-API requests always reach the service. It removes legacy cached API responses
-and respects `no-store`. Preview files use `no-cache`, so editing an external
-JavaScript or CSS file and reloading retrieves the current file; its latest
-saved copy remains available offline. Published asset requests retain the
-loaded page's version. Explicitly immutable assets can use their cached copy.
+1. Run core checks and build public interface/runtime artifacts.
+2. Build contrib against those exact bytes and run its checks.
+3. Pin the produced Worker artifact and run service integration and publication tests.
+4. Generate release manifests, record the tested pair and publish release-candidate assets.
+5. Retain the immutable runtime in the existing service asset bucket, then deploy the matched composition to fresh pre-release fixtures.
 
-Fixtures retain click, fill, permission denial, location, motion and hardware
-steps. Additional steps are:
+Release workflows publish artifacts on explicit version tags. A normal component/tool release can reuse the deployed workflow interface; deploying new trusted code requires a composition-lock change.
 
-```json
-{
-  "role": "owner",
-  "reply": "Your observation arrived.",
-  "steps": [
-    { "click": "#send", "expect_send": { "type": "observation" } },
-    { "reply": { "text": "Take the next measurement", "speak": false } },
-    { "state_ops": [{ "op": "set", "path": ["result"], "value": null }] },
-    { "offline": true, "expect_connected": false },
-    { "offline": false, "expect_connected": true },
-    { "role": "display" }
-  ]
-}
-```
+## Branch previews
 
-`reply` at the fixture root provides a scripted response to each event. It does
-not call a model. `reload`, `presence`, and `expect_connected` steps exercise
-recovery and status. Persistent media and event replay use the real browser
-outbox. Voice models are not automatically downloaded; audio defaults to muted
-in preview, and a fixture can explicitly enable it.
-
-`expect_send` waits for a public API invocation; `expect_event` waits for the local
-server to accept an event whose data matches the supplied fields. Use the latter
-before an agent response that refers to `$event.data.run.id`, `$event.seq`, or
-another field of the last accepted event. `$device.id` resolves the actual browser
-identity. These exact-value references work in state operations and response
-bodies, so scenarios do not need guessed UUIDs.
-
-Owner-only HTTP workflows can use explicit fixture routes:
-
-```json
-{
-  "http": [{ "method": "GET", "path": "/_tendril/decisions", "json": { "decisions": [] } }],
-  "steps": [{ "http": [{ "method": "GET", "path": "/_tendril/decisions", "json": { "decisions": [] } }] }]
-}
-```
-
-A route can also have `status`, `expect_body`, `once`, `update` (replacement
-routes after a successful match), and `broadcast` (a server message). Preview
-lists each request in `mocked_http`; mocked service responses are explicit, and
-the actual Worker suites cover their authorization and concurrency behavior.
-Capability reports come from the browser itself. Use `hardware` and `denied`
-fixtures to alter its inputs; the old `capabilities` API replacement is rejected.
-
-### Stream fixtures
-
-Declare custom streams at the fixture root and append records in ordered steps:
-
-```json
-{
-  "streams": [
-    {
-      "name": "measurements",
-      "durability": "durable",
-      "records": [{ "id": "first", "type": "sample", "data": { "value": 12 } }]
-    },
-    { "name": "live", "durability": "ephemeral", "readers": "page" }
-  ],
-  "steps": [
-    { "expect_text": "12" },
-    { "streams": [{ "name": "measurements", "records": [{ "id": "second", "type": "sample", "data": { "value": 15 } }] }] },
-    { "expect_text": "15" }
-  ]
-}
-```
-
-Definitions use the public `streamCreate` schema plus an optional `records`
-array. Inputs use `streamInput`: `id`, `type`, arbitrary JSON `data`, and optional
-epoch-millisecond `ts`. Steps accept only `{name,records}` for streams declared
-at the root. Initial records are available before the page opens; ordered steps
-run in headless scenarios. The persistent server uses the initial fixture only.
-
-The actual `tendril.streams.list`, `info`, `read`, `latest` and `subscribe` methods
-talk to the adapter's HTTP/WebSocket endpoints. Durable history uses the service's
-shared cursor/gap calculations, honors fixture retention limits, and replays on
-reconnect. `latest` returns null for an empty retained stream. Ephemeral samples
-reach current subscribers only; samples sent before a subscription or during a
-disconnect are not replayed. Reads of ephemeral history return `not_replayable`.
-Repeated durable IDs deduplicate identical records and reject changed payloads.
-Owner/page reader scopes follow the fixture role, and stream samples never create
-conversation events or agent wakes. Calls remain visible in the preview trace.
-
-This is a fixture transport, not an additional storage service. Unknown streams,
-undeclared writes and unsupported page publication return explicit errors.
-Built-in stream adapters, producer credentials, account authorization, persistence
-and production quotas remain covered by the Worker suites. The ordinary event,
-state, role and reply fixture features continue to work alongside stream data.
-
-OAuth, account claims, abuse controls, production limits, external host wake
-admission, and real push delivery require the isolated Worker E2E suite or a
-staging/live-host check. Unsupported adapter messages return
-`preview_unsupported`; preview never silently pretends they succeeded.
-
-## One public contract
-
-`contract/index.mjs` owns the executable JSON schemas and validation.
-`scripts/contract.mjs` derives the wire declarations in `contract/wire.d.mts`.
-`contract/index.d.mts` exports their named aliases alongside the browser's
-methods and generic application-state interfaces. The Worker uses these schemas at write boundaries, MCP advertises
-the same schemas, and preview uses the same validators. `runtime/src/types.ts`
-imports the common identities and gives `window.tendril` a public type.
-
-After changing a schema, run `npm run contract:generate` and commit the generated
-`contract/wire.d.mts`, `contract/v1.json` and `recipes/ui-schema.json`. CI checks that these files match.
-The service exposes `/contract/v1.json`; the interface schema remains at
-`/recipes/ui-schema.json`. Arbitrary application state and page event data remain
-extensible. Public request envelopes reject obsolete or misspelled fields.
-
-The small fetch client is usable without a framework:
-
-```js
-import { createClient } from "./contract/client.mjs";
-const page = createClient(privateHandle);
-const batch = await page.readEvents({ after: lastHandledSequence, wait: 300 });
-const latest = batch.events.at(-1);
-if (latest) await page.say({ text: "I received your measurement.", in_reply_to: latest.seq });
-```
-
-The explicit cursor is deliberate: the caller decides when handling is complete.
-`createPage(service, { owner, name })` validates the supported creation body before
-sending it. Typed methods also validate successful response envelopes, with
-`ApiError` code `invalid_response` and field details for an incompatible service.
-The raw `request()` escape hatch leaves custom responses to its caller.
-`ApiError` preserves HTTP status, stable code and field details. Worker conformance
-tests call the actual service through this client for state, timers, context,
-assignments, decisions, archives and bundle restoration. The examples in
-`contract/test/examples.mts` compile against the same generated declarations.
-`npm link` makes the repository CLI available as `tendril`; package exports expose
-the client, contract and browser declarations without requiring publication.
-
-`npm pack` builds and includes the runtime, preview adapter, snippets, license
-notices and recipes. `npm run test:consumer` installs that actual tarball into an
-empty project with development dependencies omitted, checks imports and types,
-exercises the CLI and all six scaffolds, and serves the packaged preview assets.
-Headless preview is optional: install `playwright` in the consuming project and
-its Chromium browser when screenshots/scenarios are needed. Without it, the CLI
-returns an explicit `playwright_missing` result. The package remains private;
-these checks do not publish it to a registry.
-
-## Shipping gates
-
-`npm run check:release` runs the non-browser gate, Chromium shipping suites and
-portable Firefox/WebKit cases. CI checks Node 22.15 and 24. The browser gate
-includes runtime core, current control, push/rules, TTS, snippets, real-runtime
-preview, every catalog recipe with a `scenario` field, and the isolated public Worker lifecycle. The latter covers owner claims,
-listener-required publication, delivery, rendering, speech and cross-origin
-behavior. Each suite writes to its own directory under `test-results/`: `runtime`,
-`control`, `push`, `tts`, `snippets`, `preview`, `e2e`, and `portable`. A later suite therefore
-cannot clear an earlier suite's diagnostics. Failures retain Playwright traces and
-screenshots; recipe preview screenshots and JSON attachments stay with their test.
-CI uploads the complete directory, including hidden diagnostic files, as
-`browser-failure-traces-node-*` and `portable-failure-traces-*`. CI also captures
-actual starter screenshots in the `catalog-previews` artifact. The optional
-staging suite uses `test-results/public`, the real-model workflow uses
-`test-results/speech-real`, and the legacy voice suite uses `test-results/legacy-voice`.
-
-The portable suite checks keyboard workflows, offline recovery and capability
-fallbacks in all three engines. All six complete recipes receive local, pinned
-axe audits in light/dark themes and after a keyboard action. See
-[E2E testing](E2E_TESTING.md) for the credential-free cached model check and its
-separate workflow. Physical devices and deployed OAuth/push still need their
-corresponding environment; the local fixtures make those boundaries explicit.
-
-The old `runtime/test/real-server.spec.ts`, `test/e2e/core.spec.ts`, and
-`runtime/test/voice` files describe an earlier anonymous service/realtime voice
-implementation. They are not shipping gates. Current public-service E2E and
-speech/TTS suites replace those flows. New service tests should be named
-`server/test/*.public.test.ts` so the supported gate includes them automatically.
-
-Install the gate's browsers once with `npx playwright install chromium firefox webkit`.
-Chromium alone is sufficient for `npm run test:browser`. An existing local
-browser can be selected explicitly with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
-If the host forbids browser processes or local sockets, run the non-browser checks
-there and let CI execute browser/Worker suites; do not mistake that environment
-restriction for a passing test.
+The existing branch-preview controller selects passing branch commits and deploys isolated resources. The controller comes from the default branch, with branch-head checks before build and deployment. Provisioning uses the same core composition entry and immutable-runtime publication path as staging. Preview cleanup deletes only that branch's resources.

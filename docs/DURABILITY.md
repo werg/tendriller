@@ -1,7 +1,7 @@
 # Unattended work: retries and processing checkpoints
 
 Tendriller stores timer occurrences and incoming events in the page’s Durable
-Object. Two additive features make recovery explicit: a notification outbox for
+Object. Recovery uses two mechanisms: a notification outbox for
 timer runs, and optional named event consumers with leased processing ownership.
 Both work without a page tab. They still require an available page, an authorized
 agent or notification subscription, and a host that actually runs the agent.
@@ -29,8 +29,8 @@ reassigned attempt.
 There are at most six attempts per occurrence, with ordinary retry delays of
 10 seconds, 1 minute, 5 minutes, 15 minutes, and 1 hour. Transient transport
 failures, timeouts, HTTP 408/425/429, and provider 5xx failures are retried.
-Unavailable push configuration and permanent errors stop retries. The existing
-20-notifications-per-hour page quota still applies; a quota rejection waits for
+Unavailable push configuration and permanent errors stop retries. The
+20-notifications-per-hour page quota applies; a quota rejection waits for
 the next hour. All retry work expires 24 hours after the occurrence was recorded.
 
 Known successes are remembered per device. If one device succeeds and another
@@ -55,7 +55,7 @@ Cancelling a timer does not erase its occurrence event or history.
 ### Delivery receipts
 
 `GET A/timers/history` and the owner page’s `_tendril/timers/history` include
-`delivery` on each run. Old or non-notifying runs have `delivery:null`.
+`delivery` on each run. Skipped and non-notifying runs have `delivery:null`.
 
 ```json
 {
@@ -80,8 +80,8 @@ Cancelling a timer does not erase its occurrence event or history.
 
 `sent` and `failed` count confirmed successes and currently unsuccessful device
 targets; they are not human read receipts. `next_attempt_at` is null for terminal
-states. The legacy `notification` field remains available for older clients.
-Settings displays the delivery state, attempts, retry time, and last error.
+states. `delivery` is the canonical receipt. Settings displays its state,
+attempts, retry time, and last error.
 
 The outbox permits 200 active intents. A full queue records a failed receipt
 while retaining the timer event. History keeps the newest 200 run records plus
@@ -105,10 +105,10 @@ failure never removes the event or executes the agent’s work on its behalf.
 
 ## Named event consumers
 
-The legacy `GET A/events?after=…` interface, long polling, WebSocket wakes,
-existing host bridges, and their cursors are unchanged. New workers may opt into
-a server-stored **handled checkpoint** when they need failover or more explicit
-processing ownership.
+`GET A/events?after=…` reads retained events from an explicit cursor. Long
+polling, WebSocket notices, and webhooks can wake a receiver. Named consumers add
+a server-stored **handled checkpoint** and leased processing ownership for
+workers that need failover.
 
 Use the **same consumer name** for replacement workers doing one job. Only one
 of them can hold that consumer at a time. Use **different names** for independent
@@ -200,8 +200,7 @@ MCP provides equivalent `list_event_consumers`, `claim_event_consumer`,
 
 ### Retention gaps are explicit
 
-Leases do not extend event retention: the existing 30-day / 10,000-event bounds
-remain. A batch includes:
+Leases do not extend the 30-day / 10,000-event retention bounds. A batch includes:
 
 ```json
 {
@@ -230,7 +229,7 @@ Even with that flag, advancing beyond the observed event/gap ceiling is rejected
 Events already fetched can be acknowledged if their retained rows expire while
 the worker handles them.
 
-### Wakes and compatibility
+### Wakes and independent readers
 
 Consumer reads are immediate reads, not long polls. Keep a persistent host
 receiver, or use an explicitly scheduled worker, to start processing. The
@@ -238,19 +237,14 @@ existing WebSocket and webhook signals remain count-only wake mechanisms. A
 consumer neither runs code on the server nor makes a particular conversation
 available when its host is stopped.
 
-Existing bridges may keep using their legacy event-read/local-ack transport
-path, then let a worker claim a named consumer for handled progress. The global
-legacy transport cursor, the session brief’s `last_handled_seq`, and each named
-consumer’s checkpoint are independent. Consumer reads do not advance the legacy
-cursor or satisfy the old delivery-probe read requirement; run probes through
-the attached bridge/legacy read path as before. A host changing to leased reads
-must preserve that transport setup and its verified wake path. No existing
-bridge is silently opted into lease mode.
+The transport-read position, the session brief's `last_handled_seq`, and each
+named consumer's checkpoint are independent. Consumer reads do not advance the
+transport-read position or satisfy the delivery probe's read requirement. Probe
+the attached receiver through its normal event-read path, and keep that receiver
+available while a worker uses leased processing.
 
-New consumer and notification tables are added when an existing Durable Object
-initializes; no D1 migration is needed. Unfinished old timer notifications cannot
-be reconstructed retroactively: only new runs create durable intents. Bundle
-export and remix do not copy consumers, active leases, or retry jobs.
+Bundle export and remix omit consumers, active leases, notification intents, and
+retry jobs. A copied page starts with independent delivery and processing state.
 
 ## Validation
 

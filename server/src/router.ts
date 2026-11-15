@@ -1,5 +1,6 @@
+import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
-import { assertValid, schemaDocument, schemas } from "../../contract/index.mjs";
+import { assertValid, schemaDocument } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
@@ -12,7 +13,7 @@ import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, toErrorResponse, withCors } from "./http";
 import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, SOCKET_TICKET_RE, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
-import { starterGallery } from "./recipe-gallery";
+import { serviceDescriptor } from "./descriptor";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
 
@@ -41,15 +42,6 @@ async function asset(env: Env, url: URL, path: string, extra?: Record<string, st
   out.headers.set("Cache-Control", "no-cache");
   for (const [k, v] of Object.entries(extra ?? {})) out.headers.set(k, v);
   return out;
-}
-
-async function speechAsset(env: Env, name: string): Promise<Response> {
-  if (!["cactus.js", "cactus.wasm", "whistle.cact"].includes(name)) return errorResponse(404, "not_found");
-  const object = await env.FILES.get(`speech/4.0.0/${name}`);
-  if (!object) return errorResponse(503, "unavailable", "Speech model is not installed");
-  const type = name.endsWith(".js") ? "text/javascript; charset=utf-8" : name.endsWith(".wasm") ? "application/wasm" : "application/octet-stream";
-  return new Response(object.body, { headers: { "Content-Type": type, "Cache-Control": "public, max-age=31536000, immutable",
-    "X-Content-Type-Options": "nosniff" } });
 }
 
 export async function route(req: Request, env: Env): Promise<Response> {
@@ -90,7 +82,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       to.pathname = page.base;
       return Response.redirect(to.toString(), 308);
     }
-    if (page.rest === "_tendril/session" && req.method === "GET") {
+    if (page.rest === "_tendril/auth/session" && req.method === "GET") {
       return redeemPageCode(env, page.id, page.key, url.searchParams.get("code") ?? "");
     }
     const check = await stub(env, page.id).fetch(new Request("https://tendril.internal/claim/check", {
@@ -108,16 +100,13 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       return errorResponse(401, "unauthorized", "Page sign-in required");
     }
     const rest = page.rest;
-    const speech = /^_tendril\/speech\/(cactus\.js|cactus\.wasm|whistle\.cact)$/.exec(rest);
-    if (speech) return speechAsset(env, speech[1]);
-    if (/^_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(rest)) return asset(env, url, `/${rest}`);
+    const resource = /^_tendril\/assets\/([a-f0-9]{64})\/([A-Za-z0-9_-][A-Za-z0-9_.-]{0,199})$/.exec(rest);
+    if (resource) return immutableAsset(env, req, resource[1], resource[2]);
+    const runtime = /^_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(rest);
+    if (runtime && !runtime[2].split("/").includes(".."))
+      return runtimeAsset(env, req, runtime[1], runtime[2]);
     if (/^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest)) return asset(env, url, `/${rest}`);
-    if (rest === "_tendril/tendril.js") return asset(env, url, "/_tendril/tendril.js");
-    if (rest === "_tendril/speech-worker.js") return asset(env, url, "/_tendril/speech-worker.js");
-    if (/^_tendril\/axe(?:\.min\.js|-LICENSE(?:-3RD-PARTY)?\.txt)$/.test(rest)) return asset(env, url, `/${rest}`);
     if (rest === "_tendril/sw.js") return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
-    const sn = /^_tendril\/snippets\/([A-Za-z0-9_.-]+\.js)$/.exec(rest);
-    if (sn) return asset(env, url, `/snippets/${sn[1]}`);
     return forward(env, page.id, "page", req, url, {
       "x-tendril-key": page.key,
       "x-tendril-origin": url.origin,
@@ -143,55 +132,37 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
     return new Response(landingPage(publicBase(env)), { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
-  if (path === "/starters" && (req.method === "GET" || req.method === "HEAD")) return starterGallery(publicBase(env));
-  if (/^\/recipes\/previews\/[a-z0-9-]+\.png$/.test(path)) return asset(env, url, path);
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
-  if (/^\/_tendril\/tts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(path)) return asset(env, url, path);
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") {
     const preview = isBranchPreview(env) && /^[a-f0-9]{40}$/.test(env.BRANCH_PREVIEW_SHA ?? "")
       ? { branch: env.BRANCH_PREVIEW_BRANCH, commit: env.BRANCH_PREVIEW_SHA } : undefined;
     return json(preview ? { ok: true, preview } : { ok: true });
   }
-  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs", "/tendril-watch.mjs", "/tendril-stream.mjs", "/tendril-events.mjs", "/tendril-preview.mjs"].includes(path) && req.method === "GET") {
-    return asset(env, url, path, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
-  }
-  if (path === "/tendril-wait.sh" && req.method === "GET") {
-    return asset(env, url, path, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
-  }
   if (path === "/status") {
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
     return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
   }
-  if (path === "/agent.md" || path === "/llms.txt" || /^\/docs\/[A-Z0-9_]+\.md$/.test(path)
-      || path === "/cli/README.md" || path === "/snippets/README.md" || path === "/examples/training-dashboard/README.md") {
+  if (path === "/agent.md" || path === "/llms.txt" || /^\/docs\/[A-Z0-9_]+\.md$/.test(path)) {
     const guide = await asset(env, url, path);
     if (!guide.ok) return guide;
     return new Response((await guide.text()).replaceAll("https://tendriller.dev", publicBase(env)), {
       headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
-  if (path === "/examples/training-dashboard" || path === "/examples/training-dashboard/")
-    return Response.redirect(`${publicBase(env)}/examples/training-dashboard/README.md`, 302);
-  if (/^\/examples\/training-dashboard\/(?:index\.html|app\.js|model\.mjs|setup\.mjs)$/.test(path))
-    return asset(env, url, path, { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
-  if (path === "/contract/v1.json") return json(schemaDocument);
-  if (path === "/recipes/ui-schema.json") return json({ $schema: schemaDocument.$schema, title: "Tendriller agent-editable interface", ...schemas.interface });
-  if (path === "/recipes/catalog.json") return asset(env, url, path);
-  if (/^\/recipes\/[a-z0-9-]+\/(?:index\.html|app\.js|assignments\.js|model\.mjs|styles\.css|AGENT\.md|contract\.json|scenario\.json)$/.test(path))
-    return asset(env, url, path, { "Content-Type": path.endsWith(".json") ? "application/json; charset=utf-8" : "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
+  if (path === "/contract/v2.json") return json(schemaDocument);
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   }
-  if (/^\/snippets\/[A-Za-z0-9_.-]+\.js$/.test(path) || path === "/_tendril/tendril.js" || path === "/_tendril/sw.js") {
-    return asset(env, url, path);
-  }
+  const runtime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
+  if (runtime) return runtimeAsset(env, req, runtime[1], runtime[2]);
   return errorResponse(404, "not_found", "Not found");
 }
 
 async function api(req: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   try {
+    if (path === "/api/service" && req.method === "GET") return json(serviceDescriptor());
     if (path === "/api/tendrils") {
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
       await requireCreationOpen(env);
@@ -285,7 +256,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       // private token in a TLS-protected subprotocol header, never in the URL.
       const socket = agentRest === "events/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
-      const agentProtocol = socket && protocols.includes("tendriller.agent.v1");
+      const agentProtocol = socket && protocols.includes("tendriller.agent.v2");
       const socketToken = agentProtocol ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
       // A listen-only ticket (POST A/events/socket/ticket) can stand in for the token on the socket only.
       const socketTicket = agentProtocol && !socketToken ? protocols.find((s) => SOCKET_TICKET_RE.test(s)) : undefined;

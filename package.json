@@ -1,13 +1,11 @@
 {
-  "name": "tendriller",
+  "name": "tendriller-engine",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
     "test": "npm run build && npm run test:server",
-    "test:cli": "node --test cli/test/*.test.mjs",
-    "test:snippets": "playwright test --config snippets/test/playwright.config.ts",
     "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
     "test:tts": "playwright test --config runtime/test/tts/playwright.config.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit && tsc -p contract/tsconfig.json --noEmit",
@@ -19,71 +17,37 @@
     "contract:check": "node scripts/contract.mjs",
     "test:contract": "node --test contract/test/*.test.mjs",
     "test:browser": "npm run build && node scripts/test-browser.mjs",
-    "check": "npm run contract:check && npm run typecheck && npm run build && npm run test:ci && npm run test:contract && npm run test:recipes && npm run test:runtime-unit && npm run test:server && npm run test:cli && npm run test:consumer",
+    "check": "npm run contract:check && npm run typecheck && npm run build && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:server && npm run test:consumer",
     "test:ci": "node --test scripts/test/*.test.mjs",
-    "check:release": "npm run check && npm run test:browser && npm run test:portable -- --project=firefox --project=webkit",
-    "preview": "npm run build && node scripts/preview.mjs",
-    "test:recipes": "node --test recipes/test/*.test.mjs",
+    "check:release": "npm run check && npm run test:pair && npm run test:browser",
     "test:runtime-unit": "node --test runtime/test/*.test.mjs",
     "test:server": "vitest run --config server/vitest.public.config.ts",
-    "prepack": "npm run build",
     "test:consumer": "node scripts/test-consumer.mjs",
-    "test:portable": "npm run build && playwright test --config test/portable/playwright.config.ts",
-    "capture:recipes": "node scripts/capture-recipes.mjs"
+    "build:engine": "node scripts/build.mjs",
+    "build:artifacts": "node scripts/build.mjs --artifacts-only",
+    "build:service": "node scripts/compose.mjs",
+    "release:artifacts": "node scripts/release.mjs",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "test:pair": "npm run build:service && vitest run --config server/vitest.pair.config.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
-    "@modelcontextprotocol/sdk": "^1.32.2",
     "@playwright/test": "^1.65.0",
     "axe-core": "4.10.3",
     "esbuild": "^0.28.2",
     "qrcode-generator": "^2.0.4",
     "typescript": "^7.0.2",
     "vitest": "4.1",
-    "wrangler": "^4.161.0"
+    "wrangler": "^4.161.0",
+    "ws": "^8.21.0"
   },
   "dependencies": {
     "ipaddr.js": "^2.5.0",
-    "phonon-tts": "0.7.1",
-    "ws": "^8.21.0"
+    "phonon-tts": "0.7.1"
   },
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "engines": {
     "node": ">=22.15.0"
-  },
-  "bin": {
-    "tendril": "cli/bin/tendril.mjs",
-    "tendril-stream": "cli/bin/tendril-stream.mjs"
-  },
-  "exports": {
-    ".": {
-      "types": "./contract/client.d.mts",
-      "import": "./contract/client.mjs"
-    },
-    "./contract": {
-      "types": "./contract/index.d.mts",
-      "import": "./contract/index.mjs"
-    },
-    "./browser": {
-      "types": "./contract/browser.d.mts"
-    },
-    "./schema": "./contract/v1.json"
-  },
-  "files": [
-    "cli/bin",
-    "cli/lib",
-    "cli/scripts",
-    "cli/README.md",
-    "contract",
-    "recipes",
-    "examples/training-dashboard",
-    "docs/STREAMS.md",
-    "docs/COLLECTOR.md",
-    "snippets/*.js",
-    "server/public/_tendril",
-    "server/public/_preview",
-    "README.md",
-    "agent.md"
-  ]
+  }
 }

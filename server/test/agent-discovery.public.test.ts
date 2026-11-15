@@ -5,39 +5,30 @@ import { createClient } from "../../contract/client.mjs";
 import { route } from "../src/router";
 import { api, apiJson, advance, create, req } from "./helpers";
 
-it("puts the public API entry point in homepage text and serves docs and examples without GitHub", async () => {
+it("discovers optional releases and serves the generic public contract", async () => {
   const home = await (await req("/")).text();
   expect(home).toContain("Agents: read");
-  expect(home).toContain("HTTP API");
-  expect(home).toContain("/agent.md</a>");
+  expect(home).toContain("https://github.com/werg/tendriller-contrib");
   const index = await req("/llms.txt");
   expect(index.status).toBe(200);
-  expect(index.headers.get("Content-Type")).toContain("text/plain");
-  expect(await index.text()).toContain("/tendril-stream.mjs");
-  for (const path of ["/docs/STREAMS.md", "/docs/COLLECTOR.md", "/docs/DURABILITY.md", "/docs/E2E_TESTING.md", "/cli/README.md", "/snippets/README.md",
-    "/examples/training-dashboard/README.md", "/examples/training-dashboard/setup.mjs", "/examples/training-dashboard/index.html",
-    "/examples/training-dashboard/app.js", "/examples/training-dashboard/model.mjs"]) {
-    const response = await req(path);
-    expect(response.status, path).toBe(200);
-    expect(response.headers.get("X-Content-Type-Options"), path).toBe("nosniff");
-    expect(await response.text(), path).not.toBe("");
+  expect(await index.text()).toContain("https://github.com/werg/tendriller-contrib/releases/latest/download/catalog.json");
+  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md"]){
+    const response=await req(path);expect(response.status,path).toBe(200);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   }
-  // Example HTML is source for publication; never execute it on the account origin.
-  expect((await req("/examples/training-dashboard/index.html")).headers.get("Content-Type")).toContain("text/plain");
-  expect((await req("/examples/training-dashboard/", { redirect: "manual" })).headers.get("Location")).toContain("/examples/training-dashboard/README.md");
-  for (const path of ["/tendril-stream.mjs", "/tendril-events.mjs", "/tendril-preview.mjs"]) {
-    const response = await req(path);
-    expect(response.status, path).toBe(200);
-    expect(response.headers.get("Content-Type")).toContain("text/javascript");
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-  }
-  expect((await req("/examples/training-dashboard/collector.json")).status).toBe(404);
-  expect((await req("/docs/not-a-public-file.json")).status).toBe(404);
+  const descriptor = await (await req("/api/service")).json();
+  assertValid("serviceDescriptor", descriptor);
+  expect(descriptor).toMatchObject({contract:2,limits:{streams:{record_bytes:65536}}});
+  const schema = await (await req("/contract/v2.json")).json<any>();
+  expect(schema.$defs.command).toBeDefined();
+  expect(schema.$defs.archive).toBeUndefined();
+  for (const path of ["/contract/v1.json","/recipes/catalog.json","/snippets/README.md","/cli/README.md","/examples/training-dashboard/index.html"])
+    expect((await req(path)).status,path).toBe(404);
 });
 
 it("keeps agent discovery links on the configured service origin", async () => {
   const config = { ...env, PUBLIC_BASE: "https://preview-0123456789ab.tendriller.dev", PAGE_BASE_DOMAIN: "tendriller.dev", PAGE_HOST_SUFFIX: "--p-0123456789ab" };
-  for (const path of ["/", "/llms.txt", "/agent.md", "/docs/COLLECTOR.md"]) {
+  for (const path of ["/", "/llms.txt", "/agent.md"]) {
     const response = await route(new Request(config.PUBLIC_BASE + path), config);
     expect(response.status).toBe(200);
     const text = await response.text();

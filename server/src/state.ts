@@ -18,6 +18,15 @@ function normPath(p: unknown): string[] {
   });
 }
 
+function validateValue(value: unknown, depth = 0): void {
+  if (depth > 128) throw new HttpError(400, "bad_ops", "State nesting exceeds 128 levels");
+  if (Array.isArray(value)) { for (const item of value) validateValue(item, depth + 1); return; }
+  if (isPlainObject(value)) for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN.has(key)) throw new HttpError(400, "bad_ops", `Key "${key}" is not allowed`);
+    validateValue(child, depth + 1);
+  }
+}
+
 /** Validates and normalises a list of ops from a client. */
 export function validateOps(raw: unknown): StateOp[] {
   const issues = validate("stateOperations", raw);
@@ -27,6 +36,7 @@ export function validateOps(raw: unknown): StateOp[] {
     if (!isPlainObject(o)) throw new HttpError(400, "bad_ops", "Each op must be an object");
     const path = normPath(o.path);
     if (o.op === "set") {
+      validateValue(o.value);
       if (path.length === 0 && !isPlainObject(o.value)) throw new HttpError(400, "bad_ops", "The root state must be an object");
       return { op: "set", path, value: o.value === undefined ? null : o.value };
     }

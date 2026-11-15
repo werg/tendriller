@@ -128,7 +128,7 @@ test("presence states and aria-live announcements", async ({ page }) => {
   await expect(presenceBtn(page)).toHaveAttribute("aria-label", /Agent status: Offline/);
 });
 
-test("text instruction path: voice layer declines, core.instruction is called", async ({ page }) => {
+test("text instructions use the core conversation transport", async ({ page }) => {
   await load(page);
   await openSheet(page);
   const box = page.getByRole("textbox", { name: "Message to the agent" });
@@ -269,7 +269,7 @@ test("activity record with thumbnails and delete", async ({ page }) => {
   expect((await calls(page)).request.at(-1)).toEqual({ t: "activity_delete", seq: 5 });
 });
 
-test("preferences are written to state and applied", async ({ page }) => {
+test("preferences are stored on the device and applied", async ({ page }) => {
   await load(page);
   await openSheet(page);
   await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
@@ -279,12 +279,8 @@ test("preferences are written to state and applied", async ({ page }) => {
   await page.getByLabel("Sounds and spoken replies").uncheck();
   await page.getByLabel("Language").selectOption("de-DE");
   const c = await calls(page);
-  expect(c.state).toEqual([
-    { path: ["_prefs", "text_size"], value: "large" },
-    { path: ["_prefs", "contrast"], value: "high" },
-    { path: ["_prefs", "audio"], value: false },
-    { path: ["_prefs", "language"], value: "de-DE" },
-  ]);
+  expect(c.preferences).toEqual([{ textSize: "large" }, { contrast: "high" }, { audio: false }, { language: "de-DE" }]);
+  expect(c.state).toEqual([]);
   const ds = await page.evaluate(() => ({ ...document.documentElement.dataset }));
   expect(ds).toMatchObject({ tendrilTextSize: "large", tendrilContrast: "high" });
   await expect(page.locator("tendril-control .root")).toHaveAttribute("data-size", "large");
@@ -324,16 +320,7 @@ test("sensor indicator appears for camera, location and motion; stop switch stop
   await expect(chip).toContainText("Microphone in use");
   await page.evaluate(() => (window as any).__s2.getTracks().forEach((t: MediaStreamTrack) => t.stop()));
   await expect(chip).toBeHidden();
-  // The legacy callback API (and anything recording from it, e.g. MediaRecorder) is tracked too.
-  const legacy = await page.evaluate(() => typeof (navigator as any).webkitGetUserMedia === "function");
-  if (legacy) {
-    await page.evaluate(() => new Promise<void>((res) => (navigator as any).webkitGetUserMedia({ audio: true }, (s: MediaStream) => {
-      (window as any).__rec = new MediaRecorder(s); (window as any).__rec.start(); (window as any).__s3 = s; res();
-    }, () => res())));
-    await expect(chip).toContainText("Microphone in use");
-    await page.evaluate(() => (window as any).__s3.getTracks().forEach((t: MediaStreamTrack) => t.stop()));
-    await expect(chip).toBeHidden();
-  }
+
 });
 
 test("hide() keeps the sensor indicator visible; position() moves the dock", async ({ page }) => {
@@ -374,7 +361,7 @@ test("speech consent traps focus, supports Escape and restores focus", async ({ 
 
 test("muted agent replies are announced and conversation history is available", async ({ page }) => {
   const transcript = Array.from({ length: 10 }, (_, i) => ({ ts: Date.now() - 1000 * (10-i), from: 'agent', text: `Earlier reply ${i}` }));
-  await load(page, { state: { _prefs: { audio: false } }, transcript }); await openSheet(page);
+  await load(page, { preferences: { audio: false }, transcript }); await openSheet(page);
   await expect(page.locator('tendril-control .log li')).toHaveCount(6);
   await page.getByRole('button', { name: 'Show earlier messages (10)' }).click(); await expect(page.locator('tendril-control .log li')).toHaveCount(10);
   await page.evaluate(() => (window as any).__fake.emit('say', { text: 'Your capture is ready', speak: false }));
@@ -447,7 +434,7 @@ test.describe("screenshots", () => {
 });
 
 const resumeRoutes = (staged = false) => ({
-  '/t/abc/s/key/_tendril/resume': { session: { purpose: 'Garden notebook', current_task: 'Compare the new leaves', completed: [], decisions: [], open_questions: [], last_handled_seq: 7 }, revision: 2, version: 3, pending_inputs: { count: 2 }, staged_remix: staged },
+  '/t/abc/s/key/_tendril/session': { session: { purpose: 'Garden notebook', current_task: 'Compare the new leaves', completed: [], decisions: [], open_questions: [], last_handled_seq: 7 }, revision: 2, version: 3, pending_inputs: { count: 2 }, staged_remix: staged },
   '/t/abc/s/key/_tendril/timers': { timers: [], expires_at: null },
   '/t/abc/s/key/_tendril/timers/history': { runs: [] },
 });

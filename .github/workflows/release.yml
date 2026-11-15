@@ -1,0 +1,50 @@
+name: Core release artifacts
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+concurrency:
+  group: core-release-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run release:artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-release
+          path: |
+            dist/tendriller-*.tgz
+            dist/manifest.json
+            dist/SHA256SUMS
+      - name: Publish immutable release candidate assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease --generate-notes
+          verify_dir=$(mktemp -d)
+          trap 'rm -rf "$verify_dir"' EXIT
+          for file in dist/tendriller-*.tgz dist/manifest.json dist/SHA256SUMS; do
+            name=$(basename "$file")
+            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fx -- "$name" >/dev/null; then
+              gh release download "$GITHUB_REF_NAME" --pattern "$name" --dir "$verify_dir"
+              cmp "$file" "$verify_dir/$name"
+            else
+              gh release upload "$GITHUB_REF_NAME" "$file"
+            fi
+          done

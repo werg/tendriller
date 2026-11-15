@@ -2,15 +2,15 @@
 import type { Tendril } from "./tendril";
 import { addActivity } from "./activity";
 import { tendrilMeta } from "./agent";
-import { servePageFile, servedVersion, versionFiles } from "./files";
+import { servePageFile, servedVersion, versionFiles, publicationManifest } from "./files";
 import { HttpError, json, readBody, readJson } from "./http";
 import { blobReference, setBlobRetention } from "./blob-retention";
 import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex } from "./ids";
 import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
-import { handleResponses } from "./interactions";
-import { handleAssignments } from "./assignments";
+import { handleScopes, handleWorkflows } from "./workflows";
+import { serviceDescriptor } from "./descriptor";
 import { STREAM_ROUTE, handleStreams } from "./streams";
 import { allows, authenticatePage } from "./access";
 
@@ -52,19 +52,12 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t));
   if (sub.startsWith("streams") && STREAM_ROUTE.test(sub))
     return handleStreams(t, req, url, sub, principal);
-  if (sub === "assignments" || sub.startsWith("assignments/")) {
-    if (!session?.account_id || !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Sign in as a participant to view assignments");
-    const manage = allows(principal, "page.owner") && (sub !== "assignments" || req.method !== "GET");
-    return handleAssignments(t, req, sub, session.account_id, manage, "owner");
-  }
-  if (sub === "responses" || sub === "responses/all") {
-    if (!session?.account_id || !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Sign in as a participant to answer");
-    if (sub === "responses/all" && !allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can view all responses");
-    return handleResponses(t, req, session.account_id, sub === "responses/all");
-  }
-  const experiencePath = sub === "resume" ? "session" : sub;
+  if (/^workflows(?:\/|$)/.test(sub)) return handleWorkflows(t, req, sub, principal);
+  if (/^scopes(?:\/|$)/.test(sub)) return handleScopes(t, req, sub, principal);
+  const experiencePath = sub;
   if (EXPERIENCE_ROUTE.test(experiencePath) || sub === "devices") {
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can manage saved work, devices, and timers");
     return handleExperience(t, req, url, "owner", experiencePath, true);
@@ -147,7 +140,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
-    return json({ id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], features: t.features() });
+    return json({ id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
   if (sub === "blob" && m === "POST") {
@@ -163,7 +156,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const store = async () => {
       const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page", keep);
       addActivity(t, { kind: "blob", summary: `${blobLabel(type)} sent${name ? ` (${name.slice(0, 80)})` : ""}, ${formatSize(body.byteLength)}`, blob: r.id, device });
-      return r;
+      return { ...r, url: base + r.url };
     };
     // A verified device's upload carrying a client id is stored once (offline replay).
     const cid = req.headers.get("X-Tendril-Cid");
@@ -174,9 +167,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (bm && (m === "GET" || m === "HEAD")) return t.getBlob(bm[1]);
   const retention = /^blob\/(b_[a-z2-7]{20})\/retention$/.exec(sub);
   if (retention && (m === "GET" || m === "PATCH")) {
-    if (m === "GET") return json(blobReference(t, retention[1]));
+    if (m === "GET") { const reference = blobReference(t, retention[1]); return json({ ...reference, url: base + reference.url }); }
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can change capture retention");
-    return json(setBlobRetention(t, retention[1], await readJson(req, 4096), null, (await verifiedDevice(t, req))?.id ?? null));
+    const reference = setBlobRetention(t, retention[1], await readJson(req, 4096), null, (await verifiedDevice(t, req))?.id ?? null);
+    return json({ ...reference, url: base + reference.url });
   }
 
   if (sub === "manifest.webmanifest" && m === "GET") {

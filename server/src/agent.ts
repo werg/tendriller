@@ -15,7 +15,10 @@ import {
   CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_BLOB, MAX_EVAL_CODE, MAX_FILE, MAX_STATE,
 } from "./limits";
 import { resolveType } from "./mime";
-import { mergePatchToOps, replaceToOps, validateOps } from "./state";
+import { validateOps } from "./state";
+import { mutate, preconditions } from "./scopes";
+import { handleScopes, handleWorkflows } from "./workflows";
+import { serviceDescriptor } from "./descriptor";
 import { blobInfo, setBlobRetention } from "./blob-retention";
 import { apiUrl, normalizeFilePath } from "./urls";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
@@ -45,10 +48,12 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
-  if (STREAM_ROUTE.test(rest) || CONSUMER_ROUTE.test(rest) || EXPERIENCE_ROUTE.test(rest)) {
+  if (STREAM_ROUTE.test(rest) || CONSUMER_ROUTE.test(rest) || EXPERIENCE_ROUTE.test(rest) || /^(?:scopes|workflows)(?:\/|$)/.test(rest)) {
     const principal = await authenticateAgent(t, req);
     requireAccess(principal, "agent.manage");
     t.checkin(principal.name);
+    if (/^scopes(?:\/|$)/.test(rest)) return handleScopes(t, req, rest, principal);
+    if (/^workflows(?:\/|$)/.test(rest)) return handleWorkflows(t, req, rest, principal);
     if (STREAM_ROUTE.test(rest)) return handleStreams(t, req, url, rest, principal);
     if (CONSUMER_ROUTE.test(rest)) return handleConsumers(t, req, url, rest);
     return handleExperience(t, req, url, principal.name, rest);
@@ -123,6 +128,7 @@ export function tendrilMeta(t: Tendril) {
 }
 
 route("GET", /^$/, async (t) => json(await tendrilInfo(t)));
+route("GET", /^service$/, t => json(serviceDescriptor(t)));
 
 /** Lifetime of a listen-only socket ticket. It only has to survive until the socket opens. */
 export const SOCKET_TICKET_TTL_MS = 10 * 60_000;
@@ -153,7 +159,7 @@ route("POST", /^events\/socket\/ticket$/, async (t, req, url) => {
     ticket,
     expires_at: expiresAt,
     socket_url: after !== null ? `${socketUrl}?after=${after}` : socketUrl,
-    protocols: ["tendriller.agent.v1", ticket],
+    protocols: ["tendriller.agent.v2", ticket],
   }, 201);
 });
 
@@ -182,7 +188,7 @@ async function socketTokenHash(t: Tendril, req: Request): Promise<string> {
 
 async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response> {
   if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required");
-  if (!(req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim()).includes("tendriller.agent.v1"))
+  if (!(req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim()).includes("tendriller.agent.v2"))
     throw new HttpError(400, "bad_request", "Unsupported agent socket protocol");
   const tokenHash = await socketTokenHash(t, req);
   const after = url.searchParams.has("after") ? intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER) : null;
@@ -199,7 +205,7 @@ async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response
   t.refreshPresence();
   t.scheduleAlarm();
   return new Response(null, { status: 101, webSocket: client,
-    headers: { "Sec-WebSocket-Protocol": "tendriller.agent.v1" } });
+    headers: { "Sec-WebSocket-Protocol": "tendriller.agent.v2" } });
 }
 
 route("PATCH", /^$/, async (t, req) => {
@@ -439,19 +445,20 @@ route("POST", /^check$/, async (t, req, url, by) => {
 
 route("GET", /^state$/, (t) => json(t.getState()));
 
-route("PUT", /^state$/, async (t, req, url, by) => {
-  const b = await readJson(req, MAX_STATE + 1024);
-  if (!isPlainObject(b)) throw new HttpError(400, "bad_request", "State must be a JSON object");
-  const rev = t.applyState(replaceToOps(t.getState().state, b), `agent:${by}`);
-  return json({ rev });
+for (const method of ["PUT", "PATCH"]) route(method, /^state$/, async (t, req, url, by) => {
+  const body = assertValid("stateUpdate", await readJson(req, MAX_STATE + 16384));
+  const ops = validateOps("state" in body ? [{ op: "set", path: [], value: body.state }] : body.ops);
+  const command = preconditions(body);
+  return json(mutate(t, `agent:${by}`, command, { paths: ops.map(op => op.path), operations: ["state"] }, ops,
+    () => ({ rev: t.applyState(ops, `agent:${by}`, undefined, command), scopes: t.getState().scopes })));
 });
-
-route("PATCH", /^state$/, async (t, req, url, by) => {
-  const b = await readJson(req, MAX_STATE + 1024);
-  if (!isPlainObject(b)) throw new HttpError(400, "bad_request", "Body must be a JSON merge patch object or {\"ops\":[…]}");
-  const ops = Array.isArray(b.ops) && Object.keys(b).length === 1 ? validateOps(b.ops) : mergePatchToOps(t.getState().state, b);
-  const rev = t.applyState(ops, `agent:${by}`);
-  return json({ rev });
+route("POST", /^events$/, async (t, req, url, by) => {
+  const body = await readJson(req, 65536 + 16384);
+  if (new TextEncoder().encode(JSON.stringify(body.data ?? null)).byteLength > 65536) throw new HttpError(413, "too_large", "Event data exceeds 64 KB");
+  return json(mutate(t, `agent:${by}`, body, { operations: ["event"] }, body.data, context => {
+    const event = addEvent(t, { type: "event", data: body.data, context, by: `agent:${by}`, role: null, wake: false });
+    return { seq: event.seq };
+  }));
 });
 
 // ------------------------------------------------------------------ logs, blobs
@@ -623,7 +630,7 @@ route("PUT", /^wake$/, async (t, req) => {
         throw new HttpError(400, "bad_request", "webhook must be {url, token?} with an http(s) URL, or null");
       }
       const auth = b.webhook.auth ?? "bearer";
-      if (!["bearer", "standard_webhooks", "hermes_v2"].includes(auth)) throw new HttpError(400, "bad_request", "webhook.auth must be bearer, standard_webhooks, or hermes_v2");
+      if (!["bearer", "standard_webhooks", "timestamp_hmac_sha256"].includes(auth)) throw new HttpError(400, "bad_request", "webhook.auth must be bearer, standard_webhooks, or timestamp_hmac_sha256");
       const token = typeof b.webhook.token === "string" && b.webhook.token ? b.webhook.token : null;
       if (auth !== "bearer" && !token) throw new HttpError(400, "bad_request", "Signed webhooks require a secret in webhook.token");
       if (auth === "standard_webhooks" && !validSecret(token)) throw new HttpError(400, "bad_request", "Standard Webhooks secret must be whsec_ plus base64 of 24–64 bytes");

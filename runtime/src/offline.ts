@@ -1,10 +1,12 @@
 // Offline support (PLAN 14.1): a persistent outbound queue and a last-known snapshot of
 // state + transcript. IndexedDB is the durable store; localStorage holds a small synchronous
 // copy of the snapshot so a reload without signal can render the page with its state before
-// IndexedDB has opened. Everything degrades to memory-only if storage is unavailable.
+// IndexedDB has opened. Durable operations fail explicitly when storage is unavailable.
+import type { ScopeDescriptor } from "../../contract/index.mjs";
+import type { OperationContext } from "./generations";
 
 export interface OutboxItem { key: number; cid: string; msg: any; blob?: Blob }
-export interface Snapshot { rev: number; state: any; pending: { cid: string; ops: any[]; sessions?: Record<string, string> }[]; transcript: any[] }
+export interface Snapshot { rev: number; state: any; scopes: ScopeDescriptor[]; pending: ({ cid: string; ops: any[] } & OperationContext)[]; transcript: any[] }
 
 const MAX_LOG_ITEMS = 50;
 let keySeq = 0;
@@ -23,14 +25,14 @@ export class OfflineStore {
   private lsKey: string;
 
   constructor(private tendrilId: string) {
-    this.lsKey = `tendril:${tendrilId}:snapshot`;
+    this.lsKey = `tendril:v2:${tendrilId}:snapshot`;
   }
 
   /** Opens IndexedDB and merges persisted outbox items (older) before items added in memory meanwhile. */
   async init(): Promise<Snapshot | null> {
     try {
       this.db = await new Promise<IDBDatabase>((res, rej) => {
-        const r = indexedDB.open(`tendril:${this.tendrilId}`, 1);
+        const r = indexedDB.open(`tendril:v2:${this.tendrilId}`, 1);
         r.onupgradeneeded = () => {
           const db = r.result;
           if (!db.objectStoreNames.contains("outbox")) db.createObjectStore("outbox", { keyPath: "key" });
@@ -71,7 +73,7 @@ export class OfflineStore {
     return it;
   }
 
-  /** A capture is only called saved after the IndexedDB transaction commits. */
+  /** Work is only exposed to optimism or transport after its transaction commits. */
   async addDurable(msg: any, blob?: Blob): Promise<OutboxItem> {
     const item: OutboxItem = { key: newKey(), cid: msg.cid, msg, blob };
     await this.commit((store) => store.put(item));
@@ -79,7 +81,7 @@ export class OfflineStore {
     return item;
   }
 
-  /** Persist a capture phase before sending its dependent event. */
+  /** Persist an operation phase before sending its dependent event. */
   async updateDurable(item: OutboxItem, msg: any): Promise<void> {
     const next = { ...item, msg };
     await this.commit((store) => store.put(next));
@@ -94,11 +96,11 @@ export class OfflineStore {
   }
 
   private commit(write: (store: IDBObjectStore) => void): Promise<void> {
-    if (!this.db) return Promise.reject(new Error("Browser storage is unavailable. Keep this capture open and try again."));
+    if (!this.db) return Promise.reject(new Error("Browser storage is unavailable. Keep this work open and try again."));
     const promise = new Promise<void>((resolve, reject) => {
       const transaction = this.db!.transaction("outbox", "readwrite");
       transaction.oncomplete = () => resolve();
-      transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error("Could not save the capture on this device."));
+      transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error("Could not save this work on the device."));
       write(transaction.objectStore("outbox"));
     });
     this.writes.add(promise);

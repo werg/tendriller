@@ -9,52 +9,16 @@ async function events(h: any, after = 0) {
 }
 
 describe("files and versions", () => {
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("upload creates a version and the page is served with injection", async () => {
-    const h = await create();
-    const r = await apiJson(h, "PUT", "files/index.html", PAGE, 200);
-    expect(r).toEqual({ version: 1, files: ["index.html"] });
-    const res = await req(h.page_url);
-    const html = await res.text();
-    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-    expect(res.headers.get("Cache-Control")).toBe("no-cache");
-    expect(html.startsWith(`<!doctype html><html><head lang="en"><script>window.__TENDRIL__=`)).toBe(true);
-    expect(html).toContain(`"version":1`);
-    expect(html).toContain("<h1>Hi</h1>");
-  });
 
   it("injects at the very start when there is no <head>", async () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", "<p>bare</p>");
     const html = await (await req(h.page_url)).text();
-    expect(html.startsWith("<script>window.__TENDRIL__=")).toBe(true);
+    expect(html.startsWith("<base href=")).toBe(true);
+    expect(html).toContain("<script>window.__TENDRIL__=");
     expect(html.endsWith("<p>bare</p>")).toBe(true);
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("guesses content types and serves other files without injection", async () => {
-    const h = await create();
-    await apiJson(h, "PUT", "files/index.html", PAGE);
-    await apiJson(h, "PUT", "files/js/app.js", "console.log(1)", undefined);
-    const r = await apiJson(h, "PUT", "files/data.json", '{"a":1}');
-    expect(r).toEqual({ version: 3, files: ["data.json", "index.html", "js/app.js"] });
-    const js = await req(h.page_url + "js/app.js");
-    expect(js.headers.get("Content-Type")).toBe("text/javascript; charset=utf-8");
-    expect(await js.text()).toBe("console.log(1)");
-    const bin = await api(h, "PUT", "files/img.png", new Uint8Array([137, 80, 78, 71]), { "Content-Type": "application/octet-stream" });
-    await bin.text();
-    const png = await req(h.page_url + "img.png");
-    expect(png.headers.get("Content-Type")).toBe("image/png");
-    expect(new Uint8Array(await png.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
-    const custom = await api(h, "PUT", "files/x.txt", "x", { "Content-Type": "text/x-custom" });
-    await custom.text();
-    expect((await req(h.page_url + "x.txt")).headers.get("Content-Type")).toBe("text/x-custom");
-    const missing = await req(h.page_url + "nope.js");
-    expect(missing.status).toBe(404);
-    await missing.text();
-  });
 
   it("rejects reserved and invalid paths", async () => {
     const h = await create();
@@ -68,31 +32,6 @@ describe("files and versions", () => {
     expect(await dots.json()).toMatchObject({ error: { code: "bad_path" } });
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("POST files with base64, delete and replace", async () => {
-    const h = await create();
-    const r1 = await apiJson(h, "POST", "files", { files: { "index.html": PAGE, "a.css": "body{}", "b.bin": { base64: btoa("\x00\x01"), type: "application/x-test" } }, message: "first" });
-    expect(r1).toEqual({ version: 1, files: ["a.css", "b.bin", "index.html"] });
-    const r2 = await apiJson(h, "POST", "files", { files: { "c.js": "1" }, delete: ["a.css"] });
-    expect(r2).toEqual({ version: 2, files: ["b.bin", "c.js", "index.html"] });
-    const r3 = await apiJson(h, "POST", "files", { files: { "index.html": "<p>only</p>" }, replace: true });
-    expect(r3).toEqual({ version: 3, files: ["index.html"] });
-    const list = await apiJson(h, "GET", "files?version=1");
-    expect(list.version).toBe(1);
-    expect(list.files.find((f: any) => f.path === "b.bin")).toMatchObject({ type: "application/x-test", size: 2 });
-    expect(list.files[0].hash).toMatch(/^[0-9a-f]{64}$/);
-    const cur = await apiJson(h, "GET", "files");
-    expect(cur).toMatchObject({ version: 3, files: [{ path: "index.html" }] });
-    const content = await api(h, "GET", "files/index.html");
-    expect(await content.text()).toBe("<p>only</p>");
-    const old = await api(h, "GET", "files/a.css?version=1");
-    expect(await old.text()).toBe("body{}");
-    const versions = await apiJson(h, "GET", "versions");
-    expect(versions).toMatchObject({ current: 3, latest: 3, healthy: null });
-    expect(versions.versions.map((v: any) => v.version)).toEqual([3, 2, 1]);
-    expect(versions.versions[2]).toMatchObject({ status: "pending", message: "first", files: 3 });
-  });
 
   it("stores content once per hash in R2", async () => {
     const h = await create();
@@ -102,12 +41,12 @@ describe("files and versions", () => {
     expect(list.objects.length).toBe(1);
   });
 
-  it("honours ?v= for non-root files", async () => {
+  it("pins file bytes to explicit immutable publication URLs", async () => {
     const h = await create();
     await apiJson(h, "PUT", "files/app.js", "v1");
     await apiJson(h, "PUT", "files/app.js", "v2");
     expect(await (await req(h.page_url + "app.js")).text()).toBe("v2");
-    expect(await (await req(h.page_url + "app.js?v=1")).text()).toBe("v1");
+    expect(await (await req(h.page_url + "_publications/1/app.js")).text()).toBe("v1");
   });
 
   it("serves directory index files", async () => {
@@ -255,27 +194,6 @@ describe("device proof on page HTTP routes", () => {
   const post = (url: string, headers: Record<string, string> = {}) =>
     req(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ tools: [] }) });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("voice sessions need a verified owner device on an owner link", async () => {
-    const h = await create();
-    const owner = await PageClient.connect(h.page_url);
-    const proof = { "X-Tendril-Device": owner.deviceId, "X-Tendril-Device-Secret": owner.secret };
-    // no proof, wrong secret
-    expect((await post(h.page_url + "_tendril/voice/session")).status).toBe(403);
-    expect((await post(h.page_url + "_tendril/voice/session", { ...proof, "X-Tendril-Device-Secret": "a".repeat(32) })).status).toBe(403);
-    // a verified owner passes the gate (501: no provider configured in tests)
-    expect((await post(h.page_url + "_tendril/voice/session", proof)).status).toBe(501);
-    // a guest device on a guest link is refused
-    const link = await apiJson(h, "POST", "links", { role: "guest" });
-    const guest = await PageClient.connect(link.url);
-    const gproof = { "X-Tendril-Device": guest.deviceId, "X-Tendril-Device-Secret": guest.secret };
-    expect((await post(link.url + "_tendril/voice/session", gproof)).status).toBe(403);
-    // an owner's proof used through a guest link is refused too
-    expect((await post(link.url + "_tendril/voice/session", proof)).status).toBe(403);
-    owner.close();
-    guest.close();
-  });
 
   it("blob uploads are attributed only with a valid device proof", async () => {
     const h = await create();

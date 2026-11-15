@@ -25,7 +25,7 @@ it("MCP advertises the shared feature schemas and preserves REST lifecycle behav
   const tools = (await rpc("tools/list")).result.tools;
   expect(tools.find((tool: any) => tool.name === "create_timer").inputSchema).toEqual(schemas.timerCreate);
   expect(tools.find((tool: any) => tool.name === "save_session").inputSchema).toEqual(schemas.sessionWrite);
-  expect(tools.map((tool: any) => tool.name)).toEqual(expect.arrayContaining(["configure_device", "stage_bundle", "publish_bundle", "remix_tendril", "request_decision", "read_responses"]));
+  expect(tools.map((tool: any) => tool.name)).toEqual(expect.arrayContaining(["configure_device", "stage_bundle", "publish_bundle", "remix_tendril", "workflow_operation", "list_scopes"]));
   const created = await call("create_timer", { title: "Check from MCP", due_at: Date.now() + 60000 });
   expect(created.result.isError).toBeUndefined(); const timer = created.result.structuredContent;
   expect((await apiJson(handle, "GET", "timers")).timers[0].id).toBe(timer.id);
@@ -37,15 +37,10 @@ it("MCP advertises the shared feature schemas and preserves REST lifecycle behav
   expect((await call("get_session")).result.structuredContent.session.purpose).toBe("Preserve the experiment");
 });
 
-it("MCP validates versioned decisions and cannot manufacture owner approval", async () => {
+it("MCP exposes explicit workflows and rejects absent module activation", async () => {
   const { call } = await fixture();
-  const proposal = (await call("request_decision", { title: "Review this change", summary: "A concrete change" })).result.structuredContent;
-  expect(proposal.status).toBe("pending");
-  const denied = await call("update_decision", { id: proposal.id, changes: { expected_version: 1, status: "approved" } });
-  expect(denied.error.code).toBe(-32602);
-  const outcome = await call("update_decision", { id: proposal.id, changes: { expected_version: 1, status: "completed" } });
-  expect(outcome.result.isError).toBe(true);
+  const result = await call("workflow_operation", { module: "sessions", operation: "activate", command: { cid: crypto.randomUUID(), expected_generations: {}, data: { scope: "notebook" } } });
+  expect(result.result.isError).toBe(true);
   expect((await call("publish_bundle", {})).error.code).toBe(-32602);
   expect((await call("configure_device", { id: "d_missing", role: "owner" })).error.code).toBe(-32602);
-  expect((await call("read_responses")).result.structuredContent.responses).toEqual([]);
 });

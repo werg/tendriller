@@ -1,108 +1,99 @@
 # Tendriller public protocol
 
-This describes the sole supported service model. `docs/PUBLIC_SERVICE.md` gives the design and `agent.md` gives the agent quick start. JSON errors have `{"error":{"code":"snake_case","message":"..."}}`; times are milliseconds since epoch.
+This is the sole supported **contract 2**. Executable schemas are published at `/contract/v2.json` and generated from `contract/index.mjs`. JSON errors have `{ "error": { "code": "snake_case", "message": "..." } }`. Timestamps are milliseconds since epoch unless a field explicitly says seconds.
 
-Executable schemas are exposed at `/contract/v1.json` and owned by
-`contract/index.mjs`; TypeScript declarations and the fetch client live alongside
-them. The runtime, API write boundaries, MCP tools and local preview use this
-contract. `docs/EXPERIENCES.md` specifies the additive device/timer/session/bundle,
-decision and private-response workflows.
-`docs/DURABILITY.md` specifies opt-in event consumer leases and durable timer
-notification retries, including their explicit retention and delivery limits.
-`docs/STREAMS.md` specifies generalized durable and ephemeral data streams,
-built-in messaging adapters, scoped producers, browser subscriptions, and
-telemetry-only dashboard readiness.
+## Identity and origins
 
-## Origins and credentials
+The service origin owns agent HTTP/MCP APIs, account sign-in, the dashboard and administration. Each page uses a separate origin and its own host-only session cookie. A page key selects a page; it does not authorize a viewer. Mutations and WebSocket upgrades require the page's actual Origin. Owner, approved guest and display permissions come from authenticated sessions, never event data or generation tokens.
 
-The service origin is `https://tendriller.dev`; each tendril page has its own origin `https://<12-char base32 id>.tendriller.site/s/<26-char base32 page key>/`. The service host serves the API, OAuth, dashboard, reports, and admin. Page hosts serve only the page and its runtime. Page keys route requests but never authorize a viewer alone. Mutating page requests and WebSocket upgrades require an `Origin` equal to that page origin. Page sessions are opaque `__Host-` cookies; service sessions are separate `__Host-` cookies on the service host. Cross-origin page storage is isolated by the host. HSTS covers the pages domain.
+Agent tokens authorize `A`, the `api` URL in a page handle. Scoped producer tokens authorize only appends to their explicitly granted streams. Device IDs/secrets establish browser identity for presence, delivery and deduplication; they cannot grant owner privileges.
 
-Agent tokens start with `tk_` and authorize `A = https://tendriller.dev/api/t/<id>`. Secrets are stored as hashes. Device IDs and device secrets identify browser devices for presence and offline replay; authorization comes from the page session and role.
+## Service descriptor and artifacts
 
-## Lifecycle
+`GET /api/service` exposes `contract`, `core_release`, installed workflow interface/schema and implementation revisions, and shared resource policy. `GET A/service` exposes the page's installed interfaces and limits. Browser/device capabilities remain separate. A tool checks its declared requirements before provisioning or writing application data.
 
-`POST /api/tendrils` accepts `owner` (a verified email), optional `name`, `lifetime`, and `mode` (`interactive` by default or `dashboard`). Owner must be an email verified by GitHub or Google. Creation has an IP rate and daily cap, global hourly and live-unclaimed caps, a 24-hour claim deadline, and 2 MB file/blob storage. Only a claimed tendril can be made resident by its agent. A `dashboard` can publish without a conversational listener; scoped producers and stream subscriptions provide its data delivery. Producer activity does not establish agent presence. Other access and lifecycle gates still apply.
+Core release, contrib release and page publication are distinct identities. A contrib component release can reuse an existing workflow interface. Trusted implementation changes require deployment composition. A catalog never activates server code.
 
-The creation response includes `agent_setup`: no event delivery is configured yet, and the agent must attach this conversation to a host wake path before promising live replies. `GET A/events` accepts `wait=0..300` seconds; the recommended `wait=300` returns as soon as a waking event arrives, and the client reconnects after an empty timeout. In the default `interactive` mode, the first `index.html` upload returns `428 listener_required` until an agent WebSocket or long poll is active, or a wake receiver is configured. A WebSocket receiver uses `wss://tendriller.dev/api/t/<id>/events/socket` and offers `tendriller.agent.v1` plus its private `tk_…` token in `Sec-WebSocket-Protocol`. The server accepts `tendriller.agent.v1`, keeps the Durable Object hibernatable, and sends only `{t:"wake",seq}`. On connect, reconnect, and wake, fetch `GET A/events?after=<acknowledged cursor>&wait=0`; the socket is receive-only. A receiver may open `events/socket?after=<cursor>`; if a waking event newer than the cursor is queued, the server sends one `{t:"wake",seq}` with the newest such sequence immediately after the upgrade. Hosts that cannot keep the token out of a transcript call `POST A/events/socket/ticket[?after=<cursor>]` with the token and receive `201 {ticket, expires_at, socket_url, protocols}`. The `lt_…` ticket replaces the token in `Sec-WebSocket-Protocol`, opens exactly one socket, expires unused after ten minutes, and authenticates nothing else; the socket it opens belongs to the issuing token and closes when that token is revoked. At most 20 unused tickets exist per tendril. A JSON `{"t":"ping"}` receives an automatic `{"t":"pong"}` without waking the object. Never put the token in the URL. Every `GET A/events` response, including an empty long-poll timeout, includes `next_poll` with the returned cursor and `agent_reminder` to continue listening. File publication and `GET A` report `agent_delivery` (`none`, `live_socket`, `live_poll`, or `wake_configured`). This is feedback about event routing, not a guarantee that an external agent host resumes the intended conversation; verify two delivery probes end to end. Events remain queued for later retrieval when the receiver is absent.
+## Lifecycle and delivery
 
-Opening a page without a page session redirects through `/auth/page` and OAuth. The signed-in account must have the intended email among its verified provider emails; opening the link claims the page automatically. The service issues a one-use page code; the page origin redeems it for its own host-only cookie. The page owner may invite signed-in guests and approve invites made by agents. Only the owner may create a login-free display link. Display links are read only. `POST A/release` can release the claim before any guest has been approved.
+`POST /api/tendrils` requires an owner email and accepts optional name and mode. Interactive pages require a live receiver or configured wake path before first publication; dashboards can publish without conversational delivery. Owner sign-in claims the page. Claim deadlines, residency, quotas, invited guest approval and suspension are enforced on the server.
 
-Service sign-in uses GitHub or Google authorization code and PKCE. Account identities use provider subject, with verified emails recorded separately. The dashboard supports provider linking, export, and deletion.
+`GET A/events?after=<cursor>&wait=<seconds>` requires an explicit nonnegative cursor. Wait is 0–300 seconds. Reconnect after every response. An authenticated agent socket at `A/events/socket` uses `tendriller.agent.v2` and a token or one-use ticket in the WebSocket subprotocol header. It sends count-only wake notices; clients fetch event bodies through the authorized API. Tokens never belong in URLs.
 
-Publishing a page version does not require an open page or device. A new version is served immediately with `status: "pending"` until a visible page reports its post-load health. Hidden pages defer health reporting until visible; the server ignores hidden reports. An explicit failure reported by a visible page fails the version and rolls back to the last healthy version when one exists. Elapsed time or a page navigation alone cannot fail a pending version, so a version may remain pending while all devices are offline.
+Wake transport success does not prove a host resumed the intended conversation. `POST A/wake/probe`, `GET A/wake/probe` and the returned acknowledgement URL exercise end-to-end delivery. Named consumers add independent processing checkpoints and bounded leases; reading alone never acknowledges handling. See [durability](DURABILITY.md).
 
-## Agent API
+## Opaque application data
 
-`PUT A/wake` accepts `{"webhook":{"url":"https://…","token":"<secret>","auth":"bearer|standard_webhooks|hermes_v2"}}`. `auth` defaults to `bearer`. Bearer sends `Authorization: Bearer <token>` (the token may be omitted for a public receiver). `standard_webhooks` requires a `whsec_` plus base64 secret and signs `{webhook-id}.{webhook-timestamp}.{raw JSON}` with HMAC-SHA256, returning `webhook-signature: v1,<base64>`. `hermes_v2` signs `<unix timestamp>.<raw JSON>` with the literal route secret and sends `X-Webhook-Timestamp` and `X-Webhook-Signature-V2` as a hex HMAC-SHA256 digest. GET wake reports the mode and `has_token`, never the secret. The receiver still needs the private page API token and a host-specific way to resume the correct conversation.
+An application event is data, even when its payload contains `session`, `session_id`, a recipe-like `type`, or any familiar workflow name. Shared state is opaque JSON. No field selects a module, changes an authoritative generation or bypasses permission checks.
 
-`POST A/wake/probe` injects a synthetic, wake-eligible `event` with `role:null`, `by:agent_probe`, and `data:{kind:"delivery_probe",nonce,status_url,ack_url}`. It exercises the same WebSocket, long-poll, webhook, or MCP Events delivery path without a browser or owner impersonation. The response includes `nonce`, `seq`, `created_at`, `ack_at`, `status_url`, and `ack_url`. After the resumed agent reads the event, it calls `POST <ack_url>`; `GET <status_url>` then has a non-null `ack_at`. The server refuses acknowledgement before any event read has advanced through that sequence. A probe expires after ten minutes, and a page may create at most five per hour. Only the newest probe is inspectable. Recover it without a saved nonce using `GET A/wake/probe`, which returns the same envelope, or `404 not_found` if none remains. Explicit routes are `GET A/wake/probe/<nonce>` and `POST A/wake/probe/<nonce>/ack`. Recovery alone does not advance the event cursor. This tests host delivery, not the browser's first real interaction. MCP exposes `probe_delivery`, `check_delivery_probe` (optional nonce), and `acknowledge_delivery_probe` tools. The typed client exposes `probeDelivery()`, `checkDeliveryProbe(nonce?)`, and `acknowledgeDeliveryProbe(nonce)`.
+Generic `POST A/events` and browser `send` accept a command envelope:
 
-Agent routes under `A` require `Authorization: Bearer tk_…`. Scoped producer tokens (`tp_…`) authorize only appends to their granted custom streams; see [STREAMS.md](STREAMS.md). `GET/PATCH/DELETE A` manage the tendril. Files and versions: `PUT A/files/<path>`, `POST/GET A/files`, `GET A/files/<path>`, `GET A/versions`, `POST A/rollback`. Interaction: `GET A/events?after=<cursor>`, `POST A/eval`, `POST A/say`, `POST A/status`, `POST A/check`. Data: `GET/PUT/PATCH A/state`, `GET A/logs`, `PUT/GET A/blobs`, `GET A/blobs/<id>`, `GET/POST A/activity`. Management: `GET/PATCH/DELETE A/devices`, `POST/GET/DELETE A/links`, `POST A/links/<id>/rotate`, `GET/PUT A/wake`, `POST/GET/DELETE A/tokens`, `GET/PUT A/rules`, `POST A/notify`. The agent can create guest invites only and cannot change roles. See `server/src/agent.ts` for exact request bodies.
+```json
+{
+  "cid": "stable-command-id",
+  "scope": "opaque-scope-id",
+  "expected_generations": {"opaque-scope-id":"captured-generation"},
+  "data": {"type":"job.status","session":"application-owned value"}
+}
+```
 
-Optional handled checkpoints use `GET A/consumers` and
-`POST A/consumers/<name>/claim`, then `GET …/events` and
-`POST …/renew`, `…/ack`, `…/release` with `X-Tendril-Lease`. A name identifies one
-logical subscriber; same-name workers fail over through a 30–900-second lease,
-while different names read independently. Reads replay unacknowledged work;
-only an explicit handled acknowledgement advances the checkpoint. Missing history
-requires explicit gap acknowledgement. Legacy `/events` and host bridges retain
-their existing behavior. Full shapes and limits are in [DURABILITY.md](DURABILITY.md).
+`scope` is optional; `cid`, `expected_generations` and the operation payload are explicit. An unguarded operation uses an empty generation map. Command IDs are scoped by authenticated actor. Reusing one with different content returns `command_conflict`.
 
-## Page API and events
+## Authoritative scopes and generations
 
-The page prefix `P` is the returned `page_url`. `GET P` serves the current version or a holding page. `GET P<path>` serves version files. Reserved `_tendril/` routes include runtime and speech assets, WebSocket, page info, blob upload/download, manifest, icon, agent listing and disconnect, guest approval, reporting, and owner version trust. They are all gated by the page role, except the one-time session code exchange. Static high-risk versions are withheld from guests and display links; owners see an explicit continue screen. A high-risk version on a young account holds the page.
+A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
 
-The runtime opens `P_tendril/ws`; the server derives owner, guest, or display permissions from the page session. Owner text and on-device speech become instruction events. Guest and display input stays untrusted data. Browser device secrets support device identity and replay deduplication; they do not grant owner access. The runtime exposes `tendril.send`, shared state, blob upload, and page connection state. Speech uses a hash-pinned Cactus Whistle model downloaded after a microphone tap and transcribes locally.
+- `GET A/scopes` reads active descriptors.
+- `PUT A/scopes/<id>` registers or rebinds `{cid,expected_generations,paths,operations}`.
+- `POST A/scopes/<id>/rotate` deliberately advances a generation.
+- `DELETE A/scopes/<id>` retires it.
 
-Spoken output from `POST A/say` (default `speak:true`), `tendril.speak(text)`, and local `say` rules uses browser speech immediately. Phonon 31M neural English speech is an optional device preference, enabled explicitly in settings or with `tendril.tts.enable()`. Enabling it prepares roughly 65 MB on first use and caches the assets in the browser; browser speech remains available during setup. `say` messages appear on all devices, while the server selects the owner device that should speak automatically. The runtime also checks that the device is a non-pending owner. The optional neural runtime loads the pinned `phonon-tts` package from `P_tendril/tts/`, including its workers, Wasm, and license notices, and an Apache-2.0 model pinned to a Hugging Face commit. Neural synthesis runs locally. WebGPU is selected when available, with single-thread Wasm CPU fallback; this adds no cross-origin isolation requirement. Non-English language preferences, a user-selected browser voice, and neural failures use browser synthesis. `_prefs.audio:false` mutes speech; changing audio/language preferences, submitting a message, or `tendril.tts.stop()` interrupts current/queued speech. Voice selection and neural enablement are stored locally per page origin and are not shared state. `tendril.tts.status` and the `tts` event report initialization/progress/failure. Settings expose enablement, browser voice selection, test, retry, and stop controls. `tendril.tts.disable()` returns to browser speech. Browser autoplay rules still apply.
+Lifecycle mutations require authorized control access. Rebinding requires the current generation and always creates a new token. Trusted modules own their scopes and cannot overwrite another controller's bindings. Retired metadata prevents queued work from silently acquiring another meaning.
 
-Neural synthesis times out after 30 seconds without a new audio chunk, allowing browser fallback instead of blocking later replies indefinitely. Stop interrupts pending model waits as well as playback; a worker that does not acknowledge cancellation within one second is discarded and reloaded from cache for the next reply. Browser autoplay restrictions preserve the loaded model, so neural speech can resume after a user interaction without a manual retry.
+The server derives required guards from all overlapping paths, explicit operation targets and selected scopes. A write to an ancestor or the document root overlaps a protected descendant. Extra supplied guards are validated too. Missing required guards return `generation_required`; stale, unknown or retired guards return `stale_generation`.
 
-`tendril.send()` distinguishes accepted, queued, and rejected results. Media inputs use `tendril.uploadEvent(blob, options)` to persist the blob and its semantic input as one recoverable transaction, with explicit retry/discard controls and retention metadata. `resident` keeps a page available; captured page media still expires after 30 days unless pinned by the owner. See [CAPTURES.md](CAPTURES.md) for the result contract, offline replay, and pin APIs.
+Generation validation, the mutation and its deduplication receipt share the same local transaction. A duplicate accepted command returns its saved result after a lost acknowledgement. It does not apply twice, including after later generation rotation.
 
-## Durable experiences
+## Shared-state writes
 
-Device purpose is separate from access role. `GET A/devices` returns purpose and
-focus; `PATCH A/devices/<id>` accepts name/purpose without changing permissions.
-`POST A/focus` leases a connected owner device for 30–86400 seconds. `POST A/say`
-accepts `device` for presentation and `speak_on` for one speaking socket; an
-audio-only recipient receives `present:false`. Device targeting never makes the
-shared transcript private. Non-owner device configuration messages expose only
-that device's own presentation information.
+`GET A/state` returns `{state,rev,scopes}`. `PATCH A/state` accepts one of:
 
-`A/timers` supports list/create, `A/timers/<id>` update/delete, and
-`A/timers/history` execution history. Occurrence event/run/next-schedule writes
-are atomic and deduplicated by run ID. A requested notification intent joins that
-transaction, with bounded retries and per-device results in history `delivery`.
-Provider delivery is at least once; see [DURABILITY.md](DURABILITY.md).
-IANA calendar recurrence, missed-run
-coalescing/skip, claim/hold/read-only checks, and page lifetime bounds are described
-in [EXPERIENCES.md](EXPERIENCES.md). Device rules remain browser-local.
+```json
+{"cid":"change-1","expected_generations":{},"ops":[{"op":"set","path":["count"],"value":1}]}
+```
 
-`GET/PUT A/session` saves/resumes compact context with optional expected-revision
-checks, independent of event-read cursor consumption. `GET A/bundle` exports the
-served page; `include_data=true` adds state/session/media bytes. `PUT A/bundle`
-stages; `POST A/bundle/publish {expected_version}` publishes atomically;
-`DELETE A/bundle` discards; `POST A/remix` creates an independent staged copy.
-First publication retains the listener requirement in `interactive` mode; `dashboard` mode permits publication without a conversational listener. Page owners have equivalent
-routes under `_tendril/`, using `_tendril/resume` for session context.
+```json
+{"cid":"replace-1","expected_generations":{},"state":{"count":1}}
+```
 
-`GET/POST A/decisions` and `PATCH A/decisions/<id>` manage proposals/outcomes;
-only the signed-in owner can respond through
-`POST P_tendril/decisions/<id>/respond`. Expected versions, expiry and valid
-transitions are enforced on the server. Private participant answers are stored
-outside shared state: a participant reads/writes only their own
-`P_tendril/responses`; the owner reads all with `/responses/all`, and the agent
-reads `GET A/responses`. Submission events contain identifiers/revision only.
+`set(null)` is a value; `delete` removes a path. Root state remains an object. Prototype-polluting keys, malformed paths, invalid JSON and excessive sizes are rejected. There is no raw merge-patch HTTP body that hides command metadata. The browser's convenience `state.patch` derives explicit operations, persists their original guards, then applies optimism.
 
-## Limits and enforcement
+HTTP, MCP, WebSocket, whole replacement, bundle restore and trusted-module state changes all use the same protected-operation rule. Imports cannot install authoritative bindings or generations from application JSON. A staged bundle's state is checked against current guards atomically at publication.
 
-Custom streams have a separate bounded SQLite allowance described in [STREAMS.md](STREAMS.md). Unclaimed file/blob storage is 2 MB and individual files are 1 MB; claimed storage is 25 MB and files are 5 MB. An account has 200 MB storage, at most 20 active tendrils and 3 residents. The service has an exact global byte reservation and admission object. Rate Limiting bindings slow request bursts. `service_state` can pause creation or set read only. A budget notification webhook changes state at configured thresholds.
+## Trusted workflows
 
-Reports arrive from a signed-in page or the public Turnstile form at `/report`. Three qualifying account reports within 24 hours hold a claimed page. Reported unclaimed pages are deleted. Three unreversed holds in 30 days suspend an account. The owner can appeal at `/appeal`; allowlisted provider identities use `/admin` to act and audit reasons. `/_tendril/report` remains available from the page control. Every automatic/manual action is recorded in D1.
+The engine's workflow registry is empty. A reviewed deployment statically selects a hash-pinned Worker artifact. `POST A/workflows/<module>/<operation>` invokes one declared operation using the generic command envelope. Page payloads cannot register implementations.
 
-Young-page guest and display visitor bursts, creator-IP claim patterns, and repeated claim releases also trigger holds at the thresholds in `PUBLIC_SERVICE.md`. The owner dashboard shows sensor activity reported by each connected page device. Suspended owners may sign in to a restricted dashboard with notices and page/account appeals; normal page access remain denied. A scheduled Worker retries page disable/restore operations from the D1 queue; account suspension in D1 denies page access while reconciliation is pending.
+Modules declare their operation permissions, schemas and explicit scope targets. The host passes authenticated identity, namespaced records, state/scopes, blob pinning, participant identities and post-commit effects. It never passes private SQL or the full Durable Object. The operation runs synchronously under the core transaction. A private response stays outside shared page state; archive/reset and generation rotation commit together. Module replacement or removal rotates/retires owned generations even if the interface revision is unchanged.
 
-## Deployment contract
+Contrib owns workflow-specific APIs, defaults, presentation and documentation. Core exposes validated workflow context separately from event `data`.
 
-Staging and production use isolated D1, R2, secrets, routes, and Worker names generated by `scripts/provision.mjs`. D1 migrations initialize creation paused. `docs/OPERATIONS.md` lists the external domain, OAuth, Turnstile, budget, legal, and browser checks required before opening service state. The repository contains one public service route path; no account-key or path-host fallback is deployed.
+## Durable browser operations and captures
+
+Before delivery or optimistic application, the runtime durably stores the command ID, original scope and captured generation map. Reconnect/reload use those exact values. Reconstructed optimistic state excludes obsolete commands, and rejection is surfaced without overwriting the current session.
+
+`send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
+
+## Publications and browser assets
+
+Publishing files snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies.
+
+The executing page pins its browser URL to its publication. Accepting an update navigates to the canonical latest page; a deferred update leaves the existing graph intact. The service worker caches complete, hash-verified graphs and keeps active client/publication associations. Injected HTML is validated by its `X-Tendril-Publication` response header. Non-HTML bytes match their manifest hashes.
+
+Core retains runtime artifacts in the existing FILES bucket across deployments. Page-file pruning preserves current/recent publications, open sockets and thirty-day offline leases. Normal publication A/B and offline recovery operate within this contract; this is not a promise to run historical pre-release clients.
+
+## Remaining platform APIs
+
+Core owns files and versions, health/rollback, authenticated conversation, device purpose/focus, timers, agent context/checkpoints, portability, blobs, streams, activity, delivery and lifecycle. Optional tools, host bridges, preview, components and examples are downloaded from [contrib releases](https://github.com/werg/tendriller-contrib/releases).
+
+Limits are defined in `contract/limits.mjs`, imported by enforcement, and exposed in metadata. [Streams](STREAMS.md) documents stream retention, producer grants and replay. [Architecture](ARCHITECTURE.md) documents artifact composition and verification. [Operations](OPERATIONS.md) documents provisioning, immutable runtime publication and deployment.

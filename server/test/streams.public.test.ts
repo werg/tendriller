@@ -199,12 +199,12 @@ it("preserves existing event/log/transcript histories and makes state/presence s
   await page.request({ t: "stream_subscribe", stream: "system.presence" });
   await apiJson(h, "POST", "say", { text: "Training started", speak: false });
   expect((await page.next(m => m.t === "stream_record" && m.record.stream === "system.transcript")).record.data.text).toBe("Training started");
-  await apiJson(h, "PATCH", "state", { run: "one" });
+  await apiJson(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {}, ops: [{ op: "set", path: ["run"], value: "one" }] });
   expect((await page.next(m => m.t === "stream_record" && m.record.stream === "system.state")).record.data.rev).toBe(1);
   await apiJson(h, "POST", "status", { state: "working", text: "Checking" });
   expect((await page.next(m => m.t === "stream_record" && m.record.stream === "system.presence")).record.type).toBe("presence");
   page.send({ t: "log", entries: [{ level: "info", message: "browser diagnostic", ts: -100.5 }] });
-  await page.request({ t: "send", kind: "event", data: { reading: 2 }, wake: false });
+  await page.request({ t: "send", expected_generations: {}, kind: "event", data: { reading: 2 }, wake: false });
   const legacy = await apiJson(h, "GET", "events?after=0"), adapter = await apiJson(h, "GET", "streams/system.events/records?after=0");
   expect(adapter.records.map((r: any) => r.data)).toEqual(legacy.events);
   const logs = await apiJson(h, "GET", "logs?after=0"), logAdapter = await apiJson(h, "GET", "streams/system.logs/records?after=0");

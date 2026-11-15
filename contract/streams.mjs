@@ -1,8 +1,9 @@
 // Transport-independent envelopes. Durability belongs to the stream, not its payload.
 // UTF-8 bytes of one producer input, before the server adds its record envelope.
 // A single retained snapshot can be larger without expanding the batch or page quota.
-export const STREAM_RECORD_BYTES = 64 * 1024;
-export const STREAM_SNAPSHOT_RECORD_BYTES = 192 * 1024;
+import { STREAM_LIMITS } from "./limits.mjs";
+export const STREAM_RECORD_BYTES = STREAM_LIMITS.record_bytes;
+export const STREAM_SNAPSHOT_RECORD_BYTES = STREAM_LIMITS.snapshot_record_bytes;
 
 const integer = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const nullableInteger = { anyOf: [integer, { type: "null" }] };
@@ -17,8 +18,6 @@ const jsonValue = { anyOf: [
 ] };
 const input = object({ id: { type: "string", minLength: 1, maxLength: 128 }, ts: integer,
   type: { type: "string", minLength: 1, maxLength: 80 }, data: json }, ["id", "type", "data"]);
-// Browser diagnostics historically accepted fractional/negative epoch values.
-// Preserve those stored timestamps in adapters; new producer input stays integral.
 const record = object({ stream: name, seq: integer, ts: { type: "number" }, received_at: { type: "number" },
   type: { type: "string", minLength: 1, maxLength: 80 }, data: json,
   producer: { type: "string", minLength: 1, maxLength: 200 }, id: { anyOf: [input.properties.id, { type: "null" }] },
@@ -27,7 +26,7 @@ const history = object({ earliest_available_seq: nullableInteger, latest_seq: in
   gap: { type: "boolean" }, missing_through: nullableInteger }, ["earliest_available_seq", "latest_seq", "gap", "missing_through"]);
 const info = object({ name, durability, readers: { enum: ["agent", "owner", "page"] }, builtin: { type: "boolean" },
   max_records: nullableInteger, max_age_seconds: nullableInteger }, ["name", "durability", "readers", "builtin", "max_records", "max_age_seconds"]);
-const batch = object({ stream: name, durability, records: { type: "array", maxItems: 500, items: record },
+const batch = object({ stream: name, durability, records: { type: "array", maxItems: STREAM_LIMITS.replay_records, items: record },
   cursor: integer, history }, ["stream", "durability", "records", "cursor", "history"]);
 const producer = object({ name, streams: { type: "array", minItems: 1, maxItems: 32, items: customName },
   created_at: integer, last_seen: nullableInteger }, ["name", "streams", "created_at", "last_seen"]);
@@ -39,15 +38,15 @@ export const streamSchemas = {
   streamInfo: info,
   streamCreate: { anyOf: [
     object({ name: customName, durability: { const: "durable" }, readers: { enum: ["owner", "page"] },
-      max_records: { type: "integer", minimum: 1, maximum: 10000 }, max_age_seconds: { type: "integer", minimum: 1, maximum: 2592000 },
+      max_records: { type: "integer", minimum: 1, maximum: STREAM_LIMITS.stream_records }, max_age_seconds: { type: "integer", minimum: 1, maximum: STREAM_LIMITS.retention_seconds },
     }, ["name", "durability"]),
     object({ name: customName, durability: { const: "ephemeral" }, readers: { enum: ["owner", "page"] } }, ["name", "durability"]),
   ] },
   streamInput: input,
   streamRecord: record,
   streamHistory: history,
-  streamAppend: object({ records: { type: "array", minItems: 1, maxItems: 100, items: input } }, ["records"]),
-  streamAppendResult: object({ records: { type: "array", maxItems: 100, items: record }, cursor: integer, durability }, ["records", "cursor", "durability"]),
+  streamAppend: object({ records: { type: "array", minItems: 1, maxItems: STREAM_LIMITS.batch_records, items: input } }, ["records"]),
+  streamAppendResult: object({ records: { type: "array", maxItems: STREAM_LIMITS.batch_records, items: record }, cursor: integer, durability }, ["records", "cursor", "durability"]),
   streamBatch: batch,
   streamLatest: object({ stream: name, durability: { const: "durable" },
     record: { anyOf: [record, { type: "null" }] }, cursor: integer }, ["stream", "durability", "record", "cursor"]),

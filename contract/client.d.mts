@@ -2,8 +2,7 @@ import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
-  PortableBundle, BundleStageResult, BundlePublish, RemixRequest, Decision, DecisionCreate, DecisionUpdate, ParticipantResponse,
-  ParticipantAssignment, AssignmentCreate, AssignmentUpdate, ArchiveScope, ArchivePreview, ArchiveCreate, ArchiveResult, ArchiveMetadata, SessionArchive } from "./index.mjs";
+  PortableBundle, BundleStageResult, BundlePublish, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
@@ -14,8 +13,8 @@ export interface AgentClient extends DurabilityClient, StreamsClient {
   checkDeliveryProbe(nonce?: string): Promise<DeliveryProbe>;
   acknowledgeDeliveryProbe(nonce: string): Promise<DeliveryProbe>;
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
-  state(): Promise<{ state: Record<string, unknown>; rev: number }>;
-  updateState(body: Record<string, unknown> | { ops: StateOperation[] }): Promise<{ rev: number }>;
+  state(): Promise<{ state: Record<string, unknown>; rev: number; scopes: ScopeDescriptor[] }>;
+  updateState(body: CommandMetadata & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
   writeFiles(body: { files: Record<string, string | { base64: string; type?: string }>; replace?: boolean; delete?: string[]; message?: string }): Promise<{ version: number; [key: string]: unknown }>;
   devices(): Promise<DeviceConfiguration>;
   updateDevice(device: string, body: DeviceUpdate): Promise<DeviceInfo>;
@@ -32,21 +31,20 @@ export interface AgentClient extends DurabilityClient, StreamsClient {
   publishBundle(body: BundlePublish): Promise<{ version: number; [key: string]: unknown }>;
   discardBundle(): Promise<void>;
   remix(body: RemixRequest): Promise<PageHandle & { remix: { staged: true; requires_receiver: true; publish_url: string; expected_version: number } }>;
-  decisions(): Promise<{ decisions: Decision[] }>;
-  createDecision(body: DecisionCreate): Promise<Decision>;
-  updateDecision(decision: string, body: DecisionUpdate): Promise<Decision>;
-  responses(): Promise<{ responses: ParticipantResponse[] }>;
-  assignments(): Promise<{ assignments: ParticipantAssignment[] }>;
-  participants(): Promise<{ participants: { id: string; label: string; role: "owner" | "guest" }[] }>;
-  createAssignment(body: AssignmentCreate): Promise<ParticipantAssignment>;
-  updateAssignment(id: string, body: AssignmentUpdate): Promise<ParticipantAssignment>;
-  archives(): Promise<{ archives: ArchiveMetadata[]; limit: number; byte_limit: number }>;
-  previewArchive(scope: ArchiveScope): Promise<ArchivePreview>;
-  createArchive(body: ArchiveCreate): Promise<ArchiveResult>;
-  archive(id: string): Promise<SessionArchive>;
-  deleteArchive(id: string): Promise<void>;
+  service(): Promise<ServiceDescriptor>;
+  scopes(): Promise<{scopes: ScopeDescriptor[]}>;
+  putScope(id: string, body: CommandMetadata & {paths: string[][]; operations: string[]}): Promise<ScopeDescriptor>;
+  rotateScope(id: string, body: CommandMetadata): Promise<ScopeDescriptor>;
+  retireScope(id: string, body: CommandMetadata): Promise<void>;
+  send(body: CommandMetadata & {data: unknown}): Promise<{seq: number}>;
+  workflow<T = unknown>(module: string, operation: string, body: CommandMetadata & {data: unknown}): Promise<T>;
   readEvents(options: { after: number; wait?: number; signal?: AbortSignal }): Promise<EventBatch>;
 }
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
 export function createClient(handle: Pick<PageHandle, "api" | "token">, options?: ClientOptions): AgentClient;
 export function createPage(service: string, body: CreateRequest, options?: ClientOptions): Promise<PageHandle>;
+
+export interface CommandMetadata { cid: string; scope?: string; expected_generations: Record<string, string> }
+export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown>; workflows: {id: string; interface_version: string; schema_version: string}[] }
+export function describeService(service: string, options?: ClientOptions): Promise<ServiceDescriptor>;
+export function requireService(descriptor: ServiceDescriptor, requirements?: {contract?: number; workflows?: Record<string, {interface_version: string; schema_version: string}>}): ServiceDescriptor;

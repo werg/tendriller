@@ -35,7 +35,7 @@ export function historyPage<T extends Sequenced>(rows: Iterable<T>, options: {
   let used = 0, truncated = false;
   for (const record of rows) {
     const size = options.sizeOf?.(record) ?? 0;
-    // At least one record must advance a reader, including legacy envelopes
+    // At least one record must advance a reader, including built-in event envelopes
     // larger than a caller's preferred page size.
     if (records.length && used + size > (options.maxBytes ?? Infinity)) { truncated = true; break; }
     records.push(record); used += size;

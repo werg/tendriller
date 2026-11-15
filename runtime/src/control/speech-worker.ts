@@ -33,11 +33,11 @@ scope.onmessage = async (event: MessageEvent) => {
   const { id, action } = event.data ?? {};
   try {
     if (action === "init") {
-      const { base, modelUrl, modelSha256 } = event.data;
-      const js = `${base}_tendril/speech/cactus.js`;
-      const wasmUrl = `${base}_tendril/speech/cactus.wasm`;
+      const { engine: assets, modelUrl, modelSha256 } = event.data;
+      const js = assets.script;
+      const wasmUrl = assets.wasm;
       const [wasm, model] = await Promise.all([
-        verified(wasmUrl, "4198b30795ded7739fe6c9e80bf26d5a844767c081574d40c8dc0487cde8b4b6", id, "speech engine"),
+        verified(wasmUrl, assets.wasm_sha256, id, "speech engine"),
         verified(modelUrl, modelSha256, id, "speech model"),
       ]);
       scope.importScripts(js);

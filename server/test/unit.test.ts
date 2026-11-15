@@ -56,55 +56,10 @@ describe("helpers", () => {
   });
 
   it("injection escapes the config", () => {
-    const html = injectRuntime("<HEAD data-x='1'>t</HEAD>", { id: "x", base: "/b/", version: 1, features: { push: false, vapid: "</script>", shared_by: "owner", speech: { model: "whistle", url: "x", sha256: "x" } } });
-    expect(html).toContain("<HEAD data-x='1'><script>");
+    const html = injectRuntime("<HEAD data-x='1'>t</HEAD>", { id: "x", base: "/b/", version: 1, features: { push: false, vapid: "</script>", shared_by: "owner", speech: { model: "whistle", url: "x", sha256: "x", engine: {script:"engine.js",wasm:"engine.wasm",wasm_sha256:"x"} } } });
+    expect(html).toContain(`<HEAD data-x='1'><base href="/b/">`);
     expect(html).not.toContain('"</script>"');
     expect(html).toContain("\\u003c/script\\u003e");
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("presence precedence", () => {
-    const base: PresenceFacts = { now: 1_000_000_000, tokens: 1, lastCheckin: 1_000_000_000 - 1000, longPollHeld: false, agentSocket: false, webhook: false, scheduleMinutes: null, wakePendingSince: null, graceSeconds: 120, status: null, withheld: 0 };
-    expect(computePresence(base).state).toBe("working");
-    expect(computePresence({ ...base, longPollHeld: true }).state).toBe("listening");
-    expect(computePresence({ ...base, wakePendingSince: base.now - 200_000, longPollHeld: true }).state).toBe("not_responding");
-    expect(computePresence({ ...base, tokens: 0 }).state).toBe("no_agent");
-    expect(computePresence({ ...base, lastCheckin: base.now - 2 * 3600_000 })).toMatchObject({ state: "away", text: "Last heard from 2 hours ago" });
-    expect(computePresence({ ...base, lastCheckin: base.now - 2 * 3600_000, webhook: true }).state).toBe("listening");
-    expect(computePresence({ ...base, lastCheckin: base.now - 25 * 3600_000, webhook: true }).state).toBe("away");
-  });
-});
-
-describe("transcription via Workers AI", () => {
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("passes base64 audio to whisper and returns text", async () => {
-    const h = await create();
-    const seen: any[] = [];
-    await inDO(h.id, (t) => {
-      (t.env as any).AI = {
-        run: async (model: string, input: any) => {
-          seen.push({ model, input });
-          return { text: " hello world ", word_count: 2 };
-        },
-      };
-    });
-    try {
-      const html = await (await req(h.page_url)).text();
-      expect(html).toContain('"transcribe":true');
-      const page = await PageClient.connect(h.page_url);
-      const proof = { "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret };
-      expect((await req(h.page_url + "_tendril/transcribe", { method: "POST", body: new Uint8Array([1]), headers: { "Content-Type": "audio/webm" } })).status).toBe(403);
-      const res = await req(h.page_url + "_tendril/transcribe", { method: "POST", body: new Uint8Array([1, 2, 3]), headers: { "Content-Type": "audio/webm", ...proof } });
-      page.close();
-      expect(await res.json()).toEqual({ text: "hello world" });
-      expect(seen[0]).toEqual({ model: "@cf/openai/whisper-large-v3-turbo", input: { audio: "AQID" } });
-      expect((await apiJson(h, "GET", "")).id).toBe(h.id);
-    } finally {
-      await inDO(h.id, (t) => {
-        delete (t.env as any).AI;
-      });
-    }
-  });
 });

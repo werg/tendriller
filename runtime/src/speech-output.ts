@@ -1,6 +1,6 @@
 import type { PhononTTS } from "phonon-tts";
 import type { Bus } from "./types";
-import type { SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
+import type { PreferencesApi, SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
 export type { SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -20,11 +20,10 @@ function waitFor<T>(task: Promise<T>, signal?: AbortSignal, timeoutMs = 0): Prom
 }
 
 /** Browser speech is immediate; neural English speech is an optional device preference. */
-export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?: boolean; language?: string },
+export function createSpeechOutput(base: string, bus: Bus, preferences: PreferencesApi,
   moduleLoader: (url: string) => Promise<typeof import("phonon-tts")> = url => import(/* @vite-ignore */ url)): SpeechOutput {
-  const storageKey = "tendriller:spoken-voice";
-  let enabled = false;
-  try { enabled = localStorage.getItem(storageKey) === "neural"; } catch { /* storage may be unavailable */ }
+  const prefs = () => preferences.get();
+  let enabled = prefs().voice === "neural";
   let status: SpeechStatus = { enabled, state: "idle", message: enabled ? "Natural voice is enabled. Prepare it once to cache about 65 MB on this device." : "Browser voice is ready. Natural voice is an optional download." };
   let model: PhononTTS | null = null;
   let loading: Promise<PhononTTS> | null = null;
@@ -39,7 +38,6 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     status = { enabled, state, message };
     bus.emit("tts", { ...status });
   };
-  const remember = () => { try { localStorage.setItem(storageKey, enabled ? "neural" : "browser"); } catch { /* optional persistence */ } };
   const audioContext = () => {
     if (!context || context.state === "closed") context = new AudioContext({ sampleRate: 24000 });
     return context;
@@ -59,7 +57,7 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
     report("loading", "Preparing natural voice — about 65 MB on first use. Browser speech is available while it downloads.");
     // Keep the upstream ES modules, workers, Wasm and notices together. This import
     // stays native/lazy so browser-only users do not download the neural runtime.
-    const url = new URL(base + "_tendril/tts/index.js", location.href).href;
+    const url = new URL("tts/index.js", new URL(base, location.href)).href;
     let timer: ReturnType<typeof setTimeout>;
     let expired = false;
     const task = (async () => {
@@ -200,14 +198,12 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
   const api: SpeechOutput = {
     get status() { return { ...status }; },
     async enable() {
-      stop(); enabled = true; remember(); unlock();
+      stop(); preferences.update({ voice: "neural" }); unlock();
       if (model) report("ready", readyMessage);
       else await load();
     },
     disable() {
-      stop(); enabled = false; remember(); ++loadEpoch;
-      loading = null; model?.dispose(); model = null;
-      report("idle", "Using the browser voice. The downloaded neural model stays cached.");
+      stop(); preferences.update({ voice: "browser" });
     },
     stop,
     speak(text) {
@@ -218,6 +214,17 @@ export function createSpeechOutput(base: string, bus: Bus, prefs: () => { audio?
       queue = queue.then(() => play(reply, token)).catch(() => {});
     },
   };
+  let previous = prefs();
+  preferences.on(next => {
+    if (next.audio !== previous.audio || next.language !== previous.language || next.voice !== previous.voice) stop();
+    if (next.voice !== previous.voice) {
+      enabled = next.voice === "neural";
+      ++loadEpoch; loading = null; model?.dispose(); model = null;
+      report("idle", enabled ? "Natural voice is enabled. Prepare it once to cache about 65 MB on this device."
+        : "Using the browser voice. The downloaded neural model stays cached.");
+    }
+    previous = next;
+  });
   window.addEventListener("pagehide", () => {
     stop(); ++loadEpoch; loading = null; model?.dispose(); model = null;
     report("idle", enabled ? "Neural voice will reload from cache for the next reply." : "Using the browser voice.");

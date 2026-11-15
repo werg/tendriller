@@ -167,7 +167,7 @@ export function startRules(core: Core): void {
   function notify(r: Rule, title: string, body: string) {
     const granted = typeof Notification !== "undefined" && Notification.permission === "granted";
     if (!granted) { core.bus.emit("notify_local", { title, body }); return; }
-    const opts: NotificationOptions = { body, tag: `rule-${r.id}`, data: { url: location.href } };
+    const opts: NotificationOptions = { body, tag: `rule-${r.id}`, data: { url: new URL(core.config.base, location.href).href } };
     const fallback = () => {
       try { new Notification(title, opts); } catch { core.bus.emit("notify_local", { title, body }); }
     };

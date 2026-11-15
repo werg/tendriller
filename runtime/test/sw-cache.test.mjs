@@ -1,28 +1,50 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
+import { createHash, webcrypto } from "node:crypto";
 import { build } from "esbuild";
 
-// Exercise the actual bundled worker without launching a browser. The in-memory
-// Cache API consumes/clones responses, and a fetch without respondWith goes to
-// the network, as it does in the browser.
-const compiled = await build({ entryPoints: [new URL("../src/sw.ts", import.meta.url).pathname],
-  bundle: true, format: "iife", platform: "browser", write: false });
-const scope = "https://page.example/s/key/";
-const versionCache = "tendril-page-v1";
+// Run the actual compiled service worker against browser-like Cache and Client
+// APIs. Each test controls publication, clients, connectivity and worker restart.
+const built = await build({ entryPoints: [new URL("../src/sw.ts", import.meta.url).pathname], bundle: true, format: "iife", platform: "browser", write: false });
+const scope = "https://page.example/t/page/s/key/";
 const absolute = path => new URL(path, scope).href;
-
-function basic(response) {
-  Object.defineProperty(response, "type", { value: "basic" });
-  const clone = response.clone.bind(response);
-  response.clone = () => basic(clone());
-  return response;
+const sha = value => createHash("sha256").update(value).digest("hex");
+const cacheName = id => `tendril-v2-publication:${encodeURIComponent(scope)}:${id}`;
+const json = value => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+function release(id, runtimeId = id, lazyResources = {}) {
+  const hash = sha(`runtime-${runtimeId}`), base = absolute(`_publications/${id}/`), runtimeBase = absolute(`_tendril/runtime/${hash}/`);
+  const sources = { "index.html": `source-${id}`, "app.js": `app-${id}`, "lazy.js": `lazy-${id}`, "styles.css": `style-${id}` };
+  const assets = Object.entries(sources).map(([path, body]) => ({ path, sha256: sha(body), type: path.endsWith("html") ? "text/html" : path.endsWith("css") ? "text/css" : "text/javascript" }));
+  const publication = { id, base, entry: "index.html", runtime: { id: hash, version: "0.2.0-rc.1", base: runtimeBase }, assets };
+  const html = `<!doctype html><script>window.__TENDRIL__=${JSON.stringify({ publication })};</script><h1>${id}</h1>`;
+  const resources = new Map(Object.entries(sources).map(([path, body]) => [new URL(path, base).href, () => new Response(path === "index.html" ? html : body, { headers: { "X-Tendril-Publication": id } })]));
+  const onDemand = Object.entries(lazyResources).map(([name, body]) => ({ url: `_tendril/assets/${sha(body)}/${name}`, sha256: sha(body), type: "application/octet-stream" }));
+  for (const [name, body] of Object.entries(lazyResources)) resources.set(absolute(`_tendril/assets/${sha(body)}/${name}`), () => new Response(body));
+  resources.set(runtimeBase + "manifest.json", () => json({ id: hash, version: "0.2.0-rc.1", assets: [{ path: "tendril.js", sha256: sha(`runtime-${runtimeId}`), type: "text/javascript" }], resources: onDemand }));
+  resources.set(runtimeBase + "tendril.js", () => new Response(`runtime-${runtimeId}`));
+  return { publication, resources, html, onDemand };
 }
-const json = (value, init) => basic(new Response(JSON.stringify(value), init));
 
-async function worker(network, timers = { setTimeout, clearTimeout }) {
-  const listeners = new Map(), stores = new Map(), requests = [], background = [];
-  let claimed = false;
+function network(first) {
+  let current = first, online = true;
+  const resources = new Map(first.resources), calls = [];
+  return {
+    calls, resources,
+    set current(value) { current = value; for (const pair of value.resources) resources.set(...pair); },
+    set online(value) { online = value; },
+    async fetch(request) {
+      const url = typeof request === "string" ? request : request.url;
+      calls.push(url);
+      if (!online) throw new TypeError("offline");
+      if (url === scope + "_tendril/info") return json({ id: "page", publication: current.publication });
+      if (url === scope) return new Response(current.html);
+      return resources.get(url)?.() || json({ live: calls.length });
+    },
+  };
+}
+async function worker(net, stores = new Map(), clients = new Map()) {
+  const listeners = new Map(), sent = [], background = [];
   const key = request => typeof request === "string" ? request : request.url;
   const caches = {
     async open(name) {
@@ -38,174 +60,137 @@ async function worker(network, timers = { setTimeout, clearTimeout }) {
     async keys() { return [...stores.keys()]; },
     async delete(name) { return stores.delete(name); },
   };
-  const fetch = async (request, init) => {
-    const url = new URL(key(request));
-    requests.push({ url: url.href, init });
-    return network(url, init);
-  };
-  runInNewContext(compiled.outputFiles[0].text, {
-    URL, Response, Request, Headers, caches, fetch, ...timers,
-    self: {
-      registration: { scope },
-      addEventListener(name, callback) { listeners.set(name, callback); },
-      skipWaiting() {},
-      clients: { async claim() { claimed = true; } },
-    },
+  runInNewContext(built.outputFiles[0].text, { URL, Response, Request, Headers, crypto: webcrypto, caches, fetch: net.fetch, setTimeout, clearTimeout,
+    self: { registration: { scope }, skipWaiting() {}, addEventListener(type, fn) { listeners.set(type, fn); },
+      clients: { async claim() {}, async matchAll() { return [...clients].map(([id, url]) => ({ id, url, postMessage(data) { sent.push({ id, data }); } })); } } },
   });
-  await (await caches.open("tendril-meta")).put(absolute("_tendril/__meta"), json({ id: "page", version: 1 }));
-  async function dispatch(name, properties = {}, settle = true) {
-    const pending = [];
-    let response;
-    listeners.get(name)({ ...properties,
-      waitUntil(promise) { pending.push(promise); background.push(promise); },
-      respondWith(promise) { response = promise; },
-    });
-    const result = response === undefined && name === "fetch" ? await fetch(properties.request) : await response;
-    if (settle) await Promise.all(pending);
+  async function dispatch(type, properties = {}) {
+    const pending = []; let response;
+    listeners.get(type)({ ...properties, waitUntil(promise) { pending.push(promise); background.push(promise); }, respondWith(promise) { response = promise; } });
+    const result = response === undefined && type === "fetch" ? await net.fetch(properties.request) : await response;
+    await Promise.all(pending);
     return result;
   }
-  return {
-    caches, requests,
-    get claimed() { return claimed; },
-    activate: () => dispatch("activate"),
-    install: () => dispatch("install"),
-    request: (path, { settle = true } = {}) => dispatch("fetch", { request: new Request(absolute(path)), clientId: "page" }, settle),
-    drain: async () => {
-      for (let offset = 0; offset < background.length;) {
-        const batch = background.slice(offset);
-        offset = background.length;
-        await Promise.all(batch);
-      }
-    },
-    async seed(name, path, value) { await (await caches.open(name)).put(absolute(path), value); },
-    async keys(name) { return (await (await caches.open(name)).keys()).map(request => request.url); },
+  return { stores, clients, sent, caches,
+    install: () => dispatch("install"), activate: () => dispatch("activate"),
+    async announce(clientId, publication) { clients.set(clientId, scope); await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url: scope } }); },
+    request: (path, clientId = "a", navigation = false) => dispatch("fetch", { request: { url: absolute(path), method: "GET", headers: new Headers(), mode: navigation ? "navigate" : "cors" }, clientId: navigation ? "" : clientId, replacesClientId: navigation ? clientId : "", resultingClientId: navigation ? clientId : "" }),
   };
 }
 
-test("live API reads stay fresh, including new and URL-encoded internal routes", async () => {
-  let revision = 0;
-  const sw = await worker(() => json({ revision }));
-  const paths = ["_tendril/devices", "_tendril/focus", "_tendril/timers", "_tendril/timers/history",
-    "_tendril/resume", "_tendril/decisions", "_tendril/responses", "_tendril/session",
-    "_tendril/agents", "_tendril/invites", "_tendril/future-api", "%5Ftendril/devices"];
+test("open A and newly published B keep complete independent asset graphs offline", async () => {
+  const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  net.current = b;
+  await sw.install(); await sw.announce("b", b.publication);
+  assert.equal(sw.stores.has(cacheName("1")), true, "active A must survive publication B");
+  net.online = false;
+  for (const [client, item] of [["a", a], ["b", b]]) {
+    for (const [file, value] of [["app.js", "app-"], ["lazy.js", "lazy-"], ["styles.css", "style-"]])
+      assert.equal(await (await sw.request(item.publication.base + file, client)).text(), value + item.publication.id);
+    assert.equal(await (await sw.request(item.publication.runtime.base + "tendril.js", client)).text(), `runtime-${item.publication.id}`);
+    assert.match(await (await sw.request("", client, true)).text(), new RegExp(`<h1>${item.publication.id}</h1>`));
+  }
+});
+
+test("active publication identity survives a worker restart and offline activation", async () => {
+  const a = release("1"), b = release("2"), net = network(a), first = await worker(net);
+  await first.install(); await first.announce("a", a.publication);
+  net.current = b; await first.install(); await first.announce("b", b.publication);
+  net.online = false;
+  const restarted = await worker(net, first.stores, first.clients);
+  await restarted.activate();
+  assert.match(await (await restarted.request("", "a", true)).text(), /<h1>1<\/h1>/);
+  assert.match(await (await restarted.request("", "b", true)).text(), /<h1>2<\/h1>/);
+});
+
+test("reloading pinned A online cannot rewind the latest publication for a new offline tab", async () => {
+  const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  net.current = b; await sw.install(); await sw.announce("b", b.publication);
+  assert.match(await (await sw.request(a.publication.base + "index.html", "a", true)).text(), /<h1>1<\/h1>/);
+  net.online = false;
+  assert.match(await (await sw.request("", "fresh", true)).text(), /<h1>2<\/h1>/);
+  assert.match(await (await sw.request(a.publication.base + "index.html", "a", true)).text(), /<h1>1<\/h1>/);
+});
+
+test("cleanup removes a publication only after all its clients leave", async () => {
+  const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  net.current = b; await sw.install(); await sw.announce("b", b.publication);
+  sw.clients.delete("a"); await sw.install();
+  assert.equal(sw.stores.has(cacheName("1")), false);
+  assert.equal(sw.stores.has(cacheName("2")), true);
+});
+
+test("unannounced active clients prevent cleanup until their publication is known", async () => {
+  const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);
+  await sw.install(); sw.clients.set("unknown", scope);
+  net.current = b; await sw.install();
+  assert.equal(sw.stores.has(cacheName("1")), true);
+  assert.deepEqual(sw.sent.map(item => item.id), ["unknown"]);
+  await sw.announce("unknown", b.publication);
+  assert.equal(sw.stores.has(cacheName("1")), false);
+});
+
+test("live API responses and undeclared resources never gain offline cache access", async () => {
+  const a = release("1"), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  const paths = ["_tendril/devices", "_tendril/workflows/sessions/responses", "%5Ftendril/session", "_tendril/future-api", "api/private", "app.js", a.publication.base + "not-declared.js", a.publication.base + "app.js?mutable=1"];
   for (const path of paths) {
-    revision = 1;
-    assert.deepEqual(await (await sw.request(path)).json(), { revision: 1 }, path);
-    revision = 2;
-    assert.deepEqual(await (await sw.request(path)).json(), { revision: 2 }, path);
+    const first = await (await sw.request(path)).json();
+    const second = await (await sw.request(path)).json();
+    assert.notEqual(first.live, second.live);
   }
-  assert.deepEqual(await sw.keys(versionCache), []);
+  net.online = false;
+  for (const path of paths) await assert.rejects(sw.request(path), /offline/);
 });
 
-test("legacy cached owner data cannot bypass changed access or appear offline", async () => {
-  let online = true;
-  const sw = await worker(() => {
-    if (!online) throw new TypeError("offline");
-    return json({ error: { code: "forbidden" } }, { status: 403 });
-  });
-  for (const path of ["_tendril/devices", "_tendril/responses"]) {
-    await sw.seed(versionCache, path, json({ private: "owner data" }));
-    const response = await sw.request(path);
-    assert.equal(response.status, 403);
-    assert.deepEqual(await response.json(), { error: { code: "forbidden" } });
-    online = false;
-    await assert.rejects(sw.request(path), /offline/);
-    online = true;
+test("no-store and mismatched bytes never become saved publication assets", async () => {
+  for (const response of [() => new Response("app-1", { headers: { "Cache-Control": "private, no-store" } }), () => new Response("unexpected source")]) {
+    const a = release("1"), net = network(a), sw = await worker(net);
+    net.resources.set(a.publication.base + "app.js", response);
+    await sw.install();
+    assert.equal(await (await sw.caches.open(cacheName("1"))).match(a.publication.base + "app.js"), undefined);
+    net.online = false;
+    await assert.rejects(sw.request(a.publication.base + "app.js"), /offline/);
+    assert.equal((await sw.request("", "new", true)).status, 503, "incomplete graph cannot become the offline navigation target");
   }
 });
 
-test("activation purges legacy live API entries even offline without deleting version assets or another scope", async () => {
-  const sw = await worker(() => { throw new TypeError("offline"); });
-  const privatePaths = ["_tendril/devices", "_tendril/responses?participant=old", "_tendril/session",
-    "%5Ftendril/decisions", "_tendril/future-api"];
-  const keptPaths = ["app.js", "_tendril/tendril.js", "_tendril/snippets/input-kit.js", "_tendril/speech/cactus.wasm"];
-  const otherScope = "https://page.example/s/other/_tendril/devices";
-  for (const name of [versionCache, "tendril-page-v0"]) {
-    for (const path of [...privatePaths, ...keptPaths, otherScope]) await sw.seed(name, path, json({ saved: true }));
-    await sw.seed(name, "legacy.js", json({ revision: -1 }, { headers: { "Cache-Control": "no-store" } }));
+test("declared lazy runtime resources retain A/B identity and cache only after use", async () => {
+  const a = release("1", "1", { "model.bin": "model A", "engine.js": "shared engine" });
+  const b = release("2", "2", { "model.bin": "model B", "engine.js": "shared engine" });
+  const net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  net.current = b; await sw.install(); await sw.announce("b", b.publication);
+  assert.equal(net.calls.some(url => url.includes("/_tendril/assets/")), false, "install does not download optional models");
+  for (const [client, item, value] of [["a", a, "model A"], ["b", b, "model B"]]) {
+    assert.equal(await (await sw.request(item.onDemand[0].url, client)).text(), value);
   }
-  await sw.seed("unrelated-app", "_tendril/devices", json({ unrelated: true }));
-  await sw.activate();
-  assert.equal(sw.claimed, true);
-  for (const name of [versionCache, "tendril-page-v0"])
-    assert.deepEqual((await sw.keys(name)).sort(), [...keptPaths.map(absolute), otherScope].sort());
-  assert.deepEqual(await sw.keys("tendril-meta"), [absolute("_tendril/__meta")]);
-  assert.deepEqual(await sw.keys("unrelated-app"), [absolute("_tendril/devices")]);
+  await sw.request(a.onDemand[1].url, "a");
+  sw.clients.delete("a"); await sw.install();
+  assert.equal(sw.stores.has(cacheName("1")), false);
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  assert.equal(await (await restarted.request(b.onDemand[0].url, "b")).text(), "model B");
+  assert.equal(await (await restarted.request(b.onDemand[1].url, "b")).text(), "shared engine", "shared resource belongs to each declaring publication");
+  await assert.rejects(restarted.request(a.onDemand[0].url, "b"), /offline/);
 });
 
-test("version, runtime, snippet, speech and brand files still load from cache offline", async () => {
-  let online = true;
-  const sw = await worker(url => {
-    if (!online) throw new TypeError("offline");
-    return basic(new Response(url.pathname, { headers: { "Cache-Control": "no-cache" } }));
-  });
-  const assets = ["app.js", "styles.css", "_tendril/tendril.js", "_tendril/speech-worker.js", "_tendril/axe.min.js",
-    "_tendril/snippets/input-kit.js", "_tendril/speech/cactus.js", "_tendril/speech/cactus.wasm",
-    "_tendril/speech/whistle.cact", "_tendril/tts/index.js", "_tendril/tts/dist/worker.js",
-    "_tendril/brand/icon-64.png", "_tendril/brand/favicon.ico"];
-  for (const path of assets) assert.equal(await (await sw.request(path)).text(), new URL(absolute(path)).pathname);
-  online = false;
-  for (const path of assets) assert.equal(await (await sw.request(path)).text(), new URL(absolute(path)).pathname);
-  assert.deepEqual((await sw.keys(versionCache)).sort(), assets.map(absolute).sort());
-});
-
-test("no-cache app edits revalidate before use and survive offline, while immutable assets stay cache first", async () => {
-  let revision = 1, online = true;
-  const sw = await worker(url => {
-    if (!online) throw new TypeError("offline");
-    return json({ revision }, { headers: { "Cache-Control": url.pathname.endsWith("fixed.js") ? "public, max-age=31536000, immutable" : "no-cache" } });
-  });
-  assert.deepEqual(await (await sw.request("app.js")).json(), { revision: 1 });
-  assert.deepEqual(await (await sw.request("fixed.js")).json(), { revision: 1 });
-  revision = 2;
-  assert.deepEqual(await (await sw.request("app.js")).json(), { revision: 2 });
-  assert.equal(new URL(sw.requests.at(-1).url).searchParams.get("v"), "1", "revalidation keeps the loaded page version");
-  assert.equal(sw.requests.at(-1).init.cache, "no-cache");
-  assert.deepEqual(await (await sw.request("fixed.js")).json(), { revision: 1 });
-  assert.equal(sw.requests.filter(request => new URL(request.url).pathname.endsWith("fixed.js")).length, 1);
-  assert.deepEqual(await (await sw.request("fixed.js?v=2")).json(), { revision: 2 });
-  assert.deepEqual(await (await sw.request("fixed.js")).json(), { revision: 1 });
-  online = false;
-  assert.deepEqual(await (await sw.request("app.js")).json(), { revision: 2 });
-  assert.deepEqual(await (await sw.request("fixed.js")).json(), { revision: 1 });
-  await assert.rejects(sw.request("fixed.js?v=2"), /offline/);
-});
-
-test("a stalled no-cache revalidation falls back by the deadline and saves the late response", { timeout: 5000 }, async () => {
-  let release, fireDeadline, scheduled;
-  const started = new Promise(resolve => { scheduled = resolve; });
-  const late = new Promise(resolve => { release = resolve; });
-  const timers = {
-    setTimeout(callback, delay) { fireDeadline = callback; scheduled(delay); return 1; },
-    clearTimeout() {},
-  };
-  let slow = false;
-  const sw = await worker(() => slow ? late : json({ revision: 1 }, { headers: { "Cache-Control": "no-cache" } }), timers);
-  assert.deepEqual(await (await sw.request("app.js")).json(), { revision: 1 });
-  slow = true;
-  const pending = sw.request("app.js", { settle: false });
-  assert.equal(await started, 6000);
-  fireDeadline();
-  assert.deepEqual(await (await pending).json(), { revision: 1 });
-  release(json({ revision: 2 }, { headers: { "Cache-Control": "no-cache" } }));
-  await sw.drain();
-  const saved = await (await sw.caches.open(versionCache)).match(absolute("app.js"));
-  assert.deepEqual(await saved.json(), { revision: 2 });
-});
-
-test("no-store responses are excluded from ordinary reads and version prefetch", async () => {
-  let revision = 0;
-  const sw = await worker(url => {
-    if (url.pathname.endsWith("_tendril/info")) return json({ id: "page", version: 1, files: ["private.js", "legacy.js", "_tendril/devices", "%5Ftendril/responses"] });
-    if (url.pathname.endsWith("_tendril/tendril.js")) return basic(new Response("runtime"));
-    if (url.pathname.endsWith("devices") || url.pathname.endsWith("responses")) return json({ private: "owner data" });
-    return json({ revision }, { headers: { "Cache-Control": "private, no-store" } });
-  });
-  for (const path of ["private.js", "legacy.js"])
-    await sw.seed(versionCache, path, json({ revision: -1 }, { headers: { "Cache-Control": "no-store" } }));
-  assert.deepEqual(await (await sw.request("private.js")).json(), { revision: 0 });
-  revision++;
-  assert.deepEqual(await (await sw.request("private.js")).json(), { revision: 1 });
-  await sw.install();
-  assert.deepEqual(await sw.keys(versionCache), [absolute("_tendril/tendril.js")]);
+test("lazy resources reject changed bytes, respect no-store, and leave undeclared routes uncached", async () => {
+  const a = release("1", "1", { "model.bin": "model A" }), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  const url = absolute(a.onDemand[0].url);
+  net.resources.set(url, () => new Response("different model"));
+  await assert.rejects(sw.request(url), /integrity mismatch/);
+  assert.equal(await (await sw.caches.open(cacheName("1"))).match(url), undefined);
+  net.resources.set(url, () => new Response("model A", { headers: { "Cache-Control": "no-store" } }));
+  assert.equal(await (await sw.request(url)).text(), "model A");
+  assert.equal(await (await sw.caches.open(cacheName("1"))).match(url), undefined);
+  const undeclared = `_tendril/assets/${sha("unrelated")}/private.bin`;
+  assert.notEqual(await (await sw.request(undeclared)).text(), await (await sw.request(undeclared)).text());
+  net.online = false;
+  await assert.rejects(sw.request(url), /offline/);
+  await assert.rejects(sw.request(undeclared), /offline/);
 });

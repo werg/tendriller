@@ -26,15 +26,15 @@ node scripts/provision.mjs staging
 node scripts/provision.mjs production
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.production.jsonc
-node scripts/install-speech.mjs tendriller-staging-files --remote
-node scripts/install-speech.mjs tendriller-production-files --remote
+node scripts/install-runtime-resources.mjs tendriller-staging-files --remote
+node scripts/install-runtime-resources.mjs tendriller-production-files --remote
 ```
 
 `provision.mjs` is idempotent. It writes Wrangler configs with the resource IDs. In Cloudflare DNS, add a proxied `AAAA` record with content `100::` for `*.tendriller.dev` (staging) and `*.tendriller.site` (production) before deploying. The default staging page host is `<id>.tendriller.dev`, separate from its service host `staging.tendriller.dev`; the Worker uses the service hostname to route service requests. Use `STAGING_PUBLIC_BASE` and `STAGING_PAGE_BASE_DOMAIN` to change staging hostnames within the `tendriller.dev` zone. Review and commit the configs before enabling CI.
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
-GitHub Actions runs typecheck, Worker tests, CLI bridge tests, and browser tests on pull requests and branch pushes. A passing `master` run applies migrations and deploys staging, verifies `/health` and `/agent.md`, then applies migrations and deploys production and verifies the same endpoints. The deployment uses immediate Durable Object code updates. Superseded commits skip deployment. The workflow can also be rerun manually from `master` with `workflow_dispatch`. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable; repository variables `STAGING_READY=true` and `PRODUCTION_READY=true` activate the respective jobs. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks or migrations.
+GitHub Actions runs typecheck, Worker tests, public artifact and composition checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. Set these variables only after selecting and verifying storage created for that schema. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
@@ -149,7 +149,7 @@ Run `npm run test:e2e:public` with `E2E_SERVICE_BASE` set to the preview URL and
 `E2E_OWNER_EMAIL` set to a verified preview account after capturing its session
 with `scripts/capture-e2e-auth.mjs`. This checks claims and two distinct page
 origins. Return creation to `creation_paused` if these checks fail. Successful
-deployment smoke checks cover `/health`, `/`, `/starters`, `/agent.md` and `/status`.
+deployment smoke checks cover `/health`, `/`, `/api/service`, `/agent.md` and `/status`.
 On branches with preview metadata support, `/health` must report the checked
 commit; the guide must point to the preview's own service URL. These checks do
 not certify OAuth, page claims, speech or push delivery.
@@ -199,3 +199,28 @@ that stale deployment.
 **Storage discrepancy:** Compare `service_state.reserved` with the sum of `tendrils.reserved`. The tendril alarm reconciles each local file ledger with its D1 row. Pause writes while resolving a persistent mismatch, then recheck before reopening.
 
 **OAuth outage:** Keep creation paused if claims cannot complete. Check provider status and callback URLs. Restore only after both real sign-in paths pass.
+
+
+## Contract 2 release cutover
+
+Build and check the generic engine and the exact trusted composition before deployment. `npm run build:service` verifies `composition.lock.json`. Publish core SDK/runtime archives first, then contrib artifacts, and record the tested pairing.
+
+Run `node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc` before deploying staging (use the production config for production). It verifies local manifest digests and stores immutable runtime files in the existing FILES bucket under `runtime/<content-id>/`. Old publication URLs remain backed by these objects after a deployment changes ASSETS. Do not delete an artifact still referenced by retained page publications.
+
+Use fresh pre-release fixtures for contract 2. There are no schema translators, dual writers or old-client compatibility modes. All first-party examples must be rebuilt from the new contrib release.
+
+The database initializer records its storage schema identity atomically. Existing tables with no matching identity cause startup to fail before schema or data writes. Deploy this redesign into a new Worker namespace and fresh D1/R2 resources; changing code on the original Worker does not create new Durable Object storage.
+
+To prepare an isolated named deployment, choose new service and page hostnames:
+
+```sh
+STAGING_PUBLIC_BASE=https://candidate.tendriller.dev \
+STAGING_PAGE_HOST_SUFFIX=--candidate \
+node scripts/provision.mjs staging --name tendriller-candidate --fresh
+```
+
+`--fresh` rejects configured resource names, reused origins, and any already-existing Worker, D1 database, or bucket before creating resources. It writes `server/wrangler.tendriller-candidate.jsonc` and leaves canonical configs unchanged. Configure DNS, certificates and OAuth callbacks for the selected origins, apply D1 migrations with this config, install runtime resources in `tendriller-candidate-files`, and install secrets with `wrangler secret put <NAME> --config server/wrangler.tendriller-candidate.jsonc`. Build the verified composition, publish its runtime with that config, then deploy and run `scripts/check-deployment.mjs` against the candidate service origin. Only after checking the matched release and fresh fixtures should the canonical deployment configs/domains and schema declaration variables be switched. This process does not delete or transform the previous storage.
+
+Branch previews are another isolated pre-release target. Their controller runs from the default branch, so the composition-aware controller must be present there before it can deploy a redesigned branch. A source push alone does not prove that the matching release artifacts or service were published.
+
+Runtime resource selection lives in `runtime/resources.mjs`. The resource installer verifies its declared hashes and uploads to content-addressed keys in the existing FILES bucket. A publication snapshots its runtime-dependent features, so later releases cannot replace an open page's speech engine or model. Optional large resources download on first use and remain cached with each retained publication that declares them.

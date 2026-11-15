@@ -104,7 +104,7 @@ jobs:
       - name: Build branch assets
         if: steps.before_build.outputs.current == 'true'
         working-directory: source
-        run: npm run build
+        run: npm run build && npm run build:service
       - name: Recheck branch immediately before deployment
         if: steps.before_build.outputs.current == 'true'
         id: current

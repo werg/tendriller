@@ -1,12 +1,21 @@
+import runtimeRelease from "./runtime-release.json";
+import type { RuntimeArtifactFeatures } from "../../contract/index.mjs";
 import { brandHead, brandLink, brandLogo, brandStyle } from "./brand";
 
 // Runtime injection into served HTML (PROTOCOL section 5) and built-in pages.
 
-export interface Features {
+export interface Features extends RuntimeArtifactFeatures {
   push: boolean;
   vapid: string | null;
   shared_by: string;
-  speech: { model: string; url: string; sha256: string };
+}
+
+export interface PublicationManifest {
+  id: string;
+  base: string;
+  entry: string;
+  assets: { path: string; sha256: string; type: string; size: number }[];
+  runtime: { id: string; version: string; base: string; features: RuntimeArtifactFeatures };
 }
 
 export interface InjectConfig {
@@ -14,6 +23,7 @@ export interface InjectConfig {
   base: string;
   version: number;
   features: Features;
+  publication?: PublicationManifest | null;
 }
 
 /** Escapes a JSON string for safe inclusion inside a <script> element. */
@@ -31,10 +41,15 @@ function attr(s: string): string {
 }
 
 export function runtimeTags(cfg: InjectConfig): string {
-  const conf = { id: cfg.id, base: cfg.base, version: cfg.version, ws: cfg.base + "_tendril/ws", features: cfg.features };
+  const publication = cfg.publication;
+  const documentBase = publication ? publication.base + publication.entry.slice(0, publication.entry.lastIndexOf("/") + 1) : cfg.base;
+  const runtimeBase = publication?.runtime.base ?? `${cfg.base}_tendril/runtime/${runtimeRelease.id}/`;
+  const conf = { id: cfg.id, base: cfg.base, version: cfg.version, ws: cfg.base + "_tendril/ws",
+    features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
+    `<base href="${attr(documentBase)}">` +
     `<script>window.__TENDRIL__=${scriptSafeJson(conf)};</script>` +
-    `<script src="${attr(cfg.base)}_tendril/tendril.js"></script>`
+    `<script src="${attr(runtimeBase)}tendril.js"></script>`
   );
 }
 
@@ -113,8 +128,8 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
 <p>Your agent creates an ad-hoc page connected to your ongoing session. Talk or type to the agent from that page while it updates the interface live.</p>
 <p>Open it on any of your devices. The page can send taps and other UI interactions back to the agent, along with camera, location, motion, microphone, and other sensor input you allow.</p>
-<p><strong>Agents: read <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">${escapeHtml(publicBase)}/agent.md</a>.</strong> It documents the HTTP API, page creation, authentication, and live event delivery. Standalone collector and event helpers are available without a repository checkout. See <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">the agent documentation index</a> for downloads, streams, and examples.</p>
-<div class="actions"><a class="button" href="/starters">Choose a starter</a><a class="button secondary" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a></div></div>
+<p><strong>Agents: read <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">${escapeHtml(publicBase)}/agent.md</a>.</strong> It documents the HTTP API, page creation, authentication, and live event delivery. Optional tools, components and workflows are published in <a href="https://github.com/werg/tendriller-contrib" style="color:inherit">tendriller-contrib</a>. See <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">the agent documentation index</a> for downloads, streams, and examples.</p>
+<div class="actions"><a class="button" href="https://github.com/werg/tendriller-contrib/releases">Tools and examples</a><a class="button secondary" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a></div></div>
 </section>
 <section class="how" aria-labelledby="how-title"><h2 id="how-title">How it works</h2><p>Setup starts in the agent session you already use.</p>
 <ol class="flow">
@@ -125,7 +140,7 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <li><span class="flow-number" aria-hidden="true">5</span><p>Keep talking here or in your agent session. The page changes live.</p></li>
 </ol></section>
 <section class="access" aria-labelledby="access-title"><h2 id="access-title">Access and permissions</h2><p>Your owner page is gated by <strong>GitHub or Google OAuth sign-in</strong>. Your agent uses a separate credential that you can revoke. Camera, location, and other browser permissions are requested on the device where you open the page.</p></section>
-<section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Each is a starting point your agent can adapt while you use it. <a href="/starters">Explore six complete workflows with previews and requests to copy.</a></p><ul class="ideas">
+<section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Each is a starting point your agent can adapt while you use it. <a href="https://github.com/werg/tendriller-contrib/releases">Explore optional tools, components and examples.</a></p><ul class="ideas">
 <li><h3>Field notebook</h3><p>Collect photos, location, voice notes, and observations on a walk.</p></li>
 <li><h3>Remote camera helper</h3><p>Point your phone at an object and discuss it with an agent running elsewhere.</p></li>
 <li><h3>Sports and activity companion</h3><p>Build your own experience for sailing, cycling, geocaching, or any physical activity using location and motion.</p></li>

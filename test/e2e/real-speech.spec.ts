@@ -13,12 +13,19 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
   const fixture = JSON.parse(await readFile("test/fixtures/speech/manifest.json", "utf8"));
   const spoken = await readFile(join("test/fixtures/speech", fixture.file));
   expect(createHash("sha256").update(spoken).digest("hex")).toBe(fixture.sha256);
-  const worker = await readFile("server/public/_tendril/speech-worker.js");
+  const worker = await readFile("dist/runtime/assets/speech-worker.js");
+  const runtime = JSON.parse(await readFile("dist/runtime/assets/manifest.json", "utf8"));
+  const js = await readFile(join(cache, "cactus.js")), wasm = await readFile(join(cache, "cactus.wasm")), model = await readFile(join(cache, "whistle.cact"));
+  const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const resource = (bytes: Uint8Array, name: string) => `/_tendril/assets/${hash(bytes)}/${name}`;
+  const config = { worker: `/_tendril/runtime/${runtime.id}/speech-worker.js`,
+    engine: { script: resource(js, "cactus.js"), wasm: resource(wasm, "cactus.wasm"), wasm_sha256: hash(wasm) },
+    modelUrl: resource(model, "whistle.cact"), modelSha256: hash(model) };
   const assets = new Map([
-    ["/_tendril/speech/cactus.js", { bytes: await readFile(join(cache, "cactus.js")), type: "text/javascript" }],
-    ["/_tendril/speech/cactus.wasm", { bytes: await readFile(join(cache, "cactus.wasm")), type: "application/wasm" }],
-    ["/_tendril/speech/whistle.cact", { bytes: await readFile(join(cache, "whistle.cact")), type: "application/octet-stream" }],
-    ["/_tendril/speech-worker.js", { bytes: worker, type: "text/javascript" }],
+    [config.engine.script, { bytes: js, type: "text/javascript" }],
+    [config.engine.wasm, { bytes: wasm, type: "application/wasm" }],
+    [config.modelUrl, { bytes: model, type: "application/octet-stream" }],
+    [config.worker, { bytes: worker, type: "text/javascript" }],
     ["/known-speech.wav", { bytes: spoken, type: "audio/wav" }],
   ]);
   const sockets = new Set<import("node:net").Socket>();
@@ -33,8 +40,8 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("No test server address");
     await page.goto(`http://127.0.0.1:${address.port}/`);
-    const messages = await page.evaluate(async () => {
-      const worker = new Worker("/_tendril/speech-worker.js");
+    const messages = await page.evaluate(async config => {
+      const worker = new Worker(config.worker);
       const terminal = (id: number) => new Promise<any>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("speech worker timed out")), 75_000);
         worker.onmessage = event => { if (event.data.id === id && (event.data.ready || event.data.text !== undefined || event.data.error)) { clearTimeout(timer); resolve(event.data); } };
@@ -43,7 +50,7 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
       const started = performance.now();
       try {
         const init = terminal(1);
-        worker.postMessage({ id: 1, action: "init", base: "/", modelUrl: `${location.origin}/_tendril/speech/whistle.cact`, modelSha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb" });
+        worker.postMessage({ id: 1, action: "init", engine: config.engine, modelUrl: config.modelUrl, modelSha256: config.modelSha256 });
         const ready = await init, initialized_ms = performance.now() - started;
         if (ready.error) return { ready, initialized_ms };
         const silence = terminal(2), zeroes = new Float32Array(16000);
@@ -55,7 +62,7 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
         worker.postMessage({ id: 3, action: "transcribe", samples: samples.buffer, language: "en" }, [samples.buffer]);
         return { ready, silence: silenceResult, spoken: await transcribe, initialized_ms, transcribed_ms: performance.now() - speakingStarted, audio_seconds: audio.duration };
       } finally { worker.terminate(); }
-    });
+    }, config);
     const errorRate = wordErrorRate(fixture.transcript, messages.spoken?.text || "");
     await info.attach("speech-results", { body: JSON.stringify({ ...messages, expected: fixture.transcript, word_error_rate: errorRate, fixture_sha256: fixture.sha256 }, null, 2), contentType: "application/json" });
     expect(messages.ready).toMatchObject({ ready: true });

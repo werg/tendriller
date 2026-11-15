@@ -1,400 +1,54 @@
-# Streams: messaging and continuous data
+# Streams: delivery and bounded history
 
-Tendriller exposes named streams with a common record envelope, independently
-authorized producers, and consumers that keep their own cursors. This supports
-training dashboards and machine telemetry while preserving existing page and
-agent messaging.
+Streams are transport-independent envelopes. Core owns admission, permissions, retention, sequence numbers, producer grants and lifecycle. Contrib owns collectors, transforms, visual components and application examples.
 
-## Responsibilities
+## Policies
 
-- A **stream** names a sequence of records within one tendril. Its durability and
-  audience are explicit and immutable.
-- A **producer** is an authenticated publisher. A machine collector receives a
-  revocable token restricted to named custom streams. It cannot read events,
-  modify the page, mint credentials, or impersonate the owner.
-- A **consumer** chooses streams and keeps a separate cursor for each. Reading
-  data never acknowledges successful application processing.
-- The **agent** configures streams, builds pages, and interprets selected data.
-  It does not run once per sample. Custom stream traffic never wakes it.
+A durable stream retains bounded records and supports explicit cursor replay. An ephemeral stream distributes live records and cannot claim historical replay. Built-in streams expose platform events, logs, state, presence and conversation through the same envelope; their existing platform APIs remain the only writers.
 
-An optional supervised collector runs on the agent's machine independently of
-the conversation. It can collect local utilization, tail training files, and
-receive JSONL through explicitly configured SSH commands. It sends outbound
-HTTPS requests to Tendriller; a dashboard uses its existing authenticated page
-connection. Neither the training machine nor SSH hosts need a public listener.
-
-## Two delivery policies
-
-| Policy | Payload storage | Disconnection behavior | Typical use |
-|---|---|---|---|
-| `durable` | Append-only bounded SQLite history | Replay from a sequence cursor; report retention gaps | Training loss, logs, milestones |
-| `ephemeral` | No payload storage or replay | Samples without a connected subscriber are lost | Current utilization, progress animation, presence |
-
-Durability is a property of the stream, not the identity of its consumer. A
-durable stream can serve a live chart and an independent historical reader.
-An ephemeral stream must not acquire an offline outbox just because another
-Tendriller message type uses one. Its small sequence counter and configuration
-may be persisted; its record payload is not.
-
-`durable` does not mean unlimited retention or exactly-once application effects.
-The server acknowledges after committing a batch. A producer retries a lost
-acknowledgement with the same record IDs; deduplication is scoped to that
-producer and stream, within the retained history. Consumers must make their
-own effects idempotent and store their cursor after handling a record.
-
-Use a durable stream when past utilization matters. The same machine may
-publish low-rate durable utilization and higher-rate ephemeral samples.
-
-## Existing messaging becomes built-in streams
-
-| Name | Policy | Readers | Existing source of truth |
-|---|---|---|---|
-| `system.events` | Durable | Agent | Page events, instructions, timers, wake metadata |
-| `system.logs` | Durable | Agent | Browser console diagnostics |
-| `system.transcript` | Durable | Page | The shared conversational transcript |
-| `system.state` | Ephemeral | Page | Changes to the independently stored shared-state snapshot |
-| `system.presence` | Ephemeral | Page | Agent presence changes |
-
-The built-ins are adapters over the existing stores and writers, rather than
-second copies of the same data. Existing event, log, and transcript sequence
-numbers remain valid. Their existing retention bounds apply. Existing HTTP,
-WebSocket, MCP, wake, and leased event-consumer APIs remain supported.
-
-Built-ins are read-only through the generalized stream API. Write messages with
-`tendril.send`, `say`, state operations, and their existing APIs so that owner
-instruction provenance, wake budgets, speech targeting, offline handling, and
-revision rules still apply. A custom record whose `type` is `instruction` is
-ordinary data; it never becomes an owner instruction.
-
-Shared state is a materialized snapshot, not an append-only history. Read the
-snapshot using the state API; `system.state` only reports changes while
-subscribed. Request/reply operations such as `eval` retain their own lifecycle.
-
-## HTTP API
-
-`A` is the tendril's private API base. Agent credentials manage streams and
-producer grants. Stream names match `[a-z][a-z0-9._-]{0,63}`; `system.*` is reserved.
-
-| Operation | Endpoint |
-|---|---|
-| List streams | `GET A/streams` |
-| Create a custom stream | `POST A/streams` |
-| Inspect policy | `GET A/streams/<name>` |
-| Append a batch | `POST A/streams/<name>/records` |
-| Read retained records | `GET A/streams/<name>/records?after=<seq>&limit=<n>` |
-| Read the latest retained snapshot | `GET A/streams/<name>/latest` |
-| Trim an observed prefix of retained records | `DELETE A/streams/<name>/records?through=<seq>` |
-| List/create producer grants | `GET/POST A/producers` |
-| Revoke a producer | `DELETE A/producers/<name>` |
-
-For example, create a durable training stream:
+Custom stream creation declares a name, durability, reader audience and (for durable streams) retention. Configuration is immutable. Reserved `system.*` names cannot be allocated by applications. Payload types, field names and application data do not change retention or authorization.
 
 ```json
-{
-  "name": "training.metrics",
-  "durability": "durable",
-  "readers": "owner",
-  "max_records": 10000,
-  "max_age_seconds": 86400
-}
+{"name":"telemetry.samples","durability":"durable","readers":"page","max_records":500,"max_age_seconds":3600}
 ```
 
-Use `durability: "ephemeral"` without retention fields for a live-only stream.
-`readers` defaults to `owner`; explicitly choosing `page` also exposes records
-to authorized guests and display links. These are read permissions. Display
-and guest access never grants publishing permission.
+Record envelopes preserve `stream`, `seq`, producer identity, producer-supplied `id`, timestamp, received timestamp, type and opaque JSON `data`. A producer retry with the same ID is deduplicated under its authenticated producer identity. Sequence numbers never rewind after trim or retention cleanup.
 
-A producer grant contains a name and an explicit list of custom streams. The
-returned `tp_…` token is shown once. Save it in a private configuration file,
-not in page code, URLs, terminal arguments, or shared logs. It authorizes only
-appends to those streams. Revocation takes effect on the next append.
+## HTTP and browser operations
 
-An append contains up to 100 records:
+The agent API under `A` provides stream creation/listing, append, replay, latest, trim and deletion, and scoped producer management. Producer credentials can append only to the streams in their grant and cannot access page-management or workflow operations. Page subscriptions enforce the declared reader audience and the authenticated role.
 
-```json
-{
-  "records": [{
-    "id": "run-42:worker-0:step-100",
-    "ts": 1794744000000,
-    "type": "training.metrics",
-    "data": {"source": "gpu-box", "run": "run-42", "step": 100, "loss": 2.1}
-  }]
-}
-```
+Use `client.streams.read(name,{after})` with an explicit nonnegative cursor. Responses include records, cursor and history metadata. `earliest_available_seq`, `latest_seq`, `gap` and `missing_through` expose missing retained history; callers must not treat an empty page as proof that no history was lost. Bounded pages always make progress when a valid record exists.
 
-The server returns records in the common envelope:
+`client.streams.latest(name)` returns the latest retained durable record or null without scanning its whole history. Trimming requires an explicit observed `through` bound and reports the removed count. It does not reset producer identities, quotas or sequence numbers.
 
-```json
-{
-  "stream": "training.metrics",
-  "seq": 17,
-  "ts": 1794744000000,
-  "received_at": 1794744000250,
-  "producer": "producer:training-host",
-  "id": "run-42:worker-0:step-100",
-  "type": "training.metrics",
-  "data": {"source": "gpu-box", "run": "run-42", "step": 100, "loss": 2.1}
-}
-```
+In browser code, subscribe through `tendril.streams`; the runtime maintains reconnect cursors and reports replay gaps. Application rendering may aggregate or batch records. Rendering options and reusable chart/view components are documented in [contrib](https://github.com/werg/tendriller-contrib).
 
-`seq` is the server ordering within the stream. `ts` is the producer's sample
-time, and `received_at` is server arrival time; do not order records from
-different machines by their unsynchronized clocks. Run/step/source/rank are
-application data, so the transport remains useful beyond ML telemetry.
+## Authoritative resource policy
 
-Reads require an explicit nonnegative `after` cursor and accept a limit of
-1–500. The result contains `records`, `cursor`, and `history` with the retained
-lower boundary, high-water sequence, and any missing history. The cursor is
-the last returned sequence, not an implicit acknowledgement. Ephemeral reads
-fail with `not_replayable` instead of returning misleading empty history.
+`contract/limits.mjs` exports `STREAM_LIMITS`. The service imports this source, and `/api/service` exposes the policy. Page metadata exposes effective limits where lifecycle changes the allowance. Consumers must read those values instead of copying hidden constants.
 
-## Optional event and alert convention
+| Resource | Policy |
+| --- | --- |
+| Ordinary producer record | 64 KiB UTF-8 input JSON |
+| Single retained snapshot (`durable`, `max_records:1`) | 192 KiB UTF-8 input JSON |
+| Append batch | 100 records, 256 KiB total |
+| Replay page | 500 records, 512 KiB preferred page budget |
+| Custom streams / producer grants / browser subscriptions | 64 / 32 / 16 |
+| Total retained custom records | 20,000 per page |
+| Total retained custom bytes | 1 MiB unclaimed, 8 MiB claimed |
+| Per-stream records / retention age | Up to 10,000 / 30 days |
 
-An operations feed can use ordinary durable records with `type: "event"` and
-three display fields in `data`. This is an optional application convention, not
-a new stream kind or a schema enforced by the transport:
+The larger snapshot is a general bounded-storage policy. It does not change total batch/storage quotas and does not inspect table parts, training metrics or particular stream names. A single retained snapshot can therefore represent any opaque current-state document within its limits.
 
-```json
-{
-  "id": "run-42:checkpoint-100",
-  "ts": 1794744000000,
-  "type": "event",
-  "data": {
-    "kind": "checkpoint.saved",
-    "level": "info",
-    "text": "Saved checkpoint at step 100",
-    "run": "run-42",
-    "step": 100
-  }
-}
-```
+Producer rate budgets, whole-page storage quotas and lifecycle checks remain authoritative even when a stream's own retention permits more records. Publishing a catalog or choosing a collector option cannot increase them.
 
-`kind` is a stable category for filtering; `level` is `info`, `warning` or `error`;
-`text` is the human-readable message. Extra context stays in ordinary data fields.
-Use the envelope's `ts`, `id` and `seq` for time, retry identity and ordering.
-A feed renderer can label the severity and category, insert `text` with
-`textContent`, and keep a bounded list of rows. Preserve unknown categories and
-display unknown severity neutrally. Even an `error` event is data: custom streams
-do not wake the agent or send a notification automatically. Use the existing
-conversation/notification APIs when that behavior is intended.
+## Lifecycle and wake behavior
 
-## Removing bad retained data
+Interactive pages retain conversational delivery requirements. Dashboard mode permits telemetry publication without an agent listener; both modes use the same stream and access rules. Producer activity does not assert that an agent is listening. Sustained collection begins after owner claim so the page has its effective claimed allowance. Producer activity cannot extend an unclaimed page's claim deadline.
 
-An agent can discard records through an explicit sequence with
-`DELETE A/streams/<name>/records?through=<seq>`. This applies only to custom
-durable streams. To clear the history observed so far, capture the latest cursor
-and use it as the inclusive bound:
+Routine telemetry does not need to wake a conversation. Applications can separately emit meaningful bounded events. A stream record's `type` or payload never becomes a trusted workflow operation.
 
-```js
-const { cursor } = await client.streams.latest('training.metrics');
-const result = await client.streams.trim('training.metrics', { through: cursor });
-// { stream, through, deleted_records, cursor }
-```
+## Optional tools
 
-The typed agent client and MCP `trim_stream` use the same route. `through` is
-required, must be a nonnegative safe integer, and cannot exceed the stream's
-high-water sequence. Records appended after the captured bound survive, including
-when the same trim is retried. `deleted_records` counts the rows actually removed;
-the returned `cursor` is the current high-water mark, not an acknowledgement.
-
-Trimming frees retained storage without deleting the stream definition, changing
-its policy or producer grants, or reusing sequence numbers. Reads and replays
-that request a removed range expose it through the existing `history.gap`/`onGap`
-mechanism; a reader already beyond that range receives no reset notification.
-Built-in streams
-remain managed through their existing APIs, and ephemeral streams have no
-retained data to trim.
-
-Stop or correct a faulty producer before cleanup. Deduplication covers retained
-records only: a queued batch containing a removed record ID can append it again
-under a new sequence. Trimming does not cancel records already in flight or erase
-an active page's materialized view/cache; reset that view or reload it explicitly.
-
-## Browser consumers
-
-The injected runtime exposes `tendril.streams.list()`, `.info(name)`,
-`.read(name, {after, limit})`, `.latest(name)`, `.subscribe(name, handler, options)`, and
-`.publish(name, {records})`. HTTP reads use `_tendril/streams` and page sessions;
-the browser never needs an agent or producer token.
-
-Subscriptions share the authenticated page WebSocket. They are explicit per
-stream, restored after reconnect, and authorized against the stream audience.
-A durable subscription can request `after` to replay history before delivering
-new samples. Registration captures a high-water mark; the runtime catches up
-in pages while holding new frames, avoiding a query/subscribe race. Retention
-gaps are surfaced to the caller. Ephemeral subscriptions resume only live data.
-Unsubscribe when a chart is removed.
-
-### Replay and efficient rendering
-
-`{after: 0}` requests all retained history; omitting `after` starts with live data.
-Handlers run synchronously for each record within a replay batch (up to 500
-records); later history batches arrive through asynchronous HTTP reads. Buffered
-live records also drain through synchronous callbacks. A large retained window
-can therefore produce many callbacks close together, though the whole window
-does not replay in one uninterrupted task. Returned promises are not awaited.
-
-Update the in-memory model for **every** record, then coalesce expensive DOM or
-chart rendering. The optional
-[`stream-view.js` snippet](../snippets/README.md#efficient-rendering-and-reload-checkpoints)
-provides `tendrilSnippets.streamView.batch(render)` with `schedule()`, `flush()`
-and `cancel()`. It queues no records and changes no delivery cursors. The training
-dashboard uses it to rebuild a bounded view from retained history on reload.
-
-### Reload checkpoints
-
-Subscription cursors live in memory and represent callback delivery. The runtime
-advances that cursor before calling the handler; a thrown error or unfinished
-asynchronous task does not rewind it. Use explicit reads and save a processing
-checkpoint only after successful work when processing needs its own handled
-checkpoint. A subscription is not a work-acknowledgement mechanism.
-
-For a browser chart or table, **persist its materialized state and cursor together**.
-A saved cursor alone makes a fresh page skip the history needed to reconstruct
-its view. `streamView.checkpoint(name, {key: 'my-view-v1'})` offers explicit
-`load()`, `save({cursor,state})` and `clear()` operations backed by one atomic,
-size-bounded localStorage item scoped to page, stream and versioned view key.
-Restore and validate the state before subscribing with its cursor. Include known
-gap/incompleteness markers in that state; a reload must not hide missing history.
-When a checkpoint is unusable, reset **both** state and cursor and rebuild from
-retained history, which can still report a gap.
-
-The helper throws on corrupt, incompatible, unavailable or oversized storage;
-it does not silently switch to a memory-only checkpoint or automatically resume a
-subscription. Authorize the current reader with `streams.info(name)` before
-showing private cached data, and clear it when the application signs out or changes
-reader identity. Browser storage is not access control. Use one writer per view
-key; the helper does not merge concurrent tabs. See the snippet's complete recipe
-for schema validation, bounded state, explicit failure handling and `pagehide`
-flushing. For a whole-table snapshot, `streams.latest()` below can restore the
-view directly without a local cache.
-
-Only an owner page may publish to custom streams. Browser stream publishing
-requires a live connection; callers that need durable offline production use
-the collector. Existing `send` and shared-state offline behavior is unchanged.
-
-## Current values and whole-table snapshots
-
-For a process list, inventory, or other replaceable view, publish a **complete
-snapshot** as each record on a durable stream with `max_records: 1`. For example,
-`data: {rows: [{pid: 17, cpu: 42}]}` replaces the consumer's whole table; a missing
-row has disappeared, rather than lingering as it could with per-row updates.
-Use one stream per independently updated source, or combine sources in one
-producer. Retention counts records across the whole stream, not per producer/key.
-This does not add a new stream kind or promise keyed merge semantics.
-
-Custom durable streams with `max_records: 1` accept **one input record up to
-192 KiB**, measured as UTF-8 JSON including `id`, `ts`, `type` and `data`.
-All other custom streams retain the 64 KiB input-record bound. The 256 KiB append
-batch limit and total retained-storage allowance still apply. Replacement is
-atomic: an invalid or over-quota append leaves the previous snapshot available.
-Send large snapshots one per request. The collector normally emits at most
-48 KiB per record; its `init` command selects the larger output bound for these
-streams. Manual configurations need `max_record_bytes: 196608`, and JSONL input
-may also need a larger `max_line_bytes`; see [collector limits](COLLECTOR.md).
-
-Above this bound, reduce the snapshot, split genuinely independent tables into
-their own streams, or have the agent publish an artifact and stream its reference.
-`latest()` returns one complete record; it does not assemble multipart records.
-
-`GET A/streams/<name>/latest` returns `{stream, durability:"durable", record, cursor}`.
-`record` is the newest retained record or `null` when empty/expired. `cursor` is
-the stream's high-water sequence, including when its payload has expired.
-This read deliberately skips older history; it never acknowledges application
-processing. Ephemeral streams return `not_replayable`, since they retain no value.
-The typed client exposes `client.streams.latest(name)` and MCP exposes
-`latest_stream`; normal stream reader permissions apply to every transport.
-
-```js
-const snapshot = await tendril.streams.latest('machine.processes');
-renderRows(snapshot.record?.data.rows ?? []);
-const stop = tendril.streams.subscribe('machine.processes', record => {
-  renderRows(record.data.rows); // Replace, rather than append rows.
-}, { after: snapshot.cursor, onGap: () => showStatus('Intermediate snapshots expired') });
-```
-
-The explicit cursor catches updates between the read and subscription; retained
-gaps remain visible. Check `record.received_at`/`record.ts` for freshness and clear
-or mark stale rows when the source stops. Choose `max_age_seconds` deliberately:
-even a one-record stream expires. Use a longer retained stream when a chart or
-audit trail needs earlier samples. The optional
-[`chart.js` snippet](../snippets/README.md#charts-for-streams-or-shared-state) renders bounded numeric time series.
-
-## Lifecycle, limits, and operational boundaries
-
-**Interactive pages support streams and conversation together.** Create a
-telemetry-only page with `mode: "dashboard"` to publish without an agent wake
-receiver. The default `interactive` mode retains the receiver requirement.
-Both modes have the same stream support, access control, ownership, holds, and
-write-pause enforcement. Collector activity extends the idle lifetime of claimed
-ad-hoc dashboards; interactive pages still use browser/agent activity for idle
-expiry. Use a claimed resident tendril for an unattended long-running interactive
-dashboard within the account's existing resident allowance.
-
-Setup order is: create/configure the page, attach a receiver if interactive,
-publish, have the owner open the URL and sign in to claim it, then start collectors
-or historical backfills. The custom stream retention allowance rises from
-1 MiB unclaimed to 8 MiB claimed. A claimed page still has bounded retention;
-select limits that fit the aggregate allowance before backfilling.
-
-Producer activity is separate from conversational presence. A collector upload
-updates its own `last_seen`; it does not mark the AI as attentive or clear a
-pending wake. The dashboard should show the last sample time and distinguish a
-connected browser from a healthy data source.
-
-Page bundles do not copy stream history or producer credentials. The existing
-remix operation creates an interactive page with its receiver requirement. To
-reuse a passive dashboard, create a new `dashboard` destination, import its page
-bundle, and provision streams and producers for that destination.
-
-The custom stream allowance is separate from file/blob storage: 8 MiB on a
-claimed tendril (1 MiB unclaimed), with at most 20,000 retained records across
-all custom streams. An input record is at most 64 KiB, or 192 KiB for a custom
-durable stream with `max_records: 1`; an append request is at most 256 KiB and
-100 records. Reads return at most 500 records or 512 KiB, so paginate
-using their returned cursor even when fewer than the requested number arrive.
-There are at most 64 custom streams, 32 producers, and 16 subscriptions per
-socket. Ingestion is limited per principal and across the tendril.
-
-### Size the retained window before collecting
-
-Estimate each durable stream, then add the totals across runs and streams:
-
-```text
-retained records = samples per run × retained runs
-retained bytes   ≈ budgeted bytes per record × samples per run × retained runs
-```
-
-Measure representative records after projection/flattening, including the
-server envelope, not just their `data`: in Node,
-`Buffer.byteLength(JSON.stringify(record), 'utf8')`. Storage also accounts for
-the producer identity used for deduplication, so allow for that overhead and
-variation between records. Budgeting 500 bytes per record for 3,000 steps across
-three runs is 4,500,000 bytes (about 4.29 MiB) and 9,000 records, before headroom
-and other streams. At six runs it exceeds 8 MiB even though 18,000 records still
-fit the count budget. A single stream's `max_records` can be at most 10,000;
-that setting counts all runs together. `max_age_seconds` can shorten the window
-further. Leave room for logs, event feeds and current snapshots too.
-
-If the estimate is too large, select fewer fields, sample less often, retain
-fewer runs, or aggregate at the source before appending. For example, emit one
-record per 100 training steps with the window's first/last step, count and each
-metric's min/max/mean/last; keep checkpoint and failure events separately.
-Preserve raw logs in your artifact storage when full history matters. Smoothing
-or dropping points in a chart changes the display only and saves no server
-retention. There is no automatic server-side downsampling.
-
-Backpressure is explicit: a full durable spool
-or rejected append must report its status rather than silently claiming data
-was saved. Live samples may be dropped/coalesced; training must continue when
-telemetry is unavailable.
-
-This implementation keeps stream ownership within a tendril and adds no new
-infrastructure. Long-term archival, cross-tendril source sharing, server-side
-downsampling, and generic leased worker groups can be added behind the stream
-interfaces when required. The existing leased consumers remain available for
-`system.events`; general consumers use their own persisted replay cursors.
-
-See [COLLECTOR.md](COLLECTOR.md) and
-[the training dashboard example](../examples/training-dashboard/) for a complete
-local/SSH collection workflow.
+[Contrib releases](https://github.com/werg/tendriller-contrib/releases) contain the collector, initialization tools, source adapters, spool manager, components and examples. Their manifests pin the core contract and runtime artifacts they were tested with. A tool update can ship without redeploying the core service.

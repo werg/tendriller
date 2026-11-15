@@ -11,7 +11,7 @@ describe("tokens and shared tendrils", () => {
     expect(dup.status).toBe(409);
     await dup.text();
     const page = await PageClient.connect(h.page_url);
-    const r = await api(h, "PATCH", "state", { list: { x: 1 } }, {}, t2.token);
+    const r = await api(h, "PATCH", "state", { cid: crypto.randomUUID(), expected_generations: {}, ops: [{ op: "set", path: ["list"], value: { x: 1 } }] }, {}, t2.token);
     await r.text();
     expect(await page.next("state")).toMatchObject({ by: "agent:alice-agent" });
     const note = await api(h, "POST", "activity", { text: "added an item" }, {}, t2.token);
@@ -44,39 +44,6 @@ describe("tokens and shared tendrils", () => {
 });
 
 describe("adopt", () => {
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("an owner page creates a code; adopting revokes old tokens and returns a fresh handle", async () => {
-    const h = await create({ name: "Kitchen", lifetime: "resident" });
-    const extra = await apiJson(h, "POST", "tokens", { name: "other" }, 201);
-    const page = await PageClient.connect(h.page_url);
-    const msg = await page.request({ t: "adopt_code" });
-    expect(msg).toMatchObject({ t: "adopt_code", code: expect.stringMatching(new RegExp(`^${h.id}-\\d{6}$`)), expires_at: expect.any(Number) });
-
-    const bad = await req("/api/adopt", { method: "POST", body: JSON.stringify({ code: `${h.id}-000000` === msg.code ? `${h.id}-000001` : `${h.id}-000000` }) });
-    expect(bad.status).toBe(404);
-    await bad.text();
-    const malformed = await req("/api/adopt", { method: "POST", body: JSON.stringify({ code: "nope" }) });
-    expect(malformed.status).toBe(400);
-    await malformed.text();
-
-    const res = await req("/api/adopt", { method: "POST", body: JSON.stringify({ code: msg.code }) });
-    expect(res.status).toBe(200);
-    const nh = await res.json<any>();
-    expect(nh).toMatchObject({ id: h.id, name: "Kitchen", page_url: h.page_url, lifetime: "resident", token: expect.stringMatching(/^tk_/) });
-    expect(nh.token).not.toBe(h.token);
-    for (const old of [h.token, extra.token]) {
-      const r = await api(h, "GET", "", undefined, {}, old);
-      expect(r.status).toBe(401);
-      await r.text();
-    }
-    expect((await apiJson({ ...h, token: nh.token }, "GET", "")).id).toBe(h.id);
-    // single use
-    const again = await req("/api/adopt", { method: "POST", body: JSON.stringify({ code: msg.code }) });
-    expect(again.status).toBe(404);
-    await again.text();
-    page.close();
-  });
 
   it("codes expire after 10 minutes and burn after repeated wrong guesses", async () => {
     const h = await create();
@@ -96,15 +63,6 @@ describe("adopt", () => {
     page.close();
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("only owners can request a code", async () => {
-    const h = await create();
-    const link = await apiJson(h, "POST", "links", { role: "guest" }, 201);
-    const guest = await PageClient.connect(link.url);
-    expect(await guest.request({ t: "adopt_code" })).toMatchObject({ t: "error", code: "forbidden" });
-    guest.close();
-  });
 });
 
 describe("blobs and activity", () => {
@@ -117,9 +75,9 @@ describe("blobs and activity", () => {
       headers: { "Content-Type": "image/jpeg", "X-Tendril-Name": "drawer.jpg", "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
     });
     const blob = await up.json<any>();
-    expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `_tendril/blob/${blob.id}`,
+    expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `${new URL(h.page_url).pathname}_tendril/blob/${blob.id}`,
       retention: { keep: false, expires_at: expect.any(Number), reason: "page_default" } });
-    const viaPage = await req(h.page_url + blob.url);
+    const viaPage = await req(new URL(blob.url, h.page_url).href);
     expect(viaPage.headers.get("Content-Type")).toBe("image/jpeg");
     expect(new Uint8Array(await viaPage.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
     const viaApi = await api(h, "GET", `blobs/${blob.id}`);
@@ -154,9 +112,9 @@ describe("blobs and activity", () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
     page.onEval = () => 1;
-    await page.request({ t: "send", kind: "instruction", text: "show the map", via: "voice" });
-    for (let i = 0; i < 3; i++) await page.request({ t: "send", data: { type: "location", i }, wake: false });
-    await page.request({ t: "send", data: { type: "tap" }, wake: false });
+    await page.request({ t: "send", expected_generations: {}, kind: "instruction", text: "show the map", via: "voice" });
+    for (let i = 0; i < 3; i++) await page.request({ t: "send", expected_generations: {}, data: { type: "location", i }, wake: false });
+    await page.request({ t: "send", expected_generations: {}, data: { type: "tap" }, wake: false });
     await apiJson(h, "POST", "eval", { code: "return 1" });
     await apiJson(h, "PUT", "files/index.html", "<p>x</p>");
     await apiJson(h, "POST", "activity", { text: "note" }, 201);
@@ -175,7 +133,7 @@ describe("blobs and activity", () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
     await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
-    for (let i = 0; i < 3; i++) await page.request({ t: "send", data: {} });
+    for (let i = 0; i < 3; i++) await page.request({ t: "send", expected_generations: {}, data: {} });
     const entries = (await apiJson(h, "GET", "activity")).entries.filter((e: any) => e.kind === "wake_withheld");
     expect(entries).toHaveLength(1);
     expect(entries[0].summary).toContain("3 page wakes withheld");
@@ -219,15 +177,6 @@ describe("blobs and activity", () => {
     expect(await (await api(h, "GET", "files/index.html")).text()).toBe("<p>54</p>");
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("guests cannot read activity", async () => {
-    const h = await create();
-    const link = await apiJson(h, "POST", "links", { role: "guest" }, 201);
-    const guest = await PageClient.connect(link.url);
-    expect(await guest.request({ t: "activity" })).toMatchObject({ code: "forbidden" });
-    guest.close();
-  });
 });
 
 describe("lifetime and deletion", () => {
@@ -259,16 +208,6 @@ describe("lifetime and deletion", () => {
     page.close();
   });
 
-  // LEGACY: asserts behaviour from before the public service (owner email, page sign-in,
-  // listener-required publishing, page subdomains). Re-enable once updated to current behaviour.
-  it.skip("resident tendrils never expire", async () => {
-    const h = await create({ lifetime: "resident" });
-    await advance(h.id, 90 * 86400_000);
-    await runAlarm(h.id);
-    const r = await api(h, "GET", "");
-    expect(r.status).toBe(200);
-    expect((await r.json<any>()).expires_at).toBeNull();
-  });
 
   it("DELETE wipes everything and closes sockets", async () => {
     const h = await create();

@@ -152,7 +152,7 @@ A new tendril needs nothing: the wildcard record and route cover every id. A scr
 - **Session on a page origin:** a page subdomain cannot read the service cookie. Opening
   a page without a page session redirects to `<service>/auth/page?tendril=<id>`. If the
   service session is valid and the account has a role, the service redirects back to
-  `<id>.<pages>/_tendril/session?code=<one-time code>`. The page origin exchanges the
+  `<id>.<pages>/_tendril/auth/session?code=<one-time code>`. The page origin exchanges the
   code with its Durable Object and sets a host-only `HttpOnly` cookie. One sign-in per
   browser covers every tendril; later visits pass through without a prompt.
 - **The runtime's WebSocket** authenticates with that page session instead of the device

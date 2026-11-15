@@ -4,7 +4,8 @@ import { addActivity } from "./activity";
 import { addEvent } from "./events";
 import { HttpError, json } from "./http";
 import { sha256Hex } from "./ids";
-import { holdingPage, injectRuntime } from "./inject";
+import runtimeRelease from "./runtime-release.json";
+import { holdingPage, injectRuntime, type PublicationManifest } from "./inject";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 
@@ -43,15 +44,49 @@ export function fileKey(t: Tendril, hash: string): string {
   return `t/${t.tid}/files/${hash}`;
 }
 
+/** Serialize external storage effects for one content hash, across writers and GC. */
+async function contentOperation<T>(t: Tendril, hash: string, operation: () => Promise<T>): Promise<T> {
+  const previous = t.contentOperations.get(hash) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  t.contentOperations.set(hash, current);
+  try { return await current; }
+  finally { if (t.contentOperations.get(hash) === current) t.contentOperations.delete(hash); }
+}
+
+/** Called in the transaction that creates a durable reference to content. */
+export function assertStoredContent(t: Tendril, files: Iterable<Pick<VersionFile, 'hash' | 'size'>>): void {
+  for (const file of files) {
+    const stored = t.db.one<{ size: number; status: string }>('SELECT size,status FROM stored_files WHERE hash=?', file.hash);
+    if (!stored || stored.status !== 'ready' || stored.size !== file.size)
+      throw new HttpError(409, 'content_unavailable', 'File content changed during preparation; upload the publication again');
+  }
+}
+
+/** Reserve deletion synchronously; references cannot be added while R2 is awaited. */
+export async function deleteUnreferencedContent(t: Tendril, hash: string, olderThan?: number): Promise<void> {
+  await contentOperation(t, hash, async () => {
+    const file = t.transaction(() => {
+      const stored = t.db.one<{ size: number; created_at: number }>('SELECT size,created_at FROM stored_files WHERE hash=?', hash);
+      if (!stored || (olderThan !== undefined && stored.created_at >= olderThan)) return null;
+      if (t.db.one('SELECT 1 AS present FROM version_files WHERE hash=? LIMIT 1', hash)) return null;
+      const staged = t.db.get<{ files: { hash: string }[] } | null>('staged_bundle', null);
+      if (staged?.files.some(file => file.hash === hash)) return null;
+      t.db.run("UPDATE stored_files SET status='deleting' WHERE hash=?", hash);
+      return stored;
+    });
+    if (!file) return;
+    // On failure the reservation remains. Another upload or a later GC pass can
+    // recover it without allowing a publication to refer to uncertain bytes.
+    await t.env.FILES.delete(fileKey(t, hash));
+    t.db.run("DELETE FROM stored_files WHERE hash=? AND status='deleting'", hash);
+    await t.releaseGlobalBytes(file.size);
+  });
+}
+
 /** Stores the bytes content-addressed in R2 (skipped if already present). */
 export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
-  const pending = t.pendingFileWrites.get(hash);
-  if (pending) {
-    await pending;
-    return { hash, size: body.byteLength };
-  }
-  const job = (async () => {
+  await contentOperation(t, hash, async () => {
     const riskScore = scanContent(body, type);
     const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore);
     let globalReserved = false;
@@ -63,6 +98,7 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
       const key = fileKey(t, hash);
       const head = await t.env.FILES.head(key);
       if (!head) await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } });
+      t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
     } catch (err) {
       if (reserved) {
         t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
@@ -70,9 +106,7 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
       }
       throw err;
     }
-  })();
-  t.pendingFileWrites.set(hash, job);
-  try { await job; } finally { t.pendingFileWrites.delete(hash); }
+  });
   return { hash, size: body.byteLength };
 }
 
@@ -110,12 +144,13 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     await t.hold("High static screening score on young account");
   }
   const n = t.transaction(() => {
+    assertStoredContent(t, files.values());
     const current = t.db.get<number>("current", 0);
     if (options.expectedCurrent !== undefined && current !== options.expectedCurrent)
       throw new HttpError(409, "version_conflict", "The page changed; review the current version before replacing it", { current });
     const next = t.db.get<number>("latest", 0) + 1;
-    t.db.run("INSERT INTO versions (version, created_at, status, message, by, risk_score, risk_flags) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
-      next, t.now(), message, by, riskScore, JSON.stringify(riskFlags));
+    t.db.run("INSERT INTO versions (version, created_at, status, runtime_id, runtime_version, runtime_features, message, by, risk_score, risk_flags) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+      next, t.now(), runtimeRelease.id, runtimeRelease.version, JSON.stringify(runtimeRelease.features), message, by, riskScore, JSON.stringify(riskFlags));
     for (const f of files.values()) {
       t.db.run("INSERT INTO version_files (version, path, hash, type, size) VALUES (?, ?, ?, ?, ?)", next, f.path, f.hash, f.type, f.size);
     }
@@ -219,15 +254,36 @@ export function listVersions(t: Tendril) {
   });
 }
 
+/** The actual immutable URLs used by this publication, including its runtime. */
+export function publicationManifest(t: Tendril, version: number, base: string, entry = "index.html"): PublicationManifest {
+  const release = version > 0
+    ? t.db.one<{ runtime_id: string; runtime_version: string; runtime_features: string }>("SELECT runtime_id,runtime_version,runtime_features FROM versions WHERE version=?", version)
+    : { runtime_id: runtimeRelease.id, runtime_version: runtimeRelease.version, runtime_features: JSON.stringify(runtimeRelease.features) };
+  if (!release) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
+  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry,
+    assets: versionFiles(t, version).map(file => ({ path: file.path, sha256: file.hash, type: file.type, size: file.size })),
+    runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `${base}_tendril/runtime/${release.runtime_id}/` } };
+}
+
+/** Keep an executing publication available during normal offline recovery. */
+export function retainPublication(t: Tendril, device: string, version: number): void {
+  if (version > 0 && t.db.one("SELECT 1 AS x FROM versions WHERE version=?", version))
+    t.db.run("INSERT INTO publication_leases(device,version,expires_at) VALUES(?,?,?) ON CONFLICT(device,version) DO UPDATE SET expires_at=excluded.expires_at", device, version, t.now() + 30 * 86400_000);
+}
+
 /** Serves `P<rest>` for a page request. */
 export async function servePageFile(t: Tendril, req: Request, base: string, rest: string,
   role: "owner" | "guest" | "display", accountId: string | null): Promise<Response> {
-  const url = new URL(req.url);
-  const vq = Number(url.searchParams.get("v"));
-  let version = servedVersion(t);
-  if (rest !== "" && Number.isInteger(vq) && vq > 0 && t.db.one("SELECT 1 AS x FROM versions WHERE version = ?", vq)) version = vq;
+  const pinned = /^_publications\/([1-9][0-9]*)\/(.*)$/.exec(rest);
+  let version = pinned ? Number(pinned[1]) : servedVersion(t);
+  if (pinned) {
+    if (!Number.isSafeInteger(version) || !t.db.one("SELECT 1 AS x FROM versions WHERE version=?", version))
+      throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
+    rest = pinned[2];
+  }
   const risk = version > 0 ? t.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", version)?.risk_score ?? 0 : 0;
   if (risk >= 5 && role !== "owner") {
+    if (pinned) throw new HttpError(403, "publication_restricted", "This publication requires owner review");
     version = t.db.one<{ version: number }>("SELECT MAX(version) AS version FROM versions WHERE risk_score < 5 AND status != 'failed' AND version <= ?", version)?.version ?? 0;
   }
   if (risk >= 5 && role === "owner" && accountId &&
@@ -245,12 +301,14 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     path = (rest === "" ? "" : rest) + "index.html";
     file = versionFile(t, version, path);
   }
-  const headers = new Headers({ "Cache-Control": "no-cache", "X-Tendril-Version": String(version) });
+  const headers = new Headers({ "Cache-Control": pinned ? "private, max-age=31536000, immutable" : "no-cache", "X-Tendril-Version": String(version), "X-Tendril-Publication": String(version), "X-Content-Type-Options": "nosniff" });
 
   if (!file) {
     if (rest === "") {
       headers.set("Content-Type", "text/html; charset=utf-8");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, features: t.features() });
+      headers.delete("X-Tendril-Publication");
+      headers.set("Cache-Control", "no-store");
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, features: t.features(), publication: null });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -265,7 +323,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, features: t.features() });
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, features: t.features(), publication: publicationManifest(t, version, base, path) });
     return new Response(req.method === "HEAD" ? null : html, { headers });
   }
   headers.set("Content-Length", String(file.size));

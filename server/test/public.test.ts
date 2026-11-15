@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
 import { beforeAll, expect, inject, it, vi } from "vitest";
 import { sha256Hex } from "../src/ids";
-import { hermesV2Headers } from "../src/events";
+import { timestampHmacHeaders } from "../src/events";
 import { signedHeaders } from "../src/mcpEvents";
 import { routeAuth } from "../src/accounts/auth";
 import { reconcileSuspensions } from "../src/abuse/reconcile";
@@ -116,26 +116,9 @@ it("reminds agents at setup, upload, and every event poll to keep a receiver run
   expect(upload.agent_delivery).toMatchObject({ mode: "wake_configured" });
 });
 
-it("serves the first-party Codex bridge from the service origin", async () => {
-  const response = await req("/codex-bridge.mjs");
-  expect(response.status).toBe(200);
-  expect(response.headers.get("Content-Type")).toContain("text/javascript");
-  expect(await response.text()).toContain("codex");
-});
 
-it("offers the recipe catalog and a permission-aware device endpoint", async () => {
-  const catalog = await req("/recipes/catalog.json");
-  expect(catalog.status).toBe(200);
-  const body = await catalog.json<{ recipes: Array<{ id: string }> }>();
-  expect(body.recipes.map((r) => r.id)).toContain("field-notebook");
-  const assignmentSource = await req("/recipes/facilitated-session/assignments.js");
-  expect(assignmentSource.status).toBe(200);
-  expect(assignmentSource.headers.get("Content-Type")).toContain("text/plain");
-  expect(await assignmentSource.text()).toContain("sessionArchive.mount");
-  const preview = await req("/recipes/previews/field-notebook.png");
-  expect(preview.status).toBe(200);
-  expect(preview.headers.get("Content-Type")).toContain("image/png");
-  expect([...new Uint8Array(await preview.arrayBuffer()).slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+
+it("offers a permission-aware device endpoint independently of optional applications", async () => {
   const h = await createPublic("explore@example.com", "192.0.2.99");
   const caps = await (await api(h, "GET", "capabilities")).json<{ devices: unknown[] }>();
   expect(caps.devices).toEqual([]);
@@ -169,35 +152,18 @@ it("records a reply only after a connected page reports rendering it", async () 
   page.close();
 });
 
-it("serves the Hermes bridge and long-poll helper from the service origin", async () => {
-  const bridge = await req("/hermes-bridge.mjs");
-  expect(bridge.status).toBe(200);
-  const script = await bridge.text();
-  expect(script).toContain("/events/socket");
-  expect(script).toContain('"wake", "now"');
-  const wait = await req("/tendril-wait.sh");
-  expect(wait.status).toBe(200);
-  expect(await wait.text()).toContain("wait_s=300");
-  const socketWait = await req("/tendril-wait.mjs");
-  expect(socketWait.status).toBe(200);
-  expect(socketWait.headers.get("Content-Type")).toContain("text/javascript");
-  expect(await socketWait.text()).toContain("/events/socket");
-  const socketWatch = await req("/tendril-watch.mjs");
-  expect(socketWatch.status).toBe(200);
-  expect(socketWatch.headers.get("Content-Type")).toContain("text/javascript");
-  expect(await socketWatch.text()).toContain("tendril-watch: stopped");
-});
+
 
 it("configures only valid signed wake receivers and never returns their secret", async () => {
   const h = await createPublic("signed@example.com", "192.0.2.88");
-  expect((await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", auth: "hermes_v2" } })).status).toBe(400);
+  expect((await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", auth: "timestamp_hmac_sha256" } })).status).toBe(400);
   expect((await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: "bad", auth: "standard_webhooks" } })).status).toBe(400);
   const secret = `whsec_${btoa("a".repeat(32))}`;
   const configured = await (await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: secret, auth: "standard_webhooks" } })).json<{ webhook: { auth: string; has_token: boolean } }>();
   expect(configured.webhook).toMatchObject({ auth: "standard_webhooks", has_token: true });
   expect(JSON.stringify(configured)).not.toContain(secret);
-  const hermes = await (await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: "private-secret", auth: "hermes_v2" } })).json<{ webhook: { auth: string; has_token: boolean } }>();
-  expect(hermes.webhook).toMatchObject({ auth: "hermes_v2", has_token: true });
+  const hermes = await (await api(h, "PUT", "wake", { webhook: { url: "https://example.org/hook", token: "private-secret", auth: "timestamp_hmac_sha256" } })).json<{ webhook: { auth: string; has_token: boolean } }>();
+  expect(hermes.webhook).toMatchObject({ auth: "timestamp_hmac_sha256", has_token: true });
   expect(JSON.stringify(hermes)).not.toContain("private-secret");
 });
 
@@ -224,10 +190,10 @@ it("lets an agent test wake delivery without forging an owner instruction", asyn
   expect((await api(h, "POST", "wake/probe")).status).toBe(429);
 });
 
-it("signs exact webhook bytes for Standard Webhooks and Hermes V2", async () => {
+it("signs exact webhook bytes for Standard Webhooks and timestamp HMAC SHA-256", async () => {
   const body = '{"waiting":2}';
   const stamp = 1_700_000_000;
-  const hermes = await hermesV2Headers("secret", body, stamp);
+  const hermes = await timestampHmacHeaders("secret", body, stamp);
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("secret"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
   const hex = hermes["X-Webhook-Signature-V2"];
   const mac = Uint8Array.from(hex.match(/../g)!, (pair) => parseInt(pair, 16));
@@ -239,32 +205,22 @@ it("signs exact webhook bytes for Standard Webhooks and Hermes V2", async () => 
   expect(await crypto.subtle.verify("HMAC", standardKey, sig, new TextEncoder().encode(`msg_123.${stamp}.${body}`))).toBe(true);
 });
 
-it("serves the bundled Claude Code channel from the service origin", async () => {
+it("does not serve optional host tools from the service origin", async () => {
   const response = await req("/claude-channel.mjs");
-  expect(response.status).toBe(200);
-  expect(response.headers.get("Content-Type")).toContain("text/javascript");
-  expect(await response.text()).toContain("tendriller_attach");
+  expect(response.status).toBe(404);
 });
 
-it("serves the first-party OpenClaw bridge from the service origin", async () => {
-  const response = await req("/openclaw-bridge.mjs");
-  expect(response.status).toBe(200);
-  expect(response.headers.get("Content-Type")).toContain("text/javascript");
-  const body = await response.text();
-  expect(body).toContain("/events/socket");
-  expect(body).toContain("system");
-  expect(body).toContain("event");
-});
+
 
 it("authenticates a hibernating agent socket and delivers a count-only probe wake", async () => {
   const h = await createPublic("socket@example.com", "192.0.2.190");
-  const denied = await req(h.api + "/events/socket", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "tendriller.agent.v1" } });
+  const denied = await req(h.api + "/events/socket", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "tendriller.agent.v2" } });
   expect(denied.status).toBe(401);
   const response = await req(h.api + "/events/socket", { headers: {
-    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}`,
+    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}`,
   } });
   expect(response.status).toBe(101);
-  expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v1");
+  expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v2");
   const socket = response.webSocket!;
   socket.accept();
   const wakes: any[] = [];
@@ -283,7 +239,7 @@ it("authenticates a hibernating agent socket and delivers a count-only probe wak
 
 async function openAgentSocket(h: Handle, credential: string, query = "") {
   const response = await req(`${h.api}/events/socket${query}`, { headers: {
-    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${credential}`,
+    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${credential}`,
   } });
   const frames: any[] = [];
   const socket = response.webSocket;
@@ -326,7 +282,7 @@ it("opens the wake socket with a single-use listen-only ticket", async () => {
   expect(issued.status).toBe(201);
   const t = await issued.json<{ ticket: string; expires_at: number; socket_url: string; protocols: string[] }>();
   expect(t.ticket).toMatch(/^lt_[a-z2-7]{32}$/);
-  expect(t.protocols).toEqual(["tendriller.agent.v1", t.ticket]);
+  expect(t.protocols).toEqual(["tendriller.agent.v2", t.ticket]);
   expect(t.socket_url).toBe(`${h.api.replace(/^http/, "ws")}/events/socket?after=0`);
   expect(JSON.stringify(t)).not.toContain(h.token);
 
@@ -336,7 +292,7 @@ it("opens the wake socket with a single-use listen-only ticket", async () => {
   const probe = await (await api(h, "POST", "wake/probe")).json<{ seq: number }>();
   const first = await openAgentSocket(h, t.ticket, "?after=0");
   expect(first.response.status).toBe(101);
-  expect(first.response.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v1");
+  expect(first.response.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v2");
   await until(() => first.frames.length > 0);
   expect(first.frames).toEqual([{ t: "wake", seq: probe.seq }]);
   expect((await (await api(h, "GET", "")).json<any>()).agent_delivery.mode).toBe("live_socket");
@@ -345,14 +301,14 @@ it("opens the wake socket with a single-use listen-only ticket", async () => {
   expect((await openAgentSocket(h, t.ticket)).response.status).toBe(401);
   expect((await openAgentSocket(h, "lt_" + "a".repeat(32))).response.status).toBe(401);
   const spoofed = await req(`${h.api}/events/socket`, { headers: { Upgrade: "websocket",
-    "Sec-WebSocket-Protocol": "tendriller.agent.v1", "x-tendril-socket-ticket": t.ticket } });
+    "Sec-WebSocket-Protocol": "tendriller.agent.v2", "x-tendril-socket-ticket": t.ticket } });
   expect(spoofed.status).toBe(401);
 
   // A valid token handshake must ignore a client-supplied ticket header. That
   // ticket remains unused and can still open its own socket afterward.
   const unused = await (await api(h, "POST", "events/socket/ticket")).json<{ ticket: string }>();
   const withHeader = await req(`${h.api}/events/socket`, { headers: { Upgrade: "websocket",
-    "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}`, "x-tendril-socket-ticket": unused.ticket } });
+    "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}`, "x-tendril-socket-ticket": unused.ticket } });
   expect(withHeader.status).toBe(101);
   withHeader.webSocket?.accept(); withHeader.webSocket?.close();
   const redeemed = await openAgentSocket(h, unused.ticket);
@@ -748,4 +704,9 @@ it("retains local static screening for external form actions", async () => {
   const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(
     "SELECT risk_score, risk_flags FROM versions WHERE version = 1"));
   expect(version).toEqual({ risk_score: 8, risk_flags: '["static_screening"]' });
+});
+
+it("keeps optional tool downloads outside the core service", async () => {
+  for (const path of ["/codex-bridge.mjs","/openclaw-bridge.mjs","/hermes-bridge.mjs","/tendril-preview.mjs","/tendril-wait.sh","/tendril-watch.mjs"])
+    expect((await req(path)).status, path).toBe(404);
 });

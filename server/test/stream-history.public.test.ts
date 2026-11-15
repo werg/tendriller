@@ -3,7 +3,7 @@ import { addEvent } from "../src/events";
 import { appendRecords } from "../src/streams";
 import { historyPage, mergeHistoryGaps, readHistory } from "../src/streams/history";
 import { appendToStore, streamHistorySource } from "../src/streams/store";
-import { legacyHistorySource } from "../src/streams/adapters";
+import { tableHistorySource } from "../src/streams/adapters";
 import type { Db } from "../src/db";
 import { api, apiJson, create, inDO, PageClient, sleep } from "./helpers";
 
@@ -30,7 +30,7 @@ it("decodes only the byte-bounded prefix while unbounded consumer reads still re
     one: (sql: string) => sql.includes("MIN(seq)") ? { seq: 1 } : { seq: 500, latest_seq: 500 },
     all: () => rows,
   } as unknown as Db;
-  const legacy = legacyHistorySource(db, "events", row => ({ seq: row.seq, data: JSON.parse(row.data) }));
+  const legacy = tableHistorySource(db, "events", row => ({ seq: row.seq, data: JSON.parse(row.data) }));
   const custom = streamHistorySource({ db, now: () => 1000, transaction: write => write() }, "training");
   for (const source of [legacy, custom]) {
     decoded = 0;

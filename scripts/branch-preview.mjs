@@ -48,7 +48,7 @@ export function previewConfig(identity, template, databaseId, accountId) {
     $schema: "../node_modules/wrangler/config-schema.json",
     name: identity.worker,
     account_id: accountId,
-    main: "src/index.ts",
+    main: "../dist/service/worker.mjs",
     compatibility_date: template.compatibility_date,
     compatibility_flags: template.compatibility_flags,
     workers_dev: false,
@@ -170,11 +170,12 @@ export async function smokePreview(identity, { fetcher = fetch, provenance = tru
       if (health.ok !== true || (provenance && health.preview?.commit !== identity.sha)) {
         throw new Error("Preview is not serving the checked commit yet");
       }
-      for (const path of ["/", "/status", "/starters", "/agent.md"]) {
+      for (const path of ["/", "/status", "/api/service", "/agent.md"]) {
         const response = await fetcher(`${identity.url}${path}`, { signal: AbortSignal.timeout(15_000), redirect: "error" });
         if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
         const body = await response.text();
-        if (!body.includes("Tendriller")) throw new Error(`${path}: missing service content`);
+        if (path === "/api/service") { if (JSON.parse(body).contract !== 2) throw new Error("Service contract mismatch"); }
+        else if (!body.includes("Tendriller")) throw new Error(`${path}: missing service content`);
         if (path === "/agent.md" && !body.includes(identity.url)) throw new Error("Agent guide points at another environment");
       }
       return;
@@ -255,23 +256,25 @@ async function main() {
   if (!identity.sha) throw new Error("Deploy requires --sha <checked commit>");
   const source = resolve(values.source);
   const template = await readPreviewTemplate(source);
-  const envSource = await readFile(resolve(source, "server/src/env.ts"), "utf8");
-  const supportsPreview = envSource.includes("PAGE_HOST_SUFFIX") && envSource.includes("BRANCH_PREVIEW_SHA");
   const secrets = previewSecrets(process.env);
   const databaseId = await provisionPreview(api, accountId, identity);
   const configPath = resolve(source, "server/wrangler.branch-preview.json");
   const config = previewConfig(identity, template, databaseId, accountId);
   await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
   await runWrangler(source, ["d1", "migrations", "apply", "ACCOUNTS", "--remote", "--config", configPath]);
+  await new Promise((resolveUpload, rejectUpload) => {
+    const child = spawn(process.execPath, [resolve(source, "scripts/publish-runtime.mjs"), "--config", configPath], {cwd: source, stdio: "inherit"});
+    child.once("error", rejectUpload); child.once("exit", code => code === 0 ? resolveUpload() : rejectUpload(new Error("Runtime publication failed")));
+  });
   await runWrangler(source, ["deploy", "--config", configPath, "--durable-objects-code-update-mode", "immediate"]);
   if (Object.keys(secrets).length) await runWrangler(source, ["secret", "bulk", "--config", configPath], JSON.stringify(secrets));
-  await smokePreview(identity, { provenance: supportsPreview });
+  await smokePreview(identity);
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT,
     `url=${identity.url}\npreview_key=${identity.key}\nworker=${identity.worker}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
     `## Live branch preview\n\n[Open preview](${identity.url}) · commit \`${identity.sha}\`\n\n`
     + "Storage is isolated from staging and production. New previews start with page creation paused; OAuth/Turnstile setup is separate.\n"
-    + (supportsPreview ? "" : "\nThis branch predates preview page routing. Merge master before testing per-page origins.\n"));
+    );
   console.log(`Branch preview verified: ${identity.url} (${identity.sha})`);
 }
 

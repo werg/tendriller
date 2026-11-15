@@ -1,115 +1,63 @@
-// Install the actual packed artifact into a project outside the checkout. This
-// deliberately omits devDependencies: repo-relative imports cannot hide a broken
-// distribution, and preview's transport must be an ordinary dependency.
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workspace = mkdtempSync(join(tmpdir(), "tendriller-consumer-"));
-const env = { ...process.env, TENDRIL_CONFIG_DIR: join(workspace, "config") };
-delete env.NODE_PATH;
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const run = (command, args, cwd = workspace) => execFileSync(command, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
+// Verify that only public release artifacts are needed in a clean consumer.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { CORE_RELEASE } from '../contract/index.mjs';
+const root = resolve(import.meta.dirname, '..');
+const directory = mkdtempSync(join(root, '.consumer-'));
+const run = (command, args) => execFileSync(command, args, {cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000});
 try {
-  const packedOutput = run(npm, ["pack", "--json", "--pack-destination", workspace], root);
-  // npm forwards prepack's build output before its JSON on some npm versions.
-  const jsonStart = packedOutput.search(/^\[\s*\{/m);
-  assert.ok(jsonStart >= 0, "npm pack did not report a tarball");
-  const packed = JSON.parse(packedOutput.slice(jsonStart))[0];
-  assert.ok(packed.files.some(file => file.path === "server/public/_tendril/tendril.js"), "tarball must contain built runtime assets");
-  assert.ok(packed.files.some(file => file.path === "server/public/_preview/state.mjs"), "tarball must contain the compiled state implementation");
-  for (const file of ["cli/bin/tendril-stream.mjs", "cli/lib/stream-collector.mjs", "cli/lib/stream-spool.mjs",
-    ...["index", "records", "host", "file", "ssh"].map(name => `cli/lib/stream-sources/${name}.mjs`),
-    "examples/training-dashboard/setup.mjs", "examples/training-dashboard/index.html", "examples/training-dashboard/app.js", "examples/training-dashboard/model.mjs", "docs/STREAMS.md", "docs/COLLECTOR.md"])
-    assert.ok(packed.files.some(entry => entry.path === file), `tarball must contain ${file}`);
-  assert.ok(!packed.files.some(file => /(?:^|\/)(?:\.env|\.dev\.vars|\.e2e-auth\.json|test-results)(?:\/|$)/.test(file.path)), "private environment/diagnostic files must not be packed");
-  writeFileSync(join(workspace, "package.json"), JSON.stringify({ name: "tendriller-consumer-smoke", private: true, type: "module" }));
-  run(npm, ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", join(workspace, packed.filename)]);
-  const installed = join(workspace, "node_modules/tendriller");
-  const bin = join(installed, "cli/bin/tendril.mjs");
-  assert.match(run(process.execPath, [bin, "--help"]), /scaffold/);
-  try { run(process.execPath, [join(installed, "cli/bin/tendril-stream.mjs")]); assert.fail("collector requires its private config"); }
-  catch (error) { assert.equal(error.status, 1); assert.match(error.stderr, /Usage: tendril-stream/); }
-  const catalog = JSON.parse(run(process.execPath, [bin, "recipes"]));
-  const recipes = catalog.recipes || catalog;
-  for (const name of ["approval-remote", "field-notebook", "hands-free-guide", "multi-device-workshop", "hardware-experiment", "facilitated-session"]) {
-    assert.ok(recipes.some(recipe => recipe.id === name), `packed catalog is missing ${name}`);
-    run(process.execPath, [bin, "scaffold", name, join(workspace, name)]);
-    for (const file of ["index.html", "AGENT.md", "contract.json", "scenario.json"])
-      assert.ok(readFileSync(join(workspace, name, file)).length, `${name}/${file} is missing`);
-  }
-  writeFileSync(join(workspace, "consumer.mts"), `
-import { createClient } from "tendriller";
-import { assertValid, type RuntimeApi, type SendResult, type StreamCreate } from "tendriller/contract";
-import type {} from "tendriller/browser";
-const client = createClient({ api: "https://example.test/api/t/test", token: "private" });
-void client.readEvents({ after: 0 });
-// @ts-expect-error handling needs an explicit cursor.
-void client.readEvents({});
-const durable: StreamCreate = { name: "training.loss", durability: "durable", max_records: 1000 };
-void client.streams.create(durable);
-void client.streams.read("training.loss", { after: 0 });
-// @ts-expect-error replay requires an explicit consumer cursor.
-void client.streams.read("training.loss", {});
-// @ts-expect-error ephemeral streams cannot declare retained history.
-const invalidStream: StreamCreate = { name: "live", durability: "ephemeral", max_records: 100 };
-void invalidStream;
-declare const page: RuntimeApi<{ count: number }>;
-const count: number = page.state.get().count;
-const result: SendResult = await page.send({ count });
-const unsubscribe: () => void = page.streams.subscribe("training.loss", record => { const sequence: number = record.seq; void sequence; }, { after: 0 });
-unsubscribe();
-if (result.status === "accepted") { const seq: number = result.seq; void seq; }
-// @ts-expect-error queued inputs do not have a server sequence.
-if (result.status === "queued") result.seq;
-window.tendril.on("say", message => { const text: string = message.text; void text; });
-assertValid("create", { owner: "owner@example.test" });
+  writeFileSync(join(directory, 'package.json'), JSON.stringify({private: true, type: 'module'}));
+  run('npm', ['install', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', ...['sdk', 'runtime'].map(name => join(root, 'dist', `tendriller-${name}-${CORE_RELEASE}.tgz`))]);
+  const core = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/core/package.json')));
+  const runtime = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/runtime/package.json')));
+  assert.equal(core.dependencies, undefined); assert.equal(runtime.dependencies, undefined);
+  writeFileSync(join(directory, 'consumer.mjs'), `
+import assert from 'node:assert/strict';
+import { createClient, requireService } from '@tendriller/core';
+import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/contract';
+import schema from '@tendriller/core/schema' with {type: 'json'};
+import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
+import {applyOps, validateOps, historyPage} from '@tendriller/runtime/preview-support';
+assert.equal(CONTRACT_VERSION, 2); assert.equal(schema.$defs.decision, undefined);
+assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
+assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
+assertValid('command', {cid:'event-1',expected_generations:{},data:{type:'job.status',session:'application data'}});
+assert.deepEqual(applyOps({}, validateOps([{op:'set',path:['experiment'],value:{session_id:'opaque'}}])), {experiment:{session_id:'opaque'}});
+assert.equal(historyPage([{seq:1}], {after:0,limit:2,latest:1,earliest:1}).cursor, 1);
+assert.equal(STREAM_LIMITS.record_bytes, 65536);
+assert.throws(() => requireService({contract:1,workflows:[]}), /contract/);
+const client = createClient({api:'https://example.test/api/t/test',token:'private'}, {fetch: async () => new Response(JSON.stringify({events:[],cursor:2,withheld:0}))});
+assert.equal((await client.readEvents({after:2})).cursor, 2);
+assert.equal(client.createDecision, undefined);
 `);
-  run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--target", "es2022", "--module", "nodenext", "--moduleResolution", "nodenext", "--lib", "es2023,dom", "consumer.mts"]);
-  writeFileSync(join(workspace, "consumer.mjs"), `
-import assert from "node:assert/strict";
-import { createClient } from "tendriller";
-import { assertValid } from "tendriller/contract";
-import schema from "tendriller/schema" with { type: "json" };
-import { pathToFileURL } from "node:url";
-import { join } from "node:path";
-const client = createClient({ api: "https://example.test/api/t/test", token: "private" }, { fetch: async () => new Response(JSON.stringify({ events: [], cursor: 2, withheld: 0 })) });
-assert.deepEqual(await client.readEvents({ after: 2 }), { events: [], cursor: 2, withheld: 0 });
-assert.equal(assertValid("create", { owner: "owner@example.test" }).owner, "owner@example.test");
-assert.ok(schema.$defs);
-assertValid("streamCreate", { name: "machine.live", durability: "ephemeral" });
-assert.equal(typeof client.streams.read, "function");
-assert.equal(typeof client.producers.create, "function");
-const { startServer, loadPlaywright } = await import(pathToFileURL(join(process.cwd(), "node_modules/tendriller/cli/lib/preview.mjs")));
-assert.equal(loadPlaywright(), null, "the fresh project must not silently find the checkout's browser tools");
-const server = await startServer(join(process.cwd(), "field-notebook"));
-try {
-  const base = "http://127.0.0.1:" + server.address().port;
-  const page = await fetch(base);
-  assert.equal(page.status, 200);
-  assert.match(await page.text(), /window.__TENDRIL__/);
-  for (const asset of ["/_tendril/tendril.js", "/_tendril/sw.js", "/_tendril/axe.min.js", "/_tendril/axe-LICENSE.txt", "/_tendril/speech-worker.js", "/_tendril/tts/index.js", "/_tendril/snippets/input-kit.js", "/app.js", "/model.mjs"]) {
-    const response = await fetch(base + asset);
-    assert.equal(response.status, 200, asset);
-    assert.ok((await response.arrayBuffer()).byteLength > 0, asset);
-  }
-} finally { await server.stopPreview(); }
+  run(process.execPath, ['consumer.mjs']);
+  writeFileSync(join(directory, 'consumer.mts'), `
+import {createClient, type CommandMetadata} from '@tendriller/core';
+import {type RuntimeApi, type SendResult} from '@tendriller/core/contract';
+import {type WorkflowModule} from '@tendriller/core/host';
+import {createFixtureTransport} from '@tendriller/runtime/preview';
+import type {} from '@tendriller/core/browser';
+const command: CommandMetadata = {cid:'durable-command',expected_generations:{}};
+const client = createClient({api:'https://example.test',token:'private'});
+void client.updateState({...command,ops:[{op:'set',path:['job'],value:{status:'ready'}}]});
+// @ts-expect-error all commands need explicit stable IDs and preconditions
+void client.updateState({ops:[]});
+declare const page: RuntimeApi<{count:number}>;
+const result: SendResult = await page.send({session:'opaque'});
+if(result.status==='accepted'){const seq:number=result.seq; void seq;}
+// @ts-expect-error queued is not accepted
+if(result.status==='queued') result.seq;
+declare const module: WorkflowModule;
+void module;
+const fixture = createFixtureTransport();
+fixture.onSend((frame,reply) => { if(frame.t==='hello') reply({t:'welcome'}); });
 `);
-  run(process.execPath, ["consumer.mjs"]);
-  let missingOutput;
-  try { run(process.execPath, [bin, "preview", join(workspace, "field-notebook")]); assert.fail("missing optional browser tooling must exit 2"); }
-  catch (error) { assert.equal(error.status, 2); missingOutput = error.stdout; }
-  const missingBrowser = JSON.parse(missingOutput.trim());
-  assert.equal(missingBrowser.error, "playwright_missing");
-  console.log("Consumer smoke passed: packed exports/types, CLI and collector, streams, dashboard, six scaffolds, and HTTP preview assets; missing optional Playwright is explicit.");
-} catch (error) {
-  if (error.stdout) process.stderr.write(error.stdout);
-  if (error.stderr) process.stderr.write(error.stderr);
+  run(process.execPath, [join(root,'node_modules/typescript/bin/tsc'),'--noEmit','--strict','--skipLibCheck','--target','es2022','--module','nodenext','--moduleResolution','nodenext','--lib','es2023,dom','consumer.mts']);
+  console.log('Independent SDK/runtime consumer passed with no source checkout dependencies.');
+} catch(error) {
+  if(error.stdout) process.stderr.write(error.stdout);
+  if(error.stderr) process.stderr.write(error.stderr);
   throw error;
-} finally {
-  rmSync(workspace, { recursive: true, force: true, maxRetries: 3 });
-}
+} finally {rmSync(directory,{recursive:true,force:true});}
