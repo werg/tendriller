@@ -10,6 +10,7 @@ server/public/openclaw-bridge.mjs
 server/public/hermes-bridge.mjs
 server/public/tendril-wait.sh
 server/public/tendril-wait.mjs
+server/public/tendril-watch.mjs
 server/public/legal/
 server/public/recipes/
 server/public/contract/

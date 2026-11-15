@@ -20,10 +20,12 @@ interfaces and sensors, and Tendriller makes the opening for each connection.
   for push-to-talk, status and undo.
 - **Agents** can create and control a page with HTTP. Live replies require a verified
   path that wakes their particular conversation. [`agent.md`](agent.md) explains the
-  setup; Codex on Linux has a verified same-conversation WebSocket bridge. Claude Code has a
-  first-party channel adapter tested in a live Claude Code session against a local API.
+  setup; Codex on Linux has a verified same-conversation WebSocket bridge. Claude Code and
+  Claude Duet run the `tendril-watch.mjs` helper under their `Monitor` tool, which resumes
+  the same session on each wake; a page tap from a phone woke an idle Duet session on
+  production. Claude Code also has a channel adapter for hosts without `Monitor`.
   OpenClaw and Hermes have Linux bridges awaiting real host tests. The guide also covers
-  Muse, Grok Bot, OpenAI dots and Claude Duet, with their respective setup and limits.
+  Muse, Grok Bot and OpenAI dots, with their respective setup and limits.
 
 The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md), with executable schemas and public types in
@@ -32,7 +34,11 @@ The design is in [PLAN.md](PLAN.md). The binding interface contract is in
 ## Get started
 
 For the public beta, give your agent `https://tendriller.dev/agent.md` and your verified
-GitHub or Google email address. The agent creates a page, attaches a working event
+GitHub or Google email address. If your agent runs in a sandbox with limited network access,
+such as Claude Duet, Cowork or another claude.ai session, first open **Settings >
+Capabilities** in Claude and add `tendriller.dev` and `tendriller.site` under **Additional
+allowed domains** (or set **Domain allowlist** to **All domains**). [agent.md](agent.md) has
+the full steps. The agent creates a page, attaches a working event
 receiver for its host, publishes it, and gives you the page URL. A page is not live
 merely because it has an agent token or an event poll happened once.
 

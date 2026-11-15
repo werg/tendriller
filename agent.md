@@ -4,6 +4,23 @@ Tendriller lets an agent make a small, changeable web page for a person. Think o
 
 You only need the person's **verified GitHub or Google email address**. Ask for it if you don't know it, along with what they want the page to do. Create the page for that email, establish event delivery, then give them its `page_url`. When they open the link, Tendriller signs them in if needed and opens the page automatically. They do not need to create or copy an account key, enter a code, or press Claim. Their browser never shares OAuth credentials with you.
 
+**First, check that you can reach Tendriller.** Agents in sandboxes, such as Claude Duet, Cowork and other claude.ai sessions, often have outbound network access limited to a list of allowed domains. Run:
+
+```sh
+curl -fsS https://tendriller.dev/health
+```
+
+If it prints `{"ok":true}`, continue. If it fails with `CONNECT tunnel failed, response 403`, `Could not resolve host`, or another proxy or DNS error, your sandbox blocks the service, and nothing below will work. Do not retry or look for another route. Give the person these steps, then wait for them to say it is done:
+
+1. In Claude (web, desktop, or the Claude Duet app), open **Settings**, then **Capabilities**. On a Team or Enterprise plan, an admin does this for the whole organization under **Organization settings > Capabilities**.
+2. Make sure **Allow network egress** is turned on.
+3. If **Domain allowlist** is set to **All domains**, nothing else is needed. Otherwise, under **Additional allowed domains**, add these two domains, one per entry:
+   - `tendriller.dev` (the API, the wake socket and the helper downloads; required)
+   - `tendriller.site` (where pages are served)
+4. Save the setting, then tell the agent to try again. A session that is already running picks up the change within a minute or two; it does not need a restart.
+
+Check again with the same `curl` command. Only `tendriller.dev` is needed for everything the agent does. Pages live on per-page subdomains (`<id>.tendriller.site`), which a plain `tendriller.site` entry did not cover in testing, so an agent that wants to fetch its own page directly also needs those subdomains allowed. For the staging service, allow `staging.tendriller.dev` as well. You can read this guide with a web-fetch tool before the domains are allowed, because that tool usually runs outside the sandbox.
+
 **Before you give them the link, arrange conversation delivery.** A background poll by itself only collects events; it must wake this agent conversation. Use the host adapter below or a verified host wake endpoint. A single poll, an agent token, a published page, and a message sent with `POST A/say` do **not** keep you listening. If your host cannot resume this conversation, tell the person the page saves input for later and do not promise immediate replies. The creation response's `agent_setup`, every event poll's `agent_reminder` and `next_poll`, and file upload responses repeat this requirement.
 
 **Publication check:** the first `index.html` upload returns HTTP `428 listener_required` unless an agent WebSocket or long poll is active, or a wake receiver is configured. A one-off `GET A/events` does not pass this check. If the receiver later stops, the page shows **Away** and keeps the person's input for later. Use the runnable example below as the simplest complete setup.
@@ -22,7 +39,7 @@ node ~/.local/share/tendriller/codex-bridge.mjs attach .tendril.json
 
 Use `https://staging.tendriller.dev/codex-bridge.mjs` for staging. The command reads `CODEX_THREAD_ID`, installs a user service, waits until its agent socket is live, and prints the page URL. It queues only a count-only notice into that conversation; the agent reads the actual events with its private page token. After handling through `A/say`, state or files, the agent acknowledges the last event sequence with `node ~/.local/share/tendriller/codex-bridge.mjs ack <page-id> <seq>`. The bridge retries unacknowledged wakes. Codex displays the notice as a user message, so the notice explicitly says it came from the bridge and contains no page content. This adapter currently requires Linux with systemd and an available Codex CLI; other hosts need their own verified wake path.
 
-**Claude Code:** a channel can wake the same open conversation. The agent can install Tendriller's bundled channel once:
+**Claude Code:** use the `Monitor` recipe in [Claude Code, Claude Duet and Claude Code on the web](#claude-code-claude-duet-and-claude-code-on-the-web) below. It needs no install, no restart and no preview opt-in. Use the bundled channel only where `Monitor` is unavailable: on Amazon Bedrock, Google Cloud's Agent Platform or Microsoft Foundry, when `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, or on Windows without Git Bash. Neither works for a non-interactive `-p` run, which ends with its prompt. Install the channel once:
 
 ```sh
 mkdir -p ~/.local/share/tendriller
@@ -49,14 +66,14 @@ Use the same private creation-response file and page API on every host. The pers
 | Host | Conversation delivery | What the agent must arrange |
 | --- | --- | --- |
 | Codex on Linux | First-party bridge queues into the creating thread | `codex-bridge.mjs attach` above; ack every handled sequence. |
-| Claude Code | First-party MCP channel wakes the open session | Enable the preview channel, call `tendriller_attach`, then events/say/ack. |
+| Claude Code | The `Monitor` tool runs the watch helper; each wake line resumes the open session | Download `tendril-watch.mjs`, arm `Monitor`, re-arm every 30 minutes. Where `Monitor` is unavailable, use the preview channel. |
 | OpenClaw on Linux | First-party bridge sends a system event to an explicit session | Attach with the current session key; ack after handling. |
 | Hermes on Linux | Local bridge uses the bound Hermes Wake plugin | Install and bind Wake once, then `hermes-bridge.mjs attach`. |
 | Muse Code | A background WebSocket wait command finishing wakes its interactive session | Start the wait command in the creating session; restart it after every event. |
 | Grok Bot | A webhook routine starts a Bot run | Create a routine once, configure its URL and bearer key on the page. |
 | Grok automation | Standard Webhooks starts an automation | Configure `standard_webhooks` with its `whsec_` secret. This is distinct from Grok Bot routines. |
 | OpenAI dot / Work chat | MCP Events webhook subscription | Connect the page MCP endpoint and subscribe to `tendril.events_waiting`. Host plugin setup may require user or workspace action. |
-| Claude Duet | MCP tools and long-polls within a running turn | Read events repeatedly while active; otherwise use its own scheduled check-in. No verified idle push. |
+| Claude Duet | The `Monitor` tool runs the watch helper; each wake line resumes the same session, even when idle | Allow `tendriller.dev`, download `tendril-watch.mjs`, arm `Monitor`, re-arm on expiry; an hourly Routine is the fallback after the session is replaced. |
 | Other terminal agents | Host-specific queue or session API | Build an adapter that wakes the **same session**; polling alone only collects events. |
 
 **Hermes, same bound chat:** The ordinary Hermes webhook adapter starts a fresh agent run. For the chat that created the page, install [Hermes Wake](https://hermes-agent.nousresearch.com/marketplace/wake) once and explicitly enable gateway injection:
@@ -93,7 +110,35 @@ The command keeps a hibernating WebSocket open and reconnects after a disconnect
 
 **OpenAI dot or Work chat:** The page exposes a Streamable HTTP MCP server at `A/mcp` with bearer authentication, or `A/mcp/<token>` for hosts that cannot send a header. The path form is a bearer capability: keep it private and rotate the page token if exposed. Connect it as an MCP plugin where that host permits custom servers. Call `events/list`, then subscribe to `tendril.events_waiting` with the host's callback URL and signing secret; on a notice, call `read_events`, `say` or `write_files`, and read again. [MCP Events](https://developers.openai.com/plugins/build/mcp-events) supports dots and Work chats, but plugin connection and event-triggered task controls are owned by the host/workspace. The per-page MCP connector is implemented and tested locally; a real dot callback has not yet been verified. Do not promise push until it has subscribed and passed two delivery probes.
 
-**Claude Duet:** Use the same MCP tools while a turn is running: call `read_events` with `wait:300`, handle the returned cursor, and call it again after empty timeouts. When Duet ends the turn, use its own check-in or schedule to read later. There is no verified external callback that resumes an idle Duet conversation. Tell the page user that input is saved and may be answered at the next check-in.
+### Claude Code, Claude Duet and Claude Code on the web
+
+These hosts have a `Monitor` tool. It runs a command in the background and turns each line it prints into a notification that resumes **that same session**, also between turns. Run Tendriller's watch helper under it. The helper holds the hibernating agent socket, prints one `{"t":"wake","seq":N}` line per wake and nothing else, so there is no polling and the Durable Object stays asleep while the page is idle. It reads the token from your private file, so the token never appears in a tool call, a command line or a notification. In Claude Duet and other claude.ai sandboxes, do the network check at the top of this guide first; nothing below works until `tendriller.dev` is allowed.
+
+1. Keep the creation response in a private file (mode `600`) with your last handled `cursor`. In Claude Code, locally or on the web, use `~/.local/share/tendriller/<id>.json`, outside the repository so it is never committed. In Claude Duet use the project's durable folder, for example `/mnt/project-files/.tendril/<id>.json`, because the container's other directories do not outlast the session.
+2. Download the helper once. It needs Node.js 22.15 or newer and has no dependencies:
+
+   ```sh
+   D=~/.local/share/tendriller   # in Duet: D=/mnt/project-files/.tendril
+   mkdir -p $D && curl -fsS https://tendriller.dev/tendril-watch.mjs -o $D/tendril-watch.mjs
+   ```
+
+3. Call `Monitor` with `command: "node $D/tendril-watch.mjs $D/<id>.json"` (paths written out in full), a description that names the page, and the longest `timeout_ms` (30 minutes). The helper connects with `after=<cursor>`, so the server wakes you at once if anything arrived while you were not listening. It reconnects after a dropped socket and resumes from the cursor in the file. If the socket is refused five times in a row (a revoked token, a deleted page or blocked network access), it prints one line starting `tendril-watch: stopped` and exits.
+4. On each wake line, read `GET A/events?after=<cursor>&wait=0` from a shell command. Handle every event in that batch as described below, including any `A/say` replies, then save its returned cursor in the private file. Repeat the read using that cursor until the returned `events` array is empty; a single response may contain only the first 100 events. Save a cursor only after its batch is handled successfully. The watch stays armed for later events.
+5. When `Monitor` reports that the watch expired or stopped, arm it again with the same call. Each re-arm costs one short turn, about two an hour while the page is idle.
+
+**Permission prompts in local Claude Code.** A `Monitor` command follows the same permission rules as Bash, so the person can allow it once, either by choosing to stop asking when the first prompt appears or with an allow rule such as `Bash(node ~/.local/share/tendriller/tendril-watch.mjs *)`. Without that, every re-arm asks again. In auto mode the classifier decides instead. Prefer the helper over `Monitor`'s WebSocket source here: that source asks for approval each time it opens and offers no way to stop asking.
+
+**Without Node.js**, use `Monitor`'s WebSocket source with a listen-only ticket, so the token still stays out of the tool call. From a shell command:
+
+```sh
+F=<private file>
+curl -fsS -X POST "$(jq -r .api $F)/events/socket/ticket?after=$(jq -r '.cursor // 0' $F)" \
+  -H "Authorization: Bearer $(jq -r .token $F)" | jq -c '{socket_url, protocols}'
+```
+
+Then call `Monitor` with `ws: {url: <socket_url>, protocols: <protocols>}` and a 30-minute `timeout_ms`. The ticket opens only that one socket, cannot read events and expires unused after ten minutes, so fetch a new one for every re-arm.
+
+Run the two delivery probes from a shell command, end the turn, and confirm that each notification resumes this session before you share the link. The watch lives only as long as the session that armed it. In local Claude Code, the page shows **Away** when the session closes and keeps the person's input until you resume and arm the watch again. In Claude Duet, arm it in the session that will keep talking to the person (usually the main chat, not a short task thread), and write in memory that the page exists and where its file is, so a replacement session re-arms it first. As a backstop there, create an hourly Routine bound to the session that reads the queue and re-arms the watch, and tell the person replies can wait up to an hour if the session was replaced. Duet's `watch_url` webhook cannot be used: only Anthropic's artifact service can sign deliveries to it.
 
 ### Build a host adapter when there is no ready-made one
 

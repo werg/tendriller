@@ -1,0 +1,84 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { WebSocketServer } from 'ws';
+
+const script = join(dirname(fileURLToPath(import.meta.url)), '../bin/tendril-watch.mjs');
+const token = 'tk_' + 'b'.repeat(32);
+const until = async (check, ms = 5000) => {
+  for (const end = Date.now() + ms; Date.now() < end;) { if (check()) return; await new Promise((r) => setTimeout(r, 20)); }
+  throw Error('timed out');
+};
+
+async function setup({ refuse = false } = {}) {
+  const server = createServer((req, res) => { res.statusCode = 404; res.end(); });
+  const sockets = [], urls = [];
+  const wss = new WebSocketServer({ noServer: true, handleProtocols: (protocols) => protocols.has('tendriller.agent.v1') ? 'tendriller.agent.v1' : false });
+  server.on('upgrade', (req, socket, head) => {
+    urls.push(req.url);
+    if (refuse || !req.headers['sec-websocket-protocol']?.includes(token)) {
+      socket.end('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n'); return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => sockets.push(ws));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dir = mkdtempSync(join(tmpdir(), 'tendril-watch-'));
+  const file = join(dir, 'page.json');
+  writeFileSync(file, JSON.stringify({ api: `http://127.0.0.1:${server.address().port}/api/t/aaaaaaaaaaaa`, token, cursor: 7 }));
+  const child = spawn(process.execPath, [script, file], { env: { ...process.env, TENDRIL_WATCH_RETRY_MS: '20' } });
+  const out = { stdout: '', stderr: '' };
+  child.stdout.on('data', (c) => { out.stdout += c; });
+  child.stderr.on('data', (c) => { out.stderr += c; });
+  const close = async () => {
+    child.kill('SIGKILL'); for (const s of sockets) s.terminate();
+    await new Promise((r) => wss.close(r)); server.closeAllConnections(); await new Promise((r) => server.close(r));
+  };
+  return { child, sockets, urls, out, file, close };
+}
+
+test('streams one line per wake, resumes from the stored cursor and reconnects', async () => {
+  const t = await setup();
+  try {
+    await until(() => t.sockets.length === 1);
+    assert.match(t.urls[0], /\/api\/t\/aaaaaaaaaaaa\/events\/socket\?after=7$/);
+    t.sockets[0].send(JSON.stringify({ t: 'wake', seq: 8 }));
+    t.sockets[0].send('not json');
+    t.sockets[0].send(JSON.stringify({ t: 'wake', seq: 9 }));
+    await until(() => t.out.stdout.split('\n').filter(Boolean).length === 2);
+    assert.deepEqual(t.out.stdout.trim().split('\n').map((l) => JSON.parse(l)), [{ t: 'wake', seq: 8 }, { t: 'wake', seq: 9 }]);
+    // The agent advances its cursor; a dropped socket reconnects from the new one.
+    writeFileSync(t.file, JSON.stringify({ ...JSON.parse((await import('node:fs')).readFileSync(t.file, 'utf8')), cursor: 9 }));
+    t.sockets[0].terminate();
+    await until(() => t.sockets.length === 2);
+    assert.match(t.urls[1], /after=9$/);
+    assert.ok(!t.out.stdout.includes(token) && !t.out.stderr.includes(token));
+  } finally { await t.close(); }
+});
+
+test('stops with one notice when the socket keeps being refused', async () => {
+  const t = await setup({ refuse: true });
+  try {
+    const code = await new Promise((resolve, reject) => {
+      t.child.on('exit', resolve); setTimeout(() => reject(Error('did not stop')), 5000);
+    });
+    assert.equal(code, 1);
+    assert.match(t.out.stdout, /^tendril-watch: stopped, the socket was refused five times/);
+    assert.ok(!t.out.stdout.includes(token));
+  } finally { await t.close(); }
+});
+
+test('refuses a file without a valid token', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tendril-watch-'));
+  const file = join(dir, 'bad.json');
+  writeFileSync(file, JSON.stringify({ api: 'https://tendriller.dev/api/t/aaaaaaaaaaaa', token: 'nope' }));
+  const child = spawn(process.execPath, [script, file]);
+  let stdout = '';
+  child.stdout.on('data', (c) => { stdout += c; });
+  assert.equal(await new Promise((r) => child.on('exit', r)), 1);
+  assert.match(stdout, /stopped, The file needs the creation response/);
+});

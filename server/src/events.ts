@@ -176,9 +176,7 @@ function deliverWake(t: Tendril, seq: number): void {
   const heldPoll = t.waiters.size > 0;
   if (heldPoll) scheduleRelease(t);
   if (agentSocket) {
-    if (t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
-    t.refreshPresence();
-    t.scheduleAlarm();
+    markWakeDelivered(t);
   }
   if (agentSocket || heldPoll) return;
   const hook = t.wakeConfig().webhook;
@@ -193,6 +191,13 @@ function deliverWake(t: Tendril, seq: number): void {
     }
   }
   queueMcpWake(t, seq);
+}
+
+/** A socket wake was sent, including one queued before the socket connected. */
+export function markWakeDelivered(t: Tendril): void {
+  if (t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
+  t.refreshPresence();
+  t.scheduleAlarm();
 }
 
 function scheduleRelease(t: Tendril): void {

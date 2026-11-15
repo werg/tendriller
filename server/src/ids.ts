@@ -17,6 +17,8 @@ export const newToken = () => "tk_" + randomB32(32);
 export const newBlobId = () => "b_" + randomB32(20);
 export const newLinkId = () => "l_" + randomB32(10);
 export const newCallId = () => "c_" + randomB32(12);
+/** Short-lived, single-use, listen-only credential for opening the agent wake socket. */
+export const newSocketTicket = () => "lt_" + randomB32(32);
 
 /** Six decimal digits, uniformly distributed. */
 export function sixDigits(): string {
@@ -33,6 +35,8 @@ export const PAGE_KEY_RE = /^[a-z2-7]{26}$/;
 export const DEVICE_ID_RE = /^d_[a-z2-7]{16}$/;
 export const DEVICE_SECRET_RE = /^[a-z2-7]{32}$/;
 export const BLOB_ID_RE = /^b_[a-z2-7]{20}$/;
+export const AGENT_TOKEN_RE = /^tk_[a-z2-7]{32}$/;
+export const SOCKET_TICKET_RE = /^lt_[a-z2-7]{32}$/;
 
 export async function sha256Hex(data: string | ArrayBuffer | ArrayBufferView): Promise<string> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;

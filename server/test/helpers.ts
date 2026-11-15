@@ -2,11 +2,22 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { Tendril } from "../src/tendril";
+import { sha256Hex } from "../src/ids";
 
 export const BASE = "https://tendriller.dev";
 
-export function req(path: string, init?: RequestInit): Promise<Response> {
-  return exports.default.fetch(path.startsWith("http") ? path : BASE + path, init);
+/**
+ * Fetches through the Worker. A request to a page that `create` claimed carries the owner's
+ * page session unless the caller sets its own Cookie header or passes `anonymous: true`.
+ */
+export function req(path: string, init?: RequestInit & { anonymous?: boolean }): Promise<Response> {
+  const url = path.startsWith("http") ? path : BASE + path;
+  const { anonymous, ...rest } = init ?? {};
+  const headers = new Headers(rest.headers);
+  if (!anonymous && !headers.has("Cookie")) {
+    for (const [k, v] of Object.entries(ownerHeaders(url))) if (!headers.has(k)) headers.set(k, v);
+  }
+  return exports.default.fetch(url, { ...rest, headers });
 }
 
 export interface Handle {
@@ -20,10 +31,68 @@ export interface Handle {
   expires_at: number | null;
 }
 
-export async function create(body: Record<string, unknown> = {}): Promise<Handle> {
-  const res = await req("/api/tendrils", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+/** Owner page-session cookies by tendril id, filled by `create` and used by `PageClient`. */
+const ownerCookies = new Map<string, string>();
+
+function randomTestIp(): string {
+  // 198.18.0.0/15 is reserved for benchmarking; a fresh address avoids per-IP creation limits.
+  const b = crypto.getRandomValues(new Uint8Array(3));
+  return `198.${18 + (b[0] & 1)}.${b[1]}.${b[2]}`;
+}
+
+/**
+ * Creates a tendril the way the public service does: for an owner email, from a creator IP.
+ * Unless `claim: false` is passed, it then signs in as that owner and keeps the page-session
+ * cookie, so `PageClient.connect(h.page_url)` connects as the owner without further setup.
+ */
+export async function create(body: Record<string, unknown> & { claim?: boolean; listener?: boolean } = {}): Promise<Handle> {
+  const { claim = true, listener = true, ...rest } = body;
+  const email = typeof rest.owner === "string" ? rest.owner : `owner-${crypto.randomUUID()}@example.com`;
+  const account = crypto.randomUUID();
+  const db = env.ACCOUNTS!;
+  const now = Date.now();
+  if (claim) await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, now, email).run();
+  const res = await req("/api/tendrils", { method: "POST",
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": randomTestIp() },
+    body: JSON.stringify({ ...rest, owner: email }) });
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
-  return (await res.json()) as Handle;
+  const h = (await res.json()) as Handle;
+  if (claim) ownerCookies.set(h.id, await signInAsOwner(h, account, email));
+  // Publishing needs a wake path; a webhook receiver is the lightest one to fake.
+  if (listener) {
+    const wake = await api(h, "PUT", "wake", { webhook: { url: "https://example.org/tendriller-test" } });
+    if (!wake.ok) throw new Error(`wake setup failed: ${wake.status} ${await wake.text()}`);
+  }
+  return h;
+}
+
+/** Signs `account` in, follows the owner auto-claim, and returns the page-session cookie. */
+export async function signInAsOwner(h: Handle, account: string, email: string): Promise<string> {
+  const db = env.ACCOUNTS!;
+  const now = Date.now();
+  const raw = `test-${crypto.randomUUID()}`;
+  await db.batch([
+    db.prepare("INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES ('google', ?, ?, ?, ?, ?)")
+      .bind(account, account, email.split("@")[0], email, now),
+    db.prepare("INSERT INTO identity_emails (provider, subject, email) VALUES ('google', ?, ?)").bind(account, email),
+    db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .bind(await sha256Hex(raw), account, now, now + 86_400_000),
+  ]);
+  const key = new URL(h.page_url).pathname.split("/")[2];
+  const redirect = await req(`/auth/page?tendril=${h.id}&key=${key}`, { headers: { Cookie: `__Host-tendriller=${raw}` }, redirect: "manual" });
+  if (redirect.status !== 303) throw new Error(`owner sign-in failed: ${redirect.status} ${await redirect.text()}`);
+  const session = await req(redirect.headers.get("Location")!, { redirect: "manual" });
+  const cookie = session.headers.get("Set-Cookie")?.split(";")[0];
+  if (!cookie) throw new Error(`no page session cookie: ${session.status}`);
+  return cookie;
+}
+
+/** Headers that make a request to `pageUrl` as the tendril's signed-in owner, if `create` claimed it. */
+export function ownerHeaders(pageUrl: string): Record<string, string> {
+  const url = new URL(pageUrl);
+  if (!url.hostname.endsWith(".tendriller.site")) return {};
+  const cookie = ownerCookies.get(url.hostname.split(".")[0]);
+  return cookie ? { Cookie: cookie, Origin: url.origin } : {};
 }
 
 /** Calls the agent API of a tendril. `body` objects are sent as JSON. */
@@ -97,7 +166,7 @@ export class PageClient {
 
   static async connect(pageUrl: string, opts: { deviceId?: string; secret?: string; name?: string; version?: number; rev?: number; headers?: Record<string, string> } = {}): Promise<PageClient> {
     const c = new PageClient(pageUrl, opts.deviceId, opts.secret);
-    c.headers = opts.headers ?? {};
+    c.headers = opts.headers ?? ownerHeaders(pageUrl);
     await c.open();
     c.welcome = await c.hello(opts);
     return c;
