@@ -39,8 +39,12 @@ for (const recipe of workflows) test(`${recipe}: accessible content, disclosures
     if (recipe === "approval-remote") await expect(page.locator("#decisions")).toContainText("Update the project guide");
     if (recipe === "field-notebook") await expect(page.locator("#timeline")).toContainText("Compare the leaf edges");
     if (recipe === "hands-free-guide") await expect(page.locator("#step-title")).toHaveText("Set out what you need");
-    for (const summary of await page.locator("main details:not([open]) > summary").all()) {
+    // Keep the locator set stable as opening a disclosure changes [open].
+    // Hidden saved-response sections are not currently interactive.
+    for (const summary of await page.locator("main details > summary").all()) {
+      if (!await summary.isVisible() || await summary.evaluate(node => (node.parentElement as HTMLDetailsElement).open)) continue;
       await summary.focus(); await summary.press("Enter");
+      await expect(summary.locator("..")).toHaveAttribute("open", "");
     }
     await page.addScriptTag({ url: app.url + "_tendril/axe.min.js" });
     for (const colorScheme of ["light", "dark"] as const) {

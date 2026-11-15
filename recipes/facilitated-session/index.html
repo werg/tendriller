@@ -40,13 +40,13 @@
       const current=(data.responses||[]).find(item=>item.prompt_id===id);revision=current?.revision||0;
       const identity=data.participant||current?.participant||null;if(participant&&identity!==participant){$('answer').value='';dirty=false;}participant=identity;
       latestAnswer=current?(typeof current.answer==='string'?current.answer:JSON.stringify(current.answer)):null;
-      if(participant&&!dirty){try{const draft=localStorage.getItem(draftKey(id));if(draft){$('answer').value=draft;dirty=draft.trim()!==latestAnswer;}}catch{}}
+      if(participant&&!dirty){try{const draft=localStorage.getItem(draftKey(id));if(draft){$('answer').value=draft;dirty=draft.trim()!==(latestAnswer??'');}}catch{}}
       if(current&&!dirty)$('answer').value=latestAnswer;
       $('saved').textContent=current?`Your response is saved · revision ${current.revision}`:'No response sent for this question yet.';
       $('saved-review').hidden=!current||(!dirty&&!review);$('saved-response').textContent=latestAnswer||'';
       if(review&&current){$('saved-review').open=true;message(dirty?'The latest saved response is shown below. Your draft is kept; sending it again replaces your saved response.':'Your latest saved response is shown below.');}
       else if(review)message('No response is saved for this question yet. Your draft is kept.');
-      if(!dirty)saveDraft();
+      saveDraft();
     }catch(error){message(error.message);}
   }
   function render(){
@@ -57,18 +57,18 @@
     $('participate').hidden=display;$('facilitator').hidden=!owner;$('display-note').hidden=!display;
     $('role-label').textContent=owner?'Facilitator':display?'Shared display':'Your private response';
     $('send').disabled=sending||spec.stage==='closed';
-    if(prompt.id!==promptId){if(promptId&&dirty){saveDraft();window.dispatchEvent(new CustomEvent('tendril:private-draft-saved',{detail:{participant,prompt_id:promptId,title:'Shared question',answer:$('answer').value}}));}promptId=prompt.id||'opening';revision=0;dirty=false;$('answer').value='';
+    if(prompt.id!==promptId){if(promptId&&dirty){saveDraft();window.dispatchEvent(new CustomEvent('tendril:private-draft-saved',{detail:{participant,prompt_id:promptId,title:'Shared question',answer:$('answer').value}}));}promptId=prompt.id||'opening';revision=0;dirty=false;$('answer').dataset.dirty='false';$('answer').value='';
       latestAnswer=null;$('saved-review').hidden=true;$('saved-response').textContent='';$('responses').replaceChildren();$('responses').hidden=true;
       message('');void loadMine();}
   }
-  $('answer').oninput=()=>{dirty=$('answer').value.trim()!==latestAnswer;saveDraft();};$('refresh').onclick=()=>void loadMine(true);
+  $('answer').oninput=()=>{dirty=$('answer').value.trim()!==(latestAnswer??'');saveDraft();};$('refresh').onclick=()=>void loadMine(true);
   $('use-saved').onclick=()=>{if(latestAnswer===null)return;$('answer').value=latestAnswer;dirty=false;saveDraft();$('saved-review').hidden=true;message('Saved response restored. You can edit it again.');};
   $('answer-form').onsubmit=async event=>{
     event.preventDefault();if(sending||display||session().stage==='closed')return;const answer=$('answer').value.trim();if(!answer)return;
-    sending=true;$('send').disabled=true;const id=promptId;message('Sending your private response…');
+    sending=true;$('answer').dataset.sending='true';$('send').disabled=true;const id=promptId;message('Sending your private response…');
     try{const data=await request(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt_id:id,answer,expected_session_id:session().session_id||'initial',...(revision?{expected_revision:revision}:{})})});
       if(id!==promptId)return;revision=(data.response||data).revision||revision+1;latestAnswer=answer;dirty=$('answer').value.trim()!==answer;saveDraft();$('saved-review').hidden=true;message(dirty?'Your previous response was saved. Your new draft is ready to send.':'Private response saved. You can edit and send again.');$('saved').textContent=`Saved revision ${revision}`;
-    }catch(error){message(`${error.message}. Your draft is kept. Choose Refresh my response to review the latest saved text before sending again.`);}finally{sending=false;$('send').disabled=session().stage==='closed';}
+    }catch(error){message(`${error.message}. Your draft is kept. Choose Refresh my response to review the latest saved text before sending again.`);}finally{sending=false;$('answer').dataset.sending='false';$('send').disabled=session().stage==='closed';}
   };
   $('prompt-form').onsubmit=event=>{event.preventDefault();if(!owner)return;const text=$('question').value.trim();if(!text)return;
     tendril.state.set('facilitation',{...session(),stage:'collect',prompt:{id:crypto.randomUUID(),text,description:$('context').value.trim()},summary:''});$('owner-status').textContent='New question shared. Previous private answers remain in the response record.';};
@@ -80,7 +80,7 @@
   $('ask-summary').onclick=async()=>{if(!owner)return;const result=await tendril.send({type:'facilitation_summary_request',prompt_id:promptId,session:{scope:'facilitation',id:session().session_id||'initial'}});$('owner-status').textContent=result.error?'The request was not accepted. Try again.':result.queued?'Summary request saved until connected.':'Request received. The agent can read private answers and propose an aggregate summary.';};
   $('summary-form').onsubmit=event=>{event.preventDefault();if(!owner)return;tendril.state.patch({facilitation:{summary:$('summary-draft').value.trim(),stage:'discuss'}});$('owner-status').textContent='Summary shared with participants and display.';};
   window.addEventListener('pagehide',saveDraft);tendril.state.on(render);
-  tendril.on?.('role',()=>{saveDraft();const changed=role!==tendril.device.role;role=tendril.device.role;owner=role==='owner'&&!tendril.device.pending;display=role==='display';if(changed||display){++loading;participant=null;dirty=false;latestAnswer=null;$('answer').value='';$('saved-response').textContent='';$('saved-review').hidden=true;$('responses').replaceChildren();}render();void loadMine();});
+  tendril.on?.('role',()=>{saveDraft();const changed=role!==tendril.device.role;role=tendril.device.role;owner=role==='owner'&&!tendril.device.pending;display=role==='display';if(changed||display){++loading;participant=null;dirty=false;$('answer').dataset.dirty='false';latestAnswer=null;$('answer').value='';$('saved-response').textContent='';$('saved-review').hidden=true;$('responses').replaceChildren();}render();void loadMine();});
   tendril.on?.('connect',()=>void loadMine());render();
 })();
 </script><script src="_tendril/snippets/session-archive.js"></script><script type="module" src="./assignments.js"></script></body></html>

@@ -242,7 +242,11 @@ device hardware; the Worker and browser suites cover different parts of that pat
 
 `GET A/assignments/participants` lists the owner and approved, unexpired guest
 identities. `POST A/assignments {participant,title,prompt,feedback?,status?}`
-creates a task for exactly that identity. `PATCH A/assignments/<id>` requires
+creates a task for exactly that identity. Include `expected_session_id` from
+`facilitation.session_id` (or `"initial"` before the first archive), captured when
+composing the task. After a rollover, missing or old session IDs are rejected;
+review the draft before deliberately moving it into the current session.
+`PATCH A/assignments/<id>` requires
 `expected_revision` and can update instructions, private feedback, or `open` /
 `closed` status. Reassignment is deliberately a new task; changing a recipient
 cannot expose an earlier answer to another participant.

@@ -33,6 +33,22 @@ test("gallery requests retain the current service origin and require a verified 
   assert.ok(html.includes("input.select()"));
 });
 
+test("starter source manifests include the page's local scripts and module imports", () => {
+  for (const item of catalog.recipes.filter(item => item.kind === "workflow")) {
+    for (const file of item.files) {
+      const source = readFileSync(new URL(`../../${item.path}/${file}`, import.meta.url), "utf8");
+      const references = file.endsWith(".html")
+        ? [...source.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)].map(match => match[1])
+        : [...source.matchAll(/\b(?:from|import)\s*["'](\.[^"']+)["']/g)].map(match => match[1]);
+      for (const reference of references) {
+        if (/^(?:_tendril\/|\/|https?:)/.test(reference)) continue;
+        const relative = reference.replace(/^\.\//, "");
+        assert.ok(item.files.includes(relative), `${item.id}/${file} depends on ${relative}, missing from the source manifest`);
+      }
+    }
+  }
+});
+
 test("copyable starter requests are escaped in HTML instead of becoming markup", async () => {
   const html = await gallery.starterGallery('https://example.test/</textarea><script>alert("x")</script>').text();
   assert.ok(!html.includes('<script>alert("x")</script>'));

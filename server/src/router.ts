@@ -166,7 +166,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   if (path === "/contract/v1.json") return json(schemaDocument);
   if (path === "/recipes/ui-schema.json") return json({ $schema: schemaDocument.$schema, title: "Tendriller agent-editable interface", ...schemas.interface });
   if (path === "/recipes/catalog.json") return asset(env, url, path);
-  if (/^\/recipes\/[a-z0-9-]+\/(?:index\.html|app\.js|model\.mjs|styles\.css|AGENT\.md|contract\.json|scenario\.json)$/.test(path))
+  if (/^\/recipes\/[a-z0-9-]+\/(?:index\.html|app\.js|assignments\.js|model\.mjs|styles\.css|AGENT\.md|contract\.json|scenario\.json)$/.test(path))
     return asset(env, url, path, { "Content-Type": path.endsWith(".json") ? "application/json; charset=utf-8" : "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });

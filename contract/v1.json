@@ -3123,6 +3123,11 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200
+        },
+        "expected_session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         }
       },
       "required": [

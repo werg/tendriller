@@ -61,7 +61,7 @@ function render() {
   $("annotations").replaceChildren(...shapes.filter(shape => shape.text).map(shape => { const li = document.createElement("li"); li.textContent = shape.text; return li; }));
   const receipts = Object.values(s.receipts?.[step.id] || {});
   $("receipts").replaceChildren(...receipts.map(receipt => { const li = document.createElement("li"); li.textContent = `${receipt.device}: ${receipt.status} ${receipt.at ? "at " + new Date(receipt.at).toLocaleTimeString() : ""}`; return li; }));
-  if (!receipts.length) $("receipts").textContent = "No completion receipts for this step yet.";
+  if (!receipts.length) { const li = document.createElement("li"); li.textContent = "No completion receipts for this step yet."; $("receipts").append(li); }
 }
 async function refresh() {
   const generation = ++refreshGeneration;

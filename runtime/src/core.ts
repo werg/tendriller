@@ -73,6 +73,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   let confirmed: any = {};
   let local: any = {};
   let rev = 0;
+  let fullStateRev = 0;
   type PendingState = { cid: string; ops: Op[]; sessions?: Record<string, string> };
   let pendingState: PendingState[] = [];
   let transcript: TranscriptEntry[] = [];
@@ -161,6 +162,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   const resetState = (s: any, r: number, by: string) => {
     confirmed = s && typeof s === "object" && !Array.isArray(s) ? s : {};
     rev = r || 0;
+    fullStateRev = rev;
     rebuild();
     persistSoon();
     emitState([], by);
@@ -592,6 +594,14 @@ export function createCore(cfg: TendrilConfig): Internal {
         const sent = m.cid ? store.items.find((item) => item.cid === m.cid)?.msg : null;
         const idx = pendingState.findIndex((p) => p.cid === m.cid);
         if (idx >= 0) {
+          if (!m.error && typeof m.rev === "number" && m.rev > fullStateRev && m.rev <= rev) {
+            // Different sockets can broadcast N+1 before this socket gets its
+            // ack for N. A delta does not include our write, and reapplying N on
+            // top could overwrite N+1. Keep the item until a reconnect supplies
+            // the full state; its cached ack is then covered by fullStateRev.
+            ws?.close(4000, "state resync");
+            break;
+          }
           const before = JSON.stringify(local);
           const [p] = pendingState.splice(idx, 1);
           // A reconnect may install a newer full snapshot before replay returns

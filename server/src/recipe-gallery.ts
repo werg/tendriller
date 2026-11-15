@@ -18,7 +18,7 @@ export function starterGallery(base: string): Response {
   const workflows = completeStarters.map(recipe => {
     const preview = recipe.preview;
     return `<article class="card starter" id="${escape(recipe.id)}" aria-labelledby="title-${escape(recipe.id)}">
-      ${preview ? `<figure><img src="/${escape(preview.image)}" alt="${escape(preview.alt)}" width="780" height="1688" loading="lazy"><figcaption>Actual page preview · example data</figcaption></figure>` : ""}
+      ${preview ? `<figure><img src="/${escape(preview.image)}" alt="${escape(preview.alt)}" width="780" height="1688" loading="lazy"><figcaption>Actual page preview · example data · <a href="/${escape(preview.image)}">View full preview</a></figcaption></figure>` : ""}
       <div class="starter-copy"><p class="eyebrow">Complete workflow</p><h2 id="title-${escape(recipe.id)}">${escape(recipe.title)}</h2><p>${escape(recipe.description)}</p>
       <details><summary>Devices and permissions</summary><ul>${(recipe.permissions || []).map(permission => `<li>${escape(permission)}</li>`).join("")}</ul></details>
       <details><summary>Page source files</summary><ul>${(recipe.files || ["index.html"]).map(file => `<li><a href="/${escape(recipe.path)}/${escape(file)}">${escape(file)}</a></li>`).join("")}</ul></details>

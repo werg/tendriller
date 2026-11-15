@@ -249,7 +249,9 @@ class Control {
     this.ready = true;
     installAudioUnlock();
     this.host = document.createElement("tendril-control");
-    this.host.setAttribute("style", "all:initial!important;position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483600!important;display:block!important;overflow:visible!important;contain:none!important;");
+    // Protect the overlay's geometry without locking text spacing against a
+    // reader's accessibility stylesheet through an important `all` shorthand.
+    this.host.setAttribute("style", "all:initial;position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483600!important;display:block!important;overflow:visible!important;contain:none!important;");
     this.host.setAttribute("data-tendril", "control");
     const shadow = this.host.attachShadow({ mode: "open" });
     shadow.appendChild(h("style", { text: CSS }));

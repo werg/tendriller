@@ -465,7 +465,7 @@ test('return-to-work card brings saved context, adoption and remix into the firs
 });
 test('prepared-copy recovery is visible and private saved context is cleared on a display role change', async ({ page }) => {
   await load(page, { http: resumeRoutes(true) }); await openSheet(page);
-  const card = page.getByRole('region', { name: 'Continue your work' });
+  const card = page.getByRole('region', { name: 'Continue your work', includeHidden: true });
   await card.getByRole('button', { name: 'Review prepared copy', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Publish prepared copy', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Discard prepared copy', exact: true })).toBeVisible();

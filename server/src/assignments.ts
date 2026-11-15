@@ -39,6 +39,12 @@ export function participants(t: Tendril) {
 export function saveAssignment(t: Tendril, body: any, by: string, id?: string): ParticipantAssignment {
   const value: Partial<AssignmentCreate & AssignmentUpdate> = assertValid(id ? "assignmentUpdate" : "assignmentCreate", body);
   const result = t.ctx.storage.transactionSync(() => {
+    if (!id) {
+      const active = t.getState().state.facilitation as { session_id?: string } | undefined;
+      const generation = typeof active?.session_id === "string" ? active.session_id : "initial";
+      if ((value.expected_session_id !== undefined || generation !== "initial") && value.expected_session_id !== generation)
+        throw new HttpError(409, "stale_session", "This task belongs to an archived session. Review its draft and the current session before assigning it again.");
+    }
     const row = id ? t.db.one<{ data: string }>("SELECT data FROM participant_assignments WHERE id=?", id) : null;
     if (id && !row) throw new HttpError(404, "not_found", "No such assignment");
     const previous: ParticipantAssignment | null = row ? JSON.parse(row.data) : null;

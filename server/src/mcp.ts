@@ -247,7 +247,7 @@ const TOOLS: Tool[] = [
     inputSchema: obj({}), call: () => ({ method: "GET", rest: "assignments" }),
   },
   {
-    name: "create_assignment", description: "Give one approved participant private instructions. Their answer uses the returned prompt_id and expected_assignment_revision. Does not publish to shared displays.",
+    name: "create_assignment", description: "Give one approved participant private instructions. Include expected_session_id from facilitation.session_id (or initial) when composing the task; review stale drafts after archive. Their answer uses the returned prompt_id and expected_assignment_revision. Does not publish to shared displays.",
     inputSchema: schemas.assignmentCreate, call: a => ({ method: "POST", rest: "assignments", body: a }),
   },
   {

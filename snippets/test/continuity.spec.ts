@@ -198,10 +198,11 @@ test('voice note supports recording duration, playback review, discard and expli
 
 test('reviewed capture retains the workflow session from capture time', async ({ page }) => {
   await mountControlledCamera(page, true);
-  await page.getByRole('button', { name: 'Add photo', exact: true }).click();
+  await page.getByRole('button', { name: 'Take photo', exact: true }).click();
   await page.getByRole('button', { name: 'Capture photo', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Send photo', exact: true })).toBeVisible();
   await page.evaluate(() => { (window as any).workflowSession = { scope: 'guide', id: 'new-session' }; });
   await page.getByRole('button', { name: 'Send photo', exact: true }).click();
+  await expect.poll(async () => (await calls(page)).send.length).toBe(1);
   expect((await calls(page)).send[0].data.session).toEqual({ scope: 'guide', id: 'old-session' });
 });

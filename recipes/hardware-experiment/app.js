@@ -16,14 +16,35 @@ function save() {
 function draw(value) {
   const canvas = $("plot"), ctx = canvas.getContext("2d"), series = value?.series || [], dark = matchMedia("(prefers-color-scheme:dark)").matches;
   const ink = dark ? "#c4dcca" : "#335a40", line = dark ? "#91d4a7" : "#1d6641";
-  ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.font = "16px system-ui"; ctx.fillStyle = ink;
-  if (!series.length) { ctx.fillText("Choose a source to see measurements", 30, 170); return; }
+  // Draw in CSS pixels; scaling a fixed-width bitmap squeezes the labels on phones.
+  const { width, height } = canvas.getBoundingClientRect(), density = window.devicePixelRatio || 1;
+  if (!width || !height) return;
+  const pixelWidth = Math.round(width * density), pixelHeight = Math.round(height * density);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) { canvas.width = pixelWidth; canvas.height = pixelHeight; }
+  ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
+  ctx.clearRect(0, 0, width, height); ctx.font = "14px system-ui"; ctx.fillStyle = ink; ctx.textAlign = "left";
+  if (!series.length) {
+    const lines = [""];
+    for (const word of "Choose a source to see measurements".split(" ")) {
+      const candidate = `${lines.at(-1)} ${word}`.trim();
+      if (ctx.measureText(candidate).width > width - 24 && lines.at(-1)) lines.push(word);
+      else lines[lines.length - 1] = candidate;
+    }
+    lines.forEach((text, i) => ctx.fillText(text, 12, height / 2 + (i - (lines.length - 1) / 2) * 22));
+    return;
+  }
   const lo = Math.min(...series.map(p => p.min)), hi = Math.max(...series.map(p => p.max)), range = hi - lo || 1, start = series[0].at, span = Math.max(1000, series.at(-1).at - start);
-  const x = at => 80 + (at - start) / span * 890, y = v => 295 - (v - lo) / range * 245;
-  ctx.strokeStyle = dark ? "#45604b" : "#d9e3da"; for (let i = 0; i <= 4; i++) { const h = 50 + i * 61.25; ctx.beginPath(); ctx.moveTo(80, h); ctx.lineTo(970, h); ctx.stroke(); ctx.fillText((hi - i * range / 4).toFixed(2), 5, h + 5); }
+  const labels = Array.from({ length: 5 }, (_, i) => (hi - i * range / 4).toFixed(2));
+  const left = Math.max(...labels.map(label => ctx.measureText(label).width)) + 12, right = width - 8, top = 24, bottom = height - 48;
+  const x = at => left + (at - start) / span * (right - left), y = v => bottom - (v - lo) / range * (bottom - top);
+  ctx.strokeStyle = dark ? "#45604b" : "#d9e3da"; ctx.lineWidth = 1;
+  labels.forEach((label, i) => { const h = top + i * (bottom - top) / 4; ctx.beginPath(); ctx.moveTo(left, h); ctx.lineTo(right, h); ctx.stroke(); ctx.fillText(label, 0, h + 5); });
   ctx.strokeStyle = line; ctx.lineWidth = 3; ctx.beginPath(); series.forEach((p, i) => i ? ctx.lineTo(x(p.at), y(p.mean)) : ctx.moveTo(x(p.at), y(p.mean))); ctx.stroke();
-  ctx.fillText(new Date(start).toLocaleTimeString(), 80, 335); ctx.fillText(new Date(series.at(-1).at).toLocaleTimeString(), 845, 335);
-  ctx.fillStyle = "#ba762e"; for (const note of value.interventions || []) if (note.at >= start) { ctx.fillRect(x(note.at) - 1, 45, 2, 255); }
+  ctx.font = "12px system-ui";
+  const firstTime = new Date(start).toLocaleTimeString(), lastTime = new Date(series.at(-1).at).toLocaleTimeString();
+  const stagger = ctx.measureText(firstTime).width + ctx.measureText(lastTime).width + 8 > right - left;
+  ctx.fillText(firstTime, left, bottom + 22); ctx.textAlign = "right"; ctx.fillText(lastTime, right, bottom + (stagger ? 40 : 22)); ctx.textAlign = "left";
+  ctx.fillStyle = "#ba762e"; for (const note of value.interventions || []) if (note.at >= start) { ctx.fillRect(x(note.at) - 1, top, 2, bottom - top); }
   canvas.setAttribute("aria-label", `${value.source} trace: ${value.count} samples, mean ${value.mean?.toFixed(2)} ${value.unit}, minimum ${value.min?.toFixed(2)}, maximum ${value.max?.toFixed(2)}.`);
 }
 function render() {
@@ -81,6 +102,7 @@ function download(name, contents, type) { const url = URL.createObjectURL(new Bl
 $("json").onclick = () => { const value = selected(); if (!value) return status("Start or select a run first."); download(`experiment-${value.id}.json`, JSON.stringify({ format: "tendriller-experiment", version: 1, run: value, interpretation: t.state.get(["experiment", "results", value.id]) || null }, null, 2), "application/json"); };
 $("csv").onclick = () => { if (!run || $("history").value && $("history").value !== run.id) return status("Raw samples are available only for this tab's current run. Use report JSON for saved runs."); download(`experiment-${run.id}.csv`, csv(run), "text/csv"); rawExported = true; status(`Exported ${run.raw.length} raw samples${run.discarded_raw ? `; ${run.discarded_raw} earlier samples were summarized` : ""}.`); };
 $("history").onchange = render;
+new ResizeObserver(() => draw(selected())).observe($("plot"));
 $("support").textContent = tendrilSnippets.serial.supported() ? "Choose a serial device after pressing Connect. No commands are written to the device." : tendrilSnippets.serial.unsupportedReason() + " Simulation is available on this device.";
 t.state.on(() => {
   if (run && run.session_id !== session().id && running) { running = false; clearInterval(timer); timer = null; const old = port; port = null; void old?.close(); status('This experiment was archived on another device. Export any raw readings still in this tab before starting again.'); }

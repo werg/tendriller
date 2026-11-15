@@ -15,7 +15,11 @@ For testing, use distinct owner and guest authenticated accounts and a display l
 
 Use `GET A/assignments/participants` for approved participant IDs. Never guess
 identity from an answer or a device purpose. Create a task with
-`POST A/assignments {participant,title,prompt}`; the participant sees it under
+`POST A/assignments {participant,title,prompt,expected_session_id}`. Capture the
+current `facilitation.session_id` (or `"initial"`) when composing the task;
+after an archive, stale or missing IDs are rejected. Review an older draft before
+explicitly moving it to the new session instead of silently retrying with a new ID.
+The participant sees it under
 Just for you and answers using its prompt_id and expected_assignment_revision.
 Use `GET A/assignments` and `GET A/responses` for facilitator review. Send private
 feedback with `PATCH A/assignments/<id> {expected_revision,feedback}` and close

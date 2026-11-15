@@ -172,7 +172,8 @@
         "alt": "Actual local preview of the facilitated group session starter"
       },
       "files": [
-        "index.html"
+        "index.html",
+        "assignments.js"
       ]
     },
     {

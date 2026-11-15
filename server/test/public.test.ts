@@ -128,6 +128,10 @@ it("offers the recipe catalog and a permission-aware device endpoint", async () 
   expect(catalog.status).toBe(200);
   const body = await catalog.json<{ recipes: Array<{ id: string }> }>();
   expect(body.recipes.map((r) => r.id)).toContain("field-notebook");
+  const assignmentSource = await req("/recipes/facilitated-session/assignments.js");
+  expect(assignmentSource.status).toBe(200);
+  expect(assignmentSource.headers.get("Content-Type")).toContain("text/plain");
+  expect(await assignmentSource.text()).toContain("sessionArchive.mount");
   const h = await createPublic("explore@example.com", "192.0.2.99");
   const caps = await (await api(h, "GET", "capabilities")).json<{ devices: unknown[] }>();
   expect(caps.devices).toEqual([]);

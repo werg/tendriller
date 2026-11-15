@@ -50,7 +50,7 @@ export interface WireContracts {
   "participantResponse": { "prompt_id": string; "answer": string; "id": string; "participant": string; "revision": number; "created_at": number; "updated_at": number; };
   "participantResponseWrite": { "prompt_id": string; "answer": string; "expected_revision"?: number; "expected_assignment_revision"?: number; "expected_session_id"?: string; };
   "assignment": { "title": string; "prompt": string; "feedback": string; "status": "open" | "closed"; "id": string; "participant": string; "prompt_id": string; "revision": number; "created_at": number; "updated_at": number; };
-  "assignmentCreate": { "title": string; "prompt": string; "feedback"?: string; "status"?: "open" | "closed"; "participant": string; };
+  "assignmentCreate": { "title": string; "prompt": string; "feedback"?: string; "status"?: "open" | "closed"; "participant": string; "expected_session_id"?: string; };
   "assignmentUpdate": { "title"?: string; "prompt"?: string; "feedback"?: string; "status"?: "open" | "closed"; "expected_revision": number; };
   "archiveScope": "notebook" | "guide" | "workshop" | "experiment" | "decisions" | "facilitation";
   "archiveCreate": { "scope": "notebook" | "guide" | "workshop" | "experiment" | "decisions" | "facilitation"; "title"?: string; "expected_state_revision": number; "expected_interaction_revision": number; "request_id": string; };

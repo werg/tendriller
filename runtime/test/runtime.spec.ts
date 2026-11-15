@@ -202,6 +202,45 @@ test("a lost state acknowledgement cannot restore an archived session after reco
   await expect.poll(queuedStateCount).toBe(0);
 });
 
+test("an acknowledgement behind a newer delta resyncs without losing own writes or overwriting later changes", async ({ page }) => {
+  const t = mock.create({ state: { shared: "before" }, rev: 4 });
+  let accepted: { acknowledgement: any; socket: any } | undefined;
+  t.onMessage = (message, socket) => {
+    if (message.t !== "state") return;
+    if (accepted) {
+      socket.send(JSON.stringify(accepted.acknowledgement)); return true;
+    }
+    // Match the real server's apply/dedupe/ack ordering: another socket's
+    // synchronous mutation may run while the first handler awaits dedupe.
+    t.state.mine = "Accepted own write"; t.state.shared = "Own earlier value";
+    accepted = { acknowledgement: { t: "ack", cid: message.cid, rev: ++t.rev }, socket };
+    return true;
+  };
+  await open(page, t);
+  await page.evaluate(() => window.tendril.state.patch({ mine: "Accepted own write", shared: "Own earlier value" }));
+  await expect.poll(() => !!accepted).toBe(true);
+  mock.pushState(t, [{ op: "set", path: ["remote"], value: "Later independent write" }, { op: "set", path: ["shared"], value: "Later conflicting write" }]);
+  await page.waitForFunction(() => window.tendril.state.get("remote") === "Later independent write");
+  expect(await page.evaluate(() => window.tendril.pendingWork().state)).toBe(1);
+  accepted!.socket.send(JSON.stringify(accepted!.acknowledgement));
+
+  await expect.poll(() => mock.messages(t, "hello").length).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.tendril.connected && window.tendril.pendingWork().state === 0)).toBe(true);
+  expect(await page.evaluate(() => window.tendril.state.get())).toEqual({
+    mine: "Accepted own write", remote: "Later independent write", shared: "Later conflicting write",
+  });
+  expect(await page.evaluate(() => (window.tendril as any)._core.rev)).toBe(t.rev);
+  const sends = mock.messages(t, "state");
+  expect(sends).toHaveLength(2); expect(sends[1]).toEqual(sends[0]);
+  // Once the full welcome covers the receipt, it must not trigger another
+  // reconnect. A subsequent ordinary write proves the connection remains usable.
+  t.onMessage = undefined;
+  await page.evaluate(() => window.tendril.state.set("afterResync", true));
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(0);
+  expect(await page.evaluate(() => window.tendril.state.get("afterResync"))).toBe(true);
+  expect(mock.messages(t, "hello")).toHaveLength(2);
+});
+
 test("send returns seq after ack; wake option", async ({ page }) => {
   const t = mock.create();
   await open(page, t);

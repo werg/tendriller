@@ -120,7 +120,7 @@ const coreSchemas = {
   participantResponse: object({ ...responseProperties, id: string, participant: string, revision: { type: "integer", minimum: 1 }, created_at: integer, updated_at: integer }, ["id", "participant", "prompt_id", "answer", "revision", "created_at", "updated_at"]),
   participantResponseWrite: object({ ...responseProperties, expected_revision: { type: "integer", minimum: 1 }, expected_assignment_revision: { type: "integer", minimum: 1 }, expected_session_id: { type: "string", minLength: 1, maxLength: 100 } }, ["prompt_id", "answer"]),
   assignment,
-  assignmentCreate: object({ ...assignmentProperties, participant: { type: "string", minLength: 1, maxLength: 200 } }, ["participant", "title", "prompt"]),
+  assignmentCreate: object({ ...assignmentProperties, participant: { type: "string", minLength: 1, maxLength: 200 }, expected_session_id: { type: "string", minLength: 1, maxLength: 100 } }, ["participant", "title", "prompt"]),
   assignmentUpdate: object({ ...assignmentProperties, expected_revision: { type: "integer", minimum: 1 } }, ["expected_revision"]),
   archiveScope,
   archiveCreate: object({ scope: archiveScope, title: shortText, expected_state_revision: integer, expected_interaction_revision: integer,

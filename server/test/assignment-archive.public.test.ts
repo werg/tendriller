@@ -106,6 +106,23 @@ it("retains capture references, rejects stale state and input after rollover, an
   expect(state.guide.steps[0].text).toBe("Start here"); expect(state.guide_progress.completed).toBeUndefined();
 });
 
+it("fences delayed private task creation after archive for both owners and agents", async () => {
+  const { h, owner, page } = await setup();
+  const draft = { participant: owner, title: "Earlier task draft", prompt: "Keep these instructions in their original session" };
+  const preview = await apiJson(h, "GET", "archives/preview?scope=facilitation");
+  const archived = await apiJson(h, "POST", "archives", { scope: "facilitation", expected_state_revision: preview.state_revision,
+    expected_interaction_revision: preview.interaction_revision, request_id: crypto.randomUUID() }, 201);
+  const stale = await page("assignments", "POST", { ...draft, expected_session_id: "initial" });
+  expect(stale.status).toBe(409); expect((await stale.json<any>()).error.code).toBe("stale_session");
+  const unstamped = await api(h, "POST", "assignments", draft);
+  expect(unstamped.status).toBe(409); expect((await unstamped.json<any>()).error.code).toBe("stale_session");
+  expect((await apiJson(h, "GET", "assignments")).assignments).toEqual([]);
+  expect((await apiJson(h, "GET", "archives/preview?scope=facilitation")).interaction_revision).toBe(preview.interaction_revision + 1);
+  const current = await page("assignments", "POST", { ...draft, expected_session_id: archived.archive.id });
+  expect(current.status).toBe(201);
+  expect((await current.json<any>()).prompt).toBe(draft.prompt);
+});
+
 it("keeps current work when archive capacity is reached and permits explicit download/removal", async () => {
   const { h, page } = await setup();
   await inDO(h.id, t => { for (let i = 0; i < 20; i++) t.db.run("INSERT INTO session_archives(id,scope,title,created_at,bytes,request,data) VALUES(?,?,?,?,?,?,?)", `old-${i}`, "notebook", "Old session", i, 1, "{}", "{}"); });

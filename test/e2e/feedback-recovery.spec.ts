@@ -1,6 +1,6 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { agent, createPage, deletePage, localPageUrl, openClaimed, publish, signInFixture } from "./local-helpers";
+import { agent, createPage, deletePage, localPageUrl, openClaimed, publish, signInFixture, type Handle } from "./local-helpers";
 
 const recipe = (file: string) => readFileSync(new URL(`../../recipes/facilitated-session/${file}`, import.meta.url), "utf8");
 
@@ -78,4 +78,159 @@ test("private feedback survives another owner's archive and reload, then stays o
     expect(await page.locator("textarea").evaluateAll((fields, text) => fields.some(field => (field as HTMLTextAreaElement).value.includes(text)), feedback)).toBe(false);
     expect((await context.request.get(new URL("_tendril/assignments", displayUrl).href)).status()).toBe(403);
   } finally { await otherContext.close(); await deletePage(h); }
+});
+
+async function openSession(page: Page, h: Handle) {
+  await publish(h, "<p>Preparing draft recovery</p>");
+  expect((await agent(h, "/files", "POST", { replace: true, files: {
+    "index.html": recipe("index.html"), "assignments.js": recipe("assignments.js"),
+  } })).status).toBe(200);
+  await signInFixture(page.context()); await openClaimed(page, h);
+  await expect(page.locator("#participant-code")).toContainText("Your participant code:");
+  await expect(page.locator("#saved")).toContainText("No response sent");
+}
+
+test("a task draft keeps its first-edit session through rollover and a delayed rejection until explicitly reused", async ({ page, context }) => {
+  const h = await createPage(), title = "Observe the quiet corner", instructions = "Describe the light beside the window.";
+  let releasePost: (() => void) | undefined;
+  try {
+    await openSession(page, h);
+    const base = `${localPageUrl(h)}_tendril/`;
+    const archiveElsewhere = async () => {
+      const snapshot = await (await context.request.get(`${base}archives/preview?scope=facilitation`)).json();
+      const response = await context.request.post(`${base}archives`, { headers: { Origin: new URL(base).origin }, data: {
+        scope: "facilitation", request_id: crypto.randomUUID(), expected_state_revision: snapshot.state_revision,
+        expected_interaction_revision: snapshot.interaction_revision,
+      } });
+      expect(response.status()).toBe(201);
+      return (await response.json()).archive.id as string;
+    };
+    const assign = page.getByRole("button", { name: "Assign privately", exact: true });
+    const reuse = page.getByRole("button", { name: "Use task draft in current session", exact: true });
+    await expect(assign).toBeEnabled();
+    const recipient = await page.locator("#assignment-participant").inputValue(); expect(recipient).toBeTruthy();
+    await page.locator("#assignment-title").fill(title);
+
+    // The generation belongs to the first keystroke, even when the private
+    // instructions are composed after another owner rolls the session over.
+    const firstSession = await archiveElsewhere();
+    await page.waitForFunction(id => (window as any).tendril.state.get("facilitation.session_id") === id, firstSession);
+    await page.locator("#assignment-prompt").fill(instructions);
+    await expect(reuse).toBeVisible(); await expect(assign).toBeDisabled();
+    await expect(page.locator("#assignment-title")).toHaveValue(title);
+    await expect(page.locator("#assignment-participant")).toHaveValue(recipient);
+    expect((await agent(h, "/assignments")).data.assignments).toEqual([]);
+    await reuse.click(); await expect(assign).toBeEnabled();
+
+    // Delay the actual request, not the Worker response. Archiving while it is
+    // in transit exercises the service's stale-session rejection and UI recovery.
+    let markCaptured!: () => void;
+    const captured = new Promise<void>(resolve => { markCaptured = resolve; });
+    const held = new Promise<void>(resolve => { releasePost = resolve; });
+    let submitted: any;
+    await page.route(`${base}assignments`, async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      submitted = route.request().postDataJSON(); markCaptured(); await held; await route.continue();
+    });
+    await assign.click(); await captured;
+    expect(submitted).toMatchObject({ title, prompt: instructions, participant: recipient, expected_session_id: firstSession });
+    const nextSession = await archiveElsewhere();
+    await page.waitForFunction(id => (window as any).tendril.state.get("facilitation.session_id") === id, nextSession);
+    const rejected = page.waitForResponse(response => response.url() === `${base}assignments` && response.request().method() === "POST");
+    releasePost();
+    const response = await rejected; expect(response.status()).toBe(409);
+    expect((await response.json()).error.code).toBe("stale_session");
+    await expect(page.locator("#assignment-status")).toContainText("Your task title and private instructions are kept.");
+    await expect(page.locator("#assignment-title")).toHaveValue(title);
+    await expect(page.locator("#assignment-prompt")).toHaveValue(instructions);
+    await expect(reuse).toBeEnabled(); await expect(assign).toBeDisabled();
+    expect((await agent(h, "/assignments")).data.assignments).toEqual([]);
+
+    await page.unroute(`${base}assignments`);
+    await reuse.click();
+    const accepted = page.waitForResponse(response => response.url() === `${base}assignments` && response.request().method() === "POST");
+    await assign.click();
+    const saved = await accepted; expect(saved.status()).toBe(201);
+    expect(saved.request().postDataJSON().expected_session_id).toBe(nextSession);
+    await expect(page.locator("#assignment-status")).toContainText("Task assigned privately.");
+    await expect(page.locator("#assignment-title")).toHaveValue("");
+    await expect(page.locator("#assignment-prompt")).toHaveValue("");
+    const tasks = (await agent(h, "/assignments")).data.assignments;
+    expect(tasks).toHaveLength(1); expect(tasks[0]).toMatchObject({ title, prompt: instructions, participant: recipient });
+  } finally { releasePost?.(); await deletePage(h); }
+});
+
+test("an unsent answer restored after reload blocks archive review", async ({ page }) => {
+  const h = await createPage(), answer = "This answer is still a draft after reopening the page.";
+  try {
+    await openSession(page, h);
+    await page.locator("#answer").fill(answer);
+    await page.reload();
+    await page.waitForFunction(() => (window as any).tendril?.connected === true);
+    await expect(page.locator("#answer")).toHaveValue(answer);
+    const writes: string[] = [];
+    page.on("request", request => {
+      if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/_tendril/archives")) writes.push(request.url());
+    });
+    const archive = page.locator("#session-archive");
+    await archive.locator("summary").click();
+    const prepare = archive.getByRole("button", { name: "Review archive and new session", exact: true });
+    await expect(prepare).toBeEnabled(); await prepare.click();
+    await expect(archive.getByRole("status")).toContainText("Save your answer and feedback drafts before archiving.");
+    await expect(archive.locator(".archive-review")).toBeHidden();
+    await expect(page.locator("#answer")).toHaveValue(answer);
+    expect(writes).toEqual([]);
+    expect((await agent(h, "/archives")).data.archives).toEqual([]);
+    expect((await agent(h, "/responses")).data.responses).toEqual([]);
+  } finally { await deletePage(h); }
+});
+
+test("an earlier in-memory answer survives a later owner archive when local storage is unavailable", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", { configurable: true, get() {
+      throw new DOMException("Local storage is disabled by the explicit test fixture", "SecurityError");
+    } });
+  });
+  const h = await createPage(), answer = "Keep this earlier private draft even when storage is blocked.";
+  try {
+    await openSession(page, h);
+    await page.locator("#answer").fill(answer);
+    await expect(page.locator("#status")).toContainText("could not save your draft");
+    await page.locator("#question").fill("Which small experiment comes next?");
+    await page.getByRole("button", { name: "Start a new question", exact: true }).click();
+    await expect(page.locator("#prompt")).toHaveText("Which small experiment comes next?");
+    await expect(page.locator("#answer")).toHaveValue("");
+    const retained = page.locator("#retained-drafts");
+    await expect(retained).toBeVisible();
+    await expect(retained.locator("textarea")).toHaveValue(answer);
+    await page.waitForFunction(() => {
+      const pending = (window as any).tendril.pendingWork();
+      return pending.events === 0 && pending.state === 0 && pending.captures === 0;
+    });
+
+    const archive = page.locator("#session-archive");
+    await archive.locator("summary").click();
+    const prepare = archive.getByRole("button", { name: "Review archive and new session", exact: true });
+    await expect(prepare).toBeEnabled(); await prepare.click();
+    await expect(archive.locator(".archive-review")).toBeVisible();
+    const archivedDownload = page.waitForEvent("download");
+    await archive.getByRole("button", { name: "Archive and start new session", exact: true }).click();
+    await archivedDownload;
+    await expect(archive.getByRole("status")).toContainText("Previous session archived.");
+    await expect(retained).toBeVisible();
+    await expect(retained.locator("textarea")).toHaveValue(answer);
+    await expect(page.locator("#answer")).toHaveValue("");
+    expect((await agent(h, "/archives")).data.archives).toHaveLength(1);
+    expect((await agent(h, "/responses")).data.responses).toEqual([]);
+    expect(JSON.stringify((await agent(h, "/state")).data)).not.toContain(answer);
+
+    const exportedDrafts = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Download private drafts", exact: true }).click();
+    const download = await exportedDrafts;
+    expect(download.suggestedFilename()).toBe("private-session-drafts.json");
+    const path = await download.path(); expect(path).toBeTruthy();
+    const exported = JSON.parse(readFileSync(path!, "utf8"));
+    expect(exported.drafts).toEqual(expect.arrayContaining([expect.objectContaining({ answer })]));
+    expect(await page.evaluate(() => { try { localStorage.getItem("probe"); return false; } catch { return true; } })).toBe(true);
+  } finally { await deletePage(h); }
 });
