@@ -53,6 +53,8 @@ The way in is the artifact `mcp` capability. A page can call the viewer's claude
 
 That route pushes from the artifact to the Tendriller page. It cannot yet wake an agent, because the MCP tools are all agent-side and none of them adds a page event. A tool that sends a waking page event would close that gap.
 
+The plan to close it, reusing Tendriller's device and message code, is in `docs/ARTIFACT_CONNECTOR.md`.
+
 ## What to borrow
 
 1. **A one-step attach in the creation response.** Tendriller cannot bind to a host the way artifacts do, but it can come close. It can return an `attach` block with the exact command for the caller's host: for Claude Code and Claude Duet, that is the `tendril-watch.mjs` download and the `Monitor` call. The agent then runs one step instead of reading the guide.
