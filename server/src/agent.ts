@@ -9,7 +9,7 @@ import {
   fileKey, type VersionFile,
 } from "./files";
 import { HttpError, intParam, isPlainObject, json, readBody, readJson } from "./http";
-import { BLOB_ID_RE, fromBase64, newPageKey, randomB32, sha256Hex } from "./ids";
+import { BLOB_ID_RE, fromBase64, newPageKey, newSocketTicket, randomB32, safeEqual, sha256Hex, SOCKET_TICKET_RE } from "./ids";
 import {
   CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_BLOB, MAX_EVAL_CODE, MAX_FILE, MAX_STATE,
 } from "./limits";
@@ -39,6 +39,8 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   if (matches.length === 0) throw new HttpError(404, "not_found", `No API route ${rest || "/"}`);
   const r = matches.find((m) => m.method === method);
   if (!r) throw new HttpError(405, "method_not_allowed", `${req.method} not allowed on ${rest || "/"}`);
+  // The wake socket authenticates itself: it accepts the page token or a listen-only ticket.
+  if (rest === "events/socket" && method === "GET") return await agentSocket(t, req, url);
   const by = await t.authAgent(req);
   const params = r.pattern.exec(rest)!.slice(1);
   return await r.handler(t, req, url, by, params);
@@ -100,21 +102,82 @@ export function tendrilMeta(t: Tendril) {
 
 route("GET", /^$/, async (t) => json(await tendrilInfo(t)));
 
-route("GET", /^events\/socket$/, async (t, req) => {
+/** Lifetime of a listen-only socket ticket. It only has to survive until the socket opens. */
+export const SOCKET_TICKET_TTL_MS = 10 * 60_000;
+
+// Registered for method matching; handleAgent dispatches it to agentSocket before token auth.
+route("GET", /^events\/socket$/, () => {
+  throw new HttpError(500, "internal", "agent socket dispatch");
+});
+
+/**
+ * Exchanges the page token for a single-use, listen-only ticket that opens the wake socket.
+ * Hosts whose socket configuration is visible in a transcript (for example a tool call that
+ * names the subprotocols) pass the ticket instead of the page token. The ticket cannot read
+ * events or call any other route; the socket it opens closes when the page token is revoked.
+ */
+route("POST", /^events\/socket\/ticket$/, async (t, req, url) => {
+  const tokenHash = await sha256Hex(/^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")![1]);
+  const now = t.now();
+  t.db.run("DELETE FROM socket_tickets WHERE expires_at <= ?", now);
+  const live = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM socket_tickets")?.n ?? 0;
+  if (live >= 20) throw new HttpError(429, "rate_limited", "Too many unused socket tickets; open a socket or wait for them to expire");
+  const ticket = newSocketTicket();
+  const expiresAt = now + SOCKET_TICKET_TTL_MS;
+  t.db.run("INSERT INTO socket_tickets (hash, token_hash, expires_at) VALUES (?, ?, ?)", await sha256Hex(ticket), tokenHash, expiresAt);
+  const socketUrl = `${apiUrl(t.env, t.tid).replace(/^http/, "ws")}/events/socket`;
+  const after = url.searchParams.get("after");
+  return json({
+    ticket,
+    expires_at: expiresAt,
+    socket_url: after !== null && /^\d+$/.test(after) ? `${socketUrl}?after=${after}` : socketUrl,
+    protocols: ["tendriller.agent.v1", ticket],
+  }, 201);
+});
+
+/** Resolves the socket credential to the page token's hash: a listen-only ticket or the token itself. */
+async function socketTokenHash(t: Tendril, req: Request): Promise<string> {
+  const ticket = req.headers.get("x-tendril-socket-ticket");
+  if (ticket !== null) {
+    if (!SOCKET_TICKET_RE.test(ticket)) throw new HttpError(401, "unauthorized", "Invalid socket ticket");
+    const hash = await sha256Hex(ticket);
+    const row = t.db.one<{ hash: string; token_hash: string; expires_at: number }>(
+      "SELECT hash, token_hash, expires_at FROM socket_tickets WHERE hash = ?", hash);
+    // Single use: a ticket is spent whether or not the socket stays open.
+    if (row) t.db.run("DELETE FROM socket_tickets WHERE hash = ?", hash);
+    if (!row || !safeEqual(row.hash, hash) || row.expires_at <= t.now()) throw new HttpError(401, "unauthorized", "Invalid, used or expired socket ticket");
+    const token = t.db.one<{ name: string }>("SELECT name FROM tokens WHERE hash = ?", row.token_hash);
+    if (!token) throw new HttpError(401, "unauthorized", "The token behind this ticket was revoked");
+    t.checkin(token.name);
+    return row.token_hash;
+  }
+  const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
+  if (!token) throw new HttpError(401, "unauthorized");
+  await t.authToken(token);
+  return sha256Hex(token);
+}
+
+async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response> {
   if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required");
   if (!(req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim()).includes("tendriller.agent.v1"))
     throw new HttpError(400, "bad_request", "Unsupported agent socket protocol");
-  const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
-  if (!token) throw new HttpError(401, "unauthorized");
+  const tokenHash = await socketTokenHash(t, req);
+  const after = url.searchParams.has("after") ? intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER) : null;
   const pair = new WebSocketPair();
   const [client, server] = [pair[0], pair[1]];
   t.ctx.acceptWebSocket(server, ["agent"]);
-  server.serializeAttachment({ kind: "agent", tokenHash: await sha256Hex(token) });
+  server.serializeAttachment({ kind: "agent", tokenHash });
+  // Catch-up: a receiver that re-arms with its cursor learns at once about anything it missed
+  // while it was disconnected, instead of waiting for the next event.
+  if (after !== null) {
+    const pending = t.db.one<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE wake = 1 AND seq > ?", after)?.m ?? null;
+    if (pending !== null) t.send(server, { t: "wake", seq: pending });
+  }
   t.refreshPresence();
   t.scheduleAlarm();
   return new Response(null, { status: 101, webSocket: client,
     headers: { "Sec-WebSocket-Protocol": "tendriller.agent.v1" } });
-});
+}
 
 route("PATCH", /^$/, async (t, req) => {
   const b = await readJson(req, 64 * 1024);

@@ -217,6 +217,81 @@ it("authenticates a hibernating agent socket and delivers a count-only probe wak
   expect(socket.readyState).toBe(WebSocket.CLOSED);
 });
 
+async function openAgentSocket(h: Handle, credential: string, query = "") {
+  const response = await req(`${h.api}/events/socket${query}`, { headers: {
+    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${credential}`,
+  } });
+  const frames: any[] = [];
+  const socket = response.webSocket;
+  if (socket) {
+    socket.accept();
+    socket.addEventListener("message", (e) => frames.push(JSON.parse(String(e.data))));
+  }
+  return { response, socket, frames };
+}
+
+async function until(check: () => boolean, tries = 40): Promise<void> {
+  for (let i = 0; i < tries && !check(); i++) await new Promise((r) => setTimeout(r, 25));
+}
+
+it("sends a catch-up wake when a re-arming socket's cursor is behind", async () => {
+  const h = await createPublic("catchup@example.com", "192.0.2.191");
+  const probe = await (await api(h, "POST", "wake/probe")).json<{ seq: number }>();
+  const behind = await openAgentSocket(h, h.token, "?after=0");
+  expect(behind.response.status).toBe(101);
+  await until(() => behind.frames.length > 0);
+  expect(behind.frames).toEqual([{ t: "wake", seq: probe.seq }]);
+  const current = await openAgentSocket(h, h.token, `?after=${probe.seq}`);
+  const plain = await openAgentSocket(h, h.token);
+  await new Promise((r) => setTimeout(r, 100));
+  expect(current.frames).toEqual([]);
+  expect(plain.frames).toEqual([]);
+  for (const s of [behind, current, plain]) s.socket!.close();
+});
+
+it("opens the wake socket with a single-use listen-only ticket", async () => {
+  const h = await createPublic("ticket@example.com", "192.0.2.192");
+  const issued = await api(h, "POST", "events/socket/ticket?after=0");
+  expect(issued.status).toBe(201);
+  const t = await issued.json<{ ticket: string; expires_at: number; socket_url: string; protocols: string[] }>();
+  expect(t.ticket).toMatch(/^lt_[a-z2-7]{32}$/);
+  expect(t.protocols).toEqual(["tendriller.agent.v1", t.ticket]);
+  expect(t.socket_url).toBe(`${h.api.replace(/^http/, "ws")}/events/socket?after=0`);
+  expect(JSON.stringify(t)).not.toContain(h.token);
+
+  // The ticket is not an API credential.
+  expect((await api(h, "GET", "events", undefined, {}, t.ticket)).status).toBe(401);
+
+  const probe = await (await api(h, "POST", "wake/probe")).json<{ seq: number }>();
+  const first = await openAgentSocket(h, t.ticket, "?after=0");
+  expect(first.response.status).toBe(101);
+  expect(first.response.headers.get("Sec-WebSocket-Protocol")).toBe("tendriller.agent.v1");
+  await until(() => first.frames.length > 0);
+  expect(first.frames).toEqual([{ t: "wake", seq: probe.seq }]);
+  expect((await (await api(h, "GET", "")).json<any>()).agent_delivery.mode).toBe("live_socket");
+
+  // Single use, and a forged header on the token path does not bypass it.
+  expect((await openAgentSocket(h, t.ticket)).response.status).toBe(401);
+  expect((await openAgentSocket(h, "lt_" + "a".repeat(32))).response.status).toBe(401);
+  const spoofed = await req(`${h.api}/events/socket`, { headers: { Upgrade: "websocket",
+    "Sec-WebSocket-Protocol": "tendriller.agent.v1", "x-tendril-socket-ticket": t.ticket } });
+  expect(spoofed.status).toBe(401);
+
+  // Revoking the page token closes a ticket-opened socket and voids unused tickets.
+  const spare = await (await api(h, "POST", "events/socket/ticket")).json<{ ticket: string }>();
+  expect((await api(h, "DELETE", "tokens/main")).status).toBe(204);
+  await until(() => first.socket!.readyState === WebSocket.CLOSED);
+  expect(first.socket!.readyState).toBe(WebSocket.CLOSED);
+  expect((await openAgentSocket(h, spare.ticket)).response.status).toBe(401);
+});
+
+it("expires socket tickets", async () => {
+  const h = await createPublic("ticket-expiry@example.com", "192.0.2.193");
+  const t = await (await api(h, "POST", "events/socket/ticket")).json<{ ticket: string }>();
+  await inDO(h.id, (d) => { d.skew += 11 * 60_000; });
+  expect((await openAgentSocket(h, t.ticket)).response.status).toBe(401);
+});
+
 it("requires an owner email and refuses a different verified account", async () => {
   const missing = await req("/api/tendrils", { method: "POST", headers: creatorHeaders, body: "{}" });
   expect(missing.status).toBe(400);

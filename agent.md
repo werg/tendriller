@@ -56,7 +56,7 @@ Use the same private creation-response file and page API on every host. The pers
 | Grok Bot | A webhook routine starts a Bot run | Create a routine once, configure its URL and bearer key on the page. |
 | Grok automation | Standard Webhooks starts an automation | Configure `standard_webhooks` with its `whsec_` secret. This is distinct from Grok Bot routines. |
 | OpenAI dot / Work chat | MCP Events webhook subscription | Connect the page MCP endpoint and subscribe to `tendril.events_waiting`. Host plugin setup may require user or workspace action. |
-| Claude Duet | MCP tools and long-polls within a running turn | Read events repeatedly while active; otherwise use its own scheduled check-in. No verified idle push. |
+| Claude Duet | The Monitor tool holds the agent WebSocket; each wake frame resumes the same session, even when idle | Get a listen-only socket ticket, arm Monitor with it, re-arm on expiry; an hourly Routine is the fallback after the session is replaced. |
 | Other terminal agents | Host-specific queue or session API | Build an adapter that wakes the **same session**; polling alone only collects events. |
 
 **Hermes, same bound chat:** The ordinary Hermes webhook adapter starts a fresh agent run. For the chat that created the page, install [Hermes Wake](https://hermes-agent.nousresearch.com/marketplace/wake) once and explicitly enable gateway injection:
@@ -93,7 +93,22 @@ The command keeps a hibernating WebSocket open and reconnects after a disconnect
 
 **OpenAI dot or Work chat:** The page exposes a Streamable HTTP MCP server at `A/mcp` with bearer authentication, or `A/mcp/<token>` for hosts that cannot send a header. The path form is a bearer capability: keep it private and rotate the page token if exposed. Connect it as an MCP plugin where that host permits custom servers. Call `events/list`, then subscribe to `tendril.events_waiting` with the host's callback URL and signing secret; on a notice, call `read_events`, `say` or `write_files`, and read again. [MCP Events](https://developers.openai.com/plugins/build/mcp-events) supports dots and Work chats, but plugin connection and event-triggered task controls are owned by the host/workspace. The per-page MCP connector is implemented and tested locally; a real dot callback has not yet been verified. Do not promise push until it has subscribed and passed two delivery probes.
 
-**Claude Duet:** Use the same MCP tools while a turn is running: call `read_events` with `wait:300`, handle the returned cursor, and call it again after empty timeouts. When Duet ends the turn, use its own check-in or schedule to read later. There is no verified external callback that resumes an idle Duet conversation. Tell the page user that input is saved and may be answered at the next check-in.
+**Claude Duet (and Claude Code on the web):** Each session has a `Monitor` tool with a WebSocket source: every text frame becomes a notification that resumes **that same session**, also between turns. Use it on the agent socket; it needs no bridge, no local process and no polling, and the Durable Object stays hibernated while idle.
+
+1. Keep the creation response in the project's durable folder, for example `/mnt/project-files/.tendril/<id>.json` (mode `600`), with your last handled `cursor`. The container's other directories do not outlast the session.
+2. Exchange the page token for a single-use, listen-only ticket from a shell command, so the token never appears in a tool call:
+
+   ```sh
+   F=/mnt/project-files/.tendril/<id>.json
+   curl -fsS -X POST "$(jq -r .api $F)/events/socket/ticket?after=$(jq -r '.cursor // 0' $F)" \
+     -H "Authorization: Bearer $(jq -r .token $F)" | jq -c '{socket_url, protocols}'
+   ```
+
+3. Call `Monitor` with `ws: {url: <socket_url>, protocols: <protocols>}`, a description naming the page, and the longest `timeout_ms` (30 minutes). The ticket only opens this one socket and cannot read events; it expires unused after ten minutes. Because the URL carries `after=<cursor>`, the server sends a wake at once if anything arrived while you were not listening.
+4. On each `{"t":"wake","seq":N}` notification, read `GET A/events?after=<cursor>&wait=0` from a shell command, handle the events as described below, reply with `A/say`, and save the new cursor. The monitor stays armed for later events.
+5. When the monitor reports that it expired or its socket closed, repeat steps 2 and 3. Each re-arm costs one short turn, about two an hour while the page is idle.
+
+Run the two delivery probes from a shell command, end the turn, and confirm that the notification resumes this session before you share the link. The watch lives only as long as the session that armed it. Arm it in the session that will keep talking to the person (in Duet, usually the main chat, not a short task thread), and write in memory that the page exists and where its file is, so a replacement session re-arms it first. As a backstop, create an hourly Routine bound to the session that reads the queue and re-arms the monitor; tell the person replies can wait up to an hour if the session was replaced. Duet's `watch_url` webhook cannot be used: only Anthropic's artifact service can sign deliveries to it. A background shell command that exits on a wake (the [WebSocket wait helper](https://tendriller.dev/tendril-wait.mjs) run with `run_in_background`) also resumes the session and lasts up to two hours, but it needs the token in its environment.
 
 ### Build a host adapter when there is no ready-made one
 
