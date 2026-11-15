@@ -45,6 +45,14 @@ Not everything a page reports needs a reply. Tendriller already has two quiet ch
 - **Shared state.** The page writes with `tendril.state.set` or `tendril.state.patch`. The change is stored with a revision number and broadcast to other open devices, but it does not wake the agent. The agent reads it with `GET A/state` whenever it next runs. This suits values that only matter in their latest form, such as a form draft, a slider position or the newest sensor reading.
 - **Quiet events.** `tendril.send(data, {wake:false})` queues an event without waking the agent. It is delivered with the next waking event. This suits a history the agent should see in order, such as a log of steps taken.
 
+## Using Tendriller from inside an artifact
+
+An artifact cannot talk to tendriller.dev directly. We tested this on 2026-11-15 with a private artifact that tried three calls: a plain `GET A/`, the agent wake socket and `POST A/wake/probe`. The artifact frame's content security policy blocked all three under `connect-src`, so `fetch` failed and the socket never opened. Artifacts may only load scripts from a short list of code hosts, and every other network call is refused. Loading `tendril.js` from a CDN would therefore work, but nothing it tries to reach would.
+
+The way in is the artifact `mcp` capability. A page can call the viewer's claude.ai connectors, and every tendril already serves MCP at `A/mcp/<token>`, a capability URL for hosts that cannot send headers. Once the owner adds that URL as a custom connector, an artifact that declares it can call the existing tools: `say` to speak on the owner's phone, `update_state` to change what open devices show, and `eval` to run code on the live page. The calls run as the viewer, so the token never sits in the artifact.
+
+That route pushes from the artifact to the Tendriller page. It cannot yet wake an agent, because the MCP tools are all agent-side and none of them adds a page event. A tool that sends a waking page event would close that gap.
+
 ## What to borrow
 
 1. **A one-step attach in the creation response.** Tendriller cannot bind to a host the way artifacts do, but it can come close. It can return an `attach` block with the exact command for the caller's host: for Claude Code and Claude Duet, that is the `tendril-watch.mjs` download and the `Monitor` call. The agent then runs one step instead of reading the guide.
