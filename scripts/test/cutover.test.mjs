@@ -6,7 +6,7 @@ import { test } from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
 const migrationDir = join(root, 'server/migrations');
-const allMigrations = readdirSync(migrationDir).filter(name => /^\\d+_.+\\.sql$/.test(name)).sort();
+const allMigrations = readdirSync(migrationDir).filter(name => /^\d+_.+\.sql$/.test(name)).sort();
 const cutover = '0010_contract2_discard_old_pages.sql';
 
 function migratedDatabase(t, includeCutover = true) {
@@ -64,8 +64,9 @@ test('cutover clears stale page registrations and usage without deleting identit
   db.exec(readFileSync(join(migrationDir, cutover), 'utf8'));
   for (const table of ['tendrils', 'page_codes', 'claim_intents', 'suspension_queue', 'creation_ip'])
     assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count, 0, table);
-  assert.deepEqual(db.prepare('SELECT reserved, mode FROM service_state WHERE id = 1').get(),
-    { reserved: 0, mode: 'creation_paused' });
+  const service = db.prepare('SELECT reserved, mode FROM service_state WHERE id = 1').get();
+  assert.equal(service.reserved, 0);
+  assert.equal(service.mode, 'creation_paused');
   assert.equal(db.prepare("SELECT reserved FROM accounts WHERE id='owner'").get().reserved, 0);
   for (const table of ['accounts', 'identities', 'sessions', 'reports', 'audit_log'])
     assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count, 1, table);
@@ -74,6 +75,7 @@ test('cutover clears stale page registrations and usage without deleting identit
 test('the full migration series initializes an empty paused contract 2 database', t => {
   const db = migratedDatabase(t);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tendrils').get().count, 0);
-  assert.deepEqual(db.prepare('SELECT mode, reserved FROM service_state WHERE id=1').get(),
-    { mode: 'creation_paused', reserved: 0 });
+  const service = db.prepare('SELECT mode, reserved FROM service_state WHERE id=1').get();
+  assert.equal(service.mode, 'creation_paused');
+  assert.equal(service.reserved, 0);
 });
