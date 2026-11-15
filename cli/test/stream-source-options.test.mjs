@@ -18,7 +18,7 @@ async function directory(t) {
   return path;
 }
 
-test('source projection validates bounded literal paths and cannot overwrite source identity', () => {
+test('source projection validates bounded literal paths and preserves input metadata', () => {
   const config = source => validateConfig({ api, token, sources: [source] }, '/work');
   for (const max_line_bytes of [0, 1023, 1048577, Infinity, '65536'])
     assert.throws(() => config({ ...fileSource, max_line_bytes }), /max_line_bytes/);
@@ -27,16 +27,70 @@ test('source projection validates bounded literal paths and cannot overwrite sou
   assert.equal(config({ ...fileSource, max_line_bytes: 1048576 }).sources[0].max_line_bytes, 1048576);
   const source = { ...base, fields: { loss: ['metrics', 'train/loss'], value: ['rows', 0, 'value'], missing: ['absent'], nullable: ['nullable'] } };
   const record = lineRecord(source, JSON.stringify({ ts: 123, type: 'training', data: {
-    metrics: { 'train/loss': 0.25 }, rows: [{ value: 'café' }], nullable: null, unwanted: 'large private detail', source: 'forged', run: 'forged',
+    metrics: { 'train/loss': 0.25 }, rows: [{ value: 'café' }], nullable: null, unwanted: 'large private detail', source: 'worker-a', run: 'run-a',
   } }));
   assert.equal(record.ts, 123); assert.equal(record.type, 'training');
-  assert.deepEqual(record.data, { loss: 0.25, value: 'café', nullable: null, source: base.id, run: base.run });
+  assert.deepEqual(record.data, { loss: 0.25, value: 'café', nullable: null, source: 'worker-a', run: 'run-a' });
   assert.equal(lineRecord(source, 'not json').data.reason, 'invalid_json');
   assert.deepEqual(lineRecord(source, '{"type":"collector_error","data":{"secret":"not selected"}}').data,
     { source: base.id, run: base.run }, 'input type names cannot bypass configured field selection');
   const local = config(command('console.log("{}")', { cwd: './tools' })).sources[0];
   assert.equal(local.cwd, '/work/tools'); assert.equal(local.timeout_ms, 10000);
   for (const timeout_ms of [99, 300001, '500']) assert.throws(() => config(command('', { timeout_ms })), /timeout_ms|command/);
+});
+
+test('raw and wrapped records retain explicit source/run values and use configuration only for absent keys', () => {
+  for (const wrap of [data => data, data => ({ ts: 123, type: 'training', data })]) {
+    for (const metadata of [
+      { source: 'worker-a', run: 'run-1' }, { source: 'worker-b', run: 'run-2' },
+      { source: null, run: null }, { source: '', run: '' }, { source: false, run: 0 },
+    ]) {
+      const record = lineRecord(base, JSON.stringify(wrap({ ...metadata, loss: 0.5 })));
+      assert.equal(record.data.source, metadata.source);
+      assert.equal(record.data.run, metadata.run);
+      assert.equal(record.data.loss, 0.5);
+    }
+    for (const [metadata, expected] of [
+      [{}, { source: base.id, run: base.run }],
+      [{ source: 'worker-a' }, { source: 'worker-a', run: base.run }],
+      [{ run: 'run-2' }, { source: base.id, run: 'run-2' }],
+    ]) {
+      const record = lineRecord(base, JSON.stringify(wrap({ ...metadata, loss: 0.5 })));
+      assert.equal(record.data.source, expected.source);
+      assert.equal(record.data.run, expected.run);
+    }
+  }
+  assert.deepEqual(lineRecord({ ...base, run: undefined }, '7').data, { value: 7, source: base.id, run: null });
+});
+
+test('projection keeps distinct input runs and sources while collector diagnostics retain configured defaults', () => {
+  const source = { ...base, fields: { loss: ['metrics', 'loss'] } };
+  const input = [
+    { source: 'worker-a', run: 'run-1', metrics: { loss: 0.8 }, unused: 'omit' },
+    { source: 'worker-a', run: 'run-2', metrics: { loss: 0.4 }, unused: 'omit' },
+    { source: 'worker-b', run: 'run-2', metrics: { loss: 0.2 }, unused: 'omit' },
+    { source: null, run: '', metrics: { loss: 0.1 } },
+    { metrics: { loss: 0.05 } },
+  ];
+  for (const wrap of [data => data, data => ({ ts: 123, type: 'training', data })]) {
+    const records = input.map(value => lineRecord(source, JSON.stringify(wrap(value))));
+    assert.deepEqual(records.map(record => record.data), [
+      { source: 'worker-a', run: 'run-1', loss: 0.8 },
+      { source: 'worker-a', run: 'run-2', loss: 0.4 },
+      { source: 'worker-b', run: 'run-2', loss: 0.2 },
+      { source: null, run: '', loss: 0.1 },
+      { source: base.id, run: base.run, loss: 0.05 },
+    ]);
+  }
+  const invalid = lineRecord(source, 'not JSON');
+  assert.equal(invalid.type, 'collector_error');
+  assert.deepEqual(invalid.data, { reason: 'invalid_json', source: base.id, run: base.run });
+  const decoder = createLineDecoder({ ...source, max_line_bytes: 262144 });
+  const [oversized] = [...decoder.push(Buffer.from(JSON.stringify({
+    source: 'worker-a', run: 'run-1', metrics: { loss: 'x'.repeat(60000) },
+  }) + '\n'))];
+  assert.equal(oversized.type, 'collector_error');
+  assert.deepEqual(oversized.data, { reason: 'record_too_large', source: base.id, run: base.run });
 });
 
 test('wide JSONL is projected before the record limit and checkpoints survive partial large lines', async t => {

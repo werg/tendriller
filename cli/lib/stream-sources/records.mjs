@@ -44,8 +44,14 @@ function project(value, fields) {
 }
 
 export function recordFor(source, type, value, ts = Date.now()) {
+  // Input metadata identifies the observation, not necessarily this collector.
+  // Preserve it before projection so selecting metrics cannot merge distinct runs.
+  const identity = {
+    source: object(value) && Object.hasOwn(value, 'source') ? value.source : source.id,
+    run: object(value) && Object.hasOwn(value, 'run') ? value.run : source.run ?? null,
+  };
   value = project(value, source.fields);
-  const data = { ...(object(value) ? value : { value }), source: source.id, run: source.run ?? null };
+  const data = { ...(object(value) ? value : { value }), ...identity };
   const record = { id: randomUUID(), ts, type, data };
   if (Buffer.byteLength(JSON.stringify(record)) > MAX_RECORD_BYTES) throw Error('record_too_large');
   return record;

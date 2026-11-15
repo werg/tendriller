@@ -84,9 +84,13 @@ Have the training job append and flush JSON lines to its normal metrics file:
 
 The collector reads complete lines independently. A job never waits for a
 Tendriller request. `ts` may be an epoch-millisecond timestamp. The optional
-envelope `{"ts":...,"type":"metrics","data":{...}}` is also accepted. The
-collector adds the configured `source` and `run` to each record's data. It does
-not parse text logs into chart values; emit numeric metrics explicitly.
+envelope `{"ts":...,"type":"metrics","data":{...}}` is also accepted. Explicit
+`source` and `run` values in the input data are preserved, including `null`, empty
+strings, and other JSON values. When a key is absent, the collector supplies its
+configured source `id` or `run` (default `null`). A file containing several runs
+therefore keeps those run identities. These are application metadata; stream
+authorization and the server-assigned producer identity are unchanged. The
+collector does not parse text logs into chart values; emit numeric metrics explicitly.
 
 ### Select fields from an existing wide log
 
@@ -115,17 +119,20 @@ key containing a period; `["train", "loss"]` selects a nested property. Numeric
 segments address array indexes. For an envelope with `data`, paths start inside
 `data`; otherwise they start at the whole JSON value. Missing paths are omitted,
 and JSON values retain their types, including `null`. The original `ts` and
-`type` envelope values are preserved; `source` and `run` always come from the
-configuration. Projection is selection and renaming only; it runs no expressions
-or application code. It works for file, SSH, command, and host sources.
+`type` envelope values are preserved. Input `source` and `run` are also carried
+through even when they are not listed in `fields`; configured values fill absent
+keys only. Those two names remain reserved as projection targets, so selecting
+metrics cannot discard or rename run/source metadata. Projection is selection
+and renaming only; it runs no expressions or application code. It works for file,
+SSH, command, and host sources.
 
 There can be 1–64 selected fields, each with at most 16 path segments. Input lines
 default to 32 KiB. Set `max_line_bytes` from 1 KiB to 1 MiB when wider input is
 expected. The selected record, including its envelope, must still fit the
 collector's 48 KiB upload limit. Increasing the input limit does not increase
 server record or storage quotas. Omit `fields` to preserve the existing complete
-record behavior. Collector-generated diagnostics retain their reason even when
-field selection is configured.
+record behavior. Collector-generated diagnostics retain their reason and the
+configured source/run defaults even when field selection is configured.
 
 ## Configuration
 
