@@ -141,7 +141,7 @@ test('EMA retains raw values, restarts at gaps and recomputes over the bounded w
   expect((await page.locator('path.tc-series').getAttribute('d'))!.match(/M/g)).toHaveLength(2);
   await page.getByText('View sample values').click();
   const cells = () => page.locator('tbody tr').evaluateAll(rows => rows.map(row => [...row.querySelectorAll('td')].map(td => td.textContent)));
-  expect(await cells()).toEqual([
+  await expect.poll(cells).toEqual([
     ['run', '1', '10', '10'], ['run', '2', '0', '5'], ['run', '3', '—', '—'], ['run', '4', '8', '8'], ['run', '5', '4', '6'],
   ]);
   await page.evaluate(() => (window as any).chart.append('run', { x: 6, y: 2 }));
