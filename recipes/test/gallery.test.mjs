@@ -13,7 +13,7 @@ test("six complete starters have reproducible preview sources and permission exp
   for (const item of workflows) {
     assert.ok(item.permissions.length); assert.ok(item.request.length);
     for (const file of item.files) assert.ok(existsSync(new URL(`../../${item.path}/${file}`, import.meta.url)), file);
-    for (const file of [item.agent, item.contract, item.scenario, item.preview.fixture]) assert.ok(existsSync(new URL(`../../${file}`, import.meta.url)), file);
+    for (const file of [item.agent, item.contract, item.scenario, item.preview.fixture, item.preview.image]) assert.ok(existsSync(new URL(`../../${file}`, import.meta.url)), file);
     const fixture = JSON.parse(readFileSync(new URL(`../../${item.preview.fixture}`, import.meta.url), "utf8"));
     assert.ok(fixture.steps.length); assert.equal(item.preview.image, `recipes/previews/${item.id}.png`);
   }

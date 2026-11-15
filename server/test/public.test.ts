@@ -132,6 +132,10 @@ it("offers the recipe catalog and a permission-aware device endpoint", async () 
   expect(assignmentSource.status).toBe(200);
   expect(assignmentSource.headers.get("Content-Type")).toContain("text/plain");
   expect(await assignmentSource.text()).toContain("sessionArchive.mount");
+  const preview = await req("/recipes/previews/field-notebook.png");
+  expect(preview.status).toBe(200);
+  expect(preview.headers.get("Content-Type")).toContain("image/png");
+  expect([...new Uint8Array(await preview.arrayBuffer()).slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
   const h = await createPublic("explore@example.com", "192.0.2.99");
   const caps = await (await api(h, "GET", "capabilities")).json<{ devices: unknown[] }>();
   expect(caps.devices).toEqual([]);

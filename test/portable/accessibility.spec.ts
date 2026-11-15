@@ -10,6 +10,15 @@ const state = (recipe: string) => recipe === "field-notebook" ? {
 
 async function audit(page: Page, info: TestInfo, stage: string) {
   const result = await page.evaluate(async () => {
+    // Theme changes can update text before an animated background reaches its
+    // final color. Audit the settled UI, without waiting on perpetual status
+    // animations or replacing browser rendering with a fixed delay.
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const transitions = document.getAnimations().filter(animation => {
+      const end = animation.effect?.getComputedTiming().endTime;
+      return animation.playState === "running" && typeof end === "number" && Number.isFinite(end);
+    });
+    await Promise.all(transitions.map(animation => animation.finished.catch(() => {})));
     const axe = (window as any).axe;
     const result = await axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } });
     return { version: axe.version, violations: result.violations.map((violation: any) => ({ id: violation.id, impact: violation.impact,

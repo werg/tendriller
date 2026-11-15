@@ -108,6 +108,7 @@ test("a task draft keeps its first-edit session through rollover and a delayed r
     const assign = page.getByRole("button", { name: "Assign privately", exact: true });
     const reuse = page.getByRole("button", { name: "Use task draft in current session", exact: true });
     await expect(assign).toBeEnabled();
+    await expect(page.locator("#assignment-participant")).toHaveValue(/\S+/);
     const recipient = await page.locator("#assignment-participant").inputValue(); expect(recipient).toBeTruthy();
     await page.locator("#assignment-title").fill(title);
 
