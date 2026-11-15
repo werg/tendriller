@@ -84,7 +84,8 @@ async function request(label, action) {
 
 export async function initializeCollector({ page, streams, out }, { fetch: fetcher = globalThis.fetch } = {}) {
   const output = resolve(out);
-  const handle = await readJson(page, 'the private page handle');
+  const pageFile = await readJson(page, 'the private page handle');
+  const handle = object(pageFile?.handle) ? pageFile.handle : pageFile;
   const spec = await readJson(streams, 'the stream spec');
   const { definitions, producer, config } = prepare(handle, spec, dirname(resolve(streams)), dirname(output));
   try { await lstat(output); throw Error('Output already exists; keep using it or choose a new --out path. It was not overwritten.'); }

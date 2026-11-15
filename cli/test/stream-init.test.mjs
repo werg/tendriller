@@ -97,6 +97,15 @@ test('init creates scoped private configurations from source and a standalone do
   });
 });
 
+test('init accepts the page handle saved by the dashboard setup script', async t => {
+  const f = await fixture(t);
+  await writeFile(f.page, JSON.stringify({ owner: 'owner@example.com', service: 'http://127.0.0.1',
+    handle: { api: f.api, token: agent }, producer: 'existing-dashboard-producer' }), { mode: 0o600 });
+  const result = await f.cli();
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(await readFile(f.out, 'utf8')).token, producerToken);
+});
+
 test('invalid specs and source/policy mismatches fail before any HTTP request', async t => {
   const f = await fixture(t);
   const cases = [
@@ -177,7 +186,6 @@ test('invalid page handles are rejected locally without sending their credential
     { api: f.api + '#fragment', token: agent },
     { api: f.api.replace('127.0.0.1', 'user:password@127.0.0.1'), token: agent },
     { api: 'http://example.invalid/api/t/aaaaaaaaaaaa', token: agent },
-    { handle: { api: f.api, token: agent } },
   ]) {
     await writeFile(f.page, JSON.stringify(handle));
     await assert.rejects(initializeCollector(f.options));

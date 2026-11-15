@@ -131,8 +131,8 @@ path, producer name, and created/reused stream names. The administrative page
 token stays in the input handle. An occupied producer name fails without
 revocation or rotation, because its original credential cannot be retrieved.
 Use its saved configuration or deliberately choose a new producer name and
-output file. The dashboard example's `page.json` wraps the creation response
-under `handle`; extract that object into a separate private file to use it here.
+output file. The helper also accepts the dashboard example's `page.json`, which
+wraps the creation response under `handle`.
 
 Provisioning uses separate API requests. A failed or lost response can leave
 created resources; the helper reports partial setup and does not claim rollback.
