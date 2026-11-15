@@ -1,4 +1,5 @@
 // Agent API (PROTOCOL section 2.2), executed inside the Tendril Durable Object.
+import { assertValid } from "../../contract/index.mjs";
 import type { Tendril } from "./tendril";
 import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
@@ -15,7 +16,10 @@ import {
 } from "./limits";
 import { resolveType } from "./mime";
 import { mergePatchToOps, replaceToOps, validateOps } from "./state";
+import { blobInfo, setBlobRetention } from "./blob-retention";
 import { apiUrl, normalizeFilePath } from "./urls";
+import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
+import { deviceConfiguration, updateDevice } from "./device-roles";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -35,6 +39,7 @@ function route(method: string, pattern: RegExp, handler: Handler) {
 export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<Response> {
   const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
   const method = req.method === "HEAD" ? "GET" : req.method;
+  if (EXPERIENCE_ROUTE.test(rest)) return handleExperience(t, req, url, await t.authAgent(req), rest);
   const matches = routes.filter((r) => r.pattern.test(rest));
   if (matches.length === 0) throw new HttpError(404, "not_found", `No API route ${rest || "/"}`);
   const r = matches.find((m) => m.method === method);
@@ -373,12 +378,14 @@ route("POST", /^eval$/, async (t, req, url, by) => {
 });
 
 route("POST", /^say$/, async (t, req, url, by) => {
-  const b = await readJson(req, 64 * 1024);
+  const b = assertValid("say", await readJson(req, 64 * 1024));
   if (typeof b.text !== "string" || !b.text) throw new HttpError(400, "bad_request", "text must be a non-empty string");
   const replyTo = b.in_reply_to === undefined ? null : Number(b.in_reply_to);
   if (replyTo !== null && (!Number.isInteger(replyTo) || replyTo < 1 || !t.db.one("SELECT 1 AS x FROM events WHERE seq = ?", replyTo)))
     throw new HttpError(400, "bad_request", "in_reply_to must identify an existing event sequence");
-  const messageId = t.say(b.text.slice(0, 4000), b.speak !== false, by, replyTo);
+  for (const field of ["device", "speak_on"] as const) if (b[field] !== undefined && typeof b[field] !== "string")
+    throw new HttpError(400, "bad_request", `${field} must be a device id`);
+  const messageId = t.say(b.text.slice(0, 4000), b.speak !== false, by, replyTo, { device: b.device, speak_on: b.speak_on });
   return json({ ok: true, message_id: messageId, in_reply_to: replyTo });
 });
 
@@ -468,14 +475,17 @@ route("PUT", /^blobs$/, async (t, req) => {
 });
 
 route("GET", /^blobs$/, (t) =>
-  json({ blobs: t.db.all("SELECT id, type, size, name, ts, device FROM blobs ORDER BY ts DESC") }),
+  json({ blobs: t.db.all<{ id: string }>("SELECT id FROM blobs ORDER BY ts DESC").map((row) => blobInfo(t, row.id)) }),
 );
 
 route("GET", /^blobs\/(b_[a-z2-7]{20})$/, (t, req, url, by, [id]) => t.getBlob(id));
+route("GET", /^blobs\/(b_[a-z2-7]{20})\/info$/, (t, req, url, by, [id]) => json(blobInfo(t, id)));
+route("PATCH", /^blobs\/(b_[a-z2-7]{20})$/, async (t, req, url, by, [id]) =>
+  json(setBlobRetention(t, id, await readJson(req, 4096), by)));
 
 // ------------------------------------------------------------------ devices and links
 
-route("GET", /^devices$/, (t) => json({ devices: t.listDevices() }));
+route("GET", /^devices$/, (t) => json(deviceConfiguration(t)));
 
 // A fresh browser-side report for connected devices, with the last handshake probe
 // as a useful (but explicitly stale) fallback for disconnected devices.
@@ -496,13 +506,7 @@ route("GET", /^capabilities$/, async (t) => {
 
 route("PATCH", /^devices\/([^/]+)$/, async (t, req, url, by, [id]) => {
   const b = await readJson(req, 4096);
-  const d = t.device(id);
-  if (!d) throw new HttpError(404, "not_found", "No such device");
-  if (b.name !== undefined) t.db.run("UPDATE devices SET name = ? WHERE id = ?", b.name === null ? null : validName(b.name), id);
-  if (b.role !== undefined) {
-    throw new HttpError(403, "forbidden", "Agent tokens cannot change device roles");
-  }
-  return json(t.listDevices().find((x) => x.id === id));
+  return json(updateDevice(t, id, b, by));
 });
 
 route("DELETE", /^devices\/([^/]+)$/, (t, req, url, by, [id]) => {

@@ -67,6 +67,37 @@ native companion; the page still works as the interactive front end. The built-i
 conversation microphone and typing are fallbacks.
 | `ui.js` | Agent-editable UI from shared `state.interface` | All | `ui.mount("#app", {path:"interface"})` |
 
+## Considerate adaptive interfaces
+
+Give every `ui.js` block a stable unique `id`. A title, status, label, or neighboring
+block update preserves existing controls, focus, text selection, and drawings.
+Text and drawing drafts are saved locally on this device. Removing a block or
+changing its kind waits for **Apply update** while it contains unfinished work.
+Unsent captures must be sent or discarded before a new layout can replace them.
+An incoming full-page publication uses the cancelable `tendril:before-reload`
+event to defer the reload; `event.detail.apply()` applies it after the person is
+ready. Custom page code can use the same hook to save its own drafts.
+
+## Capture, review, send
+
+`input-kit.js` opens a viewfinder before taking a photo. **Capture photo** produces
+a local preview; the person can retake, switch cameras, choose an existing image,
+mark a point, add a question, or discard it before **Send photo**. Audio has a
+duration indicator, stop/review, playback, discard, and explicit send. No media is
+uploaded by merely opening the camera or reviewing a capture.
+
+Sending uses `tendril.uploadEvent(blob,{name,data,keep})`, so an offline capture and
+its semantic event travel together after reconnect or reload. Capture cards show
+queued, accepted, rejected/retry, and reply states. Agent replies should include
+`in_reply_to` to connect them to the corresponding capture. The acceptance receipt
+means the page's server stored the input; it is not a claim the agent has read it.
+Owners can explicitly keep accepted media using **Keep capture**.
+
+Pass `context: () => ({step_id: currentStep})` to `inputs.mount` when a capture
+belongs to a task or observation. Context is captured at review time and included
+in the event as `data.context`, alongside any question and normalized `point`.
+The returned kit exposes `busy()` and `stop()` for considerate page updates.
+
 ## Reflex, record, wake
 
 Snippets keep sensor-rate work on the page. Defaults follow that: perception snippets only

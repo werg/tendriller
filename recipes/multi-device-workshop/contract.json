@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Multi-device workshop event",
+  "type": "object", "required": ["type", "device"],
+  "anyOf": [
+    { "properties": { "type": { "const": "workshop.frame" } }, "required": ["blob", "url", "at", "step_id"] },
+    { "properties": { "type": { "const": "workshop.point" } }, "required": ["frame", "x", "y"] },
+    { "properties": { "type": { "const": "workshop.step_ack" } }, "required": ["step_id", "action", "at"] },
+    { "properties": { "type": { "const": "workshop.pause" } }, "required": ["paused", "at"] }
+  ],
+  "properties": {
+    "type": { "enum": ["workshop.frame", "workshop.point", "workshop.step_ack", "workshop.pause"] },
+    "device": { "type": "string" }, "step_id": { "type": ["string", "null"] }, "at": { "type": "integer" },
+    "blob": { "type": "string" }, "url": { "type": "string" }, "frame": { "type": "string" },
+    "x": { "type": "number", "minimum": 0, "maximum": 1 }, "y": { "type": "number", "minimum": 0, "maximum": 1 },
+    "action": { "const": "done" }, "paused": { "type": "boolean" }
+  },
+  "x-shared-state": {
+    "workshop.step": "{id,title,instruction}",
+    "workshop.frame": "{id,url,device,at,step_id}",
+    "workshop.annotations": "{frame,shapes:[{shape,x,y,text,...}]}",
+    "workshop.receipts.<step_id>.<device>": "{device,status,at}",
+    "workshop.paused": "boolean"
+  },
+  "x-owner-http": ["GET _tendril/devices", "PATCH _tendril/devices {id,purpose}", "POST _tendril/focus {device,ttl_seconds}"],
+  "x-agent-instructions": "AGENT.md"
+}

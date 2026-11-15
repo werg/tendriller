@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Tendriller reference CLI. Zero dependencies, Node >= 18. See cli/README.md.
-import { readFileSync, existsSync, statSync, cpSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, cpSync, mkdirSync } from "node:fs";
 import { basename, resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
@@ -14,24 +14,25 @@ import { terminalQr } from "../lib/qr.mjs";
 const HELP = `tendril <command> [args] [--tendril <name>] [--pretty]
 
 Create / attach
-  new [name] [--resident] [--pairing open|required] [--as <config-name>]
+  new [name] --owner <verified-email> [--as <config-name>]
   adopt <code> [--as <config-name>]
   info                         tendril handle, versions, devices, presence, wake
   meta [--name N] [--short-name S] [--icon <blob id|https url>] [--theme-color C]
-       [--background-color C] [--lifetime ad_hoc|resident] [--pairing open|required]
+       [--background-color C] [--lifetime ad_hoc|resident]
   rm --yes                     delete the tendril and everything in it
 
 Content
   push <dir|file> [--message M] [--no-replace] [--as <path>] [--no-wait] [--timeout S]
   files | versions | rollback [version]
   upload <file> [--name N]     store a blob (e.g. an icon) -> {id,url}
+  blobs | blobs info <id> | blobs keep <id> | blobs expire <id>
   preview <dir> [--fixture scenario.json] [--out png] [--wait-ms N] [--eval JS] [--state file.json] [--desktop] [--headed]
   recipes                      list complete starter pages
   scaffold <recipe> <dir>      copy a starter page for editing
 
 Talk to the page
   eval <js> | eval -f <file> | eval -   [--device primary|all|<id>] [--timeout-ms N]
-  say <text> [--no-speak] [--in-reply-to SEQ]
+  say <text> [--no-speak] [--in-reply-to SEQ] [--device ID|all] [--speak-on ID|primary|none]
   status <working|idle|done> [text]
   notify <title> [body] [--url U] [--device D] [--tag T]
   check [--device D]           accessibility audit (axe-core) in the page
@@ -45,15 +46,28 @@ Hear from the page
 
 State, devices, sharing, wake
   state get [path] | set <path> <json> | delete <path> | patch <json> | put <json>
-  devices | devices approve <id> [role] | devices rm <id>
+  devices | devices rename <id> <name> | devices purpose <id> <purpose> | devices rm <id>
+  focus [<device-id>|off] [--ttl SECONDS]
   capabilities                 live browser and hardware report per device
-  link <owner|guest|display> [--label L] [--expires S] | link list | link rm <id> | link rotate
+  link guest [--label L] [--expires S] | link list | link rm <id> | link rotate [id]
   tokens | tokens new <name> | tokens rm <name>
   rules | rules set <json|@file>
   wake [--webhook URL [--token T] | --off] [--schedule N|off] [--page-streak N] [--grace S]
 
+Durable work and complete workflows
+  timers [list|history] | timers add <json|@file> | timers update <id> <json|@file>
+  timers cancel <id> | timers rm <id>
+  session [get] | session set <json|@file>
+  bundle export [new-file.json] [--include-data] | bundle stage <file.json>
+  bundle publish --expected-version N | bundle discard
+  remix --owner EMAIL [--name N] [--include-data] [--as CONFIG]
+  decisions [list] | decisions new <json|@file> | decisions update <id> <json|@file>
+  responses                    private participant answers (agent access)
+
 Config: TENDRIL_API + TENDRIL_TOKEN, or --tendril <name> (~/.config/tendril/<name>.json,
-written by new/adopt), TENDRIL_SERVER (default http://localhost:8787), TENDRIL_CREATE_KEY.
+written by new/adopt), TENDRIL_SERVER (default http://localhost:8787), TENDRIL_OWNER.
+Creation is ad_hoc. After the owner opens the page, use meta --lifetime resident to keep it.
+Guest invites need owner approval. Display links are created in the owner page control.
 JSON arguments may be @file. Output is JSON; --pretty indents it.`;
 
 let PRETTY = false;
@@ -76,7 +90,7 @@ async function readStdin() {
 function printHandle(h, saved) {
   out({ ...h, config: saved ? saved.name : undefined, config_file: saved ? saved.path : undefined });
   const qr = terminalQr(h.page_url);
-  note(`\nPage URL (give this to the user): ${h.page_url}`);
+  note(`\nPage URL (share after verifying the live listener): ${h.page_url}`);
   if (qr) note(qr);
   if (saved) note(`Saved to ${saved.path}. Use: tendril --tendril ${saved.name} <command>`);
 }
@@ -96,12 +110,13 @@ async function waitForHealth(api, version, timeoutS) {
 const commands = {
   async new(args, f) {
     const server = serverBase(process.env, f);
-    const body = { name: args[0] || f.name || undefined };
-    if (f.resident) body.lifetime = "resident";
-    if (f.lifetime) body.lifetime = f.lifetime;
-    if (f.pairing) body.pairing = f.pairing;
-    const key = f["create-key"] || process.env.TENDRIL_CREATE_KEY;
-    const h = await request(`${server}/api/tendrils`, { method: "POST", json: body, token: key });
+    if (f["create-key"] !== undefined) fail("--create-key is retired. Create with --owner <verified-email>; no creation token is used.", 64);
+    if (f.pairing !== undefined) fail("--pairing is retired. The owner signs in, and approves guest invitations in the page control.", 64);
+    if (f.resident || (f.lifetime !== undefined && f.lifetime !== "ad_hoc")) fail("Create an ad_hoc page first. After the owner opens it, run meta --lifetime resident.", 64);
+    const owner = String(f.owner || process.env.TENDRIL_OWNER || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner) || owner.length > 254) fail("new requires --owner <verified-email> (or TENDRIL_OWNER). Use an email verified by GitHub or Google.", 64);
+    const body = { name: args[0] || f.name || undefined, owner, lifetime: "ad_hoc" };
+    const h = await request(`${server}/api/tendrils`, { method: "POST", json: body });
     const saved = saveConfig(h, f.as || args[0] || h.name, process.env, server);
     printHandle(h, saved);
   },
@@ -117,8 +132,9 @@ const commands = {
   async info(args, f, api) { out(await api.get("")); },
 
   async meta(args, f, api) {
+    if (f.pairing !== undefined) fail("--pairing is retired. Guest access is approved by the owner in the page control.", 64);
     const map = { name: "name", "short-name": "short_name", icon: "icon", "theme-color": "theme_color",
-      "background-color": "background_color", lifetime: "lifetime", pairing: "pairing" };
+      "background-color": "background_color", lifetime: "lifetime" };
     const body = {};
     for (const [k, v] of Object.entries(map)) if (f[k] !== undefined) body[v] = f[k];
     if (f.resident) body.lifetime = "resident";
@@ -160,6 +176,15 @@ const commands = {
     out(await api.raw("/blobs", { method: "PUT", body: readFileSync(args[0]), headers }));
   },
 
+  async blobs(args, f, api) {
+    const [sub, id] = args;
+    if (!sub) return out(await api.get("/blobs"));
+    if (!id || !/^b_[a-z2-7]{20}$/.test(id)) fail("usage: tendril blobs [info|keep|expire <blob-id>]", 64);
+    if (sub === "info") return out(await api.get(`/blobs/${id}/info`));
+    if (sub === "keep" || sub === "expire") return out(await api.patch(`/blobs/${id}`, { keep: sub === "keep" }));
+    fail("usage: tendril blobs [info|keep|expire <blob-id>]", 64);
+  },
+
   async eval(args, f, api) {
     let code = args.join(" ");
     if (f.file) code = readFileSync(f.file, "utf8");
@@ -176,7 +201,8 @@ const commands = {
   async say(args, f, api) {
     if (!args.length) fail("usage: tendril say <text>");
     out(await api.post("/say", { text: args.join(" "), speak: !f["no-speak"],
-      ...(f["in-reply-to"] ? { in_reply_to: Number(f["in-reply-to"]) } : {}) }));
+      ...(f["in-reply-to"] ? { in_reply_to: Number(f["in-reply-to"]) } : {}),
+      ...(f.device ? { device: f.device } : {}), ...(f["speak-on"] ? { speak_on: f["speak-on"] } : {}) }));
   },
 
   async status(args, f, api) {
@@ -286,25 +312,106 @@ const commands = {
   },
 
   async devices(args, f, api) {
-    const [sub, id, role] = args;
+    const [sub, id, ...name] = args;
     if (!sub) return out(await api.get("/devices"));
-    if (sub === "approve") return out(await api.patch(`/devices/${id}`, { role: role || "owner" }));
-    if (sub === "rename") return out(await api.patch(`/devices/${id}`, { name: role }));
-    if (sub === "rm") { await api.del(`/devices/${id}`); return out({ ok: true }); }
-    fail("usage: tendril devices [approve <id> [role] | rename <id> <name> | rm <id>]");
+    if (sub === "approve") fail("Agent tokens cannot approve devices or change roles. The owner approves signed-in guests in the page control.", 64);
+    if (!id) fail("devices needs a device id", 64);
+    if (sub === "rename") {
+      if (!name.join(" ").trim()) fail("usage: tendril devices rename <id> <name>", 64);
+      return out(await api.patch(`/devices/${encodeURIComponent(id)}`, { name: name.join(" ") }));
+    }
+    if (sub === "purpose") {
+      const purpose = name[0];
+      if (!["general", "camera", "controller", "display", "speaker"].includes(purpose) || name.length !== 1)
+        fail("purpose must be general, camera, controller, display or speaker; it does not change access permissions", 64);
+      return out(await api.patch(`/devices/${encodeURIComponent(id)}`, { purpose }));
+    }
+    if (sub === "rm") { await api.del(`/devices/${encodeURIComponent(id)}`); return out({ ok: true }); }
+    fail("usage: tendril devices [rename <id> <name> | purpose <id> <purpose> | rm <id>]", 64);
   },
+
+  async focus(args, f, api) {
+    if (!args[0]) return out(await api.get("/focus"));
+    out(await api.post("/focus", { device: args[0] === "off" ? null : args[0], ...(f.ttl !== undefined ? { ttl_seconds: intFlag(f.ttl, "ttl") } : {}) }));
+  },
+
+  async timers(args, f, api) {
+    const [sub = "list", id, settings] = args;
+    if (sub === "list") return out(await api.get("/timers"));
+    if (sub === "history") return out(await api.get("/timers/history"));
+    if (sub === "add") return out(await api.post("/timers", jsonArg(id, "timer settings")));
+    if (!id) fail("usage: tendril timers [list|history|add <json>|update <id> <json>|cancel <id>|rm <id>]", 64);
+    const path = `/timers/${encodeURIComponent(id)}`;
+    if (sub === "update") return out(await api.patch(path, jsonArg(settings, "timer changes")));
+    if (sub === "cancel") return out(await api.patch(path, { state: "cancelled" }));
+    if (sub === "rm") { await api.del(path); return out({ ok: true, removed: id }); }
+    fail("unknown timers command; see tendril --help", 64);
+  },
+
+  async session(args, f, api) {
+    if (!args[0] || args[0] === "get") return out(await api.get("/session"));
+    if (args[0] === "set") return out(await api.put("/session", jsonArg(args[1], "session brief")));
+    fail("usage: tendril session [get|set <json|@file>]", 64);
+  },
+
+  async bundle(args, f, api) {
+    const [sub, file] = args;
+    if (sub === "export") {
+      const bundle = await api.get(`/bundle?include_data=${f["include-data"] === true}`);
+      if (!file) return out(bundle);
+      writeFileSync(file, JSON.stringify(bundle, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+      return out({ saved: resolve(file), includes_data: f["include-data"] === true });
+    }
+    if (sub === "stage") {
+      if (!file) fail("usage: tendril bundle stage <file.json>", 64);
+      return out(await api.put("/bundle", JSON.parse(readFileSync(file, "utf8"))));
+    }
+    if (sub === "publish") {
+      const version = Number(f["expected-version"]);
+      if (!Number.isSafeInteger(version) || version < 0) fail("Review the prepared copy, then use bundle publish --expected-version <current-version>", 64);
+      return out(await api.post("/bundle/publish", { expected_version: version }));
+    }
+    if (sub === "discard") { await api.del("/bundle"); return out({ discarded: true }); }
+    fail("usage: tendril bundle export [new-file.json] [--include-data] | stage <file.json> | publish --expected-version N | discard", 64);
+  },
+
+  async remix(args, f, api, cfg) {
+    const owner = String(f.owner || process.env.TENDRIL_OWNER || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) fail("remix requires --owner <verified-email> (or TENDRIL_OWNER)", 64);
+    const handle = await api.post("/remix", { owner, ...(f.name ? { name: f.name } : {}), include_data: f["include-data"] === true });
+    const saved = saveConfig(handle, f.as || handle.id, process.env, new URL(cfg.api).origin);
+    printHandle(handle, saved);
+    note("The independent copy is prepared. Open its page, attach the receiver, then publish the bundle with --expected-version 0.");
+  },
+
+  async decisions(args, f, api) {
+    const [sub = "list", id, settings] = args;
+    if (sub === "list") return out(await api.get("/decisions"));
+    if (sub === "new") return out(await api.post("/decisions", jsonArg(id, "proposal")));
+    if (sub === "update" && id) return out(await api.patch(`/decisions/${encodeURIComponent(id)}`, jsonArg(settings, "proposal changes with expected_version")));
+    fail("usage: tendril decisions [list|new <json|@file>|update <id> <json|@file>]; owners respond on the page", 64);
+  },
+
+  async responses(args, f, api) { out(await api.get("/responses")); },
 
   async capabilities(args, f, api) { out(await api.get("/capabilities")); },
 
   async link(args, f, api) {
     const [sub, id] = args;
     if (!sub || sub === "list") return out(await api.get("/links"));
-    if (sub === "rm") { await api.del(`/links/${id}`); return out({ ok: true }); }
-    if (sub === "rotate") return out(await api.post(`/links/${id || "l_main"}/rotate`, {}));
-    if (!["owner", "guest", "display"].includes(sub)) fail("usage: tendril link <owner|guest|display> [--label L] [--expires S]");
+    if (sub === "rm") {
+      if (!id) fail("usage: tendril link rm <id>", 64);
+      await api.del(`/links/${encodeURIComponent(id)}`); return out({ ok: true });
+    }
+    if (sub === "rotate") return out(await api.post(`/links/${encodeURIComponent(id || "l_main")}/rotate`, {}));
+    if (sub === "owner" || sub === "display") fail("Agents can create guest invitations only. Use the owner page control to create display links; the existing main link is the owner link.", 64);
+    if (sub !== "guest") fail("usage: tendril link guest [--label L] [--expires S] | list | rm <id> | rotate [id]", 64);
     const body = { role: sub };
     if (f.label) body.label = f.label;
-    if (f.expires) body.expires_in = Number(f.expires);
+    if (f.expires !== undefined) {
+      body.expires_in = Number(f.expires);
+      if (!Number.isFinite(body.expires_in) || body.expires_in <= 0) fail("--expires must be a positive number of seconds", 64);
+    }
     const r = await api.post("/links", body);
     out(r);
     const qr = r.url && terminalQr(r.url);

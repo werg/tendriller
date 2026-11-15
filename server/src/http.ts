@@ -1,4 +1,6 @@
 // HTTP helpers: JSON responses, consistent errors, CORS, bounded body reading.
+import { ContractError } from "../../contract/index.mjs";
+import type { ErrorResponse } from "../../contract/index.mjs";
 
 export class HttpError extends Error {
   constructor(
@@ -19,10 +21,12 @@ export function json(body: unknown, status = 200, headers?: HeadersInit): Respon
 }
 
 export function errorResponse(status: number, code: string, message?: string, extra?: Record<string, unknown>): Response {
-  return json({ error: { code, message: message ?? code, ...(extra ?? {}) } }, status);
+  const body: ErrorResponse = { error: { code, message: message ?? code, ...(extra ?? {}) } };
+  return json(body, status);
 }
 
 export function toErrorResponse(err: unknown): Response {
+  if (err instanceof ContractError) return errorResponse(400, err.code, err.message, { details: err.issues });
   if (err instanceof HttpError) return errorResponse(err.status, err.code, err.message, err.extra);
   console.error("internal error", err);
   return errorResponse(500, "internal", "Internal server error");

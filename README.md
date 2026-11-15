@@ -26,7 +26,8 @@ interfaces and sensors, and Tendriller makes the opening for each connection.
   Muse, Grok Bot, OpenAI dots and Claude Duet, with their respective setup and limits.
 
 The design is in [PLAN.md](PLAN.md). The binding interface contract is in
-[docs/PROTOCOL.md](docs/PROTOCOL.md).
+[docs/PROTOCOL.md](docs/PROTOCOL.md), with executable schemas and public types in
+[contract/](contract/).
 
 ## Get started
 
@@ -35,13 +36,33 @@ GitHub or Google email address. The agent creates a page, attaches a working eve
 receiver for its host, publishes it, and gives you the page URL. A page is not live
 merely because it has an agent token or an event poll happened once.
 
-For local development, run `npm ci` and `npm run dev`. Use the local browser suite with
+For local development, use Node 22.15+, run `npm ci` and `npm run dev` (with continuous runtime/asset rebuilding). Try a page locally with `npm run preview -- recipes/field-notebook`. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the typed contract, actual-runtime previews and shipping gates. Use the local browser suite with
 `npm run test:e2e`; it starts an isolated HTTPS Worker and temporary accounts. See
 [docs/E2E_TESTING.md](docs/E2E_TESTING.md). The optional API CLI is in
 [cli/README.md](cli/README.md).
 
 Each tendril also exposes an MCP server at `<api>/mcp`, with an MCP Event for hosts
 that support subscriptions. Connecting MCP tools alone does not establish a wake path.
+
+## Build a complete experience
+
+The [recipe catalog](recipes/README.md) includes six complete workflows with
+runnable pages, event contracts, local scenarios, and instructions for the agent:
+
+| Starting point | What it enables |
+|---|---|
+| Approval remote | Review an exact proposal, approve or request revision, and track its result |
+| Field notebook | Durable notes/photos/places, editable interpretation, search and export |
+| Hands-free guide | Spoken steps, local next/back/repeat, evidence and saved checkpoints |
+| Multi-device workshop | Camera/controller/display/speaker purposes, annotations and completion receipts |
+| Hardware experiment | Serial or labelled simulated traces, intervention notes and interpreted reports |
+| Facilitated session | Private participant answers, facilitator review and deliberate shared summaries |
+
+Server timers run with the page closed. Saved session briefs let a later agent
+continue the task, and portable bundles/remixes create independent copies with
+optional data and media. Device purpose is separate from access permission, and
+one device speaks at a time. See [Experiences](docs/EXPERIENCES.md) for the APIs,
+recovery behavior, lifetime bounds, and owner controls.
 
 ## Deploy to Cloudflare
 
@@ -56,6 +77,8 @@ runtime/       tendril.js (core, control, voice, push, rules, offline) and the s
 snippets/      copyable page pieces (camera, probe, ptt, screenshot, glance, vad, wakeword, pose, objects, …)
 agent.md       instructions served to agents at /agent.md
 cli/           optional zero-dependency API CLI and Codex conversation bridge
+contract/      executable public schemas, declarations and small typed fetch client
+recipes/       complete workflows, starter inputs, event contracts and agent loops
 scripts/       build.mjs (bundles runtime, copies snippets and agent.md), vapid-keys.mjs
 test/e2e/      end-to-end Playwright tests
 docs/          PROTOCOL.md
@@ -64,16 +87,14 @@ docs/          PROTOCOL.md
 ## Testing
 
 ```sh
-npm test                    # build + server tests (vitest with the Workers pool)
-npm run test:e2e            # build + end-to-end Playwright suite (test/e2e)
-npm run typecheck
-npm run test:tts             # neural speech, fallback, cancellation, and device preference tests
-npx playwright test --config runtime/test/playwright.config.ts          # runtime core
-npx playwright test --config runtime/test/control/playwright.config.ts  # control
-npx playwright test --config runtime/test/voice/playwright.config.ts    # voice layer
-npx playwright test --config runtime/test/push/playwright.config.ts     # push and rules
-npx playwright test --config snippets/test/playwright.config.ts         # snippets
-node --test cli/test/*.test.mjs                                         # CLI, bridge, and wait script
+npm run check               # schemas + types + build + contract/recipe/unit/Worker/CLI tests
+npm run test:browser        # current runtime, control, speech, snippets, recipes and Worker browser flows
+npm run check:release       # both gates; the same checks precede CI deployment
+npm test                    # focused build + supported public Worker tests
+npm run test:e2e            # focused current public Worker/browser flow
+npm run test:e2e:speech-real # optional real speech-engine/model download test
 ```
 
 Playwright needs browsers once: `npx playwright install chromium`.
+Old anonymous-service and retired voice-layer suites are historical references;
+see [Development](docs/DEVELOPMENT.md) for the explicit supported suite list.

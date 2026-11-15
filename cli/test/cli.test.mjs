@@ -127,7 +127,8 @@ test("config: dirs, server base, cursor files", () => {
 test("preview: runtime injected right after <head>", () => {
   const out = injectRuntime('<html><head lang="x"><title>t</title></head></html>');
   assert.match(out, /^<html><head lang="x"><script>window.__TENDRIL__=/);
-  assert.match(out, /<script src="\/_tendril\/tendril.js"><\/script><title>/);
+  assert.match(out, /<script src="\/_tendril\/tendril.js"><\/script><script>/);
+  assert.match(out, /_core\.bus\.emit/); // trace forwards into the production runtime, not a fake API
   assert.match(injectRuntime("<p>no head</p>"), /^<script>window.__TENDRIL__/);
 });
 

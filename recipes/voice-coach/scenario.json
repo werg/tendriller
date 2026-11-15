@@ -1,7 +1,8 @@
 {
   "steps": [
     { "click": "text=Record voice note" },
-    { "wait_ms": 200, "click": "text=Stop and send recording" },
-    { "expect_send": { "type": "input", "modality": "audio" } }
+    { "wait_ms": 200, "click": "text=Stop and review" },
+    { "click": "text=Send voice note" },
+    { "expect_event": { "type": "input", "modality": "audio" } }
   ]
 }

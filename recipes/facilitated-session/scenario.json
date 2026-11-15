@@ -1,0 +1,27 @@
+{
+  "http": [
+    { "method": "GET", "path": "/_tendril/responses", "json": { "participant": "preview-owner", "responses": [] } },
+    { "method": "GET", "path": "/_tendril/responses/all", "json": { "responses": [] } },
+    {
+      "method": "POST", "path": "/_tendril/responses", "once": true,
+      "expect_body": { "prompt_id": "opening", "answer": "One quiet morning for focused work" },
+      "json": { "id": "private-response-1", "participant": "preview-owner", "prompt_id": "opening", "answer": "One quiet morning for focused work", "revision": 1 },
+      "update": [
+        { "method": "GET", "path": "/_tendril/responses", "json": { "participant": "preview-owner", "responses": [{ "id": "private-response-1", "participant": "preview-owner", "prompt_id": "opening", "answer": "One quiet morning for focused work", "revision": 1 }] } },
+        { "method": "GET", "path": "/_tendril/responses/all", "json": { "responses": [{ "id": "private-response-1", "participant": "preview-owner", "prompt_id": "opening", "answer": "One quiet morning for focused work", "revision": 1 }] } }
+      ]
+    }
+  ],
+  "steps": [
+    { "fill": "#answer", "value": "One quiet morning for focused work" },
+    { "click": "#send", "expect_text": "Private response saved" },
+    { "click": "#review", "expect_text": "One quiet morning for focused work" },
+    { "click": "#ask-summary", "expect_event": { "type": "facilitation_summary_request", "prompt_id": "opening" } },
+    { "fill": "#summary-draft", "value": "The group will try a shared period for focused work." },
+    { "click": "#summary-form button", "expect_text": "The group will try a shared period for focused work." },
+    { "fill": "#question", "value": "What should we try together next?" },
+    { "fill": "#context", "value": "Choose one small experiment." },
+    { "click": "#prompt-form button", "expect_text": "What should we try together next?" },
+    { "role": "display", "expect_text": "Private responses are never loaded here." }
+  ]
+}

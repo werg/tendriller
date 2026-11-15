@@ -31,17 +31,18 @@ async function load(page: Page, opts: Record<string, unknown> = {}, body = PAGE_
 }
 
 const presenceBtn = (page: Page) => page.locator("tendril-control .presence");
-const live = (page: Page) => page.locator("tendril-control [aria-live=polite][role=status]");
+const live = (page: Page) => page.locator("tendril-control .sr[role=status]");
 const openSheet = async (page: Page) => { await presenceBtn(page).click(); await expect(page.locator("#tendril-sheet")).toBeVisible(); };
 const calls = (page: Page) => page.evaluate(() => (window as any).__fake.calls);
 
-test("neural voice is recommended and voice controls update device settings", async ({ page }) => {
+test("browser voice is immediate and voice controls update device settings", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 760 });
   await load(page);
   await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
   await page.getByText("Display and sound", { exact: true }).click();
   const voice = page.getByLabel("Spoken voice", { exact: true });
-  await expect(voice).toHaveValue("neural");
+  await expect(voice).toHaveValue("browser");
   await voice.selectOption("browser");
   await expect(page.getByText("Using the browser voice.", { exact: true }).last()).toBeVisible();
   await page.getByRole("button", { name: "Try neural voice", exact: true }).click();
@@ -88,7 +89,7 @@ test("re-attaches if page code removes it", async ({ page }) => {
 test("presence states and aria-live announcements", async ({ page }) => {
   await load(page);
   const label = page.locator("tendril-control .presence .label");
-  await expect(label).toHaveText("Listening");
+  await expect(label).toHaveText("Agent ready");
   const set = (p: object) => page.evaluate((p) => (window as any).__fake.setPresence(p), p);
 
   await set({ state: "working", text: "Working" });
@@ -147,23 +148,17 @@ test("queued instruction loses the sending label when its delayed acknowledgemen
   await box.fill("check the oven");
   await box.press("Enter");
   await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You (sending…)");
-  await page.evaluate(() => (window as any).__fake.emit("instruction_ack", { text: "check the oven" }));
+  await page.evaluate(() => (window as any).__fake.emit("instruction_ack", { text: "check the oven", cid: "instruction-1" }));
   await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You");
-  await page.evaluate(() => (window as any).__fake.emit("instruction_echo", { text: "check the oven", ts: Date.now() }));
+  await page.evaluate(() => (window as any).__fake.emit("instruction_echo", { text: "check the oven", device: "d_me", ts: Date.now() + 60_000 }));
   await expect(page.locator("tendril-control .log li.user")).toHaveCount(1);
 });
 
-test("voice layer handling an utterance skips the agent; withheld budget is reported", async ({ page }) => {
-  await load(page, { voiceHandles: ["next step"] });
-  await openSheet(page);
+test("typed owner instructions stay explicit and withheld delivery is explained", async ({ page }) => {
+  await load(page); await openSheet(page);
   const box = page.getByRole("textbox", { name: "Message to the agent" });
-  await box.fill("next step");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.locator("tendril-control .hint")).toContainText("Done");
-  expect((await calls(page)).instruction).toEqual([]);
-
-  await box.fill("do the big thing");
-  await box.press("Enter");
+  await box.fill("do the big thing"); await box.press("Enter");
+  expect((await calls(page)).instruction).toEqual([{ text: "do the big thing", via: "text" }]);
   await page.evaluate(() => (window as any).__fake.setPresence({ withheld: 1 }));
   await expect(page.locator("tendril-control .hint")).toHaveText("The agent will see this at its next check.");
 });
@@ -172,12 +167,14 @@ test("owner vs guest vs display visibility", async ({ page }) => {
   await load(page, { role: "owner" });
   await openSheet(page);
   await expect(page.getByRole("button", { name: "Go back" }).first()).toBeVisible();
+  await page.getByRole("tab", { name: "Settings and history" }).click();
   await expect(page.getByText("Activity record")).toBeVisible();
+  await page.getByRole("tab", { name: "Talk", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Message to the agent" })).toBeVisible();
 
   await page.evaluate(() => (window as any).__fake.setRole("guest"));
   await expect(page.getByText("Activity record")).toBeHidden();
-  await expect(page.locator("tendril-control .actions").first()).toBeHidden();
+  await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeHidden();
   await expect(page.getByRole("textbox", { name: "Message to the agent" })).toBeVisible();
   await expect(page.locator("tendril-control .hint")).toContainText("guest");
   await page.getByRole("textbox", { name: "Message to the agent" }).fill("hello from the back seat");
@@ -209,46 +206,35 @@ test("versions list picks a specific version", async ({ page }) => {
     { version: 1, created_at: now - 7200000, status: "failed", files: 1 },
   ] }, rollback: { version: 2 } } });
   await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
   await page.getByText("Earlier versions").click();
   await expect(page.getByText("showing now")).toBeVisible();
   await page.getByRole("button", { name: "Show version 2" }).click();
   await expect.poll(async () => (await calls(page)).request.at(-1)).toEqual({ t: "rollback", version: 2 });
 });
 
-test("pairing request: owner approves", async ({ page }) => {
-  await load(page);
-  await page.evaluate(() => (window as any).__fake.emit("pair_request", { device: { id: "d_new", name: "Kitchen tablet", ua: "x" }, code: "482913" }));
-  await expect(page.locator("tendril-control .badge")).toHaveText("1");
-  await expect(live(page)).toContainText("wants to join");
-  await openSheet(page);
-  await expect(page.getByText("Kitchen tablet wants to join as an owner")).toBeVisible();
-  await expect(page.getByText("482913")).toBeVisible();
-  await page.getByRole("button", { name: "Approve" }).click();
-  await expect.poll(async () => (await calls(page)).request.at(-1)).toEqual({ t: "pair_approve", device_id: "d_new", role: "owner" });
-  await expect(page.getByText("Kitchen tablet wants to join")).toBeHidden();
-  await expect(page.locator("tendril-control .badge")).toBeHidden();
-});
-
-test("pending device shows its pairing code", async ({ page }) => {
-  await load(page, { role: "guest", pending: true, pairCode: "771204" });
+test("pending guest stays read-only for owner administration", async ({ page }) => {
+  await load(page, { role: "guest", pending: true });
   await expect(page.locator("tendril-control .presence .label")).toHaveText("Waiting for approval");
   await openSheet(page);
-  await expect(page.locator("tendril-control .code")).toHaveText("771204");
-  await expect(page.getByText("Activity record")).toBeHidden();
+  await expect(page.getByRole("tab", { name: "Share and devices" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeHidden();
 });
 
 test("connect an agent shows the adoption code", async ({ page }) => {
   await load(page, { replies: { adopt_code: { t: "adopt_code", code: "abc234def567-381920", expires_at: Date.now() + 600000 } } });
   await openSheet(page);
+  await page.getByRole("tab", { name: "Share and devices", exact: true }).click();
   await page.getByText("Connect an agent").click();
   await page.getByRole("button", { name: "Get a code" }).click();
   await expect(page.locator("#tendril-adopt .code")).toHaveText("abc234def567-381920");
-  await expect(page.getByText("POST /api/adopt")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy resume prompt" })).toBeVisible();
 });
 
 test("add a device renders a QR code for a new link", async ({ page }) => {
   await load(page, { replies: { links: { t: "links", links: [], created: { id: "l_x", url: "http://localhost:7781/t/abc/s/displaykey/", role: "display", expires_at: null } } } });
   await openSheet(page);
+  await page.getByRole("tab", { name: "Share and devices", exact: true }).click();
   await page.getByText("Add a device").click();
   await page.getByRole("button", { name: "Big screen (display)" }).click();
   const qr = page.locator("#tendril-add svg.qr");
@@ -266,6 +252,7 @@ test("activity record with thumbnails and delete", async ({ page }) => {
     { seq: 6, ts: Date.now() - 30000, kind: "note", summary: "Added three items", device: null, source: "agent" },
   ] }, activity_delete: { t: "ack" } } });
   await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
   await page.getByText("Activity record").click();
   await expect(page.locator("#tendril-activity img.thumb")).toHaveAttribute("src", "/t/abc/s/key/_tendril/blob/b_abc");
   await expect(page.getByText("reported by the agent")).toBeVisible();
@@ -278,6 +265,7 @@ test("activity record with thumbnails and delete", async ({ page }) => {
 test("preferences are written to state and applied", async ({ page }) => {
   await load(page);
   await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
   await page.getByText("Display and sound").click();
   await page.getByText("Large", { exact: true }).click();
   await page.getByLabel("High contrast").check();
@@ -355,35 +343,54 @@ test("hide() keeps the sensor indicator visible; position() moves the dock", asy
   await expect(presenceBtn(page)).toBeVisible();
 });
 
-test("keyboard navigation through the sheet", async ({ page }) => {
-  await load(page);
-  await page.keyboard.press("Tab");
-  await expect(presenceBtn(page)).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(page.locator("#tendril-sheet")).toBeVisible();
-  await expect(presenceBtn(page)).toHaveAttribute("aria-expanded", "true");
+test("keyboard navigation keeps settings separate and restores the opener", async ({ page }) => {
+  await load(page); await presenceBtn(page).focus(); await page.keyboard.press("Enter");
   await expect(page.getByRole("textbox", { name: "Message to the agent" })).toBeFocused();
-  // Tab walks through the sheet's controls; collect the focused labels.
-  const seen: string[] = [];
-  for (let i = 0; i < 14; i++) {
-    await page.keyboard.press("Tab");
-    seen.push(await page.evaluate(() => {
-      const host = document.querySelector("tendril-control")!;
-      const a = host.shadowRoot!.activeElement as HTMLElement | null;
-      return a ? (a.getAttribute("aria-label") || a.textContent || a.tagName).trim() : "";
-    }));
-  }
-  expect(seen).toContain("Send");
-  expect(seen).toContain("Go back");
-  expect(seen.some((s) => s.includes("Activity record"))).toBe(true);
-  expect(seen.some((s) => s.includes("Display and sound"))).toBe(true);
-  // Open a section with the keyboard.
-  await page.locator("tendril-control summary", { hasText: "Display and sound" }).focus();
-  await page.keyboard.press("Enter");
-  await expect(page.getByText("Text size")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.locator("#tendril-sheet")).toBeHidden();
-  await expect(presenceBtn(page)).toBeFocused();
+  await page.getByRole("tab", { name: "Talk", exact: true }).focus();
+  await page.keyboard.press("ArrowRight"); await expect(page.getByRole("tab", { name: "Share and devices" })).toBeFocused();
+  await page.keyboard.press("End"); await expect(page.getByRole("tab", { name: "Settings and history" })).toBeFocused();
+  await page.locator("tendril-control summary", { hasText: "Display and sound" }).focus(); await page.keyboard.press("Enter");
+  await expect(page.getByRole("group", { name: "Text size", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape"); await expect(page.locator("#tendril-sheet")).toBeHidden(); await expect(presenceBtn(page)).toBeFocused();
+});
+
+test("speech consent traps focus, supports Escape and restores focus", async ({ page }) => {
+  await load(page); await openSheet(page);
+  const prepare = page.getByRole("button", { name: "Prepare voice", exact: true }); await prepare.click();
+  const modal = page.getByRole("dialog", { name: "Set up private speech", exact: true }); await expect(modal).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download and continue" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab"); await expect(page.getByRole("button", { name: "Use typing" })).toBeFocused();
+  await page.keyboard.press("Tab"); await expect(page.getByRole("button", { name: "Download and continue" })).toBeFocused();
+  await page.keyboard.press("Escape"); await expect(modal).toHaveCount(0); await expect(prepare).toBeFocused();
+  expect(await page.locator('#content').evaluate(el => (el as HTMLElement).inert)).toBe(false);
+});
+
+test("muted agent replies are announced and conversation history is available", async ({ page }) => {
+  const transcript = Array.from({ length: 10 }, (_, i) => ({ ts: Date.now() - 1000 * (10-i), from: 'agent', text: `Earlier reply ${i}` }));
+  await load(page, { state: { _prefs: { audio: false } }, transcript }); await openSheet(page);
+  await expect(page.locator('tendril-control .log li')).toHaveCount(6);
+  await page.getByRole('button', { name: 'Show earlier messages (10)' }).click(); await expect(page.locator('tendril-control .log li')).toHaveCount(10);
+  await page.evaluate(() => (window as any).__fake.emit('say', { text: 'Your capture is ready', speak: false }));
+  await expect(live(page)).toHaveText('Agent: Your capture is ready');
+});
+
+test("a rejected instruction restores editable text without promising a retry", async ({ page }) => {
+  await load(page, { instructionError: 'Page quota reached' }); await openSheet(page);
+  const input = page.getByRole('textbox', { name: 'Message to the agent' }); await input.fill('Retain my message'); await input.press('Enter');
+  await expect(input).toHaveValue('Retain my message');
+  await expect(page.locator('tendril-control .hint')).toContainText('Not sent: Page quota reached');
+  await expect(page.locator('tendril-control .hint')).not.toContainText('will be retried');
+});
+
+test("a later queued rejection preserves the new composer draft and removes its sending row", async ({ page }) => {
+  await load(page, { instructionQueued: true }); await openSheet(page);
+  const input = page.getByRole('textbox', { name: 'Message to the agent' }); await input.fill('Queued message'); await input.press('Enter');
+  await expect(page.locator('tendril-control .hint')).toContainText('Saved on this device');
+  await input.fill('A different unfinished thought');
+  await page.evaluate(() => (window as any).__fake.emit('instruction_rejected', { cid: 'instruction-1', text: 'Queued message', message: 'Page quota reached' }));
+  await expect(input).toHaveValue('A different unfinished thought\n\nQueued message');
+  await expect(page.locator('tendril-control .log')).not.toContainText('You (sending');
+  await expect(page.locator('tendril-control .hint')).toContainText('Not sent: Page quota reached');
 });
 
 test("touch targets are at least 44px", async ({ page }) => {
@@ -426,6 +433,7 @@ test.describe("screenshots", () => {
     await page.evaluate(() => (window as any).__fake.emit("say", { text: "Sorted by aisle. Dairy first.", ts: Date.now() }));
     await page.screenshot({ path: join(here, "screenshots/dark-phone-collapsed.png") });
     await openSheet(page);
+    await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
     await page.getByText("Display and sound").click();
     await page.screenshot({ path: join(here, "screenshots/dark-phone-open.png") });
   });

@@ -14,7 +14,7 @@ test("live capabilities, user-triggered location, and agent journey", async ({ p
   expect(caps.data.devices[0].source).toBe("live");
   expect(caps.data.devices[0].report.capabilities.location.available).toBe(true);
   await page.getByRole("button", { name: "Share location once" }).click();
-  await expect(page.locator("#inputs").getByRole("status")).toContainText("Location sent");
+  await expect(page.locator("#inputs").getByRole("status")).toContainText("Received by the page");
   const batch = await agent(h, "/events");
   const input = batch.data.events.find((e: any) => e.data?.modality === "location");
   expect(input).toMatchObject({ type: "event", role: "owner" });
@@ -54,7 +54,9 @@ test("device playground captures a photo only after a tap", async ({ page, conte
     await openClaimed(page, h);
     await expect(page.locator("#explore").getByRole("heading", { name: "Explore this device" })).toBeVisible();
     await page.getByRole("button", { name: "Take photo" }).click();
-    await expect(page.locator("#explore [data-input-kit] [role=status]")).toContainText("Photo sent");
+    await page.getByRole("button", { name: "Capture photo", exact: true }).click();
+    await page.getByRole("button", { name: "Send photo", exact: true }).click();
+    await expect(page.locator("#explore [data-input-kit] .ti-card [role=status]")).toContainText("Received by the page");
     const batch = await agent(h, "/events");
     const photo = batch.data.events.find((e: any) => e.data?.modality === "photo");
     expect(photo).toMatchObject({ type: "event", role: "owner" });

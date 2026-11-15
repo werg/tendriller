@@ -43,6 +43,58 @@ async function claimAs(h: Handle, account: string, email: string, rawSession = `
   return cookie;
 }
 
+async function captureFixture() {
+  const email = `capture-${crypto.randomUUID()}@example.com`, account = crypto.randomUUID();
+  await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), email).run();
+  const h = await createPublic(email, "192.0.2.181");
+  const serviceCookie = await claimAs(h, account, email);
+  const key = new URL(h.page_url).pathname.split("/")[2];
+  const redirect = await req(`/auth/page?tendril=${h.id}&key=${key}`, { headers: { Cookie: serviceCookie }, redirect: "manual" });
+  const exchange = await req(redirect.headers.get("Location")!, { redirect: "manual" });
+  const headers = { Cookie: exchange.headers.get("Set-Cookie")!.split(";")[0], Origin: new URL(h.page_url).origin };
+  return { h, headers };
+}
+
+it("reports media expiry separately from residency and retains explicitly kept captures", async () => {
+  const { h, headers } = await captureFixture();
+  expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(200);
+  const upload = (name: string, keep = false) => req(h.page_url + "_tendril/blob", {
+    method: "POST", headers: { ...headers, "Content-Type": "image/jpeg", "X-Tendril-Name": name, "X-Tendril-Keep": String(keep) }, body: "picture",
+  }).then((response) => response.json<any>());
+  const ordinary = await upload("temporary.jpg"), kept = await upload("keep.jpg", true);
+  expect(ordinary.retention).toMatchObject({ keep: false, reason: "page_default", expires_at: expect.any(Number) });
+  expect(kept.retention).toEqual({ keep: true, reason: "pinned", expires_at: null });
+  const info = await (await api(h, "GET", `blobs/${kept.id}/info`)).json<any>();
+  expect(info).toMatchObject({ name: "keep.jpg", size: 7, pinned: true, retention: { expires_at: null } });
+  await inDO(h.id, async (t) => { t.skew += 31 * 86_400_000; await t.cleanup(); });
+  expect((await api(h, "GET", `blobs/${ordinary.id}`)).status).toBe(404);
+  expect((await api(h, "GET", `blobs/${kept.id}`)).status).toBe(200);
+  const unpin = await (await api(h, "PATCH", `blobs/${kept.id}`, { keep: false })).json<any>();
+  expect(unpin.retention).toMatchObject({ keep: false, expires_at: expect.any(Number) });
+  await inDO(h.id, (t) => t.cleanup());
+  expect((await api(h, "GET", `blobs/${kept.id}`)).status).toBe(404);
+});
+
+it("lets the owner pin captures, rejects display mutations, and validates retention bodies", async () => {
+  const { h, headers } = await captureFixture();
+  const uploaded = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers, body: "capture" })).json<any>();
+  const url = h.page_url + `_tendril/blob/${uploaded.id}/retention`;
+  const keep = await req(url, { method: "PATCH", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ keep: true }) });
+  expect(keep.status).toBe(200);
+  expect(await keep.json()).toMatchObject({ id: uploaded.id, retention: { keep: true, expires_at: null } });
+  expect((await api(h, "PATCH", `blobs/${uploaded.id}`, { keep: "yes" })).status).toBe(400);
+  const owner = await PageClient.connect(h.page_url, { headers });
+  const result = await owner.request({ t: "links", create: { role: "display", label: "Screen" } });
+  const display = result.created;
+  expect(display.url).toBeTruthy();
+  const denied = await req(display.url + `_tendril/blob/${uploaded.id}/retention`, {
+    method: "PATCH", headers: { Origin: new URL(display.url).origin, "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }),
+  });
+  expect(denied.status).toBe(403);
+  expect((await (await api(h, "GET", `blobs/${uploaded.id}/info`)).json<any>()).retention.keep).toBe(true);
+  owner.close();
+});
+
 it("reminds agents at setup, upload, and every event poll to keep a receiver running", async () => {
   const h = await createPublic("listener@example.com", "192.0.2.51");
   const setup = h as Handle & { agent_setup: { event_delivery: string; next_step: string } };

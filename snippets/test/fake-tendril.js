@@ -1,10 +1,11 @@
 // A stand-in for the runtime's window.tendril (docs/PROTOCOL.md section 11) that records calls.
 // Injected with page.addInitScript before any snippet loads. Tests read window.__calls.
 (() => {
-  const calls = (window.__calls = { upload: [], send: [], state: [] });
+  const calls = (window.__calls = { upload: [], send: [], state: [], speech: [] });
   let n = 0;
   const state = {};
   const listeners = new Set();
+  const events = new Map();
   const toPath = (p) => (Array.isArray(p) ? p : String(p).split("."));
   const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
   const emit = (ops, by) => listeners.forEach((f) => f(state, ops, by));
@@ -28,6 +29,8 @@
     device: { id: "d_testdevice000000", role: "owner", name: "test", pending: false },
     version: 1,
     connected: true,
+    speak(text) { calls.speech.push(text); },
+    tts: { stop() {} },
     async upload(blob, opts) {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const id = "b_test" + String(++n).padStart(15, "0");
@@ -63,7 +66,17 @@
       mine() { return (state._device || {})[window.tendril.device.id]; },
       on(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     },
-    on() { return () => {}; },
+    on(name, fn) { if (!events.has(name)) events.set(name, new Set()); events.get(name).add(fn); return () => events.get(name).delete(fn); },
+    __emit(name, value) { for (const fn of events.get(name) || []) fn(value); },
+    async uploadEvent(blob, opts) {
+      const file = await this.upload(blob, { name: opts.name });
+      const data = clone(opts.data); let target = data;
+      for (const part of opts.dataPath || []) target = target[part] ||= {};
+      Object.assign(target, { blob: file.id, url: file.url });
+      const result = await this.send(data);
+      return { status: result.error ? 'rejected' : result.queued ? 'queued' : 'accepted', capture_id: `capture:${file.id}`, ...result, blob: file };
+    },
+    captures() { return []; },
     // Test hook: simulate the agent changing state from the server side.
     __agentState(ops) { apply(ops, "agent:main"); },
   };

@@ -3,6 +3,7 @@
 // Tools call the agent API, so behaviour and checks are the same as over HTTP.
 // MCP Events subscriptions push "events are waiting" through mcpEvents.ts.
 import type { Tendril } from "./tendril";
+import { CONTRACT_VERSION, schemas, validateSchema } from "../../contract/index.mjs";
 import { handleAgent } from "./agent";
 import { HttpError, isPlainObject, json, readJson } from "./http";
 import { LONGPOLL_MAX_WAIT_S } from "./limits";
@@ -26,6 +27,8 @@ const INSTRUCTIONS =
   "Read events with read_events (pass wait to hold the call until something arrives, then call it again to keep listening), " +
   "call describe_devices before adding sensor controls, explore starter pages at /recipes/catalog.json, " +
   "change the page with write_files, inspect or drive it with eval, diagnose with event_journey, and talk to the user with say. " +
+  "Use get_session to resume saved work, durable timers for closed-page schedules, and versioned proposals for exact owner decisions. " +
+  "Private participant answers are available through read_responses; never put raw answers in shared state or say. " +
   `Subscribe to the ${MCP_EVENT_NAME} event to be woken when events are waiting.`;
 
 interface Tool {
@@ -118,9 +121,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: "say",
-    description: "Show a message in the conversation on every device and speak on owner devices unless speak is false. Prefer this for spoken replies: English uses on-device Phonon neural TTS by default, which may sound much better than browser speech synthesis. First use downloads/caches the model; browser TTS is the fallback. Respects the user's audio settings.",
-    inputSchema: obj({ text: { type: "string" }, speak: { type: "boolean" },
-      in_reply_to: { type: "integer", minimum: 1, description: "Event seq this message answers" } }, ["text"]),
+    description: "Present a reply and speak on one eligible owner device. Optional device and speak_on separate presentation from audio. The transcript remains shared; targeting is not private delivery. Browser speech works immediately; neural voice is optional and respects the person's local settings.",
+    inputSchema: schemas.say,
     call: (a) => ({ method: "POST", rest: "say", body: a }),
   },
   {
@@ -132,7 +134,7 @@ const TOOLS: Tool[] = [
   {
     name: "update_state",
     description: "Change shared state with a JSON Merge Patch (null deletes a key). Pages see it live.",
-    inputSchema: obj({ patch: { type: "object" } }, ["patch"]),
+    inputSchema: obj({ patch: schemas.stateUpdate }, ["patch"]),
     call: (a) => ({ method: "PATCH", rest: "state", body: a.patch }),
   },
   {
@@ -152,6 +154,85 @@ const TOOLS: Tool[] = [
     description: "Send a push notification to the owner's devices that allowed them.",
     inputSchema: obj({ title: { type: "string" }, body: { type: "string" } }, ["title"]),
     call: (a) => ({ method: "POST", rest: "notify", body: a }),
+  },
+  {
+    name: "list_devices", description: "Saved device purposes, connection state and leased audio focus. Purposes do not change access roles.",
+    inputSchema: obj({}), call: () => ({ method: "GET", rest: "devices" }),
+  },
+  {
+    name: "configure_device", description: "Rename a device or set general, camera, controller, display or speaker purpose. Cannot grant permissions.",
+    inputSchema: { ...schemas.deviceUpdate, required: ["id"] },
+    call: ({ id, ...body }) => ({ method: "PATCH", rest: `devices/${encodeURIComponent(id)}`, body }),
+  },
+  {
+    name: "set_focus", description: "Continue on a connected owner device for a bounded lease, or release focus with device:null.",
+    inputSchema: schemas.focusRequest, call: (a) => ({ method: "POST", rest: "focus", body: a }),
+  },
+  {
+    name: "list_timers", description: "Durable server timers plus page lifetime. These survive browser closure but not page expiration.",
+    inputSchema: obj({}), call: () => ({ method: "GET", rest: "timers" }),
+  },
+  {
+    name: "create_timer", description: "Schedule a claimed page's durable timer. Supply due_at, or a calendar repeat with timezone; choose fire_once or skip for missed runs. Normal wake budgets and page expiration apply.",
+    inputSchema: schemas.timerCreate, call: (a) => ({ method: "POST", rest: "timers", body: a }),
+  },
+  {
+    name: "update_timer", description: "Change a timer or cancel it with changes.state='cancelled'. A completed occurrence needs a new first-run time to restart.",
+    inputSchema: obj({ id: { type: "string" }, changes: schemas.timerWrite }, ["id", "changes"]),
+    call: (a) => ({ method: "PATCH", rest: `timers/${encodeURIComponent(a.id)}`, body: a.changes }),
+  },
+  {
+    name: "delete_timer", description: "Remove a stored timer. Its existing execution history is retained within normal history bounds.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]), call: (a) => ({ method: "DELETE", rest: `timers/${encodeURIComponent(a.id)}` }),
+  },
+  {
+    name: "timer_history", description: "Recent durable occurrences, skipped runs, event sequence and best-effort notification outcomes.",
+    inputSchema: obj({}), call: () => ({ method: "GET", rest: "timers/history" }),
+  },
+  {
+    name: "get_session", description: "Saved purpose, current task, decisions, open questions and handled cursor, plus pending inputs, history gaps, devices and timers.",
+    inputSchema: obj({}), call: () => ({ method: "GET", rest: "session" }),
+  },
+  {
+    name: "save_session", description: "Save context for continuing with another agent. Preserve work you did not change; use expected_revision to avoid overwrites and last_handled_seq only for actually handled inputs.",
+    inputSchema: schemas.sessionWrite, call: (a) => ({ method: "PUT", rest: "session", body: a }),
+  },
+  {
+    name: "export_bundle", description: "Export the served page as a portable template. include_data adds shared state, session and media bytes; credentials, private answers, decisions, devices and timers are excluded.",
+    inputSchema: obj({ include_data: { type: "boolean" } }), call: (a) => ({ method: "GET", rest: "bundle", query: { include_data: String(a.include_data === true) } }),
+  },
+  {
+    name: "stage_bundle", description: "Validate and prepare a portable bundle without publishing. Review its contents and current version before publishing.",
+    inputSchema: obj({ bundle: schemas.bundle }, ["bundle"]), call: (a) => ({ method: "PUT", rest: "bundle", body: a.bundle }),
+  },
+  {
+    name: "publish_bundle", description: "Publish the prepared copy only if expected_version still matches. First publication requires a live receiver; included shared state is restored.",
+    inputSchema: schemas.bundlePublish, call: (a) => ({ method: "POST", rest: "bundle/publish", body: a }),
+  },
+  {
+    name: "discard_bundle", description: "Discard the unpublished prepared copy and release its otherwise-unused stored assets.",
+    inputSchema: obj({}), call: () => ({ method: "DELETE", rest: "bundle" }),
+  },
+  {
+    name: "remix_tendril", description: "Create an independent page for the specified owner with a staged copy and new private handle. Open/claim it, attach its receiver and publish; the source remains unchanged.",
+    inputSchema: schemas.remix, call: (a) => ({ method: "POST", rest: "remix", body: a }),
+  },
+  {
+    name: "list_decisions", description: "Versioned owner proposals and their decisions/outcomes. Check the matching scope and current record before external action.",
+    inputSchema: obj({}), call: () => ({ method: "GET", rest: "decisions" }),
+  },
+  {
+    name: "request_decision", description: "Offer a concrete proposal for the owner to approve, reject or revise on the page. Include immutable scope identifiers and an expiry if needed. Does not perform the action.",
+    inputSchema: schemas.decisionCreate, call: (a) => ({ method: "POST", rest: "decisions", body: a }),
+  },
+  {
+    name: "update_decision", description: "Record working/completed/failed outcomes after approval, or reissue pending work for a fresh owner decision. Cannot approve on the owner's behalf.",
+    inputSchema: obj({ id: { type: "string" }, changes: schemas.decisionUpdate }, ["id", "changes"]),
+    call: (a) => ({ method: "PATCH", rest: `decisions/${encodeURIComponent(a.id)}`, body: a.changes }),
+  },
+  {
+    name: "read_responses", description: "Read private participant answers to facilitate the requested session. Submission events contain only IDs. Publish an aggregate only when intended; raw answers must not enter say/shared state.",
+    inputSchema: obj({}), call: () => ({ method: "GET", rest: "responses" }),
   },
   {
     name: "probe_delivery",
@@ -183,12 +264,12 @@ export async function handleMcp(t: Tendril, req: Request, rest: string): Promise
   if (req.method !== "POST")
     return json({ error: { code: "method_not_allowed", message: "This MCP server takes JSON-RPC over POST and offers no event stream" } }, 405, { Allow: "POST" });
 
-  const msg = await readJson<any>(req, 1_000_000);
+  const msg = await readJson<any>(req, 36 * 1024 * 1024);
   if (Array.isArray(msg) || !isPlainObject(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string")
     return json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } }, 400);
   if (msg.id === undefined || msg.id === null) return new Response(null, { status: 202 });
   try {
-    const result = await dispatch(t, token, msg.method, isPlainObject(msg.params) ? msg.params : {}, req.signal);
+    const result = await dispatch(t, token, msg.method, isPlainObject(msg.params) ? msg.params : {}, req.signal, req.headers.get("CF-Connecting-IP"));
     return json({ jsonrpc: "2.0", id: msg.id, result });
   } catch (err) {
     const e = err instanceof RpcError ? err : new RpcError(-32603, err instanceof Error ? err.message : String(err));
@@ -196,14 +277,14 @@ export async function handleMcp(t: Tendril, req: Request, rest: string): Promise
   }
 }
 
-async function dispatch(t: Tendril, token: string, method: string, params: Record<string, any>, signal: AbortSignal): Promise<unknown> {
+async function dispatch(t: Tendril, token: string, method: string, params: Record<string, any>, signal: AbortSignal, clientIp: string | null): Promise<unknown> {
   switch (method) {
     case "initialize": {
       const asked = params.protocolVersion;
       return {
         protocolVersion: typeof asked === "string" && PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
         capabilities: { tools: {}, events: {} },
-        serverInfo: { name: "tendriller", version: "1" },
+        serverInfo: { name: "tendriller", version: String(CONTRACT_VERSION) },
         instructions: INSTRUCTIONS,
       };
     }
@@ -212,7 +293,7 @@ async function dispatch(t: Tendril, token: string, method: string, params: Recor
     case "tools/list":
       return { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) };
     case "tools/call":
-      return callTool(t, token, params, signal);
+      return callTool(t, token, params, signal, clientIp);
     case "events/list":
       return { events: [MCP_EVENT_DEFINITION] };
     case "events/subscribe":
@@ -224,15 +305,18 @@ async function dispatch(t: Tendril, token: string, method: string, params: Recor
   }
 }
 
-async function callTool(t: Tendril, token: string, params: Record<string, any>, signal: AbortSignal): Promise<unknown> {
+async function callTool(t: Tendril, token: string, params: Record<string, any>, signal: AbortSignal, clientIp: string | null): Promise<unknown> {
   const tool = TOOLS.find((x) => x.name === params.name);
   if (!tool) throw new RpcError(-32602, `Unknown tool: ${String(params.name)}`);
   const args = isPlainObject(params.arguments) ? params.arguments : {};
+  const issues = validateSchema(tool.inputSchema, args);
+  if (issues.length) throw new RpcError(-32602, "Invalid tool arguments", { issues });
   const spec = tool.call(args);
   const query = { ...spec.query };
   if (query.after === "__cursor__") query.after = String(t.db.get<number>("agent_cursor", 0));
   const url = new URL(`https://tendril.internal/agent?${new URLSearchParams(query)}`);
   const headers = new Headers({ Authorization: `Bearer ${token}`, "x-tendril-rest": encodeURIComponent(spec.rest) });
+  if (clientIp) headers.set("CF-Connecting-IP", clientIp);
   const init: RequestInit = { method: spec.method, headers, signal };
   if (spec.body !== undefined) {
     headers.set("Content-Type", "application/json");

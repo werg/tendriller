@@ -3,10 +3,13 @@ import type { Tendril } from "./tendril";
 import { addActivity } from "./activity";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles } from "./files";
-import { HttpError, json, readBody } from "./http";
+import { HttpError, json, readBody, readJson } from "./http";
+import { blobReference, setBlobRetention } from "./blob-retention";
 import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex } from "./ids";
 import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
+import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
+import { handleResponses } from "./interactions";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -52,6 +55,16 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (sub === "responses" || sub === "responses/all") {
+    if (!session?.account_id || link.role === "display") throw new HttpError(403, "forbidden", "Sign in as a participant to answer");
+    if (sub === "responses/all" && link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can view all responses");
+    return handleResponses(t, req, session.account_id, sub === "responses/all");
+  }
+  const experiencePath = sub === "resume" ? "session" : sub;
+  if (EXPERIENCE_ROUTE.test(experiencePath) || sub === "devices") {
+    if (link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can manage saved work, devices, and timers");
+    return handleExperience(t, req, url, "owner", experiencePath, true);
+  }
 
   if (sub === "trust-version" && m === "POST") {
     if (link.role !== "owner" || !session?.account_id) throw new HttpError(403, "forbidden");
@@ -138,9 +151,13 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const body = await readBody(req, t.blobLimit());
     const type = req.headers.get("Content-Type") || "application/octet-stream";
     const name = req.headers.get("X-Tendril-Name");
+    const keepHeader = req.headers.get("X-Tendril-Keep");
+    if (keepHeader !== null && keepHeader !== "true" && keepHeader !== "false") throw new HttpError(400, "bad_request", "X-Tendril-Keep must be true or false");
+    const keep = keepHeader === "true";
+    if (keep && link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can keep captures beyond their default retention");
     const device = (await verifiedDevice(t, req))?.id ?? null;
     const store = async () => {
-      const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page");
+      const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page", keep);
       addActivity(t, { kind: "blob", summary: `${blobLabel(type)} sent${name ? ` (${name.slice(0, 80)})` : ""}, ${formatSize(body.byteLength)}`, blob: r.id, device });
       return r;
     };
@@ -151,6 +168,12 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const bm = /^blob\/(b_[a-z2-7]{20})$/.exec(sub);
   if (bm && (m === "GET" || m === "HEAD")) return t.getBlob(bm[1]);
+  const retention = /^blob\/(b_[a-z2-7]{20})\/retention$/.exec(sub);
+  if (retention && (m === "GET" || m === "PATCH")) {
+    if (m === "GET") return json(blobReference(t, retention[1]));
+    if (link.role !== "owner") throw new HttpError(403, "forbidden", "Only the owner can change capture retention");
+    return json(setBlobRetention(t, retention[1], await readJson(req, 4096), null, (await verifiedDevice(t, req))?.id ?? null));
+  }
 
   if (sub === "manifest.webmanifest" && m === "GET") {
     const meta = tendrilMeta(t);

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Guide checkpoints and evidence",
+  "anyOf": [
+    { "type": "object", "required": ["type", "guide_id", "step_id", "completed", "at"], "properties": {
+      "type": { "const": "checkpoint" }, "guide_id": { "type": "string" }, "step_id": { "type": "string" },
+      "completed": { "const": true }, "at": { "type": "integer", "minimum": 0 }
+    } },
+    { "type": "object", "required": ["type", "modality", "context"], "properties": {
+      "type": { "const": "input" }, "modality": { "enum": ["photo", "audio", "voice"] },
+      "context": { "type": "object", "required": ["guide_id", "step_id"], "properties": { "guide_id": { "type": "string" }, "step_id": { "type": "string" } } },
+      "blob": { "type": "string" }, "url": { "type": "string" }, "capture_id": { "type": "string" }, "text": { "type": "string" }
+    } }
+  ],
+  "x-shared-state": {
+    "guide": "{id,title,description,steps:[{id,title,text}]} with stable step IDs",
+    "guide_progress": "{current,completed:{[stepId]:timestamp}}"
+  },
+  "x-agent-instructions": "AGENT.md"
+}

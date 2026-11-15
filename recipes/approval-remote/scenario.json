@@ -1,0 +1,25 @@
+{
+  "http": [
+    {
+      "method": "GET",
+      "path": "/_tendril/decisions",
+      "json": { "decisions": [{ "id": "decision_preview", "title": "Update the project guide", "summary": "Add setup examples and a troubleshooting section.", "version": 1, "status": "pending", "expires_at": null, "proposal": { "files": ["README.md"], "action": "Commit the reviewed guide" } }] }
+    },
+    {
+      "method": "POST",
+      "path": "/_tendril/decisions/decision_preview/respond",
+      "expect_body": { "expected_version": 1, "decision": "revise", "note": "Keep the current introduction." },
+      "json": { "id": "decision_preview", "title": "Update the project guide", "summary": "Add setup examples and a troubleshooting section.", "version": 2, "status": "revision_requested", "note": "Keep the current introduction.", "expires_at": null },
+      "update": [{ "method": "GET", "path": "/_tendril/decisions", "json": { "decisions": [{ "id": "decision_preview", "title": "Update the project guide", "summary": "Add setup examples and a troubleshooting section.", "version": 2, "status": "revision_requested", "note": "Keep the current introduction.", "expires_at": null }] } }],
+      "broadcast": { "t": "decisions_changed" }
+    }
+  ],
+  "steps": [
+    { "expect_text": "Update the project guide" },
+    { "fill": "#note-decision_preview", "value": "Keep the current introduction." },
+    { "click": "[data-choice=revise]" },
+    { "expect_text": "Revision requested" },
+    { "expect_text": "Your note: Keep the current introduction." },
+    { "expect_no_send": true }
+  ]
+}

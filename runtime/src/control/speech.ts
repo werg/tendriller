@@ -67,6 +67,12 @@ export class SpeechCapture {
     catch (error) { this.worker?.terminate(); this.worker = null; this.ready = null; throw error; }
   }
 
+  /** Warm transcription without opening the microphone. */
+  async prepare(): Promise<void> {
+    if (!this.mode) throw new Error("Private speech is unavailable on this device. You can type instead.");
+    await this.load();
+  }
+
   async start(_hold: boolean): Promise<void> {
     if (this.listening || !this.mode) return;
     this.cancelled = false;
