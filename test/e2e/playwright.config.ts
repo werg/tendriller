@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: ["local.spec.ts", "speech.spec.ts", "real-speech.spec.ts", "tts-integration.spec.ts", "modalities.spec.ts", "approval-remote.spec.ts", "experience-followups.spec.ts", "feedback-recovery.spec.ts"],
+  testMatch: ["local.spec.ts", "speech.spec.ts", "real-speech.spec.ts", "tts-integration.spec.ts", "modalities.spec.ts", "approval-remote.spec.ts", "experience-followups.spec.ts", "feedback-recovery.spec.ts", "streams.spec.ts"],
   timeout: 45_000,
   workers: 1,
   reporter: [["list"]],

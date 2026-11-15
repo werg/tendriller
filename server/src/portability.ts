@@ -180,7 +180,8 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
   if (expectedVersion !== current) throw new HttpError(409, "version_conflict", "The page changed; review its current version before replacing it", { current });
   if (!latestFileMap(t).has("index.html")) {
     const facts = t.presenceFacts();
-    if (!facts.agentSocket && !facts.longPollHeld && !facts.webhook) throw new HttpError(428, "listener_required", "Connect this page to its agent conversation before publishing the prepared copy");
+    if (t.db.get<string>("mode", "interactive") !== "dashboard" && !facts.agentSocket && !facts.longPollHeld && !facts.webhook)
+      throw new HttpError(428, "listener_required", "Connect this page to its agent conversation before publishing the prepared copy");
   }
   // Staging may be reviewed across browser closures and deployments. Do not
   // publish broken references if storage was removed before the review finished.

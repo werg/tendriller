@@ -10,6 +10,63 @@ async function open(page: Page, t: MockTendril) {
   await page.waitForFunction(() => (window as any).tendril && (window as any).tendril.connected);
 }
 
+test("stream runtime replays durable history, restores subscriptions, and never queues offline live samples", async ({ page }) => {
+  const makeRecord = (seq: number, stream = "training.loss") => ({ stream, seq, ts: seq, received_at: seq,
+    id: `run:${seq}`, type: "metric", data: { loss: 1 / seq }, producer: "producer:trainer" });
+  const history = [makeRecord(1), makeRecord(2)];
+  const t = mock.create({ onMessage(message, socket) {
+    if (message.t === "stream_subscribe") {
+      const durable = message.stream === "training.loss";
+      const cursor = durable ? history.at(-1)!.seq : 0;
+      const records = durable ? history.filter(record => record.seq > message.after) : [];
+      socket.send(JSON.stringify({ t: "ack", cid: message.cid, stream: message.stream,
+        durability: durable ? "durable" : "ephemeral", cursor,
+        ...(durable && message.after !== undefined ? { batch: { stream: message.stream, durability: "durable", records,
+          cursor: records.at(-1)?.seq ?? message.after, history: { earliest_available_seq: 1, latest_seq: cursor, gap: false, missing_through: null } } } : {}) }));
+      return true;
+    }
+    if (message.t === "stream_unsubscribe") {
+      socket.send(JSON.stringify({ t: "ack", cid: message.cid, stream: message.stream }));
+      return true;
+    }
+  } });
+  await open(page, t);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.streamRecords = []; w.liveRecords = []; w.streamErrors = [];
+    w.stopTrainingStream = w.tendril.streams.subscribe("training.loss", (record: any) => w.streamRecords.push(record.seq),
+      { after: 0, onError: (error: any) => w.streamErrors.push(error.code) });
+    w.stopLiveStream = w.tendril.streams.subscribe("machine.live", (record: any) => w.liveRecords.push(record.seq));
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).streamRecords)).toEqual([1, 2]);
+  await mock.waitFor(() => mock.messages(t, "stream_subscribe").length === 2);
+  history.push(makeRecord(3));
+  mock.broadcast(t, { t: "stream_record", record: history.at(-1) });
+  mock.broadcast(t, { t: "stream_record", record: makeRecord(1, "machine.live") });
+  await expect.poll(() => page.evaluate(() => (window as any).streamRecords)).toEqual([1, 2, 3]);
+  await expect.poll(() => page.evaluate(() => (window as any).liveRecords)).toEqual([1]);
+  mock.goOffline(t);
+  await page.waitForFunction(() => !window.tendril.connected);
+  const offline = await page.evaluate(async () => {
+    try { await window.tendril.streams.publish("machine.live", { records: [{ id: "offline", type: "metric", data: {} }] }); return "accepted"; }
+    catch (error) { return (error as any).code; }
+  });
+  expect(offline).toBe("offline");
+  expect(mock.messages(t, "stream_publish")).toHaveLength(0);
+  history.push(makeRecord(4), makeRecord(5));
+  mock.goOnline(t);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect.poll(() => page.evaluate(() => (window as any).streamRecords)).toEqual([1, 2, 3, 4, 5]);
+  const subscriptions = mock.messages(t, "stream_subscribe");
+  expect(subscriptions.filter(m => m.stream === "training.loss").at(-1).after).toBe(3);
+  expect(subscriptions.filter(m => m.stream === "machine.live").every(m => m.after === undefined)).toBe(true);
+  expect(mock.messages(t, "stream_publish")).toHaveLength(0);
+  expect(mock.messages(t, "send")).toHaveLength(0);
+  await page.evaluate(() => { (window as any).stopTrainingStream(); (window as any).stopLiveStream(); });
+  await mock.waitFor(() => mock.messages(t, "stream_unsubscribe").length === 2);
+  expect(await page.evaluate(() => (window as any).streamErrors)).toEqual([]);
+});
+
 test("agent replies auto-speak only for approved owners and respect speak:false", async ({ page }) => {
   const t = mock.create();
   await open(page, t);

@@ -11,6 +11,7 @@ import { iconSvg } from "./inject";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { handleResponses } from "./interactions";
 import { handleAssignments } from "./assignments";
+import { STREAM_ROUTE, handleStreams } from "./streams";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -56,6 +57,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (sub.startsWith("streams") && STREAM_ROUTE.test(sub))
+    return handleStreams(t, req, url, sub, { kind: "page", name: session?.account_id ?? link.id, role: link.role });
   if (sub === "assignments" || sub.startsWith("assignments/")) {
     if (!session?.account_id || link.role === "display") throw new HttpError(403, "forbidden", "Sign in as a participant to view assignments");
     const manage = link.role === "owner" && (sub !== "assignments" || req.method !== "GET");
@@ -142,14 +145,16 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     t.ctx.acceptWebSocket(server);
+    const sessionToken = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
     server.serializeAttachment({ linkId: link.id, deviceId: null, version: 0, at: t.now(),
-      accountId: session?.account_id ?? null, sessionRole: link.role });
+      accountId: session?.account_id ?? null, sessionRole: link.role,
+      sessionHash: sessionToken && session ? await sha256Hex(sessionToken) : null });
     return new Response(null, { status: 101, webSocket: client });
   }
 
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
-    return json({ id: t.tid, version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], features: t.features() });
+    return json({ id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], features: t.features() });
   }
 
   if (sub === "blob" && m === "POST") {

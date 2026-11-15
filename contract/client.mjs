@@ -1,5 +1,6 @@
 import { assertValid, validate } from "./index.mjs";
 import { createDurabilityClient } from "./durability-client.mjs";
+import { createStreamsClient } from "./streams-client.mjs";
 
 export class ApiError extends Error {
   constructor(status, error) {
@@ -37,6 +38,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
   }
   return {
     ...createDurabilityClient(request),
+    ...createStreamsClient(request),
     request,
     info: () => request("", undefined, "objectResponse"),
     say: body => request("/say", { method: "POST", body: assertValid("say", body) }, "sayResult"),

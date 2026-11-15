@@ -50,6 +50,22 @@ For local development, use Node 22.15+, run `npm ci` and `npm run dev` (with con
 Each tendril also exposes an MCP server at `<api>/mcp`, with an MCP Event for hosts
 that support subscriptions. Connecting MCP tools alone does not establish a wake path.
 
+## Live data and training dashboards
+
+Named **streams** carry arbitrary application data with explicit durable or
+ephemeral delivery. Existing events, logs, transcript, state changes, and presence
+are exposed as built-in streams; their existing APIs and wake behavior remain
+compatible. Custom telemetry does not wake the agent.
+
+An optional `tendril-stream` collector runs independently of the conversation. It
+samples local CPU/RAM/GPU, tails training metrics and logs, and receives data from
+configured SSH hosts. Scoped publishing credentials stay on that machine; pages
+query retained history and subscribe through `tendril.streams` using their normal
+page sessions. A `mode: "dashboard"` page can publish without an agent listener.
+
+See [Streams](docs/STREAMS.md), [Collector](docs/COLLECTOR.md), and the
+[training dashboard example](examples/training-dashboard/).
+
 ## Build a complete experience
 
 The [recipe catalog](recipes/README.md) includes six complete workflows with
