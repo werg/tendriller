@@ -305,6 +305,12 @@ it("sends a catch-up wake when a re-arming socket's cursor is behind", async () 
   expect(behind.response.status).toBe(101);
   await until(() => behind.frames.length > 0);
   expect(behind.frames).toEqual([{ t: "wake", seq: probe.seq }]);
+  await inDO(h.id, t => {
+    expect(t.db.get<number | null>("wake_pending_since", null)).not.toBeNull();
+    t.skew += t.wakeConfig().grace_seconds * 1000;
+    expect(t.presence().state).toBe("not_responding");
+    t.skew -= t.wakeConfig().grace_seconds * 1000;
+  });
   const current = await openAgentSocket(h, h.token, `?after=${probe.seq}`);
   const plain = await openAgentSocket(h, h.token);
   await new Promise((r) => setTimeout(r, 100));
@@ -315,6 +321,7 @@ it("sends a catch-up wake when a re-arming socket's cursor is behind", async () 
 
 it("opens the wake socket with a single-use listen-only ticket", async () => {
   const h = await createPublic("ticket@example.com", "192.0.2.192");
+  expect((await api(h, "POST", "events/socket/ticket?after=invalid")).status).toBe(400);
   const issued = await api(h, "POST", "events/socket/ticket?after=0");
   expect(issued.status).toBe(201);
   const t = await issued.json<{ ticket: string; expires_at: number; socket_url: string; protocols: string[] }>();
@@ -340,6 +347,17 @@ it("opens the wake socket with a single-use listen-only ticket", async () => {
   const spoofed = await req(`${h.api}/events/socket`, { headers: { Upgrade: "websocket",
     "Sec-WebSocket-Protocol": "tendriller.agent.v1", "x-tendril-socket-ticket": t.ticket } });
   expect(spoofed.status).toBe(401);
+
+  // A valid token handshake must ignore a client-supplied ticket header. That
+  // ticket remains unused and can still open its own socket afterward.
+  const unused = await (await api(h, "POST", "events/socket/ticket")).json<{ ticket: string }>();
+  const withHeader = await req(`${h.api}/events/socket`, { headers: { Upgrade: "websocket",
+    "Sec-WebSocket-Protocol": `tendriller.agent.v1, ${h.token}`, "x-tendril-socket-ticket": unused.ticket } });
+  expect(withHeader.status).toBe(101);
+  withHeader.webSocket?.accept(); withHeader.webSocket?.close();
+  const redeemed = await openAgentSocket(h, unused.ticket);
+  expect(redeemed.response.status).toBe(101);
+  redeemed.socket?.close();
 
   // Revoking the page token closes a ticket-opened socket and voids unused tickets.
   const spare = await (await api(h, "POST", "events/socket/ticket")).json<{ ticket: string }>();

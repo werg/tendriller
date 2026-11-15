@@ -3,7 +3,7 @@ import { assertValid } from "../../contract/index.mjs";
 import type { Tendril } from "./tendril";
 import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
-import { addEvent, getEvents } from "./events";
+import { addEvent, getEvents, markWakeDelivered } from "./events";
 import { validSecret } from "./mcpEvents";
 import {
   createVersion, latestFileMap, listVersions, pointers, rollback, servedVersion, storeContent, versionFile, versionFiles,
@@ -124,6 +124,7 @@ route("GET", /^events\/socket$/, () => {
  * events or call any other route; the socket it opens closes when the page token is revoked.
  */
 route("POST", /^events\/socket\/ticket$/, async (t, req, url) => {
+  const after = url.searchParams.has("after") ? intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER) : null;
   const tokenHash = await sha256Hex(/^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")![1]);
   const now = t.now();
   t.db.run("DELETE FROM socket_tickets WHERE expires_at <= ?", now);
@@ -133,11 +134,10 @@ route("POST", /^events\/socket\/ticket$/, async (t, req, url) => {
   const expiresAt = now + SOCKET_TICKET_TTL_MS;
   t.db.run("INSERT INTO socket_tickets (hash, token_hash, expires_at) VALUES (?, ?, ?)", await sha256Hex(ticket), tokenHash, expiresAt);
   const socketUrl = `${apiUrl(t.env, t.tid).replace(/^http/, "ws")}/events/socket`;
-  const after = url.searchParams.get("after");
   return json({
     ticket,
     expires_at: expiresAt,
-    socket_url: after !== null && /^\d+$/.test(after) ? `${socketUrl}?after=${after}` : socketUrl,
+    socket_url: after !== null ? `${socketUrl}?after=${after}` : socketUrl,
     protocols: ["tendriller.agent.v1", ticket],
   }, 201);
 });
@@ -178,7 +178,7 @@ async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response
   // while it was disconnected, instead of waiting for the next event.
   if (after !== null) {
     const pending = t.db.one<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE wake = 1 AND seq > ?", after)?.m ?? null;
-    if (pending !== null) t.send(server, { t: "wake", seq: pending });
+    if (pending !== null) { t.send(server, { t: "wake", seq: pending }); markWakeDelivered(t); }
   }
   t.refreshPresence();
   t.scheduleAlarm();
