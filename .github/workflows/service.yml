@@ -67,14 +67,7 @@ jobs:
           if-no-files-found: ignore
 
   staging:
-  # One-time pre-release data-discard cutover: create deploy/contract2-direct
-  # at the tested current master SHA. The in-job SHA recheck prevents a stale
-  # branch from deploying. Remove this escape hatch after a successful cutover.
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/deploy/contract2-direct')
-      || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-      && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true'
-      && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema)
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
     needs: [check, contrib-integration]
     runs-on: ubuntu-latest
     environment: staging
@@ -111,11 +104,7 @@ jobs:
         run: node scripts/check-deployment.mjs https://staging.tendriller.dev
 
   production:
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/deploy/contract2-direct')
-      || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-      && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true'
-      && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema)
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
     needs: [check, contrib-integration, staging]
     runs-on: ubuntu-latest
     environment: production
