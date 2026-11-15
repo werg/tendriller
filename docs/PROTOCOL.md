@@ -29,6 +29,8 @@ Opening a page without a page session redirects through `/auth/page` and OAuth. 
 
 Service sign-in uses GitHub or Google authorization code and PKCE. Account identities use provider subject, with verified emails recorded separately. The dashboard supports provider linking, export, and deletion.
 
+Publishing a page version does not require an open page or device. A new version is served immediately with `status: "pending"` until a visible page reports its post-load health. Hidden pages defer health reporting until visible; the server ignores hidden reports. An explicit failure reported by a visible page fails the version and rolls back to the last healthy version when one exists. Elapsed time or a page navigation alone cannot fail a pending version, so a version may remain pending while all devices are offline.
+
 ## Agent API
 
 `PUT A/wake` accepts `{"webhook":{"url":"https://…","token":"<secret>","auth":"bearer|standard_webhooks|hermes_v2"}}`. `auth` defaults to `bearer`. Bearer sends `Authorization: Bearer <token>` (the token may be omitted for a public receiver). `standard_webhooks` requires a `whsec_` plus base64 secret and signs `{webhook-id}.{webhook-timestamp}.{raw JSON}` with HMAC-SHA256, returning `webhook-signature: v1,<base64>`. `hermes_v2` signs `<unix timestamp>.<raw JSON>` with the literal route secret and sends `X-Webhook-Timestamp` and `X-Webhook-Signature-V2` as a hex HMAC-SHA256 digest. GET wake reports the mode and `has_token`, never the secret. The receiver still needs the private page API token and a host-specific way to resume the correct conversation.

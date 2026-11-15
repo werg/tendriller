@@ -72,13 +72,15 @@ export function installLogForwarding(flush: (entries: LogEntry[]) => void): void
 }
 
 /**
- * Health per PROTOCOL 4: ok:false if an uncaught error or unhandled rejection happens before
- * 2000 ms after `load` (or before `ready()` when `ready.manual()` was called before `load`).
+ * Report only while visible. The post-load observation window begins when the page is visible,
+ * and pauses if it becomes hidden. A manual ready signal made in the background is deferred.
  */
 export function createHealth(report: (ok: boolean, errors: string[]) => void, healthMs = 2000) {
   const errors: string[] = [];
   let reported = false;
   let manual = false;
+  let loaded = document.readyState === "complete";
+  let readyRequested = false;
   let timer: ReturnType<typeof setTimeout> | 0 = 0;
   window.addEventListener("error", (ev: ErrorEvent) => {
     if (reported) return;
@@ -90,16 +92,25 @@ export function createHealth(report: (ok: boolean, errors: string[]) => void, he
     errors.push(cap(`Unhandled rejection: ${reasonString(ev.reason).message}`));
   });
   const fire = () => {
-    if (reported) return;
+    if (reported || document.visibilityState !== "visible") return;
     reported = true;
-    if (timer) clearTimeout(timer);
+    if (timer) { clearTimeout(timer); timer = 0; }
     report(errors.length === 0, errors.slice(0, 20));
   };
-  const onLoad = () => { if (!manual && !reported) timer = setTimeout(fire, healthMs); };
-  if (document.readyState === "complete") onLoad();
-  else window.addEventListener("load", onLoad, { once: true });
+  const schedule = () => {
+    if (reported || document.visibilityState !== "visible") return;
+    if (readyRequested) { fire(); return; }
+    if (loaded && !manual && !timer) timer = setTimeout(() => { timer = 0; fire(); }, healthMs);
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") {
+      if (timer) { clearTimeout(timer); timer = 0; }
+    } else schedule();
+  });
+  if (loaded) schedule();
+  else window.addEventListener("load", () => { loaded = true; schedule(); }, { once: true });
   return {
-    ready: () => fire(),
+    ready: () => { readyRequested = true; schedule(); },
     manual: () => {
       if (reported) return;
       manual = true;

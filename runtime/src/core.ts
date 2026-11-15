@@ -198,11 +198,18 @@ export function createCore(cfg: TendrilConfig): Internal {
     },
   });
   const rawSend = connection.send;
+  let pendingHealth: { ok: boolean; errors: string[] } | null = null;
+  const sendHealth = () => {
+    if (!pendingHealth || document.visibilityState !== "visible" || !connection.connected) return;
+    if (rawSend({ t: "health", version: cfg.version, visible: true, ...pendingHealth })) pendingHealth = null;
+  };
   const receipts = createCommandReceipts(() => connection.connected);
   const requests = createRequests({ connected: () => connection.connected, send: rawSend,
     enqueue: message => enqueue(message), newCid });
   window.addEventListener("online", connection.reconnect);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") connection.reconnect(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") { connection.reconnect(); sendHealth(); }
+  });
 
   // ---------- outbox ----------
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
@@ -494,6 +501,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         bus.emit("transcript", null);
         bus.emit("connect");
         requests.flush();
+        sendHealth();
         pump();
         // `served` is what a reload would load (a failed current falls back to healthy), so
         // comparing against it avoids a pointless reload after a failed version.
@@ -646,7 +654,8 @@ export function createCore(cfg: TendrilConfig): Internal {
     store.add({ ...msg, cid: newCid() });
   });
   const health = createHealth((ok, errors) => {
-    raw({ t: "health", version: cfg.version, ok, errors });
+    pendingHealth = { ok, errors };
+    sendHealth();
   }, 2000);
 
   // ---------- public ----------

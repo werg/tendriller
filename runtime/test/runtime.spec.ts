@@ -661,7 +661,68 @@ test("health ok", async ({ page }) => {
   const t = mock.create();
   await open(page, t);
   const h = await mock.waitFor(() => mock.messages(t, "health")[0]);
-  expect(h).toMatchObject({ t: "health", version: 1, ok: true, errors: [] });
+  expect(h).toMatchObject({ t: "health", version: 1, visible: true, ok: true, errors: [] });
+});
+
+test("health waits for a visible page before starting its observation window", async ({ page }) => {
+  await page.addInitScript(() => {
+    let state = "hidden";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    (window as any).setTestVisibility = (next: string) => {
+      state = next;
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+  });
+  const t = mock.create({ html: `<script>addEventListener("load", () => setTimeout(() => { throw new Error("hidden error") }, 200))</script>` });
+  await open(page, t);
+  await page.waitForTimeout(2300);
+  expect(mock.messages(t, "health")).toHaveLength(0);
+  await page.evaluate(() => (window as any).setTestVisibility("visible"));
+  const h = await mock.waitFor(() => mock.messages(t, "health")[0]);
+  expect(h).toMatchObject({ visible: true, ok: false });
+  expect(h.errors.join(" ")).toContain("hidden error");
+});
+
+test("manual ready while hidden reports only after becoming visible", async ({ page }) => {
+  await page.addInitScript(() => {
+    let state = "hidden";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    (window as any).setTestVisibility = (next: string) => {
+      state = next;
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+  });
+  const t = mock.create({ html: `<script>tendril.ready.manual(); tendril.ready()</script>` });
+  await open(page, t);
+  expect(mock.messages(t, "health")).toHaveLength(0);
+  await page.evaluate(() => (window as any).setTestVisibility("visible"));
+  const h = await mock.waitFor(() => mock.messages(t, "health")[0]);
+  expect(h).toMatchObject({ visible: true, ok: true });
+});
+
+test("an offline health result is not sent after the page becomes hidden", async ({ page }) => {
+  await page.addInitScript(() => {
+    let state = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    (window as any).setTestVisibility = (next: string) => {
+      state = next;
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+  });
+  const t = mock.create();
+  await open(page, t);
+  mock.goOffline(t);
+  await page.waitForFunction(() => !(window as any).tendril.connected);
+  await page.waitForTimeout(2300);
+  expect(mock.messages(t, "health")).toHaveLength(0);
+  await page.evaluate(() => (window as any).setTestVisibility("hidden"));
+  mock.goOnline(t);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.waitForFunction(() => (window as any).tendril.connected);
+  expect(mock.messages(t, "health")).toHaveLength(0);
+  await page.evaluate(() => (window as any).setTestVisibility("visible"));
+  const h = await mock.waitFor(() => mock.messages(t, "health")[0]);
+  expect(h).toMatchObject({ visible: true, ok: true });
 });
 
 test("health failure on uncaught error after load", async ({ page }) => {

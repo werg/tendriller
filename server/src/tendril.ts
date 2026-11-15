@@ -13,7 +13,7 @@ import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
-import { checkHealthTimeouts, fileKey, nextHealthDeadline } from "./files";
+import { fileKey } from "./files";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
@@ -1114,8 +1114,6 @@ export class Tendril extends DurableObject<Env> {
     if (timerDue !== null) times.push(timerDue);
     const notificationDue = nextNotificationDeadline(this);
     if (notificationDue !== null) times.push(notificationDue);
-    const hd = nextHealthDeadline(this);
-    if (hd !== null) times.push(hd);
     const sockets = this.connectedSockets().length > 0;
     if (sockets) times.push(now + PRESENCE_TICK);
     const facts = this.presenceFacts();
@@ -1135,7 +1133,6 @@ export class Tendril extends DurableObject<Env> {
   async alarm(): Promise<void> {
     if (!this.exists()) return;
     const now = this.now();
-    checkHealthTimeouts(this);
     await runTimers(this);
     await runTimerNotifications(this);
     await runWebhook(this);
