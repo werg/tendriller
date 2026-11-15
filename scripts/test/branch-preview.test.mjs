@@ -53,6 +53,8 @@ test("preview config cannot carry staging resources, routes, or variables into d
   assert.equal(config.vars.BRANCH_PREVIEW_SHA, commit);
   assert.deepEqual(config.d1_databases.map(d => [d.database_name, d.database_id]), [[identity.database, dbId]]);
   assert.deepEqual(config.r2_buckets.map(b => b.bucket_name), [identity.bucket]);
+  assert.ok(template.triggers.crons.length > 0, "staging has scheduled maintenance");
+  assert.deepEqual(config.triggers, { crons: [] }, "preview never consumes account-wide cron quota");
   assert.ok(config.routes.every(r => identity.routes.includes(r.pattern) && !r.custom_domain));
   assert.ok(!JSON.stringify(config).includes("never-copy"));
   assert.ok(!JSON.stringify(config).includes("tendriller-staging"));

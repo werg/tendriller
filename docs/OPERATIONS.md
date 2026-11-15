@@ -101,6 +101,15 @@ quotas, storage and request allowance; they are ordinary deployed resources and
 remain until cleanup succeeds. Use disposable test data and inspect failed
 cleanup runs before assuming resources are gone.
 
+Branch previews deliberately configure `triggers.crons=[]`: they do not run
+scheduled reconciliation. This keeps each preview from allocating another
+account-wide Cron Trigger (Workers Free permits only five). The Worker still
+supports normal requests and Durable Object alarms. Exercise scheduled
+maintenance in core tests or a dedicated staging environment with cron capacity;
+do not assume that a preview validates scheduled cleanup or retention behavior.
+A retry explicitly clears any schedule from the same isolated preview Worker;
+staging and production configurations are unchanged.
+
 The initial preview is a live service for the branch's home page, starter gallery,
 agent guide, assets and API. Its fresh D1 database starts with
 `service_state.mode='creation_paused'`. The workflow never imports staging or
