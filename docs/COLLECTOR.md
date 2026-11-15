@@ -57,7 +57,8 @@ The ordinary page/account lifetime rules still apply; a long-running dashboard
 should be made resident after claim with the existing lifetime API. A collector
 heartbeat does not claim a page or keep an AI conversation available. From a
 source checkout, use `node examples/training-dashboard/setup.mjs` and
-`node cli/bin/tendril-stream.mjs` instead; the configuration is the same.
+`node cli/bin/tendril-stream.mjs ./tendriller-training/collector.json` instead;
+the configuration is the same.
 
 The dashboard displays machine freshness, a selectable training chart, and a
 bounded log tail. Durable subscriptions load retained history and resume from a
@@ -203,8 +204,35 @@ Use stable application keys such as a process identity for browser row updates.
 
 For a table that must be available when a page opens, create its ordinary
 durable stream with `max_records:1` and an appropriate `max_age_seconds`, then
-read `await tendril.streams.latest("machine.processes")` and subscribe for
-updates. Each snapshot replaces the previous retained record. This provides
+read the latest snapshot and subscribe from its cursor:
+
+```js
+const name = "machine.processes";
+const snapshot = await tendril.streams.latest(name);
+let cursor = snapshot.cursor;
+renderTable(snapshot.record?.data.processes ?? []);
+tendril.streams.subscribe(name, record => {
+  if (record.seq > cursor) {
+    cursor = record.seq;
+    renderTable(record.data.processes);
+  }
+}, {
+  after: snapshot.cursor,
+  onGap: () => {
+    // The one retained record may have changed or expired. Reconcile the table.
+    void tendril.streams.latest(name).then(current => {
+      if (current.cursor >= cursor) {
+        cursor = current.cursor;
+        renderTable(current.record?.data.processes ?? []);
+      }
+    });
+  },
+});
+```
+
+The `after` cursor closes the gap between the initial read and subscription;
+`onGap` reloads the current table when older history is no longer retained.
+Each snapshot replaces the previous retained record. This provides
 one last-known value for the whole stream, not a keyed database: include all
 current rows in each record, and use a separate stream per independent snapshot.
 Use an ephemeral stream when only currently connected subscribers need the
