@@ -8,6 +8,7 @@ import { handleAgent } from "./agent";
 import { handleMcp } from "./mcp";
 import { mcpJobDue, mcpSubs, pruneMcpSubs, runMcpEvents } from "./mcpEvents";
 import { Db } from "./db";
+import { Transactions, type CommitEffect } from "./transactions";
 import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
@@ -29,6 +30,7 @@ import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
 import { handleWsClose, handleWsMessage } from "./ws";
 import { emitBuiltinRecord, emitBuiltinSignal, pruneStreams } from "./streams";
+import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession, socketPrincipal } from "./access";
 
 import type { Role, DeviceInfo } from "../../contract/index.mjs";
 export type { Role } from "../../contract/index.mjs";
@@ -110,6 +112,7 @@ export class Tendril extends DurableObject<Env> {
   declare public env: Env;
   declare public ctx: DurableObjectState<{}>;
   db: Db;
+  private transactions: Transactions;
   waiters = new Set<Waiter>();
   releaseTimer: ReturnType<typeof setTimeout> | null = null;
   calls = new Map<string, PendingCall>();
@@ -122,12 +125,17 @@ export class Tendril extends DurableObject<Env> {
     super(ctx, env);
     this.db = new Db(ctx.storage.sql);
     this.db.init();
+    this.transactions = new Transactions(ctx.storage, () => this.db.clearCache(), work => ctx.waitUntil(work));
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping"}', '{"t":"pong"}'));
   }
 
   now(): number {
     return Date.now() + this.skew;
   }
+
+  transaction<T>(write: () => T): T { return this.transactions.run(write); }
+
+  afterCommit(effect: CommitEffect): void { this.transactions.afterCommit(effect); }
 
   get tid(): string {
     return this.db.get<string>("id", "");
@@ -149,10 +157,7 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "agent" || kind === "page" || kind === "claim") {
         const owner = this.db.get<string | null>("owner_account", null);
         if (owner) {
-          const status = await this.env.ACCOUNTS.prepare(`SELECT t.state, a.suspended_at, a.deleting_at FROM tendrils t
-            JOIN accounts a ON a.id = t.owner_account WHERE t.id = ? AND t.owner_account = ?`)
-            .bind(this.tid, owner).first<{ state: string; suspended_at: number | null; deleting_at: number | null }>();
-          if (!status || status.state === "held" || status.suspended_at || status.deleting_at) {
+          if (!await pageAccessAllowed(this)) {
             this.db.set("disabled", true);
             this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
             cancelTimerNotifications(this, null, "Delivery stopped because the page or owner account is unavailable.");
@@ -343,13 +348,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async pageSession(req: Request): Promise<{ account_id: string; role: Role } | null> {
-    const token = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
-    if (!token) return null;
-    const session = this.db.one<{ account_id: string; role: Role }>("SELECT account_id, role FROM page_sessions WHERE hash = ? AND expires_at > ?", await sha256Hex(token), this.now());
-    if (!session) return null;
-    const active = await this.env.ACCOUNTS.prepare("SELECT 1 FROM accounts WHERE id = ? AND suspended_at IS NULL AND deleting_at IS NULL")
-      .bind(session.account_id).first();
-    return active ? session : null;
+    return readPageSession(this, req);
   }
 
   async recordReport(source: "page" | "external", accountId: string | null, reason: string): Promise<void> {
@@ -452,15 +451,12 @@ export class Tendril extends DurableObject<Env> {
       return json({ status: row?.approved === 1 ? "approved" : row?.approved === -1 ? "declined" : row ? "pending" : "none" });
     }
     if (url.pathname === "/claim/check" && req.method === "GET") {
-      if (link.role === "display" && !link.created_by_agent && this.db.get<string | null>("owner_account", null)) {
+      const { principal } = await authenticatePage(this, req, link);
+      if (principal.role === "display") {
         await this.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
         if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
-        return json({ role: "display" });
       }
-      const session = await this.pageSession(req);
-      if (session && link.role === "owner" && session.role === "owner" && session.account_id === this.db.get<string | null>("owner_account", null)) return json({ role: "owner" });
-      if (session && link.role === "guest" && session.role === "guest" && this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", session.account_id, link.id)) return json({ role: "guest" });
-      throw new HttpError(401, "unauthorized", "Page sign-in required");
+      return json({ role: principal.role });
     }
     if (url.pathname === "/claim/session" && req.method === "POST") {
       const b = await readJson(req, 4096);
@@ -550,29 +546,25 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- agent auth and check-in
 
-  /** Authenticates the agent token; every authenticated call is a check-in. Returns the token name. */
+  /** Resolves identity only. Request handlers explicitly record agent activity. */
   async authAgent(req: Request): Promise<string> {
-    const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "");
-    if (!m) throw new HttpError(401, "unauthorized", "Missing Authorization: Bearer <token>");
-    return this.authToken(m[1]);
+    return (await authenticateAgent(this, req)).name;
   }
 
-  /** Authenticates a raw agent token (a check-in). Returns the token name. */
+  /** Resolves identity without changing presence or pending wake state. */
   async authToken(token: string): Promise<string> {
-    const hash = await sha256Hex(token);
-    const row = this.db.one<{ name: string; hash: string }>("SELECT name, hash FROM tokens WHERE hash = ?", hash);
-    if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
-    this.checkin(row.name);
-    return row.name;
+    return (await authenticateAgentToken(this, token)).name;
   }
 
   checkin(tokenName: string): void {
-    const now = this.now();
-    this.db.set("last_checkin", now);
-    this.db.run("UPDATE tokens SET last_used = ? WHERE name = ?", now, tokenName);
-    this.db.del("wake_pending_since");
-    this.refreshPresence();
-    this.scheduleAlarm();
+    this.transaction(() => {
+      const now = this.now();
+      this.db.set("last_checkin", now);
+      this.db.run("UPDATE tokens SET last_used = ? WHERE name = ?", now, tokenName);
+      this.db.del("wake_pending_since");
+      this.refreshPresence();
+      this.scheduleAlarm();
+    });
   }
 
   // ---------------------------------------------------------------- configuration
@@ -632,12 +624,18 @@ export class Tendril extends DurableObject<Env> {
    */
   refreshPresence(): Presence {
     const p = this.presence();
-    const key = JSON.stringify({ ...p, last_seen: p.last_seen === null ? null : Math.floor(p.last_seen / 60_000) });
-    if (key !== this.lastPresence) {
-      this.lastPresence = key;
-      this.broadcast({ t: "presence", ...p });
-      emitBuiltinSignal(this, "system.presence", "presence", p);
-    }
+    this.afterCommit(() => {
+      // Presence includes transactional metadata and live connection facts. Only
+      // publish its committed value; several changes may coalesce into one signal.
+      const current = this.presence();
+      const key = JSON.stringify({ ...current, last_seen: current.last_seen === null ? null : Math.floor(current.last_seen / 60_000) });
+      if (key === this.lastPresence) return;
+      this.transaction(() => {
+        this.broadcast({ t: "presence", ...current });
+        emitBuiltinSignal(this, "system.presence", "presence", current);
+        this.afterCommit(() => { this.lastPresence = key; });
+      });
+    });
     return p;
   }
 
@@ -652,7 +650,7 @@ export class Tendril extends DurableObject<Env> {
       if (ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
       const att = ws.deserializeAttachment() as { tokenHash?: string } | null;
       const valid = !!att?.tokenHash && !!this.db.one("SELECT 1 AS x FROM tokens WHERE hash = ?", att.tokenHash);
-      if (!valid) { ws.close(4003, "Agent token revoked"); return false; }
+      if (!valid) { this.afterCommit(() => ws.close(4003, "Agent token revoked")); return false; }
       return true;
     });
   }
@@ -671,13 +669,18 @@ export class Tendril extends DurableObject<Env> {
     }
   }
 
-  /** Sockets that completed `hello`. */
+  /** Sockets that completed `hello` and still have local page access. */
   connectedSockets(except?: WebSocket): { ws: WebSocket; att: Att & { deviceId: string } }[] {
     const out: { ws: WebSocket; att: Att & { deviceId: string } }[] = [];
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === except || ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
       const att = this.att(ws);
-      if (att?.deviceId) out.push({ ws, att: att as Att & { deviceId: string } });
+      if (!att?.deviceId) continue;
+      if (!socketPrincipal(this, ws)) {
+        this.afterCommit(() => ws.close(4003, "Page access revoked"));
+        continue;
+      }
+      out.push({ ws, att: att as Att & { deviceId: string } });
     }
     return out;
   }
@@ -693,31 +696,31 @@ export class Tendril extends DurableObject<Env> {
   }
 
   send(ws: WebSocket, msg: unknown): void {
-    try {
-      ws.send(JSON.stringify(msg));
-    } catch {
-      /* socket gone */
-    }
+    const serialized = JSON.stringify(msg);
+    this.afterCommit(() => {
+      try {
+        if (this.att(ws)?.deviceId && !socketPrincipal(this, ws)) { ws.close(4003, "Page access revoked"); return; }
+        ws.send(serialized);
+      } catch { /* socket gone */ }
+    });
   }
 
   /** Sends to every connected device socket, optionally filtered by device row. */
   broadcast(msg: unknown, filter?: (dev: DeviceRow) => boolean, except?: WebSocket): void {
     const s = JSON.stringify(msg);
-    const devCache = new Map<string, DeviceRow | null>();
-    for (const { ws, att } of this.connectedSockets(except)) {
-      if (filter) {
-        if (!devCache.has(att.deviceId)) devCache.set(att.deviceId, this.device(att.deviceId));
-        const stored = devCache.get(att.deviceId);
-        if (!stored) continue;
-        const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
-        if (!filter(dev)) continue;
+    this.afterCommit(() => {
+      const devCache = new Map<string, DeviceRow | null>();
+      for (const { ws, att } of this.connectedSockets(except)) {
+        if (filter) {
+          if (!devCache.has(att.deviceId)) devCache.set(att.deviceId, this.device(att.deviceId));
+          const stored = devCache.get(att.deviceId);
+          if (!stored) continue;
+          const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
+          if (!filter(dev)) continue;
+        }
+        try { ws.send(s); } catch { /* socket gone */ }
       }
-      try {
-        ws.send(s);
-      } catch {
-        /* socket gone */
-      }
-    }
+    });
   }
 
   broadcastOwners(msg: unknown, except?: WebSocket): void {
@@ -850,6 +853,10 @@ export class Tendril extends DurableObject<Env> {
 
   /** Applies ops (LWW per path, in server order), bumps rev, broadcasts. */
   applyState(ops: StateOp[], by: string, except?: WebSocket): number {
+    return this.transaction(() => this.applyStateTransaction(ops, by, except));
+  }
+
+  private applyStateTransaction(ops: StateOp[], by: string, except?: WebSocket): number {
     const { rev, state } = this.getState();
     if (ops.length === 0) return rev;
     const next = applyOps(structuredClone(state), ops);
@@ -959,6 +966,10 @@ export class Tendril extends DurableObject<Env> {
   // ---------------------------------------------------------------- transcript, say, notify
 
   addTranscript(src: "agent" | "user", text: string): number {
+    return this.transaction(() => this.appendTranscript(src, text));
+  }
+
+  private appendTranscript(src: "agent" | "user", text: string): number {
     const ts = this.now();
     const row = this.db.one<{ seq: number }>("INSERT INTO transcript (ts, src, text) VALUES (?, ?, ?) RETURNING seq", ts, src, text.slice(0, 4000));
     this.db.run("DELETE FROM transcript WHERE seq <= (SELECT seq FROM transcript ORDER BY seq DESC LIMIT 1 OFFSET ?)", MAX_TRANSCRIPT);
@@ -1088,6 +1099,10 @@ export class Tendril extends DurableObject<Env> {
   // ---------------------------------------------------------------- alarm
 
   scheduleAlarm(): void {
+    this.afterCommit(() => this.scheduleCommittedAlarm());
+  }
+
+  private scheduleCommittedAlarm(): void {
     if (!this.exists()) return;
     const now = this.now();
     const times: number[] = [];

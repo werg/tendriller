@@ -213,3 +213,32 @@ test('CLI SIGTERM stops collection and releases the spool without losing pending
   assert.ok(spool.size >= 1);
   await spool.close();
 });
+
+test('sample CLI exits on SIGTERM when its stdout pipe is not being drained', { timeout: 5000 }, async t => {
+  const dir = await fixture(t), preload = join(dir, 'fill-output.mjs');
+  // Fill the real pipe on the first sample without waiting for hundreds of
+  // sampling intervals. The parent deliberately never reads child.stdout.
+  await writeFile(preload, `const write = process.stdout.write.bind(process.stdout);
+process.stdout.write = () => {
+  const ready = write('x'.repeat(2 * 1024 * 1024));
+  process.stderr.write('sampler-output-blocked\\n');
+  return ready;
+};\n`);
+  const child = spawn(process.execPath, ['--import', preload, 'cli/bin/tendril-stream.mjs', '--sample', '500'],
+    { cwd: new URL('../..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { child.kill('SIGKILL'); child.stdout.destroy(); child.stderr.destroy(); });
+  const exited = once(child, 'exit');
+  let stderr = '';
+  await new Promise(resolve => child.stderr.on('data', chunk => {
+    stderr += chunk;
+    if (stderr.includes('sampler-output-blocked')) resolve();
+  }));
+  child.kill('SIGTERM');
+  let deadline;
+  try {
+    const [code, signal] = await Promise.race([exited, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(Error('Sampler remained alive behind blocked stdout')), 1500);
+    })]);
+    assert.equal(code, 0); assert.equal(signal, null);
+  } finally { clearTimeout(deadline); }
+});

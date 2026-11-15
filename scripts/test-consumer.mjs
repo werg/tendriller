@@ -22,7 +22,9 @@ try {
   const packed = JSON.parse(packedOutput.slice(jsonStart))[0];
   assert.ok(packed.files.some(file => file.path === "server/public/_tendril/tendril.js"), "tarball must contain built runtime assets");
   assert.ok(packed.files.some(file => file.path === "server/public/_preview/state.mjs"), "tarball must contain the compiled state implementation");
-  for (const file of ["cli/bin/tendril-stream.mjs", "cli/lib/stream-collector.mjs", "cli/lib/stream-spool.mjs", "examples/training-dashboard/setup.mjs", "examples/training-dashboard/index.html", "examples/training-dashboard/app.js", "examples/training-dashboard/model.mjs", "docs/STREAMS.md", "docs/COLLECTOR.md"])
+  for (const file of ["cli/bin/tendril-stream.mjs", "cli/lib/stream-collector.mjs", "cli/lib/stream-spool.mjs",
+    ...["index", "records", "host", "file", "ssh"].map(name => `cli/lib/stream-sources/${name}.mjs`),
+    "examples/training-dashboard/setup.mjs", "examples/training-dashboard/index.html", "examples/training-dashboard/app.js", "examples/training-dashboard/model.mjs", "docs/STREAMS.md", "docs/COLLECTOR.md"])
     assert.ok(packed.files.some(entry => entry.path === file), `tarball must contain ${file}`);
   assert.ok(!packed.files.some(file => /(?:^|\/)(?:\.env|\.dev\.vars|\.e2e-auth\.json|test-results)(?:\/|$)/.test(file.path)), "private environment/diagnostic files must not be packed");
   writeFileSync(join(workspace, "package.json"), JSON.stringify({ name: "tendriller-consumer-smoke", private: true, type: "module" }));

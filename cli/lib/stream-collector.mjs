@@ -1,19 +1,19 @@
-import { open, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
-import { cpus, freemem, totalmem, loadavg, hostname, platform } from 'node:os';
-import { createHash, randomUUID } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { StreamSpool, SpoolFull } from './stream-spool.mjs';
+import { createSourceAdapter } from './stream-sources/index.mjs';
+import { sampleHost } from './stream-sources/host.mjs';
+import { sshArguments } from './stream-sources/ssh.mjs';
 
-const execute = promisify(execFile);
+// Preserve the existing helper imports while adapters own their implementations.
+export { recordFor } from './stream-sources/records.mjs';
+export { readFileBatch } from './stream-sources/file.mjs';
+export { cpuSnapshot, sampleHost } from './stream-sources/host.mjs';
+export { sshArguments } from './stream-sources/ssh.mjs';
+
 const STREAM = /^[a-z][a-z0-9._-]{0,63}$/;
-const MAX_RECORD_BYTES = 48 * 1024;
-const MAX_LINE_BYTES = 32 * 1024;
-const own = (v, k) => Object.prototype.hasOwnProperty.call(v, k);
 const object = v => v && typeof v === 'object' && !Array.isArray(v);
-const digest = b => createHash('sha256').update(b).digest('hex');
 const pause = async (ms, signal) => { try { await delay(ms, undefined, { signal }); } catch (e) { if (e.name !== 'AbortError') throw e; } };
 
 export function validateConfig(input, base = process.cwd()) {
@@ -65,128 +65,19 @@ export function parseSampleArguments(args) {
   return { interval, gpu };
 }
 
-export function sshArguments(source) {
-  if (typeof source.host !== 'string' || !/^(?:[a-zA-Z0-9_.-]+@)?[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$/.test(source.host))
-    throw Error('SSH host must be a host alias or hostname, optionally prefixed with user@.');
-  if (!Array.isArray(source.command) || !source.command.length || source.command.length > 32
-    || source.command.some(x => typeof x !== 'string' || !x.length || x.length > 2048 || x.includes('\0')))
-    throw Error('SSH command must be an explicit array of nonempty arguments.');
-  if (source.port !== undefined && (!Number.isInteger(source.port) || source.port < 1 || source.port > 65535)) throw Error('Invalid SSH port.');
-  if (source.format !== undefined && !['jsonl', 'log'].includes(source.format)) throw Error('SSH format must be jsonl or log.');
-  // OpenSSH joins command arguments into a shell command on the remote host.
-  // Quote every argument ourselves; never interpolate a host into a local shell.
-  const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-  return ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10',
-    '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=2',
-    ...(source.port ? ['-p', String(source.port)] : []), '--', source.host, source.command.map(quote).join(' ')];
-}
-
-export function recordFor(source, type, value, ts = Date.now()) {
-  const data = { ...(object(value) ? value : { value }), source: source.id, run: source.run ?? null };
-  const record = { id: randomUUID(), ts, type, data };
-  if (Buffer.byteLength(JSON.stringify(record)) > MAX_RECORD_BYTES) throw Error('record_too_large');
-  return record;
-}
-
-function lineRecord(source, line) {
-  if (source.type === 'log' || source.format === 'log') return recordFor(source, 'log', { line });
-  let parsed;
-  try { parsed = JSON.parse(line); }
-  catch { return recordFor(source, 'collector_error', { reason: 'invalid_json' }); }
-  const ts = Number.isSafeInteger(parsed?.ts) && parsed.ts >= 0 ? parsed.ts : Date.now();
-  const type = typeof parsed?.type === 'string' && parsed.type.length > 0 && parsed.type.length <= 80 ? parsed.type : 'metrics';
-  return recordFor(source, type, object(parsed) && own(parsed, 'data') ? parsed.data : parsed, ts);
-}
-
-/** Reads complete UTF-8 lines; stores no uncommitted partial line in memory. */
-export async function readFileBatch(source, checkpoint, maxRecords = 100) {
-  const file = await open(source.path, 'r');
-  try {
-    const stat = await file.stat();
-    const identity = `${stat.dev}:${stat.ino}`;
-    let offset = checkpoint?.identity === identity && checkpoint.offset <= stat.size ? checkpoint.offset : 0;
-    let discarding = offset ? !!checkpoint?.discarding : false;
-    // Detect copytruncate followed by regrowth beyond the previous offset.
-    if (offset && checkpoint.anchor) {
-      const anchor = Buffer.alloc(Math.min(offset, 64));
-      const read = await file.read(anchor, 0, anchor.length, offset - anchor.length);
-      if (digest(anchor.subarray(0, read.bytesRead)) !== checkpoint.anchor) { offset = 0; discarding = false; }
-    }
-    const buffer = Buffer.alloc(Math.min(128 * 1024, Math.max(0, stat.size - offset)));
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
-    const records = [];
-    let start = 0, consumed = 0;
-    while (start < bytesRead && records.length < maxRecords) {
-      const newline = buffer.indexOf(10, start);
-      if (newline < 0 || newline >= bytesRead) {
-        if (discarding || bytesRead - start > MAX_LINE_BYTES) {
-          if (!discarding) records.push(recordFor(source, 'collector_error', { reason: 'line_too_large', offset: offset + start }));
-          discarding = true; consumed = bytesRead;
-        }
-        break;
-      }
-      if (!discarding) {
-        if (newline - start > MAX_LINE_BYTES) records.push(recordFor(source, 'collector_error', { reason: 'line_too_large', offset: offset + start }));
-        else {
-          const line = buffer.subarray(start, newline).toString('utf8').replace(/\r$/, '');
-          if (line.trim()) {
-            try { records.push(lineRecord(source, line)); }
-            catch { records.push(recordFor(source, 'collector_error', { reason: 'record_too_large', offset: offset + start })); }
-          }
-        }
-      }
-      discarding = false;
-      start = consumed = newline + 1;
-    }
-    const nextOffset = offset + consumed;
-    const anchor = Buffer.alloc(Math.min(nextOffset, 64));
-    const read = await file.read(anchor, 0, anchor.length, nextOffset - anchor.length);
-    return { records, checkpoint: { identity, offset: nextOffset, anchor: digest(anchor.subarray(0, read.bytesRead)), discarding } };
-  } finally { await file.close(); }
-}
-
-export function cpuSnapshot() {
-  return cpus().reduce((sum, cpu) => ({ idle: sum.idle + cpu.times.idle,
-    total: sum.total + Object.values(cpu.times).reduce((n, t) => n + t, 0) }), { idle: 0, total: 0 });
-}
-
-export async function sampleHost(previous, { gpu = false } = {}) {
-  const now = cpuSnapshot(), elapsed = previous ? now.total - previous.total : 0;
-  const sample = { host: hostname(), platform: platform(), metrics: {
-    cpu_percent: elapsed > 0 ? Math.max(0, Math.min(100, 100 * (1 - (now.idle - previous.idle) / elapsed))) : null,
-    memory_used_bytes: totalmem() - freemem(), memory_total_bytes: totalmem(), load1: loadavg()[0],
-  }, gpus: [] };
-  if (gpu) {
-    try {
-      const { stdout } = await execute('nvidia-smi', ['--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'],
-        { timeout: 3000, maxBuffer: 64 * 1024, windowsHide: true });
-      sample.gpus = stdout.trim().split('\n').filter(Boolean).map(line => {
-        const values = line.split(',').map(x => Number(x.trim()));
-        const [index, utilization_percent, used, total, temperature_c] = values;
-        return { index, utilization_percent: Number.isFinite(utilization_percent) ? utilization_percent : null,
-          memory_used_bytes: Number.isFinite(used) ? used * 1024 * 1024 : null,
-          memory_total_bytes: Number.isFinite(total) ? total * 1024 * 1024 : null,
-          temperature_c: Number.isFinite(temperature_c) ? temperature_c : null };
-      });
-      sample.gpu_status = 'available';
-    } catch { sample.gpu_status = 'unavailable'; }
-  }
-  return { sample, cpu: now };
-}
-
 export class Collector {
   static async open(config, options = {}) {
     const spool = await StreamSpool.open(config.spool_dir, { api: config.api, token: config.token, maxBytes: config.max_spool_bytes });
-    return new Collector(config, spool, options);
+    try { return new Collector(config, spool, options); }
+    catch (error) { await spool.close(); throw error; }
   }
 
-  constructor(config, spool, { fetch: fetcher = globalThis.fetch, status = message => process.stderr.write(JSON.stringify(message) + '\n') } = {}) {
+  constructor(config, spool, { fetch: fetcher = globalThis.fetch,
+    status = message => process.stderr.write(JSON.stringify(message) + '\n'), sourceFactory = createSourceAdapter } = {}) {
     this.config = config; this.spool = spool; this.fetch = fetcher; this.status = status;
-    this.live = new Map(); this.states = new Map(); this.cpu = new Map(); this.last = new Map();
-    this.abort = new AbortController(); this.tasks = []; this.children = new Set(); this.stopped = false;
-    this.abort.signal.addEventListener('abort', () => {
-      for (const child of this.children) this.terminate(child);
-    }, { once: true });
+    this.adapters = config.sources.map(source => sourceFactory(source));
+    this.live = new Map(); this.states = new Map(); this.last = new Map();
+    this.abort = new AbortController(); this.tasks = []; this.stopped = false;
   }
 
   report(source, state) {
@@ -205,35 +96,30 @@ export class Collector {
   }
 
   async collectOnce(now = Date.now()) {
-    await Promise.all(this.config.sources.filter(source => source.type !== 'ssh').map(async source => {
+    await Promise.all(this.adapters.filter(adapter => adapter.capabilities.mode === 'poll').map(async adapter => {
+      const { source, capabilities } = adapter;
       if (now - (this.last.get(source.id) ?? 0) < source.interval_ms) return;
       this.last.set(source.id, now);
       try {
-        if (source.type === 'host') {
-          const { sample, cpu } = await sampleHost(this.cpu.get(source.id), source);
-          this.cpu.set(source.id, cpu);
-          await this.accept(source, [recordFor(source, 'host', sample)]);
-          this.report(source.id, source.gpu && sample.gpu_status !== 'available' ? 'gpu_unavailable' : 'collecting');
-        } else {
-          const previous = this.spool.checkpoint(source.id);
-          let maxRecords = 100;
-          for (;;) {
-            const batch = await readFileBatch(source, previous, maxRecords);
-            if (JSON.stringify(batch.checkpoint) === JSON.stringify(previous)) break;
-            try {
-              await this.accept(source, batch.records, { source: source.id, value: batch.checkpoint });
-              break;
-            } catch (error) {
-              if (!(error instanceof SpoolFull) || batch.records.length <= 1) throw error;
-              // The configured spool can be smaller than a normal read batch.
-              // Re-read a smaller prefix from the same uncommitted checkpoint;
-              // never advance past records that did not fit the atomic write.
+        const previous = capabilities.checkpoint ? this.spool.checkpoint(source.id) : null;
+        let maxRecords = 100;
+        for (;;) {
+          const batch = await adapter.read({ checkpoint: previous, maxRecords, signal: this.abort.signal });
+          const checkpoint = capabilities.checkpoint ? { source: source.id, value: batch.checkpoint } : undefined;
+          if (!checkpoint || JSON.stringify(batch.checkpoint) !== JSON.stringify(previous)) {
+            try { await this.accept(source, batch.records, checkpoint); }
+            catch (error) {
+              if (!(error instanceof SpoolFull) || capabilities.replay !== 'retained-file' || batch.records.length <= 1) throw error;
+              // Retry a smaller prefix from the same uncommitted checkpoint.
+              // A live source cannot promise that failed input can be reread.
               maxRecords = Math.max(1, Math.floor(batch.records.length / 2));
+              continue;
             }
           }
-          this.report(source.id, 'collecting');
+          this.report(source.id, batch.health);
+          break;
         }
-      } catch (error) { this.report(source.id, error instanceof SpoolFull ? 'spool_full' : error.code === 'ENOENT' ? 'waiting_for_file' : 'source_error'); }
+      } catch (error) { this.report(source.id, adapter.failure(error)); }
     }));
   }
 
@@ -283,44 +169,18 @@ export class Collector {
     return !failed;
   }
 
-  terminate(child) {
-    child.kill('SIGTERM');
-    const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
-    timer.unref();
-    child.once('close', () => clearTimeout(timer));
-  }
-
-  async runSsh(source) {
+  async runStream(adapter) {
+    const { source } = adapter;
     let backoff = 1000;
     while (!this.abort.signal.aborted) {
-      const child = spawn('ssh', sshArguments(source), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
-      this.children.add(child);
-      let spawnError = false;
-      child.on('error', () => { spawnError = true; });
-      let buffered = Buffer.alloc(0), discarding = false;
       const started = Date.now();
-      this.report(source.id, 'ssh_connecting');
       try {
-        for await (const chunk of child.stdout) {
-          if (this.abort.signal.aborted) break;
-          buffered = Buffer.concat([buffered, chunk]);
-          for (;;) {
-            const newline = buffered.indexOf(10);
-            if (newline < 0) {
-              if (buffered.length > MAX_LINE_BYTES) { buffered = Buffer.alloc(0); discarding = true; this.report(source.id, 'line_too_large'); }
-              break;
-            }
-            const line = buffered.subarray(0, newline); buffered = buffered.subarray(newline + 1);
-            if (discarding || line.length > MAX_LINE_BYTES) { discarding = false; this.report(source.id, 'line_too_large'); continue; }
-            if (!line.toString('utf8').trim()) continue;
-            await this.accept(source, [lineRecord(source, line.toString('utf8').replace(/\r$/, ''))]);
-            this.report(source.id, 'collecting');
-          }
+        for await (const batch of adapter.stream({ signal: this.abort.signal, report: state => this.report(source.id, state) })) {
+          await this.accept(source, batch.records);
+          this.report(source.id, batch.health);
         }
-      } catch (error) { this.report(source.id, error instanceof SpoolFull ? 'spool_full_ssh_gap' : 'ssh_gap'); }
-      finally { this.terminate(child); this.children.delete(child); }
+      } catch (error) { this.report(source.id, adapter.failure(error)); }
       if (this.abort.signal.aborted) break;
-      this.report(source.id, spawnError ? 'ssh_unavailable' : 'ssh_disconnected_gap');
       backoff = Date.now() - started > 30_000 ? 1000 : Math.min(backoff * 2, 30_000);
       await pause(backoff, this.abort.signal);
     }
@@ -337,7 +197,7 @@ export class Collector {
           await pause(backoff, this.abort.signal);
         }
       })(),
-      ...this.config.sources.filter(source => source.type === 'ssh').map(source => this.runSsh(source)),
+      ...this.adapters.filter(adapter => adapter.capabilities.mode === 'stream').map(adapter => this.runStream(adapter)),
     ];
     try { await Promise.all(this.tasks); }
     finally { await this.stop(); }
@@ -347,9 +207,9 @@ export class Collector {
   stop() {
     if (this.stopping) return this.stopping;
     this.stopped = true; this.abort.abort();
-    for (const child of this.children) child.kill('SIGTERM');
+    const closing = this.adapters.map(adapter => Promise.resolve().then(() => adapter.close()));
     this.stopping = (async () => {
-      await Promise.allSettled(this.tasks);
+      await Promise.allSettled([...this.tasks, ...closing]);
       this.live.clear();
       await this.spool.close();
     })();
@@ -357,12 +217,27 @@ export class Collector {
   }
 }
 
-export async function emitHostSamples({ interval = 5000, gpu = false, signal } = {}) {
+function waitForDrain(output, signal) {
+  return new Promise((resolve, reject) => {
+    const finish = (ready, error) => {
+      output.off('drain', drained); output.off('close', closed); output.off('error', failed);
+      signal?.removeEventListener('abort', closed);
+      if (error) reject(error); else resolve(ready);
+    };
+    const drained = () => finish(true), closed = () => finish(false), failed = error => finish(false, error);
+    output.once('drain', drained); output.once('close', closed); output.once('error', failed);
+    signal?.addEventListener('abort', closed, { once: true });
+    if (signal?.aborted || output.destroyed) closed();
+  });
+}
+
+export async function emitHostSamples({ interval = 5000, gpu = false, signal, output = process.stdout, sample = sampleHost } = {}) {
   let previous;
   while (!signal?.aborted) {
-    const { sample, cpu } = await sampleHost(previous, { gpu }); previous = cpu;
-    if (!process.stdout.write(JSON.stringify({ ts: Date.now(), type: 'host', data: sample }) + '\n'))
-      await new Promise(resolve => process.stdout.once('drain', resolve));
+    const { sample: value, cpu } = await sample(previous, { gpu }); previous = cpu;
+    if (signal?.aborted) break;
+    if (!output.write(JSON.stringify({ ts: Date.now(), type: 'host', data: value }) + '\n')
+      && !await waitForDrain(output, signal)) break;
     await pause(interval, signal);
   }
 }

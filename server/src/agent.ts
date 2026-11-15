@@ -22,6 +22,7 @@ import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { deviceConfiguration, updateDevice } from "./device-roles";
 import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
 import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
+import { authenticateAgent, authenticateAgentToken, requireAccess } from "./access";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -44,18 +45,25 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
-  if (STREAM_ROUTE.test(rest)) return handleStreams(t, req, url, rest, { kind: "agent", name: await t.authAgent(req) });
-  if (CONSUMER_ROUTE.test(rest)) { await t.authAgent(req); return handleConsumers(t, req, url, rest); }
-  if (EXPERIENCE_ROUTE.test(rest)) return handleExperience(t, req, url, await t.authAgent(req), rest);
+  if (STREAM_ROUTE.test(rest) || CONSUMER_ROUTE.test(rest) || EXPERIENCE_ROUTE.test(rest)) {
+    const principal = await authenticateAgent(t, req);
+    requireAccess(principal, "agent.manage");
+    t.checkin(principal.name);
+    if (STREAM_ROUTE.test(rest)) return handleStreams(t, req, url, rest, principal);
+    if (CONSUMER_ROUTE.test(rest)) return handleConsumers(t, req, url, rest);
+    return handleExperience(t, req, url, principal.name, rest);
+  }
   const matches = routes.filter((r) => r.pattern.test(rest));
   if (matches.length === 0) throw new HttpError(404, "not_found", `No API route ${rest || "/"}`);
   const r = matches.find((m) => m.method === method);
   if (!r) throw new HttpError(405, "method_not_allowed", `${req.method} not allowed on ${rest || "/"}`);
   // The wake socket authenticates itself: it accepts the page token or a listen-only ticket.
   if (rest === "events/socket" && method === "GET") return await agentSocket(t, req, url);
-  const by = await t.authAgent(req);
+  const principal = await authenticateAgent(t, req);
+  requireAccess(principal, "agent.manage");
+  t.checkin(principal.name);
   const params = r.pattern.exec(rest)!.slice(1);
-  return await r.handler(t, req, url, by, params);
+  return await r.handler(t, req, url, principal.name, params);
 }
 
 // ------------------------------------------------------------------ tendril
@@ -167,8 +175,9 @@ async function socketTokenHash(t: Tendril, req: Request): Promise<string> {
   }
   const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
   if (!token) throw new HttpError(401, "unauthorized");
-  await t.authToken(token);
-  return sha256Hex(token);
+  const principal = await authenticateAgentToken(t, token);
+  t.checkin(principal.name);
+  return principal.credentialHash;
 }
 
 async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response> {

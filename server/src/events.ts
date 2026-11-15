@@ -134,6 +134,10 @@ export function pageStreak(t: Tendril): number {
 }
 
 export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
+  return t.transaction(() => appendEvent(t, e));
+}
+
+function appendEvent(t: Tendril, e: NewEvent): StoredEvent {
   let wake = false;
   let withheld = false;
   let decision: "wake" | "merged" | "withheld" | null = null;
@@ -174,11 +178,12 @@ export function addEvent(t: Tendril, e: NewEvent): StoredEvent {
 
 /** Delivery path 1 (held long-polls) or 2 (webhook and MCP Events). Never affects storage of the event. */
 function deliverWake(t: Tendril, seq: number): void {
-  const agentSocket = t.notifyAgentSockets(seq);
+  const agentSocket = t.agentSockets().length > 0;
   const heldPoll = t.waiters.size > 0;
   if (heldPoll) scheduleRelease(t);
   if (agentSocket) {
     markWakeDelivered(t);
+    t.afterCommit(() => { t.notifyAgentSockets(seq); });
   }
   if (agentSocket || heldPoll) return;
   const hook = t.wakeConfig().webhook;
@@ -197,17 +202,21 @@ function deliverWake(t: Tendril, seq: number): void {
 
 /** A socket wake was sent, including one queued before the socket connected. */
 export function markWakeDelivered(t: Tendril): void {
-  if (t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
-  t.refreshPresence();
-  t.scheduleAlarm();
+  t.transaction(() => {
+    if (t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
+    t.refreshPresence();
+    t.scheduleAlarm();
+  });
 }
 
 function scheduleRelease(t: Tendril): void {
-  if (t.releaseTimer) return;
-  t.releaseTimer = setTimeout(() => {
-    t.releaseTimer = null;
-    releaseWaiters(t);
-  }, LONGPOLL_DEBOUNCE);
+  t.afterCommit(() => {
+    if (t.releaseTimer) return;
+    t.releaseTimer = setTimeout(() => {
+      t.releaseTimer = null;
+      releaseWaiters(t);
+    }, LONGPOLL_DEBOUNCE);
+  });
 }
 
 function releaseWaiters(t: Tendril): void {

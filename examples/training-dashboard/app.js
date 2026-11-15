@@ -106,19 +106,40 @@ function render() {
   }
 }
 
+const streamNames = ['machine.utilization', 'training.metrics', 'training.logs'], subscribed = new Set();
+let initializing = false, retryInitialization = false, initializationError = null;
+async function initializeStreams() {
+  if (subscribed.size === streamNames.length) return;
+  // A recovery may arrive before an earlier discovery request has failed.
+  // Remember it, but keep at most one request in flight.
+  if (initializing) { retryInitialization = true; return; }
+  initializing = true;
+  try {
+    const { streams } = await t.streams.list();
+    if (initializationError && $('notice').textContent === initializationError) $('notice').hidden = true;
+    initializationError = null;
+    for (const name of streamNames) {
+      if (subscribed.has(name)) continue;
+      const stream = streams.find(item => item.name === name);
+      if (!stream) { notice(`Stream ${name} is not configured yet. Run the dashboard setup script.`); continue; }
+      t.streams.subscribe(name, add, {
+        ...(stream.durability === 'durable' ? { after: 0 } : {}),
+        onGap(history) { notice(`${name}: history before sequence ${history.missing_through + 1} is no longer available.`); },
+        onError(error) { notice(`${name}: ${error.message || 'stream unavailable'}`); },
+      });
+      subscribed.add(name);
+    }
+  } catch (error) {
+    initializationError = error.message || 'Could not load stream configuration.';
+    notice(initializationError);
+  } finally {
+    initializing = false;
+    if (retryInitialization) { retryInitialization = false; void initializeStreams(); }
+  }
+}
+
 $('run').addEventListener('change', schedule); $('metric').addEventListener('change', schedule);
 $('follow').addEventListener('click', () => { follow = !follow; $('follow').textContent = follow ? 'Following' : 'Paused scrolling'; $('follow').setAttribute('aria-pressed', String(follow)); schedule(); });
-t.on('connect', connection); t.on('disconnect', connection); connection();
+t.on('connect', () => { connection(); void initializeStreams(); }); t.on('disconnect', connection); connection();
 setInterval(renderMachines, 1000);
-try {
-  const { streams } = await t.streams.list();
-  for (const name of ['machine.utilization', 'training.metrics', 'training.logs']) {
-    const stream = streams.find(item => item.name === name);
-    if (!stream) { notice(`Stream ${name} is not configured yet. Run the dashboard setup script.`); continue; }
-    t.streams.subscribe(name, add, {
-      ...(stream.durability === 'durable' ? { after: 0 } : {}),
-      onGap(history) { notice(`${name}: history before sequence ${history.missing_through + 1} is no longer available.`); },
-      onError(error) { notice(`${name}: ${error.message || 'stream unavailable'}`); },
-    });
-  }
-} catch (error) { notice(error.message || 'Could not load stream configuration.'); }
+void initializeStreams();

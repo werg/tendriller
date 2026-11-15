@@ -7,22 +7,13 @@ import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics
 import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
 import { createSpeechOutput } from "./speech-output";
 import { createStreams } from "./streams";
+import { createConnection } from "./connection";
+import { deliveryPolicy } from "./delivery";
+import { createRequests, createCommandReceipts } from "./requests";
 import { captureData, type BlobReference, type CaptureOptions, type CaptureResult, type PendingCapture, type SendResult } from "./capture";
 
 export type { Bus, Core } from "./types";
 
-/** Messages kept in the persistent outbox while offline and replayed in order. */
-const QUEUED = new Set(["send", "state", "log", "upload", "rule_fired"]);
-/** Outbox messages that stay queued until the server acks their cid (others leave once written). */
-const ACKED = new Set(["send", "state"]);
-/** Never queued: pointless after a reconnect. */
-const DROP_OFFLINE = new Set(["eval_result", "ping"]);
-
-const PING_MS = 25_000;
-const PONG_TIMEOUT_MS = 10_000;
-const WELCOME_TIMEOUT_MS = 15_000;
-const REQUEST_TIMEOUT_MS = 15_000;
-const SEND_WAIT_OFFLINE_MS = 3_000;
 const TRANSCRIPT_MAX = 200;
 const AXE_PATH = "_tendril/axe.min.js";
 
@@ -170,18 +161,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   };
 
   // ---------- connection ----------
-  let ws: WebSocket | null = null;
-  let ready = false; // welcomed
-  let attempts = 0;
-  let retryTimer: ReturnType<typeof setTimeout> | 0 = 0;
-  let pingTimer: ReturnType<typeof setInterval> | 0 = 0;
-  let pongTimer: ReturnType<typeof setTimeout> | 0 = 0;
-  let welcomeTimer: ReturnType<typeof setTimeout> | 0 = 0;
-  let initDone = false;
   const sentThisConn = new Set<string>();
-  const memQueue: any[] = []; // non-persistent messages waiting for the socket
-  const ackWaiters = new Map<string, (ack: any | null) => void>();
-  const requests = new Map<string, { kind: string; res: (v: any) => void; rej: (e: any) => void; timer: ReturnType<typeof setTimeout> }>();
   const uploadWaiters = new Map<string, { res: (v: any) => void; rej: (e: any) => void }>();
   const captureWaiters = new Map<string, Set<(result: CaptureResult) => void>>();
   const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -195,11 +175,6 @@ export function createCore(cfg: TendrilConfig): Internal {
     return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + cfg.ws;
   };
 
-  const rawSend = (msg: any): boolean => {
-    if (!ws || ws.readyState !== 1) return false;
-    try { ws.send(JSON.stringify(msg)); return true; } catch { return false; }
-  };
-
   const hello = () => ({
     t: "hello",
     device_id: device.id,
@@ -211,61 +186,23 @@ export function createCore(cfg: TendrilConfig): Internal {
     caps: probeCaps(),
   });
 
-  const connect = () => {
-    if (ws || !initDone) return;
-    let sock: WebSocket;
-    try { sock = new WebSocket(wsUrl()); } catch { scheduleReconnect(); return; }
-    ws = sock;
-    sock.onopen = () => {
-      rawSend(hello());
-      welcomeTimer = setTimeout(() => { if (ws === sock && !ready) sock.close(); }, WELCOME_TIMEOUT_MS);
-    };
-    sock.onmessage = (ev) => {
-      if (ws !== sock) return;
-      if (pongTimer) { clearTimeout(pongTimer); pongTimer = 0; }
-      let m: any;
-      try { m = JSON.parse(typeof ev.data === "string" ? ev.data : ""); } catch { return; }
-      if (m && typeof m.t === "string") {
-        try { handle(m); } catch (e) { console.warn("[tendril] failed to handle", m.t, e); }
-      }
-    };
-    sock.onerror = () => {};
-    sock.onclose = () => {
-      if (ws !== sock) return;
-      ws = null;
-      const was = ready;
-      ready = false;
+  const connection = createConnection({
+    url: wsUrl,
+    hello,
+    message: message => handle(message),
+    disconnected(wasConnected) {
       sentThisConn.clear();
-      if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = 0; }
-      if (pingTimer) { clearInterval(pingTimer); pingTimer = 0; }
-      if (pongTimer) { clearTimeout(pongTimer); pongTimer = 0; }
-      for (const [cid, w] of ackWaiters) { ackWaiters.delete(cid); w(null); }
-      for (const [cid, request] of requests) {
-        if (!request.kind.startsWith("stream_")) continue;
-        requests.delete(cid); clearTimeout(request.timer);
-        request.rej(Object.assign(new Error("Stream connection closed"), { code: "offline" }));
-      }
-      if (was) bus.emit("disconnect");
-      scheduleReconnect();
-    };
-  };
-
-  const scheduleReconnect = () => {
-    if (retryTimer) return;
-    const base = Math.min(30_000, 500 * 2 ** Math.min(attempts, 10));
-    attempts++;
-    const delay = base / 2 + Math.random() * (base / 2);
-    retryTimer = setTimeout(() => { retryTimer = 0; connect(); }, delay);
-  };
-
-  const reconnectNow = () => {
-    if (ws) return;
-    if (retryTimer) { clearTimeout(retryTimer); retryTimer = 0; }
-    attempts = 0;
-    connect();
-  };
-  window.addEventListener("online", reconnectNow);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reconnectNow(); });
+      receipts.disconnected();
+      requests.disconnected();
+      if (wasConnected) bus.emit("disconnect");
+    },
+  });
+  const rawSend = connection.send;
+  const receipts = createCommandReceipts(() => connection.connected);
+  const requests = createRequests({ connected: () => connection.connected, send: rawSend,
+    enqueue: message => enqueue(message), newCid });
+  window.addEventListener("online", connection.reconnect);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") connection.reconnect(); });
 
   // ---------- outbox ----------
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
@@ -301,7 +238,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       captureWaiters.set(item.cid, new Set([resolve]));
       captureTimers.set(item.cid, setTimeout(() => {
         captureReceipt({ capture_id: item.cid, status: "queued", queued: true });
-      }, ready ? 8000 : 0));
+      }, connection.connected ? 8000 : 0));
     });
     captureQueueChanged();
     void pump();
@@ -316,11 +253,11 @@ export function createCore(cfg: TendrilConfig): Internal {
 
   let pumping = false;
   const pump = async () => {
-    if (pumping || !ready) return;
+    if (pumping || !connection.connected) return;
     pumping = true;
     try {
       for (;;) {
-        if (!ready || !ws) break;
+        if (!connection.connected) break;
         const item = store.items.find((i) => !i.msg.failed && !sentThisConn.has(i.cid));
         if (!item) break;
         sentThisConn.add(item.cid);
@@ -335,7 +272,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             }
             if (!store.has(item.cid)) continue; // discarded while uploading
             const msg = item.msg;
-            if (!ready || !rawSend({ t: "send", cid: msg.event_cid,
+            if (!connection.connected || !rawSend({ t: "send", cid: msg.event_cid,
               data: { ...captureData(msg.data, msg.dataPath, msg.uploaded), capture_id: item.cid }, wake: msg.wake, gesture: msg.gesture })) {
               sentThisConn.delete(item.cid);
               break;
@@ -383,7 +320,7 @@ export function createCore(cfg: TendrilConfig): Internal {
           continue;
         }
         if (!rawSend(item.msg)) { sentThisConn.delete(item.cid); break; }
-        if (!ACKED.has(item.msg.t)) store.remove(item.cid);
+        if (deliveryPolicy(item.msg.t).outboxCompletion !== "ack") store.remove(item.cid);
       }
     } finally {
       pumping = false;
@@ -392,15 +329,7 @@ export function createCore(cfg: TendrilConfig): Internal {
 
   /** Queue an acked message; resolves with the ack, or null if it stays queued. */
   const sendAcked = (msg: any): Promise<any | null> => {
-    const p = new Promise<any | null>((res) => {
-      let done = false;
-      let timer: ReturnType<typeof setTimeout>;
-      const finish = (a: any | null) => { if (done) return; done = true; clearTimeout(timer); ackWaiters.delete(msg.cid); res(a); };
-      ackWaiters.set(msg.cid, finish);
-      // A socket can stay open while its acknowledgement is lost. Keep the message
-      // in offline storage, but never leave the person's UI waiting indefinitely.
-      timer = setTimeout(() => finish(null), ready ? 8000 : SEND_WAIT_OFFLINE_MS);
-    });
+    const p = receipts.wait(msg.cid);
     enqueue(msg);
     return p;
   };
@@ -539,25 +468,13 @@ export function createCore(cfg: TendrilConfig): Internal {
       m = { ...m, t: "ack", error: m.code || "rejected" };
     }
     // Replies correlated by cid.
-    if (m.cid && requests.has(m.cid)) {
-      const r = requests.get(m.cid)!;
-      requests.delete(m.cid);
-      clearTimeout(r.timer);
-      if (m.t === "error" || (m.t === "ack" && m.error)) {
-        const err: any = new Error(m.message || (m.error && (m.error.message || m.error)) || m.code || "error");
-        err.code = m.code || (m.error && m.error.code) || m.error;
-        r.rej(err);
-      } else r.res(m);
-      if (m.t !== "ack") return;
-    }
+    if (requests.receive(m) && m.t !== "ack") return;
     switch (m.t) {
       case "stream_record":
         bus.emit("stream_record", m.record);
         break;
       case "welcome": {
-        if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = 0; }
         welcome = m;
-        attempts = 0;
         setRole(m.role || device.role, !!m.pending, m.pair_code);
         if (m.device_purpose !== undefined) (device as any).purpose = m.device_purpose;
         presence = m.presence ?? presence;
@@ -569,20 +486,14 @@ export function createCore(cfg: TendrilConfig): Internal {
         if (m.features) Object.assign(cfg.features, m.features);
         if (m.state && typeof m.state === "object") resetState(m.state, m.rev, "server");
         else if (typeof m.rev === "number" && m.rev > rev) rev = m.rev;
-        ready = true;
-        if (pingTimer) clearInterval(pingTimer);
-        pingTimer = setInterval(() => {
-          if (!ready) return;
-          rawSend({ t: "ping" });
-          if (!pongTimer) pongTimer = setTimeout(() => { pongTimer = 0; ws?.close(); }, PONG_TIMEOUT_MS);
-        }, PING_MS);
+        connection.welcome();
         bus.emit("welcome", m);
         bus.emit("role", { role: device.role, pending: device.pending });
         if (presence) bus.emit("presence", presence);
         bus.emit("rules", rules);
         bus.emit("transcript", null);
         bus.emit("connect");
-        while (memQueue.length && ready) rawSend(memQueue.shift());
+        requests.flush();
         pump();
         // `served` is what a reload would load (a failed current falls back to healthy), so
         // comparing against it avoids a pointless reload after a failed version.
@@ -608,7 +519,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             // ack for N. A delta does not include our write, and reapplying N on
             // top could overwrite N+1. Keep the item until a reconnect supplies
             // the full state; its cached ack is then covered by fullStateRev.
-            ws?.close(4000, "state resync");
+            connection.close(4000, "state resync");
             break;
           }
           const before = JSON.stringify(local);
@@ -652,7 +563,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             bus.emit("instruction_ack", { cid: m.cid, text: sent.text, seq: m.seq });
           }
         }
-        ackWaiters.get(m.cid)?.(m);
+        receipts.acknowledge(m.cid, m);
         break;
       }
       case "state": {
@@ -731,7 +642,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   // ---------- diagnostics ----------
   installLogForwarding((entries: LogEntry[]) => {
     const msg = { t: "log", entries };
-    if (ready && rawSend(msg)) return;
+    if (connection.connected && rawSend(msg)) return;
     store.add({ ...msg, cid: newCid() });
   });
   const health = createHealth((ok, errors) => {
@@ -740,14 +651,7 @@ export function createCore(cfg: TendrilConfig): Internal {
 
   // ---------- public ----------
   function raw(msg: any) {
-    if (!msg || typeof msg.t !== "string") return;
-    if (QUEUED.has(msg.t)) {
-      if (!msg.cid) msg.cid = newCid();
-      enqueue(msg);
-      return;
-    }
-    if (ready && rawSend(msg)) return;
-    if (!DROP_OFFLINE.has(msg.t)) memQueue.push(msg);
+    requests.raw(msg);
   }
 
   const core: Internal = {
@@ -755,14 +659,14 @@ export function createCore(cfg: TendrilConfig): Internal {
     bus,
     config: cfg,
     device,
-    get connected() { return ready; },
+    get connected() { return connection.connected; },
     get presence() { return presence; },
     get transcript() { return transcript; },
     get welcome() { return welcome; },
     get rules() { return rules; },
     get rev() { return rev; },
     state,
-    streams: createStreams({ bus, base: cfg.base, connected: () => ready, headers: deviceHeaders, request: message => core.request(message) }),
+    streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.request(message) }),
     health,
     async send(data: any, opts?: { wake?: boolean }): Promise<SendResult> {
       // Browser user activation marks a real tap or key press; page code cannot fake it. The server
@@ -788,31 +692,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       }
       return { queued: !ack, cid };
     },
-    request(msg) {
-      const m: any = { ...msg, cid: msg.cid || newCid() };
-      return new Promise((res, rej) => {
-        if (m.t.startsWith("stream_") && !ready) {
-          rej(Object.assign(new Error("Stream requests need a connected page"), { code: "offline" }));
-          return;
-        }
-        const timer = setTimeout(() => {
-          requests.delete(m.cid);
-          const i = memQueue.indexOf(m);
-          if (i >= 0) memQueue.splice(i, 1);
-          const e: any = new Error(ready ? "request timed out" : "offline");
-          e.code = ready ? "timeout" : "offline";
-          rej(e);
-        }, REQUEST_TIMEOUT_MS);
-        requests.set(m.cid, { kind: m.t, res, rej, timer });
-        if (QUEUED.has(m.t)) enqueue(m);
-        else if (!(ready && rawSend(m))) {
-          if (m.t.startsWith("stream_")) {
-            requests.delete(m.cid); clearTimeout(timer);
-            rej(Object.assign(new Error("Stream connection closed"), { code: "offline" }));
-          } else memQueue.push(m);
-        }
-      });
-    },
+    request: requests.request,
     raw,
     captures,
     pendingWork() {
@@ -904,8 +784,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     if (JSON.stringify(local) !== before) emitState([], "cache");
     captureQueueChanged();
   }).catch(() => {}).finally(() => {
-    initDone = true;
-    connect();
+    connection.start();
   });
 
   return core;

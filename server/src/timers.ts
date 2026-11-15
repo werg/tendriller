@@ -85,7 +85,7 @@ export function saveTimer(t: Tendril, body: unknown, by: string, id?: string): D
   const timer: DurableTimer = { id: previous?.id ?? crypto.randomUUID(), title: input.title.trim(), due_at: due, timezone,
     ...(repeat ? { repeat } : {}), missed: input.missed ?? "fire_once", ...(input.device ? { device: input.device } : {}), notify: input.notify === true,
     state: input.state ?? "scheduled", created_at: previous?.created_at ?? now, updated_at: now };
-  t.ctx.storage.transactionSync(() => {
+  t.transaction(() => {
     t.db.run("INSERT INTO timers (id, spec, next_at, state) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET spec=excluded.spec, next_at=excluded.next_at, state=excluded.state",
       timer.id, JSON.stringify(timer), timer.due_at, timer.state);
     if (previous) cancelTimerNotifications(t, timer.id);
@@ -97,7 +97,7 @@ export function saveTimer(t: Tendril, body: unknown, by: string, id?: string): D
 
 export function deleteTimer(t: Tendril, id: string, by: string): void {
   if (!t.db.one("SELECT id FROM timers WHERE id = ?", id)) throw new HttpError(404, "not_found", "No such timer");
-  t.ctx.storage.transactionSync(() => { cancelTimerNotifications(t, id); t.db.run("DELETE FROM timers WHERE id = ?", id); });
+  t.transaction(() => { cancelTimerNotifications(t, id); t.db.run("DELETE FROM timers WHERE id = ?", id); });
   addActivity(t, { kind: "timer", summary: "Timer removed", by });
   t.scheduleAlarm();
 }
@@ -116,35 +116,33 @@ export async function runTimers(t: Tendril): Promise<void> {
   for (const candidate of rows) {
     let timer: DurableTimer | null = null;
     let runId = "", skip = false, created = false;
-    try {
-      t.ctx.storage.transactionSync(() => {
-        // A previous timer's notification can yield to an owner editing a later
-        // timer. The candidate list is only a hint; claim its current schedule.
-        const now = t.now();
-        const row = t.db.one<TimerRow>("SELECT * FROM timers WHERE id=?", candidate.id);
-        if (!row || row.state !== "scheduled" || row.next_at > now || t.db.get("disabled", false)) return;
-        timer = JSON.parse(row.spec) as DurableTimer;
-        runId = `${timer.id}:${timer.due_at}`;
-        skip = timer.missed === "skip" && now - timer.due_at > LATE_GRACE;
-        created = !t.db.one("SELECT id FROM timer_runs WHERE id=?", runId);
-        if (created) {
-          const event = skip ? null : addEvent(t, { type: "event", data: { type: "timer", timer_id: timer.id, run_id: runId,
-            title: timer.title, scheduled_at: timer.due_at, fired_at: now, timezone: timer.timezone }, device: timer.device ?? null,
-            role: null, by: "timer", wake: true, cls: "page" });
-          t.db.run("INSERT INTO timer_runs (id, timer_id, scheduled_at, fired_at, status, event_seq) VALUES (?, ?, ?, ?, ?, ?)",
-            runId, timer.id, timer.due_at, now, skip ? "skipped" : "fired", event?.seq ?? null);
-          if (!skip && timer.notify) queueTimerNotification(t, timer, runId, now);
-        }
-        if (timer.repeat) {
-          timer.due_at = "every_minutes" in timer.repeat
-            ? timer.due_at + (Math.floor((now - timer.due_at) / (timer.repeat.every_minutes * 60000)) + 1) * timer.repeat.every_minutes * 60000
-            : nextDaily(now, timer.repeat, timer.timezone);
-        } else timer.state = "completed";
-        timer.updated_at = now;
-        t.db.run("UPDATE timers SET spec=?, next_at=?, state=? WHERE id=?", JSON.stringify(timer), timer.due_at, timer.state, timer.id);
-        if (created) addActivity(t, { kind: "timer", summary: `${skip ? "Skipped missed" : "Fired"} timer: ${timer.title}`, by: "timer", device: timer.device ?? null });
-      });
-    } catch (error) { t.db.clearCache(); throw error; }
+    t.transaction(() => {
+      // A previous timer's notification can yield to an owner editing a later
+      // timer. The candidate list is only a hint; claim its current schedule.
+      const now = t.now();
+      const row = t.db.one<TimerRow>("SELECT * FROM timers WHERE id=?", candidate.id);
+      if (!row || row.state !== "scheduled" || row.next_at > now || t.db.get("disabled", false)) return;
+      timer = JSON.parse(row.spec) as DurableTimer;
+      runId = `${timer.id}:${timer.due_at}`;
+      skip = timer.missed === "skip" && now - timer.due_at > LATE_GRACE;
+      created = !t.db.one("SELECT id FROM timer_runs WHERE id=?", runId);
+      if (created) {
+        const event = skip ? null : addEvent(t, { type: "event", data: { type: "timer", timer_id: timer.id, run_id: runId,
+          title: timer.title, scheduled_at: timer.due_at, fired_at: now, timezone: timer.timezone }, device: timer.device ?? null,
+          role: null, by: "timer", wake: true, cls: "page" });
+        t.db.run("INSERT INTO timer_runs (id, timer_id, scheduled_at, fired_at, status, event_seq) VALUES (?, ?, ?, ?, ?, ?)",
+          runId, timer.id, timer.due_at, now, skip ? "skipped" : "fired", event?.seq ?? null);
+        if (!skip && timer.notify) queueTimerNotification(t, timer, runId, now);
+      }
+      if (timer.repeat) {
+        timer.due_at = "every_minutes" in timer.repeat
+          ? timer.due_at + (Math.floor((now - timer.due_at) / (timer.repeat.every_minutes * 60000)) + 1) * timer.repeat.every_minutes * 60000
+          : nextDaily(now, timer.repeat, timer.timezone);
+      } else timer.state = "completed";
+      timer.updated_at = now;
+      t.db.run("UPDATE timers SET spec=?, next_at=?, state=? WHERE id=?", JSON.stringify(timer), timer.due_at, timer.state, timer.id);
+      if (created) addActivity(t, { kind: "timer", summary: `${skip ? "Skipped missed" : "Fired"} timer: ${timer.title}`, by: "timer", device: timer.device ?? null });
+    });
     t.scheduleAlarm();
     if (created && !skip && notificationBudget-- > 0) await runTimerNotifications(t, 1);
   }
