@@ -170,7 +170,7 @@ it("stages an unchanged bundle at the page storage limit", async () => {
 });
 
 it("accepts a portable bundle with more than 200 media entries", async () => {
-  const { handle: h } = await setup();
+  const { handle: h } = await setup(); const socket = await listener(h);
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   const media = Array.from({ length: 201 }, (_, i) => ({ id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32],
     type: "application/octet-stream", name: null, base64: "AA==" }));
@@ -179,6 +179,14 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
   ], media };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   expect(await inDO(h.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
+  expect((await api(h, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  const exported = await apiJson(h, "GET", "bundle?include_data=true");
+  expect(exported.media).toHaveLength(201);
+  const copy = await setup(); const copySocket = await listener(copy.handle);
+  expect((await api(copy.handle, "PUT", "bundle", exported)).status).toBe(202);
+  expect((await api(copy.handle, "POST", "bundle/publish", { expected_version: 0 })).status).toBe(200);
+  expect(await inDO(copy.handle.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
+  socket.close(); copySocket.close();
 }, 60_000);
 
 it("accepts only one unexpired versioned owner decision and ties the outcome to it", async () => {
