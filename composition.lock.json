@@ -3,12 +3,12 @@
   "contract": 2,
   "core": {
     "version": "0.2.0-rc.1",
-    "runtime": "13eb79b1071e635cea50befc0e4c6c59db792ecdc1481b0b76945e6910aec535",
+    "runtime": "32dc07fd83b838a0b531910e94e4366e2c80ce3ca8810a4caeffc0546fc70674",
     "artifacts": [
       {
         "file": "tendriller-runtime-0.2.0-rc.1.tgz",
         "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.1/tendriller-runtime-0.2.0-rc.1.tgz",
-        "sha256": "6e4d1127a6807e71f127d197132bd0d4e9b969abfea34cf6883616fd5a7412a9"
+        "sha256": "e5a7bfbbae0494c6f7bbecc98b4890f1c66588d2ade712276f4995e4612a1d75"
       },
       {
         "file": "tendriller-sdk-0.2.0-rc.1.tgz",
@@ -20,7 +20,7 @@
   "workflow": {
     "file": "composition/artifacts/tendriller-workflows-0.2.0-rc.1.tgz",
     "url": "https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/tendriller-workflows-0.2.0-rc.1.tgz",
-    "sha256": "a56bf9e2d34efbf4dcf290c71c4f228595ef802cbda05738004d3c1c129e1da4",
+    "sha256": "13a35f599481e2cf3c7bdd0e0e4b13a10f3b19996e3d9a0892494ad28387dcbf",
     "version": "0.2.0-rc.1",
     "interfaces": {
       "sessions": {
@@ -28,6 +28,6 @@
         "schema_version": "1"
       }
     },
-    "source_commit": "33bb0d7b6a928405b8c4c18117000725be47901b"
+    "source_commit": "4c008f24bc69040ca33115022959d53c30ea706a"
   }
 }

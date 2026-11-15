@@ -230,14 +230,26 @@ sw.addEventListener("install", event => { sw.skipWaiting(); event.waitUntil(queu
 sw.addEventListener("activate", event => { event.waitUntil(sw.clients.claim().then(() => queued(update)).catch(() => {})); });
 sw.addEventListener("message", event => {
   const data = event.data, client = event.source as Client | null;
-  if (data?.t !== "publication" || !client?.id || !validManifest(data.publication)) return;
+  if (data?.t !== "publication") return;
+  const id = typeof data.publication?.id === "string" ? data.publication.id : null;
+  const reply = (status: "ready" | "error", error?: { code: string; message: string }) =>
+    event.ports[0]?.postMessage({ t: "publication", id, status, ...(error ? { error } : {}) });
+  if (!client?.id || !validManifest(data.publication)) {
+    reply("error", { code: "invalid_publication", message: "A client and valid publication manifest are required." });
+    return;
+  }
   event.waitUntil(queued(async () => {
     const meta = await readRegistry();
     meta.clients[client.id] = data.publication.id;
     await writeRegistry(meta);
     await savePublication(data.publication);
     await cleanup();
-  }).catch(() => {}));
+    // Cache entries can become visible before their complete-graph metadata is
+    // committed. Only this acknowledgement establishes offline readiness.
+    reply("ready");
+  }).catch(error => reply("error", {
+    code: "publication_save_failed", message: error instanceof Error ? error.message : String(error),
+  })));
 });
 sw.addEventListener("fetch", event => {
   const request = event.request;

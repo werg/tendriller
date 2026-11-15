@@ -7,12 +7,13 @@ Tendriller connects an authenticated page to an agent through shared state, even
 Fetch `GET https://tendriller.dev/api/service` before creating a page. It returns `contract`, `core_release`, installed `workflows` (each with independent `interface_version` and `schema_version`), and effective `limits`. Check requirements from the chosen tool or page manifest. Device/browser capabilities are a separate endpoint and do not describe installed server modules.
 
 - [Core SDK and runtime archives](https://github.com/werg/tendriller/releases)
-- [Contrib machine-readable catalog](https://github.com/werg/tendriller-contrib/releases/latest/download/catalog.json)
+- [Tested contrib catalog, 0.2.0-rc.1](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/catalog.json)
+- [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Contrib immutable release assets](https://github.com/werg/tendriller-contrib/releases)
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)
 - [CLI, collector, preview and examples](https://github.com/werg/tendriller-contrib)
 
-Use a latest link only to discover a chosen release. Resolve it to exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
+The release index includes release candidates. Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
 
 ## Create and establish delivery
 

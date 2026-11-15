@@ -90,6 +90,8 @@ Publishing files snapshots all files under an immutable publication ID and locks
 
 The executing page pins its browser URL to its publication. Accepting an update navigates to the canonical latest page; a deferred update leaves the existing graph intact. The service worker caches complete, hash-verified graphs and keeps active client/publication associations. Injected HTML is validated by its `X-Tendril-Publication` response header. Non-HTML bytes match their manifest hashes.
 
+Offline readiness is acknowledged for one exact publication. Send `{ t: "publication", publication: <manifest> }` to the activated controlling service worker with a transferred `MessageChannel` port. It replies on that port with `{ t: "publication", id: <publication-id>, status: "ready" }` only after the complete asset graph, client binding and cleanup metadata have been committed. A failed request replies with `status: "error"` and `error: { code, message }`; the codes are `invalid_publication` and `publication_save_failed`. Asset visibility in the Cache API alone does not establish readiness. Optional lazy runtime resources are cached and verified when first used.
+
 Core retains runtime artifacts in the existing FILES bucket across deployments. Page-file pruning preserves current/recent publications, open sockets and thirty-day offline leases. Normal publication A/B and offline recovery operate within this contract; this is not a promise to run historical pre-release clients.
 
 ## Remaining platform APIs

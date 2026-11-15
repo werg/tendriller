@@ -43,7 +43,7 @@ function network(first) {
     },
   };
 }
-async function worker(net, stores = new Map(), clients = new Map()) {
+async function worker(net, stores = new Map(), clients = new Map(), { beforePut } = {}) {
   const listeners = new Map(), sent = [], background = [];
   const key = request => typeof request === "string" ? request : request.url;
   const caches = {
@@ -52,7 +52,7 @@ async function worker(net, stores = new Map(), clients = new Map()) {
       const entries = stores.get(name);
       return {
         async match(request) { return entries.get(key(request))?.clone(); },
-        async put(request, response) { entries.set(key(request), response.clone()); },
+        async put(request, response) { await beforePut?.(name, key(request), response.clone()); entries.set(key(request), response.clone()); },
         async delete(request) { return entries.delete(key(request)); },
         async keys() { return [...entries.keys()].map(url => new Request(url)); },
       };
@@ -73,10 +73,59 @@ async function worker(net, stores = new Map(), clients = new Map()) {
   }
   return { stores, clients, sent, caches,
     install: () => dispatch("install"), activate: () => dispatch("activate"),
-    async announce(clientId, publication) { clients.set(clientId, scope); await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url: scope } }); },
+    async announce(clientId, publication, replies) {
+      clients.set(clientId, scope);
+      await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url: scope },
+        ports: replies ? [{ postMessage(value) { replies.push(structuredClone(value)); } }] : [] });
+    },
     request: (path, clientId = "a", navigation = false) => dispatch("fetch", { request: { url: absolute(path), method: "GET", headers: new Headers(), mode: navigation ? "navigate" : "cors" }, clientId: navigation ? "" : clientId, replacesClientId: navigation ? clientId : "", resultingClientId: navigation ? clientId : "" }),
   };
 }
+
+test("publication readiness waits for the complete graph and final metadata commits", { timeout: 5000 }, async () => {
+  const a = release("1"), net = network(a), replies = [];
+  const reached = [Promise.withResolvers(), Promise.withResolvers()];
+  const proceed = [Promise.withResolvers(), Promise.withResolvers()];
+  let completeWrites = 0;
+  const sw = await worker(net, new Map(), new Map(), { async beforePut(name, url, response) {
+    if (name !== "tendril-v2-metadata" || !(await response.json()).complete.includes(a.publication.id)) return;
+    const stage = completeWrites++;
+    reached[stage].resolve();
+    await proceed[stage].promise;
+  } });
+  const pending = sw.announce("a", a.publication, replies);
+  await reached[0].promise;
+  assert.ok(await (await sw.caches.open(cacheName("1"))).match(a.publication.base + "index.html"));
+  assert.deepEqual(replies, [], "visible asset bytes do not acknowledge an uncommitted graph");
+  proceed[0].resolve();
+  await reached[1].promise;
+  assert.deepEqual(replies, [], "cleanup metadata must also be committed before acknowledgement");
+  proceed[1].resolve();
+  await pending;
+  assert.deepEqual(replies, [{ t: "publication", id: "1", status: "ready" }]);
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  assert.match(await (await restarted.request(a.publication.base + "index.html", "a", true)).text(), /<h1>1<\/h1>/);
+});
+
+test("publication readiness reports graph validation and saving failures", async () => {
+  const a = release("1"), net = network(a), sw = await worker(net), replies = [];
+  await sw.announce("a", { ...a.publication, entry: "../outside.html" }, replies);
+  assert.deepEqual(replies, [{ t: "publication", id: "1", status: "error", error: {
+    code: "invalid_publication", message: "A client and valid publication manifest are required.",
+  } }]);
+  assert.equal(net.calls.length, 0);
+  replies.length = 0;
+  net.resources.set(a.publication.base + "app.js", () => new Response("changed bytes"));
+  await sw.announce("a", a.publication, replies);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].id, "1");
+  assert.equal(replies[0].status, "error");
+  assert.equal(replies[0].error.code, "publication_save_failed");
+  assert.match(replies[0].error.message, /integrity mismatch/);
+  net.online = false;
+  assert.equal((await sw.request(a.publication.base + "index.html", "a", true)).status, 503);
+});
 
 test("open A and newly published B keep complete independent asset graphs offline", async () => {
   const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);

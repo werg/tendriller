@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { savedForOffline } from "./publication";
 import { MockServer, type MockTendril } from "./mock-server";
 
 let mock: MockServer;
@@ -841,21 +842,11 @@ for (const preview of [false, true]) test(`publication A and B retain pinned laz
   await expect(page).toHaveURL(new RegExp(`/_publications/1/index.html$`));
   await page.evaluate(() => { window.addEventListener("tendril:before-reload", event => event.preventDefault()); });
   await page.evaluate(() => window.tendril.state.set("note", "kept"));
-  const ready = async (tab: Page, publication: string) => {
-    await tab.waitForFunction(async id => {
-      const key = `tendril-v2-publication:${encodeURIComponent(location.origin + window.__TENDRIL__.base)}:${id}`;
-      if (!(await caches.keys()).includes(key)) return false;
-      const cache = await caches.open("tendril-v2-metadata");
-      const saved = await cache.match(location.origin + window.__TENDRIL__.base + "_tendril/publications");
-      return !!saved && (await saved.json()).complete.includes(id);
-    }, publication, { timeout: 30000 });
-    await tab.waitForFunction(() => !!navigator.serviceWorker.controller);
-  };
-  await ready(page, "1");
+  expect(await savedForOffline(page)).toBe("1");
   t.version = 2; t.html = `<h1 id="h">Page B</h1><script src="app.js"></script>`;
   t.files["app.js"] = { type: "text/javascript", body: "window.__app = 'B';" };
   t.files["lazy.js"] = { type: "text/javascript", body: "window.__lazy = 'B';" };
-  const next = await context.newPage(); await open(next, t); await ready(next, "2");
+  const next = await context.newPage(); await open(next, t); expect(await savedForOffline(next)).toBe("2");
   mock.broadcast(t, { t: "reload", version: 2 });
   expect(await page.evaluate(() => window.tendril.version)).toBe(1);
   await context.setOffline(true);

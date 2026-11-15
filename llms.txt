@@ -16,7 +16,8 @@ Application-neutral pages connected to agents. Core contract 2; application stat
 ## Optional tools, components and workflows
 
 - [Contrib](https://github.com/werg/tendriller-contrib): CLI, collectors, bridges, complete preview, components, recipes and examples.
-- [Catalog discovery](https://github.com/werg/tendriller-contrib/releases/latest/download/catalog.json): tools/components/examples with requirements, files and hashes.
+- [Tested contrib catalog](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/catalog.json): tools/components/examples with requirements, files and hashes for the recorded 0.2.0-rc.1 pairing.
+- [Release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases): machine-readable releases, including candidates, with immutable catalog and manifest download URLs.
 - [Contrib releases](https://github.com/werg/tendriller-contrib/releases): installable tools, standalone commands, static bundles and trusted workflow archives.
 
 Resolve discovery to an immutable release and verify its hashes before use. Browser component files belong in the page's publication; do not load release attachments as browser scripts. A catalog cannot install or upgrade trusted server workflows.

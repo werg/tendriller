@@ -1,6 +1,7 @@
 // End-to-end against a running server:
 //   TENDRIL_REAL=http://localhost:8702 npx playwright test --config runtime/test/playwright.config.ts real-server
 import { test, expect } from "@playwright/test";
+import { savedForOffline } from "./publication";
 
 const BASE = process.env.TENDRIL_REAL;
 test.skip(!BASE, "set TENDRIL_REAL to a running server origin");
@@ -87,17 +88,7 @@ test("real server: service worker caches the page for offline reload", async ({ 
   await page.goto(pageUrl);
   await page.waitForFunction(() => (window as any).tendril?.connected, null, { timeout: 15000 });
   await page.evaluate(() => (window as any).tendril.state.set("x", 42));
-  await page.waitForFunction(async () => {
-    const publication = window.__TENDRIL__.publication!;
-    const runtime = new URL(publication.runtime.base, location.origin);
-    const manifest = await caches.match(new URL("manifest.json", runtime).href);
-    if (!manifest || !navigator.serviceWorker.controller) return false;
-    const assets = (await manifest.json()).assets;
-    const urls = [...publication.assets.map(asset => new URL(asset.path, new URL(publication.base, location.origin)).href),
-      ...assets.map((asset: {path:string}) => new URL(asset.path, runtime).href)];
-    return (await Promise.all(urls.map(url => caches.match(url)))).every(Boolean);
-  }, null, { timeout: 15000 });
-  await page.waitForTimeout(500);
+  await savedForOffline(page);
   await context.setOffline(true);
   await page.reload();
   await expect(page.locator("#h")).toHaveText("Offline ok");
