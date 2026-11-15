@@ -83,6 +83,7 @@ producer grants. Stream names match `[a-z][a-z0-9._-]{0,63}`; `system.*` is rese
 | Append a batch | `POST A/streams/<name>/records` |
 | Read retained records | `GET A/streams/<name>/records?after=<seq>&limit=<n>` |
 | Read the latest retained snapshot | `GET A/streams/<name>/latest` |
+| Trim an observed prefix of retained records | `DELETE A/streams/<name>/records?through=<seq>` |
 | List/create producer grants | `GET/POST A/producers` |
 | Revoke a producer | `DELETE A/producers/<name>` |
 
@@ -147,6 +148,38 @@ lower boundary, high-water sequence, and any missing history. The cursor is
 the last returned sequence, not an implicit acknowledgement. Ephemeral reads
 fail with `not_replayable` instead of returning misleading empty history.
 
+## Removing bad retained data
+
+An agent can discard records through an explicit sequence with
+`DELETE A/streams/<name>/records?through=<seq>`. This applies only to custom
+durable streams. To clear the history observed so far, capture the latest cursor
+and use it as the inclusive bound:
+
+```js
+const { cursor } = await client.streams.latest('training.metrics');
+const result = await client.streams.trim('training.metrics', { through: cursor });
+// { stream, through, deleted_records, cursor }
+```
+
+The typed agent client and MCP `trim_stream` use the same route. `through` is
+required, must be a nonnegative safe integer, and cannot exceed the stream's
+high-water sequence. Records appended after the captured bound survive, including
+when the same trim is retried. `deleted_records` counts the rows actually removed;
+the returned `cursor` is the current high-water mark, not an acknowledgement.
+
+Trimming frees retained storage without deleting the stream definition, changing
+its policy or producer grants, or reusing sequence numbers. Reads and replays
+that request a removed range expose it through the existing `history.gap`/`onGap`
+mechanism; a reader already beyond that range receives no reset notification.
+Built-in streams
+remain managed through their existing APIs, and ephemeral streams have no
+retained data to trim.
+
+Stop or correct a faulty producer before cleanup. Deduplication covers retained
+records only: a queued batch containing a removed record ID can append it again
+under a new sequence. Trimming does not cancel records already in flight or erase
+an active page's materialized view/cache; reset that view or reload it explicitly.
+
 ## Browser consumers
 
 The injected runtime exposes `tendril.streams.list()`, `.info(name)`,
@@ -162,10 +195,49 @@ in pages while holding new frames, avoiding a query/subscribe race. Retention
 gaps are surfaced to the caller. Ephemeral subscriptions resume only live data.
 Unsubscribe when a chart is removed.
 
-Subscription cursors live in memory and represent callback delivery, not
-successful asynchronous processing. Persist a cursor in your application and
-pass it as `after` to resume across page reloads, or use explicit reads when
-processing needs its own handled checkpoint.
+### Replay and efficient rendering
+
+`{after: 0}` requests all retained history; omitting `after` starts with live data.
+Handlers run synchronously for each record within a replay batch (up to 500
+records); later history batches arrive through asynchronous HTTP reads. Buffered
+live records also drain through synchronous callbacks. A large retained window
+can therefore produce many callbacks close together, though the whole window
+does not replay in one uninterrupted task. Returned promises are not awaited.
+
+Update the in-memory model for **every** record, then coalesce expensive DOM or
+chart rendering. The optional
+[`stream-view.js` snippet](../snippets/README.md#efficient-rendering-and-reload-checkpoints)
+provides `tendrilSnippets.streamView.batch(render)` with `schedule()`, `flush()`
+and `cancel()`. It queues no records and changes no delivery cursors. The training
+dashboard uses it to rebuild a bounded view from retained history on reload.
+
+### Reload checkpoints
+
+Subscription cursors live in memory and represent callback delivery. The runtime
+advances that cursor before calling the handler; a thrown error or unfinished
+asynchronous task does not rewind it. Use explicit reads and save a processing
+checkpoint only after successful work when processing needs its own handled
+checkpoint. A subscription is not a work-acknowledgement mechanism.
+
+For a browser chart or table, **persist its materialized state and cursor together**.
+A saved cursor alone makes a fresh page skip the history needed to reconstruct
+its view. `streamView.checkpoint(name, {key: 'my-view-v1'})` offers explicit
+`load()`, `save({cursor,state})` and `clear()` operations backed by one atomic,
+size-bounded localStorage item scoped to page, stream and versioned view key.
+Restore and validate the state before subscribing with its cursor. Include known
+gap/incompleteness markers in that state; a reload must not hide missing history.
+When a checkpoint is unusable, reset **both** state and cursor and rebuild from
+retained history, which can still report a gap.
+
+The helper throws on corrupt, incompatible, unavailable or oversized storage;
+it does not silently switch to a memory-only checkpoint or automatically resume a
+subscription. Authorize the current reader with `streams.info(name)` before
+showing private cached data, and clear it when the application signs out or changes
+reader identity. Browser storage is not access control. Use one writer per view
+key; the helper does not merge concurrent tabs. See the snippet's complete recipe
+for schema validation, bounded state, explicit failure handling and `pagehide`
+flushing. For a whole-table snapshot, `streams.latest()` below can restore the
+view directly without a local cache.
 
 Only an owner page may publish to custom streams. Browser stream publishing
 requires a live connection; callers that need durable offline production use

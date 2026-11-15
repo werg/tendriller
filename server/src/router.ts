@@ -153,7 +153,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       ? { branch: env.BRANCH_PREVIEW_BRANCH, commit: env.BRANCH_PREVIEW_SHA } : undefined;
     return json(preview ? { ok: true, preview } : { ok: true });
   }
-  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs", "/tendril-watch.mjs", "/tendril-stream.mjs", "/tendril-events.mjs"].includes(path) && req.method === "GET") {
+  if (["/codex-bridge.mjs", "/claude-channel.mjs", "/openclaw-bridge.mjs", "/hermes-bridge.mjs", "/tendril-wait.mjs", "/tendril-watch.mjs", "/tendril-stream.mjs", "/tendril-events.mjs", "/tendril-preview.mjs"].includes(path) && req.method === "GET") {
     return asset(env, url, path, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
   }
   if (path === "/tendril-wait.sh" && req.method === "GET") {

@@ -49,8 +49,10 @@ node cli/bin/tendril.mjs --tendril kitchen pending    # replay pending input saf
   is uploaded as `index.html`. It then polls `/versions` up to `--timeout` s (20) and
   reports `healthy`, `failed` (with errors) or still `pending` (no device has loaded it).
 - **preview** uses the compiled production runtime, real control, state and
-  persistent outbox with an explicit local protocol adapter. Run `npm ci`,
-  `npm run build`, and `npx playwright install chromium` first. It serves the
+  persistent outbox with an explicit local protocol adapter. For checkout
+  development, run `npm ci`, `npm run build`, and `npx playwright install chromium`
+  first. The [standalone preview below](#preview-without-a-checkout) needs no
+  dependency installation or build to serve a page. Headless preview serves the
   directory and opens Chromium with fake camera/mic, reporting uncaught/console
   errors, actual server events, recorded public calls and a screenshot
   (`<dir>/.preview.png`, never pushed).
@@ -146,6 +148,39 @@ handling separately in `page.json.events.json`, or the explicit
 same `--checkpoint-file` to both helpers if overridden. A higher legacy
 `page.json` cursor never overrides unhandled input in an existing checkpoint.
 The helper does not attach a host listener or automatically rearm one.
+
+## Preview without a checkout
+
+Download one script and serve any local page directory:
+
+```sh
+curl -fsS https://tendriller.dev/tendril-preview.mjs -o ./tendril-preview.mjs
+node ./tendril-preview.mjs ./my-page --fixture ./scenario.json
+```
+
+It prints a loopback URL and serves the actual runtime, control, service worker,
+all browser snippets and pinned accessibility audit from that same build. Node
+22.15+ is sufficient; the script includes its WebSocket adapter and shared
+state/history code. It does not fetch executable code or assets when run.
+Edit your page files and reload. Stop the server with Ctrl-C.
+
+The fixture's `streams` declarations seed retained history before the page opens.
+For automated clicks, ordered stream appends and screenshots, add `--headless`:
+
+```sh
+node ./tendril-preview.mjs ./my-page --fixture ./scenario.json --headless --out ./preview.png
+```
+
+Headless mode uses Playwright and Chromium already available in the current
+project. If absent, it returns `playwright_missing` or `browser_missing` with setup
+instructions. Serving the page in your own browser needs neither. Optional neural
+voice engines/models are excluded from the standalone bundle; browser speech and
+text remain available. The full installed package retains its optional assets.
+
+The [stream fixture format](../docs/DEVELOPMENT.md#stream-fixtures) uses ordinary
+stream definitions and records, with `streams` steps for new samples. Reads and
+subscriptions run through the real browser API and local HTTP/WebSocket transport.
+No live account, producer credential, collector or agent is created.
 
 ## Durable workflows
 

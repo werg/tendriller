@@ -25,7 +25,7 @@ it("puts the public API entry point in homepage text and serves docs and example
   // Example HTML is source for publication; never execute it on the account origin.
   expect((await req("/examples/training-dashboard/index.html")).headers.get("Content-Type")).toContain("text/plain");
   expect((await req("/examples/training-dashboard/", { redirect: "manual" })).headers.get("Location")).toContain("/examples/training-dashboard/README.md");
-  for (const path of ["/tendril-stream.mjs", "/tendril-events.mjs"]) {
+  for (const path of ["/tendril-stream.mjs", "/tendril-events.mjs", "/tendril-preview.mjs"]) {
     const response = await req(path);
     expect(response.status, path).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/javascript");

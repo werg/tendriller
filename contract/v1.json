@@ -1219,6 +1219,51 @@
       ],
       "additionalProperties": false
     },
+    "streamTrim": {
+      "type": "object",
+      "properties": {
+        "through": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "through"
+      ],
+      "additionalProperties": false
+    },
+    "streamTrimResult": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "through": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deleted_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "stream",
+        "through",
+        "deleted_records",
+        "cursor"
+      ],
+      "additionalProperties": false
+    },
     "streamList": {
       "type": "object",
       "properties": {

@@ -1,4 +1,4 @@
-import type { StreamAppend, StreamAppendResult, StreamBatch, StreamLatest, StreamCreate, StreamInfo, StreamReadOptions,
+import type { StreamAppend, StreamAppendResult, StreamBatch, StreamLatest, StreamTrim, StreamTrimResult, StreamCreate, StreamInfo, StreamReadOptions,
   Producer, ProducerCreate, ProducerResult } from "./streams.mjs";
 export interface StreamsClient {
   streams: {
@@ -8,6 +8,8 @@ export interface StreamsClient {
     append(stream: string, body: StreamAppend): Promise<StreamAppendResult>;
     read(stream: string, options: StreamReadOptions): Promise<StreamBatch>;
     latest(stream: string, options?: { signal?: AbortSignal }): Promise<StreamLatest>;
+    /** Agent only: discard retained records through an observed cursor, preserving newer appends and sequence numbers. */
+    trim(stream: string, options: StreamTrim): Promise<StreamTrimResult>;
   };
   producers: {
     list(): Promise<{ producers: Producer[] }>;

@@ -104,3 +104,22 @@ test("latest snapshot reads validate nullable records, names, response shape and
   const malformed = createClient({ api: "https://example.test", token: "private" }, { fetch: async () => Response.json({ ...value, record: {} }) });
   await assert.rejects(malformed.streams.latest(record.stream), error => error instanceof ApiError && error.code === "invalid_response");
 });
+
+test("trimming requires an explicit safe bound and validates its receipt", async () => {
+  const value = { stream: record.stream, through: 1, deleted_records: 1, cursor: 2 };
+  let calls = 0;
+  const client = createClient({ api: "https://example.test", token: "private" }, { fetch: async (url, options) => {
+    calls++;
+    assert.equal(url, `https://example.test/streams/${record.stream}/records?through=1`);
+    assert.equal(options.method, "DELETE");
+    return Response.json(value);
+  } });
+  assert.deepEqual(await client.streams.trim(record.stream, { through: 1 }), value);
+  for (const through of [undefined, null, "1", -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => client.streams.trim(record.stream, { through }), ContractError);
+  assert.throws(() => client.streams.trim(record.stream), ContractError);
+  assert.throws(() => client.streams.trim("../tokens", { through: 1 }), ContractError);
+  assert.equal(calls, 1);
+  const malformed = createClient({ api: "https://example.test", token: "private" }, { fetch: async () => Response.json({ ...value, cursor: -1 }) });
+  await assert.rejects(malformed.streams.trim(record.stream, { through: 1 }), error => error instanceof ApiError && error.code === "invalid_response");
+});

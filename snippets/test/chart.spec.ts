@@ -125,16 +125,19 @@ test('training dashboard uses the served chart snippet for distinct source/run s
     if (!['index.html', 'app.js', 'model.mjs'].includes(file)) return route.abort();
     await route.fulfill({ body: readFileSync(fileURLToPath(new URL(file, root))), contentType: file.endsWith('.html') ? 'text/html' : 'text/javascript' });
   });
-  await page.route('**/dashboard/_tendril/snippets/chart.js', route => route.fulfill({
-    body: readFileSync(fileURLToPath(new URL('../chart.js', import.meta.url))), contentType: 'text/javascript',
-  }));
+  await page.route('**/dashboard/_tendril/snippets/*.js', async route => {
+    const file = new URL(route.request().url()).pathname.split('/').pop()!;
+    if (!['chart.js', 'stream-view.js'].includes(file)) return route.abort();
+    await route.fulfill({ body: readFileSync(fileURLToPath(new URL('../' + file, import.meta.url))), contentType: 'text/javascript' });
+  });
   await page.addInitScript(() => {
     const w = window as any;
     w.tendril = { connected: true, on() {}, streams: {
       async list() { return { streams: ['machine.utilization', 'training.metrics', 'training.logs'].map(name => ({ name, durability: 'durable' })) }; },
       subscribe(name: string, receive: (record: any) => void) {
         if (name === 'training.metrics') for (const source of ['sensor A', 'sensor B']) for (let step = 0; step < 5; step++)
-          receive({ type: 'metric', ts: step, data: { source, run: 'demo', step, loss: 5 - step } });
+          receive({ type: 'metric', ts: step, data: { source, run: 0, step, loss: 5 - step } });
+        if (name === 'training.logs') receive({ type: 'log', ts: 4, data: { source: 'training-logs', run: 0, line: 'Epoch complete' } });
         return () => {};
       },
     } };
@@ -142,10 +145,12 @@ test('training dashboard uses the served chart snippet for distinct source/run s
   await page.goto('/dashboard/');
   await expect(page.locator('path.tc-series')).toHaveCount(2);
   await expect(page.locator('#chart-summary')).toHaveText('10 samples across 2 source/run series');
-  await expect(page.locator('.tc-legend')).toContainText('sensor A / demo');
-  await expect(page.locator('.tc-legend')).toContainText('sensor B / demo');
+  await expect(page.locator('.tc-legend')).toContainText('sensor A / 0');
+  await expect(page.locator('.tc-legend')).toContainText('sensor B / 0');
   await page.getByText('View sample values').click();
   await expect(page.locator('tbody tr')).toHaveCount(10);
-  await page.selectOption('#run', JSON.stringify(['sensor A', 'demo']));
+  await page.selectOption('#run', JSON.stringify(['sensor A', '0']));
   await expect(page.locator('path.tc-series')).toHaveCount(1);
+  // Metrics and logs have different adapter source ids; match their explicit run.
+  await expect(page.locator('#logs')).toContainText('Epoch complete');
 });

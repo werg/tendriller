@@ -1,6 +1,6 @@
 // Stream definitions, storage, retention and bounded history. No socket effects.
 import { assertValid } from "../../../contract/index.mjs";
-import type { StreamInfo, StreamRecord, StreamBatch, StreamLatest, StreamAppendResult, StreamInput } from "../../../contract/index.mjs";
+import type { StreamInfo, StreamRecord, StreamBatch, StreamLatest, StreamTrimResult, StreamAppendResult, StreamInput } from "../../../contract/index.mjs";
 import type { Tendril } from "../tendril";
 import { HttpError } from "../http";
 import { BUILTIN_STREAMS, legacyTable, legacyHistorySource, renderBuiltinRecord } from "./adapters";
@@ -106,6 +106,21 @@ export function latestStream(t: StreamStoreContext, name: string): StreamLatest 
     : t.db.one<RecordRow>("SELECT * FROM stream_records WHERE stream=? ORDER BY seq DESC LIMIT 1", name);
   const record = row ? table ? renderBuiltinRecord(name, row) : renderRecord(row as RecordRow) : null;
   return { stream: name, durability: "durable", record, cursor: streamHighWater(t, name) };
+}
+
+/** Trim an explicitly observed prefix; sequence numbers and stream policy never reset. */
+export function trimStream(t: StreamStoreContext, name: string, through: number): StreamTrimResult {
+  const info = streamInfo(t, name);
+  if (info.builtin) throw new HttpError(403, "readonly_stream", "Built-in streams are managed through their existing APIs");
+  if (info.durability === "ephemeral") throw new HttpError(409, "not_replayable", "Ephemeral streams have no retained records");
+  streamCursor(through, "through");
+  return t.transaction(() => {
+    const cursor = streamHighWater(t, name);
+    if (through > cursor) throw new HttpError(400, "cursor_ahead", "through is beyond this stream's history", { latest_seq: cursor });
+    const deleted = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM stream_records WHERE stream=? AND seq<=?", name, through)!.n;
+    t.db.run("DELETE FROM stream_records WHERE stream=? AND seq<=?", name, through);
+    return { stream: name, through, deleted_records: deleted, cursor };
+  });
 }
 
 /** Bounded per-principal and aggregate budgets survive hibernation/restarts. */

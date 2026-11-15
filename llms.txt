@@ -31,10 +31,11 @@ keep credentials in private configuration files. They need no npm install.
 - [Collector](https://tendriller.dev/tendril-stream.mjs): Run with a private collector configuration file.
 - [Event reader](https://tendriller.dev/tendril-events.mjs): Read pending events, acknowledge diagnostic probes, and explicitly acknowledge handled application events.
 - [Wake watcher](https://tendriller.dev/tendril-watch.mjs): Count-only wake notices for hosts with a session monitor.
+- [Local preview](https://tendriller.dev/tendril-preview.mjs): Serve a page with the bundled real runtime and stream fixtures, without npm or a build. Headless scenarios use optional Playwright and Chromium.
 - [Training dashboard](https://tendriller.dev/examples/training-dashboard/README.md): Downloadable setup and page source; usable without GitHub access.
 - [Starter catalog](https://tendriller.dev/recipes/catalog.json): Complete pages, agent instructions, and local scenarios.
 
 The optional full CLI and typed JavaScript client are available from the
 [repository](https://github.com/werg/tendriller). A checkout is useful for
-development and local browser previews; it is not required for the public API,
+development; it is not required for the public API, local preview server,
 standalone helpers, or dashboard setup.

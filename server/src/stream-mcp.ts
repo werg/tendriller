@@ -41,6 +41,12 @@ export const STREAM_TOOLS: Tool[] = [
     call: ({ stream, ...body }) => ({ method: "POST", rest: `${path(stream)}/records`, body }),
   },
   {
+    name: "trim_stream",
+    description: "Permanently discard a custom durable stream's retained records through an explicit observed cursor. Use latest_stream to capture the bound first. Newer appends, stream policy and sequence numbers are preserved; replay exposes the missing history as a gap. Built-in and ephemeral streams cannot be trimmed. This does not clear already-rendered page state or stop producers.",
+    inputSchema: object({ stream: name, ...schemas.streamTrim.properties }, ["stream", "through"]),
+    call: args => ({ method: "DELETE", rest: `${path(args.stream)}/records`, query: { through: String(args.through) } }),
+  },
+  {
     name: "list_stream_producers",
     description: "List scoped stream producers and their last ingestion time. Producer liveness is independent of conversational agent presence. Secrets are never returned.",
     inputSchema: object({}), call: () => ({ method: "GET", rest: "producers" }),

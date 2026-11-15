@@ -2,7 +2,7 @@
 // Uses real control/state/offline behavior, with deterministic sensor and agent fixtures.
 // Needs `playwright` (or `@playwright/test`) resolvable from the current project.
 import { createServer } from "node:http";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,14 +32,18 @@ export function injectRuntime(html) {
   return tags + html;
 }
 
-export async function startServer(dir, initialState, fixture = {}) {
+export async function startServer(dir, initialState, fixture = {}, options = {}) {
   if (fixture.capabilities) throw new Error("Preview derives capabilities from the real browser. Use denied or hardware fixtures to change browser inputs.");
-  const root = resolve(dir), repo = resolve(here, "../..");
+  const root = realpathSync(resolve(dir)), repo = resolve(here, "../..");
   const assets = join(repo, "server/public/_tendril");
-  if (!existsSync(join(assets, "tendril.js"))) throw new Error("Preview needs the built runtime. Run npm run build first.");
+  if (!options.assets && !existsSync(join(assets, "tendril.js"))) throw new Error("Preview needs the built runtime. Run npm run build first, or download tendril-preview.mjs.");
   const safeFile = (base, pathname) => {
+    base = realpathSync(base);
     const file = resolve(base, "." + pathname);
-    return (file === base || file.startsWith(base + sep)) && existsSync(file) && statSync(file).isFile() ? file : null;
+    // Match publication: symlinks (including parent-directory links) are not
+    // page assets and must not expose files elsewhere on the preview host.
+    return (file === base || file.startsWith(base + sep)) && existsSync(file)
+      && realpathSync(file) === file && statSync(file).isFile() ? file : null;
   };
   let adapter, stopPromise, stopping = false, httpFixtures = structuredClone(fixture.http || []);
   const connections = new Set();
@@ -75,6 +79,17 @@ export async function startServer(dir, initialState, fixture = {}) {
       if (p === "/contract/v1.json") return json(200, schemaDocument);
       if (p === "/recipes/ui-schema.json") return json(200, schemas.interface);
       if (p === "/_tendril/info") return json(200, { id: "preview", version: 1, files: listFiles(root), features: {} });
+      const streamRoute = /^\/_tendril\/streams(?:\/([^/]+)(?:\/(records|latest))?)?$/.exec(p);
+      if (streamRoute) {
+        if (req.method !== "GET") return json(405, { error: { code: "preview_unsupported", message: "Declare and feed custom streams in the preview fixture" } });
+        const [, name, action] = streamRoute;
+        if (!name) return json(200, adapter.streams.list());
+        if (!action) return json(200, adapter.streams.info(name));
+        if (action === "latest") return json(200, adapter.streams.latest(name));
+        const after = url.searchParams.get("after");
+        if (after === null || after.trim() === "") return json(400, { error: { code: "cursor_required", message: "Provide an explicit after cursor" } });
+        return json(200, adapter.streams.read(name, Number(after), url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 100));
+      }
       if (p === "/_tendril/devices" || p === "/_tendril/focus") {
         if (adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Owner access required" } });
         if (req.method === "GET") return json(200, adapter.configuration());
@@ -109,10 +124,19 @@ export async function startServer(dir, initialState, fixture = {}) {
         return send(200, blob.type, blob.data);
       }
       if (p.startsWith("/_tendril/snippets/")) {
+        if (options.assets) {
+          const asset = options.assets[p];
+          return asset ? send(200, "text/javascript", Buffer.from(asset, "base64"), { "cache-control": "no-cache" }) : send(404, "text/plain", "No such bundled snippet");
+        }
         const file = safeFile(join(repo, "snippets"), p.slice("/_tendril/snippets".length));
         return file ? send(200, "text/javascript", readFileSync(file), { "cache-control": "no-cache" }) : send(404, "text/plain", "No such snippet");
       }
       if (p.startsWith("/_tendril/")) {
+        if (options.assets) {
+          const asset = options.assets[p];
+          return asset ? send(200, guessType(p), Buffer.from(asset, "base64"), { "cache-control": "no-cache", ...(p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {}) })
+            : json(404, { error: { code: "preview_unavailable", message: "This optional service asset is not included in the standalone preview" } });
+        }
         const file = safeFile(assets, p.slice("/_tendril".length));
         if (file) return send(200, guessType(file), readFileSync(file), { "cache-control": "no-cache", ...(p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {}) });
         return json(404, { error: { code: "preview_unavailable", message: "Use the local Worker for this service capability" } });
@@ -123,7 +147,7 @@ export async function startServer(dir, initialState, fixture = {}) {
       const type = guessType(file);
       return send(200, type === "text/html" ? "text/html; charset=utf-8" : type,
         type === "text/html" ? injectRuntime(readFileSync(file, "utf8")) : readFileSync(file), { "cache-control": "no-cache" });
-    } catch (error) { json(400, { error: { code: error.code || "bad_request", message: error.message } }); }
+    } catch (error) { json(error.status || 400, { error: { code: error.code || "bad_request", message: error.message } }); }
   });
   // Own every TCP connection, including browser preconnects, incomplete HTTP
   // requests and sockets later upgraded to WebSocket. HTTP close alone can wait
@@ -133,7 +157,7 @@ export async function startServer(dir, initialState, fixture = {}) {
     socket.once("close", () => connections.delete(socket));
     if (stopping) socket.destroy();
   });
-  adapter = await attachRuntime(server, { root: repo, state: initialState, role: fixture.role || "owner",
+  adapter = await attachRuntime(server, { root: repo, state: initialState, role: fixture.role || "owner", streams: fixture.streams, implementation: options.implementation,
     onEvent: fixture.reply ? (event, api) => api.say({ text: String(fixture.reply), in_reply_to: event.seq, speak: false }) : undefined });
   server.preview = adapter;
   server.mockedHttp = mockedHttp;
@@ -164,7 +188,7 @@ export async function preview(dir, opts = {}) {
       message: "Install Playwright in this project to use preview: npm i -D playwright && npx playwright install chromium" };
   }
   const fixture = opts.fixture || {};
-  const server = await startServer(dir, opts.state, fixture);
+  const server = await startServer(dir, opts.state, fixture, opts);
   const port = server.address().port;
   const errors = [], consoleMsgs = [];
   let browser;
@@ -259,6 +283,7 @@ export async function preview(dir, opts = {}) {
         if (step.role) server.preview.setRole(step.role);
         if (step.reply) server.preview.say(step.reply);
         if (step.state_ops) server.preview.updateState(step.state_ops);
+        if (step.streams) server.preview.streams.feed(step.streams);
         if (step.presence) server.preview.setPresence(step.presence);
         if (step.reload) await page.reload({ waitUntil: "load" });
         if (step.expect_connected !== undefined) await page.waitForFunction(value => window.tendril.connected === value, step.expect_connected, { timeout: 10000 });

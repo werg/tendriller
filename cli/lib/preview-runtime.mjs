@@ -1,11 +1,12 @@
 // Local protocol adapter for the production browser runtime. No browser API is
 // replaced here: the runtime owns its socket, control, state, IDB outbox and health.
 import { randomUUID, randomBytes } from "node:crypto";
-import { createRequire } from "node:module";
+import { WebSocketServer } from "ws";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { assertValid } from "../../contract/index.mjs";
+import { createStreamFixtures } from "./preview-streams.mjs";
 
 /** Exact-value fixture references avoid hard-coding randomly assigned IDs. */
 export function resolveFixture(value, context) {
@@ -24,11 +25,10 @@ export function resolveFixture(value, context) {
   return value;
 }
 
-export async function attachRuntime(server, { root, state = {}, role = "owner", name = "Local preview", onEvent } = {}) {
-  const { WebSocketServer } = createRequire(import.meta.url)("ws");
+export async function attachRuntime(server, { root, state = {}, role = "owner", name = "Local preview", onEvent, streams, implementation } = {}) {
   const stateModule = join(root, "server/public/_preview/state.mjs");
-  if (!existsSync(stateModule)) throw new Error("Preview needs the built runtime. Run npm run build first.");
-  const { applyOps, validateOps } = await import(pathToFileURL(stateModule).href);
+  if (!implementation && !existsSync(stateModule)) throw new Error("Preview needs the built runtime. Run npm run build first, or download tendril-preview.mjs.");
+  const { applyOps, validateOps, historyPage } = implementation || await import(pathToFileURL(stateModule).href);
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set();
   const devices = new Map();
@@ -40,10 +40,11 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
   let focus = null, closing = false, closePromise;
   let presence = { state: "listening", text: "Preview agent ready", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" };
   const send = (ws, message) => { if (ws.readyState === 1) ws.send(JSON.stringify(message)); };
+  const streamFixtures = createStreamFixtures(streams, { historyPage, role: () => role, send });
   const broadcast = (message, except) => { for (const ws of sockets) if (ws !== except) send(ws, message); };
   const log = (kind, summary, device) => activity.push({ seq: activity.length + 1, ts: Date.now(), kind, summary, device });
   const api = {
-    events, messages, activity, blobs,
+    events, messages, activity, blobs, streams: streamFixtures,
     get state() { return structuredClone(shared); },
     get rev() { return rev; },
     get online() { return online; },
@@ -123,7 +124,7 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
       if (closing) { ws.terminate(); return; }
       sockets.add(ws);
       let device;
-      ws.on("close", () => sockets.delete(ws));
+      ws.on("close", () => { sockets.delete(ws); streamFixtures.disconnect(ws); });
       ws.on("message", async buffer => {
         if (closing) return;
         let m;
@@ -142,10 +143,13 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
         const reply = message => send(ws, { ...message, ...(m.cid ? { cid: m.cid } : {}) });
         const ack = value => reply({ t: "ack", ...value });
         const key = device.id + ":" + m.cid;
-        if (m.cid && dedupe.has(key)) { ack(dedupe.get(key)); return; }
+        const subscription = m.t === "stream_subscribe" || m.t === "stream_unsubscribe";
+        if (!subscription && m.cid && dedupe.has(key)) { ack(dedupe.get(key)); return; }
         let result;
         try {
           switch (m.t) {
+            case "stream_subscribe": result = streamFixtures.subscribe(ws, m.stream, m.after); break;
+            case "stream_unsubscribe": streamFixtures.unsubscribe(ws, m.stream); result = {}; break;
             case "ping": reply({ t: "pong" }); return;
             case "send": {
               if (role === "display") { result = { error: "forbidden", message: "Display devices cannot send" }; break; }
@@ -178,7 +182,7 @@ export async function attachRuntime(server, { root, state = {}, role = "owner", 
             default: result = { error: "preview_unsupported", message: `${m.t} requires a real service; use the local Worker E2E suite` };
           }
         } catch (error) { result = { error: error.code || "bad_request", message: error.message }; }
-        if (m.cid) { dedupe.set(key, result || {}); ack(result); }
+        if (m.cid) { if (!subscription) dedupe.set(key, result || {}); ack(result); }
         if (m.t === "state" && result?.error) reply({ t: "state_reset", state: shared, rev });
       });
     });
@@ -201,5 +205,6 @@ export const TRACE_RUNTIME = String.raw`(() => {
   const t = window.tendril;
   for (const name of ["send","upload","uploadEvent","retryCapture","discardCapture","speak"]) wrap(t,name,name);
   for (const name of ["set","delete","patch"]) wrap(t.state,name,"state."+name);
+  for (const name of ["list","info","read","latest","subscribe","publish"]) wrap(t.streams,name,"streams."+name);
   window.__tendrilEmit = (event, data) => t._core.bus.emit(event,data);
 })();`;

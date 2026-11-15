@@ -1,18 +1,21 @@
 import { chartSeries, sourceKey, sourceLabel } from './model.mjs';
 const t = window.tendril, $ = id => document.getElementById(id);
 const machines = new Map(), records = [], logRows = [], runs = new Set(), metrics = new Set();
-let follow = true, scheduled = false;
+let follow = true, paint;
 const element = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; };
 const number = value => typeof value === 'number' && Number.isFinite(value);
 const format = value => number(value) ? value.toLocaleString(undefined, { maximumSignificantDigits: 4 }) : '—';
 const key = sourceKey;
 function notice(text) { $('notice').hidden = false; $('notice').textContent = text; }
 function connection() { $('connection').textContent = t.connected ? 'Connected' : 'Reconnecting'; $('connection').classList.toggle('live', t.connected); }
-function schedule() { if (!scheduled) { scheduled = true; requestAnimationFrame(() => { scheduled = false; render(); }); } }
+function schedule() {
+  paint ||= window.tendrilSnippets.streamView.batch(render);
+  paint.schedule();
+}
 
 function add(record) {
   const data = record.data || {};
-  if (record.type === 'host') machines.set(data.source || record.producer, record);
+  if (record.type === 'host') machines.set(data.source ?? record.producer, record);
   else if (record.type === 'log') {
     logRows.push(record); if (logRows.length > 200) logRows.shift();
   } else if (record.type === 'collector_error') notice(`${data.source}: ${data.reason}. Check the collector’s input format and status.`);
@@ -76,7 +79,7 @@ function render() {
   renderMachines(); draw();
   if (logRows.length) {
     const run = $('run').value, selectedRun = run ? JSON.parse(run)[1] : null;
-    $('logs').replaceChildren(...logRows.filter(r => !run || (r.data.run || 'machine') === selectedRun).map(record => {
+    $('logs').replaceChildren(...logRows.filter(r => !run || String(r.data.run ?? 'machine') === selectedRun).map(record => {
       const row = element('p', undefined, 'logline');
       row.append(element('time', new Date(record.ts).toLocaleTimeString() + ' '), element('span', `[${record.data.source}] ${record.data.line ?? ''}`));
       return row;
