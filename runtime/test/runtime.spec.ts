@@ -404,7 +404,7 @@ test("capture and its semantic input survive offline reload as one transaction",
   expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
 });
 
-test("a lost upload response followed by reload reuses the blob and sends its input once", async ({ page }) => {
+test("a lost upload response followed by reload reuses the blob and accepts its input once", async ({ page }) => {
   const t = mock.create({ dropUploadResponses: 1 });
   await open(page, t);
   await page.evaluate(() => {
@@ -417,7 +417,10 @@ test("a lost upload response followed by reload reuses the blob and sends its in
   await page.waitForFunction(() => (window as any).tendril.connected);
   await mock.waitFor(() => mock.messages(t, "send").some((message) => message.data?.note === "The loose hinge"));
   expect(t.blobs.size).toBe(1);
-  expect(mock.messages(t, "send").filter((message) => message.data?.modality === "photo")).toHaveLength(1);
+  const sends = mock.messages(t, "send").filter((message) => message.data?.modality === "photo");
+  expect(new Set(sends.map(message => message.cid)).size).toBe(1);
+  expect(t.sendReceipts.size).toBe(1);
+  expect(t.seq).toBe(1);
   await expect.poll(() => page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
 });
 
