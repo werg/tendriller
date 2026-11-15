@@ -59,8 +59,7 @@ export function previewConfig(identity, template, databaseId, accountId) {
     d1_databases: [{ binding: "ACCOUNTS", database_name: identity.database,
       database_id: databaseId, migrations_dir: "migrations" }],
     r2_buckets: [{ binding: "FILES", bucket_name: identity.bucket }],
-    // Keep scheduled reconciliation in previews too, with isolated storage.
-    triggers: { crons: ["*/15 * * * *"] },
+    // Isolated branch previews must not consume the account-wide Cron Trigger\n    // quota (five on Workers Free). Explicitly clear schedules on retries.\n    // Production and staging retain their scheduled reconciliation.\n    triggers: { crons: [] },
     ratelimits: (template.ratelimits ?? []).map((limit, index) => ({
       ...limit, namespace_id: String((BigInt(`0x${identity.key}`) + 1024n) * 16n + BigInt(index)),
     })),
