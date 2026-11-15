@@ -1,8 +1,10 @@
 import { HttpError } from "../http";
+import { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "../../../contract/streams.mjs";
 
 export const MAX_STREAMS = 64;
 export const MAX_PRODUCERS = 32;
-export const MAX_STREAM_RECORD_BYTES = 64 * 1024;
+export const MAX_STREAM_RECORD_BYTES = STREAM_RECORD_BYTES;
+export const MAX_STREAM_SNAPSHOT_RECORD_BYTES = STREAM_SNAPSHOT_RECORD_BYTES;
 export const MAX_STREAM_BATCH_BYTES = 256 * 1024;
 export const MAX_STREAM_BYTES = 8 * 1024 * 1024;
 export const MAX_STREAM_RECORDS = 20_000;

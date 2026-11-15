@@ -6,7 +6,7 @@ import { mkdtemp, open, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSourceAdapter } from '../lib/stream-sources/index.mjs';
-import { createHostSource } from '../lib/stream-sources/host.mjs';
+import { createHostSource, sampleHost } from '../lib/stream-sources/host.mjs';
 import { createFileSource } from '../lib/stream-sources/file.mjs';
 import { createSshSource } from '../lib/stream-sources/ssh.mjs';
 import { Collector, emitHostSamples, validateConfig } from '../lib/stream-collector.mjs';
@@ -68,6 +68,42 @@ test('host adapters keep sampling counters per instance and report unavailable G
   assert.equal(second.health, 'gpu_unavailable');
   assert.equal(Object.hasOwn(second, 'checkpoint'), false);
   await adapter.close();
+});
+
+test('GPU sampling distinguishes real zeroes from absent, unsupported and malformed numeric fields', async () => {
+  const calls = [];
+  const { sample } = await sampleHost(undefined, { gpu: true }, { executeGpu: async (...args) => {
+    calls.push(args);
+    return { stdout: '0, 0, 0, 1024, 0\n1, 50.5, N/A, [Not Supported], \n2, , invalid, 1e400, [N/A]\n3, 10, 0.5, 2048, -2\n' };
+  } });
+  assert.equal(calls[0][0], 'nvidia-smi');
+  assert.deepEqual(calls[0][1], ['--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits']);
+  assert.equal(calls[0][2].timeout, 3000); assert.equal(calls[0][2].maxBuffer, 65536);
+  assert.equal(sample.gpu_status, 'available');
+  assert.deepEqual(sample.gpus[0], { index: 0, utilization_percent: 0, memory_used_bytes: 0, memory_total_bytes: 1024 ** 3, temperature_c: 0 });
+  assert.deepEqual(sample.gpus[1], { index: 1, utilization_percent: 50.5, memory_used_bytes: null, memory_total_bytes: null, temperature_c: null,
+    unavailable: { memory_used_bytes: 'not_available', memory_total_bytes: 'not_supported', temperature_c: 'not_reported' } });
+  assert.deepEqual(sample.gpus[2], { index: 2, utilization_percent: null, memory_used_bytes: null, memory_total_bytes: null, temperature_c: null,
+    unavailable: { utilization_percent: 'not_reported', memory_used_bytes: 'invalid_value', memory_total_bytes: 'invalid_value', temperature_c: 'not_available' } });
+  assert.equal(sample.gpus[3].memory_used_bytes, 0.5 * 1024 ** 2);
+  assert.equal(sample.gpus[3].temperature_c, -2);
+  assert.equal(Number.isFinite(sample.metrics.memory_total_bytes), true);
+});
+
+test('GPU command failure or absent devices leaves host measurements available without invented GPU numbers', async () => {
+  for (const [executeGpu, reason] of [
+    [async () => { throw Object.assign(Error('missing'), { code: 'ENOENT' }); }, 'query_failed'],
+    [async () => ({ stdout: '\n' }), 'no_devices_reported'],
+    [async () => ({ stdout: 'unexpected non-CSV output' }), 'query_failed'],
+  ]) {
+    const { sample } = await sampleHost(undefined, { gpu: true }, { executeGpu });
+    assert.equal(sample.gpu_status, 'unavailable');
+    assert.equal(sample.gpu_reason, reason);
+    assert.deepEqual(sample.gpus, []);
+    assert.equal(Number.isFinite(sample.metrics.memory_used_bytes), true);
+  }
+  const { sample } = await sampleHost(undefined, {}, { executeGpu: () => { throw Error('GPU sampling was not requested'); } });
+  assert.equal(Object.hasOwn(sample, 'gpu_status'), false);
 });
 
 test('file fingerprints belong to captured records when copytruncate happens immediately after a read', async t => {

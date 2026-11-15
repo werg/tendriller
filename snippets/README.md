@@ -81,6 +81,73 @@ The chart owns no network connection; the caller handles subscriptions, replay,
 retention gaps and cleanup. [The training dashboard](../examples/training-dashboard/)
 uses the same helper for training steps and timestamps.
 
+### Smoothing, logarithmic values and inspection
+
+These options are opt-in and can be passed at mount or in `update(series, options)`:
+
+| Option | Behavior |
+| --- | --- |
+| `emaAlpha: 0.2` | Draw an exponential moving average over a faint raw line. `alpha` weights the **current** sample: `alpha * y + (1 - alpha) * previous`. Values must be greater than 0 and at most 1; `null` disables smoothing. |
+| `yScale: 'log'` | Use a base-10 logarithmic y axis; the default is `'linear'`. Zero and negative values break the plotted line. Their raw values remain in the table, marked as not shown on the log scale. |
+| `crosshair: true` | Inspect all series at one x using the pointer or the keyboard sample slider. The legend shows the selected values, including raw and EMA values when smoothing is enabled. Escape clears inspection. |
+| `xDomain: [0, 100]` | Fix the x range to align several panels; `null` restores automatic bounds. Both endpoints must be finite and ordered. Samples outside the range are clipped. |
+| `onCursor: x => …` | Receive the selected numeric x, or `null` when a person clears inspection. Call a peer chart's `setCursor(x)` to synchronize it; the setter does not echo this callback. |
+
+EMA follows ascending x order in the original y units, before any logarithmic
+mapping. It is **sample weighted**, so irregular timestamps do not turn it into a
+time-based average. Missing values restart the average; on a log axis, nonpositive
+values do too. The oldest retained point seeds each continuous segment. Appends
+that evict old points recompute the bounded window, so its earlier smoothed values
+can change. No hidden history accumulates outside `maxPoints`. Returned
+`{series,samples,min,max}` statistics continue to describe the retained **raw**
+data. The y range includes those retained values that can be plotted, even when
+`xDomain` clips some of them horizontally. The values table adds an EMA column
+while preserving its 100-row limit.
+
+Pointer inspection snaps to the nearest observed x across the series (a tie picks
+the lower x); the slider traverses those same distinct x values. At that x, each
+series reports its **exact** sample or a dash. There is no interpolation or
+independent nearest-neighbor guess for sparse series. If one series contains
+duplicate x values, inspection uses its last input at that x; the table retains
+them all. `setCursor(x)` selects that exact coordinate without snapping, allowing
+peer panels to show missing samples honestly. Inspection controls retain focus
+across live updates. Formatters also apply to the inspector and remain plain text.
+
+### Several panels with one x axis
+
+Keep the grid and selected range in page code. Give equal-width panels the same
+`xDomain` and x units (for example, training steps **or** Unix milliseconds), then
+forward cursor changes. Each panel can have its own y scale and smoothing:
+
+```html
+<div class="metrics"><div id="loss"></div><div id="rate"></div></div>
+<style>.metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:24px; }</style>
+```
+
+```js
+const panels = [];
+const shared = {
+  xLabel: 'Step', xDomain: [0, 100], crosshair: true,
+  onCursor: x => panels.forEach(panel => panel.setCursor(x)),
+};
+const loss = tendrilSnippets.chart.mount('#loss', {
+  ...shared, title: 'Loss', yLabel: 'Loss', yScale: 'log', emaAlpha: 0.2,
+});
+const rate = tendrilSnippets.chart.mount('#rate', {
+  ...shared, title: 'Throughput', yLabel: 'Samples / second',
+});
+panels.push(loss, rate);
+loss.update([{ id: 'run-a', points: [{ x: 0, y: 2 }, { x: 50, y: 0.8 }, { x: 100, y: 0.3 }] }]);
+rate.update([{ id: 'run-a', points: [{ x: 0, y: 80 }, { x: 100, y: 95 }] }]);
+// At step 50, throughput shows a dash because it has no sample at that step.
+// On a new window, pass the same xDomain to both panels' update calls.
+// On removal: stop the subscriptions, then panels.forEach(panel => panel.destroy()).
+```
+
+This uses the existing numeric series API; charts do not choose a stream cursor,
+join different x units, or manage the grid. Batch live model updates with the
+helper below before repainting several panels.
+
 ## Efficient rendering and reload checkpoints
 
 Stream subscription callbacks run synchronously for each record in a replay

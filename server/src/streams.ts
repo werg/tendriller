@@ -16,7 +16,7 @@ export { canReadStream };
 export { streamInfo, createStream, readStream, pruneStreams } from "./streams/store";
 export { createProducer, listProducers, deleteProducer } from "./streams/producers";
 export { subscribeStream, unsubscribeStream } from "./streams/broker";
-export { MAX_STREAMS, MAX_PRODUCERS, MAX_STREAM_RECORD_BYTES, MAX_STREAM_BATCH_BYTES, MAX_STREAM_BYTES,
+export { MAX_STREAMS, MAX_PRODUCERS, MAX_STREAM_RECORD_BYTES, MAX_STREAM_SNAPSHOT_RECORD_BYTES, MAX_STREAM_BATCH_BYTES, MAX_STREAM_BYTES,
   MAX_STREAM_RECORDS, MAX_STREAM_REPLAY_BYTES } from "./streams/limits";
 
 export function listStreams(t: Tendril, actor: StreamActor = { kind: "agent", name: "agent" }): StreamInfo[] {
