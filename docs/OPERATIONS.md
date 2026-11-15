@@ -221,69 +221,64 @@ that stale deployment.
 **OAuth outage:** Keep creation paused if claims cannot complete. Check provider status and callback URLs. Restore only after both real sign-in paths pass.
 
 
-## Contract 2 release cutover
+## Contract 2 direct cutover (pre-release data discarded)
 
-Build and check the generic engine and the exact trusted composition before deployment. `npm run build:service` verifies `composition.lock.json`. Publish core SDK/runtime archives first, then contrib artifacts, and record the tested pairing.
+The initial contract 2 release is **not** a backwards-compatible migration. The
+simplest supported cutover replaces the service **at its existing production and
+staging URLs**. We keep the current Worker names, D1 account databases, R2 buckets,
+OAuth bindings and page domains, so there is no separate candidate domain,
+duplicate account setup, or data translator.
 
-Run `node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc`
-before deploying staging (use the selected config for production or a named
-deployment). This shared preparation step verifies local runtime file digests
-and requires the built manifest's dependencies to match `runtime/resources.mjs`.
-It downloads and hash-checks every declared resource, uploads them under
-`assets/<sha256>/<name>`, and retains the runtime files under
-`runtime/<content-id>/` in that config's FILES bucket. Every upload uses the same
-config and account. The immutable runtime manifest is uploaded last, after all
-of its files and dependencies. Any mismatch or failed upload stops deployment.
-Branch previews use the same preparation step, including for a fresh bucket.
-Old publication URLs remain backed by these objects after a deployment changes
-ASSETS. Do not delete an artifact still referenced by retained page publications.
+There is one necessary storage boundary: the old per-page Durable Object SQLite
+schema cannot safely be reused. The canonical Worker configurations now bind
+`TENDRIL` to a newly created `TendrilV2` class/namespace (migration
+`v3-contract2-new-pages`). The original namespace is no longer bound. Do not
+remove the schema-identity check or attempt to initialize contract 2 tables into
+the old namespace.
 
-Use fresh pre-release fixtures for contract 2. There are no schema translators, dual writers or old-client compatibility modes. All first-party examples must be rebuilt from the new contrib release.
+The one-time D1 migration `0010_contract2_discard_old_pages.sql` clears old
+page registrations, invitations and pending claims, and resets page quota
+reservations. **Old pages, drafts, commands, media associations, and workflows
+will not survive.** Sign-in accounts and sessions, audit logs, and moderation
+records are retained; old R2 bytes remain unreferenced rather than being
+blindly deleted. New page creation starts paused for an operator to open after
+service verification. Existing links to old pages will no longer work.
 
-The database initializer records its storage schema identity atomically. Existing tables with no matching identity cause startup to fail before schema or data writes. Deploy this redesign into a new Worker namespace and fresh D1/R2 resources; changing code on the original Worker does not create new Durable Object storage.
+### Execute the direct cutover
 
-To prepare an isolated named deployment, choose new service and page hostnames:
+1. Core SDK/runtime and contrib workflow artifacts must have their recorded
+   SHA-256 hashes verified in `composition.lock.json`. Build the generic core
+   and its selected composition, then pass `npm run check`, `npm run test:pair`
+   and the composed browser/host integration suite.
+2. The temporary one-time `deploy/contract2-direct` branch triggers the
+   existing **Public service** checks, followed by staging and production in
+   that order. Create it only from the *current tested master SHA*. Both deploy
+   jobs independently refuse to mutate resources if master has moved.
+   Normal deployments from master keep their `*_READY` and
+   `*_STORAGE_SCHEMA` guards. Remove this temporary branch permission from
+   `.github/workflows/service.yml` after verifying the cutover.
+3. Each environment applies the D1 migrations using its existing Wrangler
+   config, publishes the immutable runtime/resources under content-addressed
+   keys in its existing FILES bucket, deploys the Worker with the new Durable
+   Object namespace and runs `scripts/check-deployment.mjs` against its
+   canonical origin.
+4. Verify `/health`, `/api/service`, core runtime manifest, installed workflow
+   hash and an authenticated **new** page. Confirm page-creation mode and
+   explicitly open creation when the identity and authorization checks pass.
 
-```sh
-STAGING_PUBLIC_BASE=https://candidate.tendriller.dev \
-STAGING_PAGE_HOST_SUFFIX=--candidate \
-node scripts/provision.mjs staging --name tendriller-candidate --fresh
-```
+This is intentionally a one-time destructive pre-release cutover, not a
+legacy migration framework. Do not point a future release at a namespace with
+an incompatible schema; the authoritative schema guard remains mandatory.
 
-`--fresh` rejects configured resource names, reused origins, and any already-existing Worker, D1 database, or bucket before creating resources. It writes `server/wrangler.tendriller-candidate.jsonc` and leaves canonical configs unchanged. Configure DNS, certificates and OAuth callbacks for the selected origins, apply D1 migrations with this config, and install secrets with `wrangler secret put <NAME> --config server/wrangler.tendriller-candidate.jsonc`. Build the verified composition, publish its complete runtime and resource graph with that config, then deploy and run `scripts/check-deployment.mjs` against the candidate service origin. Only after checking the matched release and fresh fixtures should the canonical deployment configs/domains and schema declaration variables be switched. This process does not delete or transform the previous storage.
+### Branch previews are optional
 
-Branch previews are another isolated pre-release target. Their controller runs
-from the default branch, so the composition-aware controller and its explicit
-`preview/**` opt-in policy must be present there before the release cutover.
-Release branches such as `release/v0.2.0-rc.1` run **Public service** checks without
-automatically deploying a preview. The canonical staging/production jobs remain
-restricted to `master` and the matching storage-schema declarations.
+Live `preview/**` branches continue to provide isolated pre-release Workers
+and storage for smoke tests, and do not allocate additional account-wide cron
+triggers. They are not required for the direct canonical cutover. For other
+fresh deployments the `scripts/provision.mjs --fresh` tool remains available,
+but no new origins or resources are needed for the direct path above.
 
-For a matched pre-release preview:
-
-1. Publish the core release archives, then the contrib release archives. Verify
-   that the URLs and SHA-256 digests in `composition.lock.json` identify those
-   published bytes and that the selected core commit passes the composition
-   checks with that lock.
-2. Create a never-used `preview/<candidate>` branch from that core commit only
-   after both releases are available. For example, use `preview/contract-2-rc1`
-   if that name has never had a preview. Preview resource identity is derived
-   from the complete branch name and reused across pushes; an existing preview
-   name cannot establish fresh storage for an incompatible schema.
-3. Run **Public service** on the new branch if creating it did not trigger a push
-   run. Its successful push or manual run authorizes the default-branch controller
-   to build the locked composition, provision that branch's isolated resources,
-   publish the immutable runtime files into its bucket, and deploy the composed
-   service. The branch must still point to the tested commit. A manual **Live
-   branch previews** run on `master` can retry that same checked branch.
-4. Verify the reported preview commit and health checks, then configure dedicated
-   preview identity providers and run the authenticated page checks above before
-   opening creation. The new database starts with creation paused.
-
-The preview controller validates CI and the local composition; release URL
-availability is an operator check before opting into deployment. A source push
-alone does not prove that the matching release artifacts or service were
-published. Keep the earlier deployments and their storage intact during these
-fresh-fixture checks.
-
-Runtime resource selection lives in `runtime/resources.mjs`. The resource installer verifies its declared hashes and uploads to content-addressed keys in the existing FILES bucket. A publication snapshots its runtime-dependent features, so later releases cannot replace an open page's speech engine or model. Optional large resources download on first use and remain cached with each retained publication that declares them.
+Runtime resource selection lives in `runtime/resources.mjs`. The installer
+verifies SHA-256 hashes and uploads to immutable keys in the selected FILES
+bucket. Publication manifests pin their complete runtime and component asset
+sets, so an already-open contract 2 page keeps its matching assets.
