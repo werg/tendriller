@@ -1,4 +1,6 @@
 import type { WireContracts } from "./wire.mjs";
+export const STREAM_RECORD_BYTES: 65536;
+export const STREAM_SNAPSHOT_RECORD_BYTES: 196608;
 export type StreamInfo = WireContracts["streamInfo"];
 export type StreamCreate = WireContracts["streamCreate"];
 export type StreamInput = WireContracts["streamInput"];

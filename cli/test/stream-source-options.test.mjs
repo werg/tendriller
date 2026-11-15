@@ -4,9 +4,10 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createLineDecoder, lineRecord } from '../lib/stream-sources/records.mjs';
+import { createLineDecoder, lineRecord, recordFor } from '../lib/stream-sources/records.mjs';
 import { createCommandSource } from '../lib/stream-sources/command.mjs';
 import { Collector, readFileBatch, validateConfig } from '../lib/stream-collector.mjs';
+import { assertValid } from '../../contract/index.mjs';
 
 const api = 'https://tendriller.dev/api/t/aaaaaaaaaaaa', token = 'tp_' + 'a'.repeat(40);
 const base = { id: 'training', stream: 'training.metrics', durability: 'durable', interval_ms: 500, run: 'experiment' };
@@ -91,6 +92,138 @@ test('projection keeps distinct input runs and sources while collector diagnosti
   }) + '\n'))];
   assert.equal(oversized.type, 'collector_error');
   assert.deepEqual(oversized.data, { reason: 'record_too_large', source: base.id, run: base.run });
+});
+
+test('flatten validates explicit bounds and expands selected metric subtrees beyond 64 leaves', () => {
+  const config = flatten => validateConfig({ api, token, sources: [{ ...fileSource, flatten }] }, '/work');
+  for (const flatten of [null, true, false, [], {}, { max_fields: 0 }, { max_fields: 1025 }, { max_fields: '120' },
+    { max_fields: Infinity }, { max_fields: 1.5 }, { max_fields: 120, numeric_only: 'true' }, { max_fields: 120, typo: true }])
+    assert.throws(() => config(flatten), /flatten/);
+  assert.equal(config({ max_fields: 1024, numeric_only: false }).sources[0].flatten.max_fields, 1024);
+  const source = { ...base, fields: { behaviour: ['behaviour'], phase_s: ['phase_s'], gain: ['gain'] },
+    flatten: { max_fields: 120, numeric_only: true } };
+  const subtree = count => Object.fromEntries(Array.from({ length: count }, (_, i) => ['m' + i, i / 10]));
+  const data = { behaviour: subtree(70), phase_s: subtree(30), gain: subtree(20), debug: 'omit', source: 'worker-a', run: 'run-a' };
+  for (const wrap of [value => value, value => ({ ts: 123, type: 'training', data: value })]) {
+    const record = lineRecord(source, JSON.stringify(wrap(data)));
+    assert.equal(Object.keys(record.data).length, 122, 'the two original identity fields do not consume max_fields');
+    assert.equal(record.data['behaviour.m69'], 6.9);
+    assert.equal(record.data['phase_s.m29'], 2.9);
+    assert.equal(record.data['gain.m19'], 1.9);
+    assert.equal(record.data.debug, undefined);
+    assert.equal(record.data.source, 'worker-a');
+    assert.equal(record.data.run, 'run-a');
+  }
+  const second = lineRecord(source, JSON.stringify({ ...data, source: null, run: '' }));
+  assert.equal(second.data.source, null); assert.equal(second.data.run, '');
+  assert.equal(Object.keys(data.behaviour).length, 70, 'flattening does not mutate its input');
+});
+
+test('flatten escapes dotted paths deterministically, retains JSON leaves, and handles own prototype-named keys safely', () => {
+  const data = Object.fromEntries([
+    ['a', { b: 1 }], ['a.b', 2], ['a\\b', 3], ['', [4]], ['__proto__', 5], ['constructor', 6],
+    ['prototype', 7], ['\\constructor', 8], ['array', [null, true, '8', 9]], ['empty', {}], ['run', 'input-run'], ['source', false],
+  ]);
+  const source = { ...base, flatten: { max_fields: 12 } };
+  const record = lineRecord(source, JSON.stringify(data));
+  assertValid('streamInput', record);
+  const first = record.data;
+  const reordered = lineRecord(source, JSON.stringify(Object.fromEntries(Object.entries(data).reverse()))).data;
+  assert.deepEqual(first, reordered);
+  assert.deepEqual(Object.keys(first), Object.keys(reordered), 'input insertion order cannot change output order');
+  assert.equal(first['a.b'], 1);
+  assert.equal(first['a\\.b'], 2);
+  assert.equal(first['a\\\\b'], 3);
+  assert.equal(first['.0'], 4);
+  assert.equal(Object.getPrototypeOf(first), Object.prototype);
+  assert.equal(Object.hasOwn(first, '__proto__'), false);
+  assert.equal(first['\\__proto__'], 5);
+  assert.equal(first['\\constructor'], 6);
+  assert.equal(first['\\prototype'], 7);
+  assert.equal(first['\\\\constructor'], 8);
+  assert.deepEqual([first['array.0'], first['array.1'], first['array.2'], first['array.3']], [null, true, '8', 9]);
+  assert.equal(Object.hasOwn(first, 'empty'), false);
+  assert.equal(first.run, 'input-run'); assert.equal(first.source, false);
+  const numeric = recordFor({ ...source, flatten: { max_fields: 3, numeric_only: true } }, 'metrics',
+    { zero: 0, finite: 2.5, text: '3', flag: true, nil: null, infinity: Infinity, nan: NaN, nested: { negative: -1 } }).data;
+  assert.deepEqual(numeric, { finite: 2.5, 'nested.negative': -1, zero: 0, source: base.id, run: base.run });
+  assert.deepEqual(lineRecord(source, '7').data, { value: 7, source: base.id, run: base.run });
+});
+
+test('flatten rejects complete over-limit observations and preserves diagnostic reasons across file and stdout decoding', async t => {
+  const path = join(await directory(t), 'train.jsonl');
+  const source = { ...fileSource, path, fields: { metrics: ['metrics'] }, flatten: { max_fields: 1, numeric_only: true } };
+  const invalid = JSON.stringify({ source: 'input-worker', run: 'input-run', metrics: { a: 1, b: 2 } });
+  const valid = JSON.stringify({ metrics: { a: 3 } });
+  assert.throws(() => lineRecord(source, invalid), { code: 'flatten_too_many_fields' });
+  const lines = invalid + '\n' + valid + '\n';
+  await writeFile(path, lines);
+  const batch = await readFileBatch(source, null);
+  assert.equal(batch.records[0].type, 'collector_error');
+  assert.deepEqual(batch.records[0].data, { reason: 'flatten_too_many_fields', offset: 0, source: base.id, run: base.run });
+  assert.deepEqual(batch.records[1].data, { 'metrics.a': 3, source: base.id, run: base.run });
+  assert.equal(batch.checkpoint.offset, Buffer.byteLength(lines));
+  const states = [], decoder = createLineDecoder(source, state => states.push(state));
+  const decoded = [...decoder.push(Buffer.from(lines))];
+  assert.deepEqual(states, ['flatten_too_many_fields']);
+  assert.deepEqual(decoded[0].data, { reason: 'flatten_too_many_fields', source: base.id, run: base.run });
+  assert.deepEqual(decoded[1].data, batch.records[1].data);
+  assert.equal(lineRecord(source, 'not JSON').data.reason, 'invalid_json');
+  assert.deepEqual(lineRecord(source, '{"type":"collector_error","data":{"hidden":"not selected"}}').data,
+    { source: base.id, run: base.run }, 'input record types cannot bypass flattening or projection');
+  let nested = 1;
+  for (let depth = 0; depth < 16; depth++) nested = { x: nested };
+  const deepSource = { ...base, flatten: { max_fields: 1 } };
+  assert.equal(lineRecord(deepSource, JSON.stringify(nested)).data[Array(16).fill('x').join('.')], 1);
+  assert.throws(() => lineRecord(deepSource, JSON.stringify({ x: nested })), { code: 'flatten_too_deep' });
+  const depthDecoder = createLineDecoder(deepSource);
+  assert.equal([...depthDecoder.push(Buffer.from(JSON.stringify({ x: nested }) + '\n'))][0].data.reason, 'flatten_too_deep');
+  const sizeDecoder = createLineDecoder({ ...deepSource, max_line_bytes: 262144 });
+  assert.equal([...sizeDecoder.push(Buffer.from(JSON.stringify({ text: 'x'.repeat(60000) }) + '\n'))][0].data.reason, 'record_too_large');
+  const local = createCommandSource(command('console.log(JSON.stringify({a:1,b:2}))', { flatten: { max_fields: 1 } }));
+  try { await assert.rejects(local.read({}), { code: 'flatten_too_many_fields' }); }
+  finally { await local.close(); }
+});
+
+test('larger durable snapshots require an explicit output limit and upload one complete record per bounded batch', async t => {
+  const root = await directory(t);
+  const source = { ...fileSource, path: join(root, 'snapshots.jsonl'), max_line_bytes: 262144, max_record_bytes: 196608 };
+  const configFor = value => validateConfig({ api, token, spool_dir: join(root, 'spool'), sources: [value] });
+  for (const max_record_bytes of [1023, 196609, '196608', NaN, Infinity, 1.5])
+    assert.throws(() => configFor({ ...source, max_record_bytes }), /max_record_bytes/);
+  assert.throws(() => configFor({ ...source, type: 'host', durability: 'ephemeral' }), /durable/);
+  const config = configFor(source);
+  const input = JSON.stringify({ type: 'table', data: { rows: [{ id: 1, text: 'x'.repeat(180000) }] } });
+  assert.throws(() => lineRecord({ ...source, max_record_bytes: undefined }, input), { code: 'record_too_large' });
+  const records = [lineRecord(source, input), lineRecord(source, input)];
+  assert.ok(Buffer.byteLength(JSON.stringify(records[0])) > 128 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(records[0])) <= 196608);
+  await writeFile(source.path, input + '\n');
+  assert.deepEqual((await readFileBatch(source, null)).records[0].data, records[0].data);
+  const uploads = [];
+  const collector = await Collector.open(config, {
+    status() {},
+    fetch: async (_url, options) => {
+      assert.ok(Buffer.byteLength(options.body) < 256 * 1024);
+      const { records: posted } = JSON.parse(options.body);
+      assert.equal(posted.length, 1, 'a snapshot above the preferred batch size still uploads whole and alone');
+      uploads.push(posted[0].id);
+      return Response.json({ records: posted.map(record => ({ ...record, stream: source.stream })), durability: 'durable' });
+    },
+  });
+  try {
+    await collector.accept(config.sources[0], records);
+    assert.equal(collector.spool.size, 2);
+    assert.equal(await collector.flushOnce(), true);
+    assert.equal(collector.spool.size, 1);
+    assert.equal(await collector.flushOnce(), true);
+    assert.equal(collector.spool.size, 0);
+    assert.deepEqual(uploads, records.map(record => record.id));
+  } finally { await collector.stop(); }
+  const decoder = createLineDecoder(source);
+  const [oversized] = [...decoder.push(Buffer.from(JSON.stringify({ text: 'x'.repeat(196608) }) + '\n'))];
+  assert.equal(oversized.type, 'collector_error');
+  assert.equal(oversized.data.reason, 'record_too_large');
 });
 
 test('wide JSONL is projected before the record limit and checkpoints survive partial large lines', async t => {

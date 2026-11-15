@@ -5,6 +5,9 @@ let follow = true, paint;
 const element = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; };
 const number = value => typeof value === 'number' && Number.isFinite(value);
 const format = value => number(value) ? value.toLocaleString(undefined, { maximumSignificantDigits: 4 }) : '—';
+const gib = value => number(value) ? format(value / 2 ** 30) : '—';
+const gpuFields = { utilization_percent: 'utilization', memory_used_bytes: 'used memory', memory_total_bytes: 'total memory', temperature_c: 'temperature' };
+const unavailable = { not_available: 'not available (N/A)', not_supported: 'not supported', not_reported: 'not reported', invalid_value: 'invalid reading' };
 const key = sourceKey;
 function notice(text) { $('notice').hidden = false; $('notice').textContent = text; }
 function connection() { $('connection').textContent = t.connected ? 'Connected' : 'Reconnecting'; $('connection').classList.toggle('live', t.connected); }
@@ -42,11 +45,16 @@ function renderMachines() {
     title.append(element('span', data.host || data.source), element('span', age > 15 ? `${age}s old` : 'Live', age > 15 ? 'stale' : 'muted'));
     card.append(title, element('p', data.source, 'muted'));
     const stats = element('div', undefined, 'stats'), m = data.metrics || {};
-    for (const [label, value] of [['CPU', `${format(m.cpu_percent)}%`], ['RAM', `${format(m.memory_used_bytes / 2 ** 30)} / ${format(m.memory_total_bytes / 2 ** 30)} GiB`]]) {
+    for (const [label, value] of [['CPU', `${format(m.cpu_percent)}%`], ['RAM', `${gib(m.memory_used_bytes)} / ${gib(m.memory_total_bytes)} GiB`]]) {
       const cell = element('div'); cell.append(element('div', value, 'value'), element('div', label, 'label')); stats.append(cell);
     }
     card.append(stats);
-    for (const gpu of data.gpus || []) card.append(element('p', `GPU ${gpu.index} · ${format(gpu.utilization_percent)}% · ${format(gpu.memory_used_bytes / 2 ** 30)} / ${format(gpu.memory_total_bytes / 2 ** 30)} GiB · ${format(gpu.temperature_c)} °C`, 'gpu'));
+    for (const gpu of data.gpus || []) {
+      card.append(element('p', `GPU ${gpu.index} · ${format(gpu.utilization_percent)}% · ${gib(gpu.memory_used_bytes)} / ${gib(gpu.memory_total_bytes)} GiB · ${format(gpu.temperature_c)} °C`, 'gpu'));
+      const reasons = Object.entries(gpuFields).filter(([field]) => !number(gpu[field]) && gpu.unavailable?.[field])
+        .map(([field, label]) => `${label}: ${unavailable[gpu.unavailable[field]] || 'unavailable'}`);
+      if (reasons.length) card.append(element('p', `GPU ${gpu.index} ${reasons.join('; ')}.`, 'gpu muted'));
+    }
     if (data.gpu_status === 'unavailable') card.append(element('p', 'GPU telemetry unavailable on this source.', 'gpu muted'));
     return card;
   });
@@ -57,7 +65,7 @@ let chart;
 function draw() {
   const metric = $('metric').value, run = $('run').value;
   const { axis, groups } = chartSeries(records, metric, run);
-  chart ||= window.tendrilSnippets.chart.mount('#chart', { title: 'Metric history', maxPoints: 2000 });
+  chart ||= window.tendrilSnippets.chart.mount('#chart', { title: 'Metric history', maxPoints: 2000, crosshair: true });
   const result = chart.update(groups.slice(0, 24).map(group => ({ id: group.key, label: group.label, points: group.points })), {
     title: metric, xLabel: axis === 'step' ? 'Step' : 'Time', yLabel: metric,
     xFormat: axis === 'step' ? format : value => new Date(value).toLocaleTimeString(), yFormat: format,

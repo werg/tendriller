@@ -1,6 +1,6 @@
 // Small fixture transport for custom streams. The browser still runs its real
 // stream client; production storage, credentials and quotas are not simulated.
-import { assertValid } from "../../contract/index.mjs";
+import { assertValid, STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "../../contract/index.mjs";
 
 const fail = (status, code, message) => { throw Object.assign(new Error(message), { status, code }); };
 const bytes = value => Buffer.byteLength(JSON.stringify(value));
@@ -35,7 +35,9 @@ export function createStreamFixtures(definitions = [], { historyPage, role, send
     const stream = get(name, false);
     if (!Array.isArray(inputs) || inputs.length > 10000) fail(400, "bad_request", "Fixture records must be an array of at most 10000 inputs");
     const records = inputs.map(input => structuredClone(assertValid("streamInput", input)));
-    if (records.some(record => bytes(record) > 64 * 1024)) fail(413, "too_large", "Fixture records must not exceed 64 KiB");
+    const recordLimit = stream.info.durability === "durable" && stream.info.max_records === 1
+      ? STREAM_SNAPSHOT_RECORD_BYTES : STREAM_RECORD_BYTES;
+    if (records.some(record => bytes(record) > recordLimit)) fail(413, "too_large", `Fixture records must not exceed ${recordLimit / 1024} KiB`);
     // Validate the whole step before changing anything. Retained IDs have the
     // same retry semantics as a single fixture producer on the real service.
     const known = new Map((stream.info.durability === "durable" ? retained(stream) : []).map(record => [record.id, record]));

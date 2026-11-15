@@ -74,6 +74,74 @@ the collector's configuration. It does not print either credential. Set
 `TENDRILLER_DASHBOARD_DIR` to use a different private directory or
 `TENDRILLER_SERVICE_BASE` for a self-hosted service.
 
+## Initialize a collector for an existing page
+
+The same downloaded helper can provision a collector for any existing page,
+including an interactive page that also has an agent conversation. Save its
+creation response (`api` and administrative `token`) in a private `page.json`,
+then describe the streams and their sources together in `streams.json`:
+
+```json
+{
+  "producer": "workstation-a",
+  "spool_dir": "./spool",
+  "streams": [
+    { "name": "machine", "durability": "ephemeral" },
+    { "name": "metrics", "durability": "durable" },
+    { "name": "table", "durability": "durable", "max_records": 1 }
+  ],
+  "sources": [
+    { "id": "host", "type": "host", "stream": "machine", "gpu": true },
+    { "id": "training", "type": "jsonl", "stream": "metrics", "path": "./metrics.jsonl" },
+    {
+      "id": "table", "type": "command", "stream": "table",
+      "command": ["python3", "snapshot.py"], "cwd": ".",
+      "max_line_bytes": 1048576, "interval_ms": 30000
+    }
+  ]
+}
+```
+
+```sh
+node ./tendril-stream.mjs init --page ./page.json --streams ./streams.json --out ./private/collector.json
+node ./tendril-stream.mjs ./private/collector.json
+```
+
+`init` validates the whole spec and existing resources before creating missing
+streams and one named, scoped producer. It never creates a page or starts source
+commands. Each stream uses the public `streamCreate` fields; each source uses
+the collector options below. All declared streams must have a source, and all
+sources must reference a declared stream. Source durability is derived from that
+definition; an explicit conflicting value fails. The spec also accepts the
+ordinary `max_spool_bytes` option. File paths and command `cwd` resolve relative
+to the spec; `spool_dir` resolves relative to the output configuration.
+
+Streams default to owner readers, with durable retention of 10,000 records and
+86,400 seconds. An existing stream is reused only if its readers, durability and
+both retention limits match exactly. A durable stream with `max_records:1`
+automatically gives its sources a 192 KiB `max_record_bytes` limit; other streams
+use 48 KiB and reject a larger configured limit. These limits include the record
+envelope. Large JSON lines still require an explicit `max_line_bytes`, as above.
+Source options such as field selection and flattening apply before the record
+limit is checked.
+
+The output path must be unused. The helper saves the producer credential
+atomically with mode `0600` and prints only a summary with the configuration
+path, producer name, and created/reused stream names. The administrative page
+token stays in the input handle. An occupied producer name fails without
+revocation or rotation, because its original credential cannot be retrieved.
+Use its saved configuration or deliberately choose a new producer name and
+output file. The dashboard example's `page.json` wraps the creation response
+under `handle`; extract that object into a separate private file to use it here.
+
+Provisioning uses separate API requests. A failed or lost response can leave
+created resources; the helper reports partial setup and does not claim rollback.
+If saving the final path fails after receiving a credential, it names a private
+recovery file and states whether writing it completed. Recover that configuration
+locally before retrying; a lost creation response may have created a producer
+whose credential was never received. Existing matching streams can be reused,
+but no existing file, stream policy or producer is silently replaced.
+
 ## Training records
 
 Have the training job append and flush JSON lines to its normal metrics file:
@@ -129,11 +197,64 @@ SSH, command, and host sources.
 
 There can be 1–64 selected fields, each with at most 16 path segments. Input lines
 default to 32 KiB. Set `max_line_bytes` from 1 KiB to 1 MiB when wider input is
-expected. The selected record, including its envelope, must still fit the
-collector's 48 KiB upload limit. Increasing the input limit does not increase
-server record or storage quotas. Omit `fields` to preserve the existing complete
-record behavior. Collector-generated diagnostics retain their reason and the
-configured source/run defaults even when field selection is configured.
+expected. The output record, including its envelope, defaults to a 48 KiB limit.
+Increasing the input limit does not increase output or storage limits. Larger
+whole-table snapshots can set `max_record_bytes` explicitly as described below.
+Omit both `fields` and `flatten` to preserve the existing complete record behavior.
+Collector-generated diagnostics retain their reason and configured source/run
+defaults; they bypass field selection, flattening, and a custom output limit.
+
+### Flatten selected metric subtrees
+
+For logs with many related metrics, select entire subtrees and flatten their
+leaves instead of listing every metric path:
+
+```json
+{
+  "id": "training-metrics",
+  "type": "jsonl",
+  "path": "/work/run/train.jsonl",
+  "stream": "training.metrics",
+  "durability": "durable",
+  "max_line_bytes": 1048576,
+  "fields": {
+    "step": ["step"],
+    "behaviour": ["behaviour"],
+    "phase_s": ["phase_s"],
+    "gain": ["gain"]
+  },
+  "flatten": { "max_fields": 120, "numeric_only": true }
+}
+```
+
+`flatten` runs after `fields`; omit `fields` to flatten the whole input payload.
+It walks own properties only and emits scalar leaves under dotted keys. Array
+indexes become path segments, so a nested value at `["layers", 0, "gain"]` becomes
+`layers.0.gain`. Empty objects and arrays contribute no leaves. A scalar input
+uses the key `value`. Keys are visited in lexical order.
+
+Literal periods and backslashes in a segment are escaped with a backslash.
+The nested path `["train", "loss"]` becomes `train.loss`, while the single literal
+key `["train.loss"]` becomes `train\.loss`. A literal backslash is doubled.
+The reserved prototype segments `__proto__`, `constructor`, and `prototype` are
+prefixed with a backslash: `constructor` becomes `\constructor`, while a literal
+`\constructor` becomes `\\constructor`. These names remain valid stream data.
+This keeps distinct paths distinct; output keys are literal JSON property names,
+not expressions to evaluate.
+
+`numeric_only:true` emits only finite JSON numbers. It does not convert strings,
+booleans, or `null` into numbers. Omit it or set it to `false` to retain all scalar
+JSON types. The original `source` and `run` values are always carried through
+unchanged and are excluded from both flattening and the leaf count.
+
+`max_fields` is required and must be 1–1024. This bound applies to the expanded
+leaves, including `step` and every metric selected from the three subtrees, so
+the example can select more than 64 metrics without listing their individual paths.
+Output paths may contain at most 16 segments. Exceeding either bound rejects the
+whole observation with `flatten_too_many_fields` or `flatten_too_deep`; metrics
+are never silently truncated. Files and SSH emit a `collector_error` record and
+can continue with the next line; a local command rejects that invocation.
+The final serialized record must also fit its output byte limit.
 
 ## Configuration
 
@@ -176,6 +297,47 @@ until a second sample establishes an interval. Optional GPU sampling invokes
 driver/tool reports `gpu_status:"unavailable"`; CPU and RAM collection continues.
 This initial adapter does not collect per-process, disk, or network counters.
 
+GPU fields retain actual zero readings, but unavailable measurements remain
+`null`, including memory counters. An optional per-GPU `unavailable` object gives
+the reason for each missing field:
+
+```json
+{
+  "index": 0,
+  "utilization_percent": 42,
+  "memory_used_bytes": null,
+  "memory_total_bytes": null,
+  "temperature_c": 61,
+  "unavailable": {
+    "memory_used_bytes": "not_available",
+    "memory_total_bytes": "not_available"
+  }
+}
+```
+
+Reasons are `not_available` for `N/A`, `not_supported` for an explicit
+`[Not Supported]`, `not_reported` for an empty field, or `invalid_value` for
+malformed/nonfinite numeric output. `gpu_status:"available"` means the query
+returned GPU rows; individual fields can still be unavailable. Empty output
+reports `gpu_reason:"no_devices_reported"`; a failed query reports
+`gpu_reason:"query_failed"`.
+
+Availability depends on the device, driver, and environment. The
+[NVIDIA System Management Interface manual](https://docs.nvidia.com/deploy/nvidia-smi/index.html)
+documents unsupported fields as `N/A` and explains that OS memory accounting can
+affect reported GPU memory on NUMA systems. An absent counter does not identify
+a shared/unified-memory architecture. Host RAM remains a separate measurement.
+Consumers should check for `null` before converting bytes to GiB.
+
+On known unified-memory hardware such as
+[DGX Spark](https://docs.nvidia.com/dgx/dgx-spark/known-issues.html), the GPU shares
+system RAM and has no separate dedicated framebuffer total to add to RAM.
+NVIDIA documents an unsupported GPU memory-usage counter on these systems.
+Show that counter as unavailable, with its reason, and explain that GPU memory
+is part of system RAM; the host RAM measurement is not GPU-only usage. The
+training dashboard preserves `null` through unit conversion and displays the
+reported reason instead of a misleading `0 GiB`.
+
 ## Periodic local commands and table snapshots
 
 Use a `command` source for an existing local program that reports data, such as
@@ -192,6 +354,7 @@ a process inventory, disk status, job queue, or experiment summary:
   "stream": "machine.processes",
   "durability": "durable",
   "max_line_bytes": 262144,
+  "max_record_bytes": 196608,
   "fields": {"processes": ["processes"]}
 }
 ```
@@ -238,6 +401,15 @@ current rows in each record, and use a separate stream per independent snapshot.
 Use an ephemeral stream when only currently connected subscribers need the
 table. Its next snapshot will populate the view; it has no retained initial value.
 
+Larger whole-table snapshots can use `max_record_bytes` from 1 KiB to 192 KiB
+(196608 bytes); the default remains 48 KiB. Values above 48 KiB require a durable
+source, and server records above 64 KiB are accepted only by a custom durable
+stream configured with `max_records:1`. Set `max_line_bytes` separately to fit
+the input JSON. The limit includes the collector's record envelope and metadata.
+One larger snapshot is uploaded alone within the unchanged 256 KiB batch limit;
+normal stream limits and aggregate retention quotas still apply. Oversized
+observations fail explicitly rather than publishing a partial table.
+
 The executable and every argument are passed directly to the operating system;
 there is no implicit local shell. Pipes, redirects, and variable expansion are
 literal arguments. `cwd` is optional and, like file paths, resolves relative to
@@ -278,8 +450,8 @@ machine and add:
 `--sample` emits JSONL to stdout and uses no Tendriller credential on the remote
 machine. The main collector adds the source identity and publishes it through
 its local producer token. A command can instead emit training JSONL, or set
-`format:"log"` for text lines. The same `fields` projection and `max_line_bytes`
-options apply. SSH is one live session, while a local `command` is one finite
+`format:"log"` for text lines. The same `fields`, `flatten`, `max_line_bytes`, and
+`max_record_bytes` options apply. SSH is one live session, while a local `command` is one finite
 observation per interval. `port` is optional. Use an SSH config alias for
 ProxyJump or identity settings.
 
@@ -403,9 +575,10 @@ Tests: `node --test cli/test/stream-collector.test.mjs` exercises lost
 acknowledgements/restart, bounded atomic checkpoints, ephemeral nonpersistence,
 UTF-8 and rotation, SSH argument safety, lock ownership, invalid acknowledgements,
 and process shutdown. `node --test cli/test/stream-sources.test.mjs` covers adapter
-capabilities, file resume, host sampling state, bounded SSH input and cancellation,
+capabilities, file resume, host sampling state and GPU availability, bounded SSH input and cancellation,
 and live-input backpressure. `node --test cli/test/stream-source-options.test.mjs`
-covers large-line projection, literal field paths, split UTF-8, command argument
-boundaries, finite output/timeout/cancellation, and concurrent source scheduling
-with durable recovery. Adapter tests use a fake SSH child and host sampler, plus
+covers large-line projection, bounded subtree flattening and path escaping,
+larger snapshot uploads, split UTF-8, command argument boundaries,
+finite output/timeout/cancellation, and concurrent source scheduling with durable
+recovery. Adapter tests use a fake SSH child and host sampler, plus
 small local Node commands; they do not contact a real GPU or SSH host.

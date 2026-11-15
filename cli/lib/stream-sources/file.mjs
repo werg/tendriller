@@ -1,6 +1,6 @@
 import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { lineLimit, lineRecord, errorRecord } from './records.mjs';
+import { lineLimit, lineRecord, errorRecord, recordErrorReason } from './records.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const capabilities = Object.freeze({ mode: 'poll', replay: 'retained-file', checkpoint: true });
@@ -42,7 +42,7 @@ export async function readFileBatch(source, checkpoint, maxRecords = 100, { open
           const line = buffer.subarray(start, newline).toString('utf8').replace(/\r$/, '');
           if (line.trim()) {
             try { records.push(lineRecord(source, line)); }
-            catch { records.push(errorRecord(source, 'record_too_large', { offset: offset + start })); }
+            catch (error) { records.push(errorRecord(source, recordErrorReason(error), { offset: offset + start })); }
           }
         }
       }

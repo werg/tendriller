@@ -115,3 +115,23 @@ test("fixture records retain retry IDs and reject malformed steps without corrup
   assert.throws(() => f.server.preview.streams.feed([{ name: "metrics", records: [input("b", 2)], typo: true }]));
   assert.throws(() => f.server.preview.streams.feed([{ name: "missing", records: [input("a", 1)] }]), { code: "not_found" });
 });
+
+test("preview retains and replays one larger snapshot with the production record bounds", async t => {
+  const f = await setup(t, { streams: [
+    { name: "snapshot", durability: "durable", max_records: 1 },
+    { name: "history", durability: "durable", max_records: 2 },
+    { name: "live", durability: "ephemeral" },
+  ] });
+  const large = input("large", "x".repeat(180 * 1024));
+  f.server.preview.streams.feed([{ name: "snapshot", records: [large] }]);
+  const live = await socket(f.base);
+  const replay = await live.call({ t: "stream_subscribe", stream: "snapshot", after: 0 });
+  assert.equal(replay.batch.records[0].data.value, large.data.value);
+  for (const name of ["history", "live"]) assert.throws(() => f.server.preview.streams.feed([{ name, records: [large] }]), { code: "too_large" });
+  assert.throws(() => f.server.preview.streams.feed([{ name: "snapshot", records: [input("over", "x".repeat(192 * 1024))] }]), { code: "too_large" });
+  assert.equal((await f.get("/snapshot/latest")).body.cursor, 1);
+  f.server.preview.streams.feed([{ name: "snapshot", records: [input("new", "current")] }]);
+  const retained = (await f.get("/snapshot/records?after=0")).body;
+  assert.equal(retained.records.length, 1);
+  assert.equal(retained.records[0].data.value, "current");
+});

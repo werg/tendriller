@@ -5,7 +5,7 @@ import type { Tendril } from "../tendril";
 import { HttpError } from "../http";
 import { BUILTIN_STREAMS, legacyTable, legacyHistorySource, renderBuiltinRecord } from "./adapters";
 import { readHistory, type HistorySource } from "./history";
-import { MAX_STREAMS, MAX_STREAM_RECORD_BYTES, MAX_STREAM_BATCH_BYTES, MAX_STREAM_BYTES, MAX_STREAM_RECORDS,
+import { MAX_STREAMS, MAX_STREAM_RECORD_BYTES, MAX_STREAM_SNAPSHOT_RECORD_BYTES, MAX_STREAM_BATCH_BYTES, MAX_STREAM_BYTES, MAX_STREAM_RECORDS,
   MAX_STREAM_REPLAY_BYTES, STREAM_NAME_PATTERN, streamCursor, jsonBytes } from "./limits";
 
 type StreamStoreContext = Pick<Tendril, "db" | "now" | "transaction">;
@@ -147,8 +147,10 @@ export function appendToStore(t: StreamStoreContext, name: string, value: unknow
   const body = assertValid("streamAppend", value);
   const size = jsonBytes(body);
   if (size > MAX_STREAM_BATCH_BYTES) throw new HttpError(413, "too_large", "Stream batch exceeds 256 KiB");
-  for (const record of body.records) if (jsonBytes(record) > MAX_STREAM_RECORD_BYTES)
-    throw new HttpError(413, "too_large", "Stream record exceeds 64 KiB");
+  const recordLimit = info.durability === "durable" && info.max_records === 1
+    ? MAX_STREAM_SNAPSHOT_RECORD_BYTES : MAX_STREAM_RECORD_BYTES;
+  for (const record of body.records) if (jsonBytes(record) > recordLimit)
+    throw new HttpError(413, "too_large", `Stream record exceeds ${recordLimit / 1024} KiB`);
   chargeRate(t, producer, size);
   const receivedAt = t.now(), fresh: StreamRecord[] = [];
   const result = t.transaction(() => {

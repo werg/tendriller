@@ -1,4 +1,9 @@
 // Transport-independent envelopes. Durability belongs to the stream, not its payload.
+// UTF-8 bytes of one producer input, before the server adds its record envelope.
+// A single retained snapshot can be larger without expanding the batch or page quota.
+export const STREAM_RECORD_BYTES = 64 * 1024;
+export const STREAM_SNAPSHOT_RECORD_BYTES = 192 * 1024;
+
 const integer = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const nullableInteger = { anyOf: [integer, { type: "null" }] };
 const object = (properties, required = [], additionalProperties = false) => ({ type: "object", properties, required, additionalProperties });

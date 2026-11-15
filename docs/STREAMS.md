@@ -148,6 +148,36 @@ lower boundary, high-water sequence, and any missing history. The cursor is
 the last returned sequence, not an implicit acknowledgement. Ephemeral reads
 fail with `not_replayable` instead of returning misleading empty history.
 
+## Optional event and alert convention
+
+An operations feed can use ordinary durable records with `type: "event"` and
+three display fields in `data`. This is an optional application convention, not
+a new stream kind or a schema enforced by the transport:
+
+```json
+{
+  "id": "run-42:checkpoint-100",
+  "ts": 1794744000000,
+  "type": "event",
+  "data": {
+    "kind": "checkpoint.saved",
+    "level": "info",
+    "text": "Saved checkpoint at step 100",
+    "run": "run-42",
+    "step": 100
+  }
+}
+```
+
+`kind` is a stable category for filtering; `level` is `info`, `warning` or `error`;
+`text` is the human-readable message. Extra context stays in ordinary data fields.
+Use the envelope's `ts`, `id` and `seq` for time, retry identity and ordering.
+A feed renderer can label the severity and category, insert `text` with
+`textContent`, and keep a bounded list of rows. Preserve unknown categories and
+display unknown severity neutrally. Even an `error` event is data: custom streams
+do not wake the agent or send a notification automatically. Use the existing
+conversation/notification APIs when that behavior is intended.
+
 ## Removing bad retained data
 
 An agent can discard records through an explicit sequence with
@@ -253,6 +283,20 @@ Use one stream per independently updated source, or combine sources in one
 producer. Retention counts records across the whole stream, not per producer/key.
 This does not add a new stream kind or promise keyed merge semantics.
 
+Custom durable streams with `max_records: 1` accept **one input record up to
+192 KiB**, measured as UTF-8 JSON including `id`, `ts`, `type` and `data`.
+All other custom streams retain the 64 KiB input-record bound. The 256 KiB append
+batch limit and total retained-storage allowance still apply. Replacement is
+atomic: an invalid or over-quota append leaves the previous snapshot available.
+Send large snapshots one per request. The collector normally emits at most
+48 KiB per record; its `init` command selects the larger output bound for these
+streams. Manual configurations need `max_record_bytes: 196608`, and JSONL input
+may also need a larger `max_line_bytes`; see [collector limits](COLLECTOR.md).
+
+Above this bound, reduce the snapshot, split genuinely independent tables into
+their own streams, or have the agent publish an artifact and stream its reference.
+`latest()` returns one complete record; it does not assemble multipart records.
+
 `GET A/streams/<name>/latest` returns `{stream, durability:"durable", record, cursor}`.
 `record` is the newest retained record or `null` when empty/expired. `cursor` is
 the stream's high-water sequence, including when its payload has expired.
@@ -305,11 +349,40 @@ bundle, and provision streams and producers for that destination.
 
 The custom stream allowance is separate from file/blob storage: 8 MiB on a
 claimed tendril (1 MiB unclaimed), with at most 20,000 retained records across
-all custom streams. A record is at most 64 KiB; an append request is at most
-256 KiB and 100 records. Reads return at most 500 records or 512 KiB, so paginate
+all custom streams. An input record is at most 64 KiB, or 192 KiB for a custom
+durable stream with `max_records: 1`; an append request is at most 256 KiB and
+100 records. Reads return at most 500 records or 512 KiB, so paginate
 using their returned cursor even when fewer than the requested number arrive.
 There are at most 64 custom streams, 32 producers, and 16 subscriptions per
 socket. Ingestion is limited per principal and across the tendril.
+
+### Size the retained window before collecting
+
+Estimate each durable stream, then add the totals across runs and streams:
+
+```text
+retained records = samples per run × retained runs
+retained bytes   ≈ budgeted bytes per record × samples per run × retained runs
+```
+
+Measure representative records after projection/flattening, including the
+server envelope, not just their `data`: in Node,
+`Buffer.byteLength(JSON.stringify(record), 'utf8')`. Storage also accounts for
+the producer identity used for deduplication, so allow for that overhead and
+variation between records. Budgeting 500 bytes per record for 3,000 steps across
+three runs is 4,500,000 bytes (about 4.29 MiB) and 9,000 records, before headroom
+and other streams. At six runs it exceeds 8 MiB even though 18,000 records still
+fit the count budget. A single stream's `max_records` can be at most 10,000;
+that setting counts all runs together. `max_age_seconds` can shorten the window
+further. Leave room for logs, event feeds and current snapshots too.
+
+If the estimate is too large, select fewer fields, sample less often, retain
+fewer runs, or aggregate at the source before appending. For example, emit one
+record per 100 training steps with the window's first/last step, count and each
+metric's min/max/mean/last; keep checkpoint and failure events separately.
+Preserve raw logs in your artifact storage when full history matters. Smoothing
+or dropping points in a chart changes the display only and saves no server
+retention. There is no automatic server-side downsampling.
 
 Backpressure is explicit: a full durable spool
 or rejected append must report its status rather than silently claiming data

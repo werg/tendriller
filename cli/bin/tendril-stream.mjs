@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 // Machine telemetry runs independently of any conversational agent session.
 import { Collector, emitHostSamples, parseSampleArguments, readConfig } from '../lib/stream-collector.mjs';
+import { INIT_USAGE, initializeCollector, parseInitArguments } from '../lib/stream-init.mjs';
+
+const usage = `Usage: tendril-stream <private-config.json> | tendril-stream --sample [interval_ms] [--gpu]\n       ${INIT_USAGE}`;
 
 try {
-  if (process.argv[2] === '--sample') {
+  if (process.argv[2] === '--help' || process.argv[2] === 'init' && process.argv[3] === '--help' && process.argv.length === 4) {
+    process.stdout.write(usage + '\n');
+  } else if (process.argv[2] === 'init') {
+    const result = await initializeCollector(parseInitArguments(process.argv.slice(3)));
+    process.stdout.write(JSON.stringify(result) + '\n');
+  } else if (process.argv[2] === '--sample') {
     const options = parseSampleArguments(process.argv.slice(3));
     const abort = new AbortController();
     const stop = () => {
@@ -20,7 +28,7 @@ try {
     if (abort.signal.aborted) process.exit(0);
   } else {
     const file = process.argv[2];
-    if (!file || process.argv.length !== 3) throw Error('Usage: tendril-stream <private-config.json> | tendril-stream --sample [interval_ms] [--gpu]');
+    if (!file || process.argv.length !== 3) throw Error(usage);
     const collector = await Collector.open(await readConfig(file));
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void collector.stop(); });
     await collector.run();

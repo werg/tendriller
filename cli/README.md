@@ -182,6 +182,32 @@ stream definitions and records, with `streams` steps for new samples. Reads and
 subscriptions run through the real browser API and local HTTP/WebSocket transport.
 No live account, producer credential, collector or agent is created.
 
+## Initialize a stream collector
+
+Use the installed `tendril-stream` command or download its standalone Node helper:
+
+```sh
+curl -fsS https://tendriller.dev/tendril-stream.mjs -o ./tendril-stream.mjs
+node ./tendril-stream.mjs init --page ./page.json --streams ./streams.json --out ./private/collector.json
+node ./tendril-stream.mjs ./private/collector.json
+```
+
+`page.json` is an existing private creation response containing `api` and `token`.
+The [stream spec](../docs/COLLECTOR.md#initialize-a-collector-for-an-existing-page)
+declares a `producer` name, `streams` using the public creation schema, and
+collector `sources` that reference those stream names. Source durability is
+derived from the stream, so setup and collection share one policy definition.
+File paths and command working directories resolve relative to the spec;
+`spool_dir` resolves relative to the output configuration.
+
+Initialization validates locally and checks all existing streams and producers
+before writing to the API. Matching streams are reused; policy conflicts,
+occupied producer names and existing output files fail without replacement.
+The generated mode `0600` file contains only the scoped producer credential.
+Stdout contains a JSON summary, never credentials. If provisioning or saving
+fails, the error describes partial setup or a private recovery file; the command
+does not roll back remote resources or rotate an existing credential.
+
 ## Durable workflows
 
 Device purposes are separate from permissions. For a camera/monitor/speaker setup:
