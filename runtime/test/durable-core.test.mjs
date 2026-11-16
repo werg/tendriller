@@ -75,20 +75,15 @@ async function environment({ database = new Database(), localStorage = storage()
 function json(value) { return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
 
-test("familiar application keys cannot configure core preferences or device namespaces", async () => {
-  const data = { _prefs: { audio: false, language: "de-DE", mode: "display" }, _device: { anything: { zoom: 3 } }, notebook: { session_id: "opaque" } };
+test("application data has no prescribed preferences or device namespaces", async () => {
+  const data = { _prefs: { audio: false, mode: "display" }, _device: { zoom: 3 }, notebook: { session_id: "opaque" } };
   const env = await environment({ state: data });
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), data);
   assert.equal(env.core.state.mine, undefined);
-  assert.equal(env.core.preferences.get().audio, true);
-  assert.equal(env.core.preferences.get().mode, "interactive");
-  env.core.preferences.update({ audio: false, textSize: "large" });
-  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), data);
-  assert.equal(env.sent.some(frame => frame.t === "state"), false);
-  assert.equal(env.core.pendingWork().state, 0);
-  const reload = await environment({ localStorage: env.localStorage, state: data });
-  assert.equal(reload.core.preferences.get().audio, false);
-  assert.equal(reload.core.preferences.get().textSize, "large");
+  assert.equal(env.core.preferences, undefined);
+  assert.equal(env.core.tts, undefined);
+  assert.equal(env.core.speak, undefined);
+  assert.equal(env.core.rules, undefined);
 });
 
 test("welcome updates service availability without replacing publication-pinned runtime features", async () => {
@@ -180,4 +175,47 @@ test("capture completion uses original scope and generation after upload and rel
   second.transport.receive({ t: "ack", cid: retried.cid, error: "stale_generation", message: "The scope changed." });
   await flush(); await second.commit();
   assert.equal((await retry).status, "rejected");
+});
+
+test("identical conversation inputs keep distinct IDs and exact echo reconciliation", async () => {
+  const env = await environment();
+  const first = env.core.conversation.send("same text"), second = env.core.conversation.send("same text");
+  await flush(); await env.commit();
+  const sent = env.sent.filter(message => message.kind === "instruction");
+  assert.equal(sent.length, 2); assert.notEqual(sent[0].cid, sent[1].cid);
+  sent.forEach((message, index) => {
+    env.transport.receive({ t: "ack", cid: message.cid, seq: index + 1 });
+    env.transport.receive({ t: "instruction_echo", cid: message.cid, device: env.core.device.id,
+      message_id: `message-${index}`, text: message.text, ts: index + 1 });
+  });
+  assert.equal((await first).status, "accepted"); assert.equal((await second).status, "accepted");
+  const entries = env.core.conversation.entries();
+  assert.equal(entries.length, 2); assert.equal(entries[0].message_id, "message-0");
+  assert.equal(entries[1].message_id, "message-1");
+  assert.equal(entries.every(entry => entry.status === "accepted"), true);
+});
+
+test("delayed rejection retains recoverable text and its identity across reload", async () => {
+  const env = await environment(), results = [];
+  env.core.bus.on("conversation_result", result => results.push(result));
+  const promise = env.core.conversation.send("keep this text");
+  await flush(); await env.commit(); await env.settle();
+  const queued = await promise; assert.equal(queued.status, "queued");
+  env.transport.receive({ t: "ack", cid: queued.cid, error: "stale_generation", message: "Compose against current work" });
+  await env.commit(); await env.settle(); await env.commit();
+  assert.deepEqual(results.map(result => result.status), ["queued", "rejected"]);
+  const reloaded = await environment({ database: env.database, localStorage: env.localStorage });
+  assert.equal(reloaded.sent.filter(message => message.kind === "instruction").length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(reloaded.core.conversation.entries())).map(entry => ({ cid: entry.cid, status: entry.status, text: entry.text })),
+    [{ cid: queued.cid, status: "rejected", text: "keep this text" }]);
+});
+
+test("unsaved conversation input is rejected without claiming a queued transcript", async () => {
+  const env = await environment(); env.database.failure = true;
+  const promise = env.core.conversation.send("not durably saved");
+  await flush(); await env.commit();
+  const result = await promise;
+  assert.equal(result.status, "rejected"); assert.equal(result.error, "storage_unavailable");
+  assert.equal(typeof result.cid, "string"); assert.equal(env.core.conversation.entries().length, 0);
+  assert.equal(env.sent.some(message => message.kind === "instruction"), false);
 });

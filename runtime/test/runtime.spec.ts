@@ -68,39 +68,33 @@ test("stream runtime replays durable history, restores subscriptions, and never 
   expect(await page.evaluate(() => (window as any).streamErrors)).toEqual([]);
 });
 
-test("agent replies auto-speak only for approved owners and respect speak:false", async ({ page }) => {
-  const t = mock.create();
+test("headless replies expose routing without speaking or imposing application UI", async ({ page }) => {
+  const t = mock.create({ html: '<main><h1>Authored workspace</h1><canvas width="300" height="120"></canvas></main>' });
+  const requested: string[] = []; page.on("request", request => requested.push(request.url()));
+  await page.addInitScript(() => {
+    (window as any).spoken = [];
+    speechSynthesis.speak = utterance => { (window as any).spoken.push(utterance.text); };
+  });
   await open(page, t);
   await page.evaluate(() => {
-    const w = window as any;
-    w.autoSpeech = [];
-    w.tendril.tts.speak = (text: string) => w.autoSpeech.push(text);
+    const w = window as any; w.replies = []; w.displayed = [];
+    w.tendril.on("reply", (message: any) => w.replies.push(message));
+    w.tendril.on("say", (message: any) => w.displayed.push(message));
   });
-  mock.broadcast(t, { t: "say", text: "owner reply", speak: true });
-  mock.broadcast(t, { t: "say", text: "text only", speak: false });
-  mock.broadcast(t, { t: "role", role: "guest", pending: false });
-  mock.broadcast(t, { t: "say", text: "guest reply", speak: true });
-  mock.broadcast(t, { t: "role", role: "owner", pending: true });
-  mock.broadcast(t, { t: "say", text: "pending reply", speak: true });
-  mock.broadcast(t, { t: "role", role: "owner", pending: false });
-  mock.broadcast(t, { t: "say", text: "default speech" });
-  await expect.poll(() => page.evaluate(() => (window as any).autoSpeech)).toEqual(["owner reply", "default speech"]);
-  expect(await page.evaluate(() => (window as any).tendril.conversation.entries().map((e: any) => e.text))).toEqual(["owner reply", "text only", "guest reply", "pending reply", "default speech"]);
-});
-
-test("an audio-only reply speaks without adding a visible message", async ({ page }) => {
-  const t = mock.create();
-  await open(page, t);
-  await page.evaluate(() => {
-    const w = window as any;
-    w.spoken = []; w.displayed = [];
-    w.tendril.tts.speak = (text: string) => w.spoken.push(text);
-    w.tendril.on("say", (message: any) => w.displayed.push(message.text));
-  });
-  mock.broadcast(t, { t: "say", text: "Look at the other screen", present: false, speak: true });
-  await expect.poll(() => page.evaluate(() => (window as any).spoken)).toEqual(["Look at the other screen"]);
-  expect(await page.evaluate(() => (window as any).displayed)).toEqual([]);
-  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([]);
+  mock.broadcast(t, { t: "say", message_id: "visible-id", text: "Read this", speak: true });
+  mock.broadcast(t, { t: "say", message_id: "audio-id", text: "Optional audio", present: false, speak: true });
+  await expect.poll(() => page.evaluate(() => (window as any).replies.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).spoken)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).displayed.map((m: any) => m.message_id))).toEqual(["visible-id"]);
+  expect(await page.evaluate(() => window.tendril.conversation.entries().map(entry => entry.message_id))).toEqual(["visible-id"]);
+  expect(await page.evaluate(() => ({ tts: typeof (window.tendril as any).tts, control: typeof (window.tendril as any).control, preferences: typeof (window.tendril as any).preferences })))
+    .toEqual({ tts: "undefined", control: "undefined", preferences: "undefined" });
+  await expect(page.locator("tendril-control")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Manage page" })).toHaveAttribute("href", mock.url(t) + "_tendril/manage");
+  expect(requested.some(url => /voice|speech|tts|resources\.json/.test(url))).toBe(false);
+  await page.evaluate(() => window.tendril.conversation.presented("visible-id"));
+  await mock.waitFor(() => mock.messages(t, "say_rendered").length === 1);
+  expect(mock.messages(t, "say_rendered")[0].message_id).toBe("visible-id");
 });
 
 test("window.tendril exists synchronously; hello and welcome", async ({ page }) => {
@@ -333,7 +327,7 @@ test("send distinguishes server rejection from accepted or queued input", async 
     .toMatchObject({ status: "rejected", error: "rate_limited", message: "Wait a moment." });
 });
 
-test("a late instruction rejection removes its optimistic transcript and reports the recoverable text", async ({ page }) => {
+test("a late conversation rejection retains its identified text across reload", async ({ page }) => {
   const t = mock.create();
   let rejectInstruction: (() => void) | undefined;
   t.onMessage = (message, socket) => {
@@ -346,18 +340,18 @@ test("a late instruction rejection removes its optimistic transcript and reports
   await page.evaluate(() => {
     const w = window as any;
     w.rejectedInstructions = [];
-    w.tendril.on("instruction_rejected", (receipt: any) => w.rejectedInstructions.push(receipt));
+    w.tendril.on("conversation_result", (receipt: any) => { if (receipt.status === "rejected") w.rejectedInstructions.push(receipt); });
   });
   expect(await page.evaluate(() => (window as any).tendril.conversation.send("Keep this draft", {via: "text"}))).toEqual({ status: "queued", cid: expect.any(String) });
   expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toHaveLength(1);
   rejectInstruction!();
   await expect.poll(() => page.evaluate(() => (window as any).rejectedInstructions)).toEqual([
-    { cid: expect.any(String), text: "Keep this draft", error: "forbidden", message: "This device is no longer an owner." },
+    { cid: expect.any(String), status: "rejected", text: "Keep this draft", error: "forbidden", message: "This device is no longer an owner." },
   ]);
-  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([]);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([expect.objectContaining({ status: "rejected", text: "Keep this draft" })]);
   await page.reload();
   await page.waitForFunction(() => (window as any).tendril.connected);
-  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([]);
+  expect(await page.evaluate(() => (window as any).tendril.conversation.entries())).toEqual([expect.objectContaining({ status: "rejected", text: "Keep this draft" })]);
   expect(mock.messages(t, "send").filter((message) => message.kind === "instruction")).toHaveLength(1);
 });
 
@@ -784,7 +778,6 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
   await open(page, t);
   await page.evaluate(() => {
     const tl = (window as any).tendril;
-    tl.preferences.update({audio:false});
     (window as any).__said = [];
     tl.on("say", (m: any) => (window as any).__said.push(m.text));
     tl.on("presence", (p: any) => ((window as any).__presence = p));
@@ -798,7 +791,7 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
   const ins = mock.messages(t, "send").find((m) => m.kind === "instruction");
   expect(ins).toMatchObject({ kind: "instruction", text: "make it blue", via: "text", wake: true });
   const id = await page.evaluate(() => (window as any).tendril.device.id);
-  mock.broadcast(t, { t: "instruction_echo", text: "make it blue", via: "text", device: id, ts: 2 });
+  mock.broadcast(t, { t: "instruction_echo", text: "make it blue", via: "text", device: id, cid: ins.cid, message_id: "user-identity", ts: 2 });
   await page.waitForTimeout(100);
   const tr = await page.evaluate(() => (window as any).tendril.conversation.entries().map((e: any) => `${e.from}:${e.text}`));
   expect(tr).toEqual(["agent:On it", "user:make it blue"]);

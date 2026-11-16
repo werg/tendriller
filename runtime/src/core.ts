@@ -1,15 +1,14 @@
+import { encodePublicationPath } from "./paths";
 // Runtime core (PROTOCOL 7, 11.1): socket, bus, state, offline queue, eval, logs, health.
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
-import { runtimeAsset, runtimeBase } from "./assets";
+import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
-import type { OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
+import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
 import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
-import { createSpeechOutput } from "./speech-output";
-import { createPreferences } from "./preferences";
 import { createStreams } from "./streams";
 import { createConnection } from "./connection";
 import { deliveryPolicy } from "./delivery";
@@ -57,8 +56,6 @@ type Internal = Core & {
 
 export function createCore(cfg: TendrilConfig): Internal {
   const bus = createBus();
-  const preferences = createPreferences(cfg.id);
-  preferences.on(value => bus.emit("preferences", value));
   const stored = loadDevice(cfg.id);
   if (!stored.name) { stored.name = guessName(); saveDevice(cfg.id, stored); }
   const device: Device = { id: stored.id, role: (stored.role as Role) || "owner", name: stored.name, pending: false };
@@ -190,7 +187,6 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let welcome: any = null;
   let presence: Presence | null = null;
-  let rules: any[] = [];
 
   const wsUrl = () => {
     if (/^wss?:/.test(cfg.ws)) return cfg.ws;
@@ -398,9 +394,6 @@ export function createCore(cfg: TendrilConfig): Internal {
     bus.emit("transcript", e);
   };
 
-  const tts = createSpeechOutput(runtimeBase(cfg), bus, preferences);
-  bus.on("role", () => { if (device.role !== "owner" || device.pending) tts.stop(); });
-  const speak = (text: string) => tts.speak(text);
 
   let pendingReload: number | null = null;
   let reloadStarted = false;
@@ -422,7 +415,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (snapTimer) { clearTimeout(snapTimer); snapTimer = 0; }
       store.saveSnapshot(snapshot());
       void store.flush(1000).then(() => {
-        const latest = new URL(cfg.publication?.entry || "index.html", new URL(cfg.base, location.href));
+        const latest = new URL(encodePublicationPath(cfg.publication?.entry || "index.html"), new URL(cfg.base, location.href));
         latest.search = location.search; latest.hash = location.hash;
         location.assign(latest.href);
       });
@@ -524,10 +517,13 @@ export function createCore(cfg: TendrilConfig): Internal {
         if (m.device_purpose !== undefined) (device as any).purpose = m.device_purpose;
         presence = m.presence ?? presence;
         if (Array.isArray(m.transcript)) {
-          transcript = m.transcript.slice(-TRANSCRIPT_MAX);
+          const received = m.transcript as TranscriptEntry[];
+          const local = transcript.filter(entry => entry.cid && entry.device === device.id &&
+            (entry.status === "queued" || entry.status === "rejected") &&
+            !received.some(other => other.cid === entry.cid && other.device === entry.device));
+          transcript = [...received, ...local].sort((a, b) => a.ts - b.ts).slice(-TRANSCRIPT_MAX);
           persistSoon();
         }
-        rules = Array.isArray(m.rules) ? m.rules : rules;
         if (m.features) {
           // Service availability can evolve; dependencies selected by the
           // executing publication keep their original configuration.
@@ -539,7 +535,6 @@ export function createCore(cfg: TendrilConfig): Internal {
         bus.emit("welcome", m);
         bus.emit("role", { role: device.role, pending: device.pending });
         if (presence) bus.emit("presence", presence);
-        bus.emit("rules", rules);
         bus.emit("transcript", null);
         bus.emit("connect");
         requests.flush();
@@ -600,21 +595,13 @@ export function createCore(cfg: TendrilConfig): Internal {
         }
         if (m.cid) store.remove(m.cid);
         if (sent?.t === "send" && sent.kind === "instruction") {
-          const mine = transcript.find((e: any) => e._cid === m.cid) ||
-            transcript.find((e: any) => e._local && e.from === "user" && e.text === sent.text);
-          if (m.error) {
-            if (mine) { transcript.splice(transcript.indexOf(mine), 1); persistSoon(); }
-            // A queued instruction can fail after its caller has returned. Keep that
-            // rejection observable and never restore it as a sending transcript row.
-            bus.emit("instruction_rejected", { cid: m.cid, text: sent.text,
-              error: String(m.error?.code || m.error),
-              message: m.message || m.error?.message || "Message rejected. Your text is kept for retry." });
-          } else {
-            // Keep the local cid until the server echo arrives. Its ack can arrive
-            // first; the echo must reconcile this row rather than append a duplicate.
-            if (mine) { delete (mine as any)._local; persistSoon(); }
-            bus.emit("instruction_ack", { cid: m.cid, text: sent.text, seq: m.seq });
-          }
+          const mine = transcript.find(entry => entry.cid === m.cid && entry.device === device.id);
+          const result: ConversationResult = m.error
+            ? { cid: m.cid, status: "rejected", error: String(m.error?.code || m.error),
+              message: m.message || m.error?.message || "Message rejected. Edit or retry the retained text." }
+            : { cid: m.cid, status: "accepted", seq: m.seq };
+          if (mine) { Object.assign(mine, result); persistSoon(); }
+          bus.emit("conversation_result", { ...result, text: sent.text });
         }
         receipts.acknowledge(m.cid, m);
         break;
@@ -654,17 +641,22 @@ export function createCore(cfg: TendrilConfig): Internal {
       }
       case "say": {
         if (m.present !== false) {
-          addTranscript({ ts: m.ts || Date.now(), from: "agent", text: String(m.text ?? "") });
+          const existing = m.message_id && transcript.some(entry => entry.message_id === m.message_id);
+          if (!existing) addTranscript({ ts: m.ts || Date.now(), from: "agent", text: String(m.text ?? ""),
+            message_id: m.message_id, in_reply_to: m.in_reply_to });
           bus.emit("say", m);
         }
-        if (device.role === "owner" && !device.pending && m.speak !== false) speak(m.text);
+        // All routing information is observable; optional presentation adapters
+        // decide whether to speak. The kernel never constructs an audio engine.
+        bus.emit("reply", m);
         break;
       }
       case "instruction_echo": {
-        const mine = m.device === device.id &&
-          transcript.find((e: any) => (e._local || e._cid) && e.from === "user" && e.text === m.text);
-        if (mine) { delete (mine as any)._local; delete (mine as any)._cid; mine.ts = m.ts || mine.ts; persistSoon(); }
-        else addTranscript({ ts: m.ts || Date.now(), from: "user", text: String(m.text ?? "") });
+        const mine = m.cid && transcript.find(entry => entry.cid === m.cid && entry.device === m.device);
+        const entry: TranscriptEntry = { ts: m.ts || Date.now(), from: "user", text: String(m.text ?? ""),
+          message_id: m.message_id, cid: m.cid, device: m.device, status: "accepted" };
+        if (mine) { Object.assign(mine, entry); persistSoon(); }
+        else if (!m.message_id || !transcript.some(value => value.message_id === m.message_id)) addTranscript(entry);
         bus.emit("instruction_echo", m);
         break;
       }
@@ -679,10 +671,6 @@ export function createCore(cfg: TendrilConfig): Internal {
         bus.emit("device_config", m);
         break;
       }
-      case "rules":
-        rules = Array.isArray(m.rules) ? m.rules : [];
-        bus.emit("rules", rules);
-        break;
       case "eval":
         runEval(m.call_id, m.code);
         break;
@@ -732,10 +720,8 @@ export function createCore(cfg: TendrilConfig): Internal {
     get presence() { return presence; },
     get transcript() { return transcript; },
     get welcome() { return welcome; },
-    get rules() { return rules; },
     get rev() { return rev; },
     state,
-    preferences,
     streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.transportRequest(message) }),
     health,
     scopes: {
@@ -743,7 +729,14 @@ export function createCore(cfg: TendrilConfig): Internal {
       capture: (scope: string) => captureContext(scopes, "event", { scope }),
     },
     get service() { return service ? clone(service) : null; },
-    conversation: { entries: () => clone(transcript), send: (text, options) => core.instruction(text, options?.via || "text") },
+    conversation: {
+      entries: () => clone(transcript),
+      send: (text, options) => core.instruction(text, options?.via || "text"),
+      presented(messageId) {
+        if (typeof messageId !== "string" || !messageId || messageId.length > 128) throw new TypeError("A reply message ID is required");
+        raw({ t: "say_rendered", message_id: messageId });
+      },
+    },
     async send(data: any, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult> {
       // Browser user activation marks a real tap or key press; page code cannot fake it. The server
       // treats such events from owner devices as human input for the page-wake cap (PROTOCOL 8.2).
@@ -755,18 +748,22 @@ export function createCore(cfg: TendrilConfig): Internal {
         error: String(ack.error?.code || ack.error), message: ack.message || ack.error?.message || "The input was rejected. Please try again." };
       return { status: "accepted", seq: ack.seq };
     },
-    async instruction(text: string, via: "voice" | "text") {
-      tts.stop();
+    async instruction(text: string, via: "voice" | "text"): Promise<ConversationResult> {
+      if (typeof text !== "string" || !text.trim()) throw new TypeError("Conversation input requires nonempty text");
       const cid = newCid();
-      const entry: any = { ts: Date.now(), from: "user", text, _local: true, _cid: cid };
+      const entry: TranscriptEntry = { ts: Date.now(), from: "user", text, status: "queued", cid, device: device.id };
       const context = captureContext(scopes, "event");
-      const ack = await sendAcked({ t: "send", cid, ...context, kind: "instruction", text, via, data: { text, via }, wake: true }, () => addTranscript(entry));
-      if (ack?.error) {
-        const error = new Error(ack.message || ack.error?.message || "Message rejected. Your text is kept for retry.");
-        (error as any).code = ack.error?.code || ack.error;
-        throw error;
-      }
-      return { status: ack ? "accepted" : "queued", cid };
+      let saved = false;
+      const ack = await sendAcked({ t: "send", cid, ...context, kind: "instruction", text, via, data: { text, via }, wake: true }, () => {
+        saved = true; addTranscript(entry);
+        bus.emit("conversation_result", { cid, text, status: "queued" });
+      });
+      const result: ConversationResult = ack?.error
+        ? { cid, status: "rejected", error: String(ack.error?.code || ack.error),
+          message: ack.message || ack.error?.message || "Message rejected. Keep the text and try again." }
+        : ack ? { cid, status: "accepted", seq: ack.seq } : { cid, status: "queued" };
+      if (!saved) bus.emit("conversation_result", { ...result, text });
+      return result;
     },
     transportRequest: requests.request,
     async request<T = unknown>(path: string, options: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown } = {}): Promise<T> {
@@ -786,7 +783,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     captures,
     pendingWork() {
       return {
-        events: store.items.filter(item => item.msg.t === "send" || item.msg.t === "rule_fired").length,
+        events: store.items.filter(item => item.msg.t === "send").length,
         state: savingState + new Set([...pendingState.map(item => item.cid), ...store.items.filter(item => item.msg.t === "state").map(item => item.cid)]).size,
         captures: store.items.filter(item => item.msg.t === "upload_event" || item.msg.t === "upload").length,
       };
@@ -851,8 +848,6 @@ export function createCore(cfg: TendrilConfig): Internal {
         enqueue({ t: "upload", cid, name, keep: opts?.keep }, blob);
       });
     },
-    speak,
-    tts,
     ready: () => health.ready(),
     readyManual: () => health.manual(),
   };
@@ -864,6 +859,13 @@ export function createCore(cfg: TendrilConfig): Internal {
       rev = fullStateRev = idbSnap.rev || 0;
       scopes = Array.isArray(idbSnap.scopes) ? idbSnap.scopes : [];
       if (!transcript.length && Array.isArray(idbSnap.transcript)) transcript = idbSnap.transcript;
+    }
+    for (const item of store.items) {
+      if (item.msg.t !== "send" || item.msg.kind !== "instruction") continue;
+      if (!transcript.some(entry => entry.cid === item.cid && entry.device === device.id)) {
+        transcript.push({ ts: Math.floor(item.key / 1000), from: "user", text: item.msg.text,
+          cid: item.cid, device: device.id, status: "queued" });
+      }
     }
     const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], scope: i.msg.scope, expected_generations: i.msg.expected_generations }));
     const before = JSON.stringify(local);

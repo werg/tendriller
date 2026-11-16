@@ -27,7 +27,6 @@ export const DELIVERY_POLICIES = Object.freeze({
   state: ACKED,
   log: WRITTEN,
   upload: WRITTEN,
-  rule_fired: WRITTEN,
   eval_result: TRANSIENT,
   ping: TRANSIENT,
   stream_subscribe: STREAM_REQUEST,

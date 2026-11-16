@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 
-const compiled = await build({ stdin: { contents: 'export { createSpeechOutput } from "./speech-output"; export { createPreferences } from "./preferences";', resolveDir: new URL('../src/', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
+const compiled = await build({ stdin: { contents: 'export { createSpeechOutput } from "./voice/output"; export { createPreferences } from "./voice/preferences";', resolveDir: new URL('../src/', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
 const { createSpeechOutput, createPreferences } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -18,7 +18,7 @@ function environment() {
   globalThis.AudioContext = class { state = 'running'; async resume() {} async close() {} };
   const events = [];
   const bus = { on: () => () => {}, emit: (type, data) => events.push({ type, data }) };
-  return { spoken, state, events, bus, preferences: createPreferences('fixture') };
+  return { spoken, state, events, bus, preferences: (() => { const preferences = createPreferences('fixture'); preferences.update({ audio: true }); return preferences; })() };
 }
 
 test('first reply uses browser speech immediately without downloading neural assets', async () => {
@@ -45,7 +45,7 @@ test('declining natural voice while loading disposes the late model', async () =
   const voice = createSpeechOutput('/page/', env.bus, env.preferences, async () => ({ PhononTTS: class { static async load() { await pending; return { dispose() { disposed++; } }; } } }));
   const preparation = voice.enable().catch(() => {}); await tick(); voice.disable(); release(); await preparation;
   assert.equal(voice.status.enabled, false); assert.equal(disposed, 1); assert.equal(env.preferences.get().voice, 'browser');
-  assert.equal(JSON.parse(env.state.get('tendril:v2:fixture:preferences')).voice, 'browser');
+  assert.equal(JSON.parse(env.state.get('tendril:voice:fixture:preferences')).voice, 'browser');
 });
 
 test('mute does not speak or download, and non-English uses browser speech', async () => {

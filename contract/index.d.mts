@@ -31,7 +31,8 @@ export type DeviceConfiguration = WireContracts["deviceConfiguration"];
 export interface DevicePresentation { id: string; purpose: DevicePurpose }
 export interface DeviceConfigMessage { t?: "device_config"; devices: (DeviceInfo | DevicePresentation)[]; focus: Focus | null }
 export interface Presence { state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent"; text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number; wake: "long_poll" | "webhook" | "schedule" | "none" }
-export interface TranscriptEntry { ts: number; from: "agent" | "user"; text: string; message_id?: string; in_reply_to?: number }
+export interface TranscriptEntry { ts: number; from: "agent" | "user"; text: string; message_id?: string; in_reply_to?: number; cid?: string; device?: string; status?: "queued" | "accepted" | "rejected"; error?: string; message?: string }
+export type ConversationResult = { cid: string } & ({ status: "queued" } | { status: "accepted"; seq?: number } | { status: "rejected"; error: string; message: string });
 export interface StateApi<T = Record<string, unknown>> {
   readonly revision: number;
   get(): T; get(path: Path): unknown;
@@ -40,10 +41,9 @@ export interface StateApi<T = Record<string, unknown>> {
   patch(mergePatch: object, options?: OperationOptions): Promise<StateResult>;
   on(fn: (state: T, ops: StateOperation[], by: string) => void): () => void;
 }
-/** Core presentation settings for this browser device and page, separate from shared application state. */
+/** Optional voice adapter settings; never constructed by the headless runtime. */
 export interface RuntimePreferences {
   audio: boolean; language: string | null; voice: "browser" | "neural";
-  textSize: "normal" | "large" | "x-large"; contrast: "normal" | "high"; mode: "interactive" | "display";
   /** Stored configuration only: listening never starts automatically after a reload. */
   wakePhrase: string; wakeMode: "local" | "browser";
 }
@@ -104,11 +104,12 @@ export interface RuntimeEventMap {
   say: SayMessage; transcript: TranscriptEntry | null;
   upload_event: CaptureResult; error: { code?: string; message?: string };
   send_result: SendResult & OperationOptions & { cid: string; data: unknown };
-  capture_queue: PendingCapture[]; capabilities: CapabilityReport; tts: SpeechStatus;
+  capture_queue: PendingCapture[]; capabilities: CapabilityReport;
+  conversation_result: ConversationResult & { text: string };
+  reply: SayMessage; sensors: SensorKind[]; sensors_stopped: { count: number };
   device_config: DeviceConfigMessage;
   scopes: ScopeDescriptor[];
   workflow: { module: string; topic: string; [key: string]: unknown };
-  preferences: RuntimePreferences;
   state_result: StateResult & OperationOptions & { cid: string };
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
@@ -120,7 +121,16 @@ export interface SpeechOutput {
   readonly status: SpeechStatus;
   /** True while browser or neural speech is playing or queued for immediate playback. */
   readonly speaking: boolean;
-  stop(): void; enable(): Promise<void>; disable(): void; speak(text: string): void;
+  stop(): void; enable(): Promise<void>; disable(): void; speak(text: string): void; dispose(): void;
+}
+export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";
+export interface NotificationStatus { permission: NotificationPermission | "unsupported"; subscribed: boolean; registered: boolean; reason?: string }
+export interface NotificationsApi {
+  readonly available: boolean; readonly reason?: string;
+  status(): Promise<NotificationStatus>;
+  /** Call from a user gesture. Permission is owned by this browser device. */
+  subscribe(): Promise<boolean>; unsubscribe(): Promise<void>;
+  test(): Promise<{ sent: number; failed: number; status?: number | null; reason?: string }>;
 }
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
@@ -129,7 +139,12 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<T>;
   scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };
   readonly service: ServiceDescriptor | null;
-  conversation: { entries(): TranscriptEntry[]; send(text: string, options?: { via?: "text" | "voice" }): Promise<{ status: "accepted" | "queued"; cid: string }> };
+  conversation: {
+    entries(): TranscriptEntry[];
+    send(text: string, options?: { via?: "text" | "voice" }): Promise<ConversationResult>;
+    /** Reports presentation by the application, never a human read receipt. */
+    presented(messageId: string): void;
+  };
   blobUrl(id: string): string;
   upload(blob: Blob, opts?: { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
@@ -138,14 +153,18 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
   setBlobRetention(id: string, options: { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
-  preferences: PreferencesApi;
   streams: BrowserStreams;
   on<K extends keyof RuntimeEventMap & string>(type: K, fn: (payload: RuntimeEventMap[K]) => void): () => void;
   ready: (() => void) & { manual(): void };
-  speak(text: string): void; tts: SpeechOutput;
   capabilities(): Promise<CapabilityReport>; deviceHeaders(): Record<string, string>;
-  device: Device; readonly version: number; readonly connected: boolean; readonly presence: Presence | null;
-  control: { hide(): void; show(): void; position(p: "bottom-right" | "bottom-left" | "top-right" | "top-left"): void };
+  readonly device: Readonly<Device>; readonly version: number; readonly connected: boolean; readonly presence: Presence | null;
+  readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
+  /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
+  assetUrl(path: string): string;
+  /** Resolves only after the exact required publication graph is saved by its service worker. */
+  publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
+  sensors: { active(): SensorKind[]; on(listener: (active: SensorKind[]) => void): () => void; stopAll(): number };
+  notifications: NotificationsApi;
 }
 export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";
 export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord, StreamBatch, StreamLatest, StreamTrim, StreamTrimResult, StreamHistory,

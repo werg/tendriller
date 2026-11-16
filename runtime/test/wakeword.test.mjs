@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 
-const compiled = await build({ entryPoints: [new URL("../src/control/wakeword.ts", import.meta.url).pathname],
+const compiled = await build({ entryPoints: [new URL("../src/voice/wakeword.ts", import.meta.url).pathname],
   bundle: true, format: "esm", platform: "node", write: false });
 const { WakeWordCapture, matchWakePhrase } = await import(
   "data:text/javascript;base64," + Buffer.from(compiled.outputFiles[0].text).toString("base64"));
