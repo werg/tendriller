@@ -128,6 +128,29 @@ export async function uploadAgent(h: Handle, value: string | Uint8Array, type = 
   return (await apiJson(h, "POST", `uploads/${started.id}/complete`, {})).blob;
 }
 
+export async function uploadPage(h: Handle, value: string | Uint8Array, type = "application/octet-stream", name?: string,
+  device?: PageClient): Promise<any> {
+  const ownDevice = device ?? await PageClient.connect(h.page_url);
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  const headers = { "X-Tendril-Device": ownDevice.deviceId, "X-Tendril-Device-Secret": ownDevice.secret };
+  try {
+    const started = await req(h.page_url + "_tendril/uploads", { method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ cid: crypto.randomUUID(), sha256: await sha256Hex(bytes), size: bytes.byteLength, type,
+        ...(name ? { name } : {}) }) });
+    if (started.status !== 201) throw new Error(`page upload start failed: ${started.status} ${await started.text()}`);
+    const session = await started.json<any>();
+    if (session.upload_required) {
+      const sent = await req(h.page_url + `_tendril/uploads/${session.id}/content`, { method: "PUT", body: bytes,
+        headers: { ...headers, "Content-Type": "application/octet-stream" } });
+      if (sent.status !== 204) throw new Error(`page upload content failed: ${sent.status} ${await sent.text()}`);
+    }
+    const done = await req(h.page_url + `_tendril/uploads/${session.id}/complete`, { method: "POST", headers });
+    if (!done.ok) throw new Error(`page upload completion failed: ${done.status} ${await done.text()}`);
+    return (await done.json<any>()).blob;
+  } finally { if (!device) ownDevice.close(); }
+}
+
 /** Build a complete publication from test files, optionally retaining the current manifest. */
 export async function publishTestFiles(h: Handle, input: { files: Record<string, string>; replace?: boolean; message?: string }): Promise<any> {
   const head = await apiJson(h, "GET", "publications");
