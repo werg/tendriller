@@ -56,7 +56,23 @@ async function environment({ database = new Database(), localStorage = storage()
     location: { href: "https://fixture.test/page/", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", reload() {} },
     navigator: { onLine: online, userAgent: "Fixture", language: "en", userActivation: { isActive: false } }, screen: { width: 800, height: 600 },
     console: { log() {}, info() {}, warn() {}, error() {} }, queueMicrotask, ...clock,
-    fetch: async () => json({ id: "b_aaaaaaaaaaaaaaaaaaaa", url: "_tendril/blob/b_aaaaaaaaaaaaaaaaaaaa" }),
+    fetch: async (url, { method = "GET", body } = {}) => {
+      const path = new URL(url, "https://fixture.test").pathname;
+      const uploadId = "u_aaaaaaaaaaaaaaaaaaaa", blobId = "b_aaaaaaaaaaaaaaaaaaaa";
+      if (path === "/page/_tendril/uploads" && method === "POST") {
+        const input = JSON.parse(body);
+        assert.match(input.sha256, /^[a-f0-9]{64}$/);
+        assert.ok(Number.isSafeInteger(input.size));
+        return json({ id: uploadId, blob_id: blobId, sha256: input.sha256, size: input.size,
+          phase: "ready", upload_required: true, expires_at: Date.now() + 60_000 });
+      }
+      if (path === `/page/_tendril/uploads/${uploadId}/content` && method === "PUT")
+        return json({ status: "received" });
+      if (path === `/page/_tendril/uploads/${uploadId}/complete` && method === "POST")
+        return json({ status: "completed", blob: { id: blobId, url: `_tendril/blob/${blobId}`,
+          sha256: "1".repeat(64), size: 13, type: "application/octet-stream" } });
+      throw new Error(`Unexpected upload test route: ${method} ${path}`);
+    },
   };
   runInNewContext(built.outputFiles[0].text, globals);
   const transport = globals.Runtime.createFixtureTransport(), sent = [];
