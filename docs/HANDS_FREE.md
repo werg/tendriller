@@ -45,7 +45,7 @@ open, foregrounded and unlocked. Browsers frequently interrupt microphone
 capture in background tabs and locked mobile screens. No web page can promise
 always-on, screen-off listening across platforms.
 
-- SpeechRecognition compatibility is narrower than general getUserMedia support.
+- SpeechRecognition compatibility is narrower than general getUserMedia support. The core uses the modern unprefixed interface rather than vendor-prefixed recognition APIs.
 - On-device SpeechRecognition requires both the API support and an installed
   language pack. processLocally=true is applied *only* when selected, and
   failure never falls back to the browser/cloud service.
