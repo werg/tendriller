@@ -264,12 +264,13 @@ export function listVersions(t: Tendril) {
 }
 
 /** The actual immutable URLs used by this publication, including its runtime. */
-export function publicationManifest(t: Tendril, version: number, base: string, entry = "index.html"): PublicationManifest {
+export function publicationManifest(t: Tendril, version: number, base: string, entry?: string): PublicationManifest {
   const release = version > 0
     ? t.db.one<{ runtime_id: string; runtime_version: string; runtime_features: string }>("SELECT runtime_id,runtime_version,runtime_features FROM versions WHERE version=?", version)
     : { runtime_id: runtimeRelease.id, runtime_version: runtimeRelease.version, runtime_features: JSON.stringify(runtimeRelease.features) };
   if (!release) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
-  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry,
+  const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
+  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: entry ?? defaultEntry,
     assets: versionFiles(t, version).map(file => ({ path: file.path, sha256: file.hash, type: file.type, size: file.size })),
     runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `${base}_tendril/runtime/${release.runtime_id}/` } };
 }
@@ -304,7 +305,8 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
 
-  let path = rest === "" ? "index.html" : rest;
+  const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
+  let path = rest === "" ? defaultEntry : rest;
   let file = version > 0 ? versionFile(t, version, path) : null;
   if (!file && version > 0 && (rest === "" || rest.endsWith("/"))) {
     path = (rest === "" ? "" : rest) + "index.html";

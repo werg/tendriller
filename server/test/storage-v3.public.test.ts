@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { api, apiJson, create } from "./helpers";
+import { api, apiJson, create, req } from "./helpers";
 import { sha256Hex } from "../src/ids";
 
 it("accepts exact immutable bytes once and applies shared-file CAS with durable replay", async () => {
@@ -60,4 +60,18 @@ it("publishes complete blob manifests with head CAS and replays the same command
   const rollback = { cid: "restore-index", expected_generations: {}, expected_head_revision: 2, version: 1 };
   expect(await apiJson(page, "POST", "publications/rollback", rollback)).toEqual({ version: 1, head_revision: 3 });
   expect(await apiJson(page, "POST", "publications/rollback", rollback)).toEqual({ version: 1, head_revision: 3 });
+});
+
+it("serves a publication's declared HTML entry at the page root", async () => {
+  const page = await create({ mode: "dashboard" });
+  const bytes = new TextEncoder().encode("<!doctype html><h1>Alternate entry</h1>");
+  const sha256 = await sha256Hex(bytes);
+  const upload = await apiJson(page, "POST", "uploads", { cid: "alternate-upload", sha256,
+    size: bytes.byteLength, type: "text/html" }, 201);
+  await api(page, "PUT", `uploads/${upload.id}/content`, bytes, { "Content-Type": "application/octet-stream" });
+  await apiJson(page, "POST", `uploads/${upload.id}/complete`, {});
+  await apiJson(page, "POST", "publications", { cid: "alternate-publish", expected_generations: {},
+    expected_head_revision: 0, entry: "start.html",
+    files: [{ path: "start.html", blob_id: upload.blob_id, type: "text/html" }] });
+  expect(await (await req(page.page_url)).text()).toContain("Alternate entry");
 });
