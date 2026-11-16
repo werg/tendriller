@@ -56,10 +56,11 @@ public snapshot/hash contracts, and resumable resident-lifetime changes that
 cannot race membership or retained-log provisioning into expiring storage.
 
 The current embedded administrator comes from clean Chronolog source
-`b2f61124631597c9d9ad4d744d15ca57e3771feb`, with 57 audited portable inputs.
+`8476228ca7645ddd003be74e663a3617e3f5c758`, with 57 audited portable inputs.
 It includes the author-time finality and closure-boundary governance changes,
 plus the earlier ledger, peer-recovery, explicit device-identity reopening and
-atomic membership-page ingestion corrections.
+atomic membership-page ingestion corrections, including the latest peer-session
+connection cleanup.
 An unchanged verified prefix performs no durable ledger write. A changed bounded
 page validates and commits together; late invalid input or failed storage cannot
 publish partial progress.
@@ -69,8 +70,8 @@ The separately verified Chronolog continuity checkpoint
 making keys usable, fences uncertain feed writes until reopening, and refuses to
 restart a native authority history beneath its retained configuration or
 certificate. Connection-bound cleanup prevents a stale session from detaching a
-newer route. The next embedded package must include these fixes together with
-the author-time finality changes.
+newer route. The current embedded package comes from the merged source checkpoint
+above; its portable fixes accompany the author-time finality changes.
 
 The [native cost review](https://github.com/werg/tendriller-contrib/blob/d6e27d660feac31175cf0dc34c9fce18494378d2/cookbooks/run-a-peer-application/notes/membership-cost-review-2026-11-16.md)
 records the source-pinned `8e497555` to `c5edba7d` batching change: 104 to 65
