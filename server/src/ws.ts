@@ -234,7 +234,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   say_rendered(c) {
     const id = c.msg.message_id;
     if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) { if (c.msg.cid) ack(c, { error: "bad_message" }); return; }
-    const sent = c.t.db.one("SELECT 1 AS x FROM activity WHERE kind = 'say' AND summary LIKE ? LIMIT 1", `Message ${id}%`);
+    const sent = c.t.db.one("SELECT 1 AS x FROM transcript WHERE src='agent' AND message_id=?", id);
     if (!sent) { if (c.msg.cid) ack(c, { error: "unknown_message" }); return; }
     const existing = c.t.db.one("SELECT 1 AS x FROM activity WHERE kind = 'say_rendered' AND device = ? AND summary = ? LIMIT 1", c.dev.id, `Message ${id} rendered`);
     if (!existing) addActivity(c.t, { kind: "say_rendered", summary: `Message ${id} rendered`, device: c.dev.id });
@@ -442,11 +442,11 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
 
 /** Authored text or speech input: an instruction from owners, data from anyone else. */
 function instruction(c: Ctx, text: string, via: string, context: ValidatedContext): number {
-  const { t, dev, ws } = c;
+  const { t, dev, ws, msg } = c;
   const isOwner = dev.role === "owner" && !dev.pending;
-  const ts = t.addTranscript("user", text);
+  const entry = t.addTranscript("user", text, { cid: msg.cid, device: dev.id });
   // Include the sender so its optimistic chat row can become a delivered row.
-  t.broadcast({ t: "instruction_echo", text, via, device: dev.id, ts });
+  t.broadcast({ ...entry, t: "instruction_echo", via });
   if (isOwner) {
     const ev = addEvent(t, { type: "instruction", data: { text, via }, context, device: dev.id, role: dev.role, wake: true, cls: "owner" });
     addActivity(t, { kind: "instruction", summary: `Instruction (${via}): ${preview(text, 300)}`, device: dev.id });

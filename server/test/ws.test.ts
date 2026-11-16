@@ -254,6 +254,27 @@ describe("links", () => {
 });
 
 describe("say, notify, logs and voice events", () => {
+  it("correlates repeated text by command and message identity across reconnects", async () => {
+    const h = await create();
+    const page = await PageClient.connect(h.page_url);
+    const echoes: any[] = [];
+    for (const cid of ['same-text-first', 'same-text-second']) {
+      await page.request({ t: 'send', cid, expected_generations: {}, kind: 'instruction', text: 'again', via: 'text' });
+      echoes.push(await page.next('instruction_echo'));
+    }
+    expect(echoes.map(message => message.cid)).toEqual(['same-text-first', 'same-text-second']);
+    expect(new Set(echoes.map(message => message.message_id)).size).toBe(2);
+    expect(echoes.every(message => message.device === page.deviceId)).toBe(true);
+    const reply = await apiJson(h, 'POST', 'say', { text: 'Recorded twice', speak: false });
+    const spoken = await page.next('say');
+    const again = await PageClient.connect(h.page_url);
+    expect(again.welcome.transcript.map((message: any) => message.message_id)).toEqual([...echoes.map(message => message.message_id), spoken.message_id]);
+    expect(again.welcome.transcript.slice(0, 2).map((message: any) => message.cid)).toEqual(['same-text-first', 'same-text-second']);
+    expect(await page.request({ t: 'say_rendered', message_id: spoken.message_id })).not.toHaveProperty('error');
+    expect(await page.request({ t: 'say_rendered', message_id: crypto.randomUUID() })).toMatchObject({ error: 'unknown_message' });
+    page.close(); again.close();
+  });
+
   it("say reaches all devices and the transcript", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);

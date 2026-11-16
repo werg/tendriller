@@ -40,7 +40,10 @@ export function renderBuiltinRecord(name: string, row: Record<string, any>): Str
       ...(row.stack ? { stack: row.stack } : {}) };
     type = row.level; producer = row.device ? `device:${row.device}` : "system";
   } else {
-    data = { ts: row.ts, from: row.src, text: row.text }; type = "message"; producer = row.src;
+    data = { message_id: row.message_id, ts: row.ts, from: row.src, text: row.text,
+      ...(row.cid ? { cid: row.cid } : {}), ...(row.device ? { device: row.device } : {}),
+      ...(row.in_reply_to !== null ? { in_reply_to: row.in_reply_to } : {}) };
+    type = "message"; producer = row.src;
   }
   // Built-in records are timestamped by the receiving service.
   return { stream: name, seq: row.seq, ts: row.ts, received_at: row.ts, type, data, producer, id: null };
