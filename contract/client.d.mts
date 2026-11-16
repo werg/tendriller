@@ -3,7 +3,8 @@ import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, RemixRequest, ScopeDescriptor } from "./index.mjs";
-export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string }
+export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
+  expires_at?: number | null; next_step?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
 export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }

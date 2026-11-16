@@ -15,9 +15,10 @@ it("discovers optional releases and serves the generic public contract", async (
   // Discovery may move, but the catalog advertised as a tested pairing must
   // identify a real, immutable release rather than a mutable latest alias.
   expect(discovery).toContain("https://api.github.com/repos/werg/tendriller-contrib/releases");
-  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.2/catalog.json");
+  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json");
   expect(discovery).not.toContain("/releases/latest/download/");
-  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md"]){
+  expect(discovery).toContain("https://tendriller.dev/docs/BROWSER_API.md");
+  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md","/docs/BROWSER_API.md"]){
     const response=await req(path);expect(response.status,path).toBe(200);
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   }

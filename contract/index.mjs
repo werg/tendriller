@@ -4,7 +4,7 @@ import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 2;
-export const CORE_RELEASE = "0.2.0-rc.4";
+export const CORE_RELEASE = "0.2.0-rc.6";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -134,7 +134,8 @@ const coreSchemas = {
 
 };
 const list = items => ({ type: "array", items });
-const pageHandle = object({ id: string, api: string, token: string, page_url: string, name: string }, ["id", "api", "token", "page_url"], true);
+const pageHandle = object({ id: string, api: string, token: string, page_url: string, name: string,
+  expires_at: { anyOf: [integer, { type: "null" }] }, next_step: string }, ["id", "api", "token", "page_url"], true);
 export const schemas = Object.freeze({
   ...coreSchemas,
   pageHandle,
