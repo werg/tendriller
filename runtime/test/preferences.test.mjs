@@ -13,20 +13,21 @@ test("voice settings are page-local and muted by default, without presentation v
   const env = environment(), a = createPreferences("A"), b = createPreferences("B");
   a.update({ audio: true, language: "de-de", voice: "neural" });
   assert.equal(a.get().language, "de-DE"); assert.equal(b.get().audio, false);
-  assert.deepEqual(createPreferences("A").get(), a.get());
+  assert.deepEqual(createPreferences("A").get(), { ...a.get(), audio: false });
+  assert.equal(JSON.parse(env.saved.get("tendril:voice:A:preferences")).audio, undefined);
   assert.deepEqual([...env.saved.keys()], ["tendril:voice:A:preferences"]);
   a.get().audio = false; assert.equal(a.get().audio, true);
   assert.equal(b.get().wakeMode, "local");
   assert.throws(() => a.update({ textSize: "large" }), /Unknown preference/);
 });
-test("voice choices synchronize across tabs without sharing application data", () => {
+test("another tab cannot change a live adapter's engine or session consent", () => {
   const env = environment(), a = createPreferences("A"), observed = [];
   const off = a.on(value => { observed.push(value); value.voice = "browser"; });
   env.event("tendril:voice:B:preferences", JSON.stringify({ audio: true })); assert.equal(observed.length, 0);
   env.event("tendril:voice:A:preferences", JSON.stringify({ audio: true, voice: "neural" }));
-  assert.equal(a.get().audio, true); assert.equal(a.get().voice, "neural"); assert.equal(observed.length, 1);
-  assert.equal(env.saved.size, 0); off(); env.event("tendril:voice:A:preferences", null);
-  assert.equal(a.get().audio, false); assert.equal(observed.length, 1);
+  assert.equal(a.get().audio, false); assert.equal(a.get().voice, "browser"); assert.equal(observed.length, 0);
+  a.update({ audio: true }); assert.equal(observed.length, 1); assert.equal(a.get().audio, true);
+  off(); a.update({ audio: false }); assert.equal(observed.length, 1);
 });
 test("invalid changes are atomic; unavailable storage preserves current visit settings", () => {
   const env = environment(), preferences = createPreferences("A");

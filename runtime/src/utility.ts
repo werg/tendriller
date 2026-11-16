@@ -22,9 +22,9 @@ export function mountUtility(api: RuntimeApi): () => void {
     active.textContent = sensors.map(sensor => labels[sensor]).join(", ") + " active";
     stop.setAttribute("aria-label", "Stop " + sensors.map(sensor => labels[sensor]).join(", "));
   };
-  const attach = () => { if (!host.isConnected) (document.body || document.documentElement).append(host); };
+  const attach = () => { const parent = document.body || document.documentElement; if (host.parentNode !== parent) parent.append(host); };
   const observer = new MutationObserver(attach);
   const off = api.sensors.on(render);
-  render(); attach(); observer.observe(document.documentElement, { childList: true, subtree: true });
+  render(); attach(); observer.observe(document, { childList: true, subtree: true });
   return () => { observer.disconnect(); off(); host.remove(); };
 }

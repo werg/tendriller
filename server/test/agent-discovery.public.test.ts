@@ -5,20 +5,18 @@ import { createClient } from "../../contract/client.mjs";
 import { route } from "../src/router";
 import { api, apiJson, advance, create, req } from "./helpers";
 
-it("discovers optional releases and serves the generic public contract", async () => {
+it("discovers core tools and cookbook reasoning through the generic public contract", async () => {
   const home = await (await req("/")).text();
   expect(home).toContain("Agents: read");
   expect(home).toContain("https://github.com/werg/tendriller-contrib");
   const index = await req("/llms.txt");
   expect(index.status).toBe(200);
   const discovery = await index.text();
-  // Discovery may move, but the catalog advertised as a tested pairing must
-  // identify a real, immutable release rather than a mutable latest alias.
-  expect(discovery).toContain("https://api.github.com/repos/werg/tendriller-contrib/releases");
-  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json");
-  expect(discovery).not.toContain("/releases/latest/download/");
+  expect(discovery).toContain("https://github.com/werg/tendriller/releases");
+  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/blob/main/agent.md");
+  expect(discovery).not.toContain("tendriller-contrib/releases/download/");
   expect(discovery).toContain("https://tendriller.dev/docs/BROWSER_API.md");
-  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md","/docs/BROWSER_API.md"]){
+  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md","/docs/BROWSER_API.md","/docs/tools/CLI.md","/docs/tools/PREVIEW.md"]){
     const response=await req(path);expect(response.status,path).toBe(200);
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   }

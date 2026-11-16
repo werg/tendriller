@@ -1,9 +1,10 @@
 import type { PhononTTS } from "phonon-tts";
 import type { Bus } from "../types";
-import type { PreferencesApi, SpeechStatus, SpeechOutput } from "../../../contract/index.mjs";
-export type { SpeechStatus, SpeechOutput } from "../../../contract/index.mjs";
+import type { VoicePreferencesApi, SpeechStatus, SpeechOutput } from "../../../contract/voice.mjs";
+export type { SpeechStatus, SpeechOutput } from "../../../contract/voice.mjs";
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+const NEURAL_MODEL = "hf://gradium/phonon-31m-en@92741c5b07d085ff840e26fea8ce43110b87852f";
 const readyMessage = "Neural voice is ready. English speech is generated on this device.";
 
 /** Stop waiting even if a worker never acknowledges cancellation or completes a request. */
@@ -20,7 +21,7 @@ function waitFor<T>(task: Promise<T>, signal?: AbortSignal, timeoutMs = 0): Prom
 }
 
 /** Browser speech is immediate; neural English speech is an optional device preference. */
-export function createSpeechOutput(base: string, bus: Bus, preferences: PreferencesApi,
+export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePreferencesApi,
   moduleLoader: (url: string) => Promise<typeof import("phonon-tts")> = url => import(/* @vite-ignore */ url)): SpeechOutput {
   const prefs = () => preferences.get();
   let enabled = prefs().voice === "neural";
@@ -70,7 +71,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
       const { PhononTTS } = await moduleLoader(url);
       if (token !== loadEpoch || !enabled) throw new Error("Voice setup cancelled");
       const loaded = await PhononTTS.load({
-        lang: "en", device: "auto", quant: "q8", threads: 1,
+        lang: "en", model: NEURAL_MODEL, device: "auto", quant: "q8", threads: 1,
         onProgress: p => {
           if (token !== loadEpoch) return;
           const size = p.total ? ` of ${(p.total / 1e6).toFixed(1)} MB` : " MB";

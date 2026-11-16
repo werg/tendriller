@@ -24,11 +24,9 @@ not a device-display guarantee.
    means the server has no working key configuration; do not prompt users to
    subscribe until it is set.
 4. Open a published page **as an approved owner** on each device, using HTTPS.
-   In the always-present Tendriller control, open **Settings and history →
-   Device notifications**. Select **Allow agent alerts on this device** and
-   approve the browser permission prompt. Once the server confirms registration,
-   use **Send test notification**. Then close all tabs for the page and send a
-   second notification from the agent to verify real background delivery.
+   An authored page calls `tendril.notifications.subscribe()` from a user gesture.
+   Use `notifications.status()` to distinguish local permission, subscription,
+   and server registration; `notifications.test()` checks the delivery path.
 
 On iPhone and iPad, install that page to the Home Screen and launch the
 installed web app before opting in. Browsers require a user gesture to request
@@ -106,11 +104,11 @@ configuration, and transient provider failures.
   alerts, persist the task or decision in shared state as well. A provider
   success means *accepted*, not *read*.
 - To diagnose: check `GET A/notify`; confirm permission and registration
-  in the control; send a test while open; close the page and send via API;
+  through the page's notification action; send a test while open; close the page and send via API;
   inspect per-device delivery statuses and device/OS notification settings.
   Browser private mode and aggressive battery settings can restrict background
   notifications.
 
 For regression checks, use `npm run test:push`, the Worker server tests
-(including notification readiness), and the Playwright control suite.
+(including notification readiness), and the Playwright notification suite.
 Real delivery must be verified on actual browser/OS push services in staging.

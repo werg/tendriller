@@ -13,12 +13,12 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
   const fixture = JSON.parse(await readFile("test/fixtures/speech/manifest.json", "utf8"));
   const spoken = await readFile(join("test/fixtures/speech", fixture.file));
   expect(createHash("sha256").update(spoken).digest("hex")).toBe(fixture.sha256);
-  const worker = await readFile("dist/runtime/assets/speech-worker.js");
+  const worker = await readFile("dist/runtime/assets/voice-worker.js");
   const runtime = JSON.parse(await readFile("dist/runtime/assets/manifest.json", "utf8"));
   const js = await readFile(join(cache, "cactus.js")), wasm = await readFile(join(cache, "cactus.wasm")), model = await readFile(join(cache, "whistle.cact"));
   const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
   const resource = (bytes: Uint8Array, name: string) => `/_tendril/assets/${hash(bytes)}/${name}`;
-  const config = { worker: `/_tendril/runtime/${runtime.id}/speech-worker.js`,
+  const config = { worker: `/_tendril/runtime/${runtime.id}/voice-worker.js`,
     engine: { script: resource(js, "cactus.js"), wasm: resource(wasm, "cactus.wasm"), wasm_sha256: hash(wasm) },
     modelUrl: resource(model, "whistle.cact"), modelSha256: hash(model) };
   const assets = new Map([

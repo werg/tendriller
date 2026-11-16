@@ -21,6 +21,7 @@ export class SpeechCapture {
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private cancelled = false;
   private starting = false;
+  private processing = false;
   private session = 0;
   private maxTimer: number | null = null;
   private consented = false;
@@ -34,9 +35,22 @@ export class SpeechCapture {
     if (!this.worker) return Promise.reject(new Error("Speech worker unavailable"));
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.worker!.postMessage({ id, action, ...payload }, transfer);
+      const timer = setTimeout(() => {
+        this.failWorker(new Error("Speech worker timed out"));
+      }, action === "init" ? 120000 : 30000);
+      this.pending.set(id, {
+        resolve: value => { clearTimeout(timer); resolve(value); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      });
+      try { this.worker!.postMessage({ id, action, ...payload }, transfer); }
+      catch (error) { this.pending.get(id)?.reject(error instanceof Error ? error : new Error(String(error))); this.pending.delete(id); }
     });
+  }
+
+  private failWorker(error: Error): void {
+    this.worker?.terminate(); this.worker = null; this.ready = null;
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
   }
 
   private async load(): Promise<void> {
@@ -56,13 +70,7 @@ export class SpeechCapture {
       if (error) pending.reject(new Error(error));
       else pending.resolve(result);
     };
-    this.worker.onerror = () => {
-      for (const pending of this.pending.values()) pending.reject(new Error("Speech worker failed"));
-      this.pending.clear();
-      this.worker?.terminate();
-      this.worker = null;
-      this.ready = null;
-    };
+    this.worker.onerror = () => this.failWorker(new Error("Speech worker failed"));
     this.h.onInterim("Downloading private speech model…");
     this.ready = this.call("init", { engine: this.speech.engine, modelUrl: new URL(this.speech.url, new URL(this.base, location.href)).href,
       modelSha256: this.speech.sha256 }).then(() => {});
@@ -78,6 +86,7 @@ export class SpeechCapture {
 
   async start(): Promise<void> {
     if (this.listening || this.starting || !this.mode) return;
+    if (this.processing) { this.h.onError("Transcription is still in progress. Wait or cancel it before recording again."); return; }
     this.starting = true;
     const session = ++this.session;
     this.cancelled = false;
@@ -114,9 +123,7 @@ export class SpeechCapture {
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
     if (this.maxTimer !== null) window.clearTimeout(this.maxTimer);
     this.maxTimer = null;
-    this.worker?.terminate(); this.worker = null; this.ready = null;
-    for (const pending of this.pending.values()) pending.reject(new Error("Speech capture disposed"));
-    this.pending.clear();
+    this.failWorker(new Error("Speech capture disposed"));
   }
 
   private async finish(blob: Blob, session: number): Promise<void> {
@@ -128,6 +135,7 @@ export class SpeechCapture {
     this.listening = false;
     this.h.onState(false);
     if (this.cancelled || session !== this.session || !blob.size) return;
+    this.processing = true;
     this.h.onInterim("Transcribing on this device…");
     try {
       // Decoding needs no playback device. An AudioContext created from MediaRecorder's
@@ -155,6 +163,7 @@ export class SpeechCapture {
     } catch {
       if (!this.cancelled && session === this.session) this.h.onError("On-device transcription failed. You can type instead.");
     } finally {
+      this.processing = false;
       this.h.onInterim("");
     }
   }

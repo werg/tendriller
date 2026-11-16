@@ -1,10 +1,11 @@
+import type { SpeechStatus } from "../../../contract/voice.mjs";
 // Explicit optional voice adapter. All input is delivered to a page-owned callback.
 // Constructing it starts no microphone, speech output, engine download or wake loop.
 import { createSpeechOutput } from "./output";
 import { createPreferences } from "./preferences";
 import { SpeechCapture } from "./capture";
 import { WakeWordCapture, type WakeMode, type WakeState } from "./wakeword";
-import type { RuntimeApi, SpeechStatus, RuntimeArtifactFeatures } from "../../../contract/index.mjs";
+import type { RuntimeApi, RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 
 export interface VoiceOptions {
   consent(request: { purpose: "output" | "transcription" | "wake"; engine: string; description: string }): boolean | Promise<boolean>;
@@ -57,7 +58,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
       const selected = { ...resource, url: absolute(resource.url), engine: { ...resource.engine, script: absolute(resource.engine.script), wasm: absolute(resource.engine.wasm) } };
       const instance = new SpeechCapture({
         onConsent: async () => !disposed && current === operation,
-        onInterim: message => options.status?.({ kind: "capture", state: "working", message }),
+        onInterim: message => options.status?.({ kind: "capture", state: capture?.listening ? "recording" : message ? "working" : "idle", message }),
         onFinal: text => { if (!disposed) options.transcript(text); },
         onState: active => options.status?.({ kind: "capture", state: active ? "recording" : "idle" }),
         onError: message => options.status?.({ kind: "capture", state: "error", message }),
@@ -80,6 +81,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
   window.addEventListener("pagehide", stop);
   return {
     get outputStatus() { return output.status; },
+    get muted() { return !preferences.get().audio; },
     get speaking() { return output.speaking; },
     get listening() { return wake.running || !!capture?.listening; },
     async enableOutput(engine: "browser" | "neural" = "browser") {
@@ -111,7 +113,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
     },
     dispose() {
       if (disposed) return;
-      stop(); disposed = true; capture?.dispose(); output.dispose();
+      stop(); disposed = true; capture?.dispose(); output.dispose(); preferences.dispose();
       offReply(); offRole(); offSensors();
       document.removeEventListener("visibilitychange", visibility); window.removeEventListener("pagehide", stop);
     },
