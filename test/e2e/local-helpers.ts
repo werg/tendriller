@@ -26,7 +26,11 @@ export async function connectAgentSocket(h: Handle): Promise<WebSocket> {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(url.toString(), ["tendriller.agent.v2", h.token], {
     rejectUnauthorized: false, // local E2E server uses a self-signed certificate
-    lookup: (_host, _options, cb) => cb(null, "127.0.0.1", 4),
+    lookup: (_host, options, callback) => {
+      const done = typeof options === "function" ? options : callback;
+      if (typeof options !== "function" && options?.all) done(null, [{ address: "127.0.0.1", family: 4 }]);
+      else done(null, "127.0.0.1", 4);
+    },
   });
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
