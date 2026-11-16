@@ -4,9 +4,15 @@ import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, RemixRequest, ScopeDescriptor } from "./index.mjs";
-export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string }
+export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
+  expires_at?: number | null; next_step?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
+export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }
+export interface NotificationStatus { available: boolean; subscribed_devices: { id: string; name: string | null }[];
+  count: number; quota: { limit: number; used: number; remaining: number } }
+export interface NotificationDelivery { sent: number; failed: number;
+  deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
 export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransferClient {
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
@@ -14,6 +20,8 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   checkDeliveryProbe(nonce?: string): Promise<DeliveryProbe>;
   acknowledgeDeliveryProbe(nonce: string): Promise<DeliveryProbe>;
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
+  notificationStatus(): Promise<NotificationStatus>;
+  notify(body: NotificationRequest): Promise<NotificationDelivery>;
   state(): Promise<{ state: Record<string, unknown>; rev: number; scopes: ScopeDescriptor[] }>;
   updateState(body: CommandMetadata & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
   devices(): Promise<DeviceConfiguration>;

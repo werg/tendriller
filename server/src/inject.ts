@@ -40,7 +40,7 @@ function attr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-export function runtimeTags(cfg: InjectConfig): string {
+export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
   const publication = cfg.publication;
   const documentBase = publication ? publication.base + publication.entry.slice(0, publication.entry.lastIndexOf("/") + 1) : cfg.base;
   const runtimeBase = publication?.runtime.base ?? `${cfg.base}_tendril/runtime/${runtimeRelease.id}/`;
@@ -48,6 +48,9 @@ export function runtimeTags(cfg: InjectConfig): string {
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
+    // Every published page gets the per-origin install metadata. On iOS,
+    // installed Home Screen web apps can receive push when no tab is open.
+    (includeManifest ? `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest">` : "") +
     `<script>window.__TENDRIL__=${scriptSafeJson(conf)};</script>` +
     `<script src="${attr(runtimeBase)}tendril.js"></script>`
   );
@@ -57,7 +60,11 @@ const HEAD_RE = /<head(?:\s[^>]*)?>/i;
 
 /** Inserts the runtime right after the opening <head> tag, or at the very start if there is none. */
 export function injectRuntime(html: string, cfg: InjectConfig): string {
-  const tags = runtimeTags(cfg);
+  // Preserve a page author's own install metadata. The generated manifest is
+  // only a default for pages that do not declare one.
+  const head = /<head\b[^>]*>([\s\S]*?)<\/head>/i.exec(html)?.[1] ?? html;
+  const hasManifest = /<link\b[^>]*\brel\s*=\s*(?:"[^"]*\bmanifest\b[^"]*"|'[^']*\bmanifest\b[^']*'|manifest\b)[^>]*>/i.test(head);
+  const tags = runtimeTags(cfg, !hasManifest);
   const m = HEAD_RE.exec(html);
   if (!m) return tags + html;
   const at = m.index + m[0].length;

@@ -63,6 +63,7 @@ test("browser speech is immediate by default and downloads no model", async ({ p
   expect(await page.evaluate(() => (window as any).tts.status.enabled)).toBe(false);
   await page.evaluate(() => (window as any).tts.speak('Ready now'));
   await expect.poll(() => page.evaluate(() => (window as any).browserSpoken)).toEqual(['Ready now']);
+  expect(await page.evaluate(() => (window as any).tts.speaking)).toBe(true);
   expect(await page.evaluate(() => (window as any).loads || 0)).toBe(0);
 });
 
@@ -106,8 +107,10 @@ test("failed optional voice falls back without repeated downloads and can retry"
 test("stop interrupts prepared audio and a browser preference survives reload", async ({page}) => {
   await open(page); await page.evaluate(async () => { const w=window as any; await w.tts.enable(); w.tts.speak('long'); });
   await expect.poll(() => page.evaluate(() => (window as any).starts)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => (window as any).tts.speaking)).toBe(true);
   await page.evaluate(() => (window as any).tts.disable());
   expect(await page.evaluate(() => (window as any).stops)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => (window as any).tts.speaking)).toBe(false);
   await page.reload();
   expect(await page.evaluate(() => (window as any).tts.status.enabled)).toBe(false);
   await page.evaluate(() => (window as any).tts.speak('browser only'));

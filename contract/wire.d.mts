@@ -102,7 +102,7 @@ export interface WireContracts {
   "bundlePublish": { "cid": string; "scope"?: string; "expected_generations": { [key: string]: string; }; "expected_version": number; };
   "remix": { "owner": string; "name"?: string; "include_data"?: boolean; };
   "remixPage": { "name"?: string; "include_data"?: boolean; };
-  "pageHandle": { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; [key: string]: unknown; };
+  "pageHandle": { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; "expires_at"?: (number) | (null); "next_step"?: string; [key: string]: unknown; };
   "objectResponse": { [key: string]: unknown; };
   "sayResult": { "ok": true; "message_id": string; "in_reply_to": (number) | (null); [key: string]: unknown; };
   "stateSnapshot": { "state": { [key: string]: unknown; }; "rev": number; "scopes": Array<{ "id": string; "generation": string; "paths": Array<Array<string>>; "operations": Array<string>; }>; [key: string]: unknown; };
@@ -113,5 +113,5 @@ export interface WireContracts {
   "sessionResult": { "session": { "purpose": string; "current_task": string; "completed": Array<string>; "decisions": Array<string>; "open_questions": Array<string>; "last_handled_seq": number; "source"?: string; }; "revision": number; [key: string]: unknown; };
   "bundleStage": { "staged": true; "files": number; "media": number; "expected_version": number; "requires_publication": true; [key: string]: unknown; };
   "publicationResult": { "version": number; [key: string]: unknown; };
-  "remixResult": { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; "remix": { "staged": true; "requires_receiver": true; "publish_url": string; "expected_version": number; [key: string]: unknown; }; [key: string]: unknown; };
+  "remixResult": { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; "expires_at"?: (number) | (null); "next_step"?: string; "remix": { "staged": true; "requires_receiver": true; "publish_url": string; "expected_version": number; [key: string]: unknown; }; [key: string]: unknown; };
 }

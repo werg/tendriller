@@ -156,9 +156,16 @@ const TOOLS: Tool[] = [
     call: (a) => ({ method: "GET", rest: "logs", query: { after: String(a.after ?? 0), limit: "200" } }),
   },
   {
+    name: "notification_status",
+    description: "Check whether Web Push is configured, which owner devices opted in, and the remaining hourly quota. Requires no open browser tab and does not send a notification.",
+    inputSchema: obj({}),
+    call: () => ({ method: "GET", rest: "notify" }),
+  },
+  {
     name: "notify",
-    description: "Send a push notification to the owner's devices that allowed them.",
-    inputSchema: obj({ title: { type: "string" }, body: { type: "string" } }, ["title"]),
+    description: "Send a Web Push notification to opted-in owner devices even while the page is closed. Optionally target one device and a same-page URL. Check notification_status first; provider acceptance is not proof of device display.",
+    inputSchema: obj({ title: { type: "string" }, body: { type: "string" },
+      url: { type: "string" }, device: { type: "string" }, tag: { type: "string" } }, ["title"]),
     call: (a) => ({ method: "POST", rest: "notify", body: a }),
   },
   {

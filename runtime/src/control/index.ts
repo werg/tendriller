@@ -17,6 +17,8 @@ import { h, clear, icon, relTime } from "./dom";
 import { installSensorWrappers, type SensorKind, type SensorTracker } from "./sensors";
 import { installAudioUnlock, playCue, haptic, type Cue } from "./feedback";
 import { SpeechCapture } from "./speech";
+import { WakeWordCapture, type WakeState } from "./wakeword";
+import { mountWakeSettings } from "./wakeword-settings";
 import { qrSvg } from "./qr";
 import { mountExperienceSettings } from "./experiences";
 import { mountReturnToWork, type ReturnAction } from "./return-to-work";
@@ -64,6 +66,11 @@ class Control {
   private pageErrors = 0;
   private reattaches = 0;
   private capture: SpeechCapture | null = null;
+  private wake: WakeWordCapture | null = null;
+  private wakeState: WakeState = "off";
+  private wakeDetail = "";
+  private wakeKey = "";
+  private wakeTest = false;
   private guestPoll: number | null = null;
   private hintMsg = "";
   private noticeSig = "";
@@ -81,7 +88,7 @@ class Control {
       localStorage.setItem(key, "1");
     } catch { this.firstPublicVisit = true; }
     this.api = {
-      hide: () => { this.hiddenByPage = true; this.render(); },
+      hide: () => { this.hiddenByPage = true; this.wake?.stop(); this.render(); },
       show: () => { this.hiddenByPage = false; this.render(); },
       position: (p) => { if (["bottom-right", "bottom-left", "top-right", "top-left"].includes(p)) { this.pos = p; this.render(); } },
     };
@@ -101,6 +108,7 @@ class Control {
   private get pending(): boolean { return !!this.core.device?.pending; }
   private get isOwner(): boolean { return this.role === "owner" && !this.pending; }
   private get canInput(): boolean { return this.role !== "display"; }
+  private get canWake(): boolean { return this.canInput && !this.pending && !this.displayMode; }
   private get prefs(): RuntimePreferences { return this.core.preferences.get(); }
   private get lang(): string { return this.prefs.language || navigator.language || "en-US"; }
   private get displayMode(): boolean {
@@ -124,8 +132,12 @@ class Control {
     const p = this.core.presence;
     const heard = p?.last_seen ? `Last heard from ${relTime(p.last_seen, this.lang)}` : "";
     switch (v) {
-      case "connecting": return { label: "Connecting", detail: "Connecting to the agent…" };
-      case "offline": return { label: "Offline", detail: "No connection. What you send is kept and delivered when the connection returns." };
+      case "connecting": return this.core.config.preview
+        ? { label: "Preview connecting", detail: "Connecting to the local fixture transport, not a live Tendriller agent." }
+        : { label: "Connecting", detail: "Connecting to the agent…" };
+      case "offline": return this.core.config.preview
+        ? { label: "Preview offline", detail: "The local fixture socket is disconnected. Preview does not use a live service or agent; offline steps intentionally test queued work." }
+        : { label: "Offline", detail: "No connection. What you send is kept and delivered when the connection returns." };
       case "pending": return { label: "Waiting for approval", detail: "An owner device needs to approve this one." };
       case "listening": return { label: "Agent ready", detail: p?.text && p.text.toLowerCase() !== "listening" ? p.text : "The agent is ready." };
       case "working": return { label: "Working", detail: p?.text && p.text.toLowerCase() !== "working" ? p.text : "The agent is working on it." };
@@ -196,11 +208,17 @@ class Control {
       this.restoreRejected(String(m.text), m.message || m.error?.message || "the page did not accept the message");
       this.renderTranscript();
     });
-    on("role", () => { this.applyPrefs(); this.render(); });
+    on("role", () => { if (!this.canWake) this.wake?.stop(); this.applyPrefs(); this.render(); });
     on("control:go_back", (m: any) => { void this.goBack(m?.version); });
     on("control:open", () => this.setOpen(true));
     on("control:close", () => this.setOpen(false));
-    this.core.preferences.on(() => { this.applyPrefs(); this.render(); });
+    this.core.preferences.on(() => {
+      const key = this.currentWakeKey();
+      if (this.wakeKey && key !== this.wakeKey && this.wake?.running)
+        this.wake.stop("paused", "Wake settings changed. Tap Start to resume.");
+      this.wakeKey = key;
+      this.applyPrefs(); this.render();
+    });
   }
 
   private onPresence(p: Presence | null) {
@@ -268,6 +286,29 @@ class Control {
       onState: (on) => this.renderMic(on),
       onError: (m) => { this.showInterim(""); this.showBubble(m, true); },
     }, this.sensors, () => this.lang, runtimeBase(this.core.config), this.core.config.features.speech && { ...this.core.config.features.speech, url: new URL(this.core.config.features.speech.url, new URL(this.core.config.base, location.href)).href, engine: { ...this.core.config.features.speech.engine, script: new URL(this.core.config.features.speech.engine.script, new URL(this.core.config.base, location.href)).href, wasm: new URL(this.core.config.features.speech.engine.wasm, new URL(this.core.config.base, location.href)).href } });
+    this.wake = new WakeWordCapture({
+      isOutputSpeaking: () => !!this.core.tts?.speaking,
+      onState: (state, detail) => {
+        this.wakeState = state;
+        this.wakeDetail = detail || "";
+        if (this.ui.wakeSettingsStatus) {
+          this.ui.wakeSettingsStatus.textContent = detail || (state === "off" ? "Hands-free off." : "Listening for your wake phrase.");
+        }
+        this.renderWake();
+      },
+      onWake: () => {
+        if (!this.wakeTest) this.core.tts?.stop();
+        this.cue("attention");
+        if (this.wakeTest) {
+          window.setTimeout(() => {
+            this.wake?.stop("paused", "Wake phrase recognized. Test passed; no command was sent.");
+            this.wakeTest = false;
+          }, 0);
+        }
+      },
+      onCommand: text => { if (!this.wakeTest) void this.submit(text, "voice"); },
+    });
+    this.wakeKey = this.currentWakeKey();
     this.view = this.computeView();
     this.applyPrefs();
     this.render();
@@ -310,7 +351,10 @@ class Control {
     u.voiceChipText = h("span", { text: "Preparing voice…" });
     u.voiceChip = h("div", { class: "chip glass", hidden: true, role: "status" }, u.voiceChipText,
       h("button", { type: "button", class: "btn small", onclick: () => { this.core.tts?.disable(); this.announce("Using browser voice."); } }, "Use browser voice"));
-    u.dock.append(u.bubble, u.voiceChip, u.sensorChip, u.pill);
+    u.wakeChipText = h("span", { text: "Hands-free listening" });
+    u.wakeChip = h("div", { class: "chip wake-chip glass", hidden: true, role: "group", "aria-label": "Hands-free microphone active" },
+      u.wakeChipText, h("button", { type: "button", class: "btn stop small", onclick: () => this.wake?.stop() }, "Stop"));
+    u.dock.append(u.bubble, u.voiceChip, u.sensorChip, u.wakeChip, u.pill);
     this.root.appendChild(u.dock);
   }
 
@@ -323,6 +367,7 @@ class Control {
       pointerHandled = true;
       downAt = Date.now();
       if (this.capture.listening) return; // second tap stops (handled on up)
+      this.wake?.stop();
       this.core.tts?.stop();
       try { b.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       void this.capture.start(true);
@@ -345,7 +390,7 @@ class Control {
       e.preventDefault();
       if (!this.capture?.mode) return;
       if (this.capture.listening) this.capture.stop();
-      else { this.core.tts?.stop(); void this.capture.start(false); }
+      else { this.wake?.stop(); this.core.tts?.stop(); void this.capture.start(false); }
     });
     b.addEventListener("contextmenu", (e) => e.preventDefault());
     return b;
@@ -429,6 +474,13 @@ class Control {
       h("button", { type: "button", class: "btn small", onclick: () => void this.prepareVoice() }, "Prepare voice"),
       h("button", { type: "button", class: "btn small", onclick: () => this.core.speak?.("Sound is working. You are ready to go.") }, "Test sound"),
       h("button", { type: "button", class: "btn small", onclick: () => { this.core.tts?.stop(); this.announce("Speech stopped."); } }, "Stop speaking")));
+    u.wakeStatus = h("p", { class: "muted wake-status", role: "status", "aria-live": "polite" });
+    u.wakeAction = h("button", { type: "button", class: "btn primary", "aria-pressed": "false", onclick: () => this.toggleWake(false) }, "Start hands-free");
+    u.wakeCard = h("section", { class: "card wake-card", "aria-label": "Hands-free wake phrase" },
+      h("h3", { text: "Hands-free wake phrase" }), u.wakeStatus,
+      h("div", { class: "actions" }, u.wakeAction,
+        h("button", { type: "button", class: "btn", onclick: () => this.openWakeSettings() }, "Configure")));
+    u.talkPanel.append(u.wakeCard);
     u.sheetSensors = h("div", { class: "card warn", hidden: true }); u.sheet.append(u.sheetSensors);
     u.ownerActions = h("div", { class: "actions" }, h("button", { type: "button", class: "btn", onclick: () => void this.goBack() }, icon("undo"), "Go back"));
     u.talkPanel.append(u.ownerActions);
@@ -440,12 +492,20 @@ class Control {
       this.section("guest-invites", "Guest invitations", icon("link"), p => void this.loadGuestInvites(p)));
     u.sharePanel.append(u.ownerSections);
     u.ownerSettings = h("div", null,
+      this.section("notify", "Device notifications", icon("bell"), p => void this.renderNotify(p)),
       this.section("experiences", "Saved work and timers", icon("scheduled"), p => mountExperienceSettings(p, this.core)),
       this.section("versions", "Earlier versions", icon("undo"), p => void this.loadVersions(p)),
       this.section("activity", "Activity record", icon("bell"), p => void this.loadActivity(p)),
-      this.section("budget", "Wake limits", icon("scheduled"), p => this.renderBudget(p)),
-      this.section("notify", "Notifications", icon("bell"), p => void this.renderNotify(p)));
+      this.section("budget", "Wake limits", icon("scheduled"), p => this.renderBudget(p)));
     u.settingsPanel.append(u.ownerSettings);
+    u.wakePrefsSection = this.section("wake-phrase", "Hands-free wake phrase", icon("mic"), p => {
+      this.ui.wakeSettingsStatus = mountWakeSettings(p, {
+        preferences: this.core.preferences, language: () => this.lang,
+        onTest: () => this.toggleWake(true),
+      });
+      if (this.wakeState !== "off") this.ui.wakeSettingsStatus.textContent = this.wakeDetail;
+    });
+    u.settingsPanel.append(u.wakePrefsSection);
     u.prefsSection = this.section("prefs", "Display and sound", icon("text"), p => this.renderPrefs(p)); u.settingsPanel.append(u.prefsSection);
     u.settingsPanel.append(this.section("report", "Report this page", icon("bell"), p => {
       clear(p, h("p", { text: "If this page is deceptive, harmful, or abusive, send a report." }), h("a", { href: this.core.config.base + "_tendril/report", target: "_blank", rel: "noopener noreferrer" }, "Open report form"));
@@ -483,6 +543,47 @@ class Control {
       const target = action === "review" ? inner?.querySelector<HTMLElement>("[data-review-copy]") : action === "remix" ? inner?.querySelector<HTMLElement>("[data-copy-name]") : inner?.querySelector<HTMLElement>("input,textarea,button");
       (target || inner?.querySelector<HTMLElement>("summary"))?.focus(); inner?.scrollIntoView({ block: "nearest" });
     }, 0);
+  }
+
+  private currentWakeKey(): string {
+    return JSON.stringify([this.prefs.wakePhrase, this.prefs.wakeMode, this.lang]);
+  }
+
+  private toggleWake(testOnly: boolean): void {
+    if (this.wake?.running) {
+      this.wake.stop();
+      this.wakeTest = false;
+      if (!testOnly) return;
+    }
+    if (!this.canWake) return;
+    this.core.tts?.stop();
+    this.capture?.stop();
+    this.wakeTest = testOnly;
+    const ok = this.wake?.start({ phrase: this.prefs.wakePhrase, lang: this.lang, mode: this.prefs.wakeMode });
+    if (!ok) this.wakeTest = false;
+  }
+
+  private openWakeSettings(): void {
+    this.setOpen(true);
+    this.selectPanel("settings");
+    (this.ui.wakePrefsSection as HTMLDetailsElement).open = true;
+    window.setTimeout(() => this.ui.wakePrefsSection.querySelector<HTMLElement>("input,select")?.focus(), 0);
+  }
+
+  private renderWake(): void {
+    if (!this.ready || !this.ui.wakeAction) return;
+    const active = !!this.wake?.running;
+    const phrase = this.prefs.wakePhrase;
+    const mode = this.prefs.wakeMode === "local" ? "on-device" : "browser-managed";
+    const message = !WakeWordCapture.supported() ? "Wake phrases are unavailable in this browser. Use the microphone button or type instead."
+      : this.wakeDetail || (active ? "Listening for your wake phrase." : "Off. Listening starts only when you tap Start.");
+    this.ui.wakeStatus.textContent = (active && this.wakeState === "listening" ? "Say “" + phrase + "”. " : "") + message +
+      (active ? "" : " Mode: " + mode + ".");
+    this.ui.wakeAction.textContent = active ? "Stop hands-free" : "Start hands-free";
+    this.ui.wakeAction.setAttribute("aria-pressed", String(active));
+    (this.ui.wakeAction as HTMLButtonElement).disabled = !this.canWake || !WakeWordCapture.supported();
+    this.ui.wakeChip.hidden = !active;
+    this.ui.wakeChipText.textContent = this.wakeState === "command" ? "Waiting for command" : "Hands-free microphone on";
   }
 
   private async prepareVoice() {
@@ -537,6 +638,10 @@ class Control {
     u.shareTab.hidden = !this.isOwner;
     if (!this.isOwner && this.panelView === "share") this.selectPanel("talk");
     u.prefsSection.hidden = this.role === "display";
+    u.wakeCard.hidden = !this.canWake;
+    u.wakePrefsSection.hidden = !this.canWake;
+    if (!this.canWake && this.wake?.running) this.wake.stop();
+    this.renderWake();
 
     // Hidden by page: keep sensor indicator visible regardless (safety).
     u.pill.hidden = this.hiddenByPage;
@@ -810,6 +915,7 @@ class Control {
   }
 
   private stopSensors() {
+    this.wake?.stop();
     const n = this.sensors.stopAll();
     this.announce(n ? "All sensors stopped." : "No sensors were in use.");
     try { this.core.bus.emit("control:sensors_stopped", { count: n }); } catch { /* ignore */ }
@@ -1081,26 +1187,70 @@ class Control {
   private async renderNotify(panel: HTMLElement) {
     const push = registry.push;
     if (!push?.available) {
-      clear(panel, h("p", { class: "muted", text: "Notifications aren't available here. On iPhone and iPad they work only after adding the page to the home screen." }));
+      clear(panel,
+        h("p", { class: "muted", text: push?.reason || "Notifications are not supported here. They require a secure page, browser support and server configuration." }),
+        h("p", { class: "muted", text: "On iPhone or iPad, add this page to the Home Screen and open it there to enable notifications." }));
       return;
     }
-    let on = false;
-    try { on = await push.subscribed(); } catch { /* ignore */ }
-    const msg = h("p", { class: "muted", "aria-live": "polite" });
-    const box = h("input", {
-      type: "checkbox", checked: on, onchange: async () => {
-        const want = (box as HTMLInputElement).checked;
-        try {
-          if (want) { const ok = await push.subscribe(); (box as HTMLInputElement).checked = ok; msg.textContent = ok ? "Notifications are on." : "Notifications were not allowed."; }
-          else { await push.unsubscribe(); msg.textContent = "Notifications are off."; }
-        } catch { (box as HTMLInputElement).checked = !want; msg.textContent = "Couldn't change notifications."; }
-      },
-    });
+    const msg = h("p", { class: "muted", role: "status", "aria-live": "polite", text: "Checking this device…" });
+    const test = h("button", { type: "button", class: "btn", disabled: true, onclick: async () => {
+      (test as HTMLButtonElement).disabled = true;
+      msg.textContent = "Sending a test notification…";
+      try {
+        const result = await push.test();
+        if (!active()) return;
+        msg.textContent = result.sent > 0
+          ? "Push service accepted the test. Check this device's notifications."
+          : result.reason === "not_subscribed" ? "Subscribe on this device before testing."
+            : `The test was not accepted (status ${result.status ?? "unknown"}). Check browser and server settings.`;
+      } catch (error: any) { if (active()) msg.textContent = error?.message || "Test notification failed."; }
+      finally { if (active()) test.disabled = !box.checked; }
+    } }, "Send test notification") as HTMLButtonElement;
+    const box = h("input", { type: "checkbox", disabled: true, onchange: async () => {
+      const wanted = (box as HTMLInputElement).checked;
+      (box as HTMLInputElement).disabled = true;
+      test.disabled = true;
+      msg.textContent = wanted ? "Requesting notification permission and registering…" : "Turning notifications off…";
+      try {
+        if (wanted) {
+          // Must run from this change gesture so browsers allow the permission prompt.
+          const ok = await push.subscribe();
+          if (!active()) return;
+          box.checked = ok;
+          msg.textContent = ok ? "Notifications enabled on this device." :
+            push.reason || "Could not register. Check permission and connection, then try again.";
+        } else {
+          await push.unsubscribe();
+          if (!active()) return;
+          box.checked = false;
+          msg.textContent = "Notifications disabled on this device.";
+        }
+      } catch (error: any) {
+        if (!active()) return;
+        box.checked = !wanted;
+        msg.textContent = error?.message || "Could not change notification settings.";
+      }
+      const state = await push.status().catch(() => null);
+      if (!active()) return;
+      if (state) box.checked = state.subscribed;
+      box.disabled = false;
+      test.disabled = state ? !state.registered : !box.checked;
+      if (state?.reason) msg.textContent = state.reason;
+    } }) as HTMLInputElement;
     clear(panel,
-      h("label", { class: "switch" }, box, "Let the agent notify this device"),
-      h("p", { class: "muted", text: "For example when a job needs your decision." }),
-      msg,
-    );
+      h("label", { class: "switch" }, box, "Allow agent alerts on this device"),
+      h("p", { class: "muted", text: "Agents and timers can alert this device while the page is closed. You choose on each device; the browser and operating system control delivery." }),
+      test, msg);
+    const active = () => panel.isConnected && panel.contains(box);
+    try {
+      const state = await push.status();
+      if (!active()) return;
+      box.checked = state.subscribed;
+      test.disabled = !state.registered;
+      msg.textContent = state.reason || (state.registered ? "Ready for agent notifications, even with the page closed." :
+        state.subscribed ? "Enabled locally; waiting for server registration." : "Notifications are off on this device.");
+    } catch { if (active()) msg.textContent = "Cannot check notification status at the moment."; }
+    finally { if (active()) box.disabled = false; }
   }
 }
 

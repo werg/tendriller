@@ -239,7 +239,12 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (this.isAgentSocket(ws)) { ws.close(1008, "Agent socket is receive-only"); return; }
+    if (this.isAgentSocket(ws)) {
+      // Normally answered by Durable Object's hibernation auto-response; also handle
+      // a forwarded heartbeat without treating a keepalive as an application write.
+      if (message === '{"t":"ping"}') { this.send(ws, { t: "pong" }); return; }
+      ws.close(1008, "Agent socket is receive-only"); return;
+    }
     await handleWsMessage(this, ws, message);
   }
 
@@ -249,8 +254,14 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
-    if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
-    else handleWsClose(this, ws);
+    if (this.isAgentSocket(ws)) {
+      const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
+      const elapsed = typeof att?.connectedAt === "number" && Number.isFinite(att.connectedAt)
+        ? `, connected for ${Math.max(0, Math.round((this.now() - att.connectedAt) / 1000))}s` : "";
+      const detail = reason ? `, reason ${JSON.stringify(reason.slice(0, 100))}` : "";
+      addActivity(this, { kind: "agent_socket", summary: `Agent receiver socket closed (code ${code}${detail}${elapsed})` });
+      this.refreshPresence(); this.scheduleAlarm();
+    } else handleWsClose(this, ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
@@ -337,6 +348,7 @@ export class Tendril extends DurableObject<Env> {
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
+      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Publication health stays pending until a visible tab loads the new version. Once claimed, set lifetime to resident for a long-lived page.",
       agent_setup: {
         event_delivery: "not_configured",
         next_step: this.db.get<string>("mode", "interactive") === "dashboard"
@@ -500,6 +512,9 @@ export class Tendril extends DurableObject<Env> {
           throw err;
         }
         if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
+        // Defense in depth for pages released by older deployments, before
+        // release cleared old push credentials. A new claim never inherits them.
+        this.db.run("DELETE FROM push_subs");
         this.db.set("owner_account", b.account_id);
         this.db.set("claimed_at", this.now());
         const label = (b.identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
@@ -1041,7 +1056,14 @@ export class Tendril extends DurableObject<Env> {
       deliveries.push({ device: s.device, ...res });
       if (res.gone) this.db.run("DELETE FROM push_subs WHERE device = ? AND sub = ?", s.device, s.sub);
     }
-    if (options.broadcastLocal !== false) this.broadcast({ t: "notify_local", title: n.title, body: n.body ?? "" }, (d) => d.role === "owner" && !d.pending && (!n.device || d.id === n.device));
+    // The same browser should not receive a system push and a second local
+    // notification when its page happens to be open. Local delivery is only
+    // the fallback for connected owner devices without provider acceptance.
+    if (options.broadcastLocal !== false) {
+      const accepted = new Set(deliveries.filter(delivery => delivery.ok).map(delivery => delivery.device));
+      this.broadcast({ t: "notify_local", title: n.title, body: n.body ?? "" },
+        (d) => d.role === "owner" && !d.pending && (!n.device || d.id === n.device) && !accepted.has(d.id));
+    }
     addActivity(this, { kind: "notify", summary: `Notification: ${preview(n.title)} (${sent} sent, ${failed} failed)`, by });
     return { sent, failed, deliveries };
   }

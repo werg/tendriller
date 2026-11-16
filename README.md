@@ -6,13 +6,15 @@ Tendriller is an application-neutral engine for pages connected to an agent. The
 
 ## Start here
 
-Read [agent.md](agent.md) for the generic service flow and [the protocol](docs/PROTOCOL.md) for guarantees. Optional CLI, collectors, host bridges, preview, browser components, workflows and examples live in [werg/tendriller-contrib](https://github.com/werg/tendriller-contrib).
+Read [agent.md](agent.md) for the generic service flow, [the browser API](docs/BROWSER_API.md) for `window.tendril`, and [the protocol](docs/PROTOCOL.md) for guarantees. Optional CLI, collectors, host bridges, preview, browser components, workflows and examples live in [werg/tendriller-contrib](https://github.com/werg/tendriller-contrib).
 
 - [Contrib release downloads](https://github.com/werg/tendriller-contrib/releases)
-- [Tested contrib catalog, 0.2.0-rc.1](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/catalog.json)
+- [Tested contrib catalog, 0.2.0-rc.3](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json)
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Core SDK/runtime releases](https://github.com/werg/tendriller/releases)
 - [Architecture and ownership](docs/ARCHITECTURE.md)
+- [Hands-free wake phrase: setup, privacy and browser support](docs/HANDS_FREE.md)
+- [Web Push notifications: device opt-in, agent API and deployment](docs/PUSH_NOTIFICATIONS.md)
 
 Use discovery to choose a release, then lock exact URLs and SHA-256 digests. Optional components are vendored into a page publication, including lazy siblings, styles and workers.
 

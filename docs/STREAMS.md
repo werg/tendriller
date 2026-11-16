@@ -16,13 +16,26 @@ Record envelopes preserve `stream`, `seq`, producer identity, producer-supplied 
 
 ## HTTP and browser operations
 
-The agent API under `A` provides stream creation/listing, append, replay, latest, trim and deletion, and scoped producer management. Producer credentials can append only to the streams in their grant and cannot access page-management or workflow operations. Page subscriptions enforce the declared reader audience and the authenticated role.
+The agent API under `A` provides stream creation/listing, append, replay, latest, trim, and scoped producer management:
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` / `POST` | `A/streams` | List/create streams |
+| `GET` | `A/streams/<name>` | Read configuration |
+| `GET` | `A/streams/<name>/records?after=N&limit=M` | Durable replay; `after` required |
+| `GET` | `A/streams/<name>/latest` | Latest durable record (possibly null), plus high-water cursor |
+| `POST` | `A/streams/<name>/records` | Append records with agent or scoped producer credential |
+| `DELETE` | `A/streams/<name>/records?through=N` | Trim retained records through explicit observed sequence |
+| `GET` / `POST` | `A/producers` | List/create scoped producers |
+| `DELETE` | `A/producers/<name>` | Revoke producer |
+
+There is no stream-definition deletion route: configuration is immutable. All `A` URLs are relative to the private agent API base in the creation response. Producer credentials can append only to the streams in their grant and cannot access page-management or workflow operations. Page subscriptions enforce the declared reader audience and the authenticated role.
 
 Use `client.streams.read(name,{after})` with an explicit nonnegative cursor. Responses include records, cursor and history metadata. `earliest_available_seq`, `latest_seq`, `gap` and `missing_through` expose missing retained history; callers must not treat an empty page as proof that no history was lost. Bounded pages always make progress when a valid record exists.
 
 `client.streams.latest(name)` returns the latest retained durable record or null without scanning its whole history. Trimming requires an explicit observed `through` bound and reports the removed count. It does not reset producer identities, quotas or sequence numbers.
 
-In browser code, subscribe through `tendril.streams`; the runtime maintains reconnect cursors and reports replay gaps. Application rendering may aggregate or batch records. Rendering options and reusable chart/view components are documented in [contrib](https://github.com/werg/tendriller-contrib).
+In browser code, use `const {record,cursor} = await tendril.streams.latest("telemetry.samples")`, then `tendril.streams.subscribe("telemetry.samples", handler, {after:cursor,onGap})` to avoid missing writes between snapshot and subscription. `tendril.streams.read(name,{after:0})` explicitly reads retained history and `tendril.streams.publish(name,{records})` requires a connected owner. See [Browser API](BROWSER_API.md). In browser code, subscribe through `tendril.streams`; the runtime maintains reconnect cursors and reports replay gaps. Application rendering may aggregate or batch records. Rendering options and reusable chart/view components are documented in [contrib](https://github.com/werg/tendriller-contrib).
 
 ## Authoritative resource policy
 
@@ -42,6 +55,10 @@ In browser code, subscribe through `tendril.streams`; the runtime maintains reco
 The larger snapshot is a general bounded-storage policy. It does not change total batch/storage quotas and does not inspect table parts, training metrics or particular stream names. A single retained snapshot can therefore represent any opaque current-state document within its limits.
 
 Producer rate budgets, whole-page storage quotas and lifecycle checks remain authoritative even when a stream's own retention permits more records. Publishing a catalog or choosing a collector option cannot increase them.
+
+## Retention sizing recipe
+
+Estimate an average JSON input record size `B` bytes, sampling every `S` seconds, with a desired lookback of `H` hours. Then estimate records `N = ceil(H * 3600 / S)` and retained bytes `N * B`. For example, 2 hours of 10-second samples at 400 bytes is about 720 records / 288 KiB. Set `max_records` somewhat above 720 for clock jitter and `max_age_seconds` at 7200 (or above for a margin). Both constraints apply; **neither guarantees** a full lookback if the page's shared 8 MiB claimed aggregate quota, 20,000-record cap or other stream workloads trim data first. A 1-second 24-hour stream would need 86,400 records and exceeds the per-stream and per-page caps. For current values, read `/api/service` rather than relying on this illustration. Ephemeral streams hold no historical lookback.
 
 ## Lifecycle and wake behavior
 
