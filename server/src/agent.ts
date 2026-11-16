@@ -26,6 +26,7 @@ import { deviceConfiguration, updateDevice } from "./device-roles";
 import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
 import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
 import { authenticateAgent, authenticateAgentToken, requireAccess } from "./access";
+import { pushAvailable, validatePushSubscription } from "./push";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -704,6 +705,20 @@ route("PUT", /^rules$/, async (t, req) => {
   t.db.set("rules", b.rules);
   t.broadcast({ t: "rules", rules: b.rules });
   return json({ rules: b.rules });
+});
+
+// The agent can inspect readiness without spending a notification or learning
+// private endpoint/auth keys. Only active owner subscriptions are counted.
+route("GET", /^notify$/, (t) => {
+  const devices = t.db.all<{ device: string; name: string | null; sub: string }>(
+    "SELECT p.device, d.name, p.sub FROM push_subs p JOIN devices d ON d.id=p.device WHERE d.role='owner' AND d.pending=0 ORDER BY p.device",
+  ).filter(row => {
+    try { return !!validatePushSubscription(JSON.parse(row.sub), t.now()); } catch { return false; }
+  }).map(row => ({ id: row.device, name: row.name }));
+  const limit = 20;
+  const used = t.db.one<{ count: number }>("SELECT count FROM notify_rate WHERE hour=?", Math.floor(t.now() / HOUR))?.count ?? 0;
+  return json({ available: pushAvailable(t.env), subscribed_devices: devices, count: devices.length,
+    quota: { limit, used, remaining: Math.max(0, limit - used) } });
 });
 
 route("POST", /^notify$/, async (t, req, url, by) => {
