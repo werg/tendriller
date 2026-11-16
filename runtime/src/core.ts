@@ -11,7 +11,7 @@ import { captureContext, matchesContext, type OperationContext } from "./generat
 import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
-import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
+import { applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
 import { createStreams } from "./streams";
 import { createConnection } from "./connection";
 import { deliveryPolicy } from "./delivery";
@@ -40,7 +40,7 @@ export function createBus(): Bus {
       const s = map.get(type);
       if (!s) return;
       for (const fn of [...s]) {
-        try { fn(["state", "state_result", "state_queue", "timer_result", "timer_queue", "sensors"].includes(type) ? clone(payload) : payload); } catch (e) { setTimeout(() => { throw e; }); }
+        try { fn(["state", "state_result", "state_queue", "timer_result", "timer_queue", "sensors", "upload_event", "capture_queue"].includes(type) ? clone(payload) : payload); } catch (e) { setTimeout(() => { throw e; }); }
       }
     },
   };
@@ -835,7 +835,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         }
         if (typeof m.rev === "number") rev = m.rev;
         if (pendingState.length) rebuild();
-        else for (const op of ops) local = applyOp(local, op);
+        else local = clone(confirmed);
         persistSoon();
         emitState(ops, m.by || "server");
         break;
@@ -1067,7 +1067,14 @@ export function createCore(cfg: TendrilConfig): Internal {
       const result: CaptureOutcome = outcome?.status === "accepted" ? outcome :
         { capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." };
       try { await removeCapture(item, result); }
-      catch (error) { sentThisConn.delete(capture_id); void pump(); throw error; }
+      catch (error) {
+        // Outcome persistence may have completed while this deletion was in
+        // progress. Settle that decision locally: the network pump skips saved
+        // rejections and cannot finish their waiting receipt while offline.
+        if (captureOutcomes.has(capture_id) || item.msg.outcome?.status === "accepted") void settleCaptureOutcome(item);
+        else { sentThisConn.delete(capture_id); void pump(); }
+        throw error;
+      }
     },
     async setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference> {
       if (!/^b_[a-z2-7]{20}$/.test(id) || typeof opts?.keep !== "boolean") throw new TypeError("setBlobRetention needs a blob id and {keep:boolean}");

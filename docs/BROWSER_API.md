@@ -358,8 +358,8 @@ the queue entry is durably removed, then reported through the promise and
 `upload_event`. After reload, a saved acceptance finishes local cleanup even
 offline, without uploading, pinning, or sending the semantic event again.
 
-If saving a known outcome or removing its queue entry fails, the capture remains
-`queued` with an uncertain local result. The runtime retries local persistence;
+If saving a newly known outcome or finishing accepted-result cleanup fails, the
+unresolved capture remains `queued`. The runtime retries local persistence;
 while it retains that outcome, it does not repeat network work. If the page reloads
 before the outcome could be saved, only the original unresolved intent survives
 and can be replayed against current server authority. `storage_unavailable` on
@@ -367,6 +367,11 @@ initial admission means the capture was never durably queued. Discard completes
 only after local removal succeeds and cannot undo server acceptance. If acceptance
 is already known when discard is requested, cleanup reports that accepted receipt
 once, without a competing discarded result.
+
+A failed discard leaves its prior queued or rejected record intact. A `discarded`
+result confirms only local queue removal: an event already sent may still be
+accepted even if its reply arrives later. Every `upload_event` and `capture_queue`
+observer receives its own detached copy, as does each waiting caller.
 
 `upload(blob,{name?,keep?,scope?,expected_generations?})` durably queues a standalone
 immutable upload and returns its verified blob metadata after completion. Optional

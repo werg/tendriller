@@ -1118,6 +1118,53 @@ test("discard before a capture decision cannot be resurrected by a late acknowle
   assert.equal(env.database.stores.outbox.size, 0); assert.equal(env.core.captures().length, 0);
 });
 
+test("a rejection saved during a failed discard settles locally even after disconnect", async () => {
+  const env = await environment({ scopes: [descriptor] }), results = [];
+  env.core.bus.on("upload_event", result => results.push(plain(result)));
+  const { promise, completion, id } = await captureAwaitingAck(env);
+  env.transport.receive({ t: "ack", cid: completion.cid, error: "forbidden", message: "Original rejection" });
+  const discarded = assert.rejects(env.core.discardCapture(id), /fixture disk failed/);
+  await flush();
+  // The outcome write commits while the later deletion is still in progress.
+  env.database.pending.shift()(); await flush();
+  assert.equal([...env.database.stores.outbox.values()][0].msg.failed.error, "forbidden");
+  assert.equal(results.length, 0);
+  env.transport.disconnect(); env.database.failure = true;
+  await env.commit(); await discarded; await flush();
+  assert.deepEqual(results.map(result => result.status), ["rejected"]);
+  assert.equal((await promise).error, "forbidden");
+  assert.equal(env.core.captures()[0].status, "rejected");
+  assert.equal(env.sent.filter(frame => frame.t === "capture_complete").length, 1);
+  env.database.failure = false;
+  const removed = env.core.discardCapture(id);
+  await flush(); await env.commit(); await removed;
+  assert.equal(results.at(-1).error, "discarded");
+  assert.equal(env.database.stores.outbox.size, 0);
+});
+
+test("capture queue and receipt observers cannot mutate another observer or the original caller result", async () => {
+  const env = await environment({ scopes: [descriptor] }), queues = [], results = [];
+  env.core.bus.on("capture_queue", queue => {
+    if (queue[0]) { queue[0].data.note = "changed by observer"; queue[0].capture_id = "wrong"; }
+    queue.length = 0;
+  });
+  env.core.bus.on("capture_queue", queue => queues.push(plain(queue)));
+  env.core.bus.on("upload_event", result => {
+    result.status = "rejected"; result.capture_id = "wrong";
+    if (result.blob) result.blob.id = "changed by observer";
+  });
+  env.core.bus.on("upload_event", result => results.push(plain(result)));
+  const { promise, completion, id } = await captureAwaitingAck(env);
+  assert.equal(queues[0][0].capture_id, id); assert.equal(queues[0][0].data.note, "original");
+  assert.equal([...env.database.stores.outbox.values()][0].msg.data.note, "original");
+  env.transport.receive({ t: "ack", cid: completion.cid, seq: 17 });
+  await env.commit(); await env.commit();
+  const result = await promise;
+  assert.equal(result.status, "accepted"); assert.equal(result.capture_id, id); assert.equal(result.blob.id, completion.blob);
+  assert.deepEqual(results, [plain(result)]);
+  assert.deepEqual(queues.at(-1), []);
+});
+
 test("capture completion uses original scope and generation after upload and reload", async () => {
   const first = await environment({ scopes: [{ ...descriptor, operations: ["capture"] }] });
   void first.core.uploadEvent(new Blob(["capture bytes"]), { data: { type: "notebook.observation", session: "uninterpreted" }, scope: descriptor.id });
