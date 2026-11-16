@@ -186,6 +186,54 @@ test("application submissions use the existing durable outbox and retain the ori
   assert.equal(env.sent.filter(message => message.t === "application").length, 0);
 });
 
+test("accepted application operations can be retried exactly on the same live connection", async () => {
+  const calls = [];
+  const receipt = { operationId: "repeat", proposalId: "original-proposal", status: "final", outcome: "accepted", revision: "r1" };
+  const env = await environment({ fetcher: async (_url, options) => { calls.push(JSON.parse(options.body)); return json(receipt); } });
+  const program = { version: 1, expected_generations: {}, steps: [{ kind: "emit", topic: "tasks", payload: "reviewed" }] };
+  const first = env.core.application.backend.submit(program, { operationId: "repeat" });
+  await flush(); await env.commit(); await env.commit(); await env.commit();
+  assert.deepEqual(plain(await first), receipt);
+  const retry = env.core.application.backend.submit(program, { operationId: "repeat" });
+  await flush(); await env.commit();
+  assert.equal(calls.length, 2, "a completed connection-local send marker must not suppress an exact retry");
+  assert.deepEqual(calls[1], calls[0]);
+  await env.commit(); await env.commit();
+  assert.deepEqual(plain(await retry), receipt);
+  assert.equal(env.database.stores.outbox.size, 0);
+});
+
+test("host failures after a lost accepted application receipt remain unresolved across reload", async () => {
+  const calls = [];
+  let mode = "lost";
+  const receipt = { operationId: "recover", proposalId: "already-accepted", status: "final", outcome: "accepted", revision: "r1" };
+  const fetcher = async (_url, options) => {
+    if (options.body !== undefined) calls.push(JSON.parse(options.body));
+    if (mode === "lost") throw new TypeError("Response lost after durable acceptance");
+    if (mode === "denied") return json({ error: { code: "forbidden", message: "Sign in again" } }, 403);
+    return json(receipt);
+  };
+  const first = await environment({ fetcher });
+  const program = { version: 1, expected_generations: { tasks: "original" }, steps: [{ kind: "emit", topic: "tasks", payload: "reviewed" }] };
+  const submitted = first.core.application.backend.submit(program, { operationId: "recover" });
+  await flush(); await first.commit();
+  assert.equal(calls.length, 1);
+  mode = "denied"; await first.expire(1000); await first.commit();
+  assert.equal(calls.length, 2);
+  assert.equal((await first.core.application.backend.operations.get("recover")).status, "queued");
+  const retained = [...first.database.stores.outbox.values()][0];
+  assert.equal(retained.msg.failed, undefined); assert.equal(retained.msg.outcome, undefined);
+  first.transport.disconnect();
+  assert.equal((await submitted).status, "queued");
+  mode = "accepted";
+  const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher });
+  await until(() => calls.length === 3);
+  assert.deepEqual(calls[1], calls[0]); assert.deepEqual(calls[2], calls[0]);
+  await second.commit(); await second.commit();
+  assert.equal(second.database.stores.outbox.size, 0);
+  assert.deepEqual(plain(await second.core.application.backend.operations.get("recover")), receipt);
+});
+
 test("application cursor reads use validated relative query URLs and keep revision-scoped snapshots coherent", async () => {
   const calls = [];
   const env = await environment({ fetcher: async url => {

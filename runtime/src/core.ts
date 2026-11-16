@@ -549,10 +549,11 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
               try { received = await deliverApplication(item); }
               catch (error) {
                 const failure = error as { status?: number; code?: string; message?: string };
-                // Explicit admission failures retain the draft. A lost/malformed
-                // response does not establish rejection and must retry exact bytes.
-                if (!(failure.status && failure.status >= 400 && failure.status < 500 && ![408, 425].includes(failure.status) &&
-                    (failure.status !== 429 || failure.code === "history_quota"))) throw error;
+                // Only the backend's exact-identity admission decisions establish
+                // rejection. Host authentication/routing failures can hide an
+                // already accepted operation whose earlier response was lost.
+                if (!(failure.status === 429 && failure.code === "history_quota" ||
+                    failure.status === 409 && failure.code === "operation_conflict")) throw error;
                 received = { operationId: item.msg.operationId, proposalId: "", status: "rejected", error: failure.code || "admission_failed", message: failure.message };
               }
             }
@@ -560,6 +561,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
             applicationOutcomes.set(item.cid, outcome);
             if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(outcome), ...(outcome.status === "rejected" ? { failed: true } : {}) });
             if (outcome.status !== "rejected") await store.removeDurable(item.cid);
+            sentThisConn.delete(item.cid);
             applicationOutcomes.delete(item.cid);
             bus.emit("application_operation", clone(outcome));
             receipts.acknowledge(item.cid, clone(outcome));

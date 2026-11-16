@@ -86,7 +86,10 @@ but not final is still `provisional` with an outcome of `rejected`; replay can
 replace that outcome. Final rejection preserves the original operation identity
 and recoverable draft. A Cloudflare admission refusal can have an empty
 `proposalId` and no `outcome`: the draft was refused before a retained proposal was
-created. A lost, malformed, or timed-out response establishes no rejection.
+created. Only an exact-identity conflict or retained-history quota refusal is
+classified this way. A lost, malformed, or timed-out response, or a host
+authentication/routing failure, establishes no rejection: an earlier submission
+may already have committed. Keep its original program queued for receipt recovery.
 
 Allocate the operation ID before submitting and keep the reviewed inputs with it.
 Retries use that same ID and original complete program. Reusing an ID for different
