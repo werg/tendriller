@@ -24,8 +24,8 @@ interface RecognitionFactory {
   install?: (options: { langs: string[]; processLocally: boolean }) => Promise<boolean>;
 }
 function recognitionFactory(): RecognitionFactory | null {
-  const w = window as unknown as { SpeechRecognition?: RecognitionFactory; webkitSpeechRecognition?: RecognitionFactory };
-  return w.SpeechRecognition || w.webkitSpeechRecognition || null;
+  const w = window as unknown as { SpeechRecognition?: RecognitionFactory };
+  return w.SpeechRecognition || null;
 }
 
 function tokens(text: string): { value: string; end: number }[] {
