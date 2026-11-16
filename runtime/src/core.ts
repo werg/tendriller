@@ -237,7 +237,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
     capture_id: item.cid, name: item.msg.name, data: clone(item.msg.data),
     scope: item.msg.scope, expected_generations: clone(item.msg.expected_generations),
-    status: item.msg.failed ? "rejected" : "queued", ...(item.msg.uploaded ? { blob: item.msg.uploaded } : {}),
+    status: item.msg.failed ? "rejected" : "queued", ...(item.msg.uploaded ? { blob: clone(item.msg.uploaded) } : {}),
     ...(item.msg.failed || {}),
   }));
   const captureQueueChanged = () => bus.emit("capture_queue", captures());

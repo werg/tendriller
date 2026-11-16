@@ -50,7 +50,9 @@ export function createPreviewStorage({ role, verifyDevice, scopes, matchesContex
       const prior = intents.get(key);
       if (prior) {
         if (prior.intent !== intent) throw failure(409, "command_conflict", "Upload CID belongs to different bytes or metadata");
-        return session(active(prior.id, device));
+        const row = active(prior.id, device);
+        if (row.phase === "aborted") throw failure(409, "upload_closed", "The original upload was aborted");
+        return session(row);
       }
       const unfinished = [...uploads.values()].filter(row => !["completed", "aborted"].includes(row.phase) && row.expires_at > now());
       if (unfinished.length >= RESOURCE_LIMITS.upload_sessions_per_page ||
@@ -142,7 +144,12 @@ export function createPreviewStorage({ role, verifyDevice, scopes, matchesContex
         }
         if (!found[2] && method === "GET") {
           let data = stored.data, status = 200;
-          const headers = { "content-type": stored.metadata.type, "accept-ranges": "bytes", "content-length": data.length };
+          const headers = {
+            "content-type": stored.metadata.type, "accept-ranges": "bytes", "content-length": data.length,
+            "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff",
+            "content-disposition": `${url.searchParams.get("disposition") === "inline" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.metadata.name || stored.metadata.id)}`,
+            "content-security-policy": "default-src 'none'; sandbox",
+          };
           if (req.headers.range) {
             const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
             if (!range || (!range[1] && !range[2])) throw failure(416, "bad_range", "Invalid byte range");

@@ -70,10 +70,12 @@ function blobService() {
 // This lets tests observe the interval between a put request and durable commit.
 class Database {
   stores = { outbox: new Map(), kv: new Map() };
+  opened = [];
   pending = [];
   failure = false;
   indexedDB = {
-    open: () => {
+    open: name => {
+      this.opened.push(name);
       const request = {};
       queueMicrotask(() => { request.result = this; request.onsuccess?.(); });
       return request;
@@ -134,6 +136,16 @@ async function environment({ database = new Database(), localStorage = storage()
 }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
+
+test("Contract 3 opens only its own persistence and ignores obsolete snapshots", async () => {
+  const localStorage = storage();
+  const obsolete = JSON.stringify({ rev: 12, state: { obsolete: true }, pending: [], transcript: [], scopes: [] });
+  localStorage.setItem("tendril:v2:page:snapshot", obsolete);
+  const env = await environment({ localStorage, online: false });
+  assert.deepEqual(env.database.opened, ["tendril:v3:page"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), {});
+  assert.equal(localStorage.getItem("tendril:v2:page:snapshot"), obsolete, "Fresh persistence does not migrate old work");
+});
 
 test("application data has no prescribed preferences or device namespaces", async () => {
   const data = { _prefs: { audio: false, mode: "display" }, _device: { zoom: 3 }, notebook: { session_id: "opaque" } };
@@ -229,6 +241,11 @@ test("capture completion uses original scope and generation after upload and rel
   const capture = second.core.captures()[0];
   assert.equal(capture.status, "rejected");
   assert.equal(capture.expected_generations[descriptor.id], "original");
+  capture.blob.id = "b_" + "b".repeat(20);
+  capture.blob.url = "https://view-only.invalid/annotation";
+  capture.blob.retention.reasons.push("view annotation");
+  assert.equal(second.core.captures()[0].blob.id, original.blob, "Public metadata is an independent snapshot");
+  assert.equal(second.core.captures()[0].blob.retention.reasons.includes("view annotation"), false);
   const retry = second.core.retryCapture(capture.capture_id);
   await flush(); await second.commit();
   const retried = second.sent.filter(frame => frame.t === "capture_complete").at(-1);

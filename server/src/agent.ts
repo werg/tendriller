@@ -5,21 +5,17 @@ import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
 import { addEvent, getEvents, markWakeDelivered } from "./events";
 import { validSecret } from "./mcpEvents";
+import { pointers } from "./files";
+import { HttpError, intParam, isPlainObject, json, readJson } from "./http";
+import { BLOB_ID_RE, newPageKey, newSocketTicket, randomB32, safeEqual, sha256Hex, SOCKET_TICKET_RE } from "./ids";
 import {
-  createVersion, latestFileMap, listVersions, pointers, rollback, servedVersion, storeContent, versionFile, versionFiles,
-  fileKey, type VersionFile,
-} from "./files";
-import { HttpError, intParam, isPlainObject, json, readBody, readJson } from "./http";
-import { BLOB_ID_RE, fromBase64, newPageKey, newSocketTicket, randomB32, safeEqual, sha256Hex, SOCKET_TICKET_RE } from "./ids";
-import {
-  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_BLOB, MAX_EVAL_CODE, MAX_FILE, MAX_STATE,
+  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_EVAL_CODE, MAX_STATE,
 } from "./limits";
-import { resolveType } from "./mime";
 import { validateOps } from "./state";
 import { mutate, preconditions } from "./scopes";
 import { handleScopes, handleWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
-import { apiUrl, normalizeFilePath } from "./urls";
+import { apiUrl } from "./urls";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { deviceConfiguration, updateDevice } from "./device-roles";
 import { CONSUMER_ROUTE, handleConsumers } from "./consumers";

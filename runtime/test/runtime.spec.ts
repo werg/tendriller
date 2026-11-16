@@ -151,7 +151,7 @@ test("pending work stays counted until acknowledgement and keeps authoritative g
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
   await page.waitForFunction(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(`tendril:v2:${window.__TENDRIL__.id}`);
+      const request = indexedDB.open(`tendril:v3:${window.__TENDRIL__.id}`);
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
     try {
@@ -209,7 +209,7 @@ test("a lost state acknowledgement cannot restore work from a rotated scope afte
   await expect.poll(() => page.evaluate(() => window.tendril.pendingWork().state)).toBe(2);
   const queuedStateCount = () => page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(`tendril:v2:${window.__TENDRIL__.id}`);
+      const request = indexedDB.open(`tendril:v3:${window.__TENDRIL__.id}`);
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
     try {

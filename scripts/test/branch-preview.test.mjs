@@ -197,7 +197,7 @@ test("live smoke waits for exact deployed commit and checks database-backed serv
   await smokePreview(identity, { delay: async () => {}, fetcher: async url => {
     const path = new URL(url).pathname; paths.push(path);
     if (path === "/health") return Response.json({ ok: true, preview: { commit: ++attempts === 1 ? "old" : commit } });
-    if (path === "/api/service") return Response.json({contract:2});
+    if (path === "/api/service") return Response.json({contract:3});
     return new Response(`Tendriller ${identity.url}`);
   } });
   assert.equal(attempts, 2);

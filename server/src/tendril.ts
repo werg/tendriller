@@ -984,10 +984,12 @@ export class Tendril extends DurableObject<Env> {
     }
     const obj = await this.env.FILES.get(this.blobKey(id), range ? { range } : undefined);
     if (!obj || !("body" in obj)) throw new HttpError(404, "not_found", "Blob content missing");
+    const filename = encodeURIComponent(new TextDecoder().decode(new TextEncoder().encode(row.name || id)))
+      .replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
     const headers = new Headers({ "Content-Type": row.type || "application/octet-stream",
       "Cache-Control": "private, max-age=31536000, immutable", "Accept-Ranges": "bytes",
       "Content-Length": String(range?.length ?? row.size), "X-Content-Type-Options": "nosniff",
-      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(row.name || id)}`,
+      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${filename}`,
       "Content-Security-Policy": "default-src 'none'; sandbox" });
     if (range) headers.set("Content-Range", `bytes ${range.offset}-${range.offset + range.length - 1}/${row.size}`);
     return new Response(head ? null : obj.body, { status: range ? 206 : 200, headers });

@@ -6,7 +6,7 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   const page = await create();
   const bytes = new TextEncoder().encode("field note α");
   const sha256 = await sha256Hex(bytes);
-  const intent = { cid: "upload-field-note", sha256, size: bytes.byteLength, type: "text/plain", name: "note.txt" };
+  const intent = { cid: "upload-field-note", sha256, size: bytes.byteLength, type: "text/plain", name: "note's α.txt" };
   const started = await apiJson(page, "POST", "uploads", intent, 201);
   expect(started).toMatchObject({ sha256, size: bytes.byteLength, phase: "reserved", upload_required: true });
   expect((await apiJson(page, "POST", "uploads", intent, 201)).id).toBe(started.id);
@@ -18,7 +18,16 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   const receipt = await apiJson(page, "POST", `uploads/${started.id}/complete`, {});
   expect(receipt.blob).toMatchObject({ id: started.blob_id, sha256, size: bytes.byteLength });
   expect((await apiJson(page, "POST", `uploads/${started.id}/complete`, {})).blob.id).toBe(started.blob_id);
-  expect(await (await api(page, "GET", `blobs/${started.blob_id}`)).text()).toBe("field note α");
+  const download = await api(page, "GET", `blobs/${started.blob_id}`);
+  expect(download.headers.get("Content-Disposition")).toBe("attachment; filename*=UTF-8''note%27s%20%CE%B1.txt");
+  expect(download.headers.get("Content-Security-Policy")).toBe("default-src 'none'; sandbox");
+  expect(download.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(await download.text()).toBe("field note α");
+  const inline = await api(page, "HEAD", `blobs/${started.blob_id}?disposition=inline`);
+  expect(inline.headers.get("Content-Disposition")).toMatch(/^inline;/);
+  expect(inline.headers.get("Content-Security-Policy")).toBe("default-src 'none'; sandbox");
+  expect(inline.headers.get("Content-Length")).toBe(String(bytes.byteLength));
+  expect(await inline.text()).toBe("");
   const partial = await api(page, "GET", `blobs/${started.blob_id}`, undefined, { Range: "bytes=0-4" });
   expect(partial.status).toBe(206);
   expect(partial.headers.get("Content-Range")).toBe(`bytes 0-4/${bytes.byteLength}`);

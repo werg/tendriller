@@ -149,7 +149,7 @@ it("remix creates an independent unpublished copy and preserves the listener gat
 
 it("validates bundle paths before writing and blocks publishing without review", async () => {
   const { handle: h } = await setup();
-  const bundle = { format: "tendriller-bundle", version: 1, name: "Bad", files: [{ path: "../index.html", type: "text/html", base64: btoa("bad") }], media: [] };
+  const bundle = { format: "tendriller-bundle", version: 3, entry: "index.html", name: "Bad", files: [{ path: "../index.html", type: "text/html", base64: btoa("bad") }], media: [] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(400);
   expect(await inDO(h.id, t => t.storageUsed())).toBe(0);
 });
@@ -173,7 +173,7 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   const media = Array.from({ length: 201 }, (_, i) => ({ id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32],
     type: "application/octet-stream", name: null, base64: "AA==" }));
-  const bundle = { format: "tendriller-bundle", version: 1, name: "Capture archive", files: [
+  const bundle = { format: "tendriller-bundle", version: 3, entry: "index.html", name: "Capture archive", files: [
     { path: "index.html", type: "text/html", base64: btoa("<h1>Archive</h1>") },
   ], media };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
@@ -212,7 +212,7 @@ it.each(["cancel", "reschedule", "delete"])("honors a %s while an earlier timer 
 
 it("keeps prepared files through orphan cleanup and later publishes them", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  const bundle = { format: "tendriller-bundle", version: 1, name: "n".repeat(200), files: [
+  const bundle = { format: "tendriller-bundle", version: 3, entry: "index.html", name: "n".repeat(200), files: [
     { path: "index.html", type: "text/html", base64: btoa("<h1>Prepared yesterday</h1>") },
   ], media: [] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
@@ -228,7 +228,13 @@ it("protects a prepared hash when its old published version is pruned", async ()
   await publishFilesJson(h, { "index.html": "<h1>Restore this older page</h1>" });
   const bundle = await apiJson(h, "GET", "bundle");
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  for (let n = 0; n < KEEP_VERSIONS; n++) await publishFilesJson(h, { "index.html": `<h1>Revision ${n}</h1>` });
+  const next = await uploadBlobJson(h, "<h1>A newer publication</h1>", { type: "text/html" });
+  let head = (await apiJson(h, "GET", "publications")).head_revision;
+  for (let n = 0; n < KEEP_VERSIONS; n++) {
+    const published = await apiJson(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: head,
+      entry: "index.html", files: [{ path: "index.html", blob_id: next.id, type: next.type }] });
+    head = published.head_revision;
+  }
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
@@ -238,7 +244,7 @@ it("protects a prepared hash when its old published version is pruned", async ()
 
 it.each(["file", "media"])("refuses publication if prepared %s bytes are missing", async (missing) => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  const bundle = { format: "tendriller-bundle", version: 1, name: "Prepared asset", files: [
+  const bundle = { format: "tendriller-bundle", version: 3, entry: "index.html", name: "Prepared asset", files: [
     { path: "index.html", type: "text/html", base64: btoa("<h1>A prepared page</h1>") },
   ], media: [{ id: "b_" + "a".repeat(20), type: "text/plain", name: "sample.txt", base64: btoa("sample") }] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);

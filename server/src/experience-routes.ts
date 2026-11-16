@@ -2,7 +2,7 @@ import type { Tendril } from "./tendril";
 import { assertValid } from "../../contract/index.mjs";
 import { deviceConfiguration, getFocus, setFocus, updateDevice } from "./device-roles";
 import { deleteTimer, listTimers, saveTimer, timerHistory } from "./timers";
-import { discardStaged, exportBundle, publishStaged, putSession, remix, sessionSummary, stageBundle } from "./portability";
+import { discardStaged, exportBundle, MAX_BUNDLE_BYTES, publishStaged, putSession, remix, sessionSummary, stageBundle } from "./portability";
 import { HttpError, json, readJson } from "./http";
 
 export const EXPERIENCE_ROUTE = /^(?:focus|timers(?:\/[^/]+)?|session|bundle(?:\/publish)?|remix)$/;
@@ -34,7 +34,7 @@ export async function handleExperience(t: Tendril, req: Request, url: URL, by: s
   if (rest === "bundle" && method === "GET") return json(await exportBundle(t, url.searchParams.get("include_data") === "true"), 200,
     { "Content-Disposition": 'attachment; filename="tendriller-bundle.json"' });
   if (rest === "bundle" && method === "PUT") {
-    const body = assertValid("bundle", await readJson(req, 36 * 1024 * 1024));
+    const body = assertValid("bundle", await readJson(req, MAX_BUNDLE_BYTES));
     const staged = await stageBundle(t, body, by);
     return json({ staged: true, files: staged.files.length, media: staged.media.length, expected_version: t.db.get("current", 0), requires_publication: true }, 202);
   }

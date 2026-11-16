@@ -198,7 +198,7 @@ it('MCP state writes use the same admission and cannot hide guards in app JSON',
 it('bundle restore checks current guards atomically and an acknowledged retry never repeats the restore', async () => {
   const h = await create({ mode: 'dashboard' });
   const entry = await apiJson(h, 'PUT', 'scopes/job', command({ paths: [['protected']], operations: [] }));
-  const bundle = { format: 'tendriller-bundle', version: 1, name: 'Scoped restore', files: [{ path: 'index.html', type: 'text/html', base64: btoa('<h1>Fresh</h1>') }], media: [], state: { protected: { session_id: 'only application JSON' } } };
+  const bundle = { format: 'tendriller-bundle', version: 3, entry: 'index.html', name: 'Scoped restore', files: [{ path: 'index.html', type: 'text/html', base64: btoa('<h1>Fresh</h1>') }], media: [], state: { protected: { session_id: 'only application JSON' } } };
   expect((await api(h, 'PUT', 'bundle', { ...bundle, scopes: [entry] })).status).toBe(400);
   await apiJson(h, 'PUT', 'bundle', bundle, 202);
   expect((await api(h, 'POST', 'bundle/publish', command({ expected_version: 0 }))).status).toBe(428);

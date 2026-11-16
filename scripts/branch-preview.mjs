@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createRequire } from "node:module";
+import { CONTRACT_VERSION } from "../contract/index.mjs";
 
 const ZONE = "tendriller.dev";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -184,7 +185,7 @@ export async function smokePreview(identity, { fetcher = fetch, provenance = tru
         const response = await fetcher(`${identity.url}${path}`, { signal: AbortSignal.timeout(15_000), redirect: "error" });
         if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
         const body = await response.text();
-        if (path === "/api/service") { if (JSON.parse(body).contract !== 2) throw new Error("Service contract mismatch"); }
+        if (path === "/api/service") { if (JSON.parse(body).contract !== CONTRACT_VERSION) throw new Error("Service contract mismatch"); }
         else if (!body.includes("Tendriller")) throw new Error(`${path}: missing service content`);
         if (path === "/agent.md" && !body.includes(identity.url)) throw new Error("Agent guide points at another environment");
       }

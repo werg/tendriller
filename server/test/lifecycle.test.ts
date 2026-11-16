@@ -20,9 +20,9 @@ describe("tokens and shared tendrils", () => {
     await publishFilesJson(h, { "index.html": "<p>x</p>" }, { token: t2.token });
     const act = await apiJson(h, "GET", "activity");
     expect(act.entries.find((e: any) => e.kind === "note")).toMatchObject({ summary: "added an item", by: "alice-agent", source: "agent" });
-    expect(act.entries.find((e: any) => e.kind === "version")).toMatchObject({ by: "alice-agent", source: "server" });
+    expect(act.entries.find((e: any) => e.kind === "version")).toMatchObject({ by: "agent:alice-agent", source: "server" });
     const versions = await apiJson(h, "GET", "publications");
-    expect(versions.versions[0].by).toBe("alice-agent");
+    expect(versions.versions[0].by).toBe("agent:alice-agent");
 
     const list = await apiJson(h, "GET", "tokens");
     expect(list.tokens.map((t: any) => t.name)).toEqual(["main", "alice-agent"]);
@@ -177,7 +177,13 @@ describe("blobs and activity", () => {
     await publishFilesJson(h, { "index.html": "<p>First</p>", "old.txt": "only in v1" });
     const first = await apiJson(h, "GET", "publications/1");
     const hashOld = first.files.find((file: any) => file.path === "old.txt").sha256;
-    for (let i = 0; i < 55; i++) await publishFilesJson(h, { "index.html": `<p>${i}</p>` }, { replace: true });
+    const current = await uploadBlobJson(h, "<p>Current</p>", { type: "text/html" });
+    let head = (await apiJson(h, "GET", "publications")).head_revision;
+    for (let i = 0; i < 55; i++) {
+      const published = await apiJson(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: head,
+        entry: "index.html", files: [{ path: "index.html", blob_id: current.id, type: current.type }] });
+      head = published.head_revision;
+    }
     await advance(h.id, 31 * 86400_000);
     await inDO(h.id, (t) => t.cleanup());
     const vs = (await apiJson(h, "GET", "publications")).versions;
@@ -185,7 +191,7 @@ describe("blobs and activity", () => {
     expect(vs[0].version).toBe(56);
     expect(await env.FILES.head(`t/${h.id}/files/${hashOld}`)).toBeNull();
     // files of kept versions are still served
-    expect(await (await publishedFile(h, "index.html")).text()).toBe("<p>54</p>");
+    expect(await (await publishedFile(h, "index.html")).text()).toBe("<p>Current</p>");
   });
 
 });

@@ -34,14 +34,16 @@ import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/c
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 import {applyOps, validateOps, historyPage} from '@tendriller/runtime/preview-support';
-assert.equal(CONTRACT_VERSION, 2); assert.equal(schema.$defs.decision, undefined);
+assert.equal(CONTRACT_VERSION, 3); assert.equal(schema.$defs.decision, undefined);
+assert.equal(schema.$defs.uploadStart.properties.cid.type, 'string');
+assert.equal(schema.$defs.publicationWrite.properties.expected_head_revision.type, 'integer');
 assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
 assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
 assertValid('command', {cid:'event-1',expected_generations:{},data:{type:'job.status',session:'application data'}});
 assert.deepEqual(applyOps({}, validateOps([{op:'set',path:['experiment'],value:{session_id:'opaque'}}])), {experiment:{session_id:'opaque'}});
 assert.equal(historyPage([{seq:1}], {after:0,limit:2,latest:1,earliest:1}).cursor, 1);
 assert.equal(STREAM_LIMITS.record_bytes, 65536);
-assert.throws(() => requireService({contract:1,workflows:[]}), /contract/);
+assert.throws(() => requireService({contract:2,workflows:[]}), /contract/);
 const client = createClient({api:'https://example.test/api/t/test',token:'private'}, {fetch: async () => new Response(JSON.stringify({events:[],cursor:2,withheld:0}))});
 assert.equal((await client.readEvents({after:2})).cursor, 2);
 assert.equal(client.createDecision, undefined);

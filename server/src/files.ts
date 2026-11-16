@@ -192,14 +192,6 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   return n;
 }
 
-/** The latest version's file map, the base for incremental uploads. */
-export function latestFileMap(t: Tendril): Map<string, VersionFile> {
-  const latest = t.db.get<number>("latest", 0);
-  const map = new Map<string, VersionFile>();
-  if (latest > 0) for (const f of versionFiles(t, latest)) map.set(f.path, f);
-  return map;
-}
-
 /** Serving rule: current unless failed, then healthy; else current; 0 = nothing uploaded. */
 export function servedVersion(t: Tendril): number {
   const current = t.db.get<number>("current", 0);
