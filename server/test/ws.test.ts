@@ -269,15 +269,15 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     again.close();
   });
 
-  it("notify sends notify_local to owner pages and reports push counts", async () => {
+  it("rejects invalid browser subscriptions and sends local fallback to open owner pages", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
     const sub = await page.request({ t: "push_subscribe", subscription: { endpoint: "https://push.example/abc", keys: { p256dh: "x", auth: "y" } } });
-    expect(sub.error).toBeUndefined();
+    expect(sub.error).toBe("push_unavailable");
     const r = await apiJson(h, "POST", "notify", { title: "Decision needed", body: "Approve?" });
-    expect(r).toMatchObject({ sent: 0, failed: 1, deliveries: [{ device: page.deviceId, ok: false }] });
+    expect(r).toEqual({ sent: 0, failed: 0, deliveries: [] });
     expect(await page.next("notify_local")).toMatchObject({ title: "Decision needed", body: "Approve?" });
-    await page.request({ t: "push_unsubscribe" });
+    expect(await page.request({ t: "push_unsubscribe" })).toMatchObject({ subscribed: false });
     expect(await apiJson(h, "POST", "notify", { title: "x" })).toEqual({ sent: 0, failed: 0, deliveries: [] });
     page.close();
   });

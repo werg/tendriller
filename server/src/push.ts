@@ -17,6 +17,46 @@ export interface NotifyDeliveryResult { sent: number; failed: number; deliveries
 export function pushAvailable(env: Env): boolean { return !!(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY); }
 export function vapidPublicKey(env: Env): string | null { return env.VAPID_PUBLIC_KEY ?? null; }
 
+/**
+ * Browser subscriptions are untrusted socket input. A push endpoint must be a
+ * public HTTPS host, never an IP address, local hostname or alternate port.
+ * This keeps a page from turning the Worker into a private-network fetcher.
+ * Accept different public push-service hosts (not only the major browsers).
+ */
+export function validatePushSubscription(value: unknown, now = Date.now()): PushSubscriptionJSON | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const sub = value as PushSubscriptionJSON;
+  if (typeof sub.endpoint !== "string" || sub.endpoint.length > 2048) return null;
+  let url: URL;
+  try { url = new URL(sub.endpoint); } catch { return null; }
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (url.protocol !== "https:" || url.username || url.password || url.hash || url.port
+    || host.length > 253 || !host.includes(".") || host.includes(":") || /^[0-9.]+$/.test(host)
+    || /(?:^|\.)(?:localhost|local|internal|test|invalid)$/.test(host)) return null;
+  if (!sub.keys || typeof sub.keys.p256dh !== "string" || typeof sub.keys.auth !== "string") return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(sub.keys.p256dh) || !/^[A-Za-z0-9_-]+$/.test(sub.keys.auth)) return null;
+  try {
+    const publicKey = b64urlDecode(sub.keys.p256dh), auth = b64urlDecode(sub.keys.auth);
+    if (publicKey.length !== 65 || publicKey[0] !== 4 || auth.length !== 16) return null;
+  } catch { return null; }
+  if (sub.expirationTime != null && (!Number.isFinite(sub.expirationTime) || sub.expirationTime <= now)) return null;
+  return {
+    endpoint: url.href,
+    expirationTime: sub.expirationTime ?? null,
+    keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+  };
+}
+
+/** Structural checks above are synchronous; WebCrypto rejects points that are
+ * the right length but do not lie on P-256 before they are persisted. */
+export async function validPushPublicKey(subscription: PushSubscriptionJSON): Promise<boolean> {
+  try {
+    await crypto.subtle.importKey("raw", b64urlDecode(subscription.keys!.p256dh),
+      { name: "ECDH", namedCurve: "P-256" }, false, []);
+    return true;
+  } catch { return false; }
+}
+
 const RECORD_SIZE = 4096;
 // header (16 salt + 4 rs + 1 idlen + 65 keyid) + 1 delimiter + 16 tag must fit the 4096-byte limit push services accept.
 const MAX_PLAINTEXT = RECORD_SIZE - 86 - 1 - 16;
@@ -28,12 +68,10 @@ export async function sendWebPush(
   opts: { ttl?: number; urgency?: Urgency; topic?: string; signal?: AbortSignal } = {},
 ): Promise<{ ok: boolean; status: number; gone: boolean }> {
   if (!pushAvailable(env)) return { ok: false, status: 501, gone: false };
-  const endpoint = subscription?.endpoint;
-  const p256dh = subscription?.keys?.p256dh;
-  const auth = subscription?.keys?.auth;
-  let url: URL;
-  try { url = new URL(endpoint ?? ""); } catch { return { ok: false, status: 400, gone: true }; }
-  if (url.protocol !== "https:" || !p256dh || !auth) return { ok: false, status: 400, gone: true };
+  const valid = validatePushSubscription(subscription);
+  if (!valid) return { ok: false, status: 400, gone: true };
+  const url = new URL(valid.endpoint!);
+  const p256dh = valid.keys!.p256dh, auth = valid.keys!.auth;
 
   const text = typeof payload === "string" ? payload : JSON.stringify(payload ?? null);
   const plaintext = new TextEncoder().encode(text);
@@ -54,7 +92,10 @@ export async function sendWebPush(
   if (topic) headers["Topic"] = topic;
 
   let res: Response;
-  try { res = await fetch(url.toString(), { method: "POST", headers, body, signal: opts.signal ?? AbortSignal.timeout(30_000) }); }
+  // A subscription endpoint is supplied by a page device. Never forward the
+  // encrypted payload or VAPID authorization to a redirect target.
+  try { res = await fetch(url.toString(), { method: "POST", headers, body, redirect: "manual",
+    signal: opts.signal ?? AbortSignal.timeout(30_000) }); }
   catch { return { ok: false, status: 0, gone: false }; }
   // Drain the body so the connection can be reused.
   try { await res.arrayBuffer(); } catch { /* ignore */ }

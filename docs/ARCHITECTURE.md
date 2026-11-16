@@ -1,6 +1,6 @@
 # Core, trusted composition, and contrib
 
-This document is the architecture decision for contract **2** and release **0.2.0-rc.2**. It replaces the pre-release combined package. Existing prototypes are rebuilt; there are no old-client adapters or storage translators.
+This document is the architecture decision for contract **2** and release **0.2.0-rc.4**. It replaces the pre-release combined package. Existing prototypes are rebuilt; there are no old-client adapters or storage translators.
 
 ## Ownership and dependency direction
 
