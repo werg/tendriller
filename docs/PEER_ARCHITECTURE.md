@@ -67,8 +67,8 @@ are unchanged by the choice of transport.
 
 ## Qualification
 
-The implementation is qualified with real browser/native WebRTC, authenticated
-Chronolog traffic and a disconnected signaling service. The evidence must
+Qualification must exercise real browser/native WebRTC, authenticated Chronolog
+traffic and a disconnected signaling service. The evidence must
 distinguish connection-setup bytes from subsequent peer bytes, demonstrate
 continued progress after host disconnection and enforce bounded queues and
 session isolation. Network reachability and provider cost remain measured

@@ -1,8 +1,8 @@
 # Selected application backends
 
 A page selects one application history at creation. Tendriller hosts the page,
-account sessions, publication recovery, blobs, connection hints, and optional
-relay. The selected backend owns application persistence, authored operations,
+account sessions, publication recovery, explicit blob facilities, connection hints
+and short-lived WebRTC rendezvous. The selected backend owns application persistence, authored operations,
 retry identity, execution, event replay, and finality.
 
 For a resident native agent deployment, select a Chronolog peer backend. Run the
@@ -55,13 +55,16 @@ Headless compositions can pass `{application: backend}` to
 `startRuntime(configuration, options)`. A hosted page uses its existing
 `window.tendril` and must not start another runtime.
 
-Peer pages never open the Cloudflare application outbox. Host diagnostics and
-blob transfers use a separate local host namespace. State, input, conversation,
-timers, streams, scopes, trusted application workflows, data bundles, and remix
-routes belonging to Cloudflare application authority return `application_backend`
-on peer pages. Page publications, recovery, accounts, blobs, and peer connectivity
-remain host facilities. The optional opaque retained record log is a separate
-explicit storage choice, not an automatically provisioned authority.
+Peer pages run a separate quiet runtime. They open no host socket or IndexedDB
+outbox and send no background health reports, logs, heartbeats or sensor reports.
+State, input, conversation, timers, streams, scopes, captures, hosted uploads and
+retained-record APIs return `application_backend`. Application work and binary
+payload exchange belong to the replica. Explicit HTTP requests, membership,
+rendezvous, publication saving and existing blob URLs remain available.
+`publication.saveOffline()` explicitly registers offline publication support.
+Automatic hosted publication health is a hosted-runtime facility; peer readiness
+belongs to the application backend. `tendril.connected` on a peer page indicates
+that its selected backend is installed, not that any remote peer is reachable.
 
 ## Small public contract
 

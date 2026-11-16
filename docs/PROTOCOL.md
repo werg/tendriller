@@ -26,9 +26,10 @@ timer, workflow, producer, or data-bundle routes. The public
 [application boundary](APPLICATION_BACKENDS.md) defines atomic programs, final
 event replay, opaque cursors, operation receipts, and revision-scoped reads.
 
-`peers/bootstrap` and `peers/socket` form a separate bounded host connectivity
-facility. `tendriller.peer.v1` binary domains and receiver credit do not change
-application membership or finality. See [peer connections](PEER_CONNECTIONS.md).
+`peers/bootstrap` and `peers/rendezvous` form a separate bounded introduction
+facility. `tendriller.rendezvous.v1` carries one complete SDP per endpoint and
+then closes. It never relays application frames. Chronolog authenticates and
+owns the subsequent WebRTC data plane, membership and finality. See [peer connections](PEER_CONNECTIONS.md).
 The count-only wake route below belongs to the Cloudflare application deployment.
 
 ## Lifecycle and delivery

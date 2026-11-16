@@ -23,8 +23,9 @@ Optional voice types and code are separate exports.
 For peer-backed pages, use `await tendril.application.ready()` and its selected
 backend's `submit`, `events`, `readView`, and `operations` methods. Install the
 matching adapter once with `tendril.application.install(backend)`; host connection
-readiness is separate. `tendril.peers.bootstrap()` and `.connect(channel,peerId)`
-provide transport setup without granting database membership. See
+readiness belongs to that backend. `tendril.peers.bootstrap()` and
+`.rendezvous(channel,peerId)` provide bounded connection setup without granting
+database membership. The Chronolog composition owns the actual WebRTC channel. See
 [application backends](APPLICATION_BACKENDS.md) and
 [peer connections](PEER_CONNECTIONS.md) for the public contracts.
 
@@ -37,8 +38,13 @@ bootstrap ordering and readiness.
 
 The state, conversation, input, timer, and stream operations below belong to the
 Cloudflare application deployment. A peer-selected page rejects these operations
-and stores application work only in its selected replica. Host publication,
-account, blob, sensor, diagnostic, and recovery APIs remain available.
+and stores application work only in its selected replica. Peer pages also reject
+hosted upload/capture, retained-record, scope and notification APIs. Explicit
+`request`, `members`, `peers`, existing `blobUrl`, local sensor controls and
+`publication.saveOffline()` remain available. No host socket, automatic health
+report, diagnostic forwarding, background poll or automatic service worker starts.
+On a peer page `connected` means its selected backend is installed; use replica
+progress for application/network readiness.
 
 ## Conversation and durable outcomes
 

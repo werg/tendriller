@@ -1,5 +1,22 @@
 # P2P application backend implementation checkpoint
 
+## Current WebRTC and quiet-host refactor
+
+The host now supplies bounded, short-lived SDP rendezvous and a separate quiet
+peer runtime. The hosted binary peer relay is removed. Peer pages start no host
+socket, heartbeat, diagnostic outbox or automatic health reporting. Chronolog owns
+WebRTC framing, peer authentication, application history and finality; participant
+administration remains event-driven. See [the architecture](PEER_ARCHITECTURE.md)
+and [public rendezvous API](PEER_CONNECTIONS.md).
+
+Tendriller source `8e92ced5` passed the complete local `npm run check`: 817 tests,
+TypeScript, public builds, dependency boundaries and the independent packed
+SDK/runtime/engine consumer. This includes actual workerd rendezvous tests and
+zero-background-host-traffic runtime regressions. Cross-repository RTC and
+application reports will identify their separately qualified source revisions.
+
+## Historical qualification before WebRTC rendezvous
+
 This branch implements the Tendriller boundary in the 16 November 2026 P2P
 events follow-up. The default Cloudflare Durable Object runs a portable,
 bandwidth-thin membership administrator. The earlier complete public

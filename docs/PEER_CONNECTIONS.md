@@ -1,134 +1,118 @@
-# Public peer connections and bootstrap
+# Peer rendezvous and explicit transports
 
-`@tendriller/core/peers` exposes a transport-only boundary for browser and native
-peers. It carries opaque bounded frames and measures the selected route. It does
-not interpret SQL, provide database membership, assign order, retain records, or
-issue finality evidence. Chronolog adapters use only this public export.
+Tendriller introduces authorized endpoints. Chronolog owns the authenticated
+application connection, signed history, detached bodies, finality and ephemeral
+signals. The default peer composition uses WebRTC through
+`@chronolog/transport-webrtc`; it does not send application frames to Cloudflare.
+See [the ownership design](PEER_ARCHITECTURE.md).
 
-For the resident agent topology, prefer a publicly reachable direct WSS endpoint
-when the deployment supports one. Tendriller's paired WSS relay is a correctness
-baseline for browsers behind NAT. Every byte through that relay still crosses
-Cloudflare; a relay connection is not a bandwidth saving claim. WebRTC, native
-Iroh, and other paths can implement the same small connection contract after
-separate qualification. No DHT or mesh is required.
-
-## Connection contract
+## Short-lived rendezvous
 
 ```js
-import { connectPeer } from '@tendriller/core/peers';
-const peer = connectPeer({ route: 'direct', url: 'wss://resident.example/peer' });
-await peer.ready;
-await peer.send({ domain: 'records', payload: signedProtocolBytes });
-for await (const frame of peer.frames) {
-  // The database adapter validates identity, grant, protocol domain, and contents.
-  await databaseTransport.receive(frame);
-}
+// Browser page; native agents use client.peers.rendezvous with their agent token.
+const signaling = tendril.peers.rendezvous(channelId, endpointId);
+const { role, session } = await signaling.ready;
+
+// The application composition owns this dependency, outside the Tendriller runtime.
+const rtc = await negotiateWebRtc({ role, signaling, onDataChannel(channel) {
+  // Transfer immediately, before sending: the exclusive replica Worker owns bytes.
+  replicaWorker.postMessage({ type: 'peer-channel', channel }, [channel]);
+} });
 ```
 
-`createPeerConnection(socket, {route,relayHandshake?,queueBytes?})` adapts a
-WebSocket-like event target. `PeerConnection` has `route`, `ready`, `frames`,
-`send(frame,{signal?})`, `close()`, and a read-only `stats` snapshot. There is one
-active frame reader. Sends preserve their call order, are bounded before waiting,
-and abort even before relay readiness. `close()` is idempotent, including after
-the remote transport closes; pending sends are rejected when the session ends.
-A closed or overflowing session is an
-explicit error; durable sync restarts from the replica's verified stored progress.
+`negotiateWebRtc` comes from `@chronolog/transport-webrtc`. The Worker frames the
+ordered reliable data channel and mutually authenticates its Chronolog reader
+capabilities before attaching it to the existing replica. Never put private keys
+in the page's signaling messages. A host account, endpoint ID, session ID or
+channel name is not a database grant.
 
-`stats.sentBytes` and `receivedBytes` count encoded application frames, including
-the three-byte Tendriller envelope. `queuedBytes` counts local queued send and
-receive frames. `openedAt` marks peer readiness. These counters exclude WebSocket,
-TLS, TCP, relay ready/credit controls, and provider billing overhead. The reported
-`route` is the explicitly chosen path, not an inference from endpoint names or a
-claim of measured direct-connect success.
+`PeerRendezvous` exposes `ready`, `messages`, `send(description)`, `close()` and a
+read-only `stats` snapshot. `ready` resolves to a fresh session ID and a server
+assigned `offerer` or `answerer` role. `messages` has one active reader and yields
+one remote `{type:'offer'|'answer',sdp}`. Each endpoint sends exactly one fully
+gathered description for its role. After both descriptions have been delivered,
+the host sends completion and closes both sockets. WebRTC and the replica remain
+independent of that closure. There are no signaling heartbeats or application
+frames. A connection failure requires a new rendezvous.
 
-## Distinct domains and bounds
+`rendezvous(channel,peerId,{signal?,timeoutMs?,socket?})` accepts cancellation and
+an optional WebSocket factory for native hosts. IDs are 1–160 characters from
+letters, numbers, underscore, dot, colon and hyphen. Use a new unpredictable
+channel for each intended pair and share it through the participant composition.
+A channel admits exactly two distinct endpoints; later reuse has a new session.
+Old messages and close callbacks cannot affect the replacement pair.
 
-The wire envelope is three bytes followed by the opaque payload: magic `0x54`,
-version `1`, and domain index `0` records / `1` signals / `2` control. Payloads must
-be nonempty. Unknown versions/domains, text application frames, oversized frames,
-and queue overflow fail closed.
+The public route is `peers/rendezvous?channel=<id>&peerId=<id>` under the agent API
+or the page's `_tendril/` prefix. Its subprotocol is `tendriller.rendezvous.v1`.
+The SDK puts private agent tokens in the TLS-protected subprotocol header, never
+in URLs. Page cookies and origin policy are enforced normally. Local credentials
+and both accounts are checked again before description delivery, including after
+asynchronous authorization. Host authorization is separate from Chronolog's
+active reader/writer capability checks.
 
 | Resource | Bound |
 | --- | --- |
-| Record or control payload | 256 KiB |
-| Ephemeral signal payload | 16 KiB |
-| Local send queue or receive queue | 4 MiB maximum |
-| Relay receiver outstanding bytes | 4 MiB |
-| Pending authorization per sender | 128 messages / 4 MiB |
-| Text relay credit control | 128 bytes |
-| Relay forwarded bytes per endpoint per second | 4 MiB |
-| Concurrent relay sessions per page | 16 pairs |
-| Bootstrap endpoints | 8 |
+| Complete SDP description | 64 KiB of UTF-8 |
+| JSON wire message | 128 KiB |
+| Description sends per endpoint | One |
+| Concurrent pending authorization per endpoint | One |
+| Concurrent rendezvous endpoints per page | 32 |
+| Rendezvous lifetime, including waiting for a partner | 60 seconds |
+| Optional bootstrap endpoints | Eight |
 
-The database framing adapter must chunk bounded range replies to fit these frame
-limits. A signal's database protocol supplies its signed session ID, sequence,
-expiry, and active membership checks. Tendriller's domain tag alone does not make
-an unsigned packet authenticated. Signals have no durable cursor or finality and
-are never inserted into the record log or application history.
+The Durable Object alarm expires abandoned introductions, including clients
+that never run a timeout. Completed sessions retain no SDP or application data.
+`stats` counts actual encoded signaling bytes and description counts; it does not
+measure RTC bytes, TLS overhead or provider billing. Binary application frames,
+wrong roles, duplicate descriptions and stale sessions fail closed. There is no
+hosted `peers/socket` relay or protocol compatibility alias.
 
-## Paired host relay
+## Bootstrap hints and explicit WebSocket transport
 
-```js
-// Authenticated browser page:
-const pagePeer = tendril.peers.connect(channelId, browserPeerId);
+`peers.setBootstrap({version:1,endpoints:[{url,route}]})` stores bounded optional
+endpoint hints. `peers.bootstrap()` reads them. Only the owner or an agent may
+replace hints; authorized nondisplay page identities may read them. WSS is
+required, except loopback WS for development. Credentials and URL fragments are
+rejected. Do not place application grants or keys in a hint URL or query.
 
-// Native host, with a private ordinary Tendriller agent token:
-const client = createClient({ api, token });
-const agentPeer = client.peers.connect(channelId, agentPeerId, {
-  socket: (url, protocols) => new WebSocket(url, protocols),
-});
-```
+An explicitly selected external native WebSocket can use the public generic
+`connectPeer({route:'direct',url})` and `createPeerConnection(socket,{route,
+queueBytes?})` helpers. These utilities are independent of the host's rendezvous.
+They expose `ready`, `frames`, ordered bounded `send`, idempotent `close`, and
+`stats` for encoded bytes, local queued bytes and opening time. Their optional
+route label is supplied by the deployment; it is not a measured ICE result.
 
-A channel pairs exactly two distinct endpoint IDs within one page. Each ID is
-1–160 characters from letters, numbers, underscore, dot, colon, and hyphen. The
-host checks authenticated page/agent access and the page's session/origin policy.
-Agent tokens travel only in the WebSocket subprotocol header, never in URLs or
-bootstrap hints. Peers must independently authenticate the database handshake;
-knowledge of a channel does not confer a group capability. Use an unpredictable
-session channel to avoid accidental collisions with other authorized host users.
+The native WebSocket envelope is magic `0x54`, version `1`, domain index
+`0` records / `1` signals / `2` control, then a nonempty opaque payload. Record and
+control payloads are bounded to 256 KiB, ephemeral signals to 16 KiB, and local
+send/receive queues to 4 MiB each. Overflow closes the session; synchronization
+resumes from verified durable progress. The retired host ready/credit protocol
+is removed. Chronolog's WebRTC framing has its own bounded fragmentation and
+receiver-credit protocol.
 
-The route is `peers/socket?channel=<id>&peerId=<id>`, under the agent API or page
-`_tendril/` prefix, with subprotocol `tendriller.peer.v1`. The public helper waits
-for both endpoints before resolving `ready`. The relay checks current local
-credentials and current account access before forwarding; revoked recipients
-are not sent later frames. A disconnected peer closes its partner and frees the
-session. A durable pair identity isolates later reuse of the same channel from
-old traffic and delayed close callbacks. The relay processes each sender's frames
-in order across asynchronous authorization. Pending authorization is bounded to
-128 messages and 4 MiB per socket; overflow closes the connection so peers can
-resume from durable progress. There is no disconnected recipient mailbox.
+## Runtime and route policy
 
-Receiver credits bound bytes in flight. The initial window is 4 MiB. Consuming a
-frame returns only its encoded byte count as a small relay control message.
-Credits acknowledge receive-buffer consumption, not durable application
-processing. Invalid or inflated credit closes the session. A slow reader leaves
-its partner waiting within the bound, or an oversized/backpressure violation
-closes the connection. A durable consumer checkpoint remains entirely separate.
+A peer page starts no ordinary host application socket, outbox, log forwarding,
+health reports or background polls. Membership and publication requests are
+explicit. `publication.saveOffline()` explicitly installs offline publication
+support. Application readiness belongs to the selected backend; it does not
+assert that an Internet route or a finality provider is currently available.
 
-The existing `events/socket` remains a count-only wake connection for the
-Cloudflare application deployment. It carries no peer record payloads and has no
-peer handshake. The new relay is a separate connection and authorization path.
+Configure ICE servers at deployment. STUN assists establishment; TURN is an
+explicit relay option whose traffic must be counted and reported as relayed.
+There is no automatic Cloudflare application-frame fallback. Existing direct
+WebSocket deployments and other transports can still attach to the same
+Chronolog authenticated protocol without changing application ownership.
 
-## Bootstrap hints
+## Qualification
 
-`client.peers.setBootstrap({version:1,endpoints:[{url,route}]})` stores bounded
-host hints. `client.peers.bootstrap()` and `tendril.peers.bootstrap()` read them.
-Only an owner or agent can replace hints; authorized nondisplay page identities
-can read them. WSS is required, except loopback WS for local development. Embedded
-URL credentials and fragments are rejected. Never place application grants,
-private keys, agent tokens, or decryption keys in a hint URL or query.
+The host tests exercise actual workerd account authorization, bounded exchange,
+role/session rejection, expiration, disconnection, and zero retained application
+records. Runtime tests verify no implicit host activity. Chronolog/contrib own
+real browser/native WebRTC and complete task/chat qualification, including work
+performed after signaling is disabled and exact original operation retries.
 
-Hints guide connection attempts. A caller explicitly chooses direct or relay;
-the helper does not probe unrelated endpoints, switch authority, or fall back to
-a different database policy. The application's enrollment flow independently
-maps the authenticated transport endpoint to permitted database roles.
-
-## Operational qualification
-
-Tests exercise the actual Worker relay with a page session and private agent
-credential, binary records/signals, quotas, revocation, disconnects, and zero
-retained application records. Direct public-agent endpoints, browser/native
-WebRTC with ICE/TURN, and Iroh browser/native paths require their own real-network
-measurements. Report route, reconnect count, catch-up bytes, and latency for the
-path actually used. No browser direct-connect rate or cost saving is asserted by
-the relay tests.
+Keep local fixture reports scoped to their exact sources and transport. Internet
+NAT reachability, TURN usage, billed provider cost and reconnect performance need
+measurements on the deployed networks. The former binary-relay reports remain
+historical evidence for their original revisions.

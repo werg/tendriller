@@ -15,9 +15,10 @@ Peer pages disable its application routes and never open a second application
 outbox. There is no automatic authority fallback. See
 [application backends](APPLICATION_BACKENDS.md).
 
-The public [peer connection](PEER_CONNECTIONS.md) boundary forwards bounded opaque
-record, signal, and control domains with receiver backpressure. Host sessions and
-relay quotas remain separate from database grants. Retained record storage is an
+The public [peer rendezvous](PEER_CONNECTIONS.md) boundary forwards one bounded
+WebRTC description per endpoint, then closes. Chronolog owns authenticated
+record, signal and control exchange over the resulting data channel. Host account
+authorization remains separate from database grants. Retained record storage is an
 optional adapter, not a mandatory checkpoint on the native commit path.
 
 The default [membership administrator](MEMBERSHIP.md) runs inside the existing
