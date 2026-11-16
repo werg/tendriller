@@ -9,7 +9,7 @@ import { normalizeFilePath, publicBase } from "./urls";
 import { listTimers } from "./timers";
 import type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
 export type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
-interface StagedBundle { name: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief; media: string[] }
+interface StagedBundle { name: string; entry: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief; media: string[] }
 const EMPTY_BRIEF: SessionBrief = { purpose: "", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
 const bundleOperations = new WeakSet<Tendril>();
 async function withBundleLock<T>(t: Tendril, work: () => Promise<T>): Promise<T> {
@@ -72,6 +72,8 @@ export async function exportBundle(t: Tendril, includeData: boolean): Promise<Po
   // state edits must not reference media that was absent from this export.
   const version = servedVersion(t);
   const fileRows = versionFiles(t, version);
+  const entry = t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry;
+  if (!entry || !fileRows.some(file => file.path === entry)) throw new HttpError(409, "no_publication", "Publish a complete page before exporting a portable bundle");
   const mediaRows = includeData ? t.db.all<{ id: string; type: string; name: string | null }>("SELECT id, type, name FROM blobs ORDER BY id") : [];
   const brief = structuredClone(t.db.get<SessionBrief>("session_brief", EMPTY_BRIEF));
   const state = structuredClone(t.getState().state);
@@ -86,7 +88,7 @@ export async function exportBundle(t: Tendril, includeData: boolean): Promise<Po
     if (!data) throw new HttpError(409, "incomplete_bundle", `Missing media ${item.id}`);
     return { ...item, base64: toBase64(await data.arrayBuffer()) };
   }));
-  return { format: "tendriller-bundle", version: 1, name, files, media,
+  return { format: "tendriller-bundle", version: 3, entry, name, files, media,
     ...(includeData ? { state, session: { ...brief, last_handled_seq: 0 } }
       : { session: { ...EMPTY_BRIEF, purpose: brief.purpose, source: brief.source } }) };
 }
@@ -111,7 +113,7 @@ export async function stageBundle(t: Tendril, value: unknown, by: string): Promi
   return withBundleLock(t, () => stageBundleUnlocked(t, value, by));
 }
 async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Promise<StagedBundle> {
-  if (!isPlainObject(value) || value.format !== "tendriller-bundle" || value.version !== 1) throw new HttpError(400, "bad_bundle", "Unsupported bundle format or version");
+  if (!isPlainObject(value) || value.format !== "tendriller-bundle" || value.version !== 3) throw new HttpError(400, "bad_bundle", "Unsupported bundle format or version");
   if (t.db.get("staged_bundle", null)) throw new HttpError(409, "staged_bundle_exists", "Publish or discard the prepared copy first");
   if (typeof value.name !== "string" || !value.name.trim() || value.name.length > 200) throw new HttpError(400, "bad_bundle", "Invalid bundle name");
   if (!Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES_PER_VERSION || !Array.isArray(value.media))
@@ -123,7 +125,9 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
     seen.add(f.path);
     return { path: f.path, type: f.type, bytes: decode(f.base64, t.fileLimit()) };
   });
-  if (!seen.has("index.html")) throw new HttpError(400, "bad_bundle", "A bundle needs index.html");
+  const entry = files.find(file => file.path === value.entry);
+  if (!entry || !/\.html?$/i.test(entry.path) || !/^text\/html(?:;|$)/i.test(entry.type))
+    throw new HttpError(400, "bad_bundle", "The bundle requires its declared authored HTML entry");
   const seenMedia = new Set<string>();
   const media = value.media.map((m: any) => {
     if (!isPlainObject(m) || typeof m.id !== "string" || !BLOB_ID_RE.test(m.id) || seenMedia.has(m.id) || typeof m.type !== "string" || m.type.length > 200 || (m.name !== null && (typeof m.name !== "string" || m.name.length > 200)))
@@ -152,7 +156,7 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
       prepared.push({ path: f.path, type: f.type, ...saved });
     }
     const state = value.state === undefined ? undefined : rewrite(value.state, mapping);
-    const staged: StagedBundle = { name: value.name.trim(), files: prepared, media: createdMedia, ...(state ? { state } : {}), ...(session ? { session } : {}) };
+    const staged: StagedBundle = { name: value.name.trim(), entry: entry.path, files: prepared, media: createdMedia, ...(state ? { state } : {}), ...(session ? { session } : {}) };
     t.transaction(() => {
       assertStoredContent(t, prepared);
       t.db.set("staged_bundle", staged);
@@ -196,7 +200,7 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
     if (!object || object.size !== stored!.size) throw new HttpError(409, "incomplete_bundle", "Prepared media is missing; discard and prepare the bundle again");
   }
   const version = await createVersion(t, new Map(staged.files.map(f => [f.path, f])), "Restored from a portable bundle", by, {
-    expectedCurrent: current,
+    entry: staged.entry, expectedCurrent: current,
     commit: () => { mutate(t, actor, command, targets, payload, () => {
       checkGenerations(t, command, { paths: staged.state ? [[]] : [], operations: ["bundle.publish"] });
       if (staged.state) t.applyState([{ op: "set", path: [], value: staged.state }], `agent:${by}`, undefined, command);
