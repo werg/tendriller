@@ -144,6 +144,21 @@ test("oversized streamed input is cancelled before any network operation", async
   assert.equal(stream.locked, false);
 });
 
+test("aborting a pending stream read cancels input before reserving or sending bytes", async () => {
+  for (const operation of ["upload", "put"]) {
+    const controller = new AbortController(); let cancelled;
+    const stream = new ReadableStream({ cancel(reason) { cancelled = reason; } });
+    const transfer = createUploadClient(async () => assert.fail("Aborted input cannot reserve a session"), async () => assert.fail("Aborted input cannot send bytes"));
+    const pending = operation === "upload" ? transfer.upload(stream, { signal: controller.signal })
+      : transfer.put(uploadId, stream, { signal: controller.signal });
+    const reason = new Error("Person cancelled this transfer");
+    controller.abort(reason);
+    await assert.rejects(pending, error => error === reason);
+    assert.equal(cancelled, reason);
+    assert.equal(stream.locked, false);
+  }
+});
+
 test("blob and shared-file listings use bounded cursors and preserve tombstones", async () => {
   const calls = [], controller = new AbortController();
   const client = createClient({ api: "https://example.test/api/t/t1", token: "tk_secret" }, { fetch: async (url, init) => {

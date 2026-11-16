@@ -4,31 +4,35 @@ import { assertValid, assertFilePath, assertPublicationEntries, RESOURCE_LIMITS 
 const id = value => encodeURIComponent(String(value));
 const bytesLimit = RESOURCE_LIMITS.blob_bytes;
 
-async function boundedBytes(input, limit = bytesLimit) {
+async function boundedBytes(input, signal, limit = bytesLimit) {
+  signal?.throwIfAborted();
   if (input instanceof Uint8Array) {
     if (input.byteLength > limit) throw new RangeError("Blob is larger than the platform byte limit");
     return input;
   }
-  if (input instanceof ArrayBuffer) return boundedBytes(new Uint8Array(input), limit);
+  if (input instanceof ArrayBuffer) return boundedBytes(new Uint8Array(input), signal, limit);
   if (typeof Blob !== "undefined" && input instanceof Blob) {
     if (input.size > limit) throw new RangeError("Blob is larger than the platform byte limit");
     return new Uint8Array(await input.arrayBuffer());
   }
   if (input?.getReader) {
     const reader = input.getReader();
+    const abort = () => { void reader.cancel(signal.reason).catch(() => {}); };
+    signal?.addEventListener("abort", abort, { once: true });
     let total = 0;
     const chunks = [];
     try {
       while (true) {
         const { done, value } = await reader.read();
+        signal?.throwIfAborted();
         if (done) break;
         const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
         total += chunk.byteLength;
         if (total > limit) throw new RangeError("Blob stream is larger than the platform byte limit");
         chunks.push(chunk);
       }
-    } catch (error) { await reader.cancel(error).catch(() => {}); throw error; }
-    finally { reader.releaseLock(); }
+    } catch (error) { void reader.cancel(error).catch(() => {}); throw error; }
+    finally { signal?.removeEventListener("abort", abort); reader.releaseLock(); }
     const buffer = new Uint8Array(total);
     for (let offset = 0, i = 0; i < chunks.length; i++) { buffer.set(chunks[i], offset); offset += chunks[i].length; }
     return buffer;
@@ -49,7 +53,7 @@ export function createUploadClient(json, raw) {
       start: (body, { signal } = {}) => json("/uploads", { method: "POST", body: assertValid("uploadStart", body), signal }, "uploadSession"),
       status: (uploadId, { signal } = {}) => json(`/uploads/${id(uploadId)}`, { signal }, "uploadSession"),
       put: async (uploadId, bytes, { signal } = {}) => {
-        const data = await boundedBytes(bytes);
+        const data = await boundedBytes(bytes, signal);
         const response = await raw(`/uploads/${id(uploadId)}/content`, { method: "PUT", body: data, signal,
           headers: { "Content-Type": "application/octet-stream" } });
         return response.status;
@@ -58,7 +62,7 @@ export function createUploadClient(json, raw) {
       cancel: (uploadId, { signal } = {}) => json(`/uploads/${id(uploadId)}`, { method: "DELETE", signal }),
       upload: async (data, { name, type = "application/octet-stream", cid = crypto.randomUUID(), signal } = {}) => {
         signal?.throwIfAborted();
-        const bytes = await boundedBytes(data);
+        const bytes = await boundedBytes(data, signal);
         const sha256 = await hexSha256(bytes);
         signal?.throwIfAborted();
         const session = await uploads.start({
