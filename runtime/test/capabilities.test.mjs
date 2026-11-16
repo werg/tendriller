@@ -27,9 +27,9 @@ function environment() {
     clearTimeout(id) { timers.delete(id); },
   };
   runInNewContext(compiled.outputFiles[0].text, context);
-  const stop = context.Capabilities.observeCapabilities(() => [], report => changed.push(report));
+  const observer = context.Capabilities.observeCapabilities(() => [], report => changed.push(report));
   return {
-    queries, changed, stop, status,
+    queries, changed, stop: observer.dispose, status,
     refresh() {
       blockQueries = true;
       window.dispatchEvent(new Event("online"));

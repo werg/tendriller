@@ -41,26 +41,26 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
   const notifications = setupPush(core);
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null,
     base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
+  const observe = () => observeCapabilities(() => tracker.active(), report => core.bus.emit("capabilities", report));
+  let capabilityObserver: ReturnType<typeof observe> | null = observe();
   const sensorChanged = () => {
     const active = tracker.active();
     core.bus.emit("sensors", active);
     core.raw({ t: "sensor_usage", active });
-    void describeCapabilities(active).then(report => core.bus.emit("capabilities", report));
+    capabilityObserver?.refresh();
   };
   let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
   core.bus.on("connect", sensorChanged);
-  const observe = () => observeCapabilities(() => tracker.active(), report => core.bus.emit("capabilities", report));
-  let offCapabilities: (() => void) | null = observe();
   // BFCache restores the same JavaScript realm without running startRuntime again.
   // Suspend observation while away, then reattach and resynchronize the utility.
   window.addEventListener("pagehide", () => {
-    offCapabilities?.(); offCapabilities = null;
+    capabilityObserver?.dispose(); capabilityObserver = null;
     offSensors?.(); offSensors = null;
   });
   window.addEventListener("pageshow", event => {
     if (!event.persisted) return;
     offSensors ??= tracker.onChange(sensorChanged);
-    offCapabilities ??= observe();
+    capabilityObserver ??= observe();
     sensorChanged();
   });
   const api: RuntimeApi = {
