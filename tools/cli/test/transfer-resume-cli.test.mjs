@@ -40,7 +40,8 @@ test("CLI changed bytes at the same path get a new transfer; identical retries r
         assert.equal(session.sha256,request.sha256);
         assert.equal(session.size,request.size);
       }
-      return json(session);
+      const { type, received, ...publicSession } = session;
+      return json(publicSession);
     }
     const match=/^\/api\/t\/abcdefghijkl\/uploads\/(u_[a-z2-7]{20})\/(content|complete)$/.exec(path);
     if(match){
@@ -55,7 +56,8 @@ test("CLI changed bytes at the same path get a new transfer; identical retries r
       if(match[2]==="complete" && req.method==="POST"){
         assert.equal(session.received,true);
         return json({status:"completed",blob:{id:session.blob_id,sha256:session.sha256,
-          size:session.size,type:session.type}});
+          size:session.size,type:session.type,url:`_tendril/blobs/${session.blob_id}`,
+          created_at:1000,retention:{expires_at:null,reasons:["agent_asset"]}}});
       }
     }
     return json({error:{code:"unknown_route",message:path}},404);

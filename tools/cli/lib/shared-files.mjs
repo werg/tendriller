@@ -2,13 +2,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { uploadBlob, downloadBlob } from "./blobs.mjs";
+import { assertFilePath, assertValid } from "@tendriller/core/contract";
 
 export function assertRemotePath(path) {
-  if (typeof path !== "string" || !path || path.length > 512 || path !== path.normalize("NFC") ||
-    /^\//.test(path) || /[\\\x00-\x1f\x7f]/.test(path) ||
-    path.split("/").some(x => !x || x === "." || x === "..") ||
-    /^(?:_tendril|_publications)(?:\/|$)/.test(path)) throw new TypeError("Invalid canonical shared file path");
-  return path;
+  return assertFilePath(path);
 }
 function sha(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 function storeRecord(file, object) {
@@ -24,14 +21,14 @@ function restoreRecord(file) {
 const uri = path => `/file-refs?path=${encodeURIComponent(assertRemotePath(path))}`;
 
 export async function readFileHead(api, path) {
-  try { return await api.get(uri(path)); }
+  try { return assertValid("fileHead", await api.get(uri(path))); }
   catch (err) {
     if (err.status === 404) return null;
     throw err;
   }
 }
-export async function listSharedFiles(api) { return api.get("/file-refs/snapshot"); }
-export async function fileHistory(api, path) { return api.get(`/file-refs/history?path=${encodeURIComponent(assertRemotePath(path))}`); }
+export async function listSharedFiles(api) { return assertValid("fileSnapshot", await api.get("/file-refs/snapshot")); }
+export async function fileHistory(api, path) { return assertValid("fileHistory", await api.get(`/file-refs/history?path=${encodeURIComponent(assertRemotePath(path))}`)); }
 
 /** Save original file intent and CAS guard before the first upload request. */
 export async function putSharedFile(api, remotePath, sourceBytes, {
@@ -58,7 +55,7 @@ export async function putSharedFile(api, remotePath, sourceBytes, {
     upload_cid: randomUUID(), phase: "pending_upload",
   };
   storeRecord(resumeFile, record);
-  if (record.phase === "accepted") return record.result;
+  if (record.phase === "accepted") return assertValid("fileResult", record.result);
   const upload = await uploadBlob(api, bytes, { type, name:localName || undefined,
     cid:record.upload_cid, resumeFile:resumeFile && `${resumeFile}.upload.json`, maxBytes });
   const body = {
@@ -68,7 +65,7 @@ export async function putSharedFile(api, remotePath, sourceBytes, {
   };
   storeRecord(resumeFile, { ...record, phase:"uploaded", blob_id:upload.blob.id });
   // On a 409, never replace the original revision/CID. Preserve the uploaded handle and command.
-  const result = await api.put("/file-refs", body);
+  const result = assertValid("fileResult", await api.put("/file-refs", assertValid("fileWrite", body)));
   storeRecord(resumeFile, { ...record, phase:"accepted", blob_id:upload.blob.id, result });
   return result;
 }
@@ -78,7 +75,9 @@ export async function deleteSharedFile(api, remotePath, {
   const path = assertRemotePath(remotePath);
   const revision = expectedRevision === undefined ? (await readFileHead(api, path))?.revision ?? 0 : expectedRevision;
   if (!Number.isSafeInteger(revision) || revision <= 0) throw new Error("Delete requires an existing exact revision");
-  return api.del("/file-refs", { json:{cid,expected_generations:expectedGenerations,...(scope ? {scope}:{}),path,expected_revision:revision} });
+  return assertValid("fileResult", await api.del("/file-refs", { json: assertValid("fileDelete", {
+    cid, expected_generations: expectedGenerations, ...(scope ? {scope}:{}), path, expected_revision: revision,
+  }) }));
 }
 export async function getSharedFile(api, remotePath, destination, {overwrite = false,signal} = {}) {
   const head = await readFileHead(api, remotePath);

@@ -19,6 +19,9 @@ const payload = Buffer.from([0, 250, 50, 0, 255, 12, 13, 127]);
 function fakeStore({ failCompleteOnce = false, corrupt = false } = {}) {
   const byCid = new Map(), byId = new Map(), objects = new Map(), calls = [], heads = new Map();
   let next = 1, fail = failCompleteOnce;
+  const metadata = stored => ({ id: stored.session.blob_id, sha256: stored.body.sha256,
+    size: stored.body.size, type: stored.body.type, url: `_tendril/blobs/${stored.session.blob_id}`,
+    created_at: 1000, retention: { expires_at: null, reasons: ["agent_asset"] } });
   const api = {
     calls, heads, objects, byCid,
     post: async (path, body) => {
@@ -38,7 +41,7 @@ function fakeStore({ failCompleteOnce = false, corrupt = false } = {}) {
         if (!stored || !stored.bytes) throw new Error("complete before raw content");
         stored.session.phase="completed";
         if (fail) {fail=false;throw new Error("lost completion acknowledgement");}
-        return {status:"completed",blob:{id:stored.session.blob_id,sha256:stored.body.sha256,size:stored.body.size,type:stored.body.type}};
+        return {status:"completed",blob:metadata(stored)};
       }
       if (path === "/publications") {
         const prior=byCid.get(`pub:${body.cid}`);
@@ -68,7 +71,7 @@ function fakeStore({ failCompleteOnce = false, corrupt = false } = {}) {
       calls.push({method:"GET",path});
       if (path.startsWith("/blobs/") && path.endsWith("/info")) {
         const id=path.split("/")[2];for(const stored of byId.values()) if(stored.session.blob_id===id)
-          return {id,sha256:stored.body.sha256,size:stored.body.size,type:stored.body.type};
+          return metadata(stored);
         throw Error("blob not found");
       }
       if (path.startsWith("/file-refs?path=")) {

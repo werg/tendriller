@@ -62,6 +62,15 @@ owns its socket, durable outbox, captures, subscriptions and publication lifecyc
 The fixture adapter intentionally has no private application records or trusted
 transaction implementation.
 
+Captures exercise the production immutable upload protocol: reserve a session,
+PUT exact bytes, then complete it before the durable capture command is accepted.
+The adapter checks the registered device identity, digest and size; repeated
+upload CIDs retain their original session and blob. Completion retries do not
+resend received bytes. Blob reads, byte ranges and guarded owner pin operations
+use the same public response shapes as the service. Uploaded fixture bytes stay
+in memory for the lifetime of the preview server; they are separate from authored
+publication files and are never added to that file set.
+
 ## HTTP fixtures and unsupported operations
 
 ```json
@@ -79,6 +88,11 @@ transaction implementation.
 Request body assertions compare JSON values, including nested objects. A mismatch
 returns `fixture_mismatch`. `once`, `update` and `broadcast` allow explicit
 scenario transitions. `mocked_http` in the report records what was simulated.
+For a query route, declare an exact `query` object, such as
+`{"path":"reports/latest.json"}` for `/_tendril/file-refs`. Its values are decoded
+strings; undeclared query values do not match. Shared-file snapshots, history and
+changes require explicit HTTP fixtures. Preview does not infer them from local
+files or claim to implement trusted shared-file transactions.
 Undeclared service operations return `501 preview_unsupported`; missing page or
 runtime assets return 404. The report fails when page errors or console errors
 occur, including a missing script. No success fixture implies authorization,

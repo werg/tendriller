@@ -28,9 +28,9 @@ test('preview and packing enumerate identical authored bytes without completing 
   const info = await (await get('/_tendril/info')).json();
   const publication = info.publication;
   const packed = pack(dir).files;
-  assert.deepEqual(publication.assets.map(asset => asset.path).sort(), Object.keys(packed).sort());
+  assert.deepEqual(publication.assets.map(asset => asset.path).sort(), packed.map(file => file.path).sort());
   for (const asset of publication.assets) {
-    const bytes = Buffer.from(packed[asset.path], 'utf8');
+    const bytes = packed.find(file => file.path === asset.path).bytes;
     assert.equal(asset.size, bytes.length);
     assert.equal(asset.sha256, createHash('sha256').update(bytes).digest('hex'));
   }

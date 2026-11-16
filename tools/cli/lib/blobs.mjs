@@ -4,6 +4,7 @@ import { createWriteStream, existsSync, lstatSync, readFileSync, writeFileSync, 
 import { dirname, basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform, Readable } from "node:stream";
+import { assertValid } from "@tendriller/core/contract";
 
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const validBlobId = id => /^b_[a-z2-7]{20}$/.test(id);
@@ -36,8 +37,10 @@ export async function uploadBlob(api, bytes, { type = "application/octet-stream"
   if (saved && cid && cid !== identity) throw new Error("Resume record CID differs from requested CID");
   const save = state => { if (resumeFile) atomicJson(resumeFile, { cid: identity, sha256, size: payload.length, type, name: name ?? null, ...state }); };
   save(saved || { phase: "starting" });
-  if (saved?.phase === "completed") return saved.completion;
-  const session = await api.post("/uploads", { cid: identity, sha256, size: payload.length, type, ...(name === undefined ? {} : { name }) }, { signal });
+  if (saved?.phase === "completed") return assertValid("uploadCompletion", saved.completion);
+  const session = assertValid("uploadSession", await api.post("/uploads", assertValid("uploadStart", {
+    cid: identity, sha256, size: payload.length, type, ...(name === undefined ? {} : { name }),
+  }), { signal }));
   if (!/^u_[a-z2-7]{20}$/.test(session?.id) || !validBlobId(session.blob_id) ||
       session.sha256 !== sha256 || session.size !== payload.length || typeof session.upload_required !== "boolean")
     throw new Error("Upload reservation did not match the submitted exact bytes");
@@ -51,7 +54,7 @@ export async function uploadBlob(api, bytes, { type = "application/octet-stream"
     await response.arrayBuffer();
     save({ phase: "received", upload_id: uploadId });
   }
-  const completion = await api.post(`/uploads/${encodeURIComponent(uploadId)}/complete`, {}, { signal });
+  const completion = assertValid("uploadCompletion", await api.post(`/uploads/${encodeURIComponent(uploadId)}/complete`, {}, { signal }));
   if (completion?.status !== "completed" || completion.blob?.id !== session.blob_id ||
       completion.blob?.sha256 !== sha256 || completion.blob.size !== payload.length)
     throw new Error("Upload completion did not attest the submitted exact bytes");
@@ -60,7 +63,7 @@ export async function uploadBlob(api, bytes, { type = "application/octet-stream"
 }
 export async function blobInfo(api, id) {
   if (!validBlobId(id)) throw new TypeError("Invalid blob ID");
-  const blob = await api.get(`/blobs/${id}/info`);
+  const blob = assertValid("blobMetadata", await api.get(`/blobs/${id}/info`));
   if (blob.id !== id || !/^[0-9a-f]{64}$/.test(blob.sha256) || !Number.isSafeInteger(blob.size) || blob.size < 0)
     throw new Error("The server returned invalid blob metadata");
   return blob;

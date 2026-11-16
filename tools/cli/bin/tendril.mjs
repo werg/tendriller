@@ -39,7 +39,8 @@ Content
   push <dir|file> [--message M] [--no-replace] [--as <path>] [--entry <html-path>] [--no-wait] [--timeout S]
   publications | publication <version> | rollback <version>
   blob upload <file> [--name N] [--type T] [--resume-file PATH]
-  blob download <id> <destination> [--overwrite] | blob info <id> | blob list
+  blob download <id> <destination> [--overwrite] | blob info <id>
+  blob list [--after <blob-id>] [--limit N]
   blob pin <id> --keep true|false [--cid C --generations JSON]
   file put <path> <file> [--revision N] [--resume-file PATH]
   file get <path> <destination> [--overwrite] | file list | file history <path>
@@ -221,7 +222,11 @@ const commands = {
 
   async blob(args, f, api, cfg) {
     const [verb, value, target] = args;
-    if (verb === "list" && args.length === 1) return out(await api.get("/blobs"));
+    if (verb === "list" && args.length === 1) {
+      const limit = boundedInteger(f.limit, "limit", 100, 1, 1000);
+      if (f.after !== undefined && !/^b_[a-z2-7]{20}$/.test(f.after)) fail("--after must be a blob ID", 64);
+      return out(await api.get(`/blobs?limit=${limit}${f.after ? `&after=${encodeURIComponent(f.after)}` : ""}`));
+    }
     if (verb === "info" && value && args.length === 2) return out(await blobInfo(api,value));
     if (verb === "upload" && value && args.length === 2) {
       const name = f.name || basename(value), type = f.type || guessType(value);
