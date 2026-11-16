@@ -252,8 +252,10 @@ objects are left unreferenced; there is no data translator or compatibility path
 3. Set `STAGING_STORAGE_SCHEMA` and `PRODUCTION_STORAGE_SCHEMA` to `3` in the
    GitHub environment or repository variables used by the deployment workflow.
    Confirm the ready gates remain enabled. A push to `master` applies D1
-   migrations, uploads the immutable runtime, deploys staging, verifies it,
-   then deploys and verifies production.
+   migrations and uploads the immutable runtime. Each environment then gets
+   a short-lived Worker that rebinds pages to `TendrilV3` while retaining inert
+   old classes, followed by the normal Worker that deletes the old namespaces.
+   Staging is verified before production starts.
 4. After each deployed Worker passes its public smoke check, the workflow
    consumes the one-time cutover marker and opens page creation automatically.
    Check a fresh page, OAuth access and an agent session in each environment.
