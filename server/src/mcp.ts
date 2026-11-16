@@ -203,11 +203,11 @@ const TOOLS: Tool[] = [
     inputSchema: obj({ include_data: { type: "boolean" } }), call: (a) => ({ method: "GET", rest: "bundle", query: { include_data: String(a.include_data === true) } }),
   },
   {
-    name: "stage_bundle", description: "Validate and prepare a portable bundle without publishing. Review its contents and current version before publishing.",
+    name: "stage_bundle", description: "Validate and prepare a portable bundle without publishing. Review its contents and publication head revision before publishing.",
     inputSchema: obj({ bundle: schemas.bundle }, ["bundle"]), call: (a) => ({ method: "PUT", rest: "bundle", body: a.bundle }),
   },
   {
-    name: "publish_bundle", description: "Publish the prepared copy only if expected_version still matches. First publication requires a live receiver; included shared state is restored.",
+    name: "publish_bundle", description: "Publish the prepared copy only if expected_head_revision still matches. First publication requires a live receiver; included shared state and shared files are restored atomically.",
     inputSchema: schemas.bundlePublish, call: (a) => ({ method: "POST", rest: "bundle/publish", body: a }),
   },
   {
