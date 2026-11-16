@@ -526,6 +526,99 @@ class Control {
     }, 0);
   }
 
+  private currentWakeKey(): string {
+    return JSON.stringify([this.prefs.wakePhrase, this.prefs.wakeMode, this.lang]);
+  }
+
+  private toggleWake(testOnly: boolean): void {
+    if (this.wake?.running) { this.wake.stop(); this.wakeTest = false; return; }
+    if (!this.canWake) return;
+    this.core.tts?.stop();
+    this.capture?.stop();
+    this.wakeTest = testOnly;
+    const ok = this.wake?.start({ phrase: this.prefs.wakePhrase, lang: this.lang, mode: this.prefs.wakeMode });
+    if (!ok) this.wakeTest = false;
+  }
+
+  private openWakeSettings(): void {
+    this.setOpen(true);
+    this.selectPanel("settings");
+    (this.ui.wakePrefsSection as HTMLDetailsElement).open = true;
+    window.setTimeout(() => this.ui.wakePrefsSection.querySelector<HTMLElement>("input,select")?.focus(), 0);
+  }
+
+  private renderWake(): void {
+    if (!this.ready || !this.ui.wakeAction) return;
+    const active = !!this.wake?.running;
+    const phrase = this.prefs.wakePhrase;
+    const mode = this.prefs.wakeMode === "local" ? "on-device" : "browser-managed";
+    const message = this.wakeDetail || (active ? "Listening for your wake phrase." : "Off. Listening starts only when you tap Start.");
+    this.ui.wakeStatus.textContent = (active && this.wakeState === "listening" ? "Say “" + phrase + "”. " : "") + message +
+      (active ? "" : " Mode: " + mode + ".");
+    this.ui.wakeAction.textContent = active ? "Stop hands-free" : "Start hands-free";
+    this.ui.wakeAction.setAttribute("aria-pressed", String(active));
+    (this.ui.wakeAction as HTMLButtonElement).disabled = !this.canWake || !WakeWordCapture.supported();
+    this.ui.wakeChip.hidden = !active;
+    this.ui.wakeChipText.textContent = this.wakeState === "command" ? "Waiting for command" : "Hands-free microphone on";
+    if (this.ui.wakeSettingsStatus) this.ui.wakeSettingsStatus.textContent = message;
+  }
+
+  private renderWakeSettings(panel: HTMLElement): void {
+    const p = this.prefs;
+    const phrase = h("input", { id: "tendril-wake-phrase", type: "text", maxlength: "64",
+      value: p.wakePhrase, autocomplete: "off", spellcheck: false }) as HTMLInputElement;
+    const mode = h("select", { id: "tendril-wake-mode" },
+      h("option", { value: "local", text: "On-device only (recommended)" }),
+      h("option", { value: "browser", text: "Browser recognition (may use cloud)" })) as HTMLSelectElement;
+    mode.value = p.wakeMode;
+    const note = h("p", { class: "muted" });
+    const explain = () => { note.textContent = mode.value === "local"
+      ? "Requires a browser with on-device SpeechRecognition and an installed language pack. Audio is processed on this device. No cloud fallback."
+      : "May send microphone audio to your browser vendor for recognition and may require internet. Choose this only if you accept that processing."; };
+    mode.addEventListener("change", explain);
+    explain();
+    const message = h("p", { class: "muted", role: "status", "aria-live": "polite" });
+    this.ui.wakeSettingsStatus = message;
+    const save = h("button", { type: "button", class: "btn", onclick: () => {
+      try {
+        this.core.preferences.update({ wakePhrase: phrase.value, wakeMode: mode.value as "local" | "browser" });
+        phrase.value = this.prefs.wakePhrase;
+        message.textContent = "Saved on this device. Tap Start to listen.";
+      } catch (error) { message.textContent = error instanceof Error ? error.message : "Invalid wake phrase."; }
+    } }, "Save phrase and mode");
+    const setup = h("button", { type: "button", class: "btn", onclick: async () => {
+      if (this.prefs.wakeMode !== "local") {
+        message.textContent = "Select On-device only and save it first."; return;
+      }
+      setup.setAttribute("disabled", "");
+      message.textContent = "Checking on-device support for " + this.lang + "…";
+      try {
+        const available = await WakeWordCapture.localAvailability(this.lang);
+        if (available === "available") message.textContent = "On-device speech is ready for " + this.lang + ". Tap Start.";
+        else if (available === "downloadable" || available === "downloading") {
+          message.textContent = "Installing the browser's language pack…";
+          const installed = await WakeWordCapture.installLocal(this.lang);
+          message.textContent = installed ? "Language pack installed. Tap Start hands-free." : "Language pack installation did not finish. Try again.";
+        } else message.textContent = "On-device recognition is not available for this browser/language. Use push-to-talk or explicitly choose Browser recognition.";
+      } catch (error) {
+        message.textContent = "Could not set up on-device speech: " + (error instanceof Error ? error.message : "browser permission or install error");
+      } finally { setup.removeAttribute("disabled"); }
+    } }, "Check / install on-device language");
+    const test = h("button", { type: "button", class: "btn", onclick: () => this.toggleWake(true) }, "Test wake phrase");
+    if (!WakeWordCapture.supported()) test.setAttribute("disabled", "");
+    clear(panel,
+      h("p", { text: "Say your phrase, followed by a command, or pause for up to 8 seconds. Commands use the normal conversation input and delivery rules." }),
+      h("div", { class: "field" }, h("label", { for: "tendril-wake-phrase", text: "Wake phrase (2+ words)" }), phrase),
+      h("div", { class: "field" }, h("label", { for: "tendril-wake-mode", text: "Recognition and privacy" }), mode),
+      note,
+      h("div", { class: "actions" }, save, setup, test),
+      message,
+      h("p", { class: "muted", text: "This is transcript matching, not a low-power wake-word chip. Keep this page visible and unlocked. Listening stops when you leave or hide the page, or stop its sensors, and never restarts automatically. Test detects the phrase without sending a command." }),
+      h("p", { class: "muted", text: "The page microphone indicator remains visible whenever hands-free listening is on. You can still type or use push-to-talk." }),
+    );
+    this.renderWake();
+  }
+
   private async prepareVoice() {
     this.ui.speechStatus.hidden = false; this.ui.speechStatus.textContent = "Preparing private speech. You can keep typing.";
     try {
