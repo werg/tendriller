@@ -53,7 +53,8 @@ export function builtinSignal(t: StreamStoreContext, name: "system.state" | "sys
   const seq = name === "system.state" ? streamHighWater(t, name)
     : t.db.one<{ seq: number }>(`INSERT INTO stream_counters(name,seq) VALUES(?,1)
         ON CONFLICT(name) DO UPDATE SET seq=seq+1 RETURNING seq`, name)!.seq;
-  return { stream: name, seq, ts: t.now(), received_at: t.now(), type, data: structuredClone(data), producer, id: null };
+  return { stream: name, seq, ts: t.now(), received_at: t.now(), type,
+    data: structuredClone(assertValid("streamJson", data)), producer, id: null };
 }
 
 function renderRecord(row: RecordRow): StreamRecord {
