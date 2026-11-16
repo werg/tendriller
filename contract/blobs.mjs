@@ -94,3 +94,32 @@ export const blobSchemas = Object.freeze({
   importStage: obj({ ...guards, sha256: sha256Schema, expected_head_revision: n, expected_files: { type: "object" } },
     [...requiredGuards, "sha256", "expected_head_revision", "expected_files"]),
 });
+
+/** Cross-field invariants cannot be expressed by the supported schema subset. */
+export function assertAttachments(attachments) {
+  if (!Array.isArray(attachments) || attachments.length > 16) throw new TypeError("At most 16 attachments are allowed");
+  const seen = new Set();
+  for (const item of attachments) {
+    const id = item?.blob_id;
+    if (typeof id !== "string" || !new RegExp(blobIdSchema.pattern).test(id) || seen.has(id) ||
+      (item.name !== undefined && (typeof item.name !== "string" || item.name.length > 200)))
+      throw new TypeError("Invalid or duplicate attachment");
+    seen.add(id);
+  }
+  return attachments;
+}
+export function assertPublicationEntries(entries, entry) {
+  if (!Array.isArray(entries) || !entries.length || entries.length > RESOURCE_LIMITS.files_per_publication)
+    throw new TypeError("Invalid publication file count");
+  assertFilePath(entry);
+  let previous = "";
+  for (const file of entries) {
+    const path = assertFilePath(file?.path);
+    if (path <= previous) throw new TypeError("Publication paths must be sorted and unique");
+    previous = path;
+    if (typeof file.blob_id !== "string" || !new RegExp(blobIdSchema.pattern).test(file.blob_id))
+      throw new TypeError("Publication entry requires a valid immutable blob ID");
+  }
+  if (!entries.some(file => file.path === entry)) throw new TypeError("Publication entry is missing from manifest");
+  return entries;
+}
