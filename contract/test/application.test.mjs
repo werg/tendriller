@@ -69,3 +69,11 @@ test('operation receipt validation prevents unverified responses from retiring a
     await assert.rejects(backend.submit(program, { operationId: 'original' }), { code: 'invalid_response' });
   }
 });
+
+
+test('Cloudflare read views reject non-object state roots before publishing a snapshot', async () => {
+  for (const state of [null, [], 'invalid', true, 42]) {
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => ({ revision: 'r1', state, scopes: [] }) });
+    await assert.rejects(backend.readView(), { code: 'invalid_response' });
+  }
+});

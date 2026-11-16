@@ -1,5 +1,5 @@
 import { assertValid } from './index.mjs';
-import { assertStateJson, normalizeStateChecks, normalizeStateOps } from './state.mjs';
+import { assertStateJson, isStateObject, normalizeStateChecks, normalizeStateOps } from './state.mjs';
 
 export const APPLICATION_LIMITS = Object.freeze({ programBytes: 256 * 1024, steps: 256, events: 128,
   eventBytes: 64 * 1024, topicLength: 160, batchTransactions: 128, historyBytes: 64 * 1024 * 1024, historyTransactions: 100_000 });
@@ -172,7 +172,7 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
     } }),
     async readView() {
       const snapshot = await request('application/view');
-      if (!snapshot || typeof snapshot.revision !== 'string' || !snapshot.revision || !Object.hasOwn(snapshot, 'state') || !Array.isArray(snapshot.scopes))
+      if (!snapshot || typeof snapshot.revision !== 'string' || !snapshot.revision || !isStateObject(snapshot.state) || !Array.isArray(snapshot.scopes))
         fail('invalid_response', 'Invalid application read snapshot');
       assertStateJson(snapshot.state);
       let released = false;

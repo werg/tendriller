@@ -80,3 +80,10 @@ test("watch treats reconnect as a hint, recovers by retained reads, and reports 
   assert.equal(removed, true);
   head = f.head; notify(); await turn(); assert.equal(observed.length, 1);
 });
+
+
+test("record root helpers consistently reject through their promised asynchronous contract", async () => {
+  await assert.rejects(recordGenesisRoot("wrong-history"), { code: "bad_request" });
+  await assert.rejects(recordEntryRoot(historyId, 0, "0".repeat(64), "1".repeat(64)), { code: "bad_request" });
+  await assert.rejects(recordEntryRoot(historyId, 1, "invalid", "1".repeat(64)), { code: "bad_request" });
+});

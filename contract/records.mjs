@@ -52,10 +52,10 @@ async function hashFields(fields) {
   return Array.from(new Uint8Array(hash), value => value.toString(16).padStart(2, "0")).join("");
 }
 /** Hash UTF-8 JSON of the shown array, with no whitespace or trailing newline. */
-export function recordGenesisRoot(historyId) {
+export async function recordGenesisRoot(historyId) {
   return hashFields([RECORD_LOG_FORMAT, "genesis", recordHistoryId(historyId)]);
 }
-export function recordEntryRoot(historyId, position, previousRoot, id) {
+export async function recordEntryRoot(historyId, position, previousRoot, id) {
   if (recordPosition(position) === 0) invalid("Entry positions start at one");
   return hashFields([RECORD_LOG_FORMAT, "entry", recordHistoryId(historyId), position, digest(previousRoot), digest(id)]);
 }

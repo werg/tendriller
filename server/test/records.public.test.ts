@@ -47,16 +47,19 @@ it("atomically deduplicates concurrent exact bytes and resumes original position
   expect(page.entries).toEqual([one, other]); expect(page.head.bytes).toBe(9);
 });
 it("recovers a lost HTTP append reply using the portable public client", async () => {
-  const { h, historyId } = await setup(); let loseReply = true;
+  const { h, historyId } = await setup(); let loseReply = true, committed: RecordLogEntry | undefined;
   const client = createRecordLogClient({ base: h.api, headers: () => ({ Authorization: `Bearer ${h.token}` }), fetch: async (url, options) => {
     const response = await req(String(url), options);
-    if (loseReply && options?.method === "POST") { loseReply = false; throw new Error("response lost after commit"); }
+    if (loseReply && options?.method === "POST") {
+      expect(response.status).toBe(200); committed = await response.json<RecordLogEntry>();
+      loseReply = false; throw new Error("response lost after commit");
+    }
     return response;
   } });
   await expect(client.append(bytes("one operation"), { historyId })).rejects.toThrow("response lost");
   await inDO(h.id, t => { t.db = new Db(t.ctx.storage); t.db.init(); });
   const result = await client.append(bytes("one operation"), { historyId });
-  expect(result.position).toBe(1);
+  expect(result.position).toBe(1); expect(result).toEqual(committed);
   expect((await client.read({ historyId, after: 0 })).entries).toEqual([result]);
 });
 it("serializes distinct concurrent appends and bounds the encoded read page", async () => {
@@ -101,7 +104,8 @@ it("retains old records across publication and elapsed time and catches up throu
   const { h, historyId, info } = await setup();
   const saved = [];
   for (let i = 0; i < 5; i++) saved.push(await append(h, historyId, `record-${i}`));
-  await publishFiles(h, { "index.html": "<!doctype html><title>New page version</title>" });
+  const publication = await publishFiles(h, { "index.html": "<!doctype html><title>New page version</title>" });
+  expect(publication.status).toBe(200);
   await inDO(h.id, t => { t.skew += 365 * 86400_000; });
   let cursor = 0;
   const received = [];
