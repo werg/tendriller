@@ -13,6 +13,7 @@ Read [agent.md](agent.md) for the generic service flow and [the protocol](docs/P
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Core SDK/runtime releases](https://github.com/werg/tendriller/releases)
 - [Architecture and ownership](docs/ARCHITECTURE.md)
+- [Web Push notifications: device opt-in, agent API and deployment](docs/PUSH_NOTIFICATIONS.md)
 
 Use discovery to choose a release, then lock exact URLs and SHA-256 digests. Optional components are vendored into a page publication, including lazy siblings, styles and workers.
 
