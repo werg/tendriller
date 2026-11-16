@@ -96,6 +96,26 @@ Read `GET A/scopes` or the `scopes` field of a state snapshot. Capture the curre
 
 Send that envelope with `PATCH A/state`. Whole replacement uses the same metadata and a `state` object. Writing an ancestor path or the whole document does not bypass the guards. Changing bindings or resetting a session rotates the authoritative generation atomically. An old queued command fails explicitly.
 
+Use core state conditions for competing edits, claims and conditional undo:
+`conditions:[{path:["item","version"],equals:3}]` or
+`conditions:[{path:["claims","item"],exists:false}]`. An optional
+`expected_revision` compares the whole shared-state revision. Every condition
+reads the same authoritative pre-mutation snapshot; all operations commit
+together. Condition-read paths also require their scope generations. Conflicts
+return `state_conflict` and retain a durable terminal receipt, so retrying that
+command cannot unexpectedly succeed later. Review the new state before issuing
+new intent under a new command ID. Conditions are concurrency guards, not
+permissions or enforced ownership policy.
+
+Browser `state.apply(ops, options)` offers the same atomic batch. Conditional
+writes remain pending until accepted and are not applied optimistically.
+`await state.snapshot()` returns a coherent `{state,rev,scopes}` from the
+authenticated connected service; use it when computing a revision-bound change.
+It fails explicitly offline and does not flush pending local writes.
+`state.get()` remains the local view for rendering. See the
+[shared-state protocol](docs/PROTOCOL.md#shared-state-writes) for exact path,
+null, conflict, retry and transaction semantics.
+
 See the full [browser API reference](https://tendriller.dev/docs/BROWSER_API.md) for `tendril.on`, stream reads, `latest`, subscriptions, publishing, state and captures. In browser code, `tendril.send(data,{scope})`, `tendril.uploadEvent(...)`, and asynchronous state operations capture and durably store the required preconditions before optimistic effects. Await the returned result and distinguish accepted, queued and rejected work. Reconnection retains the original command meaning.
 
 ## Stream read endpoints

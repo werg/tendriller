@@ -84,7 +84,7 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
       ws.close(4003, "device removed");
       return;
     }
-    const principal = await authorizeSocket(t, ws, { fresh: msg.t === "stream_subscribe" || msg.t === "stream_publish" });
+    const principal = await authorizeSocket(t, ws, { fresh: msg.t === "stream_subscribe" || msg.t === "stream_publish" || msg.t === "state_snapshot" });
     if (!principal) { ws.close(4003, "page access revoked"); return; }
     const current = t.att(ws) as Att & { deviceId: string };
     const dev = { ...t.device(current.deviceId)!, role: principal.role, pending: 0 };
@@ -279,6 +279,12 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   },
 
   async capture_complete(c) { return HANDLERS.send(c); },
+
+  state_snapshot({ t, ws, msg }) {
+    // Authorization completed above. All three fields are read synchronously
+    // from one committed state; this read creates no durable command receipt.
+    t.send(ws, { t: "state_snapshot", cid: msg.cid, ...t.getState() });
+  },
 
   async state(c) {
     const { t, dev, msg, ws } = c;

@@ -1,7 +1,7 @@
 import type { BlobTransferClient } from "./blobs-client.mjs";
 import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
-import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, StateChecks, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
+import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, StateChecks, StateSnapshot, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
@@ -22,7 +22,7 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
   notificationStatus(): Promise<NotificationStatus>;
   notify(body: NotificationRequest): Promise<NotificationDelivery>;
-  state(): Promise<{ state: Record<string, unknown>; rev: number; scopes: ScopeDescriptor[] }>;
+  state(): Promise<StateSnapshot>;
   updateState(body: CommandMetadata & StateChecks & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
   devices(): Promise<DeviceConfiguration>;
   updateDevice(device: string, body: DeviceUpdate): Promise<DeviceInfo>;

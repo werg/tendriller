@@ -3,6 +3,11 @@ import { createClient } from "../client.mjs";
 
 declare const page: RuntimeApi<{ count: number }>;
 const count: number = page.state.get().count;
+const snapshotCount: number = (await page.state.snapshot()).state.count;
+void snapshotCount;
+void page.state.apply([{op:"set",path:["count"],value:count+1}],{conditions:[{path:["count"],equals:count}]});
+// @ts-expect-error one condition cannot mean both equality and existence.
+void page.state.apply([],{conditions:[{path:["count"],equals:0,exists:true}]});
 const result: SendResult = await page.send({ count });
 if (result.status === "accepted") { const seq: number = result.seq; void seq; }
 if (result.status === "rejected") { const code: string = result.error; void code; }

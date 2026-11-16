@@ -44,7 +44,7 @@ test("preview conditional writes preserve read guards, atomic state and terminal
   const call = message => new Promise(resolve => {
     const received = raw => {
       const frame = JSON.parse(String(raw));
-      if (frame.t === "ack" && frame.cid === message.cid) { ws.off("message", received); resolve(frame); }
+      if (["ack", "state_snapshot"].includes(frame.t) && frame.cid === message.cid) { ws.off("message", received); resolve(frame); }
     };
     ws.on("message", received); ws.send(JSON.stringify(message));
   });
@@ -68,6 +68,11 @@ test("preview conditional writes preserve read guards, atomic state and terminal
   assert.ok(frames.some(frame => frame.t === "state_reset" && frame.rev === 2 && frame.state.owner === undefined));
   assert.throws(() => adapter.updateState([{ op: "set", path: ["status"], value: "wrong" }, { op: "set", path: ["array", "0"], value: 2 }]), { code: "state_conflict" });
   assert.equal(adapter.state.status, "claimed"); assert.equal(adapter.rev, 2);
+  const snapshot = await call({ t: "state_snapshot", cid: "claim-a" });
+  assert.deepEqual(snapshot.state, adapter.state);
+  assert.equal(snapshot.rev, 2); assert.equal(snapshot.scopes[0].generation, "v2");
+  adapter.updateState([{ op: "set", path: ["later"], value: true }]);
+  assert.equal((await call({ t: "state_snapshot", cid: "claim-a" })).rev, 3, "a read correlation ID is not a cached mutation receipt");
 });
 
 test("preview retries upload acknowledgements without duplicating media and speaks through real say messages", async () => {

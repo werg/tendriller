@@ -171,6 +171,17 @@ export function createCore(cfg: TendrilConfig): Internal {
   const state: StateApi = {
     get revision() { return rev; },
     get(path?: Path) { return clone(getPath(local, toPath(path))); },
+    async snapshot() {
+      const reply = await requests.request({ t: "state_snapshot" });
+      try {
+        const result = assertValid("stateSnapshot", reply);
+        // The reply may precede a newer broadcast or pending local work. Return
+        // its coherent pair without rolling back the runtime's displayed view.
+        return { state: clone(result.state), rev: result.rev, scopes: clone(result.scopes) };
+      } catch {
+        throw Object.assign(new Error("The service returned an invalid state snapshot"), { code: "invalid_response" });
+      }
+    },
     apply(ops, options) { return localOps(normalizeStateOps(ops), options); },
     set(path: Path, value: any, options?: StateWriteOptions) {
       const p = toPath(path);

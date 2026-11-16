@@ -103,6 +103,32 @@ values does not construct a coherent authoritative snapshot. `set`, `delete`,
 terminal results, including those arriving after the promise returned `queued`.
 The runtime persists commands before applying optimism or delivery.
 
+`await state.snapshot()` reads `{state,rev,scopes}` together from the service on
+the authenticated connection. It includes accepted server state, without local
+optimistic overlays. It neither flushes nor discards pending writes, and it does
+not replace the local view when the reply arrives. A read is a point-in-time
+observation, so use its revision for a subsequent conditional write. For a
+counter initialized with a numeric `count`:
+
+```js
+const observed = await tendril.state.snapshot();
+const result = await tendril.state.apply([
+  {op: "set", path: ["count"], value: observed.state.count + 1},
+], {
+  expected_revision: observed.rev,
+  expected_generations: Object.fromEntries(
+    observed.scopes.map(scope => [scope.id, scope.generation]),
+  ),
+});
+```
+
+This example guards every observed scope; a task may select only its relevant
+dependencies. Await the write result separately from the read. `snapshot()`
+rejects with `offline` before connection readiness or after a disconnect,
+`timeout` after 15 seconds without a response, and `invalid_response` for a
+malformed reply. It never queues a stale read for later delivery. Ordinary
+offline rendering continues to use `get()` and an explicit pending indicator.
+
 `state.apply(ops, options?)` submits one atomic batch of explicit `set`/`delete`
 operations. `set(null)` stores null; `delete` removes the key. Arrays are complete
 values. Literal array paths support keys containing dots and slashes. Explicit

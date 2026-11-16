@@ -19,12 +19,18 @@ const STREAM_REQUEST: DeliveryPolicy = Object.freeze({
   offlineMessage: "Stream requests need a connected page",
   disconnectMessage: "Stream connection closed",
 });
+const STATE_SNAPSHOT: DeliveryPolicy = Object.freeze({
+  ...TRANSIENT, request: "connected", disconnect: "reject",
+  offlineMessage: "State snapshots need a connected page",
+  disconnectMessage: "State snapshot connection closed",
+});
 
 /** Explicit operation names prevent new APIs accidentally inheriting a prefix policy. */
 export const DELIVERY_POLICIES = Object.freeze({
   send: ACKED,
   capture_complete: ACKED,
   state: ACKED,
+  state_snapshot: STATE_SNAPSHOT,
   log: WRITTEN,
   upload: WRITTEN,
   eval_result: TRANSIENT,

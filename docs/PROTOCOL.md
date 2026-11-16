@@ -69,6 +69,15 @@ Generation validation, the mutation and its deduplication receipt share the same
 {"cid":"replace-1","expected_generations":{},"state":{"count":1}}
 ```
 
+The browser's connected-only `state.snapshot()` sends
+`{t:"state_snapshot",cid}` on its authenticated socket and receives
+`{t:"state_snapshot",cid,state,rev,scopes}`. The fields describe one committed
+server snapshot. This read has no durable command receipt, queue or optimistic
+overlay. It does not wait for unsent local writes and does not install the reply
+over the browser's evolving local view. A later write can make it stale; capture
+its revision and relevant scope generations as write preconditions. Offline or
+disconnected reads fail explicitly; a missing response times out after 15 seconds.
+
 `set(null)` is a value; `delete` removes a path. Root state remains an object.
 Array path segments are literal keys; dots and slashes inside them do not split.
 Dotted strings split on dots and ignore empty segments. Numeric segments become
