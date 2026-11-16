@@ -1,19 +1,19 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { apiJson, api, create, req, inDO, PageClient } from './helpers';
+import { apiJson, api, create, req, inDO, PageClient, publishTestFiles, uploadAgent } from './helpers';
 import { createVersion, deleteUnreferencedContent, fileKey, publicationManifest, storeContent } from '../src/files';
 import runtimeRelease from '../src/runtime-release.json';
 import { sha256Hex } from '../src/ids';
 
 it('locks complete publication graphs and resolves nested HTML relative to its own directory', async () => {
   const page=await create();
-  const a=await apiJson(page,'POST','files',{replace:true,files:{'index.html':'<head></head><script src="app.js"></script>','app.js':'export const version="A"','docs/index.html':'<head></head><script src="nested.js"></script>','docs/nested.js':'A nested'}});
+  const a=await publishTestFiles(page,{replace:true,files:{'index.html':'<head></head><script src="app.js"></script>','app.js':'export const version="A"','docs/index.html':'<head></head><script src="nested.js"></script>','docs/nested.js':'A nested'}});
   const first=await req(page.page_url), html=await first.text();
   const config=JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
   expect(config.publication.id).toBe(String(a.version));
   expect(config.publication.assets).toHaveLength(4);
   expect(config.publication.runtime).toMatchObject({id:runtimeRelease.id,version:runtimeRelease.version});
-  const b=await apiJson(page,'POST','files',{replace:true,files:{'index.html':'<head></head>B','app.js':'export const version="B"'}});
+  const b=await publishTestFiles(page,{replace:true,files:{'index.html':'<head></head>B','app.js':'export const version="B"'}});
   const assetA=await req(page.page_url+`_publications/${a.version}/app.js`);
   const assetB=await req(page.page_url+`_publications/${b.version}/app.js`);
   expect(await assetA.text()).toContain('"A"');expect(await assetB.text()).toContain('"B"');
@@ -22,12 +22,12 @@ it('locks complete publication graphs and resolves nested HTML relative to its o
   const nested=await (await req(page.page_url+`_publications/${a.version}/docs/`)).text();
   expect(nested).toContain(`<base href="${new URL(page.page_url).pathname}_publications/${a.version}/docs/">`);
   expect((await (await req(page.page_url+'_tendril/info')).json<any>()).publication.id).toBe(String(b.version));
-  expect((await api(page,'PUT','files/_publications/forged/app.js','bad')).status).toBe(400);
+  expect((await api(page,'PUT','files/_publications/forged/app.js','bad')).status).toBe(404);
 });
 
 it('retains an offline publication lease beyond the ordinary recent-version window', async () => {
   const page=await create();
-  await apiJson(page,'POST','files',{files:{'index.html':'<head></head>A','lazy.js':'A'}});
+  await publishTestFiles(page,{files:{'index.html':'<head></head>A','lazy.js':'A'}});
   const client=await PageClient.connect(page.page_url,{version:1});client.close();
   await inDO(page.id,async t=>{
     for(let version=2;version<=52;version++){
@@ -52,13 +52,13 @@ it('serves retained immutable runtime objects after the bundled runtime changes'
 
 it('pins version-dependent features and serves old declared resources after a newer publication', async () => {
   const page = await create();
-  await apiJson(page, 'PUT', 'files/index.html', '<head></head>First publication');
+  await publishTestFiles(page, {files:{'index.html':'<head></head>First publication'}});
   const script = 'self.retainedEngine = true;', hash = await sha256Hex(script);
   const resource = `_tendril/assets/${hash}/engine.js`;
   await env.FILES.put(`assets/${hash}/engine.js`, script, {httpMetadata:{contentType:'text/javascript'}});
   const selected = {...runtimeRelease.features, speech:{...runtimeRelease.features.speech, engine:{...runtimeRelease.features.speech.engine,script:resource}}};
   await inDO(page.id, t => t.db.run('UPDATE versions SET runtime_features=? WHERE version=1', JSON.stringify(selected)));
-  await apiJson(page, 'PUT', 'files/index.html', '<head></head>Second publication');
+  await publishTestFiles(page, {files:{'index.html':'<head></head>Second publication'}});
   const config = (html: string) => JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
   const old = config(await (await req(page.page_url + '_publications/1/index.html')).text());
   const current = config(await (await req(page.page_url)).text());
@@ -74,7 +74,7 @@ it('pins version-dependent features and serves old declared resources after a ne
 
 it('keeps an incomplete holding page at its canonical URL without claiming a publication graph', async () => {
   const page = await create();
-  await apiJson(page, 'PUT', 'files/app.js', 'export const pending = true;');
+  await uploadAgent(page, 'export const pending = true;', 'text/javascript', 'app.js');
   const response = await req(page.page_url), html = await response.text();
   const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
   expect(config.publication).toBeUndefined();
