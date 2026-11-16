@@ -283,7 +283,14 @@ class Control {
       onError: (m) => { this.showInterim(""); this.showBubble(m, true); },
     }, this.sensors, () => this.lang, runtimeBase(this.core.config), this.core.config.features.speech && { ...this.core.config.features.speech, url: new URL(this.core.config.features.speech.url, new URL(this.core.config.base, location.href)).href, engine: { ...this.core.config.features.speech.engine, script: new URL(this.core.config.features.speech.engine.script, new URL(this.core.config.base, location.href)).href, wasm: new URL(this.core.config.features.speech.engine.wasm, new URL(this.core.config.base, location.href)).href } });
     this.wake = new WakeWordCapture({
-      onState: (state, detail) => { this.wakeState = state; this.wakeDetail = detail || ""; this.renderWake(); },
+      onState: (state, detail) => {
+        this.wakeState = state;
+        this.wakeDetail = detail || "";
+        if (this.ui.wakeSettingsStatus) {
+          this.ui.wakeSettingsStatus.textContent = detail || (state === "off" ? "Hands-free off." : "Listening for your wake phrase.");
+        }
+        this.renderWake();
+      },
       onWake: () => {
         if (!this.wakeTest) this.core.tts?.stop();
         this.cue("attention");
@@ -491,6 +498,7 @@ class Control {
         preferences: this.core.preferences, language: () => this.lang,
         onTest: () => this.toggleWake(true),
       });
+      if (this.wakeState !== "off") this.ui.wakeSettingsStatus.textContent = this.wakeDetail;
     });
     u.settingsPanel.append(u.wakePrefsSection);
     u.prefsSection = this.section("prefs", "Display and sound", icon("text"), p => this.renderPrefs(p)); u.settingsPanel.append(u.prefsSection);
@@ -571,7 +579,6 @@ class Control {
     (this.ui.wakeAction as HTMLButtonElement).disabled = !this.canWake || !WakeWordCapture.supported();
     this.ui.wakeChip.hidden = !active;
     this.ui.wakeChipText.textContent = this.wakeState === "command" ? "Waiting for command" : "Hands-free microphone on";
-    if (this.wakeState !== "off" && this.ui.wakeSettingsStatus) this.ui.wakeSettingsStatus.textContent = message;
   }
 
   private async prepareVoice() {
