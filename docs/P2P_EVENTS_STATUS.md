@@ -21,8 +21,16 @@ and dependency boundaries; two SDK client tests; four real Worker tests for
 provisioning, account-bound enrollment, revoked read authorization and forced
 restart; and the strict isolated SDK/runtime/engine consumer. That consumer also
 checks the exact embedded membership provenance and proves that no external
-Chronolog runtime package or private checkout is needed. The broader `npm run
-check` gate and end-to-end native/browser enrollment qualification are still in
-progress for this checkpoint.
+Chronolog runtime package or private checkout is needed. The complete `npm run
+check` gate passes 780 tests: 57 build/deployment, 69 contract, 167 runtime, five
+push, 349 Worker and 133 tools, together with all builds, TypeScript and the
+isolated consumer. The end-to-end native/browser enrollment qualification is
+still in progress for this checkpoint.
+
+The clean portable administrator pin was then advanced to Chronolog `46b72ebc`
+for canonical epoch fencing. Fresh builds, all TypeScript checks, the four
+membership Worker tests and the strict isolated consumer pass against that exact
+artifact. The 780-test run above used the preceding `b23fbc15` pin; the focused
+repeat covers the final dependency update without claiming another full run.
 
 Direct public-agent, WebRTC, and Iroh measurements remain explicit follow-up experiments; the implementation claims no production NAT success rate or cost saving. Release artifacts identify rc.9/schema 8; deployment resources have not been advanced or deployed. [Membership documentation](MEMBERSHIP.md) records the API, bootstrap order, trust boundary, quotas and fresh storage requirement.
