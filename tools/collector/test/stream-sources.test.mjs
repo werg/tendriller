@@ -74,19 +74,20 @@ test('GPU sampling distinguishes real zeroes from absent, unsupported and malfor
   const calls = [];
   const { sample } = await sampleHost(undefined, { gpu: true }, { executeGpu: async (...args) => {
     calls.push(args);
-    return { stdout: '0, 0, 0, 1024, 0\n1, 50.5, N/A, [Not Supported], \n2, , invalid, 1e400, [N/A]\n3, 10, 0.5, 2048, -2\n' };
+    return { stdout: 'Generic GPU, 0, 0, 0, 1024, 0\nNVIDIA GB10, 1, 50.5, N/A, [Not Supported], \nOther GPU, 2, , invalid, 1e400, [N/A]\nOther GPU, 3, 10, 0.5, 2048, -2\n' };
   } });
   assert.equal(calls[0][0], 'nvidia-smi');
-  assert.deepEqual(calls[0][1], ['--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits']);
+  assert.deepEqual(calls[0][1], ['--query-gpu=name,index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits']);
   assert.equal(calls[0][2].timeout, 3000); assert.equal(calls[0][2].maxBuffer, 65536);
   assert.equal(sample.gpu_status, 'available');
-  assert.deepEqual(sample.gpus[0], { index: 0, utilization_percent: 0, memory_used_bytes: 0, memory_total_bytes: 1024 ** 3, temperature_c: 0 });
-  assert.deepEqual(sample.gpus[1], { index: 1, utilization_percent: 50.5, memory_used_bytes: null, memory_total_bytes: null, temperature_c: null,
+  assert.deepEqual(sample.gpus[0], { model: 'Generic GPU', unified_memory: null, index: 0, utilization_percent: 0, memory_used_bytes: 0, memory_total_bytes: 1024 ** 3, temperature_c: 0 });
+  assert.deepEqual(sample.gpus[1], { model: 'NVIDIA GB10', unified_memory: true, index: 1, utilization_percent: 50.5, memory_used_bytes: null, memory_total_bytes: null, temperature_c: null,
     unavailable: { memory_used_bytes: 'not_available', memory_total_bytes: 'not_supported', temperature_c: 'not_reported' } });
-  assert.deepEqual(sample.gpus[2], { index: 2, utilization_percent: null, memory_used_bytes: null, memory_total_bytes: null, temperature_c: null,
+  assert.deepEqual(sample.gpus[2], { model: 'Other GPU', unified_memory: null, index: 2, utilization_percent: null, memory_used_bytes: null, memory_total_bytes: null, temperature_c: null,
     unavailable: { utilization_percent: 'not_reported', memory_used_bytes: 'invalid_value', memory_total_bytes: 'invalid_value', temperature_c: 'not_available' } });
   assert.equal(sample.gpus[3].memory_used_bytes, 0.5 * 1024 ** 2);
   assert.equal(sample.gpus[3].temperature_c, -2);
+  assert.equal(sample.gpus[3].unified_memory, null);
   assert.equal(Number.isFinite(sample.metrics.memory_total_bytes), true);
 });
 
