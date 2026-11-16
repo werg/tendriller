@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
 import { pack, listFiles, isText, guessType, shouldSkip } from "../lib/pack.mjs";
-import { syncAssets, verifyAssets } from "../lib/assets.mjs";
 import {
   resolveConfig, saveConfig, configDir, cursorPath, checkpointPath, readCursor, writeCursor, idFromApi, slug, serverBase,
 } from "../lib/config.mjs";
@@ -67,46 +66,28 @@ test("pack: directory without index.html is refused unless merging", () => {
   assert.deepEqual(pack(d, { merge: true }).files, { "style.css": "body{}" });
 });
 
-test("pack vendors declared components before publication and refuses modified copies", () => {
+test("pack preserves authored edits and never completes missing files", () => {
   const dir = tmp();
-  writeFileSync(join(dir, "index.html"), '<script src="assets/components/chart.js"></script><script src="assets/components/stream-view.js"></script>');
-  writeFileSync(join(dir, "tendril.json"), JSON.stringify({components:["chart","stream-view"]}));
-  const first = pack(dir);
-  const lock = JSON.parse(readFileSync(join(dir, "tendril.assets.json"), "utf8"));
-  assert.ok(lock.files.some(file => file.path === "assets/components/chart.js"));
-  assert.ok(lock.files.some(file => file.path === "assets/components/stream-view.js"));
-  for (const file of lock.files) assert.ok(first.files[file.path], file.path);
-  writeFileSync(join(dir, "tendril.assets.json"), JSON.stringify({...lock, core: []}));
-  assert.throws(() => verifyAssets(dir), /does not match/);
-  assert.doesNotThrow(() => pack(dir));
-  writeFileSync(join(dir, "assets/components/chart.js"), "// local edits");
-  assert.throws(() => pack(dir), /Modified or unmanaged component/);
-  assert.ok(syncAssets(dir, {force:true}).written >= 1);
-  assert.doesNotThrow(() => pack(dir));
-  writeFileSync(join(dir,"tendril.json"),JSON.stringify({components:["chart"]}));
-  assert.equal(pack(dir).files["assets/components/stream-view.js"],undefined);
+  writeFileSync(join(dir, "index.html"), '<script src="missing.js"></script>');
+  writeFileSync(join(dir, "app.js"), "// adapted for this page");
+  const before = listFiles(dir);
+  const body = pack(dir);
+  assert.deepEqual(listFiles(dir), before);
+  assert.deepEqual(Object.keys(body.files), ["app.js", "index.html"]);
+  assert.equal(body.files["app.js"], "// adapted for this page");
+  writeFileSync(join(dir, "app.js"), "// another deliberate edit");
+  assert.equal(pack(dir).files["app.js"], "// another deliberate edit");
 });
-test("asset sync refuses a symbolic link out of the page directory", () => {
-  const dir = tmp(), outside = tmp();
-  writeFileSync(join(dir, "tendril.json"), JSON.stringify({components:["chart"]}));
-  symlinkSync(outside, join(dir, "assets"), "dir");
-  assert.throws(() => syncAssets(dir), /symlink/);
-  assert.equal(existsSync(join(outside, "components", "chart.js")), false);
-});
-test("asset sync rejects nested and dangling lock symlinks", () => {
+
+test("pack refuses symlinks and unsafe publication names without reading outside files", () => {
   const dir = tmp(), outside = tmp();
   writeFileSync(join(dir, "index.html"), "<h1>safe</h1>");
-  writeFileSync(join(dir, "tendril.json"), JSON.stringify({components:["chart"]}));
-  mkdirSync(join(dir, "assets"));
-  symlinkSync(outside, join(dir, "assets", "components"), "dir");
+  symlinkSync(outside, join(dir, "linked"), "dir");
   assert.throws(() => pack(dir), /symlink/);
-  assert.equal(existsSync(join(outside, "chart.js")), false);
-
-  const other = tmp();
-  writeFileSync(join(other, "tendril.json"), JSON.stringify({components:["chart"]}));
-  symlinkSync(join(other, "missing-lock.json"), join(other, "tendril.assets.json"));
-  assert.throws(() => pack(other), /Asset lock must not be a symlink/);
+  for (const as of ["../leak.html", "/root.html", "_tendril/runtime.js", "_publications/page.js", "a\\b.html"])
+    assert.throws(() => pack(join(dir, "index.html"), { as }), /Unsafe publication path/);
 });
+
 test("pack: single html file becomes index.html; --as overrides", () => {
   const d = tmp();
   const f = join(d, "page.html");

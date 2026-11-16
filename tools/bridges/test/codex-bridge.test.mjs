@@ -25,7 +25,7 @@ if(previous===0){process.exitCode=1;}else console.log('Queued message test');
 `);chmodSync(fake,0o755);
   const id='abc234abc234';
   const server=createServer(async(req,res)=>{
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[{id:"sessions",interface_version:"1",schema_version:"1"}]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
     const u=new URL(req.url,'http://localhost');
     assert.equal(req.headers.authorization,'Bearer tk_secret');
     res.setHeader('Content-Type','application/json');

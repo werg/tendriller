@@ -1,9 +1,9 @@
 // Local protocol adapter for the production browser runtime. No browser API is
-// replaced here: the runtime owns its socket, control, state, IDB outbox and health.
+// replaced here: the runtime owns its socket, state, IDB outbox and health.
 import { randomUUID, randomBytes } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as previewSupport from "@tendriller/runtime/preview-support";
-import { assertValid } from "@tendriller/core/contract";
+import { assertValid, CONTRACT_VERSION } from "@tendriller/core/contract";
 import { createStreamFixtures } from "./preview-streams.mjs";
 
 /** Exact-value fixture references avoid hard-coding randomly assigned IDs. */
@@ -23,7 +23,7 @@ export function resolveFixture(value, context) {
   return value;
 }
 
-export async function attachRuntime(server, { state = {}, role = "owner", name = "Local preview", onEvent, streams, version = () => 1, scopes = [], service = {contract:2,workflows:[]}, implementation } = {}) {
+export async function attachRuntime(server, { state = {}, role = "owner", name = "Local preview", onEvent, streams, version = () => 1, scopes = [], service = {contract:CONTRACT_VERSION,workflows:[]}, implementation } = {}) {
   const { applyOps, validateOps, historyPage, matchesContext } = implementation || previewSupport;
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set();

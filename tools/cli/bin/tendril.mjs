@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Tendriller contrib CLI. Requires its pinned core contract and runtime artifacts.
+// Optional Tendriller operational CLI. Uses the public core contract.
 import { randomUUID } from "node:crypto";
-import { catalog, scaffold, syncAssets } from "../lib/assets.mjs";
 import { checkService } from "../lib/service.mjs";
+import { CONTRACT_VERSION } from "@tendriller/core/contract";
 import { readFileSync, writeFileSync, existsSync, statSync, cpSync, mkdirSync } from "node:fs";
 import { basename, resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,13 +27,10 @@ Create / attach
 
 Content
   push <dir|file> [--message M] [--no-replace] [--as <path>] [--no-wait] [--timeout S]
-  assets sync <dir> [--force]    complete and pin declared component files
   files | versions | rollback [version]
   upload <file> [--name N]     store a blob (e.g. an icon) -> {id,url}
   blobs | blobs info <id> | blobs keep <id> | blobs expire <id>
   preview <dir> [--fixture scenario.json] [--out png] [--wait-ms N] [--eval JS] [--state file.json] [--desktop] [--headed]
-  recipes                      list complete starter pages
-  scaffold <recipe> <dir>      copy a starter page for editing
 
 Talk to the page
   eval <js> | eval -f <file> | eval -   [--device primary|all|<id>] [--timeout-ms N]
@@ -59,10 +56,9 @@ State, devices, sharing, wake
   capabilities                 live browser and hardware report per device
   link guest [--label L] [--expires S] | link list | link rm <id> | link rotate [id]
   tokens | tokens new <name> | tokens rm <name>
-  rules | rules set <json|@file>
   wake [--webhook URL [--token T] | --off] [--schedule N|off] [--page-streak N] [--grace S]
 
-Durable work and complete workflows
+Durable work and trusted extensions
   timers [list|history] | timers add <json|@file> | timers update <id> <json|@file>
   timers cancel <id> | timers rm <id>
   session [get] | session set <json|@file>
@@ -75,7 +71,7 @@ Durable work and complete workflows
 Config: TENDRIL_API + TENDRIL_TOKEN, or --tendril <name> (~/.config/tendril/<name>.json,
 written by new/adopt), TENDRIL_SERVER (default https://tendriller.dev; use --server for local development), TENDRIL_OWNER.
 Creation is ad_hoc. After the owner opens the page, use meta --lifetime resident to keep it.
-Guest invites need owner approval. Display links are created in the owner page control.
+Guest invites need owner approval. Display links are created in the service utility.
 JSON arguments may be @file. Output is JSON; --pretty indents it.`;
 
 let PRETTY = false;
@@ -168,8 +164,6 @@ const commands = {
   async push(args, f, api, cfg) {
     const target = args[0];
     if (!target || !existsSync(target)) fail("usage: tendril push <dir|file>");
-    const declaration = statSync(target).isDirectory() && existsSync(join(target,"tendril.json")) ? JSON.parse(readFileSync(join(target,"tendril.json"),"utf8")) : null;
-    if (declaration?.requires) await checkService(cfg.api,{requirements:declaration.requires});
     const body = pack(target, { as: f.as, merge: !!f["no-replace"], message: f.message });
     const r = await api.post("/files", body);
     const result = { version: r.version, files: r.files };
@@ -433,7 +427,7 @@ const commands = {
   async workflow(args, f, api, cfg) {
     const [module, operation, data = "{}"] = args;
     if (!module || !operation) fail("workflow <module> <operation> [json] [--scope ID --generations JSON --cid ID]");
-    await checkService(cfg.api, { requirements: { contract: 2, workflows: { [module]: { interface_version: String(f["interface-version"] || "1"), schema_version: String(f["schema-version"] || "1") } } } });
+    await checkService(cfg.api, { requirements: { contract: CONTRACT_VERSION, workflows: { [module]: { interface_version: String(f["interface-version"] || "1"), schema_version: String(f["schema-version"] || "1") } } } });
     out(await api.post(`/workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, { ...commandMetadata(f), data: jsonArg(data, "workflow data") }));
   },
 
@@ -447,7 +441,7 @@ const commands = {
       await api.del(`/links/${encodeURIComponent(id)}`); return out({ ok: true });
     }
     if (sub === "rotate") return out(await api.post(`/links/${encodeURIComponent(id || "l_main")}/rotate`, {}));
-    if (sub === "owner" || sub === "display") fail("Agents can create guest invitations only. Use the owner page control to create display links; the existing main link is the owner link.", 64);
+    if (sub === "owner" || sub === "display") fail("Agents can create guest invitations only. Use the service utility to create display links; the existing main link is the owner link.", 64);
     if (sub !== "guest") fail("usage: tendril link guest [--label L] [--expires S] | list | rm <id> | rotate [id]", 64);
     const body = { role: sub };
     if (f.label) body.label = f.label;
@@ -467,15 +461,6 @@ const commands = {
     if (sub === "new") return out(await api.post("/tokens", { name }));
     if (sub === "rm") { await api.del(`/tokens/${encodeURIComponent(name)}`); return out({ ok: true }); }
     fail("usage: tendril tokens [new <name> | rm <name>]");
-  },
-
-  async rules(args, f, api) {
-    if (!args[0]) return out(await api.get("/rules"));
-    if (args[0] === "set") {
-      const v = jsonArg(args[1], "rules");
-      return out(await api.put("/rules", Array.isArray(v) ? { rules: v } : v));
-    }
-    fail("usage: tendril rules [set <json|@file>]");
   },
 
   async wake(args, f, api) {
@@ -504,24 +489,10 @@ const commands = {
     out(r);
     if (!r.ok) process.exitCode = r.error ? 2 : 1;
   },
-  async assets(args, f) {
-    if (args[0] !== "sync" || !args[1] || args.length !== 2
-      || Object.keys(f).some(k => !["force","pretty"].includes(k)))
-      fail("usage: tendril assets sync <dir> [--force]",64);
-    const result = syncAssets(args[1], {force: !!f.force});
-    out({path: resolve(args[1]), files: result.files.length, written: result.written, removed: result.removed, contrib: result.contrib});
-  },
-  async recipes() { out(catalog()); },
-  async scaffold(args) {
-    const [name, target] = args;
-    if (!name || !target) fail("usage: tendril scaffold <recipe> <dir>");
-    const result = scaffold(name, target);
-    out({ ...result, next: `tendril preview ${target}` });
-  },
 
 };
 
-const NO_CONFIG = new Set(["new", "adopt", "preview", "recipes", "scaffold", "assets"]);
+const NO_CONFIG = new Set(["new", "adopt", "preview"]);
 
 async function main() {
   let parsed;

@@ -16,7 +16,7 @@ function mock() {
   const seen = [];
   let calls = 0;
   const server = createServer((req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[{id:"sessions",interface_version:"1",schema_version:"1"}]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
     const u = new URL(req.url, "http://x");
     seen.push({ path: u.pathname, after: u.searchParams.get("after"), wait: u.searchParams.get("wait"), auth: req.headers.authorization });
     calls++;

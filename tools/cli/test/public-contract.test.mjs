@@ -13,7 +13,7 @@ let server, origin, configDir;
 before(async () => {
   configDir = mkdtempSync(join(tmpdir(), "tendril-public-cli-"));
   server = createServer(async (req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[{id:"sessions",interface_version:"1",schema_version:"1"}]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
     let body = "";
     for await (const part of req) body += part;
     requests.push({ method: req.method, path: req.url, authorization: req.headers.authorization, body: body ? JSON.parse(body) : null });

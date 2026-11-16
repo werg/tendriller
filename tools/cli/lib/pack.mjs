@@ -1,8 +1,7 @@
-import { verifyAssets, syncAssets } from "./assets.mjs";
 // Packs a directory (or one file) into the body of POST <api>/files.
 // Text files go as UTF-8 strings, everything else as {base64, type}.
 // Skips dotfiles/dot-directories, node_modules and the reserved _tendril/ prefix.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, lstatSync } from "node:fs";
 import { join, basename, extname, relative, sep } from "node:path";
 
 const TYPES = {
@@ -27,7 +26,7 @@ export function isText(buf) {
 
 export function shouldSkip(relPath) {
   const parts = relPath.split(/[\\/]/);
-  return parts.some((p) => p.startsWith(".") || p === "node_modules") || parts[0] === "_tendril";
+  return parts.some((p) => p.startsWith(".") || p === "node_modules") || ["_tendril", "_publications"].includes(parts[0]);
 }
 
 export function listFiles(dir) {
@@ -37,8 +36,10 @@ export function listFiles(dir) {
       const full = join(d, ent.name);
       const rel = relative(dir, full).split(sep).join("/");
       if (shouldSkip(rel)) continue;
+      if (ent.isSymbolicLink()) throw new Error(`Refusing symlink in publication: ${rel}`);
       if (ent.isDirectory()) walk(full);
       else if (ent.isFile()) out.push(rel);
+      else throw new Error(`Unsupported publication entry: ${rel}`);
     }
   };
   walk(dir);
@@ -53,24 +54,30 @@ export function encodeFile(buf, path) {
   return { base64: buf.toString("base64"), type };
 }
 
+function canonicalPath(path) {
+  if (!path || path.normalize("NFC") !== path || path.length > 512 || path.startsWith("/") ||
+      /[\\\x00-\x1f\x7f]/.test(path) || path.split("/").some(part => !part || part === "." || part === "..") ||
+      /^(?:_tendril|_publications)(?:\/|$)/.test(path)) throw new Error(`Unsafe publication path: ${path}`);
+  return path;
+}
+
 // Returns {files, replace, skipped?}. A single .html file is uploaded as index.html
 // unless `as` is given. A directory push replaces the whole version unless merge.
 export function pack(target, { as, merge = false, message } = {}) {
-  const st = statSync(target);
+  const st = lstatSync(target);
+  if (st.isSymbolicLink()) throw new Error("Refusing publication source symlink");
   const body = { files: {} };
   if (st.isDirectory()) {
-    if (readdirSync(target).includes('tendril.json')) syncAssets(target);
-    verifyAssets(target);
     const paths = listFiles(target);
     if (paths.length === 0) throw new Error(`nothing to upload in ${target}`);
-    for (const p of paths) body.files[p] = encodeFile(readFileSync(join(target, p)), p);
+    for (const p of paths) body.files[canonicalPath(p)] = encodeFile(readFileSync(join(target, p)), p);
     body.replace = !merge;
     if (!merge && !paths.includes("index.html")) throw new Error(`${target} has no index.html (use --no-replace to add files to the existing version)`);
-  } else {
+  } else if (st.isFile()) {
     let name = as || basename(target);
     if (!as && /\.html?$/i.test(name)) name = "index.html";
-    body.files[name] = encodeFile(readFileSync(target), name);
-  }
+    body.files[canonicalPath(name)] = encodeFile(readFileSync(target), name);
+  } else throw new Error("Publication source must be a regular file or directory");
   if (message) body.message = message;
   return body;
 }

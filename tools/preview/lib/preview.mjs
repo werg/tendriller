@@ -1,18 +1,17 @@
 import { createHash } from "node:crypto";
-import { componentAssets } from "../../cli/lib/assets.mjs";
 // Headless preview: serves the production runtime with a local protocol adapter.
-// Uses real control/state/offline behavior, with deterministic sensor and agent fixtures.
+// Uses production state, durability and lifecycle behavior with explicit fixtures.
 // Needs `playwright` (or `@playwright/test`) resolvable from the current project.
 import { createServer } from "node:http";
 import { readFileSync, existsSync, statSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve, dirname, sep } from "node:path";
+import { join, resolve, dirname, sep, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { guessType, listFiles } from "../../cli/lib/pack.mjs";
 import { attachRuntime, TRACE_RUNTIME, resolveFixture } from "./preview-runtime.mjs";
 import { assets as runtimeAssets, implementation as runtimeSupport, manifest as runtimeManifest } from "./preview-bundle.mjs";
-import { schemaDocument } from "@tendriller/core/contract";
+import { schemaDocument, CONTRACT_VERSION, assertValid } from "@tendriller/core/contract";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -26,11 +25,15 @@ export function loadPlaywright(cwd = process.cwd()) {
   return null;
 }
 
-export function injectRuntime(html, publication = { id: "preview", base:"/_publications/preview/", entry:"index.html", version:1, runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"}, assets:[] }) {
+export function injectRuntime(html, publication = { id: "preview", base:"/_publications/preview/", entry:"index.html", version:1, runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"}, assets:[] }, entry = "index.html") {
   const config = { id: "preview", base: "/", version: publication.version, preview: true, publication, ws: "/_tendril/ws", features: {
     push: false, vapid: null, shared_by: "Local preview", speech: null,
   } };
-  const tags = `<base href="${publication.base}"><script>window.__TENDRIL__=${JSON.stringify(config)};</script><script src="/_tendril/runtime/${runtimeManifest.id}/tendril.js"></script><script>${TRACE_RUNTIME}</script>`;
+  const directory = posix.dirname(entry);
+  const base = publication.base + (directory === "." ? "" : directory + "/");
+  const escapedBase = base.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const configJson = JSON.stringify(config).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  const tags = `<base href="${escapedBase}"><script>window.__TENDRIL__=${configJson};</script><script src="/_tendril/runtime/${runtimeManifest.id}/tendril.js"></script><script>${TRACE_RUNTIME}</script>`;
   const m = /<head(\s[^>]*)?>/i.exec(html);
   if (m) return html.slice(0, m.index + m[0].length) + tags + html.slice(m.index + m[0].length);
   return tags + html;
@@ -40,15 +43,15 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
   if (fixture.capabilities) throw new Error("Preview derives capabilities from the real browser. Use denied or hardware fixtures to change browser inputs.");
   const root = realpathSync(resolve(dir));
   options = { assets: runtimeAssets, implementation: runtimeSupport, ...options };
-  const declaration = existsSync(join(root, "tendril.json")) ? JSON.parse(readFileSync(join(root,"tendril.json"),"utf8")) : {components:[]};
-  const service = { contract: 2, core_release: runtimeManifest.version, workflows: Object.entries(declaration.requires?.workflows || {}).map(([id, revisions]) => ({ id, ...revisions })) };
-  const declaredAssets = new Map(componentAssets(declaration.components || [], {workflows:!!declaration.workflows?.length}).map(asset=>["/"+asset.path,asset.bytes]));
+  const service = { contract: CONTRACT_VERSION, core_release: runtimeManifest.version,
+    workflows: [], limits: {}, ...structuredClone(fixture.service || {}) };
+  assertValid("serviceDescriptor", service);
+  if (service.contract !== runtimeManifest.contract) throw new Error("Preview service fixture must use the runtime's contract");
   const publications = new Map();
   let currentPublication;
   const snapshotPublication = () => {
     const contents = new Map();
     for (const path of listFiles(root)) { const file=safeFile(root,"/"+path); if(file)contents.set(path,readFileSync(file)); }
-    for(const [path,bytes] of declaredAssets)if(!contents.has(path.slice(1)))contents.set(path.slice(1),bytes);
     const entries=[...contents].sort(([a],[b])=>a.localeCompare(b)).map(([path,bytes])=>({path,type:guessType(path),sha256:createHash("sha256").update(bytes).digest("hex"),size:bytes.length}));
     const id=createHash("sha256").update(JSON.stringify({runtime:runtimeManifest.id,assets:entries})).digest("hex");
     if(!publications.has(id))publications.set(id,{contents,manifest:{id,version:publications.size+1,base:"/_publications/"+id+"/",entry:"index.html",runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"},assets:entries}});
@@ -86,7 +89,7 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
       if(publicationRoute){
         const stored=publications.get(publicationRoute[1]), path=publicationRoute[2]||"index.html",bytes=stored?.contents.get(path);
         if(!bytes)return json(404,{error:{code:"not_found",message:"No such publication asset"}});
-        const type=guessType(path);return send(200,type,type==="text/html"?injectRuntime(bytes.toString("utf8"),stored.manifest):bytes,{"cache-control":"public,max-age=31536000,immutable","X-Tendril-Publication":stored.manifest.id});
+        const type=guessType(path);return send(200,type,type==="text/html"?injectRuntime(bytes.toString("utf8"),stored.manifest,path):bytes,{"cache-control":"public,max-age=31536000,immutable","X-Tendril-Publication":stored.manifest.id});
       }
       const mock = httpFixtures.find(r => (r.method || "GET") === req.method && r.path === p);
       if (mock) {
@@ -107,7 +110,6 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
         adapter.broadcast({ t: "fixture_event", event, data });
         return json(200, { ok: true });
       }
-      if (declaredAssets.has(p)) return send(200,guessType(p),declaredAssets.get(p),{"cache-control":"no-cache"});
       if (p === "/api/service" || p === "/_tendril/service") return json(200, service);
       if (p === "/_tendril/scopes" && req.method === "GET") return json(200, { scopes: adapter.scopes });
       if (p === "/contract/v2.json") return json(200, schemaDocument);
@@ -133,8 +135,6 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
         return json(405, { error: { code: "method_not_allowed", message: "Unsupported device action" } });
       }
       if (p === "/_tendril/manifest.webmanifest") return json(200, { name: "Tendriller preview", start_url: "/", display: "standalone" });
-      if (p === "/_tendril/agents") return json(200, { agents: [{ name: "preview", active: true }] });
-      if (p === "/_tendril/invites") return json(200, { invites: [] });
       if (p === "/_tendril/blob" && req.method === "POST") {
         if (adapter.role === "display") return json(403, { error: { code: "forbidden", message: "Display devices cannot upload" } });
         if (req.headers["x-tendril-keep"] === "true" && adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Only owners can pin captures" } });
@@ -157,19 +157,19 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
         return send(200, blob.type, blob.data);
       }
       if (p.startsWith("/_tendril/")) {
-        if (options.assets) {
-          const asset = options.assets[p];
-          return asset ? send(200, guessType(p), Buffer.from(asset, "base64"), { "cache-control": "no-cache", ...(p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {}) })
-            : json(404, { error: { code: "preview_unavailable", message: "This optional service asset is not included in the standalone preview" } });
-        }
-        return json(404, { error: { code: "preview_unsupported", message: "This service operation has no fixture implementation" } });
+        const asset = options.assets?.[p];
+        if (asset) return send(200, guessType(p), Buffer.from(asset, "base64"), {
+          "cache-control": "no-cache", ...(p.endsWith("/sw.js") ? { "Service-Worker-Allowed": "/" } : {}),
+        });
+        if (p.startsWith("/_tendril/runtime/")) return json(404, { error: { code: "not_found", message: "Runtime asset is not in this build" } });
+        return json(501, { error: { code: "preview_unsupported", message: "This service operation needs an explicit HTTP fixture or a real service" } });
       }
       if (p === "/favicon.ico") return send(204, "image/x-icon", "");
       const file = safeFile(root, p.endsWith("/") ? p + "index.html" : p);
       if (!file) return send(404, "text/plain", "Not found");
       const type = guessType(file);
       return send(200, type === "text/html" ? "text/html; charset=utf-8" : type,
-        type === "text/html" ? injectRuntime(readFileSync(file, "utf8"),snapshotPublication().manifest) : readFileSync(file), { "cache-control": "no-cache", "X-Tendril-Publication": currentPublication.id });
+        type === "text/html" ? injectRuntime(readFileSync(file, "utf8"),snapshotPublication().manifest,p.endsWith("/") ? p.slice(1) + "index.html" : p.slice(1)) : readFileSync(file), { "cache-control": "no-cache", "X-Tendril-Publication": currentPublication.id });
     } catch (error) { json(error.status || 400, { error: { code: error.code || "bad_request", message: error.message } }); }
   });
   // Own every TCP connection, including browser preconnects, incomplete HTTP
@@ -229,7 +229,7 @@ export async function preview(dir, opts = {}) {
     const context = await browser.newContext({
       viewport: { width: opts.width || (mobile ? 390 : 1280), height: opts.height || (mobile ? 844 : 800) },
       deviceScaleFactor: mobile ? 2 : 1, isMobile: mobile, hasTouch: mobile,
-      permissions: fixture.permissions || ["camera", "microphone", "geolocation"],
+      permissions: fixture.permissions || [],
       geolocation: fixture.geolocation || { latitude: 52.52, longitude: 13.405 },
     });
     const page = await context.newPage();
@@ -344,7 +344,7 @@ export async function preview(dir, opts = {}) {
     await page.screenshot({ path: shot, fullPage: false });
     const consoleErrors = consoleMsgs.filter((m) => m.level === "error");
     return {
-      ok: errors.length === 0 && (resp?.ok() ?? false),
+      ok: errors.length === 0 && consoleErrors.length === 0 && (resp?.ok() ?? false),
       status: resp?.status(), title, uncaught: errors, console_errors: consoleErrors,
       console: consoleMsgs.slice(-50), calls, fixture_trace: fixtureTrace, screenshot: shot,
       runtime: "production", events: server.preview.events, activity: server.preview.activity, state: server.preview.state,

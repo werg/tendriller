@@ -11,7 +11,7 @@ test('background socket wait exits only for a waking event', async () => {
   const token = 'tk_' + 'a'.repeat(32);
   let waking = false, socket;
   const server = createServer((req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[{id:"sessions",interface_version:"1",schema_version:"1"}]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
     assert.equal(req.headers.authorization, `Bearer ${token}`);
     const events = [{ seq: 1, wake: false }, ...(waking ? [{ seq: 2, wake: true }] : [])];
     res.setHeader('Content-Type', 'application/json');
