@@ -195,7 +195,8 @@ async function agentSocket(t: Tendril, req: Request, url: URL): Promise<Response
   const pair = new WebSocketPair();
   const [client, server] = [pair[0], pair[1]];
   t.ctx.acceptWebSocket(server, ["agent"]);
-  server.serializeAttachment({ kind: "agent", tokenHash });
+  server.serializeAttachment({ kind: "agent", tokenHash, connectedAt: t.now() });
+  addActivity(t, { kind: "agent_socket", summary: "Agent receiver socket connected" });
   // Catch-up: a receiver that re-arms with its cursor learns at once about anything it missed
   // while it was disconnected, instead of waiting for the next event.
   if (after !== null) {

@@ -254,8 +254,14 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
-    if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
-    else handleWsClose(this, ws);
+    if (this.isAgentSocket(ws)) {
+      const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
+      const elapsed = typeof att?.connectedAt === "number" && Number.isFinite(att.connectedAt)
+        ? `, connected for ${Math.max(0, Math.round((this.now() - att.connectedAt) / 1000))}s` : "";
+      const detail = reason ? `, reason ${JSON.stringify(reason.slice(0, 100))}` : "";
+      addActivity(this, { kind: "agent_socket", summary: `Agent receiver socket closed (code ${code}${detail}${elapsed})` });
+      this.refreshPresence(); this.scheduleAlarm();
+    } else handleWsClose(this, ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
