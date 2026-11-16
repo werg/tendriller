@@ -3137,7 +3137,7 @@
     },
     "scopeOperation": {
       "type": "string",
-      "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+      "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
     },
     "scopeBindings": {
       "type": "object",
@@ -3171,7 +3171,7 @@
           "maxItems": 128,
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -3250,7 +3250,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -3292,7 +3292,7 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
                 }
               }
             },
@@ -3362,7 +3362,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -5856,7 +5856,7 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
                 }
               }
             },

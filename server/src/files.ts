@@ -93,19 +93,21 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string,
     const riskScore = scanContent(body, type);
     const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore);
     let globalReserved = false;
+    let uploaded = false;
+    const key = fileKey(t, hash);
     try {
       if (reserved) {
         await t.reserveGlobalBytes(body.byteLength);
         globalReserved = true;
       }
-      const key = fileKey(t, hash);
       const head = await t.env.FILES.head(key);
-      if (!head) await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } });
+      if (!head) { await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }); uploaded = true; }
       t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
       retain?.(hash);
     } catch (err) {
       if (reserved) {
         t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
+        if (uploaded) { try { await t.env.FILES.delete(key); } catch { /* orphan sweep can retry */ } }
         if (globalReserved) await t.releaseGlobalBytes(body.byteLength);
       }
       throw err;
