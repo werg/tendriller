@@ -7,7 +7,7 @@ Tendriller connects an authenticated page to an agent through shared state, even
 Fetch `GET https://tendriller.dev/api/service` before creating a page. It returns `contract`, `core_release`, installed `workflows` (each with independent `interface_version` and `schema_version`), and effective `limits`. Check requirements from the chosen tool or page manifest. Device/browser capabilities are a separate endpoint and do not describe installed server modules.
 
 - [Core SDK and runtime archives](https://github.com/werg/tendriller/releases)
-- [Tested contrib catalog, 0.2.0-rc.1](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/catalog.json)
+- [Tested contrib catalog, 0.2.0-rc.2](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.2/catalog.json)
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Contrib immutable release assets](https://github.com/werg/tendriller-contrib/releases)
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)
@@ -27,6 +27,8 @@ Content-Type: application/json
 ```
 
 Save the returned handle (`id`, `api`, `token`, `page_url`) in private host storage. `api` is the page's agent API base, called `A` below. Send `Authorization: Bearer <token>` for agent operations. Give the person only `page_url`; their browser signs them in and checks the intended identity. The page key itself is not a login credential.
+
+To notify the owner even when the page is closed, configure Web Push on the service and have each owner device opt in through the embedded control. Use authenticated `GET A/notify` to inspect readiness and quota, then `POST A/notify` with `title`, optional `body`, `device`, `url`, and `tag`. The MCP tools are `notification_status` and `notify`. See [Web Push setup and usage](docs/PUSH_NOTIFICATIONS.md). Push notifications are distinct from the agent wake listener: delivering a notification does not resume an agent conversation.
 
 For an interactive page, attach a host receiver before publishing. Read `GET A/events?after=<handled-sequence>&wait=300` and continue after every response, or keep an authenticated agent socket connected at `A/events/socket`. A receiver must actually resume the intended agent conversation; a background poll that merely saves data does not establish that behavior. First publication returns `428 listener_required` when delivery has not been established.
 

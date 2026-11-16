@@ -17,10 +17,10 @@
     "contract:check": "node scripts/contract.mjs",
     "test:contract": "node --test contract/test/*.test.mjs",
     "test:browser": "npm run build && node scripts/test-browser.mjs",
-    "check": "npm run contract:check && npm run typecheck && npm run build && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:server && npm run test:consumer",
+    "check": "npm run contract:check && npm run typecheck && npm run build && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:push && npm run test:server && npm run test:consumer",
     "test:ci": "node --test scripts/test/*.test.mjs",
     "check:release": "npm run check && npm run test:pair && npm run test:browser",
-    "test:runtime-unit": "node --test runtime/test/*.test.mjs",
+    "test:runtime-unit": "node --test --test-concurrency=1 runtime/test/*.test.mjs",
     "test:server": "vitest run --config server/vitest.public.config.ts",
     "test:consumer": "node scripts/test-consumer.mjs",
     "build:engine": "node scripts/build.mjs",
@@ -28,7 +28,8 @@
     "build:service": "node scripts/compose.mjs",
     "release:artifacts": "node scripts/release.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
-    "test:pair": "npm run build:service && vitest run --config server/vitest.pair.config.ts"
+    "test:pair": "npm run build:service && vitest run --config server/vitest.pair.config.ts",
+    "test:push": "node scripts/test-push.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.1",
@@ -47,7 +48,7 @@
     "ipaddr.js": "^2.5.0",
     "phonon-tts": "0.7.1"
   },
-  "version": "0.2.0-rc.2",
+  "version": "0.2.0-rc.4",
   "engines": {
     "node": ">=22.15.0"
   }

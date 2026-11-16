@@ -15,6 +15,7 @@ import { serviceDescriptor } from "./descriptor";
 import { emitBuiltinRecord, publishFromPage, subscribeStream, unsubscribeStream } from "./streams";
 import { ContractError } from "../../contract/index.mjs";
 import { allows, authorizeSocket } from "./access";
+import { pushAvailable, validatePushSubscription, validPushPublicKey } from "./push";
 
 type Msg = Record<string, any>;
 
@@ -156,7 +157,12 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
       ws.close(4003, "device secret mismatch");
       return;
     }
-    t.db.run("UPDATE devices SET name = COALESCE(?, name), ua = COALESCE(?, ua), caps = COALESCE(?, caps), last_seen = ?, last_active = ? WHERE id = ?", name, ua, caps, now, now, id);
+    // The browser keeps one device identity across owner and shared links.
+    // Persist the current authenticated role so delivery eligibility agrees
+    // with the socket's permissions, and drop owner push on a downgrade.
+    if (dev.role === "owner" && principal.role !== "owner") t.db.run("DELETE FROM push_subs WHERE device = ?", id);
+    t.db.run("UPDATE devices SET name = COALESCE(?, name), ua = COALESCE(?, ua), caps = COALESCE(?, caps), role = ?, pending = 0, link = ?, last_seen = ?, last_active = ? WHERE id = ?",
+      name, ua, caps, principal.role, principal.linkId, now, now, id);
   } else {
     isNew = true;
     const role = principal.role;
@@ -209,7 +215,7 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
 
 // ------------------------------------------------------------------ handlers
 
-const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete", "adopt_code", "devices", "links", "budget", "stream_publish"]);
+const OWNER_ONLY = new Set(["rollback", "versions", "activity", "activity_delete", "adopt_code", "devices", "links", "budget", "stream_publish", "push_subscribe", "push_unsubscribe", "push_status", "push_test"]);
 
 const ack = (c: Ctx, extra: Msg = {}) => c.t.send(c.ws, { t: "ack", cid: c.msg.cid, ...extra });
 
@@ -397,22 +403,40 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
 
   async push_subscribe(c) {
     const { t, dev, msg } = c;
-    if (!isPlainObject(msg.subscription) || typeof msg.subscription.endpoint !== "string") {
-      ack(c, { error: "bad_request", message: "subscription must be a PushSubscription JSON object" });
-      return;
-    }
-    const sub = JSON.stringify(msg.subscription);
-    if (sub.length > 8000) {
-      ack(c, { error: "too_large", message: "subscription too large" });
-      return;
-    }
-    t.db.run("INSERT OR REPLACE INTO push_subs (device, sub, created_at) VALUES (?, ?, ?)", dev.id, sub, t.now());
-    ack(c, {});
+    if (!pushAvailable(t.env)) throw new HttpError(503, "push_unavailable", "Push notifications are not configured on this server");
+    const valid = validatePushSubscription(msg.subscription, t.now());
+    if (!valid || !(await validPushPublicKey(valid))) throw new HttpError(400, "bad_subscription", "A valid public HTTPS push endpoint and browser subscription keys are required");
+    // Another tab may have visited a display link using this browser identity
+    // since this owner socket's hello. Its authenticated owner request wins.
+    t.db.run("UPDATE devices SET role = 'owner', pending = 0, link = ? WHERE id = ?", c.att.linkId, dev.id);
+    t.db.run("INSERT OR REPLACE INTO push_subs (device, sub, created_at) VALUES (?, ?, ?)", dev.id, JSON.stringify(valid), t.now());
+    ack(c, { subscribed: true });
+  },
+
+  push_status(c) {
+    // Do not disclose push endpoints or keys over the socket.
+    const record = c.t.db.one<{ sub: string }>("SELECT sub FROM push_subs WHERE device = ?", c.dev.id);
+    let sub: ReturnType<typeof validatePushSubscription> = null;
+    try { if (record) sub = validatePushSubscription(JSON.parse(record.sub), c.t.now()); } catch { /* legacy invalid subscription */ }
+    ack(c, { available: pushAvailable(c.t.env), subscribed: !!sub && sub.endpoint === c.msg.endpoint });
   },
 
   push_unsubscribe(c) {
     c.t.db.run("DELETE FROM push_subs WHERE device = ?", c.dev.id);
-    ack(c, {});
+    ack(c, { subscribed: false });
+  },
+
+  async push_test(c) {
+    if (!pushAvailable(c.t.env)) throw new HttpError(503, "push_unavailable", "Push notifications are not configured on this server");
+    const sub = c.t.db.one<{ sub: string }>("SELECT sub FROM push_subs WHERE device = ?", c.dev.id);
+    if (!sub) { ack(c, { sent: 0, failed: 0, reason: "not_subscribed" }); return; }
+    const result = await c.t.notify({
+      title: "Tendriller test notification",
+      body: "This device can receive agent notifications even when the page is closed.",
+      device: c.dev.id, tag: "tendriller-test",
+    }, "device:notification-test", { broadcastLocal: false });
+    ack(c, { sent: result.sent, failed: result.failed,
+      status: result.deliveries[0]?.status ?? null });
   },
 
   async rule_fired(c) {

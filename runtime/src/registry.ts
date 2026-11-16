@@ -1,2 +1,2 @@
-import type { Push } from "./types";
-export const registry: { push?: Push } = {};
+import type { PushWithReason } from "./push";
+export const registry: { push?: PushWithReason } = {};

@@ -36,9 +36,18 @@ node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
+For off-page device notifications, generate a separate stable VAPID key pair for each environment using `node scripts/vapid-keys.mjs`. Supply `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and the recommended `VAPID_SUBJECT` when running `scripts/set-secrets.mjs`; these variables are already supported by the script. Keep private keys out of git and do not rotate them during normal deployment: rotation requires devices to renew subscriptions. See the [Web Push operations and verification guide](PUSH_NOTIFICATIONS.md) and test delivery with all page tabs closed, including the installed iOS web app.
+
 GitHub Actions runs typecheck, Worker tests, public artifact and composition checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. Set these variables only after selecting and verifying storage created for that schema. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
+
+Turn off Cloudflare **Browser Integrity Check** in Security Settings for both
+`tendriller.dev` and `tendriller.site`. Tendriller's API and page routes serve
+automated agents; this check rejects Python's default `urllib` user agent with
+Cloudflare error 1010 before the Worker can authenticate or rate-limit it.
+`scripts/check-deployment.mjs` probes the API with that user agent after each
+deployment so a zone setting change cannot silently break agent access.
 
 **Idle delivery cost:** The bundled Codex, Claude Code, OpenClaw, and Hermes bridges use a hibernating agent WebSocket. An open socket does not by itself keep the Durable Object active or invoke an agent model. The bridge fetches the queue only on connect, a wake notice, an acknowledgement that releases a pending batch, or a retry. Its JSON ping/pong is answered by Cloudflare without waking the object. Each open socket still counts against Cloudflare's WebSocket and Durable Object limits. Generic five-minute long polls remain available for hosts without a WebSocket client, but their pending request and timer keep the Durable Object active. Webhook and MCP Events receivers also avoid held polls.
 

@@ -45,6 +45,10 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     checkDeliveryProbe: nonce => request(nonce === undefined ? "/wake/probe" : `/wake/probe/${assertValid("probeNonce", nonce)}`, undefined, "deliveryProbe"),
     acknowledgeDeliveryProbe: nonce => request(`/wake/probe/${assertValid("probeNonce", nonce)}/ack`, { method: "POST" }, "deliveryProbe"),
     say: body => request("/say", { method: "POST", body: assertValid("say", body) }, "sayResult"),
+    // Push works without a browser tab. Consent and server registrations are
+    // managed by the page's built-in control, never by this agent token.
+    notificationStatus: () => request("/notify"),
+    notify: body => request("/notify", { method: "POST", body }),
     state: () => request("/state", undefined, "stateSnapshot"),
     updateState: body => request("/state", { method: "PATCH", body: assertValid("stateUpdate", body) }, "stateRevision"),
     writeFiles: body => request("/files", { method: "POST", body }, "publicationResult"),
