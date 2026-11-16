@@ -161,7 +161,7 @@ export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 3;
 export const CORE_RELEASE: "0.3.0-rc.1";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
-export { assertFilePath } from "./blobs.mjs";
+export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export const ROLES: readonly Role[];
 export const DEVICE_PURPOSES: readonly DevicePurpose[];
 export const schemas: Readonly<Record<keyof Contracts, Record<string, any>>>;
