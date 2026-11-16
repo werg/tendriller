@@ -6,6 +6,13 @@ signals. The default peer composition uses WebRTC through
 `@chronolog/transport-webrtc`; it does not send application frames to Cloudflare.
 See [the ownership design](PEER_ARCHITECTURE.md).
 
+For a cold connection to a reachable resident, the initial page configuration can
+name that peer's HTTPS offer/answer endpoint. Chronolog owns that introduction
+and the resulting WebRTC connection; Tendriller need not participate. The
+short-lived host rendezvous below requires both endpoints to join together. It
+does not discover or wake an offline resident, and applications must not use
+repeated empty sessions as a background polling mechanism.
+
 ## Short-lived rendezvous
 
 ```js

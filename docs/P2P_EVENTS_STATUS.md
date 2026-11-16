@@ -9,10 +9,14 @@ WebRTC framing, peer authentication, application history and finality; participa
 administration remains event-driven. See [the architecture](PEER_ARCHITECTURE.md)
 and [public rendezvous API](PEER_CONNECTIONS.md).
 
-Tendriller source `8e92ced5` passed the complete local `npm run check`: 817 tests,
+Tendriller source `4d63f48c` passed the complete local `npm run check`: 820 tests,
 TypeScript, public builds, dependency boundaries and the independent packed
 SDK/runtime/engine consumer. This includes actual workerd rendezvous tests and
-zero-background-host-traffic runtime regressions. Cross-repository RTC and
+zero-background-host-traffic regressions for the full served page bootstrap.
+The [public service CI](https://github.com/werg/tendriller/actions/runs/43975749128)
+passed on Node 22.15 and 24, including 87 actual browser passes and one skipped
+test. The [pinned speech CI](https://github.com/werg/tendriller/actions/runs/43975749098)
+also passed. Deployment jobs were skipped. Cross-repository RTC and
 application reports will identify their separately qualified source revisions.
 
 ## Historical qualification before WebRTC rendezvous

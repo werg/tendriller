@@ -14,6 +14,15 @@ connected to a Durable Object.
 
 ## Connection setup
 
+A newly opened page can contact an explicitly configured HTTPS introduction
+endpoint on a reachable resident Chronolog peer. That endpoint exchanges one
+offer and answer, then the authenticated application connection uses WebRTC.
+The page configuration supplies the address; the resident does not poll
+Cloudflare or keep reconnecting to an empty rendezvous to discover callers.
+
+Tendriller's bounded rendezvous is an optional introduction path when the
+application can arrange for both endpoints to participate at the same time:
+
 1. Two authorized endpoints join a named rendezvous with distinct endpoint IDs.
 2. The host assigns a fresh session and complementary offerer/answerer roles.
 3. Each endpoint sends one bounded, fully gathered WebRTC description. The host
@@ -26,8 +35,11 @@ connected to a Durable Object.
 
 An endpoint ID or authenticated host session is not a database capability.
 Chronolog remains responsible for peer authorization and rechecking governance.
-New participants or a failed connection require a new bounded rendezvous;
-already connected peers continue without the host. An offline proposal retains
+New participants or a failed connection require a fresh introduction through
+the configured provider; already connected peers continue without the host.
+An unreachable native peer needs an explicit wake/rendezvous provider or an
+existing reachable peer. A transient pairing endpoint alone is not a resident
+discovery service. An offline proposal retains
 its original identity and is synchronized by Chronolog when a route returns.
 
 ## Transport boundary
