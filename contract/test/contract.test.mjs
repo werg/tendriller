@@ -31,7 +31,7 @@ test("set(null) and delete are distinct public operations", () => {
 });
 
 test("generated schemas match the executable and MCP-facing schema", () => {
-  assert.deepEqual(JSON.parse(readFileSync(new URL("../v2.json", import.meta.url))), schemaDocument);
+  assert.deepEqual(JSON.parse(readFileSync(new URL("../v3.json", import.meta.url))), schemaDocument);
 });
 
 test("client keeps explicit cursor, validates writes and returns actionable errors", async () => {
@@ -91,7 +91,7 @@ test("generic commands keep concurrency context outside opaque data", async () =
 });
 
 test("service requirements compare interfaces independently of contrib release", async () => {
-  const descriptor = {contract:2,core_release:"0.2.0-rc.1",limits:{},workflows:[{id:"sessions",interface_version:"1",schema_version:"1",operations:{}}]};
+  const descriptor = {contract:3,core_release:"0.2.0-rc.1",limits:{},workflows:[{id:"sessions",interface_version:"1",schema_version:"1",operations:{}}]};
   assert.equal(requireService(descriptor,{workflows:{sessions:{interface_version:"1",schema_version:"1"}}}), descriptor);
   assert.throws(() => requireService(descriptor,{contract:3}), error => error.code === "contract_mismatch");
   assert.throws(() => requireService(descriptor,{workflows:{sessions:{interface_version:"2",schema_version:"1"}}}), error => error.code === "workflow_mismatch");
