@@ -2,6 +2,7 @@ export const RESOURCE_LIMITS: Readonly<{
   file_bytes: number; blob_bytes: number; event_bytes: number; state_bytes: number;
   files_per_publication: number; path_characters: number;
   active_scopes: number; scope_bindings: number; command_receipts: number; command_receipt_bytes: number;
+  private_record_bytes: number; private_records: number; private_records_bytes: number;
 }>;
 export const STREAM_LIMITS: Readonly<{
   streams: number; producers: number; subscriptions: number; record_bytes: number;

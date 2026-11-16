@@ -4,6 +4,7 @@ import { create, inDO } from './helpers';
 import { configureWorkflows, handleWorkflows, synchronizeWorkflows } from '../src/workflows';
 import { scopes } from '../src/scopes';
 import type { WorkflowHost, WorkflowModule } from '../../contract/host.d.mts';
+import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 
 beforeAll(async () => { await applyD1Migrations(env.ACCOUNTS, inject('d1Migrations')); await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); });
 const agent = { kind: 'agent' as const, name: 'main', credentialHash: 'test' };
@@ -77,6 +78,37 @@ it('expires all workflow capabilities when a callback returns and rolls back asy
       await expect(continuation).rejects.toThrow('expire');
       expect(t.db.all('SELECT * FROM workflow_records WHERE module=?', 'testmod')).toEqual([]);
       expect(t.db.all('SELECT * FROM commands')).toEqual([]);
+    } finally { configureWorkflows([]); }
+  });
+});
+
+it('rolls back private records, state, generations and effects when the page record budget is exhausted', async () => {
+  const page = await create();
+  await inDO(page.id, async t => {
+    let effect = false;
+    const limited: WorkflowModule = { ...module, operations: { ...module.operations,
+      archive: { access: 'controller', mutate: true, scopes: () => ['testmod:job'], run: h => {
+        h.records.put('archive', 'first', { preserved: true });
+        h.state.apply([{ op: 'set', path: ['payload'], value: { reset: true } }]);
+        h.scopes.rotate('testmod:job');
+        h.afterCommit(() => { effect = true; });
+        h.records.put('archive', 'second', { exceeds: true });
+        return { ok: true };
+      } },
+    } };
+    configureWorkflows([limited]);
+    const call = (operation: string, guards = {}) => handleWorkflows(t, new Request(`https://local/workflows/testmod/${operation}`, {
+      method: 'POST', body: JSON.stringify({ cid: crypto.randomUUID(), expected_generations: guards, data: {} }),
+    }), `workflows/testmod/${operation}`, agent);
+    try {
+      const scope = await (await call('activate')).json<any>();
+      t.db.run(`WITH RECURSIVE records(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM records WHERE n<?)
+        INSERT INTO workflow_records(module,collection,key,value) SELECT 'another-module','records',CAST(n AS TEXT),'{}' FROM records`, RESOURCE_LIMITS.private_records - 1);
+      await expect(call('archive', { [scope.id]: scope.generation })).rejects.toMatchObject({ code: 'resource_quota' });
+      expect(t.db.all('SELECT * FROM workflow_records WHERE module=?', 'testmod')).toEqual([]);
+      expect(t.getState().state).toEqual({});
+      expect(scopes(t)[0].generation).toBe(scope.generation);
+      expect(effect).toBe(false);
     } finally { configureWorkflows([]); }
   });
 });

@@ -7,6 +7,7 @@ import { checkGenerations, mutate, preconditions, registerScope, rotateScope, sc
 import { addEvent } from './events';
 import { validateOps } from './state';
 import { BLOB_ID_RE } from './ids';
+import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 
 let modules: ReadonlyMap<string, WorkflowModule> = new Map();
 /** Called only by the trusted deployment entry point. Page data is never consulted. */
@@ -14,11 +15,17 @@ export function configureWorkflows(selected: readonly WorkflowModule[]): void {
   const next = new Map<string, WorkflowModule>();
   for (const module of selected) {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(module.id) || next.has(module.id)) throw new Error('Invalid or duplicate workflow module');
+    for (const field of ['interfaceVersion', 'schemaVersion', 'implementationVersion'] as const)
+      if (typeof module[field] !== 'string' || !module[field] || module[field].length > 200) throw new Error(`Invalid workflow ${field}`);
+    const operations: Record<string, WorkflowModule['operations'][string]> = Object.create(null);
     for (const [name, operation] of Object.entries(module.operations)) {
       if (!/^[a-zA-Z][a-zA-Z0-9]{0,79}$/.test(name)) throw new Error('Invalid workflow operation');
+      if (!['controller', 'owner', 'participant'].includes(operation.access) || typeof operation.mutate !== 'boolean' || typeof operation.run !== 'function')
+        throw new TypeError('Workflow operations require an access policy, mutation flag and implementation');
       if (operation.run.constructor.name === 'AsyncFunction') throw new TypeError('Workflow operations must be synchronous');
+      operations[name] = Object.freeze({ ...operation, ...(operation.schema ? { schema: structuredClone(operation.schema) } : {}) });
     }
-    next.set(module.id, Object.freeze(module));
+    next.set(module.id, Object.freeze({ ...module, operations: Object.freeze(operations) }));
   }
   modules = next;
 }
@@ -58,7 +65,18 @@ function host(t: Tendril, module: WorkflowModule, who: WorkflowIdentity, command
       return row ? JSON.parse(row.value) as T : null;
     },
     list: <T>(collection: string) => { alive(); return t.db.all<{ key: string; value: string }>('SELECT key,value FROM workflow_records WHERE module=? AND collection=? ORDER BY key', owner, keyPart(collection)).map(row => ({ key: row.key, value: JSON.parse(row.value) as T })); },
-    put: (collection, key, value) => { write(); const serialized = JSON.stringify(value); if (typeof serialized !== 'string') throw new HttpError(400, 'bad_record', 'Workflow records must contain JSON data'); if (new TextEncoder().encode(serialized).byteLength > 8 * 1024 * 1024) throw new HttpError(413, 'too_large', 'Workflow record exceeds 8 MB'); t.db.run('INSERT INTO workflow_records(module,collection,key,value) VALUES(?,?,?,?) ON CONFLICT(module,collection,key) DO UPDATE SET value=excluded.value', owner, keyPart(collection), keyPart(key), serialized); },
+    put: (collection, key, value) => {
+      write(); keyPart(collection); keyPart(key);
+      const serialized = JSON.stringify(value);
+      if (typeof serialized !== 'string') throw new HttpError(400, 'bad_record', 'Workflow records must contain JSON data');
+      const bytes = new TextEncoder().encode(serialized).byteLength;
+      if (bytes > RESOURCE_LIMITS.private_record_bytes) throw new HttpError(413, 'too_large', 'Private record exceeds its byte allowance');
+      const previous = t.db.one<{ bytes: number }>('SELECT length(CAST(value AS BLOB)) AS bytes FROM workflow_records WHERE module=? AND collection=? AND key=?', owner, collection, key);
+      const usage = t.db.one<{ count: number; bytes: number }>('SELECT COUNT(*) AS count, COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM workflow_records')!;
+      if (usage.count + (previous ? 0 : 1) > RESOURCE_LIMITS.private_records || usage.bytes - (previous?.bytes ?? 0) + bytes > RESOURCE_LIMITS.private_records_bytes)
+        throw new HttpError(429, 'resource_quota', 'This page has reached its private-record allowance', { resource: 'private_records', count: usage.count, bytes: usage.bytes });
+      t.db.run('INSERT INTO workflow_records(module,collection,key,value) VALUES(?,?,?,?) ON CONFLICT(module,collection,key) DO UPDATE SET value=excluded.value', owner, collection, key, serialized);
+    },
     delete: (collection, key) => { write(); t.db.run('DELETE FROM workflow_records WHERE module=? AND collection=? AND key=?', owner, keyPart(collection), keyPart(key)); },
     clear: collection => { write(); t.db.run('DELETE FROM workflow_records WHERE module=? AND collection=?', owner, keyPart(collection)); },
   };
