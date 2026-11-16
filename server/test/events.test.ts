@@ -64,7 +64,7 @@ describe("events and socket delivery", () => {
     for (const wait of ["0", "1", "300", "301", "not-a-number"]) {
       const response = await api(h, "GET", `events?after=0&wait=${wait}`);
       expect(response.status).toBe(400);
-      expect((await response.json()).error.code).toBe("bad_request");
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe("bad_request");
     }
   });
 
