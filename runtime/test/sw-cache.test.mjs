@@ -296,7 +296,7 @@ test("offline root navigation uses the declared HTML entry even when index.html 
     const resumed = await worker(net, initial.stores, initial.clients);
     assert.equal(await (await resumed.request("", "a", true)).text(), entryHtml);
     assert.equal(await (await resumed.request(a.publication.base, "a", true)).text(), entryHtml);
-    assert.match(await (await resumed.request("index.html", "a", true)).text(), /<h1>1<\/h1>/);
+    assert.equal((await (await resumed.request("index.html", "a", true)).text()).includes("<h1>1</h1>"), true);
     assert.equal((await resumed.request("pages/", "a", true)).status, 503,
       "explicit nested directory navigation must not borrow the publication entry");
   }
