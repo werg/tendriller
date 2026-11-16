@@ -22,11 +22,11 @@ export function loadPlaywright(cwd = process.cwd()) {
   return null;
 }
 
-export function injectRuntime(html, publication = { id: "preview", base:"/_publications/preview/", entry:"index.html", version:1, runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"}, assets:[] }, entry = "index.html") {
-  const config = { id: "preview", base: "/", version: publication.version, preview: true, publication: { ...publication, entry }, ws: "/_tendril/ws", features: {
+export function injectRuntime(html, publication = { id: "preview", base:"/_publications/preview/", entry:"index.html", version:1, runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"}, assets:[] }, documentPath = "index.html") {
+  const config = { id: "preview", base: "/", version: publication.version, preview: true, publication, documentPath, ws: "/_tendril/ws", features: {
     push: false, vapid: null, shared_by: "Local preview", speech: null,
   } };
-  const directory = posix.dirname(entry);
+  const directory = posix.dirname(documentPath);
   const base = publication.base + (directory === "." ? "" : directory.split("/").map(encodeURIComponent).join("/") + "/");
   const escapedBase = base.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   const configJson = JSON.stringify(config).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");

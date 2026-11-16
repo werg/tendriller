@@ -39,19 +39,28 @@ test('preview and packing enumerate identical authored bytes without completing 
   assert.deepEqual(readdirSync(dir), before);
 });
 
-test('nested HTML pins its actual entry and resolves assets relative to its authored directory', async t => {
+test('nested HTML preserves the canonical publication and resolves assets relative to its document path', async t => {
   const { get } = await fixture(t, { 'index.html': '<!doctype html><a href="reports/detail.html">Report</a>',
     'reports/detail.html': '<!doctype html><head></head><script src="detail.js"></script><img src="../photo.svg">',
     'reports/detail.js': '// local detail', 'photo.svg': '<svg></svg>' });
-  const response = await get('/reports/detail.html');
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)[1]);
-  assert.equal(config.publication.entry, 'reports/detail.html');
-  const base = /<base href="([^"]+)"/.exec(html)[1];
-  assert.equal(base, config.publication.base + 'reports/');
-  assert.equal(await (await get(base + 'detail.js')).text(), '// local detail');
-  assert.equal(await (await get(config.publication.base + 'photo.svg')).text(), '<svg></svg>');
+  const publication = (await (await get('/_tendril/info')).json()).publication;
+  assert.equal(publication.entry, 'index.html');
+  for (const prefix of ['/', publication.base]) {
+    for (const path of ['', 'index.html', 'reports/detail.html']) {
+      const response = await get(prefix + path);
+      assert.equal(response.status, 200);
+      const html = await response.text();
+      const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)[1]);
+      assert.deepEqual(config.publication, publication, 'navigation must not change the publication manifest');
+      assert.equal(config.documentPath, path || 'index.html');
+      const base = /<base href="([^"]+)"/.exec(html)[1];
+      assert.equal(base, publication.base + (path.startsWith('reports/') ? 'reports/' : ''));
+      if (path.startsWith('reports/')) {
+        assert.equal(await (await get(base + 'detail.js')).text(), '// local detail');
+        assert.equal(await (await get(publication.base + 'photo.svg')).text(), '<svg></svg>');
+      }
+    }
+  }
 });
 
 test('an edited page creates a new publication while existing lazy asset URLs retain exact bytes', async t => {
@@ -78,7 +87,8 @@ test('pinned directory links resolve only their authored index, including encode
       assert.equal(response.status, 200);
       const html = await response.text();
       const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)[1]);
-      assert.equal(config.publication.entry, directory + '/index.html');
+      assert.deepEqual(config.publication, publication);
+      assert.equal(config.documentPath, directory + '/index.html');
       assert.equal(/<base href="([^"]+)"/.exec(html)[1], publication.base + encoded + '/');
     }
     assert.equal((await get(publication.base + encoded)).status, 404, 'a non-directory URL is not an implicit alias');
