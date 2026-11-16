@@ -285,6 +285,9 @@ route("POST", /^release$/, async (t) => {
   t.db.set("unclaimed_since", t.now());
   t.db.run("INSERT INTO release_events (at) VALUES (?)", t.now());
   t.db.run("DELETE FROM page_sessions");
+  // A later owner must never inherit the previous owner's push endpoints.
+  // These are independent of active page sockets and otherwise survive release.
+  t.db.run("DELETE FROM push_subs");
   for (const { ws } of t.connectedSockets()) ws.close(4003, "claim released");
   t.scheduleAlarm();
   return json({ released: true, expires_at: t.expiresAt() });
