@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { advance, api, apiJson, create, inDO, PageClient, req, runAlarm, sleep } from "./helpers";
+import { advance, api, apiJson, create, inDO, PageClient, req, runAlarm, sleep, uploadAgentBlob, uploadPageBlob } from "./helpers";
 
 describe("tokens and shared tendrils", () => {
   it("issues named tokens, attributes changes, lists and revokes", async () => {
@@ -69,21 +69,22 @@ describe("blobs and activity", () => {
   it("page uploads a blob; agent reads it; activity references it; owner deletion removes the bytes", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
-    const up = await req(h.page_url + "_tendril/blob", {
-      method: "POST",
-      body: new Uint8Array([0xff, 0xd8, 0xff]),
-      headers: { "Content-Type": "image/jpeg", "X-Tendril-Name": "drawer.jpg", "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
-    });
-    const blob = await up.json<any>();
-    expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `${new URL(h.page_url).pathname}_tendril/blob/${blob.id}`,
-      retention: { keep: false, expires_at: expect.any(Number), reason: "page_default" } });
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+    const blob = await uploadPageBlob(h, bytes,
+      { ...page.headers, "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret },
+      { type: "image/jpeg", name: "drawer.jpg" });
+    expect(blob).toMatchObject({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/),
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/), size: 3, type: "image/jpeg",
+      retention: { expires_at: expect.any(Number), reasons: ["page_default"] } });
     const viaPage = await req(new URL(blob.url, h.page_url).href);
     expect(viaPage.headers.get("Content-Type")).toBe("image/jpeg");
-    expect(new Uint8Array(await viaPage.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
+    expect(new Uint8Array(await viaPage.arrayBuffer())).toEqual(bytes);
     const viaApi = await api(h, "GET", `blobs/${blob.id}`);
     expect((await viaApi.arrayBuffer()).byteLength).toBe(3);
     const list = await apiJson(h, "GET", "blobs");
-    expect(list.blobs[0]).toMatchObject({ id: blob.id, type: "image/jpeg", size: 3, name: "drawer.jpg", device: page.deviceId });
+    expect(list.blobs[0]).toMatchObject({ id: blob.id, type: "image/jpeg", size: 3, name: "drawer.jpg" });
+    expect(await inDO(h.id, t => t.db.one<{ device: string | null }>("SELECT device FROM blobs WHERE id=?", blob.id)?.device))
+      .toBe(page.deviceId);
 
     const act = await page.request({ t: "activity" });
     const entry = act.entries.find((e: any) => e.kind === "blob");
@@ -91,7 +92,7 @@ describe("blobs and activity", () => {
     expect(entry.summary).toContain("Photo");
     const del = await page.request({ t: "activity_delete", seq: entry.seq });
     expect(del).toMatchObject({ t: "ack", seq: entry.seq });
-    expect(await env.FILES.head(`t/${h.id}/blobs/${blob.id}`)).toBeNull();
+    expect(await env.FILES.head(`t/${h.id}/files/${blob.sha256}`)).toBeNull();
     const gone = await api(h, "GET", `blobs/${blob.id}`);
     expect(gone.status).toBe(404);
     await gone.text();
@@ -100,8 +101,8 @@ describe("blobs and activity", () => {
 
   it("agent uploads blobs with PUT blobs and can use one as the icon", async () => {
     const h = await create();
-    const up = await apiJson(h, "PUT", "blobs", new Uint8Array([1, 2]), undefined);
-    expect(up.url).toBe(`_tendril/blob/${up.id}`);
+    const up = await uploadAgentBlob(h, new Uint8Array([1, 2]), { type: "image/png" });
+    expect(up.url).toBe(`_tendril/blobs/${up.id}`);
     const info = await apiJson(h, "PATCH", "", { icon: up.id });
     expect(info.meta.icon).toBe(up.id);
     const icon = await req(h.page_url + "_tendril/icon");
@@ -152,15 +153,18 @@ describe("blobs and activity", () => {
 
   it("page blobs expire after 30 days; agent blobs and the icon stay", async () => {
     const h = await create();
-    const pageBlob = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers: { "Content-Type": "text/plain" }, body: "photo" })).json<any>();
-    const iconBlob = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers: { "Content-Type": "image/png" }, body: "icon" })).json<any>();
-    const agentBlob = await (await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" })).json<any>();
+    const page = await PageClient.connect(h.page_url);
+    const headers = { ...page.headers, "X-Tendril-Device": page.deviceId, "X-Tendril-Device-Secret": page.secret };
+    const pageBlob = await uploadPageBlob(h, "photo", headers, { type: "text/plain" });
+    const iconBlob = await uploadPageBlob(h, "icon", headers, { type: "image/png" });
+    const agentBlob = await uploadAgentBlob(h, "asset", { type: "text/plain" });
     await apiJson(h, "PATCH", "", { icon: iconBlob.id });
+    page.close();
     await advance(h.id, 31 * 86400_000);
     await inDO(h.id, (t) => t.cleanup());
     const ids = (await apiJson(h, "GET", "blobs")).blobs.map((b: any) => b.id).sort();
     expect(ids).toEqual([iconBlob.id, agentBlob.id].sort());
-    expect(await env.FILES.get(`t/${h.id}/blobs/${pageBlob.id}`)).toBeNull();
+    expect(await env.FILES.get(`t/${h.id}/files/${pageBlob.sha256}`)).toBeNull();
   });
 
   it("prunes versions beyond the newest 50 and deletes file bodies nothing references", async () => {
@@ -183,7 +187,7 @@ describe("lifetime and deletion", () => {
   it("ad_hoc tendrils expire after 24 h with no check-in and no device; storage and R2 wiped", async () => {
     const h = await create();
     await apiJson(h, "PUT", "files/index.html", "<p>x</p>");
-    await apiJson(h, "PUT", "blobs", new Uint8Array([1]));
+    await uploadAgentBlob(h, new Uint8Array([1]));
     expect((await env.FILES.list({ prefix: `t/${h.id}/` })).objects.length).toBe(2);
     await advance(h.id, 23 * 3600_000);
     await runAlarm(h.id);
