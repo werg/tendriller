@@ -145,8 +145,9 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
         const ack = value => reply({ t: "ack", ...value });
         const key = device.id + ":" + m.cid;
         const subscription = m.t === "stream_subscribe" || m.t === "stream_unsubscribe";
+        const receipted = !subscription && m.t !== "state_snapshot";
         const fingerprint = JSON.stringify(m);
-        if (!subscription && m.cid && dedupe.has(key)) {
+        if (receipted && m.cid && dedupe.has(key)) {
           const prior = dedupe.get(key);
           const replay = prior.fingerprint === fingerprint ? prior.result : { error: "command_conflict", message: "CID belongs to a different command" };
           ack(replay);
@@ -165,6 +166,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             case "stream_subscribe": result = streamFixtures.subscribe(ws, m.stream, m.after); break;
             case "stream_unsubscribe": streamFixtures.unsubscribe(ws, m.stream); result = {}; break;
             case "ping": reply({ t: "pong" }); return;
+            case "state_snapshot": reply({ t: "state_snapshot", state: shared, rev, scopes }); return;
             case "send":
             case "capture_complete": {
               if (role === "display") { result = { error: "forbidden", message: "Display devices cannot send" }; break; }
@@ -214,7 +216,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             default: result = { error: "preview_unsupported", message: `${m.t} requires a real service; use the local Worker E2E suite` };
           }
         } catch (error) { result = { error: error.code || "bad_request", message: error.message, ...(error.code === "state_conflict" ? error.extra : {}) }; }
-        if (m.cid) { if (!subscription && (!result?.error || (m.t === "state" && result.error === "state_conflict"))) dedupe.set(key, { fingerprint, result: result || {} }); ack(result); }
+        if (m.cid) { if (receipted && (!result?.error || (m.t === "state" && result.error === "state_conflict"))) dedupe.set(key, { fingerprint, result: result || {} }); ack(result); }
         if (m.t === "state" && result?.error) reply({ t: "state_reset", state: shared, scopes, rev });
       });
     });

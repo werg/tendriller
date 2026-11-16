@@ -8,6 +8,33 @@ import { createClient } from "../../contract/client.mjs";
 beforeAll(async () => { await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations")); await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); });
 const command = (extra: Record<string, unknown> = {}) => ({ cid: crypto.randomUUID(), expected_generations: {}, ...extra });
 
+it("authenticated browser snapshots return a coherent committed state and are fresh reads without command receipts", async () => {
+  const h = await create();
+  const binding = await apiJson(h, "PUT", "scopes/read", command({ paths: [["source"]], operations: [] }));
+  const page = await PageClient.connect(h.page_url);
+  const first = await page.request({ t: "state_snapshot", cid: "read-state" });
+  expect(first).toMatchObject({ state: {}, rev: 0, scopes: [binding] });
+  const write = command({ t: "state", expected_revision: first.rev, ops: [{ op: "set", path: ["a"], value: 1 }, { op: "set", path: ["b"], value: 2 }] });
+  page.send(write);
+  const second = await page.request({ t: "state_snapshot", cid: "read-state" });
+  expect(second).toMatchObject({ state: { a: 1, b: 2 }, rev: 1, scopes: [binding] });
+  await inDO(h.id, t => {
+    expect(t.db.one("SELECT result FROM commands WHERE cid='read-state'")).toBeNull();
+    expect(t.db.all("SELECT * FROM activity WHERE kind='state'")).toHaveLength(1);
+  });
+  page.close();
+});
+
+it("snapshot reads recheck a revoked authenticated session before disclosing shared state", async () => {
+  const h = await create();
+  const page = await PageClient.connect(h.page_url);
+  await inDO(h.id, t => t.db.run("DELETE FROM page_sessions"));
+  page.send({ t: "state_snapshot", cid: "revoked-read" });
+  await expect.poll(() => page.closed?.code).toBe(4003);
+  expect(page.messages.some(message => message.t === "state_snapshot")).toBe(false);
+  page.close();
+});
+
 it("serializes competing claims against one authoritative snapshot and persists both outcomes", async () => {
   const h = await create();
   const requests = ["a", "b"].map(owner => command({ conditions: [{ path: ["claims", "item"], exists: false }],

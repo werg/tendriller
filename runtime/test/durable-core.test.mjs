@@ -116,7 +116,7 @@ function storage() {
   const values = new Map();
   return { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
-async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true, blobs = blobService(), configuration = {} } = {}) {
+async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, rev = 1, online = true, blobs = blobService(), configuration = {} } = {}) {
   const timers = new Map(); let next = 0;
   const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
@@ -133,7 +133,7 @@ async function environment({ database = new Database(), localStorage = storage()
   window.__TENDRIL_TRANSPORT__ = transport.socket;
   transport.onSend((frame, reply) => {
     sent.push(structuredClone(frame));
-    if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev: 1, role: "owner", pending: false, transcript: [] });
+    if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev, role: "owner", pending: false, transcript: [] });
   });
   const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, documentPath: null, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null}, ...configuration });
   await flush();
@@ -242,6 +242,63 @@ test("conditional apply freezes predicates and all ops before durable admission,
   assert.equal(env.core.state.get("claim").owner, "a");
   assert.equal(env.core.state.get("status"), "claimed");
   assert.deepEqual(JSON.parse(JSON.stringify(results[0].conditions)), frame.conditions);
+});
+
+test("state.snapshot returns authoritative state and matching revision without flushing or discarding optimism", async () => {
+  const env = await environment({ state: { count: 0 }, scopes: [descriptor] });
+  const pending = env.core.state.set("count", 1);
+  await flush(); await env.commit();
+  assert.equal(env.core.state.get("count"), 1); assert.equal(env.core.state.revision, 1);
+  const read = env.core.state.snapshot();
+  const request = env.sent.find(frame => frame.t === "state_snapshot");
+  env.transport.receive({ t: "state_snapshot", cid: request.cid, state: { count: 0 }, rev: 1, scopes: [descriptor] });
+  const snapshot = await read;
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot)), { state: { count: 0 }, rev: 1, scopes: [descriptor] });
+  assert.equal(env.core.state.get("count"), 1); assert.equal(env.core.pendingWork().state, 1);
+  assert.equal([...env.database.stores.outbox.values()].some(item => item.msg.t === "state_snapshot"), false);
+  snapshot.state.count = 999; snapshot.scopes[0].generation = "changed";
+  assert.equal(env.core.state.get("count"), 1); assert.equal(env.core.scopes.list()[0].generation, "original");
+  const write = env.sent.find(frame => frame.t === "state");
+  env.transport.receive({ t: "ack", cid: write.cid, rev: 2 });
+  assert.equal((await pending).status, "accepted");
+});
+
+test("late snapshots and conditional ACKs cannot overwrite a newer broadcast or lose durable work", async () => {
+  const initial = { shared: "before" };
+  const env = await environment({ state: initial });
+  const pending = env.core.state.apply([{ op: "set", path: ["mine"], value: "accepted" }, { op: "set", path: ["shared"], value: "earlier" }],
+    { expected_revision: 1 });
+  await flush(); await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  const read = env.core.state.snapshot();
+  const request = env.sent.find(frame => frame.t === "state_snapshot");
+  env.transport.receive({ t: "state", rev: 3, ops: [{ op: "set", path: ["remote"], value: true }, { op: "set", path: ["shared"], value: "later" }] });
+  env.transport.receive({ t: "state_snapshot", cid: request.cid, state: { mine: "accepted", shared: "earlier" }, rev: 2, scopes: [] });
+  const observed = await read;
+  assert.equal(observed.rev, 2); assert.equal(observed.state.shared, "earlier");
+  assert.equal(env.core.state.get("shared"), "later"); assert.equal(env.core.state.revision, 3);
+  env.transport.receive({ t: "ack", cid: original.cid, rev: 2 });
+  assert.equal((await pending).status, "queued");
+  assert.equal(env.core.connected, false); assert.equal(env.core.pendingWork().state, 1);
+  const authority = { mine: "accepted", shared: "later", remote: true };
+  const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: authority, rev: 3 });
+  assert.deepEqual(resumed.sent.find(frame => frame.t === "state"), original);
+  resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(resumed.core.state.get())), authority);
+  assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
+});
+
+test("snapshot reads fail explicitly offline, on disconnect and on malformed replies without queuing", async () => {
+  const offline = await environment({ online: false });
+  await assert.rejects(offline.core.state.snapshot(), { code: "offline" });
+  assert.equal(offline.sent.some(frame => frame.t === "state_snapshot"), false);
+  const env = await environment();
+  const failed = assert.rejects(env.core.state.snapshot(), { code: "invalid_response" });
+  const request = env.sent.find(frame => frame.t === "state_snapshot");
+  env.transport.receive({ t: "state_snapshot", cid: request.cid, state: {}, rev: "invalid", scopes: [] }); await failed;
+  const disconnected = assert.rejects(env.core.state.snapshot(), { code: "offline" });
+  env.transport.disconnect(); await disconnected;
+  assert.equal(env.database.stores.outbox.size, 0);
 });
 
 test("conditional replay keeps the exact durable predicate and never covers a newer snapshot", async () => {

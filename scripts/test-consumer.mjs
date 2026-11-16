@@ -68,6 +68,11 @@ void client.updateState({...command,conditions:[{path:['job'],exists:false}],exp
 void client.updateState({ops:[]});
 declare const page: RuntimeApi<{count:number}>;
 void page.state.apply([{op:'set',path:['count'],value:1}],{conditions:[{path:['count'],equals:0}]});
+const snapshot = await page.state.snapshot();
+const count:number = snapshot.state.count;
+void page.state.apply([{op:'set',path:['count'],value:count+1}],{expected_revision:snapshot.rev});
+// @ts-expect-error a state condition has one predicate, never both.
+void page.state.apply([],{conditions:[{path:['count'],equals:0,exists:true}]});
 const result: SendResult = await page.send({session:'opaque'});
 if(result.status==='accepted'){const seq:number=result.seq; void seq;}
 // @ts-expect-error queued is not accepted

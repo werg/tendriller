@@ -9,10 +9,11 @@ export type Role = DeviceInfo["role"];
 export type DevicePurpose = DeviceInfo["purpose"];
 export type Path = string | (string | number)[];
 export type StateOperation = WireContracts["stateOperation"];
-export type StateCondition = WireContracts["stateCondition"];
-export type StateChecks = WireContracts["stateChecks"];
+export type StateCondition = { path: Path; equals: unknown; exists?: never } | { path: Path; exists: boolean; equals?: never };
+export interface StateChecks { conditions?: StateCondition[]; expected_revision?: number }
 export interface StateWriteOptions extends OperationOptions, StateChecks {}
 export interface StateConflict { kind: "revision" | "condition" | "path"; condition?: number; path?: string[] }
+export interface StateSnapshot<T = Record<string, unknown>> { state: T; rev: number; scopes: ScopeDescriptor[] }
 export type CreateRequest = WireContracts["create"];
 export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
@@ -49,6 +50,8 @@ export type ConversationResult = { cid: string } & ({ status: "queued" } | { sta
 export interface StateApi<T = Record<string, unknown>> {
   readonly revision: number;
   get(): T; get(path: Path): unknown;
+  /** Read a coherent server snapshot while connected; does not flush pending writes or replace the local view. */
+  snapshot(): Promise<StateSnapshot<T>>;
   apply(ops: StateOperation[], options?: StateWriteOptions): Promise<StateResult>;
   set(path: Path, value: unknown, options?: StateWriteOptions): Promise<StateResult>;
   delete(path: Path, options?: StateWriteOptions): Promise<StateResult>;
