@@ -4,11 +4,14 @@ import { deviceConfiguration, getFocus, setFocus, updateDevice } from "./device-
 import { deleteTimer, listTimers, saveTimer, timerHistory } from "./timers";
 import { discardStaged, exportBundle, MAX_BUNDLE_BYTES, publishStaged, putSession, remix, sessionSummary, stageBundle } from "./portability";
 import { HttpError, json, readJson } from "./http";
+import type { AgentPrincipal, PagePrincipal } from "./access";
 
 export const EXPERIENCE_ROUTE = /^(?:focus|timers(?:\/[^/]+)?|session|bundle(?:\/publish)?|remix)$/;
 
-export async function handleExperience(t: Tendril, req: Request, url: URL, by: string, rest: string, ownerPage = false): Promise<Response> {
+export async function handleExperience(t: Tendril, req: Request, url: URL, principal: AgentPrincipal | PagePrincipal, rest: string): Promise<Response> {
   const method = req.method === "HEAD" ? "GET" : req.method;
+  const ownerPage = principal.kind === "page", by = ownerPage ? "owner" : principal.name;
+  const actor = `${principal.kind}:${principal.name}`;
   if (rest === "focus") {
     if (method === "GET") return json({ focus: getFocus(t) });
     if (method === "POST") { setFocus(t, assertValid("focusRequest", await readJson(req, 4096)), by); return json(deviceConfiguration(t)); }
@@ -19,13 +22,13 @@ export async function handleExperience(t: Tendril, req: Request, url: URL, by: s
   }
   if (rest === "timers") {
     if (method === "GET") return json({ timers: listTimers(t), execution: "server", lifetime: t.db.get("lifetime", "ad_hoc"), expires_at: t.expiresAt() });
-    if (method === "POST") return json(saveTimer(t, assertValid("timerCreate", await readJson(req, 8192)), by), 201);
+    if (method === "POST") return json(saveTimer(t, await readJson(req, 64 * 1024), actor, undefined, by), 201);
   }
   if (rest === "timers/history" && method === "GET") return json({ runs: timerHistory(t) });
   const timer = /^timers\/([a-zA-Z0-9-]+)$/.exec(rest);
   if (timer && timer[1] !== "history") {
-    if (method === "PATCH") return json(saveTimer(t, assertValid("timerWrite", await readJson(req, 8192)), by, timer[1]));
-    if (method === "DELETE") { deleteTimer(t, timer[1], by); return new Response(null, { status: 204 }); }
+    if (method === "PATCH") return json(saveTimer(t, await readJson(req, 64 * 1024), actor, timer[1], by));
+    if (method === "DELETE") return json(deleteTimer(t, timer[1], await readJson(req, 64 * 1024), actor, by));
   }
   if (rest === "session") {
     if (method === "GET") return json(sessionSummary(t));

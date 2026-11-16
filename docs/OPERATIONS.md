@@ -6,13 +6,25 @@ Tendriller does not require Email Routing or Email Sending. Public reports use `
 
 ## Fresh storage baseline
 
-The canonical staging and production Workers use separate empty revision-4 D1
-databases and R2 buckets. The first D1 migration installs the account schema;
-the second records a one-time cutover marker. New `TendrilV4` and `AdmissionV4`
-Durable Object namespaces hold page and admission state. The page storage revision
-is **4**; `node scripts/storage-schema.mjs` reads it from the authoritative
-server definition. The schema guard rejects incompatible storage. Independent
-branch previews use the generic engine classes in their own new Workers.
+The current page storage revision is **5**; `node scripts/storage-schema.mjs`
+reads it from the authoritative server definition. Timer records now carry a
+monotonic revision used by durable conditional commands. Revision-4 page storage
+does not satisfy that contract. The schema guard rejects it before changing any
+data; this release requires a fresh Durable Object namespace.
+
+The checked-in canonical staging and production configurations still identify
+the previously provisioned revision-4 resources: separate D1 databases and R2
+buckets, with `TendrilV4` and `AdmissionV4` Durable Object bindings. Those bindings
+have **not** been cut over by this change. Do not deploy revision-5 code into
+them or set the deployment schema variables to `5` merely to pass a gate.
+Prepare and review a fresh namespace cutover before enabling a canonical deploy.
+For isolated development, provision a new named Worker with `--name` and
+`--fresh`; independent branch previews use generic engine classes in their own
+new Workers. An existing preview that already contains revision-4 state also
+needs fresh resources.
+
+The first D1 migration installs the account schema; the second records the
+one-time revision-4 account cutover marker. Neither is a page-storage migration.
 
 The canonical configs bind `tendriller-{staging,production}-v4-accounts` and
 `tendriller-{staging,production}-v4-files`. The prior databases and buckets are
@@ -39,10 +51,15 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 ## Provision and deploy
 
 The canonical revision-4 resources and their IDs are already selected in the
-checked-in staging and production configs. Keep OAuth secrets out of the
-repository. For a separate named deployment, sign in with `npx wrangler login`,
-set `CLOUDFLARE_ACCOUNT_ID` if needed, and use `provision.mjs --name ... --fresh`
-with separate service and page origins.
+checked-in staging and production configs. Their namespace cutover is a
+prerequisite for deploying this revision-5 release. Keep OAuth secrets out of
+the repository. For a separate named deployment, sign in with
+`npx wrangler login`, set `CLOUDFLARE_ACCOUNT_ID` if needed, and use
+`provision.mjs --name ... --fresh` with separate service and page origins.
+
+The following canonical publication commands apply only after its configuration
+has been prepared for the required storage revision. For an isolated deployment,
+use the generated named configuration instead.
 
 ```sh
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
@@ -66,7 +83,7 @@ After creating the OAuth apps and Turnstile widgets, export their credentials lo
 
 For off-page device notifications, generate a separate stable VAPID key pair for each environment using `node scripts/vapid-keys.mjs`. Supply `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and the recommended `VAPID_SUBJECT` when running `scripts/set-secrets.mjs`; these variables are already supported by the script. Keep private keys out of git and do not rotate them during normal deployment: rotation requires devices to renew subscriptions. See the [Web Push operations and verification guide](PUSH_NOTIFICATIONS.md) and test delivery with all page tabs closed, including the installed iOS web app.
 
-GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run deploys staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. The selected empty revision-4 resources require both schema variables to be `4`. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
+GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. Existing revision-4 declarations must remain `4` until a fresh revision-5 namespace cutover has actually been completed; they deliberately block this release from those resources. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 

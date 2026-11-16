@@ -1,7 +1,7 @@
 // SQLite storage for the Tendril Durable Object (PROTOCOL section 3).
 
 /** Persistent storage identity, independent of runtime and workflow releases. */
-export const STORAGE_SCHEMA_REVISION = 4;
+export const STORAGE_SCHEMA_REVISION = 5;
 
 export class StorageSchemaError extends Error {
   readonly code = 'storage_schema_mismatch';

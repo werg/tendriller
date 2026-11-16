@@ -10,6 +10,37 @@ agent or notification subscription, and a host that actually runs the agent.
 usual `Authorization: Bearer tk_…` token. Page scripts never need these secrets.
 Times are epoch milliseconds.
 
+## Timer mutation receipts
+
+Creating, editing, cancelling, and deleting a timer are durable commands. Supply
+`cid`, `expected_generations`, optional `scope`, and the operation's fields.
+Edits and deletion additionally require the timer's reviewed `expected_revision`.
+The complete [timer contract](EXPERIENCES.md#timers-that-survive-a-closed-page)
+applies to the agent SDK, MCP, and owner page HTTP routes.
+
+The server checks bound `timer.write` generations, reads the current timer,
+validates its revision and schedule, changes the timer and notification intents,
+records activity, and saves the command receipt in one transaction. Alarm
+scheduling happens after commit. A failure to store the receipt rolls back the
+entire mutation; it cannot leave an unacknowledged timer behind or cancel a
+notification while rejecting the associated edit.
+
+Exact accepted retries are resolved before current revision, generation, and
+resource checks. A creation with a lost response therefore recovers its original
+timer ID even after that timer ran or was removed. A deletion returns a durable
+`{id,revision,deleted:true}` receipt that can be recovered after the row is gone.
+An accepted receipt records historical acceptance, not current timer state;
+reread the list when restoring the schedule display.
+
+Each timer starts at revision 1. Accepted edits and alarm transitions increment
+it. `timer_conflict` asks the caller to review the new revision; it is not an
+instruction to rewrite the pending command automatically. A changed payload,
+target, or operation using an accepted command ID returns `command_conflict`.
+The generic receipt limits apply: `429 resource_quota` rejects new commands
+atomically while retaining accepted receipts for replay. `429 quota` when all
+32 timer slots are occupied requires removing unwanted timers before composing
+new work. Neither capacity error is a transient network retry signal.
+
 ## Timer notification outbox
 
 For a fired timer with `notify:true`, the event, run receipt, notification intent,

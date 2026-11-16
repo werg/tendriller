@@ -59,7 +59,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
     if (/^workflows(?:\/|$)/.test(rest)) return handleWorkflows(t, req, rest, principal);
     if (STREAM_ROUTE.test(rest)) return handleStreams(t, req, url, rest, principal);
     if (CONSUMER_ROUTE.test(rest)) return handleConsumers(t, req, url, rest);
-    return handleExperience(t, req, url, principal.name, rest);
+    return handleExperience(t, req, url, principal, rest);
   }
   const matches = routes.filter((r) => r.pattern.test(rest));
   if (matches.length === 0) throw new HttpError(404, "not_found", `No API route ${rest || "/"}`);

@@ -2,7 +2,7 @@ import type { BlobTransferClient } from "./blobs-client.mjs";
 import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
-  FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
+  FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerDelete, TimerDeleted, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
   expires_at?: number | null; next_step?: string }
@@ -30,7 +30,7 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   timers(): Promise<{ timers: DurableTimer[]; execution: "server"; lifetime: "ad_hoc" | "resident"; expires_at: number | null }>;
   createTimer(body: CreateTimer): Promise<DurableTimer>;
   updateTimer(timer: string, body: TimerWrite): Promise<DurableTimer>;
-  deleteTimer(timer: string): Promise<void>;
+  deleteTimer(timer: string, body: TimerDelete): Promise<TimerDeleted>;
   timerHistory(): Promise<{ runs: TimerRun[] }>;
   session(): Promise<SessionSummary>;
   updateSession(body: SessionWrite): Promise<SessionResult>;
