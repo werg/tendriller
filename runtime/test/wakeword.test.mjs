@@ -10,6 +10,7 @@ const { WakeWordCapture, matchWakePhrase } = await import(
 function env({ local = true } = {}) {
   const instances = [];
   let visibility = "visible";
+  let outputSpeaking = false;
   globalThis.window = new EventTarget();
   window.setTimeout = setTimeout;
   window.clearTimeout = clearTimeout;
@@ -43,8 +44,9 @@ function env({ local = true } = {}) {
     onState: (state, detail) => states.push({ state, detail }),
     onWake: () => wakes.push("wake"),
     onCommand: text => commands.push(text),
+    isOutputSpeaking: () => outputSpeaking,
   });
-  return { capture, instances, states, wakes, commands, setVisibility: state => { visibility = state; document.dispatchEvent(new Event("visibilitychange")); } };
+  return { capture, instances, states, wakes, commands, setOutputSpeaking: value => { outputSpeaking = value; }, setVisibility: state => { visibility = state; document.dispatchEvent(new Event("visibilitychange")); } };
 }
 
 test("whole-word phrase detection preserves the following command", () => {
@@ -85,6 +87,20 @@ test("a phrase and its command in one final result send only once", () => {
   rec.onresult?.({ resultIndex: 0, results: rec.results }); // duplicate final index
   assert.deepEqual(commands, ["remember the milk"]);
   assert.equal(wakes.length, 1);
+  capture.stop();
+});
+
+test("spoken agent replies cannot trigger wake commands", () => {
+  const { capture, instances, wakes, commands, setOutputSpeaking } = env();
+  capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" });
+  const rec = instances.at(-1);
+  setOutputSpeaking(true);
+  rec.heard("Hey Tendril, change the dashboard");
+  assert.deepEqual(wakes, []);
+  assert.deepEqual(commands, []);
+  setOutputSpeaking(false);
+  rec.heard("Hey Tendril, change the dashboard");
+  assert.deepEqual(commands, ["change the dashboard"]);
   capture.stop();
 });
 

@@ -74,6 +74,7 @@ export class WakeWordCapture {
     onState(state: WakeState, detail?: string): void;
     onWake(): void;
     onCommand(text: string): void;
+    isOutputSpeaking?(): boolean;
   }) {}
 
   static supported(): boolean { return !!recognitionFactory(); }
@@ -196,7 +197,7 @@ export class WakeWordCapture {
     rec.onresult = event => {
       if (!this.active || this.rec !== rec) return;
       // Avoid accepting the agent's own browser speech output as a command.
-      if (window.speechSynthesis?.speaking) return;
+      if (window.speechSynthesis?.speaking || this.handlers.isOutputSpeaking?.()) return;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         if (!result.isFinal || this.seen.has(i)) continue;

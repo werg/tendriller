@@ -287,6 +287,7 @@ class Control {
       onError: (m) => { this.showInterim(""); this.showBubble(m, true); },
     }, this.sensors, () => this.lang, runtimeBase(this.core.config), this.core.config.features.speech && { ...this.core.config.features.speech, url: new URL(this.core.config.features.speech.url, new URL(this.core.config.base, location.href)).href, engine: { ...this.core.config.features.speech.engine, script: new URL(this.core.config.features.speech.engine.script, new URL(this.core.config.base, location.href)).href, wasm: new URL(this.core.config.features.speech.engine.wasm, new URL(this.core.config.base, location.href)).href } });
     this.wake = new WakeWordCapture({
+      isOutputSpeaking: () => !!this.core.tts?.speaking,
       onState: (state, detail) => {
         this.wakeState = state;
         this.wakeDetail = detail || "";

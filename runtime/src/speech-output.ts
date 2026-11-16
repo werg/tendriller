@@ -33,6 +33,8 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
   let epoch = 0;
   let loadEpoch = 0;
   const sources = new Set<AudioBufferSourceNode>();
+  const browserUtterances = new Set<SpeechSynthesisUtterance>();
+  let neuralSpeaking = false;
   const language = () => prefs().language || navigator.language || "en-US";
   const report = (state: SpeechStatus["state"], message: string) => {
     status = { enabled, state, message };
@@ -103,6 +105,8 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
 
   const stop = () => {
     ++epoch;
+    neuralSpeaking = false;
+    browserUtterances.clear();
     generation?.abort();
     generation = null;
     for (const source of sources) { try { source.stop(); } catch { /* already ended */ } }
@@ -114,8 +118,10 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
       if (prefs().audio === false || !window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") return;
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language();
+      browserUtterances.add(utterance);
+      utterance.onend = utterance.onerror = () => { browserUtterances.delete(utterance); };
       window.speechSynthesis.speak(utterance);
-    } catch { /* the transcript still contains the reply */ }
+    } catch { browserUtterances.clear(); /* the transcript still contains the reply */ }
   };
   const play = async (text: string, token: number) => {
     let played = false;
@@ -166,6 +172,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
           source.onended = () => { sources.delete(source); source.disconnect(); };
           at = Math.max(at, ctx.currentTime + .02);
           source.start(at);
+          neuralSpeaking = true;
           at += buffer.duration;
           played = true;
         }
@@ -192,11 +199,12 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
       // Do not repeat a partially played reply in a second voice.
       if (!played) browserSpeak(text);
     } finally {
-      if (generation === abort) generation = null;
+      if (generation === abort) { neuralSpeaking = false; generation = null; }
     }
   };
   const api: SpeechOutput = {
     get status() { return { ...status }; },
+    get speaking() { return neuralSpeaking || browserUtterances.size > 0 || !!window.speechSynthesis?.speaking; },
     async enable() {
       stop(); preferences.update({ voice: "neural" }); unlock();
       if (model) report("ready", readyMessage);
