@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { assertValid } from "@tendriller/core/contract";
+import { assertValid, RESOURCE_LIMITS } from "@tendriller/core/contract";
 import { startServer } from "../lib/preview.mjs";
 
 const sha = data => createHash("sha256").update(data).digest("hex");
@@ -91,6 +91,53 @@ test("preview deduplication rejects a false size and isolates device upload iden
   assert.equal((await call("/uploads", "POST", {}, { "X-Tendril-Device-Secret": "wrong" })).status, 401);
   server.preview.setRole("display");
   assert.equal((await start("display-upload")).status, 403);
+});
+
+test("preview blobs default to safe downloads and preserve headers for inline ranges and HEAD", async t => {
+  const { call } = await fixture(t);
+  const data = Buffer.from("<!doctype html><script>throw Error('must not execute')</script>");
+  const name = "résumé #1.html";
+  const session = await (await call("/uploads", "POST", {
+    cid: "untrusted-html", sha256: sha(data), size: data.length, type: "text/html", name,
+  })).json();
+  assert.equal((await call(`/uploads/${session.id}/content`, "PUT", data, { "Content-Type": "application/octet-stream" })).status, 204);
+  const receipt = await (await call(`/uploads/${session.id}/complete`, "POST", {})).json();
+  const path = `/blobs/${receipt.blob.id}`;
+  const check = (response, disposition) => {
+    assert.equal(response.headers.get("content-type"), "text/html");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("content-security-policy"), "default-src 'none'; sandbox");
+    assert.equal(response.headers.get("cache-control"), "private, max-age=31536000, immutable");
+    assert.equal(response.headers.get("content-disposition"), `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
+  };
+  const download = await call(path);
+  check(download, "attachment");
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), data);
+  const inline = await call(path + "?disposition=inline", "GET", undefined, { Range: "bytes=0-14" });
+  check(inline, "inline");
+  assert.equal(inline.status, 206);
+  assert.deepEqual(Buffer.from(await inline.arrayBuffer()), data.subarray(0, 15));
+  const head = await call(path, "HEAD");
+  check(head, "attachment");
+  assert.equal(head.headers.get("content-length"), String(data.length));
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+});
+
+test("preview cancellation closes the original intent and releases its active upload slot", async t => {
+  const { call, start, server } = await fixture(t);
+  for (let index = 0; index <= RESOURCE_LIMITS.upload_sessions_per_actor; index++) {
+    const cid = `cancel-${index}`;
+    const response = await start(cid);
+    assert.equal(response.status, 201);
+    const session = await response.json();
+    assert.equal((await call(`/uploads/${session.id}`, "DELETE")).status, 200);
+    assert.equal((await (await call(`/uploads/${session.id}`)).json()).phase, "aborted");
+    const retry = await start(cid);
+    assert.equal(retry.status, 409);
+    assert.equal((await retry.json()).error.code, "upload_closed");
+    assert.equal((await call(`/uploads/${session.id}/complete`, "POST", {})).status, 409);
+  }
+  assert.equal(server.preview.blobs.size, 0);
 });
 
 test("preview pin commands preserve original guards and accepted receipts", async t => {
