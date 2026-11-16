@@ -12,12 +12,14 @@ it("discovers optional releases and serves the generic public contract", async (
   const index = await req("/llms.txt");
   expect(index.status).toBe(200);
   const discovery = await index.text();
-  // Discovery may move, but the catalog advertised as a tested pairing must
-  // identify a real, immutable release rather than a mutable latest alias.
+  // Discover matching release metadata; never claim the old rc.1 catalog is the
+  // running service's current rc.2 runtime or silently follow a mutable artifact.
   expect(discovery).toContain("https://api.github.com/repos/werg/tendriller-contrib/releases");
-  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/catalog.json");
+  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases");
+  expect(discovery).toContain("https://tendriller.dev/docs/BROWSER_API.md");
+  expect(discovery).not.toContain("/releases/download/v0.2.0-rc.1/catalog.json");
   expect(discovery).not.toContain("/releases/latest/download/");
-  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md"]){
+  for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md","/docs/BROWSER_API.md"]){
     const response=await req(path);expect(response.status,path).toBe(200);
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   }
