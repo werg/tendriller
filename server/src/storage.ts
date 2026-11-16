@@ -16,7 +16,7 @@ interface UploadRow {
 }
 interface FileRow {
   path: string; revision: number; blob_id: string | null; name: string | null;
-  type: string | null; scope: string | null; updated_at: number; by_actor: string;
+  type: string | null; updated_at: number; by_actor: string;
 }
 const uploadId = () => `u_${randomB32(20)}`;
 const validUploadId = /^u_[a-z2-7]{20}$/;
@@ -51,7 +51,7 @@ const blobMetadata = blobReference;
 function fileValue(row: FileRow) {
   return { path: row.path, revision: row.revision, blob_id: row.blob_id,
     ...(row.name ? { name: row.name } : {}), ...(row.type ? { type: row.type } : {}),
-    scope: row.scope, updated_at: row.updated_at, by: row.by_actor };
+    updated_at: row.updated_at, by: row.by_actor };
 }
 
 function queryPath(url: URL): string {
@@ -89,7 +89,7 @@ function requireBlob(t: Tendril, id: string) {
 
 interface FileMutation {
   cid: string; path: string; expected_revision: number; blob_id?: string;
-  name?: string; type?: string; scope?: string;
+  name?: string; type?: string;
 }
 
 function commitFile(t: Tendril, input: FileMutation, actor: string) {
@@ -106,10 +106,10 @@ function commitFile(t: Tendril, input: FileMutation, actor: string) {
   const blobId = put?.blob_id ?? null;
   const name = put?.name ?? null;
   const type = put?.type ?? null;
-  t.db.run("INSERT INTO file_refs(path,revision,blob_id,name,type,scope,updated_at,by_actor) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision,blob_id=excluded.blob_id,name=excluded.name,type=excluded.type,scope=excluded.scope,updated_at=excluded.updated_at,by_actor=excluded.by_actor",
-    input.path, next, blobId, name, type, input.scope ?? null, now, actor);
-  t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,?,?,?,?,?,?,?)",
-    input.path, next, blobId, name, type, input.scope ?? null, now, actor, input.cid);
+  t.db.run("INSERT INTO file_refs(path,revision,blob_id,name,type,updated_at,by_actor) VALUES(?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision,blob_id=excluded.blob_id,name=excluded.name,type=excluded.type,updated_at=excluded.updated_at,by_actor=excluded.by_actor",
+    input.path, next, blobId, name, type, now, actor);
+  t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,updated_at,by_actor,cid) VALUES(?,?,?,?,?,?,?,?)",
+    input.path, next, blobId, name, type, now, actor, input.cid);
   const cursor = t.db.one<{ cursor: number }>("SELECT last_insert_rowid() AS cursor")!.cursor;
   const snapshot = t.db.all<FileRow>("SELECT * FROM file_refs WHERE blob_id IS NOT NULL ORDER BY path").map(fileValue);
   if (new TextEncoder().encode(JSON.stringify({ files: snapshot, cursor })).byteLength > RESOURCE_LIMITS.file_snapshot_bytes)
@@ -233,7 +233,7 @@ export async function handleStorage(t: Tendril, req: Request, url: URL, actor: s
   }
   if (rest === "file-refs/history" && method === "GET") {
     const path = queryPath(url);
-    const rows = t.db.all<FileRow>("SELECT path,revision,blob_id,name,type,scope,updated_at,by_actor FROM file_ref_changes WHERE path=? ORDER BY cursor DESC LIMIT ?",
+    const rows = t.db.all<FileRow>("SELECT path,revision,blob_id,name,type,updated_at,by_actor FROM file_ref_changes WHERE path=? ORDER BY cursor DESC LIMIT ?",
       path, RESOURCE_LIMITS.file_history + 1);
     return json({ path, versions: rows.map(fileValue) });
   }

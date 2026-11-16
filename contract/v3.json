@@ -1703,7 +1703,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         "name": {
           "type": "string",
@@ -1782,7 +1782,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                "pattern": "^[\\x20-\\x7e]+$"
               },
               "name": {
                 "type": "string",
@@ -1911,7 +1911,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         "name": {
           "type": "string",
@@ -1985,7 +1985,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              "pattern": "^[\\x20-\\x7e]+$"
             },
             "name": {
               "type": "string",
@@ -2077,7 +2077,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              "pattern": "^[\\x20-\\x7e]+$"
             },
             "name": {
               "type": "string",
@@ -2208,18 +2208,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "scope": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         "updated_at": {
           "type": "integer",
@@ -2278,18 +2267,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-              },
-              "scope": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "pattern": "^[\\x20-\\x7e]+$"
               },
               "updated_at": {
                 "type": "integer",
@@ -2369,18 +2347,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-              },
-              "scope": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "pattern": "^[\\x20-\\x7e]+$"
               },
               "updated_at": {
                 "type": "integer",
@@ -2457,7 +2424,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          "pattern": "^[\\x20-\\x7e]+$"
         }
       },
       "required": [
@@ -2552,18 +2519,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "scope": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "pattern": "^[\\x20-\\x7e]+$"
             },
             "updated_at": {
               "type": "integer",
@@ -2635,18 +2591,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "scope": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "pattern": "^[\\x20-\\x7e]+$"
             },
             "updated_at": {
               "type": "integer",
@@ -2735,18 +2680,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-                  },
-                  "scope": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "pattern": "^[\\x20-\\x7e]+$"
                   },
                   "updated_at": {
                     "type": "integer",
@@ -2820,7 +2754,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          "pattern": "^[\\x20-\\x7e]+$"
         }
       },
       "required": [
@@ -2887,7 +2821,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                "pattern": "^[\\x20-\\x7e]+$"
               }
             },
             "required": [
@@ -3092,7 +3026,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                "pattern": "^[\\x20-\\x7e]+$"
               },
               "sha256": {
                 "type": "string",
@@ -4074,7 +4008,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 200,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         "name": {
           "type": "string",
@@ -4209,7 +4143,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 200,
-                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                  "pattern": "^[\\x20-\\x7e]+$"
                 },
                 "name": {
                   "type": "string",
@@ -5609,7 +5543,9 @@
               },
               "type": {
                 "type": "string",
-                "maxLength": 200
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[\\x20-\\x7e]+$"
               },
               "base64": {
                 "type": "string"
@@ -5704,7 +5640,10 @@
                 "x-well-formed-unicode": true
               },
               "type": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[\\x20-\\x7e]+$"
               }
             },
             "required": [
@@ -5725,7 +5664,9 @@
               },
               "type": {
                 "type": "string",
-                "maxLength": 200
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[\\x20-\\x7e]+$"
               },
               "name": {
                 "anyOf": [

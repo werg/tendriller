@@ -122,6 +122,17 @@ stale revisions reject. A file write targets `file.write` and `["files",path]`,
 where the canonical whole file path is one segment. Names must use NFC, with no
 traversal, empty segments or reserved service paths.
 
+The authoritative scope registry is the sole source of file bindings. To protect
+one file, register `paths: [["files","reports/result.json"]], operations: []`.
+Bindings combine by OR: an operation binding of `file.write` protects every file
+mutation. Every write checks all matching current registry generations, even if
+the command omits `scope`. Optional command `scope` adds a precondition for that
+operation; it never establishes a persistent file binding and is not file metadata.
+Retiring a scope rejects old commands carrying that guard. Fresh authorized work
+uses the current file revision and any remaining active registry guards. An
+ordinary `DELETE` then creates the next tombstone; there is no separate cleanup
+operation and deletion never resets the revision to zero.
+
 `GET A/file-refs/snapshot` returns the complete bounded active set plus cursor.
 Capacity and UTF-8 metadata-byte bounds are enforced atomically on writes;
 snapshots never silently truncate. History retains the current revision and up

@@ -54,9 +54,9 @@ CREATE TABLE IF NOT EXISTS upload_sessions (id TEXT PRIMARY KEY, actor TEXT NOT 
   source TEXT NOT NULL, device TEXT, phase TEXT NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(actor,cid));
 CREATE INDEX IF NOT EXISTS upload_sessions_expiry ON upload_sessions(expires_at);
 CREATE TABLE IF NOT EXISTS file_refs (path TEXT PRIMARY KEY, revision INTEGER NOT NULL, blob_id TEXT,
-  name TEXT, type TEXT, scope TEXT, updated_at INTEGER NOT NULL, by_actor TEXT NOT NULL);
+  name TEXT, type TEXT, updated_at INTEGER NOT NULL, by_actor TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS file_ref_changes (cursor INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL,
-  revision INTEGER NOT NULL, blob_id TEXT, name TEXT, type TEXT, scope TEXT, updated_at INTEGER NOT NULL,
+  revision INTEGER NOT NULL, blob_id TEXT, name TEXT, type TEXT, updated_at INTEGER NOT NULL,
   by_actor TEXT NOT NULL, cid TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS file_ref_history ON file_ref_changes(path,cursor DESC);
 CREATE TABLE IF NOT EXISTS publication_blobs (version INTEGER NOT NULL, path TEXT NOT NULL, blob_id TEXT NOT NULL,

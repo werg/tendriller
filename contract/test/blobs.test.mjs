@@ -18,7 +18,7 @@ test("upload fingerprint fields are mandatory; hashes, IDs and sizes are bounded
   const valid = { cid: "b-1", sha256, size: 0, type: "application/octet-stream", name: "zero.dat" };
   assert.deepEqual(validate("uploadStart", valid), []);
   for (const patch of [{ sha256: sha256.toUpperCase() }, { sha256: "a" }, { size: -1 },
-    { size: 25 * 1024 * 1024 + 1 }, { cid: "../" }, { type: "" }, { extra: 1 }])
+    { size: 25 * 1024 * 1024 + 1 }, { cid: "../" }, { type: "" }, { type: "text/🌝" }, { type: "text/café" }, { type: "text/plain\r\nX-Injected: yes" }, { extra: 1 }])
     assert.notEqual(validate("uploadStart", { ...valid, ...patch }).length, 0, JSON.stringify(patch));
   assert.notEqual(validate("uploadStart", { cid: "b-1", sha256, size: 0 }).length, 0);
   assert.deepEqual(validate("uploadCompletion", { status: "completed",
@@ -40,6 +40,7 @@ test("file commands require original CAS and generation conditions", () => {
   }
   assert.deepEqual(validate("fileDelete", { ...guards, path: "x", expected_revision: 7 }), []);
   assert.notEqual(validate("fileDelete", { ...guards, path: "x" }).length, 0);
+  assert.ok(validate("fileWrite", { ...valid, type: "text/🌝" }).some(issue => issue.path === "$.type"));
 });
 test("attachment roots reject duplicates and invalid handles", () => {
   const second = "b_" + "b".repeat(20);
@@ -57,6 +58,8 @@ test("page manifests are complete, ordered and contain only exact blobs", () => 
   assert.throws(() => assertPublicationEntries([...files, files[1]], "index.html"), /unique/);
   assert.throws(() => assertPublicationEntries(files, "missing.html"), /missing/);
   assert.notEqual(validate("publicationWrite", { ...guards, entry: "index.html", files }).length, 0);
+  assert.ok(validate("publicationWrite", { ...guards, expected_head_revision: 0, entry: "index.html",
+    files: [{ ...files[0], type: "text/🌝" }] }).some(issue => issue.path === "$.files[0].type"));
 });
 
 test("scope operation contract accepts publication and shared-file generation guards", () => {
@@ -85,4 +88,17 @@ test("paths and transfer names preserve valid Unicode and reject lone surrogates
   }
   assert.deepEqual(validate("uploadStart", { cid: guards.cid, sha256, size: 0, type: "text/plain", name: "🌒.txt" }), []);
   assert.equal(assertAttachments([{ blob_id, name: "🌒.txt" }])[0].name, "🌒.txt");
+  const metadata = { id: blob_id, sha256, size: 0, type: "text/plain; charset=utf-8", url: `_tendril/blobs/${blob_id}`,
+    created_at: 0, retention: { reasons: ["unreferenced_upload"], expires_at: 1000 } };
+  assert.deepEqual(validate("blobMetadata", metadata), []);
+  assert.ok(validate("blobMetadata", { ...metadata, type: "text/🌝" }).some(issue => issue.path === "$.type"));
+  const bundle = { format: "tendriller-bundle", version: 3, name: "Copy", entry: "index.html",
+    files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
+    media: [{ id: blob_id, type: "text/plain", name: "🌒.txt", base64: "AA==" }],
+    shared_files: [{ path: "🌒.txt", blob_id, type: "text/plain" }] };
+  assert.deepEqual(validate("bundle", bundle), []);
+  for (const field of ["files", "media", "shared_files"]) {
+    const invalid = { ...bundle, [field]: [{ ...bundle[field][0], type: "text/🌝" }] };
+    assert.ok(validate("bundle", invalid).some(issue => issue.path === `$.${field}[0].type`));
+  }
 });

@@ -40,7 +40,7 @@ export function assertFilePath(path) {
 const metadata = {
   id: blobIdSchema, sha256: sha256Schema,
   size: { type: "integer", minimum: 0, maximum: RESOURCE_LIMITS.blob_bytes },
-  type: { ...s(), pattern: "^[^\\x00-\\x1f\\x7f]+$" }, name: blobNameSchema,
+  type: { ...s(), pattern: "^[\\x20-\\x7e]+$" }, name: blobNameSchema,
   url: s(2048), created_at: n,
   retention: obj({ expires_at: { type: ["integer", "null"], minimum: 0 }, reasons: arr(s(), 32) }, ["expires_at", "reasons"]),
 };
@@ -50,7 +50,6 @@ const file = obj({
   path: filePathSchema, revision: { type: "integer", minimum: 1 },
   blob_id: { anyOf: [blobIdSchema, { type: "null" }] },
   name: blobNameSchema, type: metadata.type,
-  scope: { anyOf: [scope, { type: "null" }] },
   updated_at: n, by: s(),
 }, ["path", "revision", "blob_id"]);
 const publicationFile = obj({ path: filePathSchema, blob_id: blobIdSchema, type: metadata.type }, ["path", "blob_id", "type"]);
