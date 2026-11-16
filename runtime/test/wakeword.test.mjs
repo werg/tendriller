@@ -30,9 +30,7 @@ function env({ local = true } = {}) {
     }
     error(error) { this.onerror?.({ error }); this.onend?.(); }
   }
-  class LegacyRecognition extends FakeRecognition {}
-  if (!local) delete LegacyRecognition.prototype.processLocally;
-  // Class fields live on the instance; use a distinct constructor for legacy browsers.
+  // Simulate a browser without support for on-device recognition.
   class BrowserOnly extends FakeRecognition {
     constructor() { super(); delete this.processLocally; }
   }
