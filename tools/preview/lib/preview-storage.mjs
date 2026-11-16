@@ -144,10 +144,12 @@ export function createPreviewStorage({ role, verifyDevice, scopes, matchesContex
         }
         if (!found[2] && method === "GET") {
           let data = stored.data, status = 200;
+          const filename = encodeURIComponent(new TextDecoder().decode(new TextEncoder().encode(stored.metadata.name || stored.metadata.id)))
+            .replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
           const headers = {
             "content-type": stored.metadata.type, "accept-ranges": "bytes", "content-length": data.length,
             "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff",
-            "content-disposition": `${url.searchParams.get("disposition") === "inline" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.metadata.name || stored.metadata.id)}`,
+            "content-disposition": `${url.searchParams.get("disposition") === "inline" ? "inline" : "attachment"}; filename*=UTF-8''${filename}`,
             "content-security-policy": "default-src 'none'; sandbox",
           };
           if (req.headers.range) {

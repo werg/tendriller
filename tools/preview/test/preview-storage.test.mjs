@@ -96,7 +96,7 @@ test("preview deduplication rejects a false size and isolates device upload iden
 test("preview blobs default to safe downloads and preserve headers for inline ranges and HEAD", async t => {
   const { call } = await fixture(t);
   const data = Buffer.from("<!doctype html><script>throw Error('must not execute')</script>");
-  const name = "résumé #1.html";
+  const name = "résumé's (#1)*.html";
   const session = await (await call("/uploads", "POST", {
     cid: "untrusted-html", sha256: sha(data), size: data.length, type: "text/html", name,
   })).json();
@@ -108,7 +108,7 @@ test("preview blobs default to safe downloads and preserve headers for inline ra
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.equal(response.headers.get("content-security-policy"), "default-src 'none'; sandbox");
     assert.equal(response.headers.get("cache-control"), "private, max-age=31536000, immutable");
-    assert.equal(response.headers.get("content-disposition"), `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
+    assert.equal(response.headers.get("content-disposition"), `${disposition}; filename*=UTF-8''r%C3%A9sum%C3%A9%27s%20%28%231%29%2A.html`);
   };
   const download = await call(path);
   check(download, "attachment");
