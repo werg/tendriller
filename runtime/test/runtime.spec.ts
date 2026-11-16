@@ -98,28 +98,45 @@ test("headless replies expose routing without speaking or imposing application U
 });
 
 test("a BFCache return restores live sensor reporting without remounting the authored page", async ({ page }) => {
+  await page.addInitScript(() => {
+    // Keep permission replies immediate so the assertions isolate observer lifecycle.
+    navigator.permissions.query = async () => Object.assign(new EventTarget(), { state: "prompt" }) as PermissionStatus;
+  });
   const t = mock.create();
   await open(page, t);
   await page.evaluate(() => {
     const w = window as any;
-    w.sensorUpdates = [];
+    w.sensorUpdates = []; w.capabilityUpdates = [];
     w.tendril.sensors.on((active: string[]) => w.sensorUpdates.push([...active]));
-    w.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
-    w.motionListener = () => {};
-    w.addEventListener("devicemotion", w.motionListener);
+    w.tendril.on("capabilities", (report: any) => w.capabilityUpdates.push(report.capabilities.motion.active));
   });
-  // Monitoring is detached while the document is in the page cache.
-  await page.waitForTimeout(40);
-  expect(await page.evaluate(() => (window as any).sensorUpdates)).toEqual([]);
-  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
-  await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates.at(-1))).toEqual(["motion"]);
-  await expect(page.getByRole("button", { name: "Stop Motion" })).toBeVisible();
-  await page.evaluate(() => {
-    const w = window as any;
-    w.removeEventListener("devicemotion", w.motionListener);
-  });
-  await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates.at(-1))).toEqual([]);
-  await expect(page.getByRole("button", { name: /Stop/ })).toBeHidden();
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await page.evaluate(() => {
+      const w = window as any;
+      w.sensorUpdates = []; w.capabilityUpdates = [];
+      w.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      w.addEventListener("devicemotion", () => {});
+      navigator.mediaDevices.dispatchEvent(new Event("devicechange"));
+    });
+    // Both observers stay detached, including after the second departure.
+    await page.waitForTimeout(150);
+    expect(await page.evaluate(() => ({ sensors: (window as any).sensorUpdates, capabilities: (window as any).capabilityUpdates })))
+      .toEqual({ sensors: [], capabilities: [] });
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+    await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates)).toEqual([["motion"]]);
+    await expect.poll(() => page.evaluate(() => (window as any).capabilityUpdates)).toEqual([true]);
+
+    // A capability-only signal must reach the newly attached observer exactly once.
+    await page.evaluate(() => navigator.mediaDevices.dispatchEvent(new Event("devicechange")));
+    await expect.poll(() => page.evaluate(() => (window as any).capabilityUpdates)).toEqual([true, true]);
+    await page.getByRole("button", { name: "Stop Motion", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates)).toEqual([["motion"], []]);
+    await expect(page.getByRole("button", { name: /Stop/ })).toBeHidden();
+    await page.waitForTimeout(150);
+    expect(await page.evaluate(() => (window as any).capabilityUpdates)).toEqual([true, true, false]);
+    expect(await page.evaluate(() => window.tendril.sensors.active())).toEqual([]);
+  }
+  expect(t.pageLoads).toBe(1);
 });
 
 test("window.tendril exists synchronously; hello and welcome", async ({ page }) => {
