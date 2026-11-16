@@ -962,12 +962,26 @@ export class Tendril extends DurableObject<Env> {
     return blobReference(this, id);
   }
 
-  async getBlob(id: string): Promise<Response> {
-    const row = this.db.one<{ type: string; name: string | null }>("SELECT type, name FROM blobs WHERE id = ?", id);
+  async getBlob(id: string, rangeHeader?: string | null, head = false): Promise<Response> {
+    const row = this.db.one<{ type: string; name: string | null; size: number }>("SELECT type, name, size FROM blobs WHERE id = ?", id);
     if (!row) throw new HttpError(404, "not_found", "No such blob");
-    const obj = await this.env.FILES.get(this.blobKey(id));
-    if (!obj) throw new HttpError(404, "not_found", "Blob content missing");
-    return new Response(obj.body, { headers: { "Content-Type": row.type || "application/octet-stream", "Cache-Control": "private, max-age=31536000, immutable" } });
+    let range: { offset: number; length: number } | undefined;
+    if (rangeHeader) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+      if (!match || (!match[1] && !match[2])) throw new HttpError(416, "bad_range", "Only one byte range is supported");
+      const start = match[1] ? Number(match[1]) : Math.max(0, row.size - Number(match[2]));
+      const end = match[1] ? (match[2] ? Number(match[2]) : row.size - 1) : row.size - 1;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= row.size)
+        throw new HttpError(416, "bad_range", "Requested byte range is unavailable");
+      range = { offset: start, length: Math.min(end, row.size - 1) - start + 1 };
+    }
+    const obj = await this.env.FILES.get(this.blobKey(id), range ? { range } : undefined);
+    if (!obj || !("body" in obj)) throw new HttpError(404, "not_found", "Blob content missing");
+    const headers = new Headers({ "Content-Type": row.type || "application/octet-stream",
+      "Cache-Control": "private, max-age=31536000, immutable", "Accept-Ranges": "bytes",
+      "Content-Length": String(range?.length ?? row.size) });
+    if (range) headers.set("Content-Range", `bytes ${range.offset}-${range.offset + range.length - 1}/${row.size}`);
+    return new Response(head ? null : obj.body, { status: range ? 206 : 200, headers });
   }
 
   async deleteBlob(id: string): Promise<void> {

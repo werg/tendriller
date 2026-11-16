@@ -19,6 +19,10 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   expect(receipt.blob).toMatchObject({ id: started.blob_id, sha256, size: bytes.byteLength });
   expect((await apiJson(page, "POST", `uploads/${started.id}/complete`, {})).blob.id).toBe(started.blob_id);
   expect(await (await api(page, "GET", `blobs/${started.blob_id}`)).text()).toBe("field note α");
+  const partial = await api(page, "GET", `blobs/${started.blob_id}`, undefined, { Range: "bytes=0-4" });
+  expect(partial.status).toBe(206);
+  expect(partial.headers.get("Content-Range")).toBe(`bytes 0-4/${bytes.byteLength}`);
+  expect(await partial.text()).toBe("field");
 
   const write = { cid: "file-note-1", expected_generations: {}, path: "notes/note.txt",
     expected_revision: 0, blob_id: started.blob_id, type: "text/plain" };

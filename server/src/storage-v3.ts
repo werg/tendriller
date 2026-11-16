@@ -145,7 +145,7 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   const blob = /^blobs\/(b_[a-z2-7]{20})(?:\/(info|pin))?$/.exec(rest);
   if (blob) {
     if (blob[2] === "info" && method === "GET") return json(blobMetadata(t, blob[1]));
-    if (!blob[2] && method === "GET") return t.getBlob(blob[1]);
+    if (!blob[2] && method === "GET") return t.getBlob(blob[1], req.headers.get("Range"), req.method === "HEAD");
     if (blob[2] === "pin" && method === "PUT") {
       const input = assertValid("blobPin", await readJson(req, 4096));
       const result = mutate(t, actor, input, { operations: ["blob.pin"] }, { id: blob[1], keep: input.keep }, () => {
