@@ -40,11 +40,11 @@ const attachment = obj({ blob_id: blobIdSchema, name: { type: "string", maxLengt
 const file = obj({
   path: filePathSchema, revision: { type: "integer", minimum: 1 },
   blob_id: { anyOf: [blobIdSchema, { type: "null" }] },
-  name: { type: "string", maxLength: 200 }, type: s(),
+  name: { type: "string", maxLength: 200 }, type: metadata.type,
   scope: { anyOf: [scope, { type: "null" }] },
   updated_at: n, by: s(),
 }, ["path", "revision", "blob_id"]);
-const publicationFile = obj({ path: filePathSchema, blob_id: blobIdSchema, type: s() }, ["path", "blob_id", "type"]);
+const publicationFile = obj({ path: filePathSchema, blob_id: blobIdSchema, type: metadata.type }, ["path", "blob_id", "type"]);
 const transferError = obj({ code: s(), message: s(1000), retryable: bool, details: { type: "object" } }, ["code", "message"]);
 const fileChange = obj({ cursor: n, file, cid, actor: s(), at: n }, ["cursor", "file", "cid", "actor", "at"]);
 export const blobSchemas = Object.freeze({
@@ -68,7 +68,7 @@ export const blobSchemas = Object.freeze({
   fileHistory: obj({ path: filePathSchema, versions: arr(file, RESOURCE_LIMITS.file_history + 1) }, ["path", "versions"]),
   fileWrite: obj({
     ...guards, path: filePathSchema, expected_revision: n, blob_id: blobIdSchema,
-    name: { type: "string", maxLength: 200 }, type: s(),
+    name: { type: "string", maxLength: 200 }, type: metadata.type,
   }, [...requiredGuards, "path", "expected_revision", "blob_id"]),
   fileDelete: obj({ ...guards, path: filePathSchema, expected_revision: n }, [...requiredGuards, "path", "expected_revision"]),
   fileResult: obj({ file, cursor: n }, ["file", "cursor"]),

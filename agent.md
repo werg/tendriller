@@ -1,6 +1,6 @@
 # Give your agent a page
 
-Tendriller connects an authenticated page to an agent through shared state, events, files, blobs and streams. This is the entry point for **core contract 2**. Core owns the platform and optional operational tools. [Cookbooks](https://github.com/werg/tendriller-contrib) preserve reasoning that helps you author a page for the task.
+Tendriller connects an authenticated page to an agent through shared state, events, files, blobs and streams. This is the entry point for **core contract 3**. Core owns the platform and optional operational tools. [Cookbooks](https://github.com/werg/tendriller-contrib) preserve reasoning that helps you author a page for the task.
 
 ## Discover and check requirements
 
@@ -35,17 +35,28 @@ A page that only needs telemetry may use `mode:"dashboard"`; it has the same str
 
 ## Publish a complete page
 
-Publish all files in one `POST A/files` request. The public SDK exposes `client.writeFiles({files})`:
+Upload immutable bytes, then commit one complete publication manifest. The optional core CLI does this for an ordinary file or directory; the public SDK exposes the same operations:
 
-```json
-{
-  "files": {
-    "index.html": "<!doctype html><html><head><title>Status</title></head><body><button id='send'>Send</button><script src='app.js'></script></body></html>",
-    "app.js": "document.querySelector('#send').onclick = () => tendril.send({type:'job.status',session:'job-123'});"
-  },
-  "replace": true
-}
+```js
+import { createClient } from "@tendriller/core";
+const client = createClient(handle);
+const head = await client.publications.list();
+// Persist this identity, head revision, guards and authored bytes before starting.
+const intent = { cid: "publish-status-1", expected_head_revision: head.head_revision,
+  expected_generations: {}, entry: "index.html" };
+const upload = await client.blobs.upload(new Blob([
+  "<!doctype html><title>Status</title><button id='send'>Send</button>" +
+  "<script>document.querySelector('#send').onclick=()=>tendril.send({type:'job.status'});</script>"
+]), { cid: "publish-status-1:index", type: "text/html", name: "index.html" });
+await client.publications.publish({ ...intent,
+  files: [{ path: "index.html", blob_id: upload.blob.id, type: "text/html" }] });
 ```
+
+An upload receipt attests bytes; it does not publish a page. Publication requires a
+sorted, complete manifest, an actual HTML entry, and the captured head revision.
+For protected work, capture the required generations for `publication.publish`
+and the entire `["publications"]` namespace. After a lost reply retry the original
+intent unchanged. A conflict requires a deliberate new review and command.
 
 The service injects its released runtime. Every publication locks that runtime and all submitted asset hashes. Relative references resolve within the actual HTML file’s immutable directory. Include every authored dependency, including lazy modules, workers and styles. Neither publishing nor preview completes a missing asset graph. Nested pages work as explicit HTML files; directory URLs select `index.html`, and missing routes return 404.
 
@@ -105,4 +116,4 @@ For troubleshooting use events, activity, logs, delivery probes and `GET A/capab
 
 ## Reference
 
-[Browser API](https://tendriller.dev/docs/BROWSER_API.md) · [Protocol](https://tendriller.dev/docs/PROTOCOL.md) · [Executable schema](https://tendriller.dev/contract/v2.json) · [Streams](https://tendriller.dev/docs/STREAMS.md) · [Captures](https://tendriller.dev/docs/CAPTURES.md) · [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md) · [Contrib](https://github.com/werg/tendriller-contrib)
+[Browser API](https://tendriller.dev/docs/BROWSER_API.md) · [Protocol](https://tendriller.dev/docs/PROTOCOL.md) · [MCP](https://tendriller.dev/docs/MCP.md) · [Executable schema](https://tendriller.dev/contract/v3.json) · [Streams](https://tendriller.dev/docs/STREAMS.md) · [Captures](https://tendriller.dev/docs/CAPTURES.md) · [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md) · [Contrib](https://github.com/werg/tendriller-contrib)

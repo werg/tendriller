@@ -6,8 +6,9 @@ Authenticated pages connected to agents through dependable mechanisms. The page 
 
 - [Agent guide](https://tendriller.dev/agent.md): creation, explicit delivery, plain-file publication and page-owned interaction.
 - [Service descriptor](https://tendriller.dev/api/service): installed capabilities, contract, release and effective limits.
-- [Contract schema](https://tendriller.dev/contract/v2.json): executable wire schema.
+- [Contract schema](https://tendriller.dev/contract/v3.json): executable wire schema.
 - [Protocol](https://tendriller.dev/docs/PROTOCOL.md): identity, authorization, command generations and atomicity.
+- [MCP](https://tendriller.dev/docs/MCP.md): authenticated tools for immutable uploads, shared files and publications.
 - [Browser API](https://tendriller.dev/docs/BROWSER_API.md): headless transport, state, conversation, streams, captures and device APIs.
 - [Streams](https://tendriller.dev/docs/STREAMS.md): ordered observations, replay, retention and resource policy.
 - [Captures](https://tendriller.dev/docs/CAPTURES.md): durable media, review and event acceptance.

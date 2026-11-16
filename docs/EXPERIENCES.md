@@ -139,7 +139,7 @@ jobs are never exported.
 Anything deliberately embedded in a user-authored page file is still file
 content; inspect your code before sharing a template.
 
-The bundle has `format:"tendriller-bundle"`, `version:1`, a name, files with MIME
+The bundle has `format:"tendriller-bundle"`, `version:3`, its actual HTML `entry`, a name, files with MIME
 types and base64 bytes, optional state/session, and media entries. Restoration
 allocates new media IDs and rewrites their references in text files and state.
 Files are validated before storage: normalized paths, no duplicates, index page,

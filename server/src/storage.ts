@@ -97,7 +97,7 @@ function commitFile(t: Tendril, input: FileMutation, actor: string) {
   const current = fileHead(t, input.path);
   if ((current?.revision ?? 0) !== input.expected_revision)
     throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
-  if (put) requireBlob(t, put.blob_id);
+  if (put) requireBlob(t, put.blob_id!);
   if (!current && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs")?.n ?? 0) >= RESOURCE_LIMITS.shared_file_paths)
     throw new HttpError(429, "file_path_quota", "The page's retained file-path budget is full");
   if (put && !current?.blob_id && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs WHERE blob_id IS NOT NULL")?.n ?? 0) >= RESOURCE_LIMITS.shared_files)
@@ -144,8 +144,8 @@ export async function handleStorage(t: Tendril, req: Request, url: URL, actor: s
         if (prior.phase === "aborted") throw new HttpError(409, "upload_closed", "The original upload was aborted");
         return prior;
       }
-      const active = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE phase!='completed' AND expires_at>?", t.now())?.n ?? 0;
-      const own = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE actor=? AND phase!='completed' AND expires_at>?", actor, t.now())?.n ?? 0;
+      const active = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE phase NOT IN ('completed','aborted') AND expires_at>?", t.now())?.n ?? 0;
+      const own = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE actor=? AND phase NOT IN ('completed','aborted') AND expires_at>?", actor, t.now())?.n ?? 0;
       if (active >= RESOURCE_LIMITS.upload_sessions_per_page || own >= RESOURCE_LIMITS.upload_sessions_per_actor)
         throw new HttpError(429, "upload_quota", "Too many unfinished uploads");
       const retained = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions")?.n ?? 0;
@@ -215,7 +215,7 @@ export async function handleStorage(t: Tendril, req: Request, url: URL, actor: s
   const blob = /^blobs\/(b_[a-z2-7]{20})(?:\/(info|pin))?$/.exec(rest);
   if (blob) {
     if (blob[2] === "info" && method === "GET") return json(blobMetadata(t, blob[1]));
-    if (!blob[2] && method === "GET") return t.getBlob(blob[1], req.headers.get("Range"), req.method === "HEAD");
+    if (!blob[2] && method === "GET") return t.getBlob(blob[1], req.headers.get("Range"), req.method === "HEAD", url.searchParams.get("disposition") === "inline");
     if (blob[2] === "pin" && method === "PUT") {
       const input = assertValid("blobPin", await readJson(req, 4096));
       const result = mutate(t, actor, input, { operations: ["blob.pin"] }, { id: blob[1], keep: input.keep }, () => {

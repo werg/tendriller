@@ -1,7 +1,7 @@
 # Cookbook platform architecture
 
 This change implements the maintainer's 16 November 2026 design for the
-unreleased Tendriller system. There is one target baseline: no compatibility
+unreleased Tendriller system. The final target uses Contract 3 and one fresh storage baseline: no compatibility
 aliases, legacy readers, migration, dual runtime, or preserved development data.
 
 ## Ownership

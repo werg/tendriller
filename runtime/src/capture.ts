@@ -3,7 +3,7 @@ import type { BlobReference } from "../../contract/index.mjs";
 export type { BlobReference, SendResult, CaptureOptions, CaptureResult, PendingCapture } from "../../contract/index.mjs";
 
 /** Attach media to the original semantic input, preserving UI block value envelopes. */
-export function captureData(data: Record<string, unknown>, path: string[] = [], blob: BlobReference): Record<string, unknown> {
+export function captureData(data: Record<string, unknown>, path: string[] = [], blob: Pick<BlobReference, "id" | "url">): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data));
   let target = result;
   for (const key of path) {

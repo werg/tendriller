@@ -969,7 +969,7 @@ export class Tendril extends DurableObject<Env> {
     return blobReference(this, id);
   }
 
-  async getBlob(id: string, rangeHeader?: string | null, head = false): Promise<Response> {
+  async getBlob(id: string, rangeHeader?: string | null, head = false, inline = false): Promise<Response> {
     const row = this.db.one<{ type: string; name: string | null; size: number }>("SELECT type, name, size FROM blobs WHERE id = ?", id);
     if (!row) throw new HttpError(404, "not_found", "No such blob");
     let range: { offset: number; length: number } | undefined;
@@ -986,7 +986,9 @@ export class Tendril extends DurableObject<Env> {
     if (!obj || !("body" in obj)) throw new HttpError(404, "not_found", "Blob content missing");
     const headers = new Headers({ "Content-Type": row.type || "application/octet-stream",
       "Cache-Control": "private, max-age=31536000, immutable", "Accept-Ranges": "bytes",
-      "Content-Length": String(range?.length ?? row.size) });
+      "Content-Length": String(range?.length ?? row.size), "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(row.name || id)}`,
+      "Content-Security-Policy": "default-src 'none'; sandbox" });
     if (range) headers.set("Content-Range", `bytes ${range.offset}-${range.offset + range.length - 1}/${row.size}`);
     return new Response(head ? null : obj.body, { status: range ? 206 : 200, headers });
   }
@@ -996,6 +998,7 @@ export class Tendril extends DurableObject<Env> {
     if (this.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id) ||
         this.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? LIMIT 1", id) ||
         this.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) return;
+    if (this.db.get<{ media: string[] } | null>("staged_bundle", null)?.media.includes(id)) return;
     this.db.run("DELETE FROM blobs WHERE id = ?", id);
     if (hash) await deleteUnreferencedContent(this, hash);
   }

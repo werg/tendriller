@@ -22,7 +22,7 @@ function blobService() {
   const metadata = session => ({ id: blobId, sha256: session.sha256, size: session.size, type: session.type,
     url: "/page/_tendril/blobs/" + blobId, created_at: 1000, retention: { expires_at: 100000, reasons: [] } });
   const service = {
-    calls, sessions, pins, dropComplete: 0, dropPin: 0, rejectPin: false,
+    calls, sessions, pins, dropComplete: 0, dropPin: 0, rejectPin: false, beforeComplete: null,
     fetch: async (url, init) => {
       const path = new URL(url, "https://fixture.test").pathname.replace("/page/_tendril", "");
       const body = init.headers["Content-Type"] === "application/json" ? JSON.parse(new TextDecoder().decode(init.body)) : init.body;
@@ -48,6 +48,7 @@ function blobService() {
       if (path === `/uploads/${uploadId}/complete`) {
         assert.ok(["received", "completed"].includes(session.phase));
         session.phase = "completed";
+        if (service.beforeComplete) await service.beforeComplete();
         if (service.dropComplete > 0) { service.dropComplete--; throw new TypeError("Connection lost after completion"); }
         return json({ status: "completed", blob: metadata(session) });
       }
@@ -343,6 +344,28 @@ test("standalone uploads also commit before I/O and reuse one CID after a lost c
   assert.equal(second.core.pendingWork().captures, 0);
   assert.deepEqual(blobs.calls.filter(call => call.path === "/uploads").map(call => call.body.cid), [original.cid, original.cid]);
   assert.equal(blobs.calls.filter(call => call.path.endsWith("/content")).length, 1);
+});
+
+test("an upload reply during a pending discard cannot recreate the capture or start pinning", async () => {
+  const blobs = blobService(); let release;
+  blobs.beforeComplete = () => new Promise(resolve => { release = resolve; });
+  const first = await environment({ blobs });
+  const result = first.core.uploadEvent(new Blob(["discarded bytes"]), { data: { submission_id: "discarded-review" }, keep: true });
+  await flush(); await first.commit();
+  await until(() => release !== undefined);
+  const id = first.core.captures()[0].capture_id;
+  const discarded = first.core.discardCapture(id);
+  await flush(); // Delete is queued, but its transaction has not committed.
+  release(); await flush(); // HTTP completion arrives inside that interval.
+  await first.commit(); await discarded; await first.commit();
+  assert.equal((await result).error, "discarded");
+  assert.equal(first.database.stores.outbox.size, 0);
+  assert.equal(blobs.calls.some(call => call.path.endsWith("/pin")), false);
+  assert.equal(first.sent.some(frame => frame.t === "capture_complete"), false);
+  first.transport.disconnect();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs });
+  assert.equal(second.core.captures().length, 0);
+  assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false);
 });
 
 test("capture IDs belong to the runtime and reviewed inputs retain separate application correlation", async () => {

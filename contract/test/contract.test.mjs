@@ -19,7 +19,7 @@ test("schemas distinguish accepted, queued and rejected results", () => {
     assert.equal(validate("sendResult", result).length, 0);
   assert.ok(validate("sendResult", { queued: false }).length);
   assert.ok(validate("sendResult", { status: "queued", seq: 1 }).length);
-  const blob = { id: "b_" + "a".repeat(20), url: "_tendril/blob/photo", retention: { keep: false, expires_at: 1000 } };
+  const blob = { id: "b_" + "a".repeat(20), sha256: "a".repeat(64), size: 3, type: "image/png", url: "_tendril/blobs/photo", created_at: 0, retention: { reasons: ["unreferenced_upload"], expires_at: 1000 } };
   assert.equal(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1, blob }).length, 0);
   assert.ok(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1 }).length);
   assert.ok(validate("captureResult", { status: "queued" }).length);
@@ -88,7 +88,7 @@ test("experience write contracts preserve revision checks, roles and bounded sch
 });
 
 test("exported bundle media can have no name and multi-file templates keep the service bounds", () => {
-  const bundle = { format: "tendriller-bundle", version: 1, name: "N".repeat(200), files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
+  const bundle = { format: "tendriller-bundle", version: 3, entry: "index.html", name: "N".repeat(200), files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
     media: [{ id: "b_" + "a".repeat(20), type: "image/png", name: null, base64: "AA==" }] };
   assert.equal(validate("bundle", bundle).length, 0);
   assert.ok(validate("bundle", { ...bundle, version: 2 }).length);

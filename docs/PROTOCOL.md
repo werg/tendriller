@@ -1,6 +1,6 @@
 # Tendriller public protocol
 
-This is the sole supported **contract 2**. Executable schemas are published at `/contract/v2.json` and generated from `contract/index.mjs`. JSON errors have `{ "error": { "code": "snake_case", "message": "..." } }`. Timestamps are milliseconds since epoch unless a field explicitly says seconds.
+This is the sole supported **contract 3**. Executable schemas are published at `/contract/v3.json` and generated from `contract/index.mjs`. JSON errors have `{ "error": { "code": "snake_case", "message": "..." } }`. Timestamps are milliseconds since epoch unless a field explicitly says seconds.
 
 ## Identity and origins
 
@@ -13,6 +13,9 @@ Agent tokens authorize `A`, the `api` URL in a page handle. Scoped producer toke
 `GET /api/service` exposes `contract`, `core_release`, installed workflow interface/schema and implementation revisions, and shared resource policy. `GET A/service` exposes the page's installed interfaces and limits. Browser/device capabilities remain separate. A tool checks its declared requirements before provisioning or writing application data.
 
 Core software releases, cookbook content revisions and page publications are distinct identities. Trusted implementations are deliberately selected by a deployment. Cookbook discovery cannot activate code. Core builds and releases do not depend on contrib executable artifacts.
+
+The [MCP interface](MCP.md) invokes the same authenticated routes and command
+semantics as HTTP. It does not define a separate storage or publication model.
 
 ## Lifecycle and delivery
 
@@ -41,7 +44,7 @@ Generic `POST A/events` and browser `send` accept a command envelope:
 
 ## Authoritative scopes and generations
 
-A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
+A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
 
 - `GET A/scopes` reads active descriptors.
 - `PUT A/scopes/<id>` registers or rebinds `{cid,expected_generations,paths,operations}`.
@@ -90,9 +93,65 @@ A transcript entry has a persistent message ID; owner messages also retain their
 
 The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and active-sensor stop. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
 
+## Immutable bytes and shared files
+
+`POST A/uploads` reserves `{cid,sha256,size,type,name?}` and returns an immutable
+upload/session identity. Send raw bytes with `PUT A/uploads/<id>/content`
+(`application/octet-stream`), then `POST A/uploads/<id>/complete`. Start/status,
+completion and retries agree on the original digest, length and blob ID. A known
+digest is reused only when its authoritative stored length also matches.
+`GET A/uploads/<id>` resumes status and `DELETE A/uploads/<id>` aborts unfinished
+work. Upload receipts retain their IDs within a bounded page budget; reaching the
+budget rejects new work without forgetting accepted identities.
+
+`GET A/blobs?after=<id>&limit=100` lists metadata in ID order with an explicit
+continuation cursor. `GET A/blobs/<id>/info` returns `{id,sha256,size,type,url,
+created_at,retention}` and optional name. `GET`/`HEAD A/blobs/<id>` retrieve bytes
+with optional single byte ranges. Downloads default to attachment disposition;
+`?disposition=inline` remains sandboxed. `PUT A/blobs/<id>/pin` is a guarded
+`{cid,expected_generations,scope?,keep}` command. Pins, icons, current shared files,
+retained file history, staged imports and publications retain their content. Unreferenced uploads
+expire after 30 days regardless of who uploaded them. Application JSON containing
+a blob ID is not itself a retention root.
+
+Shared files are mutable names pointing to immutable bytes. `GET A/file-refs?path=…`
+returns the current head, including a tombstone's retained revision. `PUT` writes
+`{cid,expected_generations,scope?,path,expected_revision,blob_id,name?,type?}`;
+`DELETE` uses the same original guards/path/revision without a blob. Missing or
+stale revisions reject. A file write targets `file.write` and `["files",path]`,
+where the canonical whole file path is one segment. Names must use NFC, with no
+traversal, empty segments or reserved service paths.
+
+`GET A/file-refs/snapshot` returns the complete bounded active set plus cursor.
+Capacity and UTF-8 metadata-byte bounds are enforced atomically on writes;
+snapshots never silently truncate. History retains the current revision and up
+to ten prior revisions for 30 days. `GET A/file-refs/history?path=…` exposes that
+history. `GET A/file-refs/changes?after=N&limit=100` returns ordered changes;
+`410 file_cursor_expired` means history was pruned and requires a fresh snapshot.
+Deletion does not erase the path's CAS identity.
+
+The same upload/blob/file-reference paths under `P_tendril/` use page session and
+same-origin authorization. Uploads also require a registered device proof.
+Owner/approved-guest sessions can write shared data; displays can read but cannot
+write. Only owners may change blob pins. Page sessions cannot publish code.
+These shared-data routes provide no private-record or per-participant media
+policy; that requires a deliberately selected trusted capability.
+
 ## Publications and browser assets
 
-Publishing files snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at the requested HTML file’s encoded directory under `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies. `publication.base` is the immutable root and `publication.entry` is the actual requested logical HTML path. Path segments are URL-encoded separately. Directory URLs select `index.html`; missing routes return 404. Hash routing and explicit multi-page publications need no application framework. An authored install manifest is preserved.
+`GET A/publications` exposes current/latest/healthy/served versions and a monotonic
+`head_revision`. `GET A/publications/<version>` gives the exact declared entry and
+sorted files with blob IDs, types, verified digests and byte counts.
+`POST A/publications` accepts `{cid,expected_generations,scope?,expected_head_revision,
+entry,files,message?}`. Its files are the complete graph of `{path,blob_id,type}`;
+the entry must be one of its authored HTML files. A replacement targets
+`publication.publish` and the whole `["publications"]` namespace, including removed
+paths. `POST A/publications/rollback` requires the same guards/head plus an explicit
+version. Every publication selection, including recovery and health fallback,
+advances the head revision. Retried accepted commands return their saved receipt;
+stale new work requires review.
+
+Publishing snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at the requested HTML file’s encoded directory under `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies. `publication.base` is the immutable root and `publication.entry` is the actual requested logical HTML path. Path segments are URL-encoded separately. Directory URLs select `index.html`; missing routes return 404. Hash routing and explicit multi-page publications need no application framework. An authored install manifest is preserved.
 
 The executing page pins its browser URL to its publication. Accepting an update navigates to the canonical latest page; a deferred update leaves the existing graph intact. The service worker caches complete, hash-verified graphs and keeps active client/publication associations. Injected HTML is validated by its `X-Tendril-Publication` response header. Non-HTML bytes match their manifest hashes.
 

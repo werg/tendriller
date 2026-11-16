@@ -22,7 +22,7 @@ test("upload fingerprint fields are mandatory; hashes, IDs and sizes are bounded
     assert.notEqual(validate("uploadStart", { ...valid, ...patch }).length, 0, JSON.stringify(patch));
   assert.notEqual(validate("uploadStart", { cid: "b-1", sha256, size: 0 }).length, 0);
   assert.deepEqual(validate("uploadCompletion", { status: "completed",
-    blob: { id: blob_id, sha256, size: 0, type: "application/octet-stream" } }), []);
+    blob: { id: blob_id, sha256, size: 0, type: "application/octet-stream", url: `_tendril/blobs/${blob_id}`, created_at: 0, retention: { reasons: ["unreferenced_upload"], expires_at: 1000 } } }), []);
 });
 test("file commands require original CAS and generation conditions", () => {
   const valid = { ...guards, path: "inputs/über.csv", expected_revision: 0, blob_id };
