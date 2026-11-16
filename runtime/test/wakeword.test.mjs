@@ -115,3 +115,11 @@ test("browser language pack availability can be checked and explicitly installed
   assert.equal(await WakeWordCapture.localAvailability("en-US"), "downloadable");
   assert.equal(await WakeWordCapture.installLocal("en-US"), true);
 });
+
+test("recognizer construction failure leaves the microphone off", () => {
+  const { capture, states } = env();
+  window.SpeechRecognition = class { constructor() { throw new Error("browser unavailable"); } };
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" }), false);
+  assert.equal(capture.running, false);
+  assert.equal(states.at(-1).state, "error");
+});

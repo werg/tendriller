@@ -10,9 +10,9 @@ Hands-free wake phrase) to change the phrase, recognition mode, and test it.
 1. Choose a two-or-more-word phrase (default "Hey Tendril") and recognition mode.
    These preferences stay in local device/page storage, not in shared app state.
 2. **On-device only** is the default. Use **Check / install on-device language**
-   if your browser needs a speech language pack. Chrome introduced local
-   SpeechRecognition in version 139; other engines and languages vary. If local
-   support is missing, the control does **not** silently change privacy modes.
+   if your browser needs a speech language pack. Engine and language support
+   vary. If local support is missing, the control does **not** silently change
+   privacy modes.
 3. To use the browser's usual speech recognition instead, explicitly select
    **Browser recognition (may use cloud)** and save. Browser vendors may process
    microphone audio remotely; internet access may be required.

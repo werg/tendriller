@@ -167,13 +167,24 @@ export class WakeWordCapture {
     if (!this.active) return;
     const factory = recognitionFactory();
     if (!factory) { this.stop("error", "Speech recognition is no longer available."); return; }
-    const rec = new factory();
+    let rec: Recognition;
+    try { rec = new factory(); }
+    catch {
+      this.stop("error", "Could not initialize speech recognition. Check browser support and try again.");
+      return;
+    }
     this.rec = rec;
     this.seen = new Set();
     rec.lang = this.lang;
     rec.continuous = true;
     rec.interimResults = false; // Never expose background speech as live transcripts.
-    if (this.mode === "local") rec.processLocally = true;
+    if (this.mode === "local") {
+      try { rec.processLocally = true; }
+      catch {
+        this.stop("error", "This browser could not enable on-device speech. Use another browser or explicitly choose Browser recognition.");
+        return;
+      }
+    }
     this.begunAt = Date.now();
     this.handlers.onState("starting", "Starting microphone…");
     rec.onstart = () => {
