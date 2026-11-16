@@ -51,6 +51,7 @@ async function environment({ database = new Database(), localStorage = storage()
   const timers = new Map(); let next = 0;
   const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
+  let stagedUpload;
   const globals = { window, document, localStorage, sessionStorage: storage(), indexedDB: database.indexedDB,
     crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, structuredClone, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
     location: { href: "https://fixture.test/page/", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", reload() {} },
@@ -61,16 +62,22 @@ async function environment({ database = new Database(), localStorage = storage()
       const uploadId = "u_aaaaaaaaaaaaaaaaaaaa", blobId = "b_aaaaaaaaaaaaaaaaaaaa";
       if (path === "/page/_tendril/uploads" && method === "POST") {
         const input = JSON.parse(body);
+        stagedUpload = input;
         assert.match(input.sha256, /^[a-f0-9]{64}$/);
         assert.ok(Number.isSafeInteger(input.size));
         return json({ id: uploadId, blob_id: blobId, sha256: input.sha256, size: input.size,
           phase: "ready", upload_required: true, expires_at: Date.now() + 60_000 });
       }
-      if (path === `/page/_tendril/uploads/${uploadId}/content` && method === "PUT")
+      if (path === `/page/_tendril/uploads/${uploadId}/content` && method === "PUT") {
+        assert.ok(stagedUpload, "upload session must be started before PUT");
+        assert.equal(body.byteLength, stagedUpload.size);
+        const digest = await webcrypto.subtle.digest("SHA-256", body);
+        assert.equal([...new Uint8Array(digest)].map(n => n.toString(16).padStart(2, "0")).join(""), stagedUpload.sha256);
         return json({ status: "received" });
+      }
       if (path === `/page/_tendril/uploads/${uploadId}/complete` && method === "POST")
         return json({ status: "completed", blob: { id: blobId, url: `_tendril/blob/${blobId}`,
-          sha256: "1".repeat(64), size: 13, type: "application/octet-stream" } });
+          sha256: stagedUpload.sha256, size: stagedUpload.size, type: stagedUpload.type } });
       throw new Error(`Unexpected upload test route: ${method} ${path}`);
     },
   };
