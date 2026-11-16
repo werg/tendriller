@@ -21,6 +21,8 @@ test("device preferences persist separately for each page and expose copies", ()
   a.get().audio = true;
   assert.equal(a.get().audio, false);
   assert.equal(b.get().voice, "browser");
+  assert.equal(b.get().wakeMode, "local");
+  assert.equal(b.get().wakePhrase, "Hey Tendril");
 });
 
 test("preference changes synchronize tabs without becoming shared application state", () => {

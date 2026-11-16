@@ -2,6 +2,7 @@ import type { PreferencesApi, RuntimePreferences } from "../../contract/index.mj
 
 const defaults: RuntimePreferences = {
   audio: true, language: null, voice: "browser", textSize: "normal", contrast: "normal", mode: "interactive",
+  wakePhrase: "Hey Tendril", wakeMode: "local",
 };
 
 function validate(patch: unknown): Partial<RuntimePreferences> {
@@ -19,6 +20,16 @@ function validate(patch: unknown): Partial<RuntimePreferences> {
       case "voice":
         if (value !== "browser" && value !== "neural") throw new TypeError("voice must be browser or neural");
         result.voice = value; break;
+      case "wakePhrase": {
+        if (typeof value !== "string") throw new TypeError("wakePhrase must be text");
+        const phrase = value.trim().replace(/\s+/g, " ");
+        if (phrase.length < 3 || phrase.length > 64 || !/^[\p{L}\p{N}]+(?:[ '-][\p{L}\p{N}]+)*$/u.test(phrase) || phrase.split(" ").length < 2)
+          throw new TypeError("Use a wake phrase of 2 or more words (3–64 letters, numbers, spaces, apostrophes or hyphens)");
+        result.wakePhrase = phrase; break;
+      }
+      case "wakeMode":
+        if (value !== "local" && value !== "browser") throw new TypeError("wakeMode must be local or browser");
+        result.wakeMode = value; break;
       case "textSize":
         if (value !== "normal" && value !== "large" && value !== "x-large") throw new TypeError("Invalid textSize");
         result.textSize = value; break;

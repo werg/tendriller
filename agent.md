@@ -7,7 +7,7 @@ Tendriller connects an authenticated page to an agent through shared state, even
 Fetch `GET https://tendriller.dev/api/service` before creating a page. It returns `contract`, `core_release`, installed `workflows` (each with independent `interface_version` and `schema_version`), and effective `limits`. Check requirements from the chosen tool or page manifest. Device/browser capabilities are a separate endpoint and do not describe installed server modules.
 
 - [Core SDK and runtime archives](https://github.com/werg/tendriller/releases)
-- [Tested contrib catalog, 0.2.0-rc.2](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.2/catalog.json)
+- [Tested contrib catalog, 0.2.0-rc.3](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json)
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Contrib immutable release assets](https://github.com/werg/tendriller-contrib/releases)
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)

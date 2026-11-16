@@ -44,6 +44,8 @@ export interface StateApi<T = Record<string, unknown>> {
 export interface RuntimePreferences {
   audio: boolean; language: string | null; voice: "browser" | "neural";
   textSize: "normal" | "large" | "x-large"; contrast: "normal" | "high"; mode: "interactive" | "display";
+  /** Stored configuration only: listening never starts automatically after a reload. */
+  wakePhrase: string; wakeMode: "local" | "browser";
 }
 export interface PreferencesApi {
   get(): RuntimePreferences;
@@ -149,7 +151,7 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 2;
-export const CORE_RELEASE: "0.2.0-rc.4";
+export const CORE_RELEASE: "0.2.0-rc.5";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
 export const ROLES: readonly Role[];
 export const DEVICE_PURPOSES: readonly DevicePurpose[];

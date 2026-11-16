@@ -2,18 +2,18 @@
   "format": "tendriller-composition",
   "contract": 2,
   "core": {
-    "version": "0.2.0-rc.4",
-    "runtime": "60a63b065acf4a90bf5d84400b932fe33a701080ecec8303a6200e59d23c00e7",
+    "version": "0.2.0-rc.5",
+    "runtime": "425230324bc02a2bdacc290222028f68895e3475afc80f92506c8a141c61a72b",
     "artifacts": [
       {
-        "file": "tendriller-runtime-0.2.0-rc.4.tgz",
-        "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.4/tendriller-runtime-0.2.0-rc.4.tgz",
-        "sha256": "71bed444c53328ef34beed1af78a995e956c5754a98626373cc0fb06815ed4b1"
+        "file": "tendriller-runtime-0.2.0-rc.5.tgz",
+        "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.5/tendriller-runtime-0.2.0-rc.5.tgz",
+        "sha256": "03d35cb1bcd2531ced1ea71acb91bbc9f99b99b6a209d32ccf7304714ce906ab"
       },
       {
-        "file": "tendriller-sdk-0.2.0-rc.4.tgz",
-        "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.4/tendriller-sdk-0.2.0-rc.4.tgz",
-        "sha256": "35fca77b4361632f19588537ec38a857b70a8ca945def4f41fcf4afab2721bd7"
+        "file": "tendriller-sdk-0.2.0-rc.5.tgz",
+        "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.5/tendriller-sdk-0.2.0-rc.5.tgz",
+        "sha256": "598353daae23dbf3ca1aad98e211ab07834f31a8875eb63caa6b8489dca6c640"
       }
     ]
   },

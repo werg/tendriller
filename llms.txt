@@ -17,7 +17,7 @@ Application-neutral pages connected to agents. Core contract 2; application stat
 ## Optional tools, components and workflows
 
 - [Contrib](https://github.com/werg/tendriller-contrib): CLI, collectors, bridges, complete preview, components, recipes and examples.
-- [Tested contrib catalog](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.2/catalog.json): tools/components/examples with requirements, files and hashes for the recorded 0.2.0-rc.2 pairing.
+- [Tested contrib catalog](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json): tools/components/examples with requirements, files and hashes for the recorded 0.2.0-rc.3 pairing.
 - [Release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases): machine-readable releases, including candidates, with immutable catalog and manifest download URLs.
 - [Contrib releases](https://github.com/werg/tendriller-contrib/releases): installable tools, standalone commands, static bundles and trusted workflow archives.
 

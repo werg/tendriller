@@ -142,6 +142,13 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .control-tabs { display:flex; gap:4px; padding:4px; background:var(--soft); border-radius:14px; margin:8px 0 12px; }
 .control-tab { flex:1; min-width:44px; min-height:44px; padding:.45em .5em; border:0; border-radius:10px; background:transparent; font-size:.8em; font-weight:650; }
 .control-tab[aria-selected="true"] { background:var(--accent); color:var(--accent-fg); }
+.wake-card { margin-top:12px; }
+.wake-card .wake-status { min-height:1.4em; overflow-wrap:anywhere; }
+.wake-card .actions { margin-bottom:0; }
+.wake-chip { color:var(--fg); border:1px solid var(--accent); max-width:min(24em, calc(100vw - 24px)); }
+.wake-chip span { overflow-wrap:anywhere; }
+.panel #tendril-wake-phrase-input, .panel #tendril-wake-mode { display:block; width:100%; box-sizing:border-box; min-height:44px; border:var(--bw) solid var(--line); border-radius:10px; padding:.55em; background:var(--solid); color:var(--fg); font:inherit; }
+.panel #tendril-wake-phrase-input { margin-bottom:.6em; }
 .voice-actions { gap:5px; }
 .voice-actions .btn { flex:1; padding:0 .5em; font-size:.75em; }
 .device-controls { display:grid; gap:8px; width:100%; }
