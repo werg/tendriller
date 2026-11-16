@@ -230,54 +230,37 @@ that stale deployment.
 **OAuth outage:** Keep creation paused if claims cannot complete. Check provider status and callback URLs. Restore only after both real sign-in paths pass.
 
 
-## Contract 2 direct cutover (pre-release data discarded)
+## Contract 3 direct cutover
 
-The initial contract 2 release is **not** a backwards-compatible migration. The
-simplest supported cutover replaces the service **at its existing production and
-staging URLs**. We keep the current Worker names, D1 account databases, R2 buckets,
-OAuth bindings and page domains, so there is no separate candidate domain,
-duplicate account setup, or data translator.
+This pre-release release uses the existing staging and production origins, OAuth
+configuration, D1 databases and R2 buckets. The Worker binds `TENDRIL` to the
+fresh `TendrilV3` Durable Object namespace (storage schema revision 3).
+The Wrangler `exports` map declares the old page classes deleted and keeps
+`TendrilV3` and `Admission` live. The D1 migration `0011_contract3_discard_old_pages.sql`
+deletes old page registrations, claims and invitations, resets page storage
+reservations, and pauses new page creation. Accounts, sign-in sessions and audit
+records remain. Old page links and their unpublished data cease to work. Old R2
+objects are left unreferenced; there is no data translator or compatibility path.
 
-There is one necessary storage boundary: the old per-page Durable Object SQLite
-schema cannot safely be reused. The canonical Worker configurations now bind
-`TENDRIL` to a newly created `TendrilV2` class/namespace (migration
-`v3-contract2-new-pages`). The original namespace is no longer bound. Do not
-remove the schema-identity check or attempt to initialize contract 2 tables into
-the old namespace.
+1. Publish the Contract 3 SDK/runtime assets and pin their SHA-256 hashes in
+   Contrib's `core.lock.json`. Build and test the Contrib workflow artifact against
+   those exact bytes.
+2. Pin the Contrib archive and its source commit in `composition.lock.json`.
+   Run `npm run check`, `npm run test:pair`, `npm run test:browser` and the
+   composed Contrib integration suite. The CI service workflow uses the same
+   checks before any deploy.
+3. Set `STAGING_STORAGE_SCHEMA` and `PRODUCTION_STORAGE_SCHEMA` to `3` in the
+   GitHub environment or repository variables used by the deployment workflow.
+   Confirm the ready gates remain enabled. A push to `master` applies D1
+   migrations, uploads the immutable runtime, deploys staging, verifies it,
+   then deploys and verifies production.
+4. After each deployed Worker passes its public smoke check, the workflow
+   consumes the one-time cutover marker and opens page creation automatically.
+   Check a fresh page, OAuth access and an agent session in each environment.
+   Later intentional pauses remain in place across deploys.
 
-The one-time D1 migration `0010_contract2_discard_old_pages.sql` clears old
-page registrations, invitations and pending claims, and resets page quota
-reservations. **Old pages, drafts, commands, media associations, and workflows
-will not survive.** Sign-in accounts and sessions, audit logs, and moderation
-records are retained; old R2 bytes remain unreferenced rather than being
-blindly deleted. New page creation starts paused for an operator to open after
-service verification. Existing links to old pages will no longer work.
-
-### Execute the direct cutover
-
-1. Core SDK/runtime and contrib workflow artifacts must have their recorded
-   SHA-256 hashes verified in `composition.lock.json`. Build the generic core
-   and its selected composition, then pass `npm run check`, `npm run test:pair`
-   and the composed browser/host integration suite.
-2. The temporary one-time `deploy/contract2-direct` branch triggers the
-   existing **Public service** checks, followed by staging and production in
-   that order. Create it only from the *current tested master SHA*. Both deploy
-   jobs independently refuse to mutate resources if master has moved.
-   Normal deployments from master keep their `*_READY` and
-   `*_STORAGE_SCHEMA` guards. Remove this temporary branch permission from
-   `.github/workflows/service.yml` after verifying the cutover.
-3. Each environment applies the D1 migrations using its existing Wrangler
-   config, publishes the immutable runtime/resources under content-addressed
-   keys in its existing FILES bucket, deploys the Worker with the new Durable
-   Object namespace and runs `scripts/check-deployment.mjs` against its
-   canonical origin.
-4. Verify `/health`, `/api/service`, core runtime manifest, installed workflow
-   hash and an authenticated **new** page. Confirm page-creation mode and
-   explicitly open creation when the identity and authorization checks pass.
-
-This is intentionally a one-time destructive pre-release cutover, not a
-legacy migration framework. Do not point a future release at a namespace with
-an incompatible schema; the authoritative schema guard remains mandatory.
+The storage schema identity check must remain in place. A future incompatible
+schema needs a new namespace and an explicit D1 cutover.
 
 ### Branch previews are optional
 
@@ -290,4 +273,4 @@ but no new origins or resources are needed for the direct path above.
 Runtime resource selection lives in `runtime/resources.mjs`. The installer
 verifies SHA-256 hashes and uploads to immutable keys in the selected FILES
 bucket. Publication manifests pin their complete runtime and component asset
-sets, so an already-open contract 2 page keeps its matching assets.
+sets, so an already-open page keeps its matching assets.

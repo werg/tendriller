@@ -21,7 +21,7 @@ async function load(page: Page, opts: Record<string, unknown> = {}, body = PAGE_
     const http = opts.http as Record<string, unknown> | undefined;
     if (http && url.pathname in http) return route.fulfill({ json: http[url.pathname] });
     if (url.pathname === "/entry.js") return route.fulfill({ body: entry, contentType: "text/javascript" });
-    if (url.pathname.includes("/_tendril/blob/")) return route.fulfill({ body: PNG, contentType: "image/png" });
+    if (url.pathname.includes("/_tendril/blobs/")) return route.fulfill({ body: PNG, contentType: "image/png" });
     return route.fulfill({
       contentType: "text/html",
       body: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -270,7 +270,7 @@ test("activity record with thumbnails and delete", async ({ page }) => {
   await openSheet(page);
   await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
   await page.getByText("Activity record").click();
-  await expect(page.locator("#tendril-activity img.thumb")).toHaveAttribute("src", "/t/abc/s/key/_tendril/blob/b_abc");
+  await expect(page.locator("#tendril-activity img.thumb")).toHaveAttribute("src", "/t/abc/s/key/_tendril/blobs/b_abc");
   await expect(page.getByText("reported by the agent")).toBeVisible();
   await expect(page.getByText("can't remove what the agent has already read")).toBeVisible();
   await page.getByRole("button", { name: "Delete: Photo sent" }).click();

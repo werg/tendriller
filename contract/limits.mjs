@@ -11,6 +11,19 @@ export const RESOURCE_LIMITS = Object.freeze({
   scope_bindings: 4096,
   command_receipts: 20_000,
   command_receipt_bytes: 32 * 1024 * 1024,
+  // Hard transport ceiling is separate from the actor's effective per-body quota.
+  owned_body_bytes: 5 * 1024 * 1024,
+  unclaimed_body_bytes: 1 * 1024 * 1024,
+  owned_page_bytes: 25 * 1024 * 1024,
+  unclaimed_page_bytes: 2 * 1024 * 1024,
+  upload_sessions_per_actor: 8,
+  upload_sessions_per_page: 32,
+  upload_expiry_seconds: 86400,
+  shared_files: 512,
+  shared_file_paths: 4096,
+  file_snapshot_bytes: 1024 * 1024,
+  file_history: 10,
+  file_history_seconds: 30 * 86400,
 });
 
 export const STREAM_LIMITS = Object.freeze({

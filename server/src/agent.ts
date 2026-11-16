@@ -5,28 +5,24 @@ import { validName } from "./tendril";
 import { addActivity, listActivity, preview } from "./activity";
 import { addEvent, getEvents, markWakeDelivered } from "./events";
 import { validSecret } from "./mcpEvents";
+import { pointers } from "./files";
+import { HttpError, intParam, isPlainObject, json, readJson } from "./http";
+import { BLOB_ID_RE, newPageKey, newSocketTicket, randomB32, safeEqual, sha256Hex, SOCKET_TICKET_RE } from "./ids";
 import {
-  createVersion, latestFileMap, listVersions, pointers, rollback, servedVersion, storeContent, versionFile, versionFiles,
-  fileKey, type VersionFile,
-} from "./files";
-import { HttpError, intParam, isPlainObject, json, readBody, readJson } from "./http";
-import { BLOB_ID_RE, fromBase64, newPageKey, newSocketTicket, randomB32, safeEqual, sha256Hex, SOCKET_TICKET_RE } from "./ids";
-import {
-  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_BLOB, MAX_EVAL_CODE, MAX_FILE, MAX_STATE,
+  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_EVAL_CODE, MAX_STATE,
 } from "./limits";
-import { resolveType } from "./mime";
 import { validateOps } from "./state";
 import { mutate, preconditions } from "./scopes";
 import { handleScopes, handleWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
-import { blobInfo, setBlobRetention } from "./blob-retention";
-import { apiUrl, normalizeFilePath } from "./urls";
+import { apiUrl } from "./urls";
 import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
 import { deviceConfiguration, updateDevice } from "./device-roles";
 import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
 import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
 import { authenticateAgent, authenticateAgentToken, requireAccess } from "./access";
 import { pushAvailable, validatePushSubscription } from "./push";
+import { STORAGE_V3_ROUTE, handleStorageV3 } from "./storage-v3";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -49,6 +45,12 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
+  if (STORAGE_V3_ROUTE.test(rest)) {
+    const principal = await authenticateAgent(t, req);
+    requireAccess(principal, "agent.manage");
+    t.checkin(principal.name);
+    return handleStorageV3(t, req, url, principal.name, rest);
+  }
   if (STREAM_ROUTE.test(rest) || CONSUMER_ROUTE.test(rest) || EXPERIENCE_ROUTE.test(rest) || /^(?:scopes|workflows)(?:\/|$)/.test(rest)) {
     const principal = await authenticateAgent(t, req);
     requireAccess(principal, "agent.manage");
@@ -107,15 +109,6 @@ function deliveryFeedback(t: Tendril) {
         ? "Keep the agent socket connected and the host adapter running. Read events on each wake, reply in this conversation, and acknowledge after handling."
         : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
   };
-}
-
-function requireFirstPageReceiver(t: Tendril): void {
-  if (t.db.get<string>("mode", "interactive") === "dashboard") return;
-  if (latestFileMap(t).has("index.html")) return;
-  const facts = t.presenceFacts();
-  if (facts.agentSocket || facts.longPollHeld || facts.webhook) return;
-  throw new HttpError(428, "listener_required",
-    "Attach this conversation with a verified host wake path: a persistent agent WebSocket at A/events/socket, continuous GET A/events?after=<cursor>&wait=300 plus same-session delivery, or PUT A/wake with a persistent receiver. A one-off poll or agent token is not a listener; run two POST A/wake/probe diagnostics before promising live replies.");
 }
 
 export function tendrilMeta(t: Tendril) {
@@ -294,85 +287,6 @@ route("POST", /^release$/, async (t) => {
   return json({ released: true, expires_at: t.expiresAt() });
 });
 
-// ------------------------------------------------------------------ files and versions
-
-route("PUT", /^files\/(.+)$/, async (t, req, url, by, [raw]) => {
-  const path = normalizeFilePath(raw);
-  if (!path) throw new HttpError(400, "bad_path", "Invalid file path (no '..', no leading '_tendril/', no trailing '/')");
-  if (path === "index.html") requireFirstPageReceiver(t);
-  const body = await readBody(req, t.fileLimit());
-  const type = resolveType(path, req.headers.get("Content-Type"));
-  const { hash, size } = await storeContent(t, body, type);
-  const files = latestFileMap(t);
-  files.set(path, { path, hash, type, size });
-  const version = await createVersion(t, files, url.searchParams.get("message"), by);
-  return json({ version, files: [...files.keys()].sort(), agent_delivery: deliveryFeedback(t) });
-});
-
-route("POST", /^files$/, async (t, req, url, by) => {
-  const b = await readJson(req, t.fileLimit() * 4);
-  if (b.files !== undefined && !isPlainObject(b.files)) throw new HttpError(400, "bad_request", "files must be an object of path → content");
-  if (isPlainObject(b.files) && Object.hasOwn(b.files, "index.html")) requireFirstPageReceiver(t);
-  const files = b.replace ? new Map<string, VersionFile>() : latestFileMap(t);
-  if (b.delete !== undefined) {
-    if (!Array.isArray(b.delete)) throw new HttpError(400, "bad_request", "delete must be an array of paths");
-    for (const p of b.delete) files.delete(normalizeFilePath(String(p)) ?? "");
-  }
-  for (const [raw, v] of Object.entries((b.files ?? {}) as Record<string, unknown>)) {
-    const path = normalizeFilePath(raw);
-    if (!path) throw new HttpError(400, "bad_path", `Invalid file path: ${raw}`);
-    let bytes: Uint8Array;
-    let given: string | null = null;
-    if (typeof v === "string") bytes = new TextEncoder().encode(v);
-    else if (isPlainObject(v) && typeof v.base64 === "string") {
-      try {
-        bytes = fromBase64(v.base64);
-      } catch {
-        throw new HttpError(400, "bad_request", `Invalid base64 for ${raw}`);
-      }
-      given = typeof v.type === "string" ? v.type : null;
-    } else throw new HttpError(400, "bad_request", `File ${raw} must be a string or {"base64","type"?}`);
-    if (bytes.byteLength > t.fileLimit()) throw new HttpError(413, "too_large", `File ${raw} exceeds ${t.fileLimit()} bytes`);
-    const type = resolveType(path, given);
-    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-    const { hash, size } = await storeContent(t, buf, type);
-    files.set(path, { path, hash, type, size });
-  }
-  const version = await createVersion(t, files, typeof b.message === "string" ? b.message.slice(0, 500) : null, by);
-  return json({ version, files: [...files.keys()].sort(), agent_delivery: deliveryFeedback(t) });
-});
-
-function requestedVersion(t: Tendril, url: URL): number {
-  const q = url.searchParams.get("version");
-  if (q === null || q === "") return t.db.get<number>("current", 0);
-  const n = Number(q);
-  if (!Number.isInteger(n) || !t.db.one("SELECT 1 AS x FROM versions WHERE version = ?", n)) throw new HttpError(404, "not_found", `No version ${q}`);
-  return n;
-}
-
-route("GET", /^files$/, (t, req, url) => {
-  const v = requestedVersion(t, url);
-  return json({ version: v > 0 ? v : null, files: v > 0 ? versionFiles(t, v) : [] });
-});
-
-route("GET", /^files\/(.+)$/, async (t, req, url, by, [raw]) => {
-  const v = requestedVersion(t, url);
-  const path = normalizeFilePath(raw);
-  const f = v > 0 && path ? versionFile(t, v, path) : null;
-  if (!f) throw new HttpError(404, "not_found", `No file ${raw} in version ${v || "(none)"}`);
-  const obj = await t.env.FILES.get(fileKey(t, f.hash));
-  if (!obj) throw new HttpError(500, "internal", "File content missing");
-  return new Response(obj.body, { headers: { "Content-Type": f.type, "X-Tendril-Version": String(v) } });
-});
-
-route("GET", /^versions$/, (t) => json({ versions: listVersions(t), ...pointers(t), served: servedVersion(t) || null }));
-
-route("POST", /^rollback$/, async (t, req, url, by) => {
-  const b = await readJson(req, 4096);
-  const v = rollback(t, b.version, by, null);
-  return json({ version: v });
-});
-
 // ------------------------------------------------------------------ events
 
 route("GET", /^events$/, (t, req, url) => {
@@ -496,22 +410,6 @@ route("GET", /^journey$/, (t, req, url) => {
   const entries = [...events, ...activity, ...logs].sort((a, b) => a.ts - b.ts || a.seq - b.seq).slice(-limit);
   return json({ entries, presence: t.presence(), agent_cursor: t.db.get<number>("agent_cursor", 0) });
 });
-
-route("PUT", /^blobs$/, async (t, req) => {
-  const body = await readBody(req, t.blobLimit());
-  const name = req.headers.get("X-Tendril-Name");
-  const type = req.headers.get("Content-Type") || "application/octet-stream";
-  return json(await t.storeBlob(body, type, name ? name.slice(0, 200) : null, null, "agent"));
-});
-
-route("GET", /^blobs$/, (t) =>
-  json({ blobs: t.db.all<{ id: string }>("SELECT id FROM blobs ORDER BY ts DESC").map((row) => blobInfo(t, row.id)) }),
-);
-
-route("GET", /^blobs\/(b_[a-z2-7]{20})$/, (t, req, url, by, [id]) => t.getBlob(id));
-route("GET", /^blobs\/(b_[a-z2-7]{20})\/info$/, (t, req, url, by, [id]) => json(blobInfo(t, id)));
-route("PATCH", /^blobs\/(b_[a-z2-7]{20})$/, async (t, req, url, by, [id]) =>
-  json(setBlobRetention(t, id, await readJson(req, 4096), by)));
 
 // ------------------------------------------------------------------ devices and links
 

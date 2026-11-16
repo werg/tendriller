@@ -61,7 +61,7 @@ const core: Core = {
     return typeof r === "function" ? r(msg) : (r ?? { t: "ack" });
   },
   raw() {},
-  async upload() { return { id: "b_x", url: "_tendril/blob/b_x" }; },
+  async upload() { return { id: "b_x", url: "_tendril/blobs/b_x" }; },
 };
 
 if (opts.push) {

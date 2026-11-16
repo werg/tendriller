@@ -15,7 +15,7 @@ it("discovers optional releases and serves the generic public contract", async (
   // Discovery may move, but the catalog advertised as a tested pairing must
   // identify a real, immutable release rather than a mutable latest alias.
   expect(discovery).toContain("https://api.github.com/repos/werg/tendriller-contrib/releases");
-  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json");
+  expect(discovery).toContain("https://github.com/werg/tendriller-contrib/releases/download/v0.3.0-rc.1/catalog.json");
   expect(discovery).not.toContain("/releases/latest/download/");
   expect(discovery).toContain("https://tendriller.dev/docs/BROWSER_API.md");
   for (const path of ["/docs/STREAMS.md","/docs/DURABILITY.md","/docs/ARCHITECTURE.md","/docs/PROTOCOL.md","/docs/BROWSER_API.md"]){
@@ -24,8 +24,8 @@ it("discovers optional releases and serves the generic public contract", async (
   }
   const descriptor = await (await req("/api/service")).json();
   assertValid("serviceDescriptor", descriptor);
-  expect(descriptor).toMatchObject({contract:2,limits:{streams:{record_bytes:65536}}});
-  const schema = await (await req("/contract/v2.json")).json<any>();
+  expect(descriptor).toMatchObject({contract:3,limits:{streams:{record_bytes:65536}}});
+  const schema = await (await req("/contract/v3.json")).json<any>();
   expect(schema.$defs.command).toBeDefined();
   expect(schema.$defs.archive).toBeUndefined();
   for (const path of ["/contract/v1.json","/recipes/catalog.json","/snippets/README.md","/cli/README.md","/examples/training-dashboard/index.html"])

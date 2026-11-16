@@ -30,6 +30,7 @@ export interface MockTendril {
   dedupe: Set<string>;
   blobs: Map<string, { type: string; body: Buffer; name?: string }>;
   uploadReceipts: Map<string, any>;
+  uploadSessions: Map<string, { cid: string; id: string; sha256: string; size: number; type: string; name?: string; body?: Buffer }>;
   uploadFailureStatus: number;
   dropUploadResponses: number;
   sendReceipts: Map<string, any>;
@@ -65,7 +66,7 @@ export class MockServer {
     const t: MockTendril = {
       id, version: 1, html: "<h1>Hello</h1>", publications: new Map(), files: {}, noSw: true, preview: false, state: {}, scopes: [], rev: 0, seq: 0,
       sockets: new Set(), msgs: [], refuse: false, dedupe: new Set(), blobs: new Map(), pageLoads: 0, welcomeExtra: {},
-      uploadReceipts: new Map(), uploadFailureStatus: 0, dropUploadResponses: 0, sendReceipts: new Map(),
+      uploadReceipts: new Map(), uploadSessions: new Map(), uploadFailureStatus: 0, dropUploadResponses: 0, sendReceipts: new Map(),
       ...over,
     };
     this.tendrils.set(id, t);
@@ -122,19 +123,59 @@ export class MockServer {
     const send = (status: number, type: string, body: string | Buffer, extra: Record<string, string> = {}) => {
       res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-cache", ...extra }).end(body);
     };
-    if (req.method === "POST" && rel === "_tendril/blob") {
+    if (req.method === "POST" && rel === "_tendril/uploads") {
       const chunks: Buffer[] = [];
       req.on("data", (c) => chunks.push(c));
       req.on("end", () => {
         if (t.uploadFailureStatus) return send(t.uploadFailureStatus, "application/json", JSON.stringify({ error: { code: "quota", message: "Capture storage is full." } }));
-        const cid = String(req.headers["x-tendril-cid"] || "");
-        if (cid && t.uploadReceipts.has(cid)) return send(200, "application/json", JSON.stringify(t.uploadReceipts.get(cid)));
-        const id = "b_" + String(t.blobs.size + 1).padStart(20, "a");
-        t.blobs.set(id, { type: String(req.headers["content-type"] || ""), body: Buffer.concat(chunks), name: req.headers["x-tendril-name"] as string });
-        const keep = req.headers["x-tendril-keep"] === "true";
-        const receipt = { id, url: "_tendril/blob/" + id, retention: { keep, expires_at: keep ? null : Date.now() + 30 * 86_400_000 } };
-        if (cid) t.uploadReceipts.set(cid, receipt);
+        const input = JSON.parse(Buffer.concat(chunks).toString());
+        const cid = input.cid;
+        let session = t.uploadSessions.get(cid);
+        if (!session) {
+        const id = "b_" + String(t.blobs.size + 2).padStart(20, "a");
+          session = { cid, id, sha256: input.sha256, size: input.size, type: input.type, name: input.name };
+          t.uploadSessions.set(cid, session);
+        }
+        send(201, "application/json", JSON.stringify({ id: "u_" + cid, blob_id: session.id, sha256: session.sha256, size: session.size,
+          phase: session.body ? "received" : "reserved", upload_required: !session.body, expires_at: Date.now() + 60_000 }));
+      });
+      return;
+    }
+    const upload = /^_tendril\/uploads\/([^/]+)\/(content|complete)$/.exec(rel);
+    if (upload) {
+      const session = t.uploadSessions.get(upload[1].slice(2));
+      if (!session) return send(404, "application/json", JSON.stringify({ error: { code: "not_found" } }));
+      if (upload[2] === "content" && req.method === "PUT") {
+        const chunks: Buffer[] = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          const body = Buffer.concat(chunks);
+          if (body.byteLength !== session.size || hash(body) !== session.sha256) return send(422, "application/json", JSON.stringify({ error: { code: "digest_mismatch" } }));
+          session.body = body;
+          res.writeHead(204).end();
+        });
+        return;
+      }
+      if (upload[2] === "complete" && req.method === "POST") {
+        if (!session.body) return send(409, "application/json", JSON.stringify({ error: { code: "upload_incomplete" } }));
+        t.blobs.set(session.id, { type: session.type, body: session.body, name: session.name });
+        const receipt = { id: session.id, sha256: session.sha256, size: session.size, type: session.type,
+          url: "_tendril/blobs/" + session.id, created_at: Date.now(), retention: { expires_at: Date.now() + 30 * 86_400_000, reasons: ["page_default"] } };
+        t.uploadReceipts.set(session.cid, receipt);
         if (t.dropUploadResponses > 0) { t.dropUploadResponses--; req.socket.destroy(); return; }
+        send(200, "application/json", JSON.stringify({ status: "completed", blob: receipt }));
+        return;
+      }
+    }
+    const pin = /^_tendril\/blobs\/(b_[a-z2-7]{20})\/pin$/.exec(rel);
+    if (pin && req.method === "PUT") {
+      const receipt = [...t.uploadReceipts.values()].find(r => r.id === pin[1]);
+      if (!receipt) return send(404, "application/json", JSON.stringify({ error: { code: "not_found" } }));
+      const chunks: Buffer[] = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        const { keep } = JSON.parse(Buffer.concat(chunks).toString());
+        receipt.retention = { expires_at: keep ? null : Date.now() + 30 * 86_400_000, reasons: [keep ? "pinned" : "page_default"] };
         send(200, "application/json", JSON.stringify(receipt));
       });
       return;

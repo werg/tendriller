@@ -20,7 +20,7 @@ import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/c
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 import {applyOps, validateOps, historyPage} from '@tendriller/runtime/preview-support';
-assert.equal(CONTRACT_VERSION, 2); assert.equal(schema.$defs.decision, undefined);
+assert.equal(CONTRACT_VERSION, 3); assert.equal(schema.$defs.decision, undefined);
 assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
 assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
 assertValid('command', {cid:'event-1',expected_generations:{},data:{type:'job.status',session:'application data'}});

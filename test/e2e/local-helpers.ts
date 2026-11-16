@@ -1,4 +1,5 @@
 import { expect, request, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
+import { createHash, randomUUID } from "node:crypto";
 
 export const SERVICE = "https://service.localhost:8790";
 export const OWNER = "owner@example.test";
@@ -39,11 +40,37 @@ export async function publish(h: Handle, body: string) {
     if ((await agent(h)).data.presence.state === "listening") break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  const res = await (await requester()).put(`${h.api}/files/index.html`, { headers: {
-    Authorization: `Bearer ${h.token}`, "Content-Type": "text/html",
-  }, data: `<!doctype html><html><head><meta charset="utf-8"><title>E2E</title></head><body>${body}</body></html>` });
-  expect(res.status(), await res.text()).toBe(200);
-  return res.json();
+  return publishAssets(h, { "index.html": `<!doctype html><html><head><meta charset="utf-8"><title>E2E</title></head><body>${body}</body></html>` });
+}
+
+export async function uploadAsset(h: Handle, content: string, type = "text/html") {
+  const bytes = Buffer.from(content);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const started = await agent(h, "/uploads", "POST", { cid: randomUUID(), sha256, size: bytes.length, type });
+  expect(started.status).toBe(201);
+  if (started.data.upload_required) {
+    const contentResponse = await (await requester()).put(`${h.api}/uploads/${started.data.id}/content`, {
+      headers: { Authorization: `Bearer ${h.token}`, "Content-Type": "application/octet-stream" }, data: bytes });
+    expect(contentResponse.status(), await contentResponse.text()).toBe(204);
+  }
+  const finished = await agent(h, `/uploads/${started.data.id}/complete`, "POST", {});
+  expect(finished.status).toBe(200);
+  return finished.data.blob;
+}
+
+export async function publishAssets(h: Handle, content: Record<string, string>) {
+  const head = await agent(h, "/publications");
+  expect(head.status).toBe(200);
+  const files = [];
+  for (const [path, data] of Object.entries(content)) {
+    const type = path.endsWith(".html") ? "text/html" : path.endsWith(".js") ? "text/javascript" : "text/plain";
+    const blob = await uploadAsset(h, data, type);
+    files.push({ path, blob_id: blob.id, type });
+  }
+  const result = await agent(h, "/publications", "POST", { cid: randomUUID(), expected_generations: {},
+    expected_head_revision: head.data.head_revision, entry: "index.html", files });
+  expect(result.status).toBe(200);
+  return result.data;
 }
 
 export function localPageUrl(h: Handle): string {

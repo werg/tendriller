@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tendriller.dev/contract/v2.json",
-  "title": "Tendriller public contract v2",
+  "$id": "https://tendriller.dev/contract/v3.json",
+  "title": "Tendriller public contract v3",
   "$defs": {
     "consumerName": {
       "type": "string",
@@ -1667,13 +1667,1477 @@
       ],
       "additionalProperties": false
     },
+    "blobId": {
+      "type": "string",
+      "pattern": "^b_[a-z2-7]{20}$"
+    },
+    "blobSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "filePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "x-canonical-nfc": true,
+      "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+    },
+    "blobMetadata": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^b_[a-z2-7]{20}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 26214400
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retention": {
+          "type": "object",
+          "properties": {
+            "expires_at": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "maxItems": 32
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "size",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "blobList": {
+      "type": "object",
+      "properties": {
+        "blobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^b_[a-z2-7]{20}$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 26214400
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "url": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "created_at": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "retention": {
+                "type": "object",
+                "properties": {
+                  "expires_at": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "maxItems": 32
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "sha256",
+              "size",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 1000
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "blobs"
+      ],
+      "additionalProperties": false
+    },
+    "blobAttachment": {
+      "type": "object",
+      "properties": {
+        "blob_id": {
+          "type": "string",
+          "pattern": "^b_[a-z2-7]{20}$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "blob_id"
+      ],
+      "additionalProperties": false
+    },
+    "blobAttachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "blob_id": {
+            "type": "string",
+            "pattern": "^b_[a-z2-7]{20}$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "blob_id"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 16
+    },
+    "uploadStart": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 26214400
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "cid",
+        "sha256",
+        "size",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "uploadSession": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^u_[a-z2-7]{20}$"
+        },
+        "blob_id": {
+          "type": "string",
+          "pattern": "^b_[a-z2-7]{20}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 26214400
+        },
+        "phase": {
+          "enum": [
+            "reserved",
+            "ready",
+            "receiving",
+            "received",
+            "completed",
+            "aborted",
+            "expired"
+          ]
+        },
+        "upload_required": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blob": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^b_[a-z2-7]{20}$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 26214400
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "created_at": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retention": {
+              "type": "object",
+              "properties": {
+                "expires_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "maxItems": 32
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "sha256",
+            "size",
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "blob_id",
+        "sha256",
+        "size",
+        "phase",
+        "upload_required",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "uploadCompletion": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "completed"
+        },
+        "blob": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^b_[a-z2-7]{20}$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 26214400
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "created_at": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retention": {
+              "type": "object",
+              "properties": {
+                "expires_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "maxItems": 32
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "sha256",
+            "size",
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "status",
+        "blob"
+      ],
+      "additionalProperties": false
+    },
+    "blobPin": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "keep": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "keep"
+      ],
+      "additionalProperties": false
+    },
+    "fileHead": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "blob_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^b_[a-z2-7]{20}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "path",
+        "revision",
+        "blob_id"
+      ],
+      "additionalProperties": false
+    },
+    "fileSnapshot": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-canonical-nfc": true,
+                "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "blob_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^b_[a-z2-7]{20}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "updated_at": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "by": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "path",
+              "revision",
+              "blob_id"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 512
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "files",
+        "cursor"
+      ],
+      "additionalProperties": false
+    },
+    "fileHistory": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-canonical-nfc": true,
+                "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "blob_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^b_[a-z2-7]{20}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "updated_at": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "by": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "path",
+              "revision",
+              "blob_id"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 11
+        }
+      },
+      "required": [
+        "path",
+        "versions"
+      ],
+      "additionalProperties": false
+    },
+    "fileWrite": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blob_id": {
+          "type": "string",
+          "pattern": "^b_[a-z2-7]{20}$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "path",
+        "expected_revision",
+        "blob_id"
+      ],
+      "additionalProperties": false
+    },
+    "fileDelete": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "path",
+        "expected_revision"
+      ],
+      "additionalProperties": false
+    },
+    "fileCleanup": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "path",
+        "expected_revision"
+      ],
+      "additionalProperties": false
+    },
+    "fileResult": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "x-canonical-nfc": true,
+              "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "blob_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^b_[a-z2-7]{20}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "updated_at": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "by": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "path",
+            "revision",
+            "blob_id"
+          ],
+          "additionalProperties": false
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "cursor"
+      ],
+      "additionalProperties": false
+    },
+    "fileChange": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "file": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "x-canonical-nfc": true,
+              "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "blob_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^b_[a-z2-7]{20}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "updated_at": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "by": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "path",
+            "revision",
+            "blob_id"
+          ],
+          "additionalProperties": false
+        },
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "at": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "cursor",
+        "file",
+        "cid",
+        "actor",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "publicationFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "blob_id": {
+          "type": "string",
+          "pattern": "^b_[a-z2-7]{20}$"
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "path",
+        "blob_id",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "publicationWrite": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "expected_head_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "entry": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-canonical-nfc": true,
+                "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+              },
+              "blob_id": {
+                "type": "string",
+                "pattern": "^b_[a-z2-7]{20}$"
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "path",
+              "blob_id",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 2000
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "expected_head_revision",
+        "entry",
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "publicationRollback": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "expected_head_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "expected_head_revision",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "publicationResultV3": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "head_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "version",
+        "head_revision"
+      ],
+      "additionalProperties": false
+    },
+    "publicationHead": {
+      "type": "object",
+      "properties": {
+        "current": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latest": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "healthy": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "head_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "needs_republication": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "current",
+        "latest",
+        "healthy",
+        "head_revision"
+      ],
+      "additionalProperties": false
+    },
+    "transferDescriptor": {
+      "type": "object",
+      "properties": {
+        "transfer_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "phase": {
+          "enum": [
+            "queued",
+            "uploading",
+            "ready",
+            "committing",
+            "accepted",
+            "rejected"
+          ]
+        },
+        "blob": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^b_[a-z2-7]{20}$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 26214400
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "created_at": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retention": {
+              "type": "object",
+              "properties": {
+                "expires_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "maxItems": 32
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "sha256",
+            "size",
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        "file": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "x-canonical-nfc": true,
+              "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "blob_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^b_[a-z2-7]{20}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "updated_at": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "by": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "path",
+            "revision",
+            "blob_id"
+          ],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "details": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "transfer_id",
+        "phase"
+      ],
+      "additionalProperties": false
+    },
+    "exportSnapshot": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "expires_at",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    "importStage": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "expected_head_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected_files": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "sha256",
+        "expected_head_revision",
+        "expected_files"
+      ],
+      "additionalProperties": false
+    },
     "scopeId": {
       "type": "string",
       "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
     },
     "scopeOperation": {
       "type": "string",
-      "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+      "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
     },
     "scopeBindings": {
       "type": "object",
@@ -1707,7 +3171,7 @@
           "maxItems": 128,
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -1786,7 +3250,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -1828,7 +3292,7 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
                 }
               }
             },
@@ -1898,7 +3362,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -1981,7 +3445,7 @@
       "type": "object",
       "properties": {
         "contract": {
-          "const": 2
+          "const": 3
         },
         "core_release": {
           "type": "string",
@@ -4075,7 +5539,7 @@
           "const": "tendriller-bundle"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "name": {
           "type": "string",
@@ -4201,6 +5665,51 @@
             ],
             "additionalProperties": false
           }
+        },
+        "shared_files": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "blob_id": {
+                "type": "string",
+                "pattern": "^b_[a-z2-7]{20}$"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "blob_id",
+              "name",
+              "type"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -4208,7 +5717,8 @@
         "version",
         "name",
         "files",
-        "media"
+        "media",
+        "shared_files"
       ],
       "additionalProperties": false
     },
@@ -4392,7 +5902,7 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "pattern": "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
                 }
               }
             },

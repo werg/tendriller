@@ -9,7 +9,9 @@ import { normalizeFilePath, publicBase } from "./urls";
 import { listTimers } from "./timers";
 import type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
 export type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
-interface StagedBundle { name: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief; media: string[] }
+interface SharedBundleFile { path: string; blob_id: string; name: string | null; type: string | null }
+interface StagedBundle { name: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief;
+  media: string[]; sharedFiles: SharedBundleFile[]; expectedFileCursor: number }
 const EMPTY_BRIEF: SessionBrief = { purpose: "", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
 const bundleOperations = new WeakSet<Tendril>();
 async function withBundleLock<T>(t: Tendril, work: () => Promise<T>): Promise<T> {
@@ -54,6 +56,9 @@ function eventHighWater(t: Tendril): number {
   // event. A checkpoint must remain valid after the referenced events expire.
   return t.db.one<{ seq: number }>("SELECT seq FROM sqlite_sequence WHERE name='events'")?.seq ?? 0;
 }
+function fileHighWater(t: Tendril): number {
+  return t.db.one<{ seq: number }>("SELECT seq FROM sqlite_sequence WHERE name='file_ref_changes'")?.seq ?? 0;
+}
 export function putSession(t: Tendril, value: unknown, by: string): SessionResult {
   const brief = validateBrief(value);
   const previous = t.db.get("session_revision", 0);
@@ -72,7 +77,10 @@ export async function exportBundle(t: Tendril, includeData: boolean): Promise<Po
   // state edits must not reference media that was absent from this export.
   const version = servedVersion(t);
   const fileRows = versionFiles(t, version);
-  const mediaRows = includeData ? t.db.all<{ id: string; type: string; name: string | null }>("SELECT id, type, name FROM blobs ORDER BY id") : [];
+  const mediaRows = includeData ? t.db.all<{ id: string; type: string; name: string | null }>(
+    "SELECT id,type,name FROM blobs WHERE id NOT IN (SELECT blob_id FROM publication_blobs) OR id IN (SELECT blob_id FROM file_refs WHERE blob_id IS NOT NULL) ORDER BY id") : [];
+  const shared_files = includeData ? t.db.all<SharedBundleFile>(
+    "SELECT path,blob_id,name,type FROM file_refs WHERE blob_id IS NOT NULL ORDER BY path") : [];
   const brief = structuredClone(t.db.get<SessionBrief>("session_brief", EMPTY_BRIEF));
   const state = structuredClone(t.getState().state);
   const name = t.db.get("name", "Tendril");
@@ -86,7 +94,7 @@ export async function exportBundle(t: Tendril, includeData: boolean): Promise<Po
     if (!data) throw new HttpError(409, "incomplete_bundle", `Missing media ${item.id}`);
     return { ...item, base64: toBase64(await data.arrayBuffer()) };
   }));
-  return { format: "tendriller-bundle", version: 1, name, files, media,
+  return { format: "tendriller-bundle", version: 2, name, files, media, shared_files,
     ...(includeData ? { state, session: { ...brief, last_handled_seq: 0 } }
       : { session: { ...EMPTY_BRIEF, purpose: brief.purpose, source: brief.source } }) };
 }
@@ -111,10 +119,11 @@ export async function stageBundle(t: Tendril, value: unknown, by: string): Promi
   return withBundleLock(t, () => stageBundleUnlocked(t, value, by));
 }
 async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Promise<StagedBundle> {
-  if (!isPlainObject(value) || value.format !== "tendriller-bundle" || value.version !== 1) throw new HttpError(400, "bad_bundle", "Unsupported bundle format or version");
+  if (!isPlainObject(value) || value.format !== "tendriller-bundle" || value.version !== 2) throw new HttpError(400, "bad_bundle", "Unsupported bundle format or version");
   if (t.db.get("staged_bundle", null)) throw new HttpError(409, "staged_bundle_exists", "Publish or discard the prepared copy first");
   if (typeof value.name !== "string" || !value.name.trim() || value.name.length > 200) throw new HttpError(400, "bad_bundle", "Invalid bundle name");
-  if (!Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES_PER_VERSION || !Array.isArray(value.media))
+  if (!Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES_PER_VERSION || !Array.isArray(value.media) ||
+      !Array.isArray(value.shared_files) || value.shared_files.length > 1000)
     throw new HttpError(400, "bad_bundle", "Invalid bundle entries");
   const seen = new Set<string>();
   const files = value.files.map((f: any) => {
@@ -130,6 +139,16 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
       throw new HttpError(400, "bad_bundle", "Invalid media entry");
     seenMedia.add(m.id);
     return { id: m.id, type: m.type, name: m.name, bytes: decode(m.base64, t.blobLimit()) };
+  });
+  const seenShared = new Set<string>();
+  const sharedFiles: SharedBundleFile[] = value.shared_files.map((f: any) => {
+    if (!isPlainObject(f) || typeof f.path !== "string" || normalizeFilePath(f.path) !== f.path || seenShared.has(f.path) ||
+        typeof f.blob_id !== "string" || !seenMedia.has(f.blob_id) ||
+        (f.name !== null && (typeof f.name !== "string" || f.name.length > 200)) ||
+        (f.type !== null && (typeof f.type !== "string" || f.type.length > 200)))
+      throw new HttpError(400, "bad_bundle", "Invalid shared file reference");
+    seenShared.add(f.path);
+    return { path: f.path, blob_id: f.blob_id, name: f.name, type: f.type };
   });
   if (value.state !== undefined && (!isPlainObject(value.state) || JSON.stringify(value.state).length > MAX_STATE)) throw new HttpError(400, "bad_bundle", "Invalid shared state");
   const session = value.session === undefined ? undefined : { ...validateBrief(value.session), last_handled_seq: 0 };
@@ -152,7 +171,9 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
       prepared.push({ path: f.path, type: f.type, ...saved });
     }
     const state = value.state === undefined ? undefined : rewrite(value.state, mapping);
-    const staged: StagedBundle = { name: value.name.trim(), files: prepared, media: createdMedia, ...(state ? { state } : {}), ...(session ? { session } : {}) };
+    const staged: StagedBundle = { name: value.name.trim(), files: prepared, media: createdMedia,
+      sharedFiles: sharedFiles.map(f => ({ ...f, blob_id: mapping.get(f.blob_id)! })), expectedFileCursor: fileHighWater(t),
+      ...(state ? { state } : {}), ...(session ? { session } : {}) };
     t.transaction(() => {
       assertStoredContent(t, prepared);
       t.db.set("staged_bundle", staged);
@@ -178,6 +199,8 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
   if (!staged) throw new HttpError(404, "not_found", "No prepared copy");
   const current = t.db.get("current", 0);
   if (expectedVersion !== current) throw new HttpError(409, "version_conflict", "The page changed; review its current version before replacing it", { current });
+  if (fileHighWater(t) !== staged.expectedFileCursor)
+    throw new HttpError(409, "file_conflict", "Shared files changed since this bundle was staged; discard and stage it again");
   if (!latestFileMap(t).has("index.html")) {
     const facts = t.presenceFacts();
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !facts.agentSocket && !facts.longPollHeld && !facts.webhook)
@@ -201,6 +224,25 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
       checkGenerations(t, command, { paths: staged.state ? [[]] : [], operations: ["bundle.publish"] });
       if (staged.state) t.applyState([{ op: "set", path: [], value: staged.state }], `agent:${by}`, undefined, command);
       if (staged.session) { t.db.set("session_brief", staged.session); t.db.set("session_revision", t.db.get("session_revision", 0) + 1); }
+      const nextFiles = new Map(staged.sharedFiles.map(file => [file.path, file]));
+      const oldFiles = t.db.all<{ path: string; revision: number; blob_id: string | null }>("SELECT path,revision,blob_id FROM file_refs ORDER BY path");
+      const oldRevisions = new Map(oldFiles.map(file => [file.path, file.revision]));
+      const now = t.now(), fileActor = `agent:${by}`;
+      for (const old of oldFiles) {
+        if (old.blob_id === null || nextFiles.has(old.path)) continue;
+        const revision = old.revision + 1;
+        t.db.run("UPDATE file_refs SET revision=?,blob_id=NULL,name=NULL,type=NULL,scope=NULL,updated_at=?,by_actor=? WHERE path=?",
+          revision, now, fileActor, old.path);
+        t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,NULL,NULL,NULL,NULL,?,?,?)",
+          old.path, revision, now, fileActor, command.cid);
+      }
+      for (const file of staged.sharedFiles) {
+        const revision = (oldRevisions.get(file.path) ?? 0) + 1;
+        t.db.run("INSERT INTO file_refs(path,revision,blob_id,name,type,scope,updated_at,by_actor) VALUES(?,?,?,?,?,NULL,?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision,blob_id=excluded.blob_id,name=excluded.name,type=excluded.type,scope=NULL,updated_at=excluded.updated_at,by_actor=excluded.by_actor",
+          file.path, revision, file.blob_id, file.name, file.type, now, fileActor);
+        t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,?,?,?,NULL,?,?,?)",
+          file.path, revision, file.blob_id, file.name, file.type, now, fileActor, command.cid);
+      }
       t.db.del("staged_bundle");
       return { version: t.db.get("current", 0), restored: true };
     }); },

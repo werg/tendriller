@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { agent, claim, createPage, deletePage, localPageUrl, openClaimed, publish, requester, signInFixture, OTHER_TOKEN } from "./local-helpers";
+import { agent, claim, createPage, deletePage, localPageUrl, openClaimed, publish, requester, signInFixture, uploadAsset, OTHER_TOKEN } from "./local-helpers";
 
 test("email invitation auto-claims for a verified account and opens the published page", async ({ page, context }) => {
   const h = await createPage();
@@ -44,11 +44,11 @@ test("agent reminder and each event poll point to the next continuous poll", asy
 test("first interactive publication requires a live listener", async () => {
   const h = await createPage();
   try {
-    const res = await (await requester()).put(`${h.api}/files/index.html`, { headers: {
-      Authorization: `Bearer ${h.token}`, "Content-Type": "text/html",
-    }, data: "<!doctype html><button>Tap</button>" });
-    expect(res.status()).toBe(428);
-    expect(await res.text()).toMatch(/listener_required|listen|poll/i);
+    const blob = await uploadAsset(h, "<!doctype html><button>Tap</button>");
+    const res = await agent(h, "/publications", "POST", { cid: "before-listener", expected_generations: {},
+      expected_head_revision: 0, entry: "index.html", files: [{ path: "index.html", blob_id: blob.id, type: "text/html" }] });
+    expect(res.status).toBe(428);
+    expect(JSON.stringify(res.data)).toMatch(/listener_required|listen|poll/i);
     await publish(h, "<button>Tap</button>");
   } finally { await deletePage(h); }
 });

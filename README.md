@@ -2,14 +2,14 @@
 
 Tendriller is an application-neutral engine for pages connected to an agent. The core provides authenticated pages, browser transport, shared state, events, blobs, streams, durable delivery, timers and publication lifecycle.
 
-**Contract 2 is a pre-release redesign.** New clients use explicit commands and authoritative scope generations. Application JSON is opaque. Existing prototypes must be rebuilt for this contract.
+**Contract 3 is the current pre-release contract.** New clients use explicit commands and authoritative scope generations. Application JSON is opaque. Existing prototypes must be rebuilt for this contract.
 
 ## Start here
 
 Read [agent.md](agent.md) for the generic service flow, [the browser API](docs/BROWSER_API.md) for `window.tendril`, and [the protocol](docs/PROTOCOL.md) for guarantees. Optional CLI, collectors, host bridges, preview, browser components, workflows and examples live in [werg/tendriller-contrib](https://github.com/werg/tendriller-contrib).
 
 - [Contrib release downloads](https://github.com/werg/tendriller-contrib/releases)
-- [Tested contrib catalog, 0.2.0-rc.3](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json)
+- [Tested contrib catalog, 0.3.0-rc.1](https://github.com/werg/tendriller-contrib/releases/download/v0.3.0-rc.1/catalog.json)
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Core SDK/runtime releases](https://github.com/werg/tendriller/releases)
 - [Architecture and ownership](docs/ARCHITECTURE.md)

@@ -5,9 +5,9 @@ import { sha256Hex } from "../src/ids";
 import { deleteTimer, nextDaily, runTimers, saveTimer } from "../src/timers";
 import { addEvent } from "../src/events";
 import { exportBundle } from "../src/portability";
-import { fileKey } from "../src/files";
+import { createVersion, fileKey } from "../src/files";
 import { KEEP_VERSIONS } from "../src/limits";
-import { api, apiJson, advance, inDO, PageClient, req, type Handle } from "./helpers";
+import { api, apiJson, advance, inDO, PageClient, publishTestFiles, req, uploadAgent, type Handle } from "./helpers";
 
 beforeAll(async () => {
   await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations"));
@@ -30,6 +30,11 @@ async function setup() {
   const page = (path: string, method = "GET", body?: unknown, url = handle.page_url, useCookie = cookie) => req(url + "_tendril/" + path, {
     method, headers: { Cookie: useCookie, Origin: new URL(url).origin, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { handle, account, cookie, origin, page };
+}
+async function currentHtml(h: Handle) {
+  const hash = await inDO(h.id, t => t.db.one<{ hash: string }>(
+    "SELECT hash FROM version_files WHERE version=? AND path='index.html'", t.db.get("current", 0))!.hash);
+  return (await env.FILES.get(`t/${h.id}/files/${hash}`))!.text();
 }
 async function listener(h: Handle) {
   const response = await api(h, "GET", "events/socket", undefined, { Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}` });
@@ -117,9 +122,8 @@ it("daily recurrence respects IANA time zones, DST gaps and repeated times", () 
 
 it("preserves context, restores bundles with rewritten media, and refuses stale publication", async () => {
   const { handle: h, page } = await setup(); const socket = await listener(h);
-  const blobResponse = await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" });
-  const blob = await blobResponse.json<any>(); expect(blobResponse.status).toBe(200);
-  await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blob/${blob.id}">Asset</a>` } });
+  const blob = await uploadAgent(h, "asset", "text/plain");
+  await publishTestFiles(h, { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blobs/${blob.id}">Asset</a>` } });
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { notebook: { asset: blob.id }, _device: { old: { secret: "do not copy" } } } });
   await apiJson(h, "PUT", "session", { purpose: "Observe the garden", current_task: "Compare leaves", open_questions: ["What changed?"], completed: [], decisions: [], last_handled_seq: 0 });
   expect((await api(h, "PUT", "session", { purpose: "Stale context", expected_revision: 0 })).status).toBe(409);
@@ -138,7 +142,7 @@ it("preserves context, restores bundles with rewritten media, and refuses stale 
 
 it("remix creates an independent unpublished copy and preserves the listener gate", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>A reusable tool</h1>" } });
+  await publishTestFiles(h, { files: { "index.html": "<h1>A reusable tool</h1>" } });
   const copy = await apiJson(h, "POST", "remix", { owner: "new-owner@example.com", name: "My new copy" }, 201);
   expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token); expect(copy.remix.staged).toBe(true);
   expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(428);
@@ -150,14 +154,14 @@ it("remix creates an independent unpublished copy and preserves the listener gat
 
 it("validates bundle paths before writing and blocks publishing without review", async () => {
   const { handle: h } = await setup();
-  const bundle = { format: "tendriller-bundle", version: 1, name: "Bad", files: [{ path: "../index.html", type: "text/html", base64: btoa("bad") }], media: [] };
+  const bundle = { format: "tendriller-bundle", version: 2, name: "Bad", files: [{ path: "../index.html", type: "text/html", base64: btoa("bad") }], media: [], shared_files: [] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(400);
   expect(await inDO(h.id, t => t.storageUsed())).toBe(0);
 });
 
 it("stages an unchanged bundle at the page storage limit", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Keep this page</h1>" } });
+  await publishTestFiles(h, { files: { "index.html": "<h1>Keep this page</h1>" } });
   const bundle = await apiJson(h, "GET", "bundle");
   await inDO(h.id, t => {
     const used = t.storageUsed();
@@ -174,9 +178,9 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   const media = Array.from({ length: 201 }, (_, i) => ({ id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32],
     type: "application/octet-stream", name: null, base64: "AA==" }));
-  const bundle = { format: "tendriller-bundle", version: 1, name: "Capture archive", files: [
+  const bundle = { format: "tendriller-bundle", version: 2, name: "Capture archive", files: [
     { path: "index.html", type: "text/html", base64: btoa("<h1>Archive</h1>") },
-  ], media };
+  ], media, shared_files: [] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   expect(await inDO(h.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
@@ -213,35 +217,40 @@ it.each(["cancel", "reschedule", "delete"])("honors a %s while an earlier timer 
 
 it("keeps prepared files through orphan cleanup and later publishes them", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  const bundle = { format: "tendriller-bundle", version: 1, name: "n".repeat(200), files: [
+  const bundle = { format: "tendriller-bundle", version: 2, name: "n".repeat(200), files: [
     { path: "index.html", type: "text/html", base64: btoa("<h1>Prepared yesterday</h1>") },
-  ], media: [] };
+  ], media: [], shared_files: [] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   await advance(h.id, 2 * 3600000);
   await inDO(h.id, t => t.pruneOrphanFiles(t.now()));
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Prepared yesterday");
+  expect(await currentHtml(h)).toContain("Prepared yesterday");
   socket.close();
 });
 
 it("protects a prepared hash when its old published version is pruned", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Restore this older page</h1>" } });
+  await publishTestFiles(h, { files: { "index.html": "<h1>Restore this older page</h1>" } });
   const bundle = await apiJson(h, "GET", "bundle");
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  for (let n = 0; n < KEEP_VERSIONS; n++) await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Revision ${n}</h1>` } });
+  for (let n = 0; n < KEEP_VERSIONS; n++) await inDO(h.id, async t => {
+    const bytes = new TextEncoder().encode(`<h1>Revision ${n}</h1>`);
+    await t.storeBlob(bytes.buffer as ArrayBuffer, "text/html", null, null, "agent");
+    await createVersion(t, new Map([["index.html", { path: "index.html", hash: await sha256Hex(bytes),
+      size: bytes.byteLength, type: "text/html" }]]), null, "test");
+  });
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Restore this older page");
+  expect(await currentHtml(h)).toContain("Restore this older page");
   socket.close();
 });
 
 it.each(["file", "media"])("refuses publication if prepared %s bytes are missing", async (missing) => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  const bundle = { format: "tendriller-bundle", version: 1, name: "Prepared asset", files: [
+  const bundle = { format: "tendriller-bundle", version: 2, name: "Prepared asset", files: [
     { path: "index.html", type: "text/html", base64: btoa("<h1>A prepared page</h1>") },
-  ], media: [{ id: "b_" + "a".repeat(20), type: "text/plain", name: "sample.txt", base64: btoa("sample") }] };
+  ], media: [{ id: "b_" + "a".repeat(20), type: "text/plain", name: "sample.txt", base64: btoa("sample") }], shared_files: [] };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   await inDO(h.id, async t => {
     const staged = t.db.get<any>("staged_bundle", null);
@@ -256,15 +265,15 @@ it.each(["file", "media"])("refuses publication if prepared %s bytes are missing
 
 it("exports one logical data snapshot while new captures arrive during media reads", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Notebook</h1>" } });
-  const original = await (await api(h, "PUT", "blobs", "old media", { "Content-Type": "text/plain" })).json<any>();
+  await publishTestFiles(h, { files: { "index.html": "<h1>Notebook</h1>" } });
+  const original = await uploadAgent(h, "old media", "text/plain");
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { asset: original.id } });
   await apiJson(h, "PUT", "session", { purpose: "Original context" });
   const bundle = await inDO(h.id, async t => {
     let changed = false;
     const exporting = { db: t.db, tid: t.tid, blobKey: (id: string) => t.blobKey(id), getState: () => t.getState(), env: { ...t.env, FILES: {
       get: async (key: string) => {
-        if (!changed && key.includes("/blobs/")) {
+        if (!changed && key === t.blobKey(original.id)) {
           changed = true;
           const next = await t.storeBlob(new TextEncoder().encode("new media").buffer as ArrayBuffer, "text/plain", "new.txt", null, "agent");
           t.db.set("state", { asset: next.id });
@@ -282,6 +291,36 @@ it("exports one logical data snapshot while new captures arrive during media rea
   expect(bundle.session?.purpose).toBe("Original context");
   expect((await apiJson(h, "GET", "state")).state.asset).not.toBe(original.id);
   socket.close();
+});
+
+it("restores shared file bytes with new blob IDs and rejects a stale staged file snapshot", async () => {
+  const { handle: source } = await setup(); const sourceSocket = await listener(source);
+  await publishTestFiles(source, { files: { "index.html": "<h1>Shared notes</h1>" } });
+  const original = await uploadAgent(source, "check the rigging", "text/plain");
+  await apiJson(source, "PUT", "file-refs", { cid: crypto.randomUUID(), expected_generations: {},
+    path: "notes/checklist.txt", expected_revision: 0, blob_id: original.id, type: "text/plain", name: "checklist.txt" });
+  const bundle = await apiJson(source, "GET", "bundle?include_data=true");
+  expect(bundle.version).toBe(2);
+  expect(bundle.shared_files).toEqual([{ path: "notes/checklist.txt", blob_id: original.id, name: "checklist.txt", type: "text/plain" }]);
+
+  const { handle: copy } = await setup(); const copySocket = await listener(copy);
+  await apiJson(copy, "PUT", "bundle", bundle, 202);
+  await apiJson(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 });
+  const restored = (await apiJson(copy, "GET", "file-refs/snapshot")).files[0];
+  expect(restored.path).toBe("notes/checklist.txt");
+  expect(restored.blob_id).not.toBe(original.id);
+  expect(await (await api(copy, "GET", `blobs/${restored.blob_id}`)).text()).toBe("check the rigging");
+  expect((await apiJson(copy, "GET", "file-refs/changes?after=0")).changes).toHaveLength(1);
+
+  await apiJson(copy, "PUT", "bundle", bundle, 202);
+  const changed = await uploadAgent(copy, "new checklist", "text/plain");
+  await apiJson(copy, "PUT", "file-refs", { cid: crypto.randomUUID(), expected_generations: {},
+    path: "notes/checklist.txt", expected_revision: restored.revision, blob_id: changed.id, type: "text/plain" });
+  const stale = await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 1 });
+  expect(stale.status).toBe(409);
+  expect((await stale.json<any>()).error.code).toBe("file_conflict");
+  expect((await apiJson(copy, "GET", "file-refs?path=notes%2Fchecklist.txt")).blob_id).toBe(changed.id);
+  sourceSocket.close(); copySocket.close();
 });
 
 it("keeps handled cursors valid and reports gaps after retained history disappears", async () => {

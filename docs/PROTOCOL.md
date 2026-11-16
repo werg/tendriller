@@ -1,6 +1,6 @@
 # Tendriller public protocol
 
-This is the sole supported **contract 2**. Executable schemas are published at `/contract/v2.json` and generated from `contract/index.mjs`. JSON errors have `{ "error": { "code": "snake_case", "message": "..." } }`. Timestamps are milliseconds since epoch unless a field explicitly says seconds.
+This is the sole supported **contract 3**. Executable schemas are published at `/contract/v3.json` and generated from `contract/index.mjs`. JSON errors have `{ "error": { "code": "snake_case", "message": "..." } }`. Timestamps are milliseconds since epoch unless a field explicitly says seconds.
 
 ## Identity and origins
 
@@ -41,7 +41,7 @@ Generic `POST A/events` and browser `send` accept a command envelope:
 
 ## Authoritative scopes and generations
 
-A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
+A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets include `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
 
 - `GET A/scopes` reads active descriptors.
 - `PUT A/scopes/<id>` registers or rebinds `{cid,expected_generations,paths,operations}`.
@@ -85,6 +85,12 @@ Before delivery or optimistic application, the runtime durably stores the comman
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
 
 ## Publications and browser assets
+
+`POST A/uploads` reserves an immutable blob by `cid`, SHA-256, size and type. Send exact bytes to `PUT A/uploads/<id>/content` when `upload_required` is true, then call `POST A/uploads/<id>/complete`. `GET A/blobs/<id>/info` returns verified metadata and retention reasons. Byte reads support `Range`. `PUT A/blobs/<id>/pin` changes explicit retention with a guarded command. A page capture uses the same route family under `P_tendril/` and a verified device.
+
+`GET A/file-refs/snapshot` reads active shared file references. `GET A/file-refs?path=<canonical path>` reads one current reference. `PUT` and `DELETE A/file-refs` use `expected_revision`, a stable `cid` and captured generation guards; `GET A/file-refs/changes?after=<cursor>` streams changes. Content remains in immutable blobs, and a reference updates atomically. Owner pages can use the corresponding `P_tendril/file-refs` routes.
+
+`GET A/publications` returns the current manifest head and `head_revision`. `POST A/publications` accepts a complete manifest of blob references, an HTML `entry`, `expected_head_revision`, `cid` and generation guards. A stale head fails rather than overwriting another publisher. `POST A/publications/rollback` selects a retained version under the same head check. Each accepted command has one durable receipt.
 
 Publishing files snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies.
 

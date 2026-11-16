@@ -74,9 +74,9 @@ outdated optimistic change is excluded when reconstructing the current view.
 Page captures normally expire 30 days after upload, including on resident tendrils. Upload responses and blob metadata expose:
 
 ```json
-{"retention":{"keep":false,"expires_at":1900000000000,"reason":"page_default"}}
+{"retention":{"expires_at":1900000000000,"reasons":["page_default"]}}
 ```
 
-Owners may select “Keep” during capture (`uploadEvent(..., {keep: true})`) or use `await tendril.setBlobRetention(id, {keep: true})` later. Kept captures have `expires_at: null` and count toward the existing storage quota. They remain until explicitly deleted or the tendril/account is deleted. Unpinning restores the original expiry, which may already be past. Agent assets and the install icon have retained policies identified by `reason`; making a page resident does not change capture retention.
+Owners may select “Keep” during capture (`uploadEvent(..., {keep: true})`) or use `await tendril.setBlobRetention(id, {keep: true})` later. Kept captures have `expires_at: null` and count toward the existing storage quota. They remain until explicitly deleted or the tendril/account is deleted. Unpinning restores the original expiry, which may already be past. Agent assets, the install icon, shared files and publication references contribute retention reasons; making a page resident does not change capture retention.
 
-Agent APIs: `GET A/blobs` and `GET A/blobs/<id>/info` return metadata and retention; `PATCH A/blobs/<id>` accepts `{keep: boolean}`. Page API: `GET/PATCH P_tendril/blob/<id>/retention`; only an authenticated owner can mutate it. A page upload may include `X-Tendril-Keep: true`, again only for the owner. Guests can upload ordinary captures but cannot extend their retention.
+Agent APIs: `GET A/blobs` and `GET A/blobs/<id>/info` return metadata and retention; `PUT A/blobs/<id>/pin` accepts a guarded `{cid,expected_generations,keep}` command. The page uses `PUT P_tendril/blobs/<id>/pin`; only an authenticated owner can mutate it. Browser uploads use `POST P_tendril/uploads`, an exact byte `PUT .../content`, then `POST .../complete`. Guests can upload ordinary captures but cannot extend their retention.

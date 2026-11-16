@@ -2,9 +2,11 @@
  * browsers, Workers and Node. Matching declarations are in index.d.mts. */
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
+import { blobSchemas } from "./blobs.mjs";
+export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
-export const CONTRACT_VERSION = 2;
-export const CORE_RELEASE = "0.2.0-rc.6";
+export const CONTRACT_VERSION = 3;
+export const CORE_RELEASE = "0.3.0-rc.1";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -51,7 +53,7 @@ const identifier = { type: "string", minLength: 1, maxLength: 200 };
 const scopeId = { type: "string", pattern: "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$" };
 const generationToken = { type: "string", minLength: 1, maxLength: 160 };
 const commandId = { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" };
-const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
+const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
 const generationMap = { type: "object", maxProperties: 128, propertyNames: scopeId, additionalProperties: generationToken };
 const guards = { cid: commandId, scope: scopeId, expected_generations: generationMap };
 const scopeDescriptor = object({ id: scopeId, generation: generationToken,
@@ -63,6 +65,7 @@ const workflowDescriptor = object({ id: identifier, interface_version: identifie
 const coreSchemas = {
   ...durabilitySchemas,
   ...streamSchemas,
+  ...blobSchemas,
   scopeId,
   scopeOperation,
   scopeBindings: object({paths: {type:"array",maxItems:128,items:path},operations:{type:"array",maxItems:128,items:scopeOperation}}, ["paths","operations"]),
@@ -73,7 +76,7 @@ const coreSchemas = {
   scopeWrite: object({ ...guards, paths: { type: "array", items: path }, operations: { type: "array", items: scopeOperation } }, ["cid", "expected_generations", "paths", "operations"]),
   command: object({ ...guards, data: {} }, ["cid", "expected_generations", "data"]),
   workflowDescriptor,
-  serviceDescriptor: object({ contract: { const: 2 }, core_release: identifier,
+  serviceDescriptor: object({ contract: { const: 3 }, core_release: identifier,
     workflows: { type: "array", items: workflowDescriptor }, limits: jsonObject,
   }, ["contract", "core_release", "workflows", "limits"]),
   error,
@@ -123,11 +126,13 @@ const coreSchemas = {
     timers: { type: "array", items: timer }, devices: { type: "array", items: deviceInfo },
     recent_activity: { type: "array", items: object({ ts: integer, kind: string, summary: string }, ["ts", "kind", "summary"]) },
   }, ["session", "revision", "version", "staged_remix", "pending_inputs", "timers", "devices", "recent_activity"]),
-  bundle: object({ format: { const: "tendriller-bundle" }, version: { const: 1 }, name: { type: "string", minLength: 1, maxLength: 200 },
+  bundle: object({ format: { const: "tendriller-bundle" }, version: { const: 2 }, name: { type: "string", minLength: 1, maxLength: 200 },
     files: { type: "array", minItems: 1, maxItems: 2000, items: object({ path: string, type: { type: "string", maxLength: 200 }, base64: string }, ["path", "type", "base64"]) },
     state: jsonObject, session,
     media: { type: "array", items: object({ id: blobReference.properties.id, type: { type: "string", maxLength: 200 }, name: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] }, base64: string }, ["id", "type", "name", "base64"]) },
-  }, ["format", "version", "name", "files", "media"]),
+    shared_files: { type: "array", maxItems: 1000, items: object({ path: string, blob_id: blobReference.properties.id,
+      name: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] }, type: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] } }, ["path", "blob_id", "name", "type"]) },
+  }, ["format", "version", "name", "files", "media", "shared_files"]),
   bundlePublish: object({ ...guards, expected_version: integer }, ["cid", "expected_generations", "expected_version"]),
   remix: object({ owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, name: { type: "string", maxLength: 200 }, include_data: boolean }, ["owner"]),
   remixPage: object({ name: { type: "string", maxLength: 200 }, include_data: boolean }),
@@ -155,8 +160,8 @@ export const schemas = Object.freeze({
 
 export const schemaDocument = Object.freeze({
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://tendriller.dev/contract/v2.json",
-  title: "Tendriller public contract v2",
+  $id: "https://tendriller.dev/contract/v3.json",
+  title: "Tendriller public contract v3",
   $defs: schemas,
 });
 
@@ -191,6 +196,7 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
     if (schema.minLength !== undefined && value.length < schema.minLength) issue(`Minimum length is ${schema.minLength}`);
     if (schema.maxLength !== undefined && value.length > schema.maxLength) issue(`Maximum length is ${schema.maxLength}`);
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) issue("Value does not match the required format");
+    if (schema["x-canonical-nfc"] && value.normalize("NFC") !== value) issue("Value must use canonical Unicode NFC");
   }
   if (typeof value === "number") {
     if (schema.minimum !== undefined && value < schema.minimum) issue(`Minimum is ${schema.minimum}`);

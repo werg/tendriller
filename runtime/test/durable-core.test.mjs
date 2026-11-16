@@ -51,12 +51,35 @@ async function environment({ database = new Database(), localStorage = storage()
   const timers = new Map(); let next = 0;
   const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
+  let stagedUpload;
   const globals = { window, document, localStorage, sessionStorage: storage(), indexedDB: database.indexedDB,
     crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, structuredClone, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
     location: { href: "https://fixture.test/page/", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", reload() {} },
     navigator: { onLine: online, userAgent: "Fixture", language: "en", userActivation: { isActive: false } }, screen: { width: 800, height: 600 },
     console: { log() {}, info() {}, warn() {}, error() {} }, queueMicrotask, ...clock,
-    fetch: async () => json({ id: "b_aaaaaaaaaaaaaaaaaaaa", url: "_tendril/blob/b_aaaaaaaaaaaaaaaaaaaa" }),
+    fetch: async (url, { method = "GET", body } = {}) => {
+      const path = new URL(url, "https://fixture.test").pathname;
+      const uploadId = "u_aaaaaaaaaaaaaaaaaaaa", blobId = "b_aaaaaaaaaaaaaaaaaaaa";
+      if (path === "/page/_tendril/uploads" && method === "POST") {
+        const input = JSON.parse(body);
+        stagedUpload = input;
+        assert.match(input.sha256, /^[a-f0-9]{64}$/);
+        assert.ok(Number.isSafeInteger(input.size));
+        return json({ id: uploadId, blob_id: blobId, sha256: input.sha256, size: input.size,
+          phase: "ready", upload_required: true, expires_at: Date.now() + 60_000 });
+      }
+      if (path === `/page/_tendril/uploads/${uploadId}/content` && method === "PUT") {
+        assert.ok(stagedUpload, "upload session must be started before PUT");
+        assert.equal(body.byteLength, stagedUpload.size);
+        const digest = await webcrypto.subtle.digest("SHA-256", body);
+        assert.equal([...new Uint8Array(digest)].map(n => n.toString(16).padStart(2, "0")).join(""), stagedUpload.sha256);
+        return json({ status: "received" });
+      }
+      if (path === `/page/_tendril/uploads/${uploadId}/complete` && method === "POST")
+        return json({ status: "completed", blob: { id: blobId, url: `_tendril/blobs/${blobId}`,
+          sha256: stagedUpload.sha256, size: stagedUpload.size, type: stagedUpload.type } });
+      throw new Error(`Unexpected upload test route: ${method} ${path}`);
+    },
   };
   runInNewContext(built.outputFiles[0].text, globals);
   const transport = globals.Runtime.createFixtureTransport(), sent = [];
@@ -159,8 +182,14 @@ test("capture completion uses original scope and generation after upload and rel
   void first.core.uploadEvent(new Blob(["capture bytes"]), { data: { type: "notebook.observation", session: "uninterpreted" }, scope: descriptor.id });
   await flush();
   assert.equal(first.sent.some(frame => frame.t === "capture_complete"), false);
-  await first.commit(); // original blob + semantic input become durable
-  await first.commit(); // blob upload receipt becomes durable before completion
+  await first.commit(); // original blob and semantic intent become durable
+  // WebCrypto digest and native Response.json() settle on later event-loop turns,
+  // not just microtasks. Commit each durable phase without assuming two ticks.
+  const deadline = Date.now() + 5000;
+  while (!first.sent.some(frame => frame.t === "capture_complete") && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await first.commit();
+  }
   const original = first.sent.find(frame => frame.t === "capture_complete");
   assert.ok(original);
   assert.equal(original.expected_generations[descriptor.id], "original");

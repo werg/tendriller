@@ -11,12 +11,12 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "TENDRIL", "class_name": "Tendril" },
+      { "name": "TENDRIL", "class_name": "TendrilV3" },
       { "name": "ADMISSION", "class_name": "Admission" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Tendril"] },
+    { "tag": "v1", "new_sqlite_classes": ["TendrilV3"] },
     { "tag": "v2", "new_sqlite_classes": ["Admission"] }
   ],
   "d1_databases": [{

@@ -7,7 +7,7 @@ import { api, apiJson, advance, create, inDO, req } from "./helpers";
 it("reads a whole latest snapshot, retaining the high-water cursor across empty and expired data", async () => {
   const h = await create({ listener: false });
   const client = createClient(h, { fetch: (input, init) => req(String(input), init) });
-  await client.streams.create({ name: "processes", durability: "durable", max_records: 1, max_age_seconds: 1 });
+  await client.streams.create({ name: "processes", durability: "durable", max_records: 1, max_age_seconds: 60 });
   expect(await client.streams.latest("processes")).toEqual({ stream: "processes", durability: "durable", record: null, cursor: 0 });
   const body = { records: [{ id: "a", type: "snapshot", data: { rows: [{ pid: 1 }, { pid: 2 }] } },
     { id: "b", type: "snapshot", data: { rows: [{ pid: 2 }] } }] };
@@ -22,7 +22,7 @@ it("reads a whole latest snapshot, retaining the high-water cursor across empty 
   const mcp = await apiJson(h, "POST", "mcp", { jsonrpc: "2.0", id: 1, method: "tools/call",
     params: { name: "latest_stream", arguments: { stream: "processes" } } });
   expect(mcp.result.structuredContent).toEqual(latest);
-  await advance(h.id, 2000);
+  await advance(h.id, 61000);
   expect(await client.streams.latest("processes")).toEqual({ stream: "processes", durability: "durable", record: null, cursor: 2 });
   await client.streams.append("processes", { records: [{ id: "c", type: "snapshot", data: { rows: [] } }] });
   expect((await client.streams.read("processes", { after: latest.cursor })).records[0].seq).toBe(3);

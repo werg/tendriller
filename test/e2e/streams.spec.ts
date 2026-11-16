@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { agent, deletePage, openClaimed, requester, SERVICE, OWNER, signInFixture, type Handle } from "./local-helpers";
+import { agent, deletePage, openClaimed, publishAssets, requester, SERVICE, OWNER, signInFixture, type Handle } from "./local-helpers";
 
 type StreamTestWindow = typeof window & {
   __streamNetwork: { blocked: boolean; sockets: Set<WebSocket> };
@@ -39,7 +39,7 @@ test("a passive dashboard replays training history and receives live samples fro
     await append("training.metrics", "step-1", { step: 1, loss: 2.4 });
     await append("gpu.live", "before-viewer", { percent: 50 });
     // No polling bridge or fake wake receiver is needed for dashboard publication.
-    expect((await agent(h, "/files", "POST", { files: { "index.html": `<!doctype html><html><head><meta charset="utf-8"><title>Training streams</title></head><body>
+    await publishAssets(h, { "index.html": `<!doctype html><html><head><meta charset="utf-8"><title>Training streams</title></head><body>
       <h1>Training</h1><pre id="history"></pre><output id="gpu">Waiting for live sample</output>
       <script>
       window.samples = []; window.errors = [];
@@ -49,7 +49,7 @@ test("a passive dashboard replays training history and receives live samples fro
       tendril.streams.subscribe('gpu.live', record => {
         document.querySelector('#gpu').textContent = String(record.data.percent);
       });
-      </script></body></html>` } })).status).toBe(200);
+      </script></body></html>` });
     await signInFixture(context); await openClaimed(page, h);
     await expect.poll(() => page.evaluate(() => (window as any).samples.length)).toBe(1);
     await expect(page.locator("#gpu")).toHaveText("Waiting for live sample");
