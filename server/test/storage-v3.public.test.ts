@@ -18,6 +18,14 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   const receipt = await apiJson(page, "POST", `uploads/${started.id}/complete`, {});
   expect(receipt.blob).toMatchObject({ id: started.blob_id, sha256, size: bytes.byteLength });
   expect((await apiJson(page, "POST", `uploads/${started.id}/complete`, {})).blob.id).toBe(started.blob_id);
+  // A matching digest does not authorize attesting different byte lengths on the deduplication path.
+  expect((await api(page, "POST", "uploads",
+    { ...intent, cid: "upload-field-note-wrong-size", size: bytes.byteLength + 1 })).status).toBe(409);
+  const reused = await apiJson(page, "POST", "uploads",
+    { ...intent, cid: "upload-field-note-reuse" }, 201);
+  expect(reused).toMatchObject({ sha256, size: bytes.byteLength, upload_required: false });
+  expect((await apiJson(page, "POST", `uploads/${reused.id}/complete`, {})).blob)
+    .toMatchObject({ sha256, size: bytes.byteLength });
   expect(await (await api(page, "GET", `blobs/${started.blob_id}`)).text()).toBe("field note α");
   const partial = await api(page, "GET", `blobs/${started.blob_id}`, undefined, { Range: "bytes=0-4" });
   expect(partial.status).toBe(206);
