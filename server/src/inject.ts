@@ -48,6 +48,9 @@ export function runtimeTags(cfg: InjectConfig): string {
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
+    // Every published page gets the per-origin install metadata. On iOS,
+    // installed Home Screen web apps can receive push when no tab is open.
+    `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest">` +
     `<script>window.__TENDRIL__=${scriptSafeJson(conf)};</script>` +
     `<script src="${attr(runtimeBase)}tendril.js"></script>`
   );
