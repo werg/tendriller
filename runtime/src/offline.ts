@@ -26,14 +26,14 @@ export class OfflineStore {
   private lsKey: string;
 
   constructor(private tendrilId: string) {
-    this.lsKey = `tendril:v2:${tendrilId}:snapshot`;
+    this.lsKey = `tendril:v3:${tendrilId}:snapshot`;
   }
 
   /** Opens IndexedDB and merges persisted outbox items (older) before items added in memory meanwhile. */
   async init(): Promise<Snapshot | null> {
     try {
       this.db = await new Promise<IDBDatabase>((res, rej) => {
-        const r = indexedDB.open(`tendril:v2:${this.tendrilId}`, 1);
+        const r = indexedDB.open(`tendril:v3:${this.tendrilId}`, 1);
         r.onupgradeneeded = () => {
           const db = r.result;
           if (!db.objectStoreNames.contains("outbox")) db.createObjectStore("outbox", { keyPath: "key" });
