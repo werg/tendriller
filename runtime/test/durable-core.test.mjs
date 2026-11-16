@@ -203,6 +203,25 @@ test("accepted application operations can be retried exactly on the same live co
   assert.equal(env.database.stores.outbox.size, 0);
 });
 
+test("concurrent exact application submissions share one delivery and both receive its durable receipt", async () => {
+  const calls = [];
+  let respond, settled = 0;
+  const receipt = { operationId: "concurrent", proposalId: "one-proposal", status: "final", outcome: "accepted", revision: "r1" };
+  const env = await environment({ fetcher: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Promise(resolve => { respond = resolve; });
+  } });
+  const program = { version: 1, expected_generations: {}, steps: [{ kind: "emit", topic: "tasks", payload: "reviewed" }] };
+  const one = env.core.application.backend.submit(program, { operationId: "concurrent" }).then(value => { settled++; return value; });
+  const two = env.core.application.backend.submit(program, { operationId: "concurrent" }).then(value => { settled++; return value; });
+  await flush(); await env.commit();
+  assert.equal(calls.length, 1);
+  respond(json(receipt)); await flush(); await env.commit(); await env.commit();
+  assert.equal(settled, 2, "both observers receive the same committed result");
+  assert.deepEqual(plain(await Promise.all([one, two])), [receipt, receipt]);
+  assert.equal(env.database.stores.outbox.size, 0);
+});
+
 test("host failures after a lost accepted application receipt remain unresolved across reload", async () => {
   const calls = [];
   let mode = "lost";

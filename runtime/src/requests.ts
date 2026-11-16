@@ -88,7 +88,8 @@ export function createRequests(host: RequestHost, clock: Clock = globalThis) {
 
 /** Waiting for a command receipt never owns or removes its durable outbox entry. */
 export function createCommandReceipts(connected: () => boolean, clock: Clock = globalThis) {
-  const waiters = new Map<string, (ack: any | null) => void>();
+  // An exact operation can have several callers, each with its own deadline.
+  const waiters = new Map<string, Set<(ack: any | null) => void>>();
   return {
     wait(cid: string): Promise<any | null> {
       return new Promise(resolve => {
@@ -98,16 +99,18 @@ export function createCommandReceipts(connected: () => boolean, clock: Clock = g
           if (done) return;
           done = true;
           clock.clearTimeout(timer);
-          waiters.delete(cid);
+          group.delete(finish);
+          if (!group.size) waiters.delete(cid);
           resolve(ack);
         };
-        waiters.set(cid, finish);
+        const group = waiters.get(cid) ?? new Set<(ack: any | null) => void>();
+        group.add(finish); waiters.set(cid, group);
         // A lost ACK must not leave the UI waiting indefinitely. Null means the
         // command remains queued, not that it failed or was processed by a consumer.
         timer = clock.setTimeout(() => finish(null), connected() ? 8000 : 3000);
       });
     },
-    acknowledge(cid: string, ack: any) { waiters.get(cid)?.(ack); },
-    disconnected() { for (const finish of [...waiters.values()]) finish(null); },
+    acknowledge(cid: string, ack: any) { for (const finish of [...waiters.get(cid) ?? []]) finish(ack); },
+    disconnected() { for (const group of [...waiters.values()]) for (const finish of [...group]) finish(null); },
   };
 }

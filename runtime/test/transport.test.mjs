@@ -170,6 +170,25 @@ test("command receipts time out without rejection and remain distinct from corre
   assert.equal(h.clock.jobs.size, 0);
 });
 
+test("concurrent exact command callers receive one receipt without replacing each other's waiters", async () => {
+  const h = requestsSetup(true), ack = { t: "ack", cid: "same", rev: 2 };
+  const one = h.receipts.wait(ack.cid), two = h.receipts.wait(ack.cid);
+  h.receipts.acknowledge(ack.cid, ack);
+  assert.equal(h.clock.jobs.size, 0);
+  assert.deepEqual(await Promise.all([one, two]), [ack, ack]);
+});
+
+test("an expired command waiter cannot remove a later exact caller's receipt", async () => {
+  const h = requestsSetup(true), ack = { t: "ack", cid: "same", rev: 2 };
+  const expired = h.receipts.wait(ack.cid);
+  h.clock.tick(1000);
+  const later = h.receipts.wait(ack.cid);
+  h.clock.tick(7000); assert.equal(await expired, null);
+  h.receipts.acknowledge(ack.cid, ack);
+  assert.equal(h.clock.jobs.size, 0);
+  assert.equal(await later, ack);
+});
+
 function connectionSetup({ failOpens = 0 } = {}) {
   const clock = new Clock(), sockets = [], messages = [], disconnects = [];
   let rev = 0, attempts = 0;

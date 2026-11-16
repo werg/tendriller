@@ -92,8 +92,9 @@ authentication/routing failure, establishes no rejection: an earlier submission
 may already have committed. Keep its original program queued for receipt recovery.
 
 Allocate the operation ID before submitting and keep the reviewed inputs with it.
-Retries use that same ID and original complete program. Reusing an ID for different
-contents is a conflict. Do not rewrite an old operation's grant, scope, generation,
+Retries use that same ID and original complete program. Concurrent callers waiting
+for the same operation each receive its durable receipt; one caller's timeout
+cannot cancel another caller's wait. Reusing an ID for different contents is a conflict. Do not rewrite an old operation's grant, scope, generation,
 conditions, or message identity to make it pass after a reset.
 
 ## Events, views, and consumer checkpoints
