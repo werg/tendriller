@@ -47,10 +47,22 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
     core.raw({ t: "sensor_usage", active });
     void describeCapabilities(active).then(report => core.bus.emit("capabilities", report));
   };
-  const offSensors = tracker.onChange(sensorChanged);
+  let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
   core.bus.on("connect", sensorChanged);
-  const offCapabilities = observeCapabilities(() => tracker.active(), report => core.bus.emit("capabilities", report));
-  window.addEventListener("pagehide", () => { offCapabilities(); offSensors(); }, { once: true });
+  const observe = () => observeCapabilities(() => tracker.active(), report => core.bus.emit("capabilities", report));
+  let offCapabilities: (() => void) | null = observe();
+  // BFCache restores the same JavaScript realm without running startRuntime again.
+  // Suspend observation while away, then reattach and resynchronize the utility.
+  window.addEventListener("pagehide", () => {
+    offCapabilities?.(); offCapabilities = null;
+    offSensors?.(); offSensors = null;
+  });
+  window.addEventListener("pageshow", event => {
+    if (!event.persisted) return;
+    offSensors ??= tracker.onChange(sensorChanged);
+    offCapabilities ??= observe();
+    sensorChanged();
+  });
   const api: RuntimeApi = {
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
