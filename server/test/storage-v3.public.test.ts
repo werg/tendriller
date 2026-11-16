@@ -63,7 +63,9 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   const deleted = await apiJson(page, "DELETE", "file-refs", { cid: "file-note-2", expected_generations: {},
     path: "notes/note.txt", expected_revision: 1 });
   expect(deleted.file.blob_id).toBeNull();
-  expect((await api(page, "GET", "file-refs?path=notes%2Fnote.txt")).status).toBe(404);
+  expect(await apiJson(page, "GET", "file-refs?path=notes%2Fnote.txt")).toMatchObject({
+    path: "notes/note.txt", revision: 2, blob_id: null,
+  });
 });
 
 it("publishes complete blob manifests with head CAS and replays the same command", async () => {
