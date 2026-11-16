@@ -97,6 +97,31 @@ test("headless replies expose routing without speaking or imposing application U
   expect(mock.messages(t, "say_rendered")[0].message_id).toBe("visible-id");
 });
 
+test("a BFCache return restores live sensor reporting without remounting the authored page", async ({ page }) => {
+  const t = mock.create();
+  await open(page, t);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.sensorUpdates = [];
+    w.tendril.sensors.on((active: string[]) => w.sensorUpdates.push([...active]));
+    w.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    w.motionListener = () => {};
+    w.addEventListener("devicemotion", w.motionListener);
+  });
+  // Monitoring is detached while the document is in the page cache.
+  await page.waitForTimeout(40);
+  expect(await page.evaluate(() => (window as any).sensorUpdates)).toEqual([]);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates.at(-1))).toEqual(["motion"]);
+  await expect(page.getByRole("button", { name: "Stop Motion" })).toBeVisible();
+  await page.evaluate(() => {
+    const w = window as any;
+    w.removeEventListener("devicemotion", w.motionListener);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates.at(-1))).toEqual([]);
+  await expect(page.getByRole("button", { name: /Stop/ })).toBeHidden();
+});
+
 test("window.tendril exists synchronously; hello and welcome", async ({ page }) => {
   const t = mock.create({
     html: `<script>
