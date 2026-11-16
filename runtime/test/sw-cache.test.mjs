@@ -172,6 +172,16 @@ test("cleanup removes a publication only after all its clients leave", async () 
   assert.equal(sw.stores.has(cacheName("2")), true);
 });
 
+test("cleanup deletes orphaned publication caches after an interrupted metadata write", async () => {
+  const a = release("1"), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  await sw.caches.open(cacheName("orphan"));
+  assert.equal(sw.stores.has(cacheName("orphan")), true);
+  await sw.install();
+  assert.equal(sw.stores.has(cacheName("orphan")), false);
+  assert.equal(sw.stores.has(cacheName("1")), true, "active publication remains retained");
+});
+
 test("unannounced active clients prevent cleanup until their publication is known", async () => {
   const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);
   await sw.install(); sw.clients.set("unknown", scope);
