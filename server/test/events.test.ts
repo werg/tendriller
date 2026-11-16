@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { advance, api, apiJson, create, inDO, PageClient, req, runAlarm, sleep } from "./helpers";
+import { advance, api, apiJson, publishFilesJson, create, inDO, PageClient, req, runAlarm, sleep } from "./helpers";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -183,7 +183,7 @@ describe("page-wake cap", () => {
   it("version_failed wakes regardless of the cap", async () => {
     const { h, page } = await setup();
     await apiJson(h, "PUT", "wake", { budget: { page_streak: 0 } });
-    await apiJson(h, "PUT", "files/index.html", "<p>x</p>");
+    await publishFilesJson(h, { "index.html": "<p>x</p>" });
     page.send({ t: "health", version: 1, visible: true, ok: false, errors: ["e"] });
     await page.request({ t: "versions" });
     const r = await apiJson(h, "GET", "events");
