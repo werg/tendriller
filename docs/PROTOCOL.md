@@ -166,6 +166,17 @@ Before delivery or optimistic application, the runtime durably stores the comman
 
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
 
+For acknowledged browser state and `send` commands, including conversation
+instructions, the original server outcome is a durable phase of the existing
+local outbox row. Terminal result notifications follow committed removal of
+that row. Storage failure during settlement keeps the command unresolved; a
+saved outcome resumes local cleanup without resending the mutation after
+reload. This also prevents an uncached authority or rate-limit rejection from
+later becoming a fresh server decision after the page reported it as terminal.
+An outcome that could not be saved before interruption remains uncertain and
+may replay its unchanged command. Accepted state outcomes still require a full
+state resynchronization when a newer delta arrived before their own ACK.
+
 Admitted browser state results include their command `cid`. `state.pending()`
 and `state_queue` expose detached original commands from the existing durable
 outbox, and `state_result` carries the original normalized operations and guards

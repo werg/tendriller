@@ -25,15 +25,26 @@ Optional voice types and code are separate exports.
 
 | Status | Meaning | Application behavior |
 | --- | --- | --- |
-| `queued` | The command is durably stored locally; no acceptance has arrived. | Show pending work. Preserve recoverable text and listen for the later result. |
+| `queued` | The command is durably stored locally; delivery or local outcome cleanup is still unresolved. | Show pending work. Preserve recoverable text and listen for the later result. |
 | `accepted` | The service accepted the command; `seq` identifies its event when supplied. | Show acceptance without claiming an agent completed the task. |
 | `rejected` | Storage or authority checks failed; `error` and `message` explain why. | Keep the person's text and offer explicit correction/retry. |
 
 `conversation_result` emits the same `cid`, `text`, and status at durable queuing
 and at terminal acknowledgement, including a rejection after the send promise
-already returned `queued`. A local storage failure returns `rejected` and never
-claims that input was saved. Two identical text submissions have different IDs.
+already returned `queued`. A failure to save the initial command returns
+`rejected` and never claims that input was saved. Two identical text submissions have different IDs.
 Server echoes reconcile by command/device identity rather than matching text.
+
+State writes, `send`, and `conversation.send` save the first received server
+outcome alongside the original command before removing its durable outbox row.
+Their terminal result and result event follow committed removal. A failed
+outcome write or deletion keeps admitted work `queued`; the current runtime
+retries local cleanup without requesting a new server decision. Reload also
+finishes a saved outcome locally, even when current authority would give a
+different answer. If the outcome itself could not be saved before reload, the
+command remains unresolved and may replay with its original ID and guards; no
+terminal result was promised. These result events are live notifications, not
+a retained history of every terminal outcome.
 
 ```js
 const draft = document.querySelector("textarea");
@@ -123,8 +134,11 @@ const stopReceipts = tendril.on("state_result", receipt => {
 });
 ```
 
-These rendering functions belong to the page. Commands leave `pending()` after a
-terminal receipt; this is not a retained rejection history. Keep recoverable
+These rendering functions belong to the page. Commands leave `pending()` after
+their outcome and removal have committed locally. The list can therefore still
+show `queued` while a known server outcome waits for local cleanup. A confirmed
+state update may already be visible during that interval; use the correlated
+result for command completion. This is not a retained rejection history. Keep recoverable
 unsent or rejected text according to the page's draft policy. A failed local
 admission returns `rejected` without a durable `cid`; its `state_result` may carry
 an allocated attempt ID for correlation, but it never appears in the queue.

@@ -123,6 +123,21 @@ null, conflict, retry and transaction semantics.
 
 See the full [browser API reference](https://tendriller.dev/docs/BROWSER_API.md) for `tendril.on`, stream reads, `latest`, subscriptions, publishing, state and captures. In browser code, `tendril.send(data,{scope})`, `tendril.uploadEvent(...)`, and asynchronous state operations capture and durably store the required preconditions before optimistic effects. Await the returned result and distinguish accepted, queued and rejected work. Reconnection retains the original command meaning.
 
+## Schedule durable work
+
+Use browser `tendril.timers.create/update/remove` for durable timer commands and
+`timers.pending()` plus queue/result events for restored intent. The runtime
+owns command IDs; never call create again merely to retry queued work. Read
+current schedules with `timers.list()` and occurrence history with `history()`.
+Agent SDK callers use `createTimer`, `updateTimer`, and `deleteTimer`, retaining
+their explicit `cid` and `expected_generations`. Updates/deletions require the
+reviewed `expected_revision`; the CLI requires `--revision`. Exact retries keep
+the original accepted receipt or classified domain rejection. Review changed
+conditions before creating a new command. An accepted historical receipt is
+separate from current timer state or successful notification delivery. See
+[timer semantics](docs/EXPERIENCES.md#timers-that-survive-a-closed-page) and the
+[browser timer API](docs/BROWSER_API.md#durable-timers).
+
 ## Stream read endpoints
 
 With the private bearer token, `GET A/streams` lists streams; `GET A/streams/<name>` describes one; `GET A/streams/<name>/records?after=0&limit=100` reads a durable replay page with gap metadata; and `GET A/streams/<name>/latest` returns `{record,cursor}` for a **durable** stream (record may be `null`). Use the response cursor to subscribe without a read/subscribe race. `POST A/streams` creates streams; `POST A/streams/<name>/records` appends; `DELETE A/streams/<name>/records?through=N` trims explicitly. Producers have scoped `A/producers` management routes. Ephemeral streams are live-only. See [STREAMS.md](https://tendriller.dev/docs/STREAMS.md) for policy and retention sizing.

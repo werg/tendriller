@@ -1,13 +1,13 @@
 # Tendriller
 
-Tendriller connects an authenticated page to an agent. Core supplies reliable mechanisms: shared state, events, streams, captures, durable commands, publication identity and explicit trusted server extensions. The page owns its interface, application data and ordinary web dependencies.
+Tendriller connects an authenticated page to an agent. Core supplies reliable mechanisms: conditional shared-state transactions, events, streams, captures, durable timer commands, publication identity and explicit trusted server extensions. The page owns its interface, application data and ordinary web dependencies.
 
 Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
 
 ## Start here
 
 - [Agent guide](agent.md): create a page, establish delivery and publish complete files.
-- [Browser API](docs/BROWSER_API.md): transport, conversation, state, streams, captures and explicit device features.
+- [Browser API](docs/BROWSER_API.md): transport, conversation, coherent state snapshots, conditional writes, durable timers, streams, captures and explicit device features.
 - [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
 - [Operational tools](docs/tools/CLI.md): optional core-owned publishing, preview, collectors and host bridges.
 - [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.

@@ -5,7 +5,7 @@ import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
 import type { ConversationResult, OperationOptions, PendingStateCommand, PendingTimerCommand, ScopeDescriptor, ServiceDescriptor, StateResult, StateWriteOptions, TimerIntent, TimerMutationResult } from "../../contract/index.mjs";
-import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError } from "../../contract/state.mjs";
+import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError, StateInputError } from "../../contract/state.mjs";
 import type { NormalizedStateChecks } from "../../contract/state.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
@@ -84,6 +84,10 @@ export function createCore(cfg: TendrilConfig): Internal {
   let savingState = 0;
   let pendingState: PendingState[] = [];
   let transcript: TranscriptEntry[] = [];
+  // A received ACK is first saved in its original outbox row. Memory bridges a
+  // failed phase write; only committed cleanup can publish a terminal result.
+  const commandOutcomes = new Map<string, any>();
+  const reconciledStateAcks = new Set<string>();
 
   const snap = store.loadSnapshotSync();
   if (snap) {
@@ -97,12 +101,12 @@ export function createCore(cfg: TendrilConfig): Internal {
     local = clone(confirmed);
     // Old work stays durable and keeps its original generation until a receipt
     // arrives, but it must not cover a newer session received from the server.
-    for (const p of pendingState) if (!conditional(p) && matchesContext(scopes, p, "state", p.ops)) {
+    for (const p of pendingState) if (!commandOutcomes.has(p.cid) && !conditional(p) && matchesContext(scopes, p, "state", p.ops)) {
       try { local = applyOps(local, p.ops); }
       catch (error) {
         // A remote parent replacement can make an old path incompatible. Keep
         // the original command for its receipt, without hiding newer authority.
-        if (!(error instanceof StatePathError)) throw error;
+        if (!(error instanceof StatePathError) && !(error instanceof StateInputError)) throw error;
       }
     }
   };
@@ -235,6 +239,8 @@ export function createCore(cfg: TendrilConfig): Internal {
   // A receipt first becomes a durable outbox phase, then the command is removed.
   // Memory only bridges failed phase writes; it never implies saved completion.
   const timerOutcomes = new Map<string, TimerTerminalResult>();
+  const settlingCommands = new Set<string>();
+  const commandRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let welcome: any = null;
   let presence: Presence | null = null;
 
@@ -361,6 +367,87 @@ export function createCore(cfg: TendrilConfig): Internal {
     return store.has(item.cid) ? item.msg.uploaded : null;
   };
 
+  const hasCommandAck = (item: OutboxItem) => item.msg.t === "state" || item.msg.t === "send";
+  const settleCommandAck = async (item: OutboxItem): Promise<void> => {
+    if (settlingCommands.has(item.cid) || !store.has(item.cid)) return;
+    const ack = item.msg.outcome || commandOutcomes.get(item.cid);
+    if (!ack) return;
+    settlingCommands.add(item.cid);
+    try {
+      if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(ack) });
+      const p = pendingState.find(value => value.cid === item.cid);
+      if (p && !reconciledStateAcks.has(item.cid)) {
+        if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > fullStateRev && ack.rev <= rev) {
+          // N+1 can arrive before our ACK for N. Save that ACK, then obtain the
+          // complete state; its old operations must never cover newer values.
+          connection.close(4000, "state resync");
+          return;
+        }
+        const before = JSON.stringify(local);
+        if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
+          try { confirmed = applyOps(confirmed, p.ops); }
+          catch (error) {
+            if (!(error instanceof StatePathError)) throw error;
+            connection.close(4000, "state resync");
+            return;
+          }
+          rev = ack.rev;
+        }
+        // This authoritative update is applied once, even if local deletion
+        // needs retries while later state broadcasts continue to arrive.
+        reconciledStateAcks.add(item.cid);
+        rebuild();
+        if (JSON.stringify(local) !== before) emitState([], "server");
+        persistSoon();
+      }
+      await store.removeDurable(item.cid);
+      const sent = item.msg;
+      if (p) {
+        pendingState = pendingState.filter(value => value.cid !== item.cid);
+        bus.emit("state_result", { cid: p.cid, ops: p.ops, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(ack.error
+          ? stateRejection(ack)
+          : { status: "accepted", rev: ack.rev }) });
+        stateQueueChanged();
+        if (ack.error) emitState([], "rejected");
+        persistSoon();
+      }
+      if (sent.t === "send" && sent.kind !== "instruction") {
+        const result: SendResult = ack.error
+          ? { status: "rejected", error: String(ack.error?.code || ack.error),
+            message: ack.message || ack.error?.message || "The input was rejected. Please try again." }
+          : { status: "accepted", seq: ack.seq };
+        bus.emit("send_result", clone({ cid: item.cid, scope: sent.scope, expected_generations: sent.expected_generations, data: sent.data, ...result }));
+      }
+      if (sent.t === "send" && sent.kind === "instruction") {
+        const mine = transcript.find(entry => entry.cid === item.cid && entry.device === device.id);
+        const result: ConversationResult = ack.error
+          ? { cid: item.cid, status: "rejected", error: String(ack.error?.code || ack.error),
+            message: ack.message || ack.error?.message || "Message rejected. Edit or retry the retained text." }
+          : { cid: item.cid, status: "accepted", seq: ack.seq };
+        if (mine) { Object.assign(mine, result); persistSoon(); bus.emit("transcript", clone(mine)); }
+        bus.emit("conversation_result", { ...result, text: sent.text });
+      }
+      commandOutcomes.delete(item.cid);
+      reconciledStateAcks.delete(item.cid);
+      const retry = commandRetryTimers.get(item.cid);
+      if (retry) clearTimeout(retry);
+      commandRetryTimers.delete(item.cid);
+      requests.receive(clone(ack));
+      receipts.acknowledge(item.cid, clone(ack));
+    } catch {
+      // Neither a failed phase write nor a failed deletion authorizes a new
+      // network decision. Keep the known ACK in memory and retry local storage.
+      if (store.has(item.cid) && !commandRetryTimers.has(item.cid)) {
+        commandRetryTimers.set(item.cid, setTimeout(() => {
+          commandRetryTimers.delete(item.cid);
+          void settleCommandAck(item);
+        }, 5000));
+      }
+    } finally {
+      settlingCommands.delete(item.cid);
+    }
+  };
+
   let pumping = false;
   const pump = async () => {
     if (pumping || !connection.connected) return;
@@ -391,6 +478,10 @@ export function createCore(cfg: TendrilConfig): Internal {
             retryTimer(item, error);
             break;
           }
+          continue;
+        }
+        if (hasCommandAck(item) && (item.msg.outcome || commandOutcomes.has(item.cid))) {
+          await settleCommandAck(item);
           continue;
         }
         if (item.msg.t === "upload_event") {
@@ -609,7 +700,8 @@ export function createCore(cfg: TendrilConfig): Internal {
       m = { ...m, t: "ack", error: m.code || "rejected" };
     }
     // Replies correlated by cid.
-    if (requests.receive(m) && m.t !== "ack") return;
+    const durableAck = m.t === "ack" && store.items.some(item => item.cid === m.cid && hasCommandAck(item));
+    if (!durableAck && requests.receive(m) && m.t !== "ack") return;
     switch (m.t) {
       case "stream_record":
         bus.emit("stream_record", m.record);
@@ -661,61 +753,16 @@ export function createCore(cfg: TendrilConfig): Internal {
           }
           break;
         }
-        const sent = m.cid ? store.items.find((item) => item.cid === m.cid)?.msg : null;
-        const idx = pendingState.findIndex((p) => p.cid === m.cid);
-        if (idx >= 0) {
-          if (!m.error && pendingState[idx].ops.length && typeof m.rev === "number" && m.rev > fullStateRev && m.rev <= rev) {
-            // Different sockets can broadcast N+1 before this socket gets its
-            // ack for N. A delta does not include our write, and reapplying N on
-            // top could overwrite N+1. Keep the item until a reconnect supplies
-            // the full state; its cached ack is then covered by fullStateRev.
-            connection.close(4000, "state resync");
-            break;
-          }
-          const before = JSON.stringify(local);
-          const p = pendingState[idx];
-          // A reconnect may install a newer full snapshot before replay returns
-          // a cached success for this cid. Its old ops are already accounted for
-          // by that snapshot; applying them again can resurrect archived data.
-          if (!m.error && p.ops.length && typeof m.rev === "number" && m.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
-            try { confirmed = applyOps(confirmed, p.ops); }
-            catch (error) {
-              if (!(error instanceof StatePathError)) throw error;
-              connection.close(4000, "state resync");
-              break;
-            }
-            rev = m.rev;
-          }
-          pendingState.splice(idx, 1);
-          rebuild();
-          store.remove(p.cid);
-          bus.emit("state_result", { cid: p.cid, ops: p.ops, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(m.error
-            ? stateRejection(m)
-            : { status: "accepted", rev: m.rev }) });
-          stateQueueChanged();
-          if (m.error) emitState([], "rejected");
-          else if (JSON.stringify(local) !== before) emitState([], "server");
-          persistSoon();
+        const item = m.cid ? store.items.find(value => value.cid === m.cid) : undefined;
+        if (item && hasCommandAck(item)) {
+          // Preserve the first received outcome even if the server does not
+          // cache this rejection and a later attempt would be allowed.
+          if (!commandOutcomes.has(item.cid)) commandOutcomes.set(item.cid, clone(item.msg.outcome || m));
+          sentThisConn.add(item.cid);
+          void settleCommandAck(item);
+          break;
         }
-        if (sent?.t === "send" && sent.kind !== "instruction") {
-          const result: SendResult = m.error
-            ? { status: "rejected", error: String(m.error?.code || m.error),
-              message: m.message || m.error?.message || "The input was rejected. Please try again." }
-            : { status: "accepted", seq: m.seq };
-          // Replayed inputs no longer have their original promise. Keep the input
-          // context in the receipt so pages can reconcile their own durable cards.
-          bus.emit("send_result", { cid: m.cid, scope: sent.scope, expected_generations: sent.expected_generations, data: sent.data, ...result });
-        }
-        if (m.cid && idx < 0) store.remove(m.cid);
-        if (sent?.t === "send" && sent.kind === "instruction") {
-          const mine = transcript.find(entry => entry.cid === m.cid && entry.device === device.id);
-          const result: ConversationResult = m.error
-            ? { cid: m.cid, status: "rejected", error: String(m.error?.code || m.error),
-              message: m.message || m.error?.message || "Message rejected. Edit or retry the retained text." }
-            : { cid: m.cid, status: "accepted", seq: m.seq };
-          if (mine) { Object.assign(mine, result); persistSoon(); bus.emit("transcript", clone(mine)); }
-          bus.emit("conversation_result", { ...result, text: sent.text });
-        }
+        if (m.cid) store.remove(m.cid);
         receipts.acknowledge(m.cid, m);
         break;
       }
@@ -990,6 +1037,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (!transcript.length && Array.isArray(idbSnap.transcript)) transcript = idbSnap.transcript;
     }
     for (const item of store.items) {
+      if (hasCommandAck(item) && item.msg.outcome) commandOutcomes.set(item.cid, clone(item.msg.outcome));
       if (item.msg.t !== "send" || item.msg.kind !== "instruction") continue;
       if (!transcript.some(entry => entry.cid === item.cid && entry.device === device.id)) {
         transcript.push({ ts: Math.floor(item.key / 1000), from: "user", text: item.msg.text,
