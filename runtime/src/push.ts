@@ -46,7 +46,8 @@ export function setupPush(core: Core): PushWithReason {
   const supported = typeof window !== "undefined" && "PushManager" in window && "serviceWorker" in navigator && "Notification" in window;
 
   let staticReason: string | undefined;
-  if (!vapid) staticReason = "Notifications are not set up on this server.";
+  if (core.config.application?.kind === "peer") staticReason = "Peer application notifications are owned by the selected application backend.";
+  else if (!vapid) staticReason = "Notifications are not set up on this server.";
   else if (isIOS() && !isStandalone()) staticReason = IOS_REASON;
   else if (!supported) staticReason = "This browser does not support notifications.";
 
@@ -77,7 +78,7 @@ export function setupPush(core: Core): PushWithReason {
     return regPromise;
   };
 
-  const vapidBytes = vapid ? b64urlToBytes(vapid) : null;
+  const vapidBytes = !staticReason && vapid ? b64urlToBytes(vapid) : null;
 
   async function currentSub(): Promise<PushSubscription | null> {
     const r = await findReg();

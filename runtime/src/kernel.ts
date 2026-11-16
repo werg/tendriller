@@ -1,6 +1,7 @@
 import { documentUrl, validateDocumentContext } from "./document";
 // Importing this module mounts nothing and requests no device permissions.
-// startRuntime creates one page connection. A page owns all application UI.
+// Hosted applications own one page connection. Peer applications use only their
+// selected backend and explicit host operations. A page owns all application UI.
 import { createCore } from "./core";
 import { setupPush } from "./push";
 import { describeCapabilities, observeCapabilities } from "./capabilities";
@@ -10,23 +11,19 @@ import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi } from "../../contract/index.mjs";
 
-function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): void {
+async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<void> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;
-  const register = async () => {
-    if ((window as any).__TENDRIL_NO_SW__) return;
-    try {
-      const registration = await navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base });
-      // Blocked or unavailable support must not leave callbacks holding no registration.
-      if (!registration) return;
-      const announce = () => (registration.active || registration.waiting || registration.installing)?.postMessage({ t: "publication", page: cfg.id, publication: cfg.publication });
-      core.bus.on("welcome", announce);
-      navigator.serviceWorker.addEventListener("controllerchange", announce);
-      navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") announce(); });
-      announce();
-    } catch (error) { console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error); }
-  };
-  if (document.readyState === "complete") setTimeout(register, 0);
-  else window.addEventListener("load", register, { once: true });
+  if ((window as any).__TENDRIL_NO_SW__) return;
+  try {
+    const registration = await navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base });
+    // Blocked or unavailable support must not leave callbacks holding no registration.
+    if (!registration) return;
+    const announce = () => (registration.active || registration.waiting || registration.installing)?.postMessage({ t: "publication", page: cfg.id, publication: cfg.publication });
+    core.bus.on("welcome", announce);
+    navigator.serviceWorker.addEventListener("controllerchange", announce);
+    navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") announce(); });
+    announce();
+  } catch (error) { console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error); }
 }
 
 export function startRuntime(cfg: TendrilConfig, options: { application?: import("../../contract/application.mjs").ApplicationBackend } = {}): RuntimeApi {
@@ -37,6 +34,9 @@ export function startRuntime(cfg: TendrilConfig, options: { application?: import
     if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
   }
   const core = createCore(cfg, options.application);
+  const peerApplication = cfg.application?.kind === "peer";
+  let registration: Promise<void> | undefined;
+  const registerOffline = () => registration ??= registerServiceWorker(cfg, core);
   const tracker = installSensorWrappers();
   const notifications = setupPush(core);
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null,
@@ -46,7 +46,7 @@ export function startRuntime(cfg: TendrilConfig, options: { application?: import
   const sensorChanged = () => {
     const status = tracker.status();
     core.bus.emit("sensors", status);
-    core.raw({ t: "sensor_usage", active: status.active });
+    if (!peerApplication) core.raw({ t: "sensor_usage", active: status.active });
     capabilityObserver?.refresh();
   };
   let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
@@ -85,7 +85,7 @@ export function startRuntime(cfg: TendrilConfig, options: { application?: import
     get connected() { return core.connected; },
     get presence() { return core.presence ? { ...core.presence } : null; },
     identity,
-    publication: { saveOffline: () => savePublicationOffline(cfg.base, cfg.publication) },
+    publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); } },
     assetUrl(path) {
       if (!path || /[?#\\]/.test(path) || path.startsWith("/") || /^[a-z]+:/i.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || decodeURIComponent(path) !== path)
         throw new TypeError("Runtime assets require an unencoded relative path");
@@ -102,6 +102,11 @@ export function startRuntime(cfg: TendrilConfig, options: { application?: import
     },
     notifications,
   };
-  registerServiceWorker(cfg, core);
+  // Saving a peer publication is an explicit host operation; loading and using
+  // the application must not trigger hidden service-worker fetches or updates.
+  if (!peerApplication) {
+    if (document.readyState === "complete") setTimeout(registerOffline, 0);
+    else window.addEventListener("load", registerOffline, { once: true });
+  }
   return Object.freeze(api);
 }

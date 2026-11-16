@@ -150,9 +150,10 @@ async function environment({ database = new Database(), localStorage = storage()
 async function commitAck(env) { await flush(); await env.commit(); await env.commit(); }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
-test("peer pages select one backend and never open or deliver a Cloudflare application outbox", async () => {
+test("peer pages select one backend without opening a host socket or outbox", async () => {
   const env = await environment({ configuration: { application: { kind: "peer", id: "history-one" } } });
-  assert.deepEqual(env.database.opened, ["tendril:v3:page:host"]);
+  assert.deepEqual(env.database.opened, []);
+  assert.deepEqual(env.sent, []);
   assert.throws(() => env.core.application.backend, { code: "backend_unavailable" });
   await assert.rejects(env.core.send({ type: "task" }), { code: "application_backend" });
   assert.throws(() => env.core.state.apply([{ op: "set", path: ["task"], value: 1 }]), { code: "application_backend" });
@@ -163,7 +164,7 @@ test("peer pages select one backend and never open or deliver a Cloudflare appli
   await backend.submit({ exact: "proposal" }, { operationId: "original" });
   assert.equal(authored.length, 1);
   assert.equal(env.database.stores.outbox.size, 0);
-  assert.equal(env.sent.filter(message => ["send", "state", "application"].includes(message.t)).length, 0);
+  assert.deepEqual(env.sent, []);
   assert.throws(() => env.core.application.install(backend), { code: "backend_already_selected" });
 });
 

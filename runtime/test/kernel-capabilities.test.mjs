@@ -16,7 +16,7 @@ const compiled = await build({ entryPoints: [new URL('../src/kernel.ts', import.
 });
 const settle = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
 
-async function environment() {
+async function environment({ peer = false } = {}) {
   const listeners = new Map(), sensorListeners = new Set(), reports = [], sensorReports = [], sensorUsage = [], timers = new Map();
   let active = [], pending = [], timerId = 0, pendingCamera;
   const bus = {
@@ -39,7 +39,8 @@ async function environment() {
     } },
   };
   runInNewContext(compiled.outputFiles[0].text, context);
-  const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null });
+  const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null,
+    ...(peer ? { application: { kind: 'peer', id: 'history' } } : {}) });
   await settle();
   const flushTimers = () => { for (const [id, fn] of timers) { timers.delete(id); fn(); } };
   return { reports, sensorReports, sensorUsage, runtime,
@@ -86,4 +87,12 @@ test('pending sensor snapshots reach subscribers without claiming active capture
   assert.deepEqual(env.sensorUsage.map(frame => [...frame.active]), [[]]);
   env.flushTimers(); await settle();
   assert.deepEqual(env.reports, [false]);
+});
+
+test('peer sensor changes remain local while capability observations stay available', async () => {
+  const env = await environment({ peer: true });
+  env.sensors(['camera']); env.flushTimers(); await settle();
+  assert.deepEqual(env.sensorReports, [{ active: ['camera'], pending: [] }]);
+  assert.deepEqual(env.reports, [true]);
+  assert.deepEqual(env.sensorUsage, []);
 });

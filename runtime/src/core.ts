@@ -1,7 +1,7 @@
 import { applicationSelection, createApplicationBinding, createCloudflareApplicationBackend, validateCloudflareProgram, validateApplicationOperation, assertApplicationOperationId } from "../../contract/application.mjs";
 import type { ApplicationBackend, ApplicationOperation, CloudflareApplicationSubmission } from "../../contract/application.mjs";
-import { connectPeer, validatePeerBootstrap } from "../../contract/peers.mjs";
-import { createMembersClient } from "../../contract/members.mjs";
+import { createPageHost } from "./page-host";
+import { createPeerCore } from "./peer-core";
 import { documentUrl } from "./document";
 // Runtime core (PROTOCOL 7, 11.1): socket, bus, state, offline queue, eval, logs, health.
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
@@ -72,15 +72,14 @@ type Internal = Core & {
 
 export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBackend): Internal {
   const selection = applicationSelection(cfg.application, `cf:${cfg.id}`);
-  const peerApplication = selection.kind === "peer";
-  const unavailable = (): never => { throw Object.assign(new Error("Use the selected application backend for application data"), { code: "application_backend" }); };
-  if (selectedBackend && !peerApplication) throw new TypeError("A custom backend requires an explicit peer application selection");
-  const application = createApplicationBinding(selection, selectedBackend);
   const bus = createBus();
+  if (selection.kind === "peer") return createPeerCore(cfg, selection, bus, selectedBackend);
+  if (selectedBackend) throw new TypeError("A custom backend requires an explicit peer application selection");
+  const application = createApplicationBinding(selection);
   const stored = loadDevice(cfg.id);
   if (!stored.name) { stored.name = guessName(); saveDevice(cfg.id, stored); }
   const device: Device = { id: stored.id, role: (stored.role as Role) || "owner", name: stored.name, pending: false };
-  const store = new OfflineStore(peerApplication ? `${cfg.id}:host` : cfg.id);
+  const store = new OfflineStore(cfg.id);
 
   // ---------- state ----------
   let confirmed: any = {};
@@ -151,7 +150,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
   const localOps = (operation: Op[] | ((state: any) => Op[]), options?: StateWriteOptions): Promise<StateResult> => {
     // A misspelled guard must not silently turn a conditional write into an
     // unconditional one. Validate the complete option envelope before capture.
-    if (peerApplication) unavailable();
     assertValid("stateWriteOptions", options ?? {});
     const checks = normalizeStateChecks(options);
     if (Array.isArray(operation) && !operation.length && !conditional(checks)) return Promise.resolve({ status: "unchanged", rev });
@@ -821,7 +819,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     // Replies correlated by cid.
     const durableAck = m.t === "ack" && store.items.some(item => item.cid === m.cid && hasCommandAck(item));
     if (!durableAck && requests.receive(m) && m.t !== "ack") return;
-    if (peerApplication && ["state", "state_reset", "scopes", "say", "instruction_echo", "stream_record"].includes(m.t)) return;
     switch (m.t) {
       case "stream_record":
         bus.emit("stream_record", m.record);
@@ -832,12 +829,12 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
         break;
       case "welcome": {
         welcome = m;
-        if (!peerApplication) installScopes(m.scopes);
+        installScopes(m.scopes);
         service = m.service || null;
         setRole(m.role || device.role, !!m.pending, m.pair_code);
         if (m.device_purpose !== undefined) (device as any).purpose = m.device_purpose;
         presence = m.presence ?? presence;
-        if (!peerApplication && Array.isArray(m.transcript)) {
+        if (Array.isArray(m.transcript)) {
           const received = m.transcript as TranscriptEntry[];
           const local = transcript.filter(entry => entry.cid && entry.device === device.id &&
             (entry.status === "queued" || entry.status === "rejected") &&
@@ -850,7 +847,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
           // executing publication keep their original configuration.
           Object.assign(cfg.features, m.features, cfg.publication?.runtime.features);
         }
-        if (!peerApplication && m.state && typeof m.state === "object") resetState(m.state, m.rev, "server");
+        if (m.state && typeof m.state === "object") resetState(m.state, m.rev, "server");
         else if (typeof m.rev === "number" && m.rev > rev) rev = m.rev;
         connection.welcome();
         bus.emit("welcome", m);
@@ -1005,11 +1002,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
   }
 
   const core: Internal = {
-    deviceHeaders,
-    blobUrl(id: string) {
-      if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
-      return new URL(`_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href;
-    },
+    ...createPageHost(cfg, deviceHeaders),
     bus,
     config: cfg,
     device,
@@ -1018,17 +1011,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     get transcript() { return transcript; },
     get welcome() { return welcome; },
     application,
-    members: createMembersClient({ base: cfg.base + "_tendril", headers: deviceHeaders }),
-    peers: {
-      async bootstrap() { return validatePeerBootstrap(await core.request("peers/bootstrap")); },
-      connect(channel, peerId) {
-        if (![channel, peerId].every(value => /^[A-Za-z0-9_.:-]{1,160}$/.test(value))) throw new TypeError("Invalid peer channel or identity");
-        const url = new URL(cfg.base + "_tendril/peers/socket", location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        url.searchParams.set("channel", channel); url.searchParams.set("peerId", peerId);
-        return connectPeer({ url: url.href, route: "relay" }, { protocols: ["tendriller.peer.v1"] });
-      },
-    },
     get rev() { return rev; },
     state,
     timers: timers.api,
@@ -1052,7 +1034,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
       },
     },
     async send(data: any, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult> {
-      if (peerApplication) unavailable();
       // Browser user activation marks a real tap or key press; page code cannot fake it. The server
       // treats such events from owner devices as human input for the page-wake cap (PROTOCOL 8.2).
       const gesture = !!(navigator as any).userActivation?.isActive;
@@ -1064,7 +1045,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
       return { status: "accepted", seq: ack.seq };
     },
     async instruction(text: string, via: "voice" | "text"): Promise<ConversationResult> {
-      if (peerApplication) unavailable();
       if (typeof text !== "string" || !text.trim()) throw new TypeError("Conversation input requires nonempty text");
       const cid = newCid();
       const entry: TranscriptEntry = { ts: Date.now(), from: "user", text, status: "queued", cid, device: device.id };
@@ -1082,19 +1062,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
       return result;
     },
     transportRequest: requests.request,
-    async request<T = unknown>(path: string, options: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
-      let decoded: string;
-      try { decoded = decodeURIComponent(path.split("?", 1)[0]); } catch { throw new TypeError("Invalid service path"); }
-      if (!decoded || path.includes("#") || /[?#\\]/.test(decoded) || decoded.startsWith("/") || decoded.split("/").some(part => !part || part === "." || part === "..") || /^[a-z]+:/i.test(decoded)) throw new TypeError("Service requests require a relative path");
-      const response = await fetch(cfg.base + "_tendril/" + path, {
-        method: options.method || "GET", credentials: "same-origin", cache: "no-store", signal: options.signal,
-        headers: { ...deviceHeaders(), ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw Object.assign(new Error(result.error?.message || `Service operation failed (${response.status})`), { code: result.error?.code || "service_error", status: response.status });
-      return result as T;
-    },
     raw,
     captures,
     pendingWork() {
@@ -1106,7 +1073,6 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
       };
     },
     async uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult> {
-      if (peerApplication) unavailable();
       if (!(blob instanceof Blob)) throw new TypeError("tendril.uploadEvent needs a Blob");
       if (blob.size > RESOURCE_LIMITS.blob_bytes) throw new RangeError("Capture exceeds the platform byte limit");
       assertValid("captureOptions", opts);
@@ -1184,15 +1150,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     readyManual: () => health.manual(),
   };
 
-  if (peerApplication) {
-    // Host diagnostics/uploads use a separate namespace; no Cloudflare application
-    // outbox is opened or replayed for a peer page.
-    core.state = new Proxy({} as StateApi, { get: () => unavailable });
-    core.timers = new Proxy({} as typeof core.timers, { get: () => unavailable });
-    core.streams = new Proxy({} as typeof core.streams, { get: () => unavailable });
-    core.scopes = { list: unavailable, capture: unavailable };
-    core.conversation = { entries: unavailable, send: unavailable, presented: unavailable };
-  } else {
+  {
     let authoring = Promise.resolve();
     application.install(createCloudflareApplicationBackend({ id: selection.id,
       request: async (path, options) => {
