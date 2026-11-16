@@ -3,9 +3,19 @@
 // Notification.requestPermission() is the first thing it does, before any await.
 import type { Core, Push } from "./types";
 
+export interface PushStatus {
+  permission: NotificationPermission | "unsupported";
+  subscribed: boolean;
+  registered: boolean;
+  reason?: string;
+}
 export type PushWithReason = Push & {
   /** Why push is unavailable or blocked, in words the control can show. Undefined when it can be used. */
   readonly reason?: string;
+  /** Browser permission and subscription, plus server acknowledgement. */
+  status(): Promise<PushStatus>;
+  /** Deliver a test to this owner device through the same server path as an agent. */
+  test(): Promise<{ sent: number; failed: number; status?: number | null; reason?: string }>;
 };
 
 const IOS_REASON = "On iPhone and iPad, notifications work only after you add this page to your Home Screen: tap Share, then \"Add to Home Screen\", and open it from there.";
@@ -76,6 +86,7 @@ export function setupPush(core: Core): PushWithReason {
   }
 
   async function register(sub: PushSubscription): Promise<boolean> {
+    if (!core.connected) return false;
     try {
       const reply = await core.transportRequest({ t: "push_subscribe", subscription: sub.toJSON() });
       return !reply?.error;
@@ -103,6 +114,30 @@ export function setupPush(core: Core): PushWithReason {
     async subscribed() {
       if (staticReason || Notification.permission !== "granted") return false;
       return !!(await currentSub());
+    },
+    async status(): Promise<PushStatus> {
+      const permission = supported ? Notification.permission : "unsupported";
+      if (staticReason || permission !== "granted") {
+        return { permission, subscribed: false, registered: false, reason: api.reason };
+      }
+      const sub = await currentSub();
+      if (!sub) return { permission, subscribed: false, registered: false, reason: api.reason };
+      if (!core.connected) return { permission, subscribed: true, registered: false,
+        reason: "This device has enabled notifications. It will register with the server when the page reconnects." };
+      try {
+        const response = await core.transportRequest({ t: "push_status", endpoint: sub.endpoint });
+        const registered = response?.subscribed === true || (!response?.subscribed && await register(sub));
+        return { permission, subscribed: true, registered, reason: registered ? undefined :
+          "This device is subscribed, but the server has not confirmed registration. Try again after reconnecting." };
+      } catch {
+        return { permission, subscribed: true, registered: false,
+          reason: "Could not confirm notification delivery with the server. Try again after reconnecting." };
+      }
+    },
+    test: async () => {
+      if (!core.connected) throw new Error("Reconnect the page before testing notifications.");
+      const result = await core.transportRequest({ t: "push_test" });
+      return { sent: result.sent ?? 0, failed: result.failed ?? 0, status: result.status, reason: result.reason };
     },
     async subscribe() {
       if (staticReason) return false;
@@ -135,7 +170,10 @@ export function setupPush(core: Core): PushWithReason {
       void (async () => {
         const r = await findReg();
         if (!r || !(await r.pushManager.getSubscription())) return;
-        try { await register(await ensureSub(r)); } catch { /* ignore */ }
+        try {
+          const ok = await register(await ensureSub(r));
+          core.bus.emit("push", { subscribed: ok });
+        } catch { /* ignore */ }
       })();
     });
   }
