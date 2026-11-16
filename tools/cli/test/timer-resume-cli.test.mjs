@@ -66,6 +66,9 @@ test("timer CLI recovers original commands after lost replies without refreshing
       const known = await run(command, env); assert.equal(known.code, 0, known.stderr);
       assert.equal(requests.length, count, "a saved accepted receipt needs no repeat request");
       assert.deepEqual(JSON.parse(known.stdout), JSON.parse(retry.stdout));
+      const wrongAccepted = await run(command, { ...env, TENDRIL_API: env.TENDRIL_API.replace("abcdefghijkl", "other-page") });
+      assert.notEqual(wrongAccepted.code, 0); assert.match(wrongAccepted.stderr, /does not match this intent/);
+      assert.equal(requests.length, count, "another page must not receive or claim an accepted receipt");
       const changed = await run([...command, "--generations", '{"schedule":"newer-generation"}'], env);
       assert.notEqual(changed.code, 0); assert.match(changed.stderr, /does not match this intent/);
       assert.equal(requests.length, count, "new guards must not replace the reviewed command");
