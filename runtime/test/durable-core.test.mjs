@@ -182,8 +182,13 @@ test("capture completion uses original scope and generation after upload and rel
   void first.core.uploadEvent(new Blob(["capture bytes"]), { data: { type: "notebook.observation", session: "uninterpreted" }, scope: descriptor.id });
   await flush();
   assert.equal(first.sent.some(frame => frame.t === "capture_complete"), false);
-  await first.commit(); // original blob + semantic input become durable
-  await first.commit(); // blob upload receipt becomes durable before completion
+  await first.commit(); // original blob and semantic intent become durable
+  // WebCrypto digest and native Response.json() settle on later event-loop turns,
+  // not just microtasks. Commit each durable phase without assuming two ticks.
+  for (let attempt = 0; attempt < 25 && !first.sent.some(frame => frame.t === "capture_complete"); attempt++) {
+    await new Promise(resolve => setImmediate(resolve));
+    await first.commit();
+  }
   const original = first.sent.find(frame => frame.t === "capture_complete");
   assert.ok(original);
   assert.equal(original.expected_generations[descriptor.id], "original");
