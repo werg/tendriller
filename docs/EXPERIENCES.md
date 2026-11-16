@@ -144,9 +144,11 @@ jobs are never exported.
 Anything deliberately embedded in a user-authored page file is still file
 content; inspect your code before sharing a template.
 
-The bundle has `format:"tendriller-bundle"`, `version:1`, a name, files with MIME
-types and base64 bytes, optional state/session, and media entries. Restoration
-allocates new media IDs and rewrites their references in text files and state.
+The bundle has `format:"tendriller-bundle"`, `version:2`, a name, files with MIME
+types and base64 bytes, optional state/session, media entries, and current
+shared-file references. Restoration allocates new media IDs and rewrites their
+references in text files, state and shared files. Imported shared files have no
+scope binding. Create a new scoped path if a workflow needs a bound reference.
 Files are validated before storage: normalized paths, no duplicates, index page,
 and existing file/state/storage limits. Media retain ordinary quota accounting.
 

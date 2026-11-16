@@ -81,10 +81,10 @@ test("experience write contracts preserve revision checks, roles and bounded sch
 });
 
 test("exported bundle media can have no name and multi-file templates keep the service bounds", () => {
-  const bundle = { format: "tendriller-bundle", version: 1, name: "N".repeat(200), files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
-    media: [{ id: "b_" + "a".repeat(20), type: "image/png", name: null, base64: "AA==" }] };
+  const bundle = { format: "tendriller-bundle", version: 2, name: "N".repeat(200), files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
+    media: [{ id: "b_" + "a".repeat(20), type: "image/png", name: null, base64: "AA==" }], shared_files: [] };
   assert.equal(validate("bundle", bundle).length, 0);
-  assert.ok(validate("bundle", { ...bundle, version: 2 }).length);
+  assert.ok(validate("bundle", { ...bundle, version: 1 }).length);
   assert.ok(validate("bundle", { ...bundle, files: [] }).length);
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   const manyCaptures = Array.from({ length: 201 }, (_, i) => ({ ...bundle.media[0],

@@ -5539,7 +5539,7 @@
           "const": "tendriller-bundle"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "name": {
           "type": "string",
@@ -5665,6 +5665,51 @@
             ],
             "additionalProperties": false
           }
+        },
+        "shared_files": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "blob_id": {
+                "type": "string",
+                "pattern": "^b_[a-z2-7]{20}$"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "blob_id",
+              "name",
+              "type"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -5672,7 +5717,8 @@
         "version",
         "name",
         "files",
-        "media"
+        "media",
+        "shared_files"
       ],
       "additionalProperties": false
     },
