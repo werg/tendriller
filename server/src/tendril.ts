@@ -218,7 +218,7 @@ export class Tendril extends DurableObject<Env> {
           state: this.db.get("state", {}),
           versions: this.db.all("SELECT version, created_at, status, message FROM versions ORDER BY version"),
           version_files: this.db.all("SELECT version, path, hash, type, size FROM version_files ORDER BY version, path"),
-          blobs: this.db.all("SELECT id, type, size, name, ts FROM blobs ORDER BY ts"),
+          blobs: this.db.all("SELECT id, sha256, type, size, name, ts FROM blobs ORDER BY ts"),
           stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
         });
         if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
