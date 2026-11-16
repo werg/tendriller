@@ -18,6 +18,8 @@ export interface AgentClient extends DurabilityClient, StreamsClient {
   checkDeliveryProbe(nonce?: string): Promise<DeliveryProbe>;
   acknowledgeDeliveryProbe(nonce: string): Promise<DeliveryProbe>;
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
+  notificationStatus(): Promise<NotificationStatus>;
+  notify(body: NotificationRequest): Promise<NotificationDelivery>;
   state(): Promise<{ state: Record<string, unknown>; rev: number; scopes: ScopeDescriptor[] }>;
   updateState(body: CommandMetadata & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
   writeFiles(body: { files: Record<string, string | { base64: string; type?: string }>; replace?: boolean; delete?: string[]; message?: string }): Promise<{ version: number; [key: string]: unknown }>;
