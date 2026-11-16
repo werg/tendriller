@@ -244,6 +244,60 @@ test("conditional apply freezes predicates and all ops before durable admission,
   assert.deepEqual(JSON.parse(JSON.stringify(results[0].conditions)), frame.conditions);
 });
 
+test("pending state commands and queue observers expose detached durable identities without a second queue", async () => {
+  const env = await environment({ state: { item: { done: false } }, scopes: [descriptor] });
+  const observed = [];
+  env.core.bus.on("state_queue", queue => {
+    if (queue[0]) { queue[0].ops[0].value = "observer changed"; queue[0].conditions[0].equals = "observer changed"; queue[0].expected_generations[descriptor.id] = "observer changed"; }
+    queue.length = 0;
+  });
+  env.core.bus.on("state_queue", queue => observed.push(queue));
+  const write = env.core.state.set("item.done", true, { conditions: [{ path: ["item", "done"], equals: false }], scope: descriptor.id });
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.pending())), []);
+  await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  assert.equal(observed.at(-1)[0].cid, original.cid);
+  assert.equal(observed.at(-1)[0].ops[0].value, true);
+  assert.equal(observed.at(-1)[0].conditions[0].equals, false);
+  const inspected = env.core.state.pending();
+  inspected[0].ops[0].path[0] = "wrong"; inspected[0].ops[0].value = false;
+  inspected[0].conditions[0].equals = true; inspected[0].expected_generations[descriptor.id] = "changed";
+  const saved = env.core.state.pending()[0];
+  assert.equal(saved.status, "queued"); assert.equal(saved.cid, original.cid);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.ops)), original.ops);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.conditions)), original.conditions);
+  assert.equal(saved.expected_generations[descriptor.id], "original");
+  env.transport.disconnect();
+  const queued = await write;
+  assert.equal(queued.status, "queued"); assert.equal(queued.cid, original.cid);
+  const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: { item: { done: true } }, scopes: [descriptor] });
+  assert.equal(resumed.core.state.pending()[0].cid, original.cid);
+  const receipts = [];
+  resumed.core.bus.on("state_result", receipt => { receipt.ops[0].value = "mutated"; receipt.conditions[0].equals = "mutated"; });
+  resumed.core.bus.on("state_result", receipt => receipts.push(receipt));
+  resumed.transport.receive({ t: "ack", cid: original.cid, error: "state_conflict", rev: 1, conflict: { kind: "condition", condition: 0, path: ["item", "done"] } });
+  await flush();
+  assert.equal(receipts[0].cid, original.cid);
+  assert.deepEqual(JSON.parse(JSON.stringify(receipts[0].ops)), original.ops);
+  assert.deepEqual(JSON.parse(JSON.stringify(receipts[0].conditions)), original.conditions);
+  assert.deepEqual(JSON.parse(JSON.stringify(resumed.core.state.pending())), []);
+  assert.equal([...env.database.stores.outbox.values()][0].msg.ops[0].value, true, "observer mutation never changes the stored command before its deletion commits");
+});
+
+test("unchanged local operations have no command receipt while conditional empty checks have real identities", async () => {
+  const env = await environment();
+  assert.deepEqual(JSON.parse(JSON.stringify(await env.core.state.apply([]))), { status: "unchanged", rev: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(await env.core.state.patch({ absent: null }))), { status: "unchanged", rev: 1 });
+  assert.equal(env.sent.some(frame => frame.t === "state"), false);
+  const pending = env.core.state.apply([], { expected_revision: 1 });
+  await flush(); await env.commit();
+  const frame = env.sent.find(frame => frame.t === "state");
+  env.transport.receive({ t: "ack", cid: frame.cid, rev: 1 });
+  const result = await pending;
+  assert.equal(result.status, "accepted"); assert.equal(result.cid, frame.cid); assert.equal(result.rev, 1);
+});
+
 test("state.snapshot returns authoritative state and matching revision without flushing or discarding optimism", async () => {
   const env = await environment({ state: { count: 0 }, scopes: [descriptor] });
   const pending = env.core.state.set("count", 1);
@@ -386,7 +440,10 @@ test("failed durable commit never changes optimistic state or sends the command"
   const pending = env.core.state.set("notebook", { draft: "not saved" });
   const input = env.core.send({ type: "experiment.done", session: "opaque" });
   await flush(); await env.commit();
-  assert.equal((await pending).error, "storage_unavailable");
+  const stateResult = await pending;
+  assert.equal(stateResult.error, "storage_unavailable");
+  assert.equal(stateResult.cid, undefined, "a failed local admission has no durable result identity");
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.pending())), []);
   assert.equal((await input).error, "storage_unavailable");
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), {});
   assert.equal(env.sent.filter(frame => ["state", "send"].includes(frame.t)).length, 0);

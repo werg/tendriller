@@ -4,7 +4,7 @@ import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, Transc
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
-import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult, StateWriteOptions } from "../../contract/index.mjs";
+import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult, StateWriteOptions, PendingStateCommand } from "../../contract/index.mjs";
 import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError } from "../../contract/state.mjs";
 import type { NormalizedStateChecks } from "../../contract/state.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
@@ -39,14 +39,14 @@ export function createBus(): Bus {
       const s = map.get(type);
       if (!s) return;
       for (const fn of [...s]) {
-        try { fn(payload); } catch (e) { setTimeout(() => { throw e; }); }
+        try { fn(["state", "state_result", "state_queue"].includes(type) ? clone(payload) : payload); } catch (e) { setTimeout(() => { throw e; }); }
       }
     },
   };
 }
 
 function newCid(): string { return "c_" + Date.now().toString(36) + rand32(8); }
-function stateRejection(message: any): StateResult {
+function stateRejection(message: any): Extract<StateResult, { status: "rejected" }> {
   return { status: "rejected", error: String(message.error?.code || message.error), message: message.message || message.error?.message,
     ...(typeof message.rev === "number" ? { rev: message.rev } : {}), ...(message.conflict ? { conflict: clone(message.conflict) } : {}) };
 }
@@ -122,10 +122,15 @@ export function createCore(cfg: TendrilConfig): Internal {
     const s = clone(local);
     bus.emit("state", { state: s, ops, by });
     for (const fn of [...stateListeners]) {
-      try { fn(clone(local), ops, by); } catch (e) { setTimeout(() => { throw e; }); }
+      try { fn(clone(local), clone(ops), by); } catch (e) { setTimeout(() => { throw e; }); }
     }
   };
   const stateListeners = new Set<(state: any, ops: any[], by: string) => void>();
+  const pendingStateCommands = (): PendingStateCommand[] => clone(store.items.filter(item => item.msg.t === "state").map(item => ({
+    cid: item.cid, ops: item.msg.ops, status: "queued" as const, scope: item.msg.scope,
+    expected_generations: item.msg.expected_generations, conditions: item.msg.conditions, expected_revision: item.msg.expected_revision,
+  })));
+  const stateQueueChanged = () => bus.emit("state_queue", pendingStateCommands());
 
   let saving = Promise.resolve();
   const localOps = (operation: Op[] | ((state: any) => Op[]), options?: StateWriteOptions): Promise<StateResult> => {
@@ -133,10 +138,11 @@ export function createCore(cfg: TendrilConfig): Internal {
     // unconditional one. Validate the complete option envelope before capture.
     assertValid("stateWriteOptions", options ?? {});
     const checks = normalizeStateChecks(options);
-    if (Array.isArray(operation) && !operation.length && !conditional(checks)) return Promise.resolve({ status: "accepted", rev });
+    if (Array.isArray(operation) && !operation.length && !conditional(checks)) return Promise.resolve({ status: "unchanged", rev });
     const cid = newCid();
     const capturedScopes = clone(scopes), capturedOptions = { ...clone(options), ...checks };
     let context: OperationContext = { expected_generations: {} };
+    let createdOps: Op[] = Array.isArray(operation) ? operation : [];
     let empty = false;
     savingState++;
     // Preserve invocation order even while IndexedDB opens. No optimistic state
@@ -144,6 +150,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     const saved = saving.then(async () => {
       await storeReady;
       const ops = normalizeStateOps(typeof operation === "function" ? operation(local) : operation);
+      createdOps = ops;
       if (!ops.length && !conditional(checks)) { empty = true; return; }
       context = captureContext(capturedScopes, "state", capturedOptions, ops);
       const pending = { cid, ops, ...context, ...checks };
@@ -151,22 +158,23 @@ export function createCore(cfg: TendrilConfig): Internal {
       pendingState.push(pending);
       rebuild();
       persistSoon();
+      stateQueueChanged();
       if (!conditional(checks)) emitState(ops, "device:" + device.id);
     });
     saving = saved.then(() => {}, () => {});
     return saved.then(async () => {
       savingState--;
-      if (empty) return { status: "accepted", rev } as StateResult;
+      if (empty) return { status: "unchanged", rev } as StateResult;
       const receipt = receipts.wait(cid);
       void pump();
       const ack = await receipt;
-      return !ack ? { status: "queued" } as StateResult
-        : ack.error ? stateRejection(ack)
-        : { status: "accepted", rev: ack.rev } as StateResult;
+      return !ack ? { status: "queued", cid } as StateResult
+        : ack.error ? { ...stateRejection(ack), cid }
+        : { status: "accepted", cid, rev: ack.rev } as StateResult;
     }, error => {
       savingState--;
       const result: StateResult = { status: "rejected", error: (error as any)?.code || "storage_unavailable", message: error instanceof Error ? error.message : "Could not save this change." };
-      bus.emit("state_result", { cid, ...context, ...checks, ...result });
+      bus.emit("state_result", { cid, ops: createdOps, ...context, ...checks, ...result });
       return result;
     });
   };
@@ -174,6 +182,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   const state: StateApi = {
     get revision() { return rev; },
     get(path?: Path) { return clone(getPath(local, toPath(path))); },
+    pending: pendingStateCommands,
     async snapshot() {
       const reply = await requests.request({ t: "state_snapshot" });
       try {
@@ -619,9 +628,11 @@ export function createCore(cfg: TendrilConfig): Internal {
           }
           pendingState.splice(idx, 1);
           rebuild();
-          bus.emit("state_result", { cid: p.cid, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(m.error
+          store.remove(p.cid);
+          bus.emit("state_result", { cid: p.cid, ops: p.ops, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(m.error
             ? stateRejection(m)
             : { status: "accepted", rev: m.rev }) });
+          stateQueueChanged();
           if (m.error) emitState([], "rejected");
           else if (JSON.stringify(local) !== before) emitState([], "server");
           persistSoon();
@@ -635,7 +646,7 @@ export function createCore(cfg: TendrilConfig): Internal {
           // context in the receipt so pages can reconcile their own durable cards.
           bus.emit("send_result", { cid: m.cid, scope: sent.scope, expected_generations: sent.expected_generations, data: sent.data, ...result });
         }
-        if (m.cid) store.remove(m.cid);
+        if (m.cid && idx < 0) store.remove(m.cid);
         if (sent?.t === "send" && sent.kind === "instruction") {
           const mine = transcript.find(entry => entry.cid === m.cid && entry.device === device.id);
           const result: ConversationResult = m.error
@@ -929,6 +940,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     pendingState = store.persistent ? fromOutbox : [];
     rebuild();
     if (JSON.stringify(local) !== before) emitState([], "cache");
+    stateQueueChanged();
     captureQueueChanged();
   }).catch(() => {}).finally(() => {
     connection.start();

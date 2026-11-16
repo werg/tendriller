@@ -103,6 +103,40 @@ values does not construct a coherent authoritative snapshot. `set`, `delete`,
 terminal results, including those arriving after the promise returned `queued`.
 The runtime persists commands before applying optimism or delivery.
 
+Every durably admitted write result includes its `cid`: use that identity for
+`queued`, `accepted`, and server-rejected outcomes. `state.pending()` returns
+detached copies of this device's currently unsettled durable commands, including
+`cid`, normalized `ops`, original predicates, revision guard and generation map,
+and `status:"queued"`. It is reconstructed from the existing outbox after reload.
+`state_queue` emits the current list after durable admission, startup recovery,
+and terminal removal. It does not include a save that has not committed locally.
+
+`state_result` includes the same original `ops` and context, so a page can identify
+the affected record even when its original promise no longer exists. Inspect the
+queue at startup and subscribe before submitting work:
+
+```js
+renderPendingState(tendril.state.pending());
+const stopQueue = tendril.on("state_queue", renderPendingState);
+const stopReceipts = tendril.on("state_result", receipt => {
+  showStateOutcome(receipt.cid, receipt.ops, receipt.status, receipt.message);
+});
+```
+
+These rendering functions belong to the page. Commands leave `pending()` after a
+terminal receipt; this is not a retained rejection history. Keep recoverable
+unsent or rejected text according to the page's draft policy. A failed local
+admission returns `rejected` without a durable `cid`; its `state_result` may carry
+an allocated attempt ID for correlation, but it never appears in the queue.
+Mutating a returned queue entry or one observer's payload cannot alter the
+command, its delivery, or another observer's payload.
+
+An empty unconditional `apply([])`, or a merge patch that produces no operations,
+returns `{status:"unchanged",rev}`. No command was admitted and no server
+acceptance or receipt is implied; there is no `cid`. An empty batch with
+conditions or `expected_revision` is a real authoritative check with its own
+command identity and normal receipt.
+
 `await state.snapshot()` reads `{state,rev,scopes}` together from the service on
 the authenticated connection. It includes accepted server state, without local
 optimistic overlays. It neither flushes nor discards pending writes, and it does

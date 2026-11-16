@@ -151,6 +151,15 @@ Before delivery or optimistic application, the runtime durably stores the comman
 
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
 
+Admitted browser state results include their command `cid`. `state.pending()`
+and `state_queue` expose detached original commands from the existing durable
+outbox, and `state_result` carries the original normalized operations and guards
+for correlation after reload. Terminal outcomes remove those commands from the
+pending view; it is not a second queue or a retained history. Local admission
+failure has no durable result identity. Empty unconditional work is explicitly
+`unchanged`, with no command or server acceptance. Empty conditional checks are
+admitted commands and still receive an authoritative outcome.
+
 ## Conversation and interaction
 
 A transcript entry has a persistent message ID; owner messages also retain their original command ID and device. Replies can reference the exact owner message. Repeated identical text is never used to match acknowledgements. Retries and reconnect history preserve those identities. `conversation.presented(messageId)` records presentation of an actual stored agent message; merely receiving the socket frame is not presentation.

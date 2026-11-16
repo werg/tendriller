@@ -109,6 +109,11 @@ permissions or enforced ownership policy.
 
 Browser `state.apply(ops, options)` offers the same atomic batch. Conditional
 writes remain pending until accepted and are not applied optimistically.
+Admitted results carry `cid`. Use `state.pending()` and `state_queue` to recover
+the existing outbox's per-record operations after reload; `state_result` carries
+their original normalized `ops` and guards for terminal correlation. Do not
+build another command queue. Empty unconditional work returns `unchanged`,
+which makes no claim of server acceptance.
 `await state.snapshot()` returns a coherent `{state,rev,scopes}` from the
 authenticated connected service; use it when computing a revision-bound change.
 It fails explicitly offline and does not flush pending local writes.

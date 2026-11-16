@@ -8,6 +8,13 @@ void snapshotCount;
 void page.state.apply([{op:"set",path:["count"],value:count+1}],{conditions:[{path:["count"],equals:count}]});
 // @ts-expect-error one condition cannot mean both equality and existence.
 void page.state.apply([],{conditions:[{path:["count"],equals:0,exists:true}]});
+const stateResult = await page.state.apply([]);
+if (stateResult.status === "queued" || stateResult.status === "accepted") { const cid:string = stateResult.cid; void cid; }
+// @ts-expect-error unchanged work has no durable command identity.
+if (stateResult.status === "unchanged") stateResult.cid;
+for (const work of page.state.pending()) { const path:string[] = work.ops[0].path; void path; }
+page.on("state_result", receipt => { const cid:string = receipt.cid; const path:string[] = receipt.ops[0].path; void [cid,path]; });
+page.on("state_queue", commands => { const cid:string|undefined = commands[0]?.cid; void cid; });
 const result: SendResult = await page.send({ count });
 if (result.status === "accepted") { const seq: number = result.seq; void seq; }
 if (result.status === "rejected") { const code: string = result.error; void code; }
