@@ -1,33 +1,33 @@
 {
   "format": "tendriller-composition",
-  "contract": 2,
+  "contract": 3,
   "core": {
-    "version": "0.2.0-rc.6",
-    "runtime": "47405b5b31fe4d63337a6d7570666f7d7da33c40558d838280cf54ebcb18c1eb",
+    "version": "0.3.0-rc.1",
+    "runtime": "02f795c7b8d81272a8add2aeee3dc27eff032ad7ed1c9f815afa52877bce53c6",
     "artifacts": [
       {
-        "file": "tendriller-runtime-0.2.0-rc.6.tgz",
-        "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.6/tendriller-runtime-0.2.0-rc.6.tgz",
-        "sha256": "ff4e502b42d5d2bdb39ecd8a068753cc19f9bb7286ef4cecb6fb196f3c31ae72"
+        "file": "tendriller-runtime-0.3.0-rc.1.tgz",
+        "url": "https://github.com/werg/tendriller/releases/download/v0.3.0-rc.1/tendriller-runtime-0.3.0-rc.1.tgz",
+        "sha256": "ff92cae31094a005283654faa6148ca634b6ee355c3c8bd46c197969469e284d"
       },
       {
-        "file": "tendriller-sdk-0.2.0-rc.6.tgz",
-        "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.6/tendriller-sdk-0.2.0-rc.6.tgz",
-        "sha256": "034e0b44f8fe7cefaaf6517b795fa0c82adbc115c0c64ba0ce2c5d0e2dd761dc"
+        "file": "tendriller-sdk-0.3.0-rc.1.tgz",
+        "url": "https://github.com/werg/tendriller/releases/download/v0.3.0-rc.1/tendriller-sdk-0.3.0-rc.1.tgz",
+        "sha256": "3160026fba48d65d7f2aa35a994697706317eee7e76ad68f0f7ac8c4b7f34027"
       }
     ]
   },
   "workflow": {
-    "file": "composition/artifacts/tendriller-workflows-0.2.0-rc.1.tgz",
-    "url": "https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.1/tendriller-workflows-0.2.0-rc.1.tgz",
-    "sha256": "13a35f599481e2cf3c7bdd0e0e4b13a10f3b19996e3d9a0892494ad28387dcbf",
-    "version": "0.2.0-rc.1",
+    "file": "composition/artifacts/tendriller-workflows-0.3.0-rc.1.tgz",
+    "url": "https://github.com/werg/tendriller-contrib/releases/download/v0.3.0-rc.1/tendriller-workflows-0.3.0-rc.1.tgz",
+    "sha256": "4f499a8deea72c697dc071be75612e04efb4ecd693b5dd353d82ec9af63ff9a8",
+    "version": "0.3.0-rc.1",
     "interfaces": {
       "sessions": {
         "interface_version": "1",
         "schema_version": "1"
       }
     },
-    "source_commit": "4c008f24bc69040ca33115022959d53c30ea706a"
+    "source_commit": "6df1fb2449f7a84e41c65db6119f6b35d95b7492"
   }
 }
