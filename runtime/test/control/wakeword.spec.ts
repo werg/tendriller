@@ -22,7 +22,6 @@ async function speechStub(page: Page, local = true) {
   await page.addInitScript((onDevice: boolean) => {
     const instances: any[] = [];
     class Recognition {
-      processLocally?: boolean;
       onstart?: () => void;
       onresult?: (event: any) => void;
       onerror?: (event: any) => void;
@@ -30,7 +29,7 @@ async function speechStub(page: Page, local = true) {
       results: any[] = [];
       started = false;
       aborted = false;
-      constructor() { if (onDevice) this.processLocally = false; instances.push(this); }
+      constructor() { if (onDevice) (this as any).processLocally = false; instances.push(this); }
       start() { this.started = true; this.onstart?.(); }
       abort() { this.aborted = true; this.onend?.(); }
       heard(text: string) {
@@ -63,6 +62,7 @@ test("every page gets visible hands-free controls and explicit privacy settings"
   await expect(page.getByRole("button", { name: "Stop hands-free" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".wake-chip")).toBeVisible();
   expect(await page.evaluate(() => (window as any).__wakeFake.instances.at(-1).processLocally)).toBe(true);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.locator(".wake-chip").getByRole("button", { name: "Stop" }).click();
   await expect(page.locator(".wake-chip")).toBeHidden();
   expect(await page.evaluate(() => (window as any).__wakeFake.instances.at(-1).aborted)).toBe(true);
@@ -101,7 +101,7 @@ test("testing the phrase cannot send commands; leaving the page disarms the micr
   await page.getByRole("button", { name: "Configure" }).click();
   await page.getByRole("button", { name: "Test wake phrase" }).click();
   await page.evaluate(() => (window as any).__wakeFake.heard("Hey Tendril delete everything"));
-  await expect(page.getByText("Wake phrase recognized. Test passed; no command was sent.")).toBeVisible();
+  await expect(page.locator(".wake-status")).toContainText("Wake phrase recognized. Test passed; no command was sent.");
   expect(await page.evaluate(() => (window as any).__fake.calls.instruction)).toEqual([]);
   await page.getByRole("tab", { name: "Talk", exact: true }).click();
   await page.getByRole("button", { name: "Start hands-free" }).click();
