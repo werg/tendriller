@@ -157,7 +157,7 @@ async function navigate(event: FetchEvent): Promise<Response> {
   const prior = pin || meta.clients[replaced || event.clientId] || meta.latest;
   const publication = prior && meta.complete.includes(prior) ? meta.publications[prior] : undefined;
   const path = pinned ? pinned[2] : relative;
-  const filename = path === "" ? "index.html" : path?.endsWith("/") ? path + "index.html" : path;
+  const filename = path === "" ? (publication?.entry || "index.html") : path?.endsWith("/") ? path + "index.html" : path;
   const declared = safePath(filename) ? publication?.assets.find(asset => asset.path === filename && asset.type.split(";", 1)[0] === "text/html") : undefined;
   // Ordinary file routing: an offline nested URL must never show another entry page.
   const savedURL = publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;

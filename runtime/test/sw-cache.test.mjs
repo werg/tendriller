@@ -280,6 +280,28 @@ test("nested logical filenames are encoded exactly and offline navigation never 
   assert.equal((await sw.request("missing.html", "a", true)).status, 503);
 });
 
+test("offline root navigation uses the declared HTML entry even when index.html also exists", async () => {
+  for (const entry of ["app.html", "pages/home.html"]) {
+    const a = release("1");
+    a.publication.entry = entry;
+    const entryHtml = `<!doctype html><script>window.__TENDRIL__=${JSON.stringify({ publication: a.publication })};</script><h1>declared: ${entry}</h1>`;
+    a.publication.assets.push({ path: entry, sha256: sha(entryHtml), type: "text/html" });
+    a.resources.set(new URL(entry, a.publication.base).href, () => new Response(entryHtml, { headers: { "X-Tendril-Publication": "1" } }));
+    a.html = entryHtml;
+    const net = network(a), initial = await worker(net);
+    await initial.install(); await initial.announce("a", a.publication);
+    net.online = false;
+    // A worker restart, a PWA launch at the root, and an explicit publication
+    // root all use the same authored entry, not a coincidental index.html.
+    const resumed = await worker(net, initial.stores, initial.clients);
+    assert.equal(await (await resumed.request("", "a", true)).text(), entryHtml);
+    assert.equal(await (await resumed.request(a.publication.base, "a", true)).text(), entryHtml);
+    assert.match(await (await resumed.request("index.html", "a", true)).text(), /<h1>1<\\/h1>/);
+    assert.equal((await resumed.request("pages/", "a", true)).status, 503,
+      "explicit nested directory navigation must not borrow the publication entry");
+  }
+});
+
 test("pinned and ordinary directory navigation resolves only declared index files with equivalent URL encoding", async () => {
   const a = release("1"), b = release("2"), directory = "notes & charts/question ? # 100%/";
   const encode = path => path.split("/").map(encodeURIComponent).join("/");
