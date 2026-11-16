@@ -239,7 +239,12 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (this.isAgentSocket(ws)) { ws.close(1008, "Agent socket is receive-only"); return; }
+    if (this.isAgentSocket(ws)) {
+      // Normally answered by Durable Object's hibernation auto-response; also handle
+      // a forwarded heartbeat without treating a keepalive as an application write.
+      if (message === '{"t":"ping"}') { this.send(ws, { t: "pong" }); return; }
+      ws.close(1008, "Agent socket is receive-only"); return;
+    }
     await handleWsMessage(this, ws, message);
   }
 
@@ -249,8 +254,14 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
-    if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
-    else handleWsClose(this, ws);
+    if (this.isAgentSocket(ws)) {
+      const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
+      const elapsed = typeof att?.connectedAt === "number" && Number.isFinite(att.connectedAt)
+        ? `, connected for ${Math.max(0, Math.round((this.now() - att.connectedAt) / 1000))}s` : "";
+      const detail = reason ? `, reason ${JSON.stringify(reason.slice(0, 100))}` : "";
+      addActivity(this, { kind: "agent_socket", summary: `Agent receiver socket closed (code ${code}${detail}${elapsed})` });
+      this.refreshPresence(); this.scheduleAlarm();
+    } else handleWsClose(this, ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
@@ -337,6 +348,7 @@ export class Tendril extends DurableObject<Env> {
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
+      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Publication health stays pending until a visible tab loads the new version. Once claimed, set lifetime to resident for a long-lived page.",
       agent_setup: {
         event_delivery: "not_configured",
         next_step: this.db.get<string>("mode", "interactive") === "dashboard"

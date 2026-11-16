@@ -124,8 +124,13 @@ async function cleanup(): Promise<void> {
   for (const client of live) if (!meta.clients[client.id]) { unknown = true; client.postMessage({ t: "publication_request" }); }
   if (!unknown) {
     const retain = new Set([meta.latest, ...Object.values(meta.clients)].filter(Boolean));
+    // Sweep actual cache keys too. A prior interrupted metadata commit may leave
+    // a complete but orphaned publication cache absent from meta.publications.
+    // An unannounced live client pauses this sweep above, so offline drafts remain safe.
+    for (const key of await caches.keys()) {
+      if (key.startsWith(PREFIX) && !retain.has(key.slice(PREFIX.length))) await caches.delete(key);
+    }
     for (const id of Object.keys(meta.publications)) if (!retain.has(id)) {
-      await caches.delete(cacheName(id));
       delete meta.publications[id];
       meta.complete = meta.complete.filter(value => value !== id);
     }

@@ -134,7 +134,8 @@ const coreSchemas = {
 
 };
 const list = items => ({ type: "array", items });
-const pageHandle = object({ id: string, api: string, token: string, page_url: string, name: string }, ["id", "api", "token", "page_url"], true);
+const pageHandle = object({ id: string, api: string, token: string, page_url: string, name: string,
+  expires_at: { anyOf: [integer, { type: "null" }] }, next_step: string }, ["id", "api", "token", "page_url"], true);
 export const schemas = Object.freeze({
   ...coreSchemas,
   pageHandle,

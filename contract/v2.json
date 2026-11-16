@@ -4300,6 +4300,20 @@
         },
         "name": {
           "type": "string"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_step": {
+          "type": "string"
         }
       },
       "required": [
@@ -4926,6 +4940,20 @@
           "type": "string"
         },
         "name": {
+          "type": "string"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_step": {
           "type": "string"
         },
         "remix": {

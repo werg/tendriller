@@ -3,17 +3,17 @@
   "contract": 2,
   "core": {
     "version": "0.2.0-rc.5",
-    "runtime": "425230324bc02a2bdacc290222028f68895e3475afc80f92506c8a141c61a72b",
+    "runtime": "5a05095b1948ccd8b0968a8d6fdd03031d64aa4196c9a45fcfc34d7e216bde4a",
     "artifacts": [
       {
         "file": "tendriller-runtime-0.2.0-rc.5.tgz",
         "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.5/tendriller-runtime-0.2.0-rc.5.tgz",
-        "sha256": "03d35cb1bcd2531ced1ea71acb91bbc9f99b99b6a209d32ccf7304714ce906ab"
+        "sha256": "581f20dd38d6c04eefebd8d86f81f8024f814b1b1d7d3dbf1ae756ac606ced02"
       },
       {
         "file": "tendriller-sdk-0.2.0-rc.5.tgz",
         "url": "https://github.com/werg/tendriller/releases/download/v0.2.0-rc.5/tendriller-sdk-0.2.0-rc.5.tgz",
-        "sha256": "598353daae23dbf3ca1aad98e211ab07834f31a8875eb63caa6b8489dca6c640"
+        "sha256": "22b4ea7a8f168c0a0b23ec6ac2c4362b5cca51660cd7073bd0432f1936d31e47"
       }
     ]
   },

@@ -6,7 +6,7 @@ Tendriller is an application-neutral engine for pages connected to an agent. The
 
 ## Start here
 
-Read [agent.md](agent.md) for the generic service flow and [the protocol](docs/PROTOCOL.md) for guarantees. Optional CLI, collectors, host bridges, preview, browser components, workflows and examples live in [werg/tendriller-contrib](https://github.com/werg/tendriller-contrib).
+Read [agent.md](agent.md) for the generic service flow, [the browser API](docs/BROWSER_API.md) for `window.tendril`, and [the protocol](docs/PROTOCOL.md) for guarantees. Optional CLI, collectors, host bridges, preview, browser components, workflows and examples live in [werg/tendriller-contrib](https://github.com/werg/tendriller-contrib).
 
 - [Contrib release downloads](https://github.com/werg/tendriller-contrib/releases)
 - [Tested contrib catalog, 0.2.0-rc.3](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json)

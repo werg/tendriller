@@ -132,8 +132,12 @@ class Control {
     const p = this.core.presence;
     const heard = p?.last_seen ? `Last heard from ${relTime(p.last_seen, this.lang)}` : "";
     switch (v) {
-      case "connecting": return { label: "Connecting", detail: "Connecting to the agent…" };
-      case "offline": return { label: "Offline", detail: "No connection. What you send is kept and delivered when the connection returns." };
+      case "connecting": return this.core.config.preview
+        ? { label: "Preview connecting", detail: "Connecting to the local fixture transport, not a live Tendriller agent." }
+        : { label: "Connecting", detail: "Connecting to the agent…" };
+      case "offline": return this.core.config.preview
+        ? { label: "Preview offline", detail: "The local fixture socket is disconnected. Preview does not use a live service or agent; offline steps intentionally test queued work." }
+        : { label: "Offline", detail: "No connection. What you send is kept and delivered when the connection returns." };
       case "pending": return { label: "Waiting for approval", detail: "An owner device needs to approve this one." };
       case "listening": return { label: "Agent ready", detail: p?.text && p.text.toLowerCase() !== "listening" ? p.text : "The agent is ready." };
       case "working": return { label: "Working", detail: p?.text && p.text.toLowerCase() !== "working" ? p.text : "The agent is working on it." };

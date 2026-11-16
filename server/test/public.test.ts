@@ -214,6 +214,8 @@ it("does not serve optional host tools from the service origin", async () => {
 
 it("authenticates a hibernating agent socket and delivers a count-only probe wake", async () => {
   const h = await createPublic("socket@example.com", "192.0.2.190");
+  expect((h as any).next_step).toContain("visible browser tab");
+  expect((h as any).expires_at).toBeGreaterThan(Date.now());
   const denied = await req(h.api + "/events/socket", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "tendriller.agent.v2" } });
   expect(denied.status).toBe(401);
   const response = await req(h.api + "/events/socket", { headers: {
@@ -225,6 +227,10 @@ it("authenticates a hibernating agent socket and delivers a count-only probe wak
   socket.accept();
   const wakes: any[] = [];
   socket.addEventListener("message", (e) => wakes.push(JSON.parse(String(e.data))));
+  socket.send('{"t":"ping"}');
+  for (let i = 0; i < 40 && !wakes.some(m => m.t === "pong"); i++) await new Promise((r) => setTimeout(r, 25));
+  expect(wakes).toEqual([{ t: "pong" }]);
+  wakes.length = 0;
   expect((await (await api(h, "GET", "")).json<any>()).agent_delivery.mode).toBe("live_socket");
   const probe = await (await api(h, "POST", "wake/probe")).json<{ seq: number }>();
   for (let i = 0; i < 40 && !wakes.length; i++) await new Promise((r) => setTimeout(r, 25));
