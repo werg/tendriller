@@ -21,11 +21,11 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
     const action = form.get('action');
     if (action === 'select-version') {
-      const expected = Number(form.get('current')), version = Number(form.get('version'));
+      const expected = Number(form.get('head_revision')), version = Number(form.get('version'));
       if (!Number.isSafeInteger(expected) || expected < 0 || !Number.isSafeInteger(version) || version < 1)
         throw new HttpError(400, 'bad_request', 'Choose a publication from this page');
       t.transaction(() => {
-        if (t.db.get('current', 0) !== expected) throw new HttpError(409, 'publication_changed', 'The page changed. Reload recovery before selecting a version.');
+        if (t.db.get('publication_head_revision', 0) !== expected) throw new HttpError(409, 'publication_changed', 'The page changed. Reload recovery before selecting a version.');
         rollback(t, version, `owner:${principal.accountId}`, null);
       });
       message = `Publication ${version} is now selected.`;
@@ -51,7 +51,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
 
   const actionURL = text(`${base}_tendril/manage`), current = pointers(t).current ?? 0;
   const form = (action: string, fields: string, label: string) => `<form action="${actionURL}" method="post"><input type="hidden" name="action" value="${action}">${fields}<button>${text(label)}</button></form>`;
-  const versions = owner ? listVersions(t).map(version => `<li><strong>Publication ${text(version.version)}</strong> · ${text(version.status)}${version.version === current ? ' · current' : ''}<p>${text(version.message)}</p>${version.version === current ? '' : form('select-version', `<input type="hidden" name="current" value="${current}"><input type="hidden" name="version" value="${text(version.version)}">`, 'Use this publication')}</li>`).join('') : '';
+  const versions = owner ? listVersions(t).map(version => `<li><strong>Publication ${text(version.version)}</strong> · ${text(version.status)}${version.version === current ? ' · current' : ''}<p>${text(version.message)}</p>${version.version === current ? '' : form('select-version', `<input type="hidden" name="head_revision" value="${t.db.get("publication_head_revision", 0)}"><input type="hidden" name="version" value="${text(version.version)}">`, 'Use this publication')}</li>`).join('') : '';
   const agents = owner ? t.db.all<{ name: string }>('SELECT name FROM tokens ORDER BY created_at').map(agent => `<li>${text(agent.name)}${form('disconnect-agent', `<input type="hidden" name="agent" value="${text(agent.name)}">`, 'Disconnect')}</li>`).join('') : '';
   const requests = owner ? t.db.all<{ account_id: string; link_id: string }>('SELECT account_id,link_id FROM guest_accounts WHERE approved=0 ORDER BY created_at') : [];
   const guests = (await Promise.all(requests.map(async pending => {

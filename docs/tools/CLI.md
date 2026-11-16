@@ -9,7 +9,7 @@ Use `tendril --help` for the complete command reference.
 ```sh
 node tools/cli/bin/tendril.mjs new 'A useful page' --owner you@example.com --as example
 node tools/cli/bin/tendril.mjs --tendril example push ./page
-node tools/cli/bin/tendril.mjs --tendril example versions
+node tools/cli/bin/tendril.mjs --tendril example publications
 node tools/preview/bin/tendril-preview.mjs ./page
 ```
 
@@ -22,13 +22,20 @@ privately through the environment. `TENDRIL_SERVER` chooses the service origin.
 
 `push` accepts one file or a directory. A single HTML file is published as
 `index.html` unless `--as` specifies a path. A directory replaces the page's file
-set and requires `index.html`; `--no-replace` adds or updates explicitly named files.
+set and uses `index.html`; `--entry nested/report.html` selects another authored
+HTML entry. `--no-replace` adds or updates explicitly named files and preserves
+the existing entry unless `--entry` changes it.
 Dotfiles, `node_modules`, `_tendril/` and `_publications/` are excluded. Symlinks,
 unsafe paths and nonregular filesystem entries are rejected. Text retains its
-UTF-8 content; binary data is transported explicitly. Packing never edits files,
+UTF-8 content; every file is uploaded as exact binary bytes with a verified
+SHA-256 and size. Packing never edits files,
 adds dependencies, checks copied-source equality or completes missing imports.
 
-The service owns the publication identity and final asset hashes. `push` waits
+The service verifies uploaded content and commits one complete manifest against
+the captured publication head revision. Unchanged SHA-256/size pairs reuse
+verified blobs from the current manifest. A changed head returns a conflict;
+the CLI does not overwrite a newer publication by recapturing its revision.
+`push` waits
 for the publication's health result unless `--no-wait` is given. Pending means no
 device has yet reported a terminal health result; it is not proof of failure.
 A failed publication returns exit status 3. Reopen the authored page and inspect
@@ -45,13 +52,65 @@ its runtime errors before retrying.
 | `timers`, `session`, `bundle`, `remix` | Durable operational context and deliberate page copies |
 | `scopes`, `workflow` | Captured generations and explicit installed trusted extensions |
 | `notify`, `notifications` | Send a notification or inspect readiness without sending |
-| `upload`, `blobs` | Page media and explicit retention operations |
+| `blob` | Verified immutable binary transfers and guarded pin operations |
+| `file` | Shared-file revision reads, guarded writes, history and downloads |
+| `publications`, `publication`, `rollback` | Publication heads, exact manifests and guarded selection |
 
 `workflow <module> <operation> [json]` checks the selected module's advertised
 interface/schema before dispatch. No domain module is installed by default.
 Use `--cid`, `--scope` and `--generations` for protected commands. A retry must
 retain its original command ID, payload and captured generations; a stale command
 needs a deliberate newly composed action, not an automatic generation rewrite.
+Publication replacement and rollback target the complete `["publications"]`
+namespace, including removed paths. Inspect `scopes list` and provide every
+relevant original generation with `--generations`; enumerating only the new
+manifest's paths is insufficient. Shared-file mutations target
+`["files", "reports/latest.json"]`, with the canonical file path as one segment.
+
+## Binary transfers and shared files
+
+```sh
+tendril blob upload ./photo.png --name 'Latest observation'
+tendril blob info b_aaaaaaaaaaaaaaaaaaaa
+tendril blob list --limit 100
+tendril blob list --after b_aaaaaaaaaaaaaaaaaaaa --limit 100
+tendril blob download b_aaaaaaaaaaaaaaaaaaaa ./downloaded-photo.png
+tendril blob pin b_aaaaaaaaaaaaaaaaaaaa --keep true --cid keep-observation
+tendril file put reports/latest.json ./report.json
+tendril file get reports/latest.json ./downloaded-report.json
+tendril file history reports/latest.json
+tendril file delete reports/latest.json --revision 4
+tendril publication 3
+tendril rollback 2
+```
+
+An upload reserves its digest, size, type and optional name, sends bytes only
+when required, and verifies the completion receipt before reporting success.
+Downloads require an explicit local destination, verify its full size and hash,
+and replace the destination only after verification. Existing files require
+`--overwrite`. Remote names never become local paths; symlink destinations and
+symlink source files are rejected.
+Blob listings are bounded pages ordered by blob ID. When `cursor` is non-null,
+pass it as `--after` to read the next page; a null cursor marks the end.
+
+Shared-file paths identify revisioned references to immutable blobs. `file put`
+captures the current revision before uploading; `--revision` supplies a deliberate
+revision instead. A deleted path retains its tombstone revision, so recreation
+still uses compare-and-swap. Conflicts exit with status 4 and preserve the original
+uploaded blob and operation identity. `file get` downloads the exact blob named
+by the captured head, even if that shared path subsequently changes.
+
+Uploads, shared-file writes and pushes save private resume records under the
+selected configuration directory. Their keys include the destination service,
+content bytes and command intent. Repeating the same command resumes that
+operation or returns its accepted receipt; changed bytes create a new operation.
+`--resume-file` selects an explicit record. `--cid` selects an explicit command
+identity. To deliberately repeat a completed operation as new work, choose a new
+CID. Changing bytes or guards while reusing an explicit record is rejected.
+
+Publication rollback selects a particular retained version against the current
+head revision; it requires an explicit version. No command rewrites an original
+failed operation with newer generations or revisions automatically.
 
 ## Delivery and checkpoints
 

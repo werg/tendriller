@@ -24,7 +24,9 @@ const result = await tendril.uploadEvent(photo, {
 });
 ```
 
-The runtime stores the blob and the semantic input in one IndexedDB outbox record. It persists the upload receipt before sending the event. Reloads, interrupted uploads, and reconnects resume the same transaction. The event contains the original data plus `blob`, `url`, and `capture_id`. An accepted result includes `seq`, `capture_id`, and `blob: {id, url, retention}`. An offline call returns `status:"queued"` after the local storage transaction commits, so the UI can finish the capture without waiting for a network connection.
+The runtime stores the blob and the semantic input in one IndexedDB outbox record before making a network request. It reserves an immutable upload session with the original command ID, byte length, and SHA-256 digest; sends raw bytes only when needed; and verifies the completion receipt. It persists that receipt before any requested pin operation, then persists the pin receipt before sending the semantic event. Reloads, interrupted uploads, and reconnects resume the saved phase with the original identities and guards.
+
+The event contains the original data plus `blob`, `url`, and `capture_id`. An accepted result includes `seq`, `capture_id`, and a complete blob reference: `{id, sha256, size, type, url, created_at, retention}` with optional `name`. The browser returns an absolute URL for the immutable blob. An offline call returns `status:"queued"` after the local storage transaction commits, so the UI can finish the capture without waiting for a network connection.
 
 Each `uploadEvent` call creates new work with a runtime-owned `capture_id`.
 Its options do not accept a command ID; unknown options such as `cid` fail validation
@@ -52,13 +54,13 @@ await tendril.uploadEvent(drawing, {
 
 This adds the media reference to `data.value` while keeping `capture_id` at the event's top level. Prototype keys are forbidden in `dataPath`.
 
-Do not compose `await upload(blob); await send(metadata)` for durable capture flows: a reload between those calls can lose the metadata. The lower-level `upload` API remains available for standalone assets.
+Do not compose `await upload(blob); await send(metadata)` for durable capture flows: a reload between those calls can lose the metadata. The lower-level `upload(blob,{name?,keep?,scope?,expected_generations?})` API remains available for standalone assets. It also commits its upload identity and optional pin command before I/O. Its promise resolves to the verified blob reference after completion; it remains pending while offline. The `upload` event reports `{cid,name,...blob}` after delivery, including after a reload when the original promise no longer exists.
 
 ### Recovery
 
 Listen for `upload_event` to update a card after offline replay. Its payload is a capture result with the same `capture_id`. `capture_queue` reports the pending/rejected queue after storage opens and after changes. Read `tendril.captures()` on mount as well, because a listener may attach after initialization.
 
-`tendril.retryCapture(capture_id)` retries a rejected capture using its saved blob and metadata. The retry retains the original command ID and scope generations. It reuses an uploaded blob instead of duplicating media. Use this operation to retry saved work; calling `uploadEvent` again creates a separate submission. A stale-generation rejection stays rejected until the person deliberately creates new work after review; retry never relabels a capture. `tendril.discardCapture(capture_id)` removes the local queued capture. Discarding is not an undo of a request already accepted by the server.
+`tendril.retryCapture(capture_id)` retries a rejected capture using its saved blob and metadata. The retry retains the original upload, pin, and event command IDs and scope generations. It reuses a received upload session or persisted blob receipt instead of duplicating media. Use this operation to retry saved work; calling `uploadEvent` again creates a separate submission. A stale-generation rejection stays rejected until the person deliberately creates new work after review; retry never relabels a capture. An expired or aborted transfer also requires explicit new work after review. `tendril.discardCapture(capture_id)` removes the local queued capture. Discarding is not an undo of a request already accepted by the server.
 
 When browser storage is unavailable or a durable write fails, `uploadEvent` returns `storage_unavailable` rather than claiming the capture was saved. Keep the local preview open so the person can retry or save the file elsewhere. Device storage can still be evicted by the browser; installation and available storage affect offline reliability.
 
@@ -86,12 +88,14 @@ outdated optimistic change is excluded when reconstructing the current view.
 
 ## Retention is separate from page lifetime
 
-Page captures normally expire 30 days after upload, including on resident tendrils. Upload responses and blob metadata expose:
+Unreferenced uploads expire 30 days after upload, including on resident tendrils. This applies equally to page and agent uploads. Upload responses and blob metadata expose:
 
 ```json
-{"retention":{"keep":false,"expires_at":1900000000000,"reason":"page_default"}}
+{"retention":{"expires_at":1900000000000,"reasons":["unreferenced_upload"]}}
 ```
 
-Owners may select “Keep” during capture (`uploadEvent(..., {keep: true})`) or use `await tendril.setBlobRetention(id, {keep: true})` later. Kept captures have `expires_at: null` and count toward the existing storage quota. They remain until explicitly deleted or the tendril/account is deleted. Unpinning restores the original expiry, which may already be past. Agent assets and the install icon have retained policies identified by `reason`; making a page resident does not change capture retention.
+Owners may select “Keep” during capture (`uploadEvent(..., {keep: true})`) or use `await tendril.setBlobRetention(id, {keep: true, ...context})` later. Pin commands include a separate command ID and captured scope generations. Guests can upload ordinary captures but cannot pin them.
 
-Agent APIs: `GET A/blobs` and `GET A/blobs/<id>/info` return metadata and retention; `PATCH A/blobs/<id>` accepts `{keep: boolean}`. Page API: `GET/PATCH P_tendril/blob/<id>/retention`; only an authenticated owner can mutate it. A page upload may include `X-Tendril-Keep: true`, again only for the owner. Guests can upload ordinary captures but cannot extend their retention.
+Pinned blobs, current shared files, retained file history, publication graphs, and the install icon are explicit retention roots. Their metadata has `expires_at: null` and reports the applicable `reasons`, such as `"pinned"`, `"shared_file"`, `"file_history"`, `"publication"`, or `"icon"`. They count toward storage quota. Unpinning removes only the pin reason: other references continue retaining the blob. Once no references remain, the original upload expiry applies and may already be past. A blob ID written into arbitrary application JSON does not retain its bytes. Making a page resident does not change these rules.
+
+The HTTP protocol is the same under the agent API base and the page's `_tendril` base: `POST /uploads`, `PUT /uploads/<id>/content`, and `POST /uploads/<id>/complete` transfer bytes; `GET /blobs/<id>/info` reads metadata; `GET /blobs/<id>` reads bytes; and `PUT /blobs/<id>/pin` accepts `{cid,expected_generations,scope?,keep}`. The agent SDK exposes `client.blobs`; browser captures use the narrow upload primitive internally. Neither path encodes upload bytes as base64.

@@ -1701,7 +1701,8 @@
         "type": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
         },
         "name": {
           "type": "string",
@@ -1736,7 +1737,10 @@
               "maxItems": 32
             }
           },
-          "required": [],
+          "required": [
+            "expires_at",
+            "reasons"
+          ],
           "additionalProperties": false
         }
       },
@@ -1744,7 +1748,10 @@
         "id",
         "sha256",
         "size",
-        "type"
+        "type",
+        "url",
+        "created_at",
+        "retention"
       ],
       "additionalProperties": false
     },
@@ -1772,7 +1779,8 @@
               "type": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
               },
               "name": {
                 "type": "string",
@@ -1807,7 +1815,10 @@
                     "maxItems": 32
                   }
                 },
-                "required": [],
+                "required": [
+                  "expires_at",
+                  "reasons"
+                ],
                 "additionalProperties": false
               }
             },
@@ -1815,7 +1826,10 @@
               "id",
               "sha256",
               "size",
-              "type"
+              "type",
+              "url",
+              "created_at",
+              "retention"
             ],
             "additionalProperties": false
           },
@@ -1829,7 +1843,8 @@
         }
       },
       "required": [
-        "blobs"
+        "blobs",
+        "cursor"
       ],
       "additionalProperties": false
     },
@@ -1890,7 +1905,8 @@
         "type": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
         },
         "name": {
           "type": "string",
@@ -1962,7 +1978,8 @@
             "type": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 200
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
             },
             "name": {
               "type": "string",
@@ -1997,7 +2014,10 @@
                   "maxItems": 32
                 }
               },
-              "required": [],
+              "required": [
+                "expires_at",
+                "reasons"
+              ],
               "additionalProperties": false
             }
           },
@@ -2005,7 +2025,10 @@
             "id",
             "sha256",
             "size",
-            "type"
+            "type",
+            "url",
+            "created_at",
+            "retention"
           ],
           "additionalProperties": false
         }
@@ -2046,7 +2069,8 @@
             "type": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 200
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
             },
             "name": {
               "type": "string",
@@ -2081,7 +2105,10 @@
                   "maxItems": 32
                 }
               },
-              "required": [],
+              "required": [
+                "expires_at",
+                "reasons"
+              ],
               "additionalProperties": false
             }
           },
@@ -2089,7 +2116,10 @@
             "id",
             "sha256",
             "size",
-            "type"
+            "type",
+            "url",
+            "created_at",
+            "retention"
           ],
           "additionalProperties": false
         }
@@ -2112,7 +2142,7 @@
           "maxProperties": 128,
           "propertyNames": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
           },
           "additionalProperties": {
             "type": "string",
@@ -2122,7 +2152,7 @@
         },
         "scope": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
         },
         "keep": {
           "type": "boolean"
@@ -2173,7 +2203,7 @@
           "anyOf": [
             {
               "type": "string",
-              "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+              "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
             },
             {
               "type": "null"
@@ -2240,7 +2270,7 @@
                 "anyOf": [
                   {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                    "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
                   },
                   {
                     "type": "null"
@@ -2327,7 +2357,7 @@
                 "anyOf": [
                   {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                    "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
                   },
                   {
                     "type": "null"
@@ -2372,7 +2402,7 @@
           "maxProperties": 128,
           "propertyNames": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
           },
           "additionalProperties": {
             "type": "string",
@@ -2382,7 +2412,7 @@
         },
         "scope": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
         },
         "path": {
           "type": "string",
@@ -2430,7 +2460,7 @@
           "maxProperties": 128,
           "propertyNames": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
           },
           "additionalProperties": {
             "type": "string",
@@ -2440,7 +2470,7 @@
         },
         "scope": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
         },
         "path": {
           "type": "string",
@@ -2503,7 +2533,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                  "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
                 },
                 {
                   "type": "null"
@@ -2583,7 +2613,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                  "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
                 },
                 {
                   "type": "null"
@@ -2630,6 +2660,116 @@
       ],
       "additionalProperties": false
     },
+    "fileChanges": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cursor": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "file": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "x-canonical-nfc": true,
+                    "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "blob_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^b_[a-z2-7]{20}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "type": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "scope": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "updated_at": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "by": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "path",
+                  "revision",
+                  "blob_id"
+                ],
+                "additionalProperties": false
+              },
+              "cid": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+              },
+              "actor": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "at": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "cursor",
+              "file",
+              "cid",
+              "actor",
+              "at"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "changes",
+        "cursor"
+      ],
+      "additionalProperties": false
+    },
     "publicationFile": {
       "type": "object",
       "properties": {
@@ -2669,7 +2809,7 @@
           "maxProperties": 128,
           "propertyNames": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
           },
           "additionalProperties": {
             "type": "string",
@@ -2679,7 +2819,7 @@
         },
         "scope": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
         },
         "expected_head_revision": {
           "type": "integer",
@@ -2749,7 +2889,7 @@
           "maxProperties": 128,
           "propertyNames": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
           },
           "additionalProperties": {
             "type": "string",
@@ -2759,7 +2899,7 @@
         },
         "scope": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
         },
         "expected_head_revision": {
           "type": "integer",
@@ -2778,7 +2918,7 @@
       ],
       "additionalProperties": false
     },
-    "publicationResultV3": {
+    "publicationReceipt": {
       "type": "object",
       "properties": {
         "version": {
@@ -2796,7 +2936,7 @@
       ],
       "additionalProperties": false
     },
-    "publicationHead": {
+    "publicationList": {
       "type": "object",
       "properties": {
         "current": {
@@ -2815,15 +2955,132 @@
           "type": "integer",
           "minimum": 0
         },
-        "needs_republication": {
-          "type": "boolean"
+        "served": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "created_at": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "healthy",
+                  "failed"
+                ]
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "errors": {
+                "type": "array",
+                "items": {}
+              },
+              "by": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "version",
+              "created_at",
+              "status",
+              "message",
+              "files"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
         "current",
         "latest",
         "healthy",
-        "head_revision"
+        "head_revision",
+        "served",
+        "versions"
+      ],
+      "additionalProperties": false
+    },
+    "publicationDetails": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "entry": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-canonical-nfc": true,
+                "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+              },
+              "blob_id": {
+                "type": "string",
+                "pattern": "^b_[a-z2-7]{20}$"
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 26214400
+              }
+            },
+            "required": [
+              "path",
+              "blob_id",
+              "type",
+              "sha256",
+              "size"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 2000
+        }
+      },
+      "required": [
+        "version",
+        "entry",
+        "files"
       ],
       "additionalProperties": false
     },
@@ -2864,7 +3121,8 @@
             "type": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 200
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
             },
             "name": {
               "type": "string",
@@ -2899,7 +3157,10 @@
                   "maxItems": 32
                 }
               },
-              "required": [],
+              "required": [
+                "expires_at",
+                "reasons"
+              ],
               "additionalProperties": false
             }
           },
@@ -2907,7 +3168,10 @@
             "id",
             "sha256",
             "size",
-            "type"
+            "type",
+            "url",
+            "created_at",
+            "retention"
           ],
           "additionalProperties": false
         },
@@ -2949,7 +3213,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+                  "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
                 },
                 {
                   "type": "null"
@@ -3054,7 +3318,7 @@
           "maxProperties": 128,
           "propertyNames": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
           },
           "additionalProperties": {
             "type": "string",
@@ -3064,7 +3328,7 @@
         },
         "scope": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,160}$"
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
         },
         "sha256": {
           "type": "string",
@@ -4037,7 +4301,8 @@
         "type": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
         },
         "name": {
           "type": "string",
@@ -4072,7 +4337,10 @@
               "maxItems": 32
             }
           },
-          "required": [],
+          "required": [
+            "expires_at",
+            "reasons"
+          ],
           "additionalProperties": false
         }
       },
@@ -4080,7 +4348,10 @@
         "id",
         "sha256",
         "size",
-        "type"
+        "type",
+        "url",
+        "created_at",
+        "retention"
       ],
       "additionalProperties": false
     },
@@ -4162,7 +4433,8 @@
                 "type": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 200
+                  "maxLength": 200,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
                 },
                 "name": {
                   "type": "string",
@@ -4197,7 +4469,10 @@
                       "maxItems": 32
                     }
                   },
-                  "required": [],
+                  "required": [
+                    "expires_at",
+                    "reasons"
+                  ],
                   "additionalProperties": false
                 }
               },
@@ -4205,7 +4480,10 @@
                 "id",
                 "sha256",
                 "size",
-                "type"
+                "type",
+                "url",
+                "created_at",
+                "retention"
               ],
               "additionalProperties": false
             }
@@ -5528,7 +5806,14 @@
           "const": "tendriller-bundle"
         },
         "version": {
-          "const": 1
+          "const": 3
+        },
+        "entry": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-canonical-nfc": true,
+          "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "name": {
           "type": "string",
@@ -5618,6 +5903,37 @@
           ],
           "additionalProperties": false
         },
+        "shared_files": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-canonical-nfc": true,
+                "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
+              },
+              "blob_id": {
+                "type": "string",
+                "pattern": "^b_[a-z2-7]{20}$"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "blob_id"
+            ],
+            "additionalProperties": false
+          }
+        },
         "media": {
           "type": "array",
           "items": {
@@ -5659,6 +5975,7 @@
       "required": [
         "format",
         "version",
+        "entry",
         "name",
         "files",
         "media"

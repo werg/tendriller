@@ -50,17 +50,6 @@ export async function accountData(req: Request, env: Env, url: URL): Promise<Res
               firstFile = false;
               put(JSON.stringify({ hash: file.hash, size: file.size, base64: content }));
             }
-            put(`],"blob_contents":[`);
-            let firstBlob = true;
-            for (const blob of blobs) {
-              const object = await env.FILES.get(`t/${row.id}/blobs/${blob.id}`);
-              if (!object) throw new Error(`Missing blob ${blob.id}`);
-              const bytes = new Uint8Array(await object.arrayBuffer());
-              const content = base64(bytes);
-              if (!firstBlob) put(",");
-              firstBlob = false;
-              put(JSON.stringify({ id: blob.id, size: blob.size, base64: content }));
-            }
             put("]}");
           }
           put("]}");

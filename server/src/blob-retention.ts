@@ -17,10 +17,9 @@ export function blobInfo(t: Tendril, id: string) {
   if (t.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id)) reasons.push("shared_file");
   if (t.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? LIMIT 1", id)) reasons.push("file_history");
   if (t.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) reasons.push("publication");
-  if (row.source === "agent") reasons.push("agent_asset");
-  if (!reasons.length) reasons.push("page_default");
+  if (!reasons.length) reasons.push("unreferenced_upload");
   return { ...row, pinned: !!row.pinned,
-    retention: { expires_at: reasons.length === 1 && reasons[0] === "page_default" ? row.ts + ACTIVITY_RETENTION : null, reasons } };
+    retention: { expires_at: reasons.length === 1 && reasons[0] === "unreferenced_upload" ? row.ts + ACTIVITY_RETENTION : null, reasons } };
 }
 
 /** One metadata shape is used by upload receipts, captures, named files and downloads. */

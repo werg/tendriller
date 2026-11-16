@@ -1,10 +1,69 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
-import { webcrypto } from "node:crypto";
+import { webcrypto, createHash } from "node:crypto";
 import { build } from "esbuild";
 const built = await build({ stdin: { contents: 'export { createCore } from "./core"; export { createFixtureTransport } from "./preview";', resolveDir: new URL("../src/", import.meta.url).pathname, loader: "ts" }, bundle: true, format: "iife", globalName: "Runtime", platform: "browser", write: false });
-const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+const flush = async () => {
+  for (let round = 0; round < 3; round++) {
+    await new Promise(setImmediate);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+};
+async function until(predicate) {
+  const deadline = Date.now() + 2000;
+  while (!predicate() && Date.now() < deadline) await flush();
+  assert.ok(predicate(), "Fixture did not reach the expected transfer phase");
+}
+
+function blobService() {
+  const calls = [], sessions = new Map(), pins = new Map();
+  const blobId = "b_" + "a".repeat(20), uploadId = "u_" + "a".repeat(20);
+  const metadata = session => ({ id: blobId, sha256: session.sha256, size: session.size, type: session.type,
+    url: "/page/_tendril/blobs/" + blobId, created_at: 1000, retention: { expires_at: 100000, reasons: [] } });
+  const service = {
+    calls, sessions, pins, dropComplete: 0, dropPin: 0, rejectPin: false,
+    fetch: async (url, init) => {
+      const path = new URL(url, "https://fixture.test").pathname.replace("/page/_tendril", "");
+      const body = init.headers["Content-Type"] === "application/json" ? JSON.parse(new TextDecoder().decode(init.body)) : init.body;
+      calls.push({ path, method: init.method, body });
+      assert.ok(init.headers["X-Tendril-Device"]);
+      assert.ok(init.headers["X-Tendril-Device-Secret"]);
+      if (path === "/uploads") {
+        let session = sessions.get(body.cid);
+        if (!session) {
+          session = { ...body, id: uploadId, blob_id: blobId, phase: "ready", upload_required: true, expires_at: 100000 };
+          sessions.set(body.cid, session);
+        } else assert.deepEqual({ cid: session.cid, sha256: session.sha256, size: session.size, type: session.type, ...(session.name === undefined ? {} : { name: session.name }) }, body);
+        const { cid, type, name, ...response } = session;
+        return json(response);
+      }
+      const session = [...sessions.values()][0];
+      if (path === `/uploads/${uploadId}/content`) {
+        assert.equal(createHash("sha256").update(body).digest("hex"), session.sha256);
+        assert.equal(body.byteLength, session.size);
+        session.phase = "received"; session.upload_required = false;
+        return new Response(null, { status: 204 });
+      }
+      if (path === `/uploads/${uploadId}/complete`) {
+        assert.ok(["received", "completed"].includes(session.phase));
+        session.phase = "completed";
+        if (service.dropComplete > 0) { service.dropComplete--; throw new TypeError("Connection lost after completion"); }
+        return json({ status: "completed", blob: metadata(session) });
+      }
+      if (path === `/blobs/${blobId}/pin`) {
+        if (pins.has(body.cid)) return json(pins.get(body.cid));
+        if (service.rejectPin) return json({ error: { code: "stale_generation", message: "The original pin scope changed" } }, 409);
+        const receipt = { ...metadata(session), retention: body.keep ? { expires_at: null, reasons: ["pinned"] } : { expires_at: 100000, reasons: [] } };
+        pins.set(body.cid, receipt);
+        if (service.dropPin > 0) { service.dropPin--; throw new TypeError("Connection lost after pinning"); }
+        return json(receipt);
+      }
+      throw new Error(`Unexpected blob request ${path}`);
+    },
+  };
+  return service;
+}
 
 // The fake controls transaction completion (not the runtime's queuing policy).
 // This lets tests observe the interval between a put request and durable commit.
@@ -47,32 +106,32 @@ function storage() {
   const values = new Map();
   return { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
-async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true } = {}) {
+async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true, blobs = blobService() } = {}) {
   const timers = new Map(); let next = 0;
   const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
   const globals = { window, document, localStorage, sessionStorage: storage(), indexedDB: database.indexedDB,
-    crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, structuredClone, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
+    crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, ArrayBuffer, TextEncoder, URLSearchParams, structuredClone, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
     location: { href: "https://fixture.test/page/", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", reload() {} },
     navigator: { onLine: online, userAgent: "Fixture", language: "en", userActivation: { isActive: false } }, screen: { width: 800, height: 600 },
     console: { log() {}, info() {}, warn() {}, error() {} }, queueMicrotask, ...clock,
-    fetch: async () => json({ id: "b_aaaaaaaaaaaaaaaaaaaa", url: "_tendril/blob/b_aaaaaaaaaaaaaaaaaaaa" }),
+    fetch: blobs.fetch,
   };
   runInNewContext(built.outputFiles[0].text, globals);
   const transport = globals.Runtime.createFixtureTransport(), sent = [];
   window.__TENDRIL_TRANSPORT__ = transport.socket;
   transport.onSend((frame, reply) => {
     sent.push(structuredClone(frame));
-    if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev: 1, role: "owner", pending: false, transcript: [], rules: [] });
+    if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev: 1, role: "owner", pending: false, transcript: [] });
   });
   const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null} });
   await flush();
-  return { core, database, localStorage, transport, sent, window,
+  return { core, database, localStorage, transport, sent, window, blobs,
     async commit() { database.commit(); await flush(); },
     async settle() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } await flush(); },
   };
 }
-function json(value) { return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } }); }
+function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
 
 test("application data has no prescribed preferences or device namespaces", async () => {
@@ -155,9 +214,10 @@ test("capture completion uses original scope and generation after upload and rel
   await flush();
   assert.equal(first.sent.some(frame => frame.t === "capture_complete"), false);
   await first.commit(); // original blob + semantic input become durable
+  await until(() => first.database.pending.length > 0 && first.blobs.calls.some(call => call.path.endsWith("/complete")));
   await first.commit(); // blob upload receipt becomes durable before completion
   const original = first.sent.find(frame => frame.t === "capture_complete");
-  assert.ok(original);
+  assert.ok(original, JSON.stringify({ calls: first.blobs.calls, pending: first.database.pending.length, captures: first.core.captures() }));
   assert.equal(original.expected_generations[descriptor.id], "original");
   assert.equal(original.blob, "b_aaaaaaaaaaaaaaaaaaaa");
   const second = await environment({ database: first.database, localStorage: first.localStorage, scopes: [{ ...descriptor, generation: "new", operations: ["capture"] }] });
@@ -177,6 +237,114 @@ test("capture completion uses original scope and generation after upload and rel
   assert.equal((await retry).status, "rejected");
 });
 
+test("a lost upload completion resumes the original session after reload without new bytes or identities", async () => {
+  const blobs = blobService(); blobs.dropComplete = 1;
+  const originalScope = { ...descriptor, operations: ["capture"] };
+  const first = await environment({ scopes: [originalScope], blobs });
+  void first.core.uploadEvent(new Blob(["reviewed bytes"]), { data: { submission_id: "review-1", answer: "original" }, scope: descriptor.id });
+  await flush(); await first.commit();
+  await until(() => blobs.calls.some(call => call.path.endsWith("/complete")));
+  const original = [...first.database.stores.outbox.values()].find(item => item.msg.t === "upload_event");
+  assert.equal(original.msg.uploaded, undefined);
+  first.transport.disconnect();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs,
+    scopes: [{ ...originalScope, generation: "new" }] });
+  await until(() => second.database.pending.length > 0 && blobs.calls.filter(call => call.path.endsWith("/complete")).length === 2);
+  await second.commit();
+  const starts = blobs.calls.filter(call => call.path === "/uploads");
+  assert.equal(starts.length, 2);
+  assert.deepEqual(starts[0].body, starts[1].body);
+  assert.equal(starts[0].body.cid, original.cid);
+  assert.equal(blobs.calls.filter(call => call.path.endsWith("/content")).length, 1);
+  const event = second.sent.find(frame => frame.t === "capture_complete");
+  assert.equal(event.cid, original.msg.event_cid);
+  assert.equal(event.data.capture_id, original.cid);
+  assert.equal(event.data.submission_id, "review-1");
+  assert.equal(event.data.answer, "original");
+  assert.equal(event.expected_generations[descriptor.id], "original");
+});
+
+test("pinning persists its original guarded command and replays a lost pin receipt before semantic delivery", async () => {
+  const blobs = blobService(); blobs.dropPin = 1;
+  const originalScope = { ...descriptor, operations: ["capture", "blob.pin"] };
+  const first = await environment({ scopes: [originalScope], blobs });
+  void first.core.uploadEvent(new Blob(["evidence"]), { data: { submission_id: "review-2" }, keep: true, scope: descriptor.id });
+  await flush(); await first.commit();
+  await until(() => first.database.pending.length > 0 && blobs.calls.some(call => call.path.endsWith("/complete")));
+  const original = [...first.database.stores.outbox.values()].find(item => item.msg.t === "upload_event");
+  assert.equal(original.msg.pin.expected_generations[descriptor.id], "original");
+  assert.notEqual(original.msg.pin.cid, original.cid);
+  await first.commit();
+  await until(() => blobs.calls.some(call => call.path.endsWith("/pin")));
+  assert.equal(first.sent.some(frame => frame.t === "capture_complete"), false);
+  const uploaded = [...first.database.stores.outbox.values()].find(item => item.cid === original.cid);
+  assert.ok(uploaded.msg.uploaded);
+  assert.equal(uploaded.msg.pinned, undefined);
+  first.transport.disconnect();
+  blobs.rejectPin = true; // Rotation cannot invalidate an already committed pin receipt.
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs,
+    scopes: [{ ...originalScope, generation: "new" }] });
+  await until(() => second.database.pending.length > 0 && blobs.calls.filter(call => call.path.endsWith("/pin")).length === 2);
+  assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false, "Pin receipt must be durable before event delivery");
+  await second.commit();
+  const pinCalls = blobs.calls.filter(call => call.path.endsWith("/pin"));
+  assert.deepEqual(pinCalls[0].body, original.msg.pin);
+  assert.deepEqual(pinCalls[1].body, original.msg.pin);
+  assert.equal(blobs.calls.filter(call => call.path === "/uploads").length, 1);
+  const event = second.sent.find(frame => frame.t === "capture_complete");
+  assert.equal(event.cid, original.msg.event_cid);
+  assert.equal(event.expected_generations[descriptor.id], "original");
+  assert.deepEqual(second.core.captures()[0].blob.retention.reasons, ["pinned"]);
+});
+
+test("a stale pin rejects the retained capture and retry keeps the original pin guards", async () => {
+  const blobs = blobService(); blobs.rejectPin = true;
+  const env = await environment({ blobs, scopes: [{ ...descriptor, operations: ["capture", "blob.pin"] }] });
+  const input = { data: { submission_id: "review-3", answer: "reviewed" }, keep: true, scope: descriptor.id };
+  const outcome = env.core.uploadEvent(new Blob(["reviewed"]), input);
+  input.data.answer = "new draft";
+  await flush(); await env.commit();
+  await until(() => env.database.pending.length > 0 && blobs.calls.some(call => call.path.endsWith("/complete")));
+  await env.commit(); await env.commit();
+  assert.equal((await outcome).error, "stale_generation");
+  const capture = env.core.captures()[0];
+  assert.equal(capture.data.answer, "reviewed");
+  assert.equal(capture.status, "rejected");
+  env.transport.receive({ t: "scopes", scopes: [{ ...descriptor, generation: "new", operations: ["capture", "blob.pin"] }] });
+  const retried = env.core.retryCapture(capture.capture_id);
+  await flush(); await env.commit(); await env.commit();
+  assert.equal((await retried).error, "stale_generation");
+  const pins = blobs.calls.filter(call => call.path.endsWith("/pin"));
+  assert.equal(pins.length, 2);
+  assert.deepEqual(pins[0].body, pins[1].body);
+  assert.equal(pins[1].body.expected_generations[descriptor.id], "original");
+  assert.equal(env.sent.some(frame => frame.t === "capture_complete"), false);
+});
+
+test("standalone uploads also commit before I/O and reuse one CID after a lost completion", async () => {
+  const blobs = blobService(); blobs.dropComplete = 1;
+  const first = await environment({ blobs });
+  void first.core.upload(new Blob(["standalone"]), { name: "proof.txt" });
+  await flush();
+  assert.equal(blobs.calls.length, 0);
+  await first.commit();
+  await until(() => blobs.calls.some(call => call.path.endsWith("/complete")));
+  const original = [...first.database.stores.outbox.values()].find(item => item.msg.t === "upload");
+  first.transport.disconnect();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs });
+  const delivered = [];
+  second.core.bus.on("upload", result => delivered.push(result));
+  await until(() => second.database.pending.length > 0 && blobs.calls.filter(call => call.path.endsWith("/complete")).length === 2);
+  await second.commit(); // upload receipt
+  assert.equal(delivered.length, 0);
+  await second.commit(); // queue removal before reporting success
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].cid, original.cid);
+  assert.equal(second.core.pendingWork().captures, 0);
+  assert.deepEqual(blobs.calls.filter(call => call.path === "/uploads").map(call => call.body.cid), [original.cid, original.cid]);
+  assert.equal(blobs.calls.filter(call => call.path.endsWith("/content")).length, 1);
+});
+
 test("capture IDs belong to the runtime and reviewed inputs retain separate application correlation", async () => {
   const env = await environment(), queued = [], results = [];
   env.core.bus.on("capture_queue", values => queued.push(...values));
@@ -190,7 +358,9 @@ test("capture IDs belong to the runtime and reviewed inputs retain separate appl
   assert.equal(env.database.pending.length, 0); assert.equal(env.core.captures().length, 0); assert.equal(queued.length, 0);
 
   const saving = env.core.uploadEvent(new Blob(["evidence"]), { data: { submission_id: "review-1", text: "reviewed input" } });
-  await flush(); await env.commit(); await env.commit();
+  await flush(); await env.commit();
+  await until(() => env.database.pending.length > 0 && env.blobs.calls.some(call => call.path.endsWith("/complete")));
+  await env.commit();
   const capture = env.core.captures()[0]; assert.notEqual(capture.capture_id, "review-1");
   assert.equal(capture.data.submission_id, "review-1"); assert.equal(queued[0].capture_id, capture.capture_id);
   const completion = env.sent.find(frame => frame.t === "capture_complete");

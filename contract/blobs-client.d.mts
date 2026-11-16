@@ -12,7 +12,7 @@ export interface BlobUploadClient {
 export interface BlobTransferClient {
   blobs: BlobUploadClient & {
     info(blobId: string): Promise<BlobReference>;
-    list(): Promise<{blobs: BlobReference[]; cursor?: string | null}>;
+    list(options?: { after?: string; limit?: number; signal?: AbortSignal }): Promise<{blobs: BlobReference[]; cursor: string | null}>;
     download(blobId: string, options?: { signal?: AbortSignal; range?: string; disposition?: "inline" | "attachment" }): Promise<Response>;
     pin(blobId: string, command: { cid: string; expected_generations: Record<string,string>; scope?: string; keep: boolean }): Promise<BlobReference>;
   };
@@ -25,10 +25,10 @@ export interface BlobTransferClient {
     delete(body: SharedFileDelete): Promise<{file: SharedFileHead; cursor: number}>;
   };
   publications: {
-    list(): Promise<unknown>;
-    get(version: number): Promise<unknown>;
-    publish(body: PagePublicationWrite): Promise<{version: number; head_revision: number}>;
-    rollback(body: PagePublicationRollback): Promise<{version: number; head_revision: number}>;
+    list(): Promise<WireContracts["publicationList"]>;
+    get(version: number): Promise<WireContracts["publicationDetails"]>;
+    publish(body: PagePublicationWrite): Promise<WireContracts["publicationReceipt"]>;
+    rollback(body: PagePublicationRollback): Promise<WireContracts["publicationReceipt"]>;
   };
 }
 export type BlobJsonRequest = (path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal }, schema?: keyof WireContracts) => Promise<any>;

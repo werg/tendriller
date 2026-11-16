@@ -336,7 +336,9 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     const { t, dev, msg } = c;
     const result = await t.dedupe(dev.id, msg.cid, () => {
       try {
-        return { version: rollback(t, typeof msg.version === "number" ? msg.version : null, null, dev.id) };
+        if (!Number.isSafeInteger(msg.expected_head_revision) || msg.expected_head_revision < 0) throw new HttpError(400, "bad_request", "Capture the publication head revision before choosing a version");
+        if (t.db.get<number>("publication_head_revision", 0) !== msg.expected_head_revision) throw new HttpError(409, "publication_conflict", "The publication changed; review its current head");
+        return { version: rollback(t, typeof msg.version === "number" ? msg.version : null, null, dev.id), head_revision: t.db.get<number>("publication_head_revision", 0) };
       } catch (err) {
         return { error: err instanceof HttpError ? err.code : "internal", message: err instanceof Error ? err.message : String(err) };
       }
@@ -345,7 +347,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   },
 
   versions(c) {
-    c.t.send(c.ws, { t: "versions", cid: c.msg.cid, versions: listVersions(c.t), ...pointers(c.t) });
+    c.t.send(c.ws, { t: "versions", cid: c.msg.cid, versions: listVersions(c.t), head_revision: c.t.db.get<number>("publication_head_revision", 0), ...pointers(c.t) });
   },
 
   activity(c) {

@@ -101,6 +101,7 @@ export interface FixtureTransport {
 export interface RuntimeEventMap {
   connect: void; disconnect: void; role: Pick<Device, "role" | "pending">; presence: Presence;
   say: SayMessage; transcript: TranscriptEntry | null;
+  upload: Omit<BlobReference, "name"> & { cid: string; name: string | null };
   upload_event: CaptureResult; error: { code?: string; message?: string };
   send_result: SendResult & OperationOptions & { cid: string; data: unknown };
   capture_queue: PendingCapture[]; capabilities: CapabilityReport;

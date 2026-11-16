@@ -30,7 +30,8 @@ function setup({ failComplete = false, corrupt = false } = {}) {
     } else if (path === `/uploads/${uploadId}/complete`) {
       completed++;
       if (failComplete) return Response.json({error:{code:"blob_unavailable",message:"Try again"}}, {status:503});
-      value = { status: "completed", blob: { id: blobId, sha256, size: bytes.length, type:"application/octet-stream" } };
+      value = { status: "completed", blob: { id: blobId, sha256, size: bytes.length, type:"application/octet-stream",
+        url: `/blobs/${blobId}`, created_at: 1000, retention: { expires_at: 100000, reasons: [] } } };
     } else if (path === `/blobs/${blobId}`) {
       assert.equal(init.method, "GET");
       return new Response(corrupt ? Uint8Array.of(1) : bytes, {status:200});
@@ -141,4 +142,67 @@ test("oversized streamed input is cancelled before any network operation", async
   await assert.rejects(transfer.upload(stream), RangeError);
   assert.equal(cancelled, true);
   assert.equal(stream.locked, false);
+});
+
+test("aborting a pending stream read cancels input before reserving or sending bytes", async () => {
+  for (const operation of ["upload", "put"]) {
+    const controller = new AbortController(); let cancelled;
+    const stream = new ReadableStream({ cancel(reason) { cancelled = reason; } });
+    const transfer = createUploadClient(async () => assert.fail("Aborted input cannot reserve a session"), async () => assert.fail("Aborted input cannot send bytes"));
+    const pending = operation === "upload" ? transfer.upload(stream, { signal: controller.signal })
+      : transfer.put(uploadId, stream, { signal: controller.signal });
+    const reason = new Error("Person cancelled this transfer");
+    controller.abort(reason);
+    await assert.rejects(pending, error => error === reason);
+    assert.equal(cancelled, reason);
+    assert.equal(stream.locked, false);
+  }
+});
+
+test("blob and shared-file listings use bounded cursors and preserve tombstones", async () => {
+  const calls = [], controller = new AbortController();
+  const client = createClient({ api: "https://example.test/api/t/t1", token: "tk_secret" }, { fetch: async (url, init) => {
+    const target = new URL(url); calls.push({ target, init });
+    if (target.pathname.endsWith("/blobs")) return Response.json({ blobs: [], cursor: null });
+    if (target.pathname.endsWith("/changes")) return Response.json({ changes: [], cursor: 12 });
+    return Response.json({ path: "reviews/draft.txt", revision: 4, blob_id: null });
+  } });
+  assert.deepEqual(await client.blobs.list({ after: blobId, limit: 7, signal: controller.signal }), { blobs: [], cursor: null });
+  assert.equal(calls[0].target.searchParams.get("after"), blobId);
+  assert.equal(calls[0].target.searchParams.get("limit"), "7");
+  assert.equal(calls[0].init.signal, controller.signal);
+  assert.deepEqual(await client.files.changes({ after: 12, limit: 3 }), { changes: [], cursor: 12 });
+  assert.equal(calls[1].target.searchParams.get("after"), "12");
+  assert.equal(calls[1].target.searchParams.get("limit"), "3");
+  assert.equal((await client.files.get("reviews/draft.txt")).blob_id, null);
+  assert.equal(calls[2].target.searchParams.get("path"), "reviews/draft.txt");
+  assert.throws(() => client.blobs.list({ limit: 1001 }), TypeError);
+  assert.throws(() => client.blobs.list({ after: "invalid" }), TypeError);
+  assert.throws(() => client.files.changes({ after: -1 }), TypeError);
+  assert.throws(() => client.files.changes({ limit: 101 }), TypeError);
+  assert.equal(calls.length, 3);
+  assert.equal(client.files.cleanup, undefined);
+});
+
+test("an expired file cursor remains an explicit snapshot-required service error", async () => {
+  const client = createClient({ api: "https://example.test/api/t/t1", token: "tk_secret" }, { fetch: async () =>
+    Response.json({ error: { code: "file_cursor_expired", message: "Read a new file snapshot", details: { floor: 17 } } }, { status: 410 }) });
+  await assert.rejects(client.files.changes({ after: 3 }), error => error instanceof ApiError && error.status === 410 &&
+    error.code === "file_cursor_expired" && error.details.floor === 17);
+});
+
+test("publication reads validate the public head and immutable asset graph", async () => {
+  let malformed = false;
+  const client = createClient({ api: "https://example.test/api/t/t1", token: "tk_secret" }, { fetch: async url => {
+    if (malformed) return Response.json({ version: 1 });
+    return Response.json(url.endsWith("/publications")
+      ? { current: 1, latest: 1, healthy: 0, head_revision: 4, served: 1,
+        versions: [{ version: 1, created_at: 1000, status: "pending", message: null, files: 1 }] }
+      : { version: 1, entry: "index.html", files: [{ path: "index.html", blob_id: blobId, type: "text/html", sha256, size: bytes.length }] });
+  } });
+  assert.equal((await client.publications.list()).head_revision, 4);
+  assert.equal((await client.publications.get(1)).files[0].sha256, sha256);
+  malformed = true;
+  await assert.rejects(client.publications.list(), error => error.code === "invalid_response");
+  await assert.rejects(client.publications.get(1), error => error.code === "invalid_response");
 });

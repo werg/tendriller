@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -25,7 +26,7 @@ if(previous===0){process.exitCode=1;}else console.log('ok');
 `);chmodSync(fake,0o755);
   const id='abc234abc234';
   const server=createServer(async(req,res)=>{
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:CONTRACT_VERSION,core_release:CORE_RELEASE,workflows:[]})); return; }
     const u=new URL(req.url,'http://localhost');
     assert.equal(req.headers.authorization,'Bearer tk_secret');
     res.setHeader('Content-Type','application/json');

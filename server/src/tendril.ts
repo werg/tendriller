@@ -16,6 +16,7 @@ import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
 import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
+import { pruneFileHistory } from "./storage";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
@@ -217,7 +218,9 @@ export class Tendril extends DurableObject<Env> {
           state: this.db.get("state", {}),
           versions: this.db.all("SELECT version, created_at, status, message FROM versions ORDER BY version"),
           version_files: this.db.all("SELECT version, path, hash, type, size FROM version_files ORDER BY version, path"),
-          blobs: this.db.all("SELECT id, type, size, name, ts FROM blobs ORDER BY ts"),
+          blobs: this.db.all("SELECT id, sha256, type, size, name, ts FROM blobs ORDER BY ts"),
+          file_refs: this.db.all("SELECT * FROM file_refs ORDER BY path"),
+          publication_blobs: this.db.all("SELECT * FROM publication_blobs ORDER BY version,path"),
           stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
         });
         if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
@@ -920,7 +923,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   reserveStoredFile(hash: string, size: number, riskScore: number): boolean {
-    if (this.db.one("SELECT 1 AS x FROM stored_files WHERE hash = ?", hash)) return false;
+    const stored = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=?", hash);
+    if (stored) {
+      if (stored.size !== size) throw new HttpError(422, "digest_size_mismatch", "Stored content has a different size");
+      return false;
+    }
     this.checkLocalStorage(size);
     this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score, status) VALUES (?, ?, ?, ?, 'writing')",
       hash, size, this.now(), riskScore);
@@ -987,6 +994,7 @@ export class Tendril extends DurableObject<Env> {
   async deleteBlob(id: string): Promise<void> {
     const hash = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id)?.sha256;
     if (this.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id) ||
+        this.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? LIMIT 1", id) ||
         this.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) return;
     this.db.run("DELETE FROM blobs WHERE id = ?", id);
     if (hash) await deleteUnreferencedContent(this, hash);
@@ -1210,8 +1218,9 @@ export class Tendril extends DurableObject<Env> {
     pruneActivity(this);
     pruneMcpSubs(this);
     pruneTimerHistory(this);
-    await this.pruneBlobs(now);
+    this.transaction(() => pruneFileHistory(this));
     await this.pruneVersions();
+    await this.pruneBlobs(now);
     await this.pruneOrphanFiles(now);
     await this.reconcileStorage();
     this.db.run("DELETE FROM dedupe WHERE ts < ?", now - DEDUPE_RETENTION);
@@ -1225,12 +1234,12 @@ export class Tendril extends DurableObject<Env> {
   }
 
   /**
-   * Photos, clips and other page uploads expire with the activity record (30 days). Agent
-   * uploads, explicitly kept captures and the install icon stay until deleted explicitly.
+   * Unreferenced uploads expire after 30 days. Pins, the install icon, retained file
+   * history and publication references retain their bytes until those roots are removed.
    */
   async pruneBlobs(now: number): Promise<void> {
     const icon = this.db.get<string | null>("icon", null);
-    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE source = 'page' AND pinned = 0 AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
+    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE pinned = 0 AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
     for (const { id } of old) await this.deleteBlob(id);
   }
 
@@ -1254,6 +1263,7 @@ export class Tendril extends DurableObject<Env> {
       this.db.run("DELETE FROM version_files WHERE version = ?", v);
       this.db.run("DELETE FROM versions WHERE version = ?", v);
       this.db.run("DELETE FROM publication_leases WHERE version = ?", v);
+      this.db.run("DELETE FROM publication_blobs WHERE version = ?", v);
     }
     const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);

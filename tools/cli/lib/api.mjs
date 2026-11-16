@@ -21,7 +21,8 @@ export async function request(url, { method = "GET", token, json, body, headers 
   if (token) h.authorization = `Bearer ${token}`;
   let payload = body;
   if (json !== undefined) { h["content-type"] = "application/json"; payload = JSON.stringify(json); }
-  const res = await fetch(url, { method, headers: h, body: payload, signal });
+  const res = await fetch(url, { method, headers: h, body: payload, signal,
+    ...(payload && typeof payload.getReader === "function" ? { duplex: "half" } : {}) });
   if (raw && res.ok) return res;
   const text = await res.text();
   let data = null;

@@ -33,7 +33,7 @@ const metadata = {
   size: { type: "integer", minimum: 0, maximum: RESOURCE_LIMITS.blob_bytes },
   type: { ...s(), pattern: "^[^\\x00-\\x1f\\x7f]+$" }, name: { type: "string", maxLength: 200 },
   url: s(2048), created_at: n,
-  retention: obj({ expires_at: { type: ["integer", "null"], minimum: 0 }, reasons: arr(s(), 32) }),
+  retention: obj({ expires_at: { type: ["integer", "null"], minimum: 0 }, reasons: arr(s(), 32) }, ["expires_at", "reasons"]),
 };
 const blob = obj(metadata, ["id", "sha256", "size", "type", "url", "created_at", "retention"]);
 const attachment = obj({ blob_id: blobIdSchema, name: { type: "string", maxLength: 200 } }, ["blob_id"]);
@@ -52,7 +52,7 @@ export const blobSchemas = Object.freeze({
   blobSha256: sha256Schema,
   filePath: filePathSchema,
   blobMetadata: blob,
-  blobList: obj({ blobs: arr(blob, 1000), cursor: { type: ["string", "null"] } }, ["blobs"]),
+  blobList: obj({ blobs: arr(blob, 1000), cursor: { type: ["string", "null"] } }, ["blobs", "cursor"]),
   blobAttachment: attachment,
   blobAttachments: arr(attachment, 16),
   uploadStart: obj({ cid, sha256: sha256Schema, size: metadata.size, type: metadata.type, name: { type: "string", maxLength: 200 } }, ["cid", "sha256", "size", "type"]),
@@ -82,10 +82,16 @@ export const blobSchemas = Object.freeze({
   }, [...requiredGuards, "expected_head_revision", "entry", "files"]),
   publicationRollback: obj({ ...guards, expected_head_revision: n, version: { type: "integer", minimum: 1 } },
     [...requiredGuards, "expected_head_revision", "version"]),
-  publicationResultV3: obj({ version: { type: "integer", minimum: 1 }, head_revision: { type: "integer", minimum: 1 } },
+  publicationReceipt: obj({ version: { type: "integer", minimum: 1 }, head_revision: { type: "integer", minimum: 1 } },
     ["version", "head_revision"]),
-  publicationHead: obj({ current: n, latest: n, healthy: n, head_revision: n,
-    needs_republication: bool }, ["current", "latest", "healthy", "head_revision"]),
+  publicationList: obj({ current: n, latest: n, healthy: n, head_revision: n, served: n,
+    versions: arr(obj({ version: { type: "integer", minimum: 1 }, created_at: n,
+      status: { enum: ["pending", "healthy", "failed"] }, message: { type: ["string", "null"] },
+      files: n, errors: arr({}), by: s() }, ["version", "created_at", "status", "message", "files"])) },
+    ["current", "latest", "healthy", "head_revision", "served", "versions"]),
+  publicationDetails: obj({ version: { type: "integer", minimum: 1 }, entry: filePathSchema,
+    files: arr(obj({ ...publicationFile.properties, sha256: sha256Schema, size: metadata.size },
+      ["path", "blob_id", "type", "sha256", "size"]), RESOURCE_LIMITS.files_per_publication) }, ["version", "entry", "files"]),
   transferDescriptor: obj({
     transfer_id: s(), phase: { enum: ["queued", "uploading", "ready", "committing", "accepted", "rejected"] },
     blob, file, error: transferError, progress: n,

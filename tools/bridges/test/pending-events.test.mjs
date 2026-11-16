@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -21,7 +22,7 @@ async function fixture(t, events) {
   const options = { events, response: null, failProbe: null, afterRead: null };
   let readThrough = 0;
   const server = createServer(async (req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:CONTRACT_VERSION,core_release:CORE_RELEASE,workflows:[]})); return; }
     const url = new URL(req.url, "http://localhost");
     seen.push({ method: req.method, path: url.pathname, after: url.searchParams.get("after"), auth: req.headers.authorization });
     res.setHeader("content-type", "application/json");
