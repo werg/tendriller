@@ -217,13 +217,24 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "file-refs/cleanup" && method === "POST") {
     const input = assertValid("fileCleanup", await readJson(req, 4096));
-    const result = mutate(t, actor, input, { paths: [["files", input.path]], operations: ["file.write"] }, input, () => {
+    // A retired bound scope cannot satisfy ordinary file-write guards. Cleanup is
+    // deliberately narrower: active operation guards plus proof of retirement.
+    // Keep the tombstone and monotonic revision to prevent revision-zero ABA.
+    const targets = { paths: [["files", input.path]], operations: ["file.write"] };
+    const result = mutate(t, actor, input, targets, input, () => {
       const current = fileHead(t, input.path);
-      if (!current || current.revision !== input.expected_revision || current.blob_id !== null)
-        throw new HttpError(409, "file_conflict", "Only the current deleted file can be cleaned up");
-      t.db.run("DELETE FROM file_refs WHERE path=?", input.path);
-      const cursor = t.db.one<{ cursor: number }>("SELECT COALESCE(MAX(cursor),0) AS cursor FROM file_ref_changes")?.cursor ?? 0;
-      return { file: fileValue(current), cursor };
+      if (!current || current.revision !== input.expected_revision || current.blob_id === null)
+        throw new HttpError(409, "file_conflict", "Cleanup requires the current live file revision");
+      const bound = current.scope && t.db.one<{ retired: number }>("SELECT retired FROM scopes WHERE id=?", current.scope);
+      if (!bound || bound.retired !== 1)
+        throw new HttpError(409, "scope_active", "Only a file bound to a retired scope can be cleaned up");
+      const now = t.now(), revision = current.revision + 1;
+      t.db.run("UPDATE file_refs SET revision=?,blob_id=NULL,updated_at=?,by_actor=? WHERE path=?",
+        revision, now, actor, input.path);
+      t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,NULL,?,?,?,?,?,?)",
+        input.path, revision, current.name, current.type, current.scope, now, actor, input.cid);
+      const cursor = t.db.one<{ cursor: number }>("SELECT last_insert_rowid() AS cursor")!.cursor;
+      return { file: fileValue(fileHead(t, input.path)!), cursor };
     });
     return json(result);
   }

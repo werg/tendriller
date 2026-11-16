@@ -144,11 +144,12 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (STORAGE_V3_ROUTE.test(sub)) {
-    if (sub.startsWith("publications")) throw new HttpError(403, "forbidden");
-    if (sub.startsWith("file-refs") && (m === "GET" || m === "HEAD") && !allows(principal, "page.write"))
+    if (sub.startsWith("publications") && !allows(principal, "page.owner"))
+      throw new HttpError(403, "forbidden", "Only the owner can publish or roll back page code");
+    if (sub.startsWith("file-refs") && !allows(principal, "page.write"))
       throw new HttpError(403, "forbidden");
-    if (sub.startsWith("file-refs") && m !== "GET" && m !== "HEAD" && !allows(principal, "page.owner"))
-      throw new HttpError(403, "forbidden", "Only the owner can change shared files");
+    if (sub === "file-refs/cleanup" && !allows(principal, "page.owner"))
+      throw new HttpError(403, "forbidden", "Only the owner can clean up retired-scope files");
     if ((sub === "blobs" || /^blobs\/[^/]+\/info$/.test(sub)) && !allows(principal, "page.owner"))
       throw new HttpError(403, "forbidden", "Only the owner can enumerate captures");
     if (m !== "GET" && m !== "HEAD" && !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
