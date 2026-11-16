@@ -218,6 +218,24 @@ test("identical conversation inputs keep distinct IDs and exact echo reconciliat
   assert.equal(entries.every(entry => entry.status === "accepted"), true);
 });
 
+test("transcript observers see acknowledgements and stable echo identity through independent snapshots", async () => {
+  const env = await environment(), changes = [];
+  env.core.bus.on("transcript", entry => {
+    if (!entry) return;
+    changes.push({ status: entry.status, message_id: entry.message_id });
+    entry.text = "presentation-local edit";
+  });
+  const pending = env.core.conversation.send("original input"); await flush(); await env.commit();
+  const sent = env.sent.find(message => message.kind === "instruction");
+  env.transport.receive({ t: "ack", cid: sent.cid, seq: 1 }); await pending;
+  env.transport.receive({ t: "instruction_echo", cid: sent.cid, device: env.core.device.id, message_id: "persistent-message", text: sent.text, ts: 1 });
+  assert.deepEqual(changes, [
+    { status: "queued", message_id: undefined }, { status: "accepted", message_id: undefined },
+    { status: "accepted", message_id: "persistent-message" },
+  ]);
+  assert.equal(env.core.conversation.entries()[0].text, "original input");
+});
+
 test("delayed rejection retains recoverable text and its identity across reload", async () => {
   const env = await environment(), results = [];
   env.core.bus.on("conversation_result", result => results.push(result));

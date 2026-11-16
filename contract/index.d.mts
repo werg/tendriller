@@ -12,7 +12,7 @@ export type StateOperation = WireContracts["stateOperation"];
 export type CreateRequest = WireContracts["create"];
 export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
-export interface SayMessage extends SayRequest { t?: "say"; message_id?: string; ts?: number; present?: boolean }
+export interface SayMessage extends SayRequest { t?: "say"; message_id: string; ts: number; present?: boolean }
 export type BlobReference = WireContracts["blobReference"];
 export type SendResult = WireContracts["sendResult"];
 export type CaptureOptions = WireContracts["captureOptions"] & OperationOptions;
@@ -30,7 +30,7 @@ export type DeviceConfiguration = WireContracts["deviceConfiguration"];
 /** Guest/display broadcasts expose only each device's identity and presentation. */
 export interface DevicePresentation { id: string; purpose: DevicePurpose }
 export interface DeviceConfigMessage { t?: "device_config"; devices: (DeviceInfo | DevicePresentation)[]; focus: Focus | null }
-export interface Presence { state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent"; text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number; wake: "long_poll" | "webhook" | "schedule" | "none" }
+export interface Presence { state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent"; text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number; wake: "socket" | "long_poll" | "webhook" | "schedule" | "none" }
 export interface TranscriptEntry { ts: number; from: "agent" | "user"; text: string; message_id?: string; in_reply_to?: number; cid?: string; device?: string; status?: "queued" | "accepted" | "rejected"; error?: string; message?: string }
 export type ConversationResult = { cid: string } & ({ status: "queued" } | { status: "accepted"; seq?: number } | { status: "rejected"; error: string; message: string });
 export interface StateApi<T = Record<string, unknown>> {

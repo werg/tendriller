@@ -392,7 +392,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     transcript.push(e);
     if (transcript.length > TRANSCRIPT_MAX) transcript.splice(0, transcript.length - TRANSCRIPT_MAX);
     persistSoon();
-    bus.emit("transcript", e);
+    bus.emit("transcript", clone(e));
   };
 
 
@@ -601,7 +601,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             ? { cid: m.cid, status: "rejected", error: String(m.error?.code || m.error),
               message: m.message || m.error?.message || "Message rejected. Edit or retry the retained text." }
             : { cid: m.cid, status: "accepted", seq: m.seq };
-          if (mine) { Object.assign(mine, result); persistSoon(); }
+          if (mine) { Object.assign(mine, result); persistSoon(); bus.emit("transcript", clone(mine)); }
           bus.emit("conversation_result", { ...result, text: sent.text });
         }
         receipts.acknowledge(m.cid, m);
@@ -656,7 +656,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         const mine = m.cid && transcript.find(entry => entry.cid === m.cid && entry.device === m.device);
         const entry: TranscriptEntry = { ts: m.ts || Date.now(), from: "user", text: String(m.text ?? ""),
           message_id: m.message_id, cid: m.cid, device: m.device, status: "accepted" };
-        if (mine) { Object.assign(mine, entry); persistSoon(); }
+        if (mine) { Object.assign(mine, entry); persistSoon(); bus.emit("transcript", clone(mine)); }
         else if (!m.message_id || !transcript.some(value => value.message_id === m.message_id)) addTranscript(entry);
         bus.emit("instruction_echo", m);
         break;

@@ -83,7 +83,7 @@ const coreSchemas = {
   probeNonce: { type: "string", pattern: "^[a-z2-7]{20}$" },
   deliveryProbe: object({ nonce: { type: "string", pattern: "^[a-z2-7]{20}$" }, seq: { type: "integer", minimum: 1 },
     created_at: integer, ack_at: nullableTime, status_url: string, ack_url: string }, ["nonce", "seq", "created_at", "ack_at", "status_url", "ack_url"]),
-  sayMessage: object({ ...sayProperties, message_id: string, ts: integer, present: boolean }, ["text"], true),
+  sayMessage: object({ ...sayProperties, message_id: { type: "string", minLength: 1 }, ts: integer, present: boolean }, ["text", "message_id", "ts"], true),
   stateOperation,
   stateOperations: { type: "array", items: stateOperation },
   stateUpdate: { anyOf: [

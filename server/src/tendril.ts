@@ -1019,7 +1019,7 @@ export class Tendril extends DurableObject<Env> {
       const play = att.deviceId === speaker && sockets.get(att.deviceId) === ws;
       if (!present && !play) continue;
       this.send(ws, { t: "say", text, present, speak: play,
-        ts: entry.ts, message_id: messageId, in_reply_to: replyTo, speak_on: speaker });
+        ts: entry.ts, message_id: messageId, ...(replyTo !== null ? { in_reply_to: replyTo } : {}), ...(speaker !== null ? { speak_on: speaker } : {}) });
     }
     addActivity(this, { kind: "say", summary: `Message ${messageId}${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
     return messageId;

@@ -2235,7 +2235,8 @@
           "type": "string"
         },
         "message_id": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "ts": {
           "type": "integer",
@@ -2246,7 +2247,9 @@
         }
       },
       "required": [
-        "text"
+        "text",
+        "message_id",
+        "ts"
       ],
       "additionalProperties": true
     },

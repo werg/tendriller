@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { assertValid } from "../../contract/index.mjs";
 import { api, apiJson, create, inDO, PageClient, req, sleep } from "./helpers";
 
 describe("eval relay", () => {
@@ -267,6 +268,9 @@ describe("say, notify, logs and voice events", () => {
     expect(echoes.every(message => message.device === page.deviceId)).toBe(true);
     const reply = await apiJson(h, 'POST', 'say', { text: 'Recorded twice', speak: false });
     const spoken = await page.next('say');
+    assertValid('sayMessage', spoken);
+    expect(spoken).not.toHaveProperty('in_reply_to');
+    expect(spoken).not.toHaveProperty('speak_on');
     const again = await PageClient.connect(h.page_url);
     expect(again.welcome.transcript.map((message: any) => message.message_id)).toEqual([...echoes.map(message => message.message_id), spoken.message_id]);
     expect(again.welcome.transcript.slice(0, 2).map((message: any) => message.cid)).toEqual(['same-text-first', 'same-text-second']);

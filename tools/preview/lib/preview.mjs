@@ -85,7 +85,8 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
       const p = decodeURIComponent(url.pathname);
       const publicationRoute=/^\/_publications\/([a-f0-9]{64})\/(.*)$/.exec(p);
       if(publicationRoute){
-        const stored=publications.get(publicationRoute[1]), path=publicationRoute[2]||"index.html",bytes=stored?.contents.get(path);
+        const stored=publications.get(publicationRoute[1]), requested=publicationRoute[2];
+        const path=!requested||requested.endsWith("/")?requested+"index.html":requested,bytes=stored?.contents.get(path);
         if(!bytes)return json(404,{error:{code:"not_found",message:"No such publication asset"}});
         const type=guessType(path);return send(200,type,type==="text/html"?injectRuntime(bytes.toString("utf8"),stored.manifest,path):bytes,{"cache-control":"public,max-age=31536000,immutable","X-Tendril-Publication":stored.manifest.id});
       }

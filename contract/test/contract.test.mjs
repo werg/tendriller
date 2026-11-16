@@ -97,7 +97,8 @@ test("exported bundle media can have no name and multi-file templates keep the s
   const manyCaptures = Array.from({ length: 201 }, (_, i) => ({ ...bundle.media[0],
     id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32] }));
   assert.equal(validate("bundle", { ...bundle, media: manyCaptures }).length, 0);
-  assert.equal(validate("sayMessage", { t: "say", text: "Look here", present: false, speak: true }).length, 0);
+  assert.equal(validate("sayMessage", { t: "say", text: "Look here", message_id: "reply-1", ts: 1, present: false, speak: true }).length, 0);
+  assert.ok(validate("sayMessage", { t: "say", text: "Uncorrelated reply" }).length);
   assert.ok(validate("say", { text: "Look here", present: false }).length);
 });
 
