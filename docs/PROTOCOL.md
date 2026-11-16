@@ -44,7 +44,7 @@ Generic `POST A/events` and browser `send` accept a command envelope:
 
 ## Authoritative scopes and generations
 
-A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
+A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish`, `timer.write` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
 
 - `GET A/scopes` reads active descriptors.
 - `PUT A/scopes/<id>` registers or rebinds `{cid,expected_generations,paths,operations}`.
@@ -56,6 +56,15 @@ Lifecycle mutations require authorized control access. Rebinding requires the cu
 The server derives required guards from all overlapping paths, explicit operation targets and selected scopes. A write to an ancestor or the document root overlaps a protected descendant. Extra supplied guards are validated too. Missing required guards return `generation_required`; stale, unknown or retired guards return `stale_generation`.
 
 Generation validation, the mutation and its deduplication receipt share the same local transaction. A duplicate accepted command returns its saved result after a lost acknowledgement. It does not apply twice, including after later generation rotation.
+
+Timer creation, edits, cancellation, and deletion target `timer.write` and use
+this same command transaction. Timers also carry a monotonic `revision`;
+`PATCH` and `DELETE` require `expected_revision`, and alarm advances change that
+revision too. A stale review returns `timer_conflict` before any timer or
+notification change. `DELETE` accepts a JSON command body and returns
+`{id,revision,deleted:true}`. Exact accepted retries recover the original result
+even after the timer is removed. See [timer operations](EXPERIENCES.md#timers-that-survive-a-closed-page)
+for payloads, recurrence, lifetime gates, and notification semantics.
 
 ## Shared-state writes
 

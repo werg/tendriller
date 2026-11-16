@@ -24,6 +24,12 @@ before(async () => {
       res.end(JSON.stringify({ id: "abcdefghijkl", name: "Contract page", lifetime: "ad_hoc", token: "tk_private",
         mode: body ? JSON.parse(body).mode || "interactive" : "interactive",
         api: `${origin}/api/t/abcdefghijkl`, page_url: `${origin}/page/`, agent_setup: { event_delivery: "not_configured" } }));
+    } else if (/\/timers(?:\/[^/]+)?$/.test(req.url)) {
+      const input = JSON.parse(body), revision = (input.expected_revision ?? 0) + 1;
+      res.end(JSON.stringify(req.method === "DELETE" ? { id: "timer-id", revision, deleted: true } : {
+        id: "timer-id", revision, title: input.title ?? "Check", due_at: input.due_at ?? 1794810000000,
+        timezone: "UTC", missed: "fire_once", notify: false, state: input.state ?? "scheduled", created_at: 1, updated_at: 1,
+      }));
     } else res.end(JSON.stringify({ ok: true, role: "guest", id: "l_test", url: `${origin}/guest/` }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -134,8 +140,10 @@ test("durable work commands preserve targets, revisions and explicit publication
     [["focus", "d_example", "--ttl", "60"], "POST", "/focus", { device: "d_example", ttl_seconds: 60 }],
     [["focus", "off"], "POST", "/focus", { device: null }],
     [["say", "Next step", "--device", "d_display", "--speak-on", "d_speaker"], "POST", "/say", { text: "Next step", speak: true, device: "d_display", speak_on: "d_speaker" }],
-    [["timers", "add", '{"title":"Check","due_at":1794810000000}'], "POST", "/timers", { title: "Check", due_at: 1794810000000 }],
-    [["timers", "cancel", "timer-id"], "PATCH", "/timers/timer-id", { state: "cancelled" }],
+    [["timers", "add", '{"title":"Check","due_at":1794810000000}', "--cid", "create-timer"], "POST", "/timers", { title: "Check", due_at: 1794810000000, cid: "create-timer", expected_generations: {} }],
+    [["timers", "cancel", "timer-id", "--revision", "1", "--cid", "cancel-timer"], "PATCH", "/timers/timer-id", { state: "cancelled", expected_revision: 1, cid: "cancel-timer", expected_generations: {} }],
+    [["timers", "update", "timer-id", '{"title":"Revised"}', "--revision", "2", "--cid", "edit-timer"], "PATCH", "/timers/timer-id", { title: "Revised", expected_revision: 2, cid: "edit-timer", expected_generations: {} }],
+    [["timers", "rm", "timer-id", "--revision", "3", "--cid", "delete-timer"], "DELETE", "/timers/timer-id", { expected_revision: 3, cid: "delete-timer", expected_generations: {} }],
     [["session", "set", '{"purpose":"Garden","expected_revision":4}'], "PUT", "/session", { purpose: "Garden", expected_revision: 4 }],
     [["bundle", "publish", "--expected-head", "0"], "POST", "/bundle/publish", { expected_head_revision: 0 }],
 
@@ -149,6 +157,11 @@ test("durable work commands preserve targets, revisions and explicit publication
   assert.equal((await cli(["bundle", "publish", "--expected-head", ""])).code, 64);
   assert.equal((await cli(["devices", "purpose", "d_example", "owner"])).code, 64);
   assert.equal((await cli(["remix"])).code, 64);
+  for (const args of [["timers", "cancel", "timer-id"], ["timers", "rm", "timer-id"],
+    ["timers", "update", "timer-id", '{"title":"Unreviewed"}'], ["timers", "cancel", "timer-id", "--revision", "0"],
+    ["timers", "cancel", "timer-id", "--revision", ""], ["timers", "cancel", "timer-id", "--revison", "3"],
+    ["timers", "add", '{"title":"Unexpected revision"}', "--revision", "1"]])
+    assert.equal((await cli(args)).code, 64);
   assert.equal(requests.length, count);
   assert.equal((await cli(["bundle", "export", "--include-data"])).code, 0);
   assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/bundle?include_data=true");
