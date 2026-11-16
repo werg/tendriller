@@ -296,6 +296,14 @@ test("unchanged local operations have no command receipt while conditional empty
   env.transport.receive({ t: "ack", cid: frame.cid, rev: 1 });
   const result = await pending;
   assert.equal(result.status, "accepted"); assert.equal(result.cid, frame.cid); assert.equal(result.rev, 1);
+  env.transport.receive({ t: "state", rev: 2, ops: [{ op: "set", path: ["remote"], value: true }] });
+  const check = env.core.state.apply([], { expected_revision: 2 });
+  await flush(); await env.commit();
+  const next = env.sent.filter(frame => frame.t === "state").at(-1);
+  env.transport.receive({ t: "ack", cid: next.cid, rev: 2 });
+  assert.equal((await check).status, "accepted");
+  assert.equal(env.core.connected, true, "an accepted check has no missing own delta to resynchronize");
+  assert.equal(env.core.state.revision, 2); assert.equal(env.core.state.get("remote"), true);
 });
 
 test("state.snapshot returns authoritative state and matching revision without flushing or discarding optimism", async () => {

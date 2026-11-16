@@ -604,7 +604,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         const sent = m.cid ? store.items.find((item) => item.cid === m.cid)?.msg : null;
         const idx = pendingState.findIndex((p) => p.cid === m.cid);
         if (idx >= 0) {
-          if (!m.error && typeof m.rev === "number" && m.rev > fullStateRev && m.rev <= rev) {
+          if (!m.error && pendingState[idx].ops.length && typeof m.rev === "number" && m.rev > fullStateRev && m.rev <= rev) {
             // Different sockets can broadcast N+1 before this socket gets its
             // ack for N. A delta does not include our write, and reapplying N on
             // top could overwrite N+1. Keep the item until a reconnect supplies
@@ -617,7 +617,7 @@ export function createCore(cfg: TendrilConfig): Internal {
           // A reconnect may install a newer full snapshot before replay returns
           // a cached success for this cid. Its old ops are already accounted for
           // by that snapshot; applying them again can resurrect archived data.
-          if (!m.error && typeof m.rev === "number" && m.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
+          if (!m.error && p.ops.length && typeof m.rev === "number" && m.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
             try { confirmed = applyOps(confirmed, p.ops); }
             catch (error) {
               if (!(error instanceof StatePathError)) throw error;
