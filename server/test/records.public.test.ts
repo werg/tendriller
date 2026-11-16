@@ -1,14 +1,15 @@
 import { afterEach, expect, it } from "vitest";
-import { RECORD_LOG_LIMITS, encodeRecord, verifyRecordEntry, recordGenesisRoot } from "../../contract/records.mjs";
+import { RECORD_LOG_LIMITS, createRecordLogClient, encodeRecord, verifyRecordEntry, recordGenesisRoot } from "../../contract/records.mjs";
 import type { RecordLogEntry, RecordLogInfo, RecordLogPage } from "../../contract/records.mjs";
 import { appendRecord, getRecordLog } from "../src/records";
 import { Db } from "../src/db";
+import { authenticateAgentToken, currentPrincipal } from "../src/access";
 import { api, apiJson, create, inDO, PageClient, publishFiles, req, sleep, type Handle } from "./helpers";
 const bytes = (value: string) => new TextEncoder().encode(value);
 const pages: PageClient[] = [];
 afterEach(() => { for (const page of pages.splice(0)) page.close(); });
 async function setup() {
-  const h = await create();
+  const h = await create({ mode: "dashboard", listener: false });
   await apiJson(h, "PATCH", "", { lifetime: "resident" });
   const info = await apiJson<RecordLogInfo>(h, "POST", "records", {});
   return { h, info, historyId: info.descriptor.historyId };
@@ -36,12 +37,54 @@ it("atomically deduplicates concurrent exact bytes and resumes original position
   const [one, retry] = await Promise.all([append(h, historyId, "same"), append(h, historyId, "same")]);
   expect(one).toEqual(retry); expect(one.position).toBe(1);
   expect(await verifyRecordEntry(one, info.head)).toEqual(bytes("same"));
-  await inDO(h.id, t => { t.db = new Db(t.ctx.storage); t.db.init(); });
+  await inDO(h.id, t => { t.skew = 123; });
+  await inDO(h.id, t => { t.ctx.abort("record-log restart test"); }).catch(() => {});
+  expect(await inDO(h.id, t => t.skew)).toBe(0);
   expect(await append(h, historyId, "same")).toEqual(one);
   const other = await append(h, historyId, "other");
   expect(other.position).toBe(2); expect(other.previousRoot).toBe(one.root);
   const page = await read(h, historyId);
   expect(page.entries).toEqual([one, other]); expect(page.head.bytes).toBe(9);
+});
+it("recovers a lost HTTP append reply using the portable public client", async () => {
+  const { h, historyId } = await setup(); let loseReply = true;
+  const client = createRecordLogClient({ base: h.api, headers: () => ({ Authorization: `Bearer ${h.token}` }), fetch: async (url, options) => {
+    const response = await req(String(url), options);
+    if (loseReply && options?.method === "POST") { loseReply = false; throw new Error("response lost after commit"); }
+    return response;
+  } });
+  await expect(client.append(bytes("one operation"), { historyId })).rejects.toThrow("response lost");
+  await inDO(h.id, t => { t.db = new Db(t.ctx.storage); t.db.init(); });
+  const result = await client.append(bytes("one operation"), { historyId });
+  expect(result.position).toBe(1);
+  expect((await client.read({ historyId, after: 0 })).entries).toEqual([result]);
+});
+it("serializes distinct concurrent appends and bounds the encoded read page", async () => {
+  const { h, historyId, info } = await setup();
+  const results = await Promise.all(Array.from({ length: 16 }, (_, i) => append(h, historyId, `concurrent-${i}`)));
+  expect(results.map(value => value.position).sort((a, b) => a - b)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
+  let previous = info.head;
+  for (const value of (await read(h, historyId)).entries) {
+    const decoded = await verifyRecordEntry(value, previous);
+    previous = { historyId, position: value.position, root: value.root, bytes: previous.bytes + decoded.length };
+  }
+  for (let i = 0; i < 4; i++) await inDO(h.id, t => appendRecord(t, historyId, new Uint8Array(RECORD_LOG_LIMITS.recordBytes).fill(i)));
+  const page = await read(h, historyId, 16);
+  expect(page.entries.length).toBeGreaterThan(0); expect(page.entries.length).toBeLessThan(4);
+  expect(page.entries.reduce((size, value) => size + new TextEncoder().encode(JSON.stringify(value)).length, 0)).toBeLessThanOrEqual(RECORD_LOG_LIMITS.readBytes);
+  expect((await read(h, historyId, page.cursor)).cursor).toBe(20);
+});
+it("checks local revocation again after asynchronous append preparation", async () => {
+  const { h, historyId, info } = await setup();
+  await inDO(h.id, async t => {
+    const principal = await authenticateAgentToken(t, h.token);
+    let authorizations = 0;
+    await expect(appendRecord(t, historyId, bytes("revoked during preparation"), () => {
+      if (++authorizations === 2) t.db.run("DELETE FROM tokens WHERE hash=?", principal.credentialHash);
+      if (!currentPrincipal(t, principal)) throw new Error("revoked");
+    })).rejects.toThrow("revoked");
+    expect(getRecordLog(t)).toEqual(info); expect(t.db.all("SELECT * FROM record_log_entries")).toEqual([]);
+  });
 });
 it("commits entry, deduplication, and head together or rolls every write back", async () => {
   const { h, historyId, info } = await setup();

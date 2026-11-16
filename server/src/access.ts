@@ -113,6 +113,14 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
   return { kind: "page", name: identity.accountId ?? identity.linkId, ...identity };
 }
 
+/** Recheck local revocation at a synchronous commit after asynchronous preparation. */
+export function currentPrincipal(t: Tendril, principal: Principal): Principal | null {
+  if (t.db.get("disabled", false)) return null;
+  if (principal.kind === "page") return localPagePrincipal(t, principal);
+  if (principal.kind === "producer") return producerStillValid(t, principal) ? principal : null;
+  return t.db.one("SELECT 1 FROM tokens WHERE hash=? AND name=?", principal.credentialHash, principal.name) ? principal : null;
+}
+
 export async function authenticatePage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
   const session = await readPageSession(t, req);
   const principal = localPagePrincipal(t, { role: link.role, accountId: session?.account_id ?? null,

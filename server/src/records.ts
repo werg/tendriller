@@ -3,7 +3,7 @@ import { RECORD_LOG_FORMAT, RECORD_LOG_LIMITS, RecordLogError, decodeRecord, enc
   recordBytes, recordEntryRoot, recordGenesisRoot, recordHistoryId, recordId, recordPosition } from "../../contract/records.mjs";
 import type { RecordLogEntry, RecordLogHead, RecordLogInfo, RecordLogPage } from "../../contract/records.mjs";
 import type { Tendril } from "./tendril";
-import { allows, authorizeSocket, pageAccessAllowed, type Principal } from "./access";
+import { allows, authorizeSocket, currentPrincipal, pageAccessAllowed, type Principal } from "./access";
 import { HttpError, isPlainObject, json, readJson } from "./http";
 
 type Store = Pick<Tendril, "db" | "transaction">;
@@ -29,12 +29,14 @@ export function getRecordLog(t: Store, historyId?: string): RecordLogInfo {
   return { descriptor: { historyId: current.history_id, format: RECORD_LOG_FORMAT, limits: { ...RECORD_LOG_LIMITS } }, head: head(current) };
 }
 /** Idempotent provisioning chooses identity on the server, independent of page versions. */
-export async function provisionRecordLog(t: Store): Promise<RecordLogInfo> {
+export async function provisionRecordLog(t: Store, authorize: () => void = () => {}): Promise<RecordLogInfo> {
+  authorize();
   requireResident(t);
   if (t.db.one("SELECT id FROM record_log WHERE id=1")) return getRecordLog(t);
   const historyId = "h_" + crypto.randomUUID().replaceAll("-", "");
   const root = await recordGenesisRoot(historyId);
   return t.transaction(() => {
+    authorize();
     requireResident(t);
     if (!t.db.one("SELECT id FROM record_log WHERE id=1"))
       t.db.run("INSERT INTO record_log(id,history_id,position,root,bytes) VALUES(1,?,0,?,0)", historyId, root);
@@ -42,10 +44,11 @@ export async function provisionRecordLog(t: Store): Promise<RecordLogInfo> {
   });
 }
 /** Hash asynchronously, then compare the captured head within one synchronous commit. */
-export async function appendRecord(t: Store, historyId: string, value: Uint8Array): Promise<{ entry: RecordLogEntry; fresh: boolean }> {
+export async function appendRecord(t: Store, historyId: string, value: Uint8Array, authorize: () => void = () => {}): Promise<{ entry: RecordLogEntry; fresh: boolean }> {
   recordHistoryId(historyId);
   const bytes = recordBytes(value), encoded = encodeRecord(bytes), id = await recordId(bytes);
   for (let attempt = 0; attempt < 64; attempt++) {
+    authorize();
     requireResident(t);
     const before = row(t, historyId);
     const previous = t.db.one<EntryRow>("SELECT * FROM record_log_entries WHERE record_id=?", id);
@@ -58,6 +61,7 @@ export async function appendRecord(t: Store, historyId: string, value: Uint8Arra
       throw new HttpError(413, "record_log_full", "Retained record log quota exhausted; no entries were removed", { limits: RECORD_LOG_LIMITS });
     const root = await recordEntryRoot(historyId, position, before.root, id);
     const committed = t.transaction(() => {
+      authorize();
       requireResident(t);
       const current = row(t, historyId);
       // Another append may have committed while WebCrypto was running.
@@ -100,15 +104,19 @@ async function notifyRecordHead(t: Tendril, value: RecordLogHead): Promise<void>
   for (const ws of t.agentSockets()) t.send(ws, { t: "record_log_head", head: value });
 }
 export async function handleRecordLog(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
-  if (!allows(principal, "agent.manage") && !allows(principal, "page.owner"))
-    throw new HttpError(403, "forbidden", "Only the owner and authorized agents can access retained records");
+  const authorize = () => {
+    const current = currentPrincipal(t, principal);
+    if (!current || !allows(current, "agent.manage") && !allows(current, "page.owner"))
+      throw new HttpError(403, "forbidden", "Only the owner and authorized agents can access retained records");
+  };
+  authorize();
   try {
     if (path === "records") {
       if (req.method === "GET" || req.method === "HEAD") return json(getRecordLog(t, url.searchParams.get("historyId") ?? undefined));
       if (req.method === "POST") {
         const body = await readJson(req, 1024);
         if (!isPlainObject(body) || Object.keys(body).length) throw new HttpError(400, "bad_request", "Provisioning takes an empty object");
-        return json(await provisionRecordLog(t));
+        return json(await provisionRecordLog(t, authorize));
       }
     }
     if (path === "records/entries") {
@@ -116,7 +124,7 @@ export async function handleRecordLog(t: Tendril, req: Request, url: URL, path: 
         const body = await readJson(req, Math.ceil(RECORD_LOG_LIMITS.recordBytes / 3) * 4 + 1024);
         if (!isPlainObject(body) || Object.keys(body).sort().join(",") !== "historyId,record")
           throw new HttpError(400, "bad_request", "Append requires only historyId and record");
-        const accepted = await appendRecord(t, body.historyId, decodeRecord(body.record));
+        const accepted = await appendRecord(t, body.historyId, decodeRecord(body.record), authorize);
         if (accepted.fresh) {
           const current = getRecordLog(t).head;
           t.afterCommit(() => notifyRecordHead(t, current));

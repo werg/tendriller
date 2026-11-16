@@ -9,6 +9,7 @@ Start with authored HTML, JavaScript and assets. There is no starter, component 
 - [Agent guide](agent.md): create a page, establish delivery and publish complete files.
 - [Browser API](docs/BROWSER_API.md): transport, conversation, state, streams, captures and explicit device features.
 - [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
+- [Retained record logs](docs/RECORD_LOG.md): exact bytes, retry-safe identity, bounded catch-up and peer adapters.
 - [Operational tools](docs/tools/CLI.md): optional core-owned publishing, preview, collectors and host bridges.
 - [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.
 - [Cookbooks](https://github.com/werg/tendriller-contrib): adaptable decision guides and reviewed reference implementations.

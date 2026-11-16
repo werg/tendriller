@@ -6,6 +6,12 @@ Tendriller does not require Email Routing or Email Sending. Public reports use `
 
 ## Fresh storage baseline
 
+The retained-log implementation raises the page schema baseline to **5**. The
+canonical configurations below still identify revision-4 resources and must not
+be deployed with this code merely by changing a schema environment variable.
+Use deliberately provisioned fresh resources for the new unreleased baseline;
+no storage migration is supplied. See [retained record logs](RECORD_LOG.md).
+
 The canonical staging and production Workers use separate empty revision-4 D1
 databases and R2 buckets. The first D1 migration installs the account schema;
 the second records a one-time cutover marker. New `TendrilV4` and `AdmissionV4`
