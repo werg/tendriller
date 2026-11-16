@@ -1010,6 +1010,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     if (JSON.stringify(local) !== before) emitState([], "cache");
     captureQueueChanged();
     timerQueueChanged();
+    // Restored acceptances only need local cleanup, even without a connection.
+    for (const item of store.items) {
+      if (item.msg.t === "upload_event" && item.msg.outcome?.status === "accepted") void settleCaptureOutcome(item);
+    }
   }).catch(() => {}).finally(() => {
     connection.start();
   });

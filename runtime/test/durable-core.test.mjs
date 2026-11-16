@@ -577,7 +577,7 @@ test("capture outcome save failures remain queued and retry only local storage a
   }
 });
 
-test("a saved capture acceptance survives failed deletion and reload without upload, pin or semantic replay", async () => {
+test("a saved capture acceptance survives failed deletion and offline reload without upload, pin or semantic replay", async () => {
   const first = await environment({ scopes: [descriptor] }), before = [], after = [];
   first.core.bus.on("upload_event", result => before.push(plain(result)));
   const { promise, completion, id } = await captureAwaitingAck(first);
@@ -592,7 +592,7 @@ test("a saved capture acceptance survives failed deletion and reload without upl
   assert.equal((await promise).status, "queued"); assert.equal(first.core.captures()[0].status, "queued");
   first.transport.disconnect(); first.database.failure = false;
   const second = await environment({ database: first.database, localStorage: first.localStorage, blobs: first.blobs,
-    scopes: [{ ...descriptor, generation: "rotated" }], onCore(core) { core.bus.on("upload_event", result => after.push(plain(result))); } });
+    online: false, scopes: [{ ...descriptor, generation: "rotated" }], onCore(core) { core.bus.on("upload_event", result => after.push(plain(result))); } });
   assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false);
   assert.equal(second.blobs.calls.length, requests); assert.equal(after.length, 0);
   await second.commit();

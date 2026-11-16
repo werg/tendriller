@@ -239,8 +239,8 @@ intent remain available for explicit `retryCapture` or `discardCapture`. Retry
 durably clears the saved rejection before resuming, keeping the original upload,
 pin, and event command IDs and generation guards. An acceptance is saved before
 the queue entry is durably removed, then reported through the promise and
-`upload_event`. After reload, a saved acceptance finishes local cleanup without
-uploading, pinning, or sending the semantic event again.
+`upload_event`. After reload, a saved acceptance finishes local cleanup even
+offline, without uploading, pinning, or sending the semantic event again.
 
 If saving a known outcome or removing its queue entry fails, the capture remains
 `queued` with an uncertain local result. The runtime retries local persistence;
