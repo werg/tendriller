@@ -96,7 +96,8 @@ const coreSchemas = {
     object({ status: { const: "rejected" }, error: string, message: string }, ["status", "error"]),
   ] },
   blobReference,
-  captureOptions: object({ ...guards, name: string, data: jsonObject, dataPath: { type: "array", items: string }, keep: { type: "boolean" }, wake: { type: "boolean" } }, ["data"]),
+  captureOptions: object({ scope: scopeId, expected_generations: generationMap, name: string, data: jsonObject,
+    dataPath: { type: "array", items: string }, keep: { type: "boolean" }, wake: { type: "boolean" } }, ["data"]),
   captureResult: { anyOf: [
     object({ capture_id: string, status: { const: "accepted" }, seq: { type: "integer", minimum: 1 }, blob: blobReference }, ["capture_id", "status", "seq", "blob"]),
     object({ capture_id: string, status: { const: "queued" } }, ["capture_id", "status"]),

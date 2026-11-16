@@ -128,6 +128,10 @@ See [Streams](STREAMS.md).
 a capture with its semantic event and original concurrency context. Use
 `captures()`, `retryCapture(id)`, and `discardCapture(id)` to expose pending or
 rejected work. `upload_event` and `capture_queue` report lifecycle changes.
+Each new call creates a runtime-owned capture ID; use an application ID in `data`
+to correlate a reviewed draft before asynchronous work, and `retryCapture` to
+retry the original operation. Unknown options, including a supplied `cid`, fail
+before any local queue write.
 `upload`, `blobUrl`, and `setBlobRetention` provide lower-level media operations;
 see [Captures](CAPTURES.md). Private cached records still require the current
 application's authorization policy before display.

@@ -30,6 +30,13 @@ test("set(null) and delete are distinct public operations", () => {
   assert.ok(validate("stateOperations", [{ op: "delete", path: ["reading"], value: 1 }]).length);
 });
 
+test("capture options carry application correlation while runtime owns command identity", () => {
+  const options = { data: { submission_id: "review-1" }, scope: "review", expected_generations: { review: "generation-1" } };
+  assert.deepEqual(assertValid("captureOptions", options), options);
+  assert.throws(() => assertValid("captureOptions", { ...options, cid: "caller-command" }), ContractError);
+  assert.throws(() => assertValid("captureOptions", { ...options, capture_id: "caller-capture" }), ContractError);
+});
+
 test("generated schemas match the executable and MCP-facing schema", () => {
   assert.deepEqual(JSON.parse(readFileSync(new URL("../v2.json", import.meta.url))), schemaDocument);
 });

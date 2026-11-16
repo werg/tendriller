@@ -19,12 +19,27 @@ Use `uploadEvent` for a photo, recording, file, or drawing that represents an in
 ```js
 const result = await tendril.uploadEvent(photo, {
   name: "hinge.jpg",
-  data: { type: "input", modality: "photo", note: "Which part is loose?", at: Date.now() },
+  data: { submission_id: crypto.randomUUID(), type: "input", modality: "photo", note: "Which part is loose?", at: Date.now() },
   keep: true
 });
 ```
 
 The runtime stores the blob and the semantic input in one IndexedDB outbox record. It persists the upload receipt before sending the event. Reloads, interrupted uploads, and reconnects resume the same transaction. The event contains the original data plus `blob`, `url`, and `capture_id`. An accepted result includes `seq`, `capture_id`, and `blob: {id, url, retention}`. An offline call returns `status:"queued"` after the local storage transaction commits, so the UI can finish the capture without waiting for a network connection.
+
+Each `uploadEvent` call creates new work with a runtime-owned `capture_id`.
+Its options do not accept a command ID; unknown options such as `cid` fail validation
+before any queue write or upload. Give the reviewed input its own `data.submission_id`
+before asynchronous work when the page needs to identify a draft or outcome card.
+That application ID and the runtime's capture ID have separate purposes.
+
+`capture_queue` entries include both `capture_id` and the original `data`, so the
+page can persist their association as soon as the durable queue changes. The
+promise's result also carries `capture_id`; associate it with the submitted card
+in that call's closure. This handles a storage rejection, which never enters the
+queue. `upload_event` carries a result and capture ID, without repeating the original
+data, so reconcile it against the saved association. An early terminal event can
+arrive before the original promise's continuation; applying the same outcome twice
+must be harmless.
 
 If a component wraps a value, set `dataPath`, for example:
 
@@ -43,7 +58,7 @@ Do not compose `await upload(blob); await send(metadata)` for durable capture fl
 
 Listen for `upload_event` to update a card after offline replay. Its payload is a capture result with the same `capture_id`. `capture_queue` reports the pending/rejected queue after storage opens and after changes. Read `tendril.captures()` on mount as well, because a listener may attach after initialization.
 
-`tendril.retryCapture(capture_id)` retries a rejected capture using its saved blob and metadata. The retry retains the original command ID and scope generations. It reuses an uploaded blob instead of duplicating media. A stale-generation rejection stays rejected until the person deliberately creates new work after review; retry never relabels a capture. `tendril.discardCapture(capture_id)` removes the local queued capture. Discarding is not an undo of a request already accepted by the server.
+`tendril.retryCapture(capture_id)` retries a rejected capture using its saved blob and metadata. The retry retains the original command ID and scope generations. It reuses an uploaded blob instead of duplicating media. Use this operation to retry saved work; calling `uploadEvent` again creates a separate submission. A stale-generation rejection stays rejected until the person deliberately creates new work after review; retry never relabels a capture. `tendril.discardCapture(capture_id)` removes the local queued capture. Discarding is not an undo of a request already accepted by the server.
 
 When browser storage is unavailable or a durable write fails, `uploadEvent` returns `storage_unavailable` rather than claiming the capture was saved. Keep the local preview open so the person can retry or save the file elsewhere. Device storage can still be evicted by the browser; installation and available storage affect offline reliability.
 
