@@ -537,7 +537,11 @@ class Control {
   }
 
   private toggleWake(testOnly: boolean): void {
-    if (this.wake?.running) { this.wake.stop(); this.wakeTest = false; return; }
+    if (this.wake?.running) {
+      this.wake.stop();
+      this.wakeTest = false;
+      if (!testOnly) return;
+    }
     if (!this.canWake) return;
     this.core.tts?.stop();
     this.capture?.stop();
