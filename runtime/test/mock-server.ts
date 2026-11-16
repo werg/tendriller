@@ -38,7 +38,7 @@ export interface MockTendril {
   pinReceipts: Map<string, { command: any; receipt: any }>;
   transferRequests: { path: string; method: string; body?: any }[];
   uploadFailureStatus: number;
-  dropUploadResponses: number;
+  holdCompletionResponses: number;
   dropPinResponses: number;
   sendReceipts: Map<string, any>;
   pageLoads: number;
@@ -73,7 +73,7 @@ export class MockServer {
     const t: MockTendril = {
       id, version: 1, html: "<h1>Hello</h1>", publications: new Map(), files: {}, noSw: true, preview: false, state: {}, scopes: [], rev: 0, seq: 0,
       sockets: new Set(), msgs: [], refuse: false, dedupe: new Set(), blobs: new Map(), pageLoads: 0, welcomeExtra: {},
-      uploads: new Map(), pinReceipts: new Map(), transferRequests: [], uploadFailureStatus: 0, dropUploadResponses: 0, dropPinResponses: 0, sendReceipts: new Map(),
+      uploads: new Map(), pinReceipts: new Map(), transferRequests: [], uploadFailureStatus: 0, holdCompletionResponses: 0, dropPinResponses: 0, sendReceipts: new Map(),
       ...over,
     };
     this.tendrils.set(id, t);
@@ -176,7 +176,9 @@ export class MockServer {
               sha256: upload.command.sha256, size: upload.command.size, created_at: Date.now(),
               retention: { expires_at: Date.now() + 30 * 86_400_000, reasons: [] } });
             upload.session.phase = "completed"; upload.session.upload_required = false;
-            if (t.dropUploadResponses > 0) { t.dropUploadResponses--; req.socket.destroy(); return; }
+            // Reload must happen after completion but before the browser receives its receipt.
+            // Resetting a reused connection before headers can trigger a transparent Chromium retry.
+            if (t.holdCompletionResponses > 0) { t.holdCompletionResponses--; return; }
             return respond({ status: "completed", blob: metadata(id) });
           }
         }

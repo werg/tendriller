@@ -399,8 +399,8 @@ test("capture and its semantic input survive offline reload as one transaction",
   expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
 });
 
-test("a lost upload response followed by reload reuses the blob and accepts its input once", async ({ page }) => {
-  const t = mock.create({ dropUploadResponses: 1 });
+test("reload before receiving the upload completion receipt reuses the blob and accepts its input once", async ({ page }) => {
+  const t = mock.create({ holdCompletionResponses: 1 });
   await open(page, t);
   await page.evaluate(() => {
     (window as any).capture = (window as any).tendril.uploadEvent(new Blob(["photo"], { type: "image/jpeg" }), {
@@ -408,6 +408,11 @@ test("a lost upload response followed by reload reuses the blob and accepts its 
     });
   });
   await mock.waitFor(() => t.blobs.size === 1);
+  expect([...t.uploads.values()][0].session.phase).toBe("completed");
+  const pending = await page.evaluate(() => (window as any).tendril.captures()[0]);
+  expect(pending).toMatchObject({ capture_id: t.transferRequests[0].body.cid, status: "queued" });
+  expect(pending.blob).toBeUndefined();
+  expect(mock.messages(t, "capture_complete")).toHaveLength(0);
   await page.reload();
   await page.waitForFunction(() => (window as any).tendril.connected);
   await mock.waitFor(() => mock.messages(t, "capture_complete").some((message) => message.data?.note === "The loose hinge"));
