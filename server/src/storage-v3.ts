@@ -11,7 +11,8 @@ export const STORAGE_V3_ROUTE = /^(?:uploads|blobs|file-refs|publications)(?:\/|
 
 interface UploadRow {
   id: string; actor: string; cid: string; sha256: string; size: number; type: string;
-  name: string | null; blob_id: string; phase: string; expires_at: number;
+  name: string | null; blob_id: string; source: "agent" | "page"; device: string | null;
+  phase: string; expires_at: number;
 }
 interface FileRow {
   path: string; revision: number; blob_id: string | null; name: string | null;
@@ -41,7 +42,7 @@ function blobMetadata(t: Tendril, id: string) {
   const info = blobInfo(t, id);
   return { id: info.id, sha256: info.sha256, size: info.size,
     type: info.type || "application/octet-stream", name: info.name || undefined,
-    url: `_tendril/blob/${id}`, created_at: info.ts,
+    url: `_tendril/blobs/${id}`, created_at: info.ts,
     retention: { expires_at: info.retention.expires_at, reasons: [info.retention.reason] } };
 }
 
@@ -69,7 +70,8 @@ function requireBlob(t: Tendril, id: string) {
   return blob;
 }
 
-export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor: string, rest: string): Promise<Response> {
+export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor: string, rest: string,
+  source: "agent" | "page" = "agent", device: string | null = null): Promise<Response> {
   const method = req.method === "HEAD" ? "GET" : req.method;
   if (rest === "uploads" && method === "POST") {
     const input = assertValid("uploadStart", await readJson(req, 4096));
@@ -87,11 +89,11 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
         throw new HttpError(429, "upload_quota", "Too many unfinished uploads");
       const ready = !!t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND status='ready'", input.sha256);
       const next: UploadRow = { id: uploadId(), actor, cid: input.cid, sha256: input.sha256,
-        size: input.size, type: input.type, name: input.name ?? null, blob_id: newBlobId(),
+        size: input.size, type: input.type, name: input.name ?? null, blob_id: newBlobId(), source, device,
         phase: ready ? "ready" : "reserved", expires_at: t.now() + RESOURCE_LIMITS.upload_expiry_seconds * 1000 };
-      t.db.run("INSERT INTO upload_sessions(id,actor,cid,sha256,size,type,name,blob_id,phase,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      t.db.run("INSERT INTO upload_sessions(id,actor,cid,sha256,size,type,name,blob_id,source,device,phase,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         next.id, next.actor, next.cid, next.sha256, next.size, next.type, next.name,
-        next.blob_id, next.phase, next.expires_at);
+        next.blob_id, next.source, next.device, next.phase, next.expires_at);
       return next;
     });
     return json(session(t, row), 201);
@@ -115,8 +117,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
         if (!current || current.phase === "aborted" || current.phase === "completed" || current.expires_at <= t.now())
           throw new HttpError(409, "upload_closed", "Upload closed while content was in transit");
         if (!t.db.one("SELECT 1 AS present FROM blobs WHERE id=?", row.blob_id))
-          t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,NULL,'agent',0)",
-            row.blob_id, hash, row.type, row.size, row.name, t.now());
+          t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,?,?,0)",
+            row.blob_id, hash, row.type, row.size, row.name, t.now(), row.device, row.source);
         t.db.run("UPDATE upload_sessions SET phase='received' WHERE id=? AND phase!='completed'", row.id);
       });
       return new Response(null, { status: 204 });
@@ -130,8 +132,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
         if (!t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND status='ready'", row.sha256))
           throw new HttpError(409, "upload_incomplete", "Upload content is not ready");
         if (!t.db.one("SELECT 1 AS present FROM blobs WHERE id=?", row.blob_id))
-          t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,NULL,'agent',0)",
-            row.blob_id, row.sha256, row.type, row.size, row.name, t.now());
+          t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,?,?,0)",
+            row.blob_id, row.sha256, row.type, row.size, row.name, t.now(), row.device, row.source);
         t.db.run("UPDATE upload_sessions SET phase='completed' WHERE id=?", row.id);
         return blobMetadata(t, row.blob_id);
       });

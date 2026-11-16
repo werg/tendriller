@@ -376,18 +376,39 @@ export function createCore(cfg: TendrilConfig): Internal {
 
   // ---------- http upload ----------
   const httpUpload = async (blob: Blob, name?: string, cid?: string, keep?: boolean): Promise<BlobReference> => {
-    const headers: Record<string, string> = { "Content-Type": blob.type || "application/octet-stream", ...deviceHeaders() };
-    if (cid) headers["X-Tendril-Cid"] = cid; // a replay after a lost response is stored once
-    if (name) headers["X-Tendril-Name"] = name;
-    if (keep === true) headers["X-Tendril-Keep"] = "true";
-    const r = await fetch(cfg.base + "_tendril/blob", { method: "POST", body: blob, headers });
-    if (!r.ok) {
-      let msg = `upload failed (${r.status})`, code = "upload_failed";
-      try { const j = await r.json(); if (j?.error?.message) msg = j.error.message; if (j?.error?.code) code = j.error.code; } catch { /* ignore */ }
-      throw new HttpError(r.status, msg, code);
-    }
-    const reference = await r.json();
+    const bytes = await blob.arrayBuffer();
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(n => n.toString(16).padStart(2, "0")).join("");
+    const headers = { ...deviceHeaders() };
+    const checked = async (response: Response) => {
+      if (response.ok) return response;
+      let msg = `upload failed (${response.status})`, code = "upload_failed";
+      try { const j = await response.json(); if (j?.error?.message) msg = j.error.message; if (j?.error?.code) code = j.error.code; } catch { /* ignore */ }
+      throw new HttpError(response.status, msg, code);
+    };
+    const start = await checked(await fetch(cfg.base + "_tendril/uploads", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ cid: cid ?? newCid(), sha256, size: blob.size,
+        type: blob.type || "application/octet-stream", ...(name ? { name } : {}) }),
+    }));
+    const session = await start.json();
+    if (session.upload_required) await checked(await fetch(cfg.base + `_tendril/uploads/${session.id}/content`, {
+      method: "PUT", headers: { "Content-Type": "application/octet-stream", ...headers }, body: bytes,
+    }));
+    const done = await checked(await fetch(cfg.base + `_tendril/uploads/${session.id}/complete`, { method: "POST", headers }));
+    let reference = (await done.json()).blob;
+    if (keep) reference = await pinBlob(reference.id, true);
     return { ...reference, url: new URL(reference.url, new URL(cfg.base, location.href)).href };
+  };
+
+  const pinBlob = async (id: string, keep: boolean): Promise<BlobReference> => {
+    const expected_generations = Object.fromEntries(scopes.filter(s => s.operations.includes("blob.pin")).map(s => [s.id, s.generation]));
+    const response = await fetch(cfg.base + `_tendril/blobs/${id}/pin`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...deviceHeaders() },
+      body: JSON.stringify({ cid: newCid(), expected_generations, keep }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new HttpError(response.status, result.error?.message || "Could not change capture retention", result.error?.code);
+    return result;
   };
 
   // ---------- incoming ----------
@@ -723,7 +744,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     deviceHeaders,
     blobUrl(id: string) {
       if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
-      return new URL(`_tendril/blob/${id}`, new URL(cfg.base, location.href)).href;
+      return new URL(`_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href;
     },
     bus,
     config: cfg,
@@ -832,12 +853,8 @@ export function createCore(cfg: TendrilConfig): Internal {
     },
     async setBlobRetention(id: string, opts: { keep: boolean }): Promise<BlobReference> {
       if (!/^b_[a-z2-7]{20}$/.test(id) || typeof opts?.keep !== "boolean") throw new TypeError("setBlobRetention needs a blob id and {keep:boolean}");
-      const response = await fetch(cfg.base + `_tendril/blob/${id}/retention`, {
-        method: "PATCH", headers: { "Content-Type": "application/json", ...deviceHeaders() }, body: JSON.stringify(opts),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new HttpError(response.status, result.error?.message || "Could not change capture retention", result.error?.code);
-      return { ...result, url: new URL(result.url, new URL(cfg.base, location.href)).href };
+      const result = await pinBlob(id, opts.keep);
+      return { ...result, url: new URL(result.url ?? `_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href };
     },
     async upload(blob: Blob, opts?: { name?: string; keep?: boolean }) {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.upload needs a Blob");

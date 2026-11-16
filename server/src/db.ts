@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, typ
 CREATE INDEX IF NOT EXISTS blobs_content ON blobs(sha256);
 CREATE TABLE IF NOT EXISTS upload_sessions (id TEXT PRIMARY KEY, actor TEXT NOT NULL, cid TEXT NOT NULL,
   sha256 TEXT NOT NULL, size INTEGER NOT NULL, type TEXT NOT NULL, name TEXT, blob_id TEXT NOT NULL,
-  phase TEXT NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(actor,cid));
+  source TEXT NOT NULL, device TEXT, phase TEXT NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(actor,cid));
 CREATE INDEX IF NOT EXISTS upload_sessions_expiry ON upload_sessions(expires_at);
 CREATE TABLE IF NOT EXISTS file_refs (path TEXT PRIMARY KEY, revision INTEGER NOT NULL, blob_id TEXT,
   name TEXT, type TEXT, scope TEXT, updated_at INTEGER NOT NULL, by_actor TEXT NOT NULL);
