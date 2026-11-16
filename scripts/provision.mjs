@@ -64,7 +64,7 @@ export function provisionResources(plan, wrangler) {
 export function deploymentConfig(plan, databaseId, account) {
   return {
     $schema: '../node_modules/wrangler/config-schema.json', name: plan.worker,
-    main: '../dist/service/worker.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],
+    main: '../dist/engine/worker.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],
     assets: { directory: './public', binding: 'ASSETS', run_worker_first: true },
     durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'TendrilV2' }, { name: 'ADMISSION', class_name: 'Admission' }] },
     migrations: [{ tag: 'v1', new_sqlite_classes: ['TendrilV2'] }, { tag: 'v2', new_sqlite_classes: ['Admission'] }],

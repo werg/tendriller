@@ -29,15 +29,6 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check:release
-      - name: Test the composed service with its pinned public contrib suite
-        run: node scripts/test-contrib-integration.mjs
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: release-contrib-service-failure-traces
-          path: test-results/contrib-integration/
-          include-hidden-files: true
-          if-no-files-found: ignore
       - run: npm run release:artifacts
       - uses: actions/upload-artifact@v4
         with:

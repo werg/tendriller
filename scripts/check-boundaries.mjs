@@ -1,19 +1,26 @@
 import assert from 'node:assert/strict';
-import {readFileSync, readdirSync, existsSync} from 'node:fs';
-import {join, relative, resolve} from 'node:path';
-const root=resolve(import.meta.dirname,'..');
-const walk=directory=>readdirSync(directory,{withFileTypes:true}).flatMap(entry=>entry.isDirectory()?walk(join(directory,entry.name)):[join(directory,entry.name)]);
-const optional=/(?:^|[/\\])(?:tendriller-contrib|cli|components|snippets|recipes|examples)(?:[/\\]|$)|@tendriller\/workflows/;
-for(const directory of ['server/src','runtime/src','contract'])for(const path of walk(join(root,directory))){
- if(!/\.(ts|mjs|mts)$/.test(path))continue;
- const source=readFileSync(path,'utf8');
- for(const match of source.matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g))
-  assert.ok(!optional.test(match[1]),`${relative(root,path)} imports optional implementation ${match[1]}`);
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+
+const root = resolve(import.meta.dirname, '..');
+const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
+  entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
+const application = /(?:^|[/\\])(?:tendriller-contrib|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)/;
+const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
+for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
+  if (!/\.(ts|mjs|mts)$/.test(path)) continue;
+  for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g))
+    assert.ok(!application.test(match[1]) && !tooling.test(match[1]), `${relative(root, path)} imports application/tool implementation ${match[1]}`);
 }
-for(const name of ['engine','service']){
- const inputs=join(root,'dist',name,'inputs.json');if(!existsSync(inputs))continue;
- for(const path of JSON.parse(readFileSync(inputs)))assert.ok(!optional.test(path)&&!/(?:node_modules\/)(?:ws|@modelcontextprotocol|playwright|@playwright)\//.test(path),`${name} build includes tool/component dependency ${path}`);
+const engine = JSON.parse(readFileSync(join(root, 'dist/engine/inputs.json')));
+for (const input of engine) assert.ok(!application.test(input) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
+const kernelPath = join(root, 'dist/runtime/inputs.json');
+if (existsSync(kernelPath)) for (const input of JSON.parse(readFileSync(kernelPath))) {
+  assert.ok(!application.test(input) && !tooling.test(input), `Browser kernel includes application/tool dependency ${input}`);
+  assert.ok(!/(?:^|[/\\])(?:control|voice)(?:[/\\]|$)|(?:^|[/\\])(?:rules|speech[^/\\]*)\.[cm]?[jt]s$|phonon-tts/.test(input), `Browser kernel includes optional interaction code ${input}`);
 }
-for(const name of ['archives.ts','assignments.ts','interactions.ts','recipe-gallery.ts'])assert.ok(!existsSync(join(root,'server/src',name)),`Optional workflow implementation remains in core: ${name}`);
-for(const path of walk(join(root,'dist/sdk')))assert.ok(!/\/server\/|\/runtime\/|\/tools\/|\/test\//.test(path),'SDK contains private implementation');
-console.log('Core engine, public SDK and composition import boundaries passed.');
+for (const name of ['composition.lock.json', 'composition', 'server/src/archives.ts', 'server/src/assignments.ts', 'server/src/interactions.ts', 'server/src/recipe-gallery.ts'])
+  assert.ok(!existsSync(join(root, name)), `Prescribed application surface remains: ${name}`);
+for (const path of walk(join(root, 'dist/sdk')))
+  assert.ok(!/\/server\/|\/runtime\/|\/tools\/|\/test\//.test(path), 'SDK contains private implementation');
+console.log('Public API, headless runtime, Worker and optional tool boundaries passed.');

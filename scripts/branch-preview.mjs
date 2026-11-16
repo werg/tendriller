@@ -48,7 +48,7 @@ export function previewConfig(identity, template, databaseId, accountId) {
     $schema: "../node_modules/wrangler/config-schema.json",
     name: identity.worker,
     account_id: accountId,
-    main: "../dist/service/worker.mjs",
+    main: "../dist/engine/worker.mjs",
     compatibility_date: template.compatibility_date,
     compatibility_flags: template.compatibility_flags,
     workers_dev: false,
