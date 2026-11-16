@@ -1,6 +1,6 @@
 # Tendriller
 
-Application-neutral pages connected to agents. Core contract 2; application state and event payloads are opaque.
+Application-neutral pages connected to agents. Core contract 3; application state and event payloads are opaque.
 
 ## Core interfaces
 

@@ -76,7 +76,7 @@ async function environment({ database = new Database(), localStorage = storage()
         return json({ status: "received" });
       }
       if (path === `/page/_tendril/uploads/${uploadId}/complete` && method === "POST")
-        return json({ status: "completed", blob: { id: blobId, url: `_tendril/blob/${blobId}`,
+        return json({ status: "completed", blob: { id: blobId, url: `_tendril/blobs/${blobId}`,
           sha256: stagedUpload.sha256, size: stagedUpload.size, type: stagedUpload.type } });
       throw new Error(`Unexpected upload test route: ${method} ${path}`);
     },
@@ -185,8 +185,9 @@ test("capture completion uses original scope and generation after upload and rel
   await first.commit(); // original blob and semantic intent become durable
   // WebCrypto digest and native Response.json() settle on later event-loop turns,
   // not just microtasks. Commit each durable phase without assuming two ticks.
-  for (let attempt = 0; attempt < 25 && !first.sent.some(frame => frame.t === "capture_complete"); attempt++) {
-    await new Promise(resolve => setImmediate(resolve));
+  const deadline = Date.now() + 5000;
+  while (!first.sent.some(frame => frame.t === "capture_complete") && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
     await first.commit();
   }
   const original = first.sent.find(frame => frame.t === "capture_complete");
