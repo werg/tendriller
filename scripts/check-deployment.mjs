@@ -23,6 +23,9 @@ async function get(path, headers) {
 
 const health = await (await get("/health")).json();
 if (health?.ok !== true) throw new Error("Health response did not report ok: true");
+const status = await (await get("/status")).text();
+if (!/Operational|New page creation paused|Read-only or unavailable/.test(status))
+  throw new Error("Service status did not read the account database");
 const guide = await (await get("/agent.md")).text();
 if (!guide.includes("Tendriller")) throw new Error("Agent guide is missing or incomplete");
 console.log(`Deployment smoke check passed: ${base}`);

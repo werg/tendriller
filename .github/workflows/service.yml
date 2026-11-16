@@ -87,6 +87,8 @@ jobs:
         run: node scripts/check-deployment.mjs https://staging.tendriller.dev
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.staging.jsonc --file scripts/open-contract4-cutover.sql
+      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
+        run: node scripts/check-service-open.mjs https://staging.tendriller.dev
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
@@ -132,3 +134,5 @@ jobs:
         run: node scripts/check-deployment.mjs https://tendriller.dev
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.production.jsonc --file scripts/open-contract4-cutover.sql
+      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
+        run: node scripts/check-service-open.mjs https://tendriller.dev
