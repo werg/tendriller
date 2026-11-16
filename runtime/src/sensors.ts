@@ -2,7 +2,8 @@
 // one stop switch. Wrappers are installed during runtime bootstrap, synchronously
 // from tendril.js before any page script runs.
 
-export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";
+import type { SensorKind } from "../../contract/index.mjs";
+export type { SensorKind } from "../../contract/index.mjs";
 
 export interface SensorTracker {
   /** Sensors currently in use by page code. */
@@ -10,10 +11,6 @@ export interface SensorTracker {
   onChange(fn: () => void): () => void;
   /** Stops every tracked track, watch, listener and recognizer. Returns how many things were stopped. */
   stopAll(): number;
-  /** Unwrapped getUserMedia for the control's own use (not shown as page use). */
-  getUserMedia(c: MediaStreamConstraints): Promise<MediaStream>;
-  /** Mark a SpeechRecognition instance as the control's own. */
-  own(rec: object): void;
 }
 
 const MOTION_TYPES = new Set(["devicemotion", "deviceorientation", "deviceorientationabsolute"]);
@@ -28,7 +25,6 @@ export function installSensorWrappers(): SensorTracker {
   const watches = new Set<number>();
   const motion: { type: string; listener: any; options: any }[] = [];
   const recognizers = new Set<any>();
-  const ownRecognizers = new WeakSet<object>();
   const subs = new Set<() => void>();
   let recentLocationUntil = 0;
   let lastSig = "";
@@ -158,7 +154,7 @@ export function installSensorWrappers(): SensorTracker {
     try {
       SR.prototype.start = function (this: any, ...a: any[]) {
         const r = origStart.apply(this, a);
-        if (!ownRecognizers.has(this) && !recognizers.has(this)) {
+        if (!recognizers.has(this)) {
           recognizers.add(this);
           const done = () => { recognizers.delete(this); notify(); };
           try { this.addEventListener("end", done, { once: true }); } catch { /* ignore */ }
@@ -192,11 +188,7 @@ export function installSensorWrappers(): SensorTracker {
       check();
       return n;
     },
-    getUserMedia(c) {
-      if (origGUM) return origGUM(c);
-      return Promise.reject(new Error("getUserMedia unavailable"));
-    },
-    own(rec) { ownRecognizers.add(rec); },
+
   };
   return singleton;
 }

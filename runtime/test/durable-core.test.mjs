@@ -75,20 +75,15 @@ async function environment({ database = new Database(), localStorage = storage()
 function json(value) { return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
 
-test("familiar application keys cannot configure core preferences or device namespaces", async () => {
-  const data = { _prefs: { audio: false, language: "de-DE", mode: "display" }, _device: { anything: { zoom: 3 } }, notebook: { session_id: "opaque" } };
+test("application data has no prescribed preferences or device namespaces", async () => {
+  const data = { _prefs: { audio: false, mode: "display" }, _device: { zoom: 3 }, notebook: { session_id: "opaque" } };
   const env = await environment({ state: data });
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), data);
   assert.equal(env.core.state.mine, undefined);
-  assert.equal(env.core.preferences.get().audio, true);
-  assert.equal(env.core.preferences.get().mode, "interactive");
-  env.core.preferences.update({ audio: false, textSize: "large" });
-  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), data);
-  assert.equal(env.sent.some(frame => frame.t === "state"), false);
-  assert.equal(env.core.pendingWork().state, 0);
-  const reload = await environment({ localStorage: env.localStorage, state: data });
-  assert.equal(reload.core.preferences.get().audio, false);
-  assert.equal(reload.core.preferences.get().textSize, "large");
+  assert.equal(env.core.preferences, undefined);
+  assert.equal(env.core.tts, undefined);
+  assert.equal(env.core.speak, undefined);
+  assert.equal(env.core.rules, undefined);
 });
 
 test("welcome updates service availability without replacing publication-pinned runtime features", async () => {

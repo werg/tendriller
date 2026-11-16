@@ -1,7 +1,7 @@
 import type { PhononTTS } from "phonon-tts";
-import type { Bus } from "./types";
-import type { PreferencesApi, SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
-export type { SpeechStatus, SpeechOutput } from "../../contract/index.mjs";
+import type { Bus } from "../types";
+import type { PreferencesApi, SpeechStatus, SpeechOutput } from "../../../contract/index.mjs";
+export type { SpeechStatus, SpeechOutput } from "../../../contract/index.mjs";
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const readyMessage = "Neural voice is ready. English speech is generated on this device.";
@@ -31,6 +31,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
   let generation: AbortController | null = null;
   let queue = Promise.resolve();
   let epoch = 0;
+  let disposed = false;
   let loadEpoch = 0;
   const sources = new Set<AudioBufferSourceNode>();
   const browserUtterances = new Set<SpeechSynthesisUtterance>();
@@ -46,7 +47,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
   };
   // Resume synchronously in a gesture, before model downloads or asynchronous synthesis.
   const unlock = () => {
-    if (!enabled || prefs().audio === false) return;
+    if (disposed || !enabled || prefs().audio === false) return;
     try { void audioContext().resume().catch(() => {}); } catch { /* browser voice can still work */ }
   };
   document.addEventListener("pointerdown", unlock, true);
@@ -206,6 +207,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
     get status() { return { ...status }; },
     get speaking() { return neuralSpeaking || browserUtterances.size > 0 || !!window.speechSynthesis?.speaking; },
     async enable() {
+      if (disposed) throw new Error("Speech output is disposed");
       stop(); preferences.update({ voice: "neural" }); unlock();
       if (model) report("ready", readyMessage);
       else await load();
@@ -214,8 +216,15 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
       stop(); preferences.update({ voice: "browser" });
     },
     stop,
+    dispose() {
+      if (disposed) return;
+      disposed = true; release(); offPreferences();
+      document.removeEventListener("pointerdown", unlock, true);
+      document.removeEventListener("keydown", unlock, true);
+      window.removeEventListener("pagehide", release);
+    },
     speak(text) {
-      if (!text || prefs().audio === false) return;
+      if (disposed || !text || prefs().audio === false) return;
       const reply = String(text).trim();
       if (!reply) return;
       const token = epoch;
@@ -223,7 +232,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
     },
   };
   let previous = prefs();
-  preferences.on(next => {
+  const offPreferences = preferences.on(next => {
     if (next.audio !== previous.audio || next.language !== previous.language || next.voice !== previous.voice) stop();
     if (next.voice !== previous.voice) {
       enabled = next.voice === "neural";
@@ -233,10 +242,11 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: Preferen
     }
     previous = next;
   });
-  window.addEventListener("pagehide", () => {
+  const release = () => {
     stop(); ++loadEpoch; loading = null; model?.dispose(); model = null;
     report("idle", enabled ? "Neural voice will reload from cache for the next reply." : "Using the browser voice.");
     if (context) void context.close().catch(() => {});
-  });
+  };
+  window.addEventListener("pagehide", release);
   return api;
 }

@@ -97,7 +97,7 @@ async function savePublication(publication: PublicationManifest, latest = false)
   await cache.put(runtimeURL, runtimeResponse);
   await Promise.all([
     ...publication.assets.map(asset => saveAsset(cache, absolute(asset.path, absolute(publication.base)), asset, publication)),
-    ...runtime.assets.map((asset: PublicationAsset) => saveAsset(cache, absolute(asset.path, absolute(publication.runtime.base)), asset, publication)),
+    ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => saveAsset(cache, absolute(asset.path, absolute(publication.runtime.base)), asset, publication)),
   ]);
   if (!meta.complete.includes(publication.id)) meta.complete.push(publication.id);
   if (latest) meta.latest = publication.id;
@@ -205,7 +205,10 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
     }
     const manifest = await cache.match(absolute("manifest.json", runtimeBase));
     if (manifest) {
-      const asset = (await manifest.json()).resources.find((resource: RuntimeResource) => absolute(resource.url) === url);
+      const declared = await manifest.json();
+      const optional = declared.assets.find((asset: PublicationAsset) => absolute(asset.path, runtimeBase) === url);
+      const asset = optional ? { url, sha256: optional.sha256, type: optional.type }
+        : declared.resources.find((resource: RuntimeResource) => absolute(resource.url) === url);
       if (asset) resources.push({ cache, asset });
     }
   }

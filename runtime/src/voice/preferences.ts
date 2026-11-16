@@ -1,7 +1,7 @@
-import type { PreferencesApi, RuntimePreferences } from "../../contract/index.mjs";
+import type { PreferencesApi, RuntimePreferences } from "../../../contract/index.mjs";
 
 const defaults: RuntimePreferences = {
-  audio: true, language: null, voice: "browser", textSize: "normal", contrast: "normal", mode: "interactive",
+  audio: false, language: null, voice: "browser",
   wakePhrase: "Hey Tendril", wakeMode: "local",
 };
 
@@ -30,24 +30,15 @@ function validate(patch: unknown): Partial<RuntimePreferences> {
       case "wakeMode":
         if (value !== "local" && value !== "browser") throw new TypeError("wakeMode must be local or browser");
         result.wakeMode = value; break;
-      case "textSize":
-        if (value !== "normal" && value !== "large" && value !== "x-large") throw new TypeError("Invalid textSize");
-        result.textSize = value; break;
-      case "contrast":
-        if (value !== "normal" && value !== "high") throw new TypeError("Invalid contrast");
-        result.contrast = value; break;
-      case "mode":
-        if (value !== "interactive" && value !== "display") throw new TypeError("Invalid mode");
-        result.mode = value; break;
       default: throw new TypeError(`Unknown preference: ${key}`);
     }
   }
   return result;
 }
 
-/** Core presentation settings are local to this browser device and page. */
+/** Optional voice settings are local to this browser device and page. */
 export function createPreferences(page: string): PreferencesApi {
-  const key = `tendril:v2:${page}:preferences`;
+  const key = `tendril:voice:${page}:preferences`;
   const read = (value: string | null): RuntimePreferences => {
     try { return value === null ? { ...defaults } : { ...defaults, ...validate(JSON.parse(value)) }; }
     catch { return { ...defaults }; }

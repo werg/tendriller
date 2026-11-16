@@ -1,4 +1,4 @@
-// Opt-in wake-phrase recognition for the always-present control.
+// Opt-in wake-phrase recognition for explicitly selected voice experiences.
 // On-device Web Speech is strict: never silently fall back to vendor/cloud recognition.
 // This is transcript matching, not a dedicated low-power wake-word model.
 export type WakeMode = "local" | "browser";
@@ -52,7 +52,7 @@ const FATAL: Record<string, string> = {
   "not-allowed": "Microphone or speech permission was denied. Check site permissions and tap Start again.",
   "service-not-allowed": "The selected speech recognition service is blocked on this device.",
   "audio-capture": "No usable microphone was found. Connect one and try again.",
-  "language-not-supported": "This language has no installed on-device speech pack. Open wake settings to install it or change the language.",
+  "language-not-supported": "This language has no installed on-device speech pack. Install that language pack or choose another language.",
   "network": "Speech recognition lost its connection. Tap Start again when online.",
 };
 
@@ -119,7 +119,7 @@ export class WakeWordCapture {
       return false;
     }
     if (!tokens(options.phrase).length) {
-      this.handlers.onState("error", "Save a wake phrase in Settings first.");
+      this.handlers.onState("error", "Choose a nonempty wake phrase first.");
       return false;
     }
     if (options.mode === "local") {
