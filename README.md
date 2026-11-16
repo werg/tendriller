@@ -1,6 +1,6 @@
 # Tendriller
 
-Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history in Chronolog; Tendriller supplies hosting, account access, portable membership administration, publication recovery, blobs, bounded peer connections and optional relay. A Cloudflare JSON state/event backend remains an explicit alternative. The page owns its interface, application data and ordinary web dependencies.
+Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history and ordinary peer exchange in Chronolog over WebRTC. Tendriller supplies page assets, account access, participant administration, publication recovery and optional short-lived SDP rendezvous. Peer pages run without a background host socket or application-data relay. A Cloudflare JSON state/event backend remains an explicit alternative. The page owns its interface, application data and ordinary web dependencies.
 
 Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
 
@@ -10,7 +10,8 @@ Start with authored HTML, JavaScript and assets. There is no starter, component 
 - [Browser API](docs/BROWSER_API.md): transport, conversation, coherent state snapshots, conditional writes, durable timers, streams, captures and explicit device features.
 - [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
 - [Application backends](docs/APPLICATION_BACKENDS.md): one selected history, atomic programs, operation status and coherent event/query views.
-- [Peer connections](docs/PEER_CONNECTIONS.md): public bounded binary sessions, ephemeral domains, bootstrap and measured direct/relay routes.
+- [Peer architecture](docs/PEER_ARCHITECTURE.md): quiet hosting, reachable resident introductions, Worker ownership and authenticated WebRTC exchange.
+- [Peer connections](docs/PEER_CONNECTIONS.md): bounded SDP rendezvous, optional endpoint hints and explicit transport configuration.
 - [Membership](docs/MEMBERSHIP.md): the default portable administrator, account-bound device enrollment, certified bootstrap and native authority separation.
 - [Retained record logs](docs/RECORD_LOG.md): exact bytes, retry-safe identity, bounded catch-up and peer adapters.
 - [Operational tools](docs/tools/CLI.md): optional core-owned publishing, preview, collectors and host bridges.
@@ -42,7 +43,7 @@ The generic engine has an empty trusted-extension registry. A deployment may del
 | --- | --- |
 | `contract/` | Executable schemas, SDK, browser declarations, trusted-host types and resource limits |
 | `server/` | Identity, authorization, transactions, private records, delivery, serving and lifecycle |
-| `runtime/` | Headless browser connection, durable outbox, state/streams, sensor tracking and optional voice |
+| `runtime/` | Separate quiet peer and hosted browser runtimes, selected application backend, sensor tracking and optional voice |
 | `preview-support/` | Public runtime and preview boundaries |
 | `tools/` | Optional CLI, exact-file preview, host bridges and bounded collectors |
 | `scripts/` | Build, artifact checks, release publication and service operations |
