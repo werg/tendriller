@@ -2,8 +2,9 @@
 
 This branch implements the Tendriller boundary in the 16 November 2026 P2P
 events follow-up. The default Cloudflare Durable Object runs a portable,
-bandwidth-thin membership administrator. The complete public
-workerd/native/browser qualification now passes with the same pinned artifact.
+bandwidth-thin membership administrator. The earlier complete public
+workerd/native/browser qualification passed at the exact pins recorded below.
+The subsequent review and dependency checkpoint is recorded separately.
 
 ## Implemented boundaries
 
@@ -30,7 +31,21 @@ application bodies or loading SQL. Devices keep their private signing and
 reader keys. The administrator retains shared epoch keys to wrap for approved
 public keys and remains trusted with those keys.
 
-## Verified implementation
+## Review and dependency checkpoint
+
+The review adds exact application receipt recovery after host authorization
+failures, repeated and concurrent exact-operation callers, ordered relay
+forwarding across asynchronous authorization, retired pair isolation, stricter
+public snapshot/hash contracts, and resumable resident-lifetime changes that
+cannot race membership or retained-log provisioning into expiring storage.
+
+The current embedded administrator comes from clean Chronolog source
+`3067dc6d07103f0249b5e3268f194b10a38f9b0e`, with 53 audited portable inputs.
+It includes the follow-up ledger, governance and peer-recovery corrections.
+The earlier full CI numbers below describe their explicitly identified source
+pins; current review validation is recorded in the PR description.
+
+## Earlier verified implementation
 
 Tendriller implementation head
 [`43cac4e75b0bbe1e422f4879b7249d6db5988440`](https://github.com/werg/tendriller/commit/43cac4e75b0bbe1e422f4879b7249d6db5988440)
