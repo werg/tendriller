@@ -11,7 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';
 
-const script = join(dirname(fileURLToPath(import.meta.url)), '../../../dist/claude-channel.mjs');
+const script = join(dirname(fileURLToPath(import.meta.url)), '../../../dist/tools/bin/claude-channel.mjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn) { for (let i = 0; i < 100; i++) { const value = fn(); if (value) return value; await pause(50); } throw Error('Timed out'); }
 

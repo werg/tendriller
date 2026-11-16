@@ -3,7 +3,6 @@ import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs, intFlag } from "../../cli/lib/args.mjs";
 import { startServer, preview } from "../lib/preview.mjs";
-import { assets, implementation } from "../lib/preview-bundle.mjs";
 
 const usage = "Usage: tendril-preview.mjs <page-directory> [--fixture scenario.json] [--headless] [--out screenshot.png] [--state state.json] [--wait-ms N] [--desktop] [--headed]";
 async function main() {
@@ -15,7 +14,7 @@ async function main() {
   if (!statSync(directory).isDirectory()) throw new Error("Preview needs a directory containing index.html");
   const fixture = flags.fixture ? JSON.parse(readFileSync(flags.fixture, "utf8")) : {};
   const state = flags.state ? JSON.parse(readFileSync(flags.state, "utf8")) : undefined;
-  const options = { assets, implementation, fixture, state, out: flags.out, waitMs: intFlag(flags["wait-ms"], "wait-ms", 2500), desktop: !!flags.desktop, headed: !!flags.headed };
+  const options = { fixture, state, out: flags.out, waitMs: intFlag(flags["wait-ms"], "wait-ms", 2500), desktop: !!flags.desktop, headed: !!flags.headed };
   if (options.waitMs < 0) throw Object.assign(new Error("--wait-ms must be nonnegative"), { exit: 64 });
   if (flags.headless) {
     const result = await preview(directory, options);

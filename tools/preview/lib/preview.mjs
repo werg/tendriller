@@ -26,11 +26,11 @@ export function loadPlaywright(cwd = process.cwd()) {
 }
 
 export function injectRuntime(html, publication = { id: "preview", base:"/_publications/preview/", entry:"index.html", version:1, runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"}, assets:[] }, entry = "index.html") {
-  const config = { id: "preview", base: "/", version: publication.version, preview: true, publication, ws: "/_tendril/ws", features: {
+  const config = { id: "preview", base: "/", version: publication.version, preview: true, publication: { ...publication, entry }, ws: "/_tendril/ws", features: {
     push: false, vapid: null, shared_by: "Local preview", speech: null,
   } };
   const directory = posix.dirname(entry);
-  const base = publication.base + (directory === "." ? "" : directory + "/");
+  const base = publication.base + (directory === "." ? "" : directory.split("/").map(encodeURIComponent).join("/") + "/");
   const escapedBase = base.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   const configJson = JSON.stringify(config).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
   const tags = `<base href="${escapedBase}"><script>window.__TENDRIL__=${configJson};</script><script src="/_tendril/runtime/${runtimeManifest.id}/tendril.js"></script><script>${TRACE_RUNTIME}</script>`;
@@ -52,6 +52,7 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
   const snapshotPublication = () => {
     const contents = new Map();
     for (const path of listFiles(root)) { const file=safeFile(root,"/"+path); if(file)contents.set(path,readFileSync(file)); }
+    if (!contents.has("index.html")) throw new Error("Preview directory must contain an authored index.html");
     const entries=[...contents].sort(([a],[b])=>a.localeCompare(b)).map(([path,bytes])=>({path,type:guessType(path),sha256:createHash("sha256").update(bytes).digest("hex"),size:bytes.length}));
     const id=createHash("sha256").update(JSON.stringify({runtime:runtimeManifest.id,assets:entries})).digest("hex");
     if(!publications.has(id))publications.set(id,{contents,manifest:{id,version:publications.size+1,base:"/_publications/"+id+"/",entry:"index.html",runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"},assets:entries}});

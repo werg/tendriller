@@ -1,83 +1,25 @@
-# Machine collectors and training dashboards
+# Collector operations
 
-The optional `tendril-stream` process collects data independently of the agent
-conversation. It opens outbound HTTPS connections to Tendriller; the training
-machine needs no public listener. It never holds an agent token and cannot
-publish page files, execute browser code, or wake an agent. Its `tp_` credential
-can append only to the custom streams granted when it was created.
+The optional `tendril-stream` process collects data independently of an agent
+conversation. It makes outbound HTTPS requests; a source machine needs no public
+listener. The running collector holds only a scoped `tp_` producer credential and
+cannot publish page files, execute browser code, or wake an agent.
 
-## A working dashboard
+Build or obtain an exact core tools artifact and verify its hash with
+`tools-manifest.json` before extracting. Run `bin/tendril-stream.mjs` from that
+package, or `tools/collector/bin/tendril-stream.mjs` from a source checkout after
+installing the optional tool dependencies. Node.js 22.15 or newer is required.
+The package contains no dashboard template. Author a page and choose streams
+suited to its task; the cookbook collection explains those decisions.
 
-Install the standalone collector and example with Node 22.15 or newer. These
-files come from one immutable contrib release; no repository checkout or npm
-dependencies are needed:
-
-```sh
-umask 077
-curl -fL https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/manifest.json -o manifest.json
-curl -fL https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/tendriller-tools-0.2.0-rc.3.tgz -o tools.tgz
-# Verify tools.tgz against the manifest before extracting.
-mkdir tendriller-tools
-tar -xzf tools.tgz -C tendriller-tools
-cp tendriller-tools/tools/collector/bin/tendril-stream.mjs ./tendril-stream.mjs
-cp -R tendriller-tools/examples/training-dashboard ./dashboard
-```
-
-The downloaded page files are editable template source. The setup script
-publishes them through the authenticated API:
-
-```sh
-TENDRILLER_SERVICE_BASE=https://tendriller.dev \
-TENDRILLER_OWNER=you@example.com \
-TRAINING_METRICS=/absolute/path/metrics.jsonl \
-TRAINING_LOG=/absolute/path/training.log \
-TRAINING_RUN=experiment-42 \
-node dashboard/setup.mjs
-```
-
-Use an email verified by your GitHub or Google account. The setup script creates
-a page with `mode:"dashboard"`, so an agent conversation listener is not required.
-It creates three owner-readable streams:
-
-| Stream | Policy | Input |
-| --- | --- | --- |
-| `machine.utilization` | Ephemeral | CPU, RAM, load average, optional NVIDIA GPU measurements |
-| `training.metrics` | Durable | JSONL records with training step and numeric metrics |
-| `training.logs` | Durable | Complete lines from a text log |
-
-**Open the printed page URL and sign in to claim the page before starting the
-collector.** Custom streams share a 1 MiB allowance while the page is unclaimed
-and 8 MiB after claim. Starting a large backlog before claim can fill the smaller
-allowance and leave the collector buffering. Then start collection:
-
-```sh
-node ./tendril-stream.mjs ./tendriller-training/collector.json
-```
-
-The ordinary page/account lifetime rules still apply; a long-running dashboard
-should be made resident after claim with the existing lifetime API. A collector
-heartbeat does not claim a page or keep an AI conversation available. From a
-source checkout, use `node examples/training-dashboard/setup.mjs` and
-`node tools/collector/bin/tendril-stream.mjs ./tendriller-training/collector.json` instead;
-the configuration is the same.
-
-The dashboard displays machine freshness, a selectable training chart, and a
-bounded log tail. Durable subscriptions load retained history and resume from a
-cursor; ephemeral subscriptions start with the next live sample. Charts retain
-the latest 2,000 metric records in the browser and the log view retains 200 lines.
-A history-gap banner identifies missing server history. No data is fabricated
-when the producer is absent.
-
-`tendriller-training/page.json` contains the administrative agent handle;
-`collector.json` contains the restricted producer credential. The script creates
-both with mode `0600`. Run it again to republish the dashboard while preserving
-the collector's configuration. It does not print either credential. Set
-`TENDRILLER_DASHBOARD_DIR` to use a different private directory or
-`TENDRILLER_SERVICE_BASE` for a self-hosted service.
+Before beginning a large backlog, claim the page and inspect its current stream
+limits through the service descriptor. A collector heartbeat neither claims a
+page nor keeps an agent conversation available. For a long-running process,
+choose the page's resident lifetime deliberately after claim.
 
 ## Initialize a collector for an existing page
 
-The same downloaded helper can provision a collector for any existing page,
+The collector helper can provision a collector for any existing page,
 including an interactive page that also has an agent conversation. Save its
 creation response (`api` and administrative `token`) in a private `page.json`,
 then describe the streams and their sources together in `streams.json`:
@@ -132,8 +74,7 @@ path, producer name, and created/reused stream names. The administrative page
 token stays in the input handle. An occupied producer name fails without
 revocation or rotation, because its original credential cannot be retrieved.
 Use its saved configuration or deliberately choose a new producer name and
-output file. The helper also accepts the dashboard example's `page.json`, which
-wraps the creation response under `handle`.
+output file. A private handle file contains the creation response or an explicit `handle` property.
 
 Provisioning uses separate API requests. A failed or lost response can leave
 created resources; the helper reports partial setup and does not claim rollback.

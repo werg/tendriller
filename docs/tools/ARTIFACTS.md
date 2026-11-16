@@ -1,18 +1,44 @@
-# Release artifacts and dependencies
+# Core tool artifacts
 
-One contrib tag creates independent tool, static and trusted-workflow artifacts. All carry the same release version. Module interface/schema revisions are separate from that version, so a component-only release does not require a server deployment.
+Operational software is built and versioned in core. Contrib releases only
+cookbook content and its checks; the core build has no contrib dependency.
 
-| Artifact | Contents |
+## Build and install
+
+```sh
+npm ci
+npm run build
+npm --prefix tools ci
+node scripts/build-tools.mjs
+mkdir -p /path/to/private-tools
+# Choose the actual version produced by the build.
+tar -xzf dist/tendriller-tools-<version>.tgz -C /path/to/private-tools
+node /path/to/private-tools/bin/tendril.mjs --help
+```
+
+`dist/tools-manifest.json` records the source commit, core contract, exact runtime
+identity, archive byte length and SHA-256. Verify the archive's hash before
+extracting. The archive is deterministic for the same built runtime, source,
+dependencies and toolchain; its tar metadata has normalized order and timestamps.
+
+The package is `@tendriller/tools`. Commands live in `bin/`; optional public
+libraries are exported as `./preview`, `./collector`, `./events`, and `./pack`.
+Commands bundle their runtime dependencies. Browser automation additionally
+needs an explicitly installed Playwright and browser. The preview command shares
+one packaged preview library; ordinary publishing does not load fixture assets.
+Third-party notices accompany the archive. This change grants no project license.
+
+## Three separate identities
+
+| Identity | Meaning |
 | --- | --- |
-| `tendriller-tools-<version>.tgz` | Bundled Node CLI, collector, preview, bridges, local resources and recipe assets; no installation-time dependencies |
-| Standalone `.mjs` / `.sh` commands | Collector, fixture preview, host bridges and watch/wait/event helpers |
-| `tendriller-static-<version>.tgz` | Components, complete dependency graph, examples, documentation and public catalog |
-| `tendriller-workflows-<version>.tgz` | Worker-compatible trusted module, narrow interface requirements and integrity manifest |
-| `catalog.json` | Machine-readable supported tools/components/recipes, file hashes, content types, core pairing and maintainer |
-| `manifest.json` | Source commit, exact download URLs, SHA-256 hashes and sizes for every release asset |
+| Cookbook provenance | Source and reasoning an author used; adapted code is page-owned |
+| Deliberate dependency | Explicitly selected package/version and its ordinary integrity record |
+| Publication | Actual authored file bytes plus the exact production runtime |
 
-`core.lock.json` pins the SDK/runtime release artifacts used by builds. The archive copies in `vendor/core` and the ordinary npm lockfile are sufficient to build without a core checkout. `distribution/install-core.mjs` accepts only these declared HTTPS release URLs and rejects a mismatched hash before installation.
+Packing reads authored files without changing them or completing missing imports.
+A copied snippet can change freely. Publication hashes protect the final bytes,
+not equality to an upstream example. Preview serves those same authored files.
 
-Release CI verifies tests, builds from the tag commit and publishes immutable assets to GitHub Releases. Production composition in core consumes only the trusted workflow archive. It does not install this repository's CLI or Node dependencies.
-
-Page publications have a third identity. `tendril.json` declares selected dependencies; scaffolding resolves their full closure to local page files and writes `tendril.assets.json`. The core then generates the authoritative publication manifest with immutable runtime and page asset URLs. An open tab retains the graph matching its executing publication while another tab uses the next publication.
+The optional tools use built public SDK/runtime exports. Their sources and Node
+dependencies must stay outside the Worker and minimal browser module graphs.

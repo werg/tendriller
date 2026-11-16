@@ -88,7 +88,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
     say(value) {
       const body = assertValid("say", typeof value === "string" ? { text: value } : value);
       const message_id = randomUUID(), ts = Date.now();
-      transcript.push({ ts, from: "agent", text: body.text });
+      transcript.push({ ts, from: "agent", text: body.text, message_id, ...(body.in_reply_to === undefined ? {} : { in_reply_to: body.in_reply_to }) });
       log("say", `Message ${message_id}: ${body.text}`);
       // Explicit fixture speak:true can exercise local TTS. Default avoids model downloads.
       broadcast({ t: "say", ...body, speak: body.speak === true, message_id, ts });
@@ -133,7 +133,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
           devices.set(device.id, device);
           send(ws, { t: "welcome", device_id: device.id, role, pending: false, primary: true,
             tendril: { id: "preview", name }, version: { current: version(), latest: version(), healthy: version(), served: m.version || version() },
-            state: shared, scopes, service, rev, presence, transcript, rules: [], features: { push: false },
+            state: shared, scopes, service, rev, presence, transcript, features: { push: false },
             budget: { page_streak: 12 }, focus: null });
           return;
         }
@@ -167,7 +167,10 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
                 data: m.kind === "instruction" ? { text: m.text, via: m.via || "text" } : m.data ?? null,
                 context: { ...(m.scope ? { scope: m.scope } : {}), generations: structuredClone(m.expected_generations) }, wake: m.wake !== false, withheld: false };
               assertValid("event", event); events.push(event); result = { seq: event.seq };
-              if (instruction) { transcript.push({ ts: event.ts, from: "user", text: m.text }); broadcast({ t: "instruction_echo", text: m.text, device: device.id, ts: event.ts }); }
+              if (m.kind === "instruction") {
+                const entry = { message_id: randomUUID(), ts: event.ts, from: "user", text: m.text, cid: m.cid, device: device.id };
+                transcript.push(entry); broadcast({ ...entry, t: "instruction_echo", seq: event.seq });
+              }
               log("event", `${event.type} ${event.seq}`, device.id);
               // Scripted fixtures are deterministic responders, never a claim to a live host.
               if (onEvent) Promise.resolve(onEvent(event, api)).catch(error => log("error", error.message));
@@ -212,7 +215,8 @@ export const TRACE_RUNTIME = String.raw`(() => {
     target[key] = function(...args) { record(name,args); return original.apply(this,args); };
   };
   const t = window.tendril;
-  for (const name of ["send","upload","uploadEvent","retryCapture","discardCapture","speak"]) wrap(t,name,name);
+  for (const name of ["send","upload","uploadEvent","retryCapture","discardCapture"]) wrap(t,name,name);
+  for (const name of ["send","presented"]) wrap(t.conversation,name,"conversation."+name);
   for (const name of ["set","delete","patch"]) wrap(t.state,name,"state."+name);
   for (const name of ["list","info","read","latest","subscribe","publish"]) wrap(t.streams,name,"streams."+name);
   window.__tendrilEmit = async (event, data) => {

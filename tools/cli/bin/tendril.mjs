@@ -30,7 +30,6 @@ Content
   files | versions | rollback [version]
   upload <file> [--name N]     store a blob (e.g. an icon) -> {id,url}
   blobs | blobs info <id> | blobs keep <id> | blobs expire <id>
-  preview <dir> [--fixture scenario.json] [--out png] [--wait-ms N] [--eval JS] [--state file.json] [--desktop] [--headed]
 
 Talk to the page
   eval <js> | eval -f <file> | eval -   [--device primary|all|<id>] [--timeout-ms N]
@@ -344,7 +343,7 @@ const commands = {
   async devices(args, f, api) {
     const [sub, id, ...name] = args;
     if (!sub) return out(await api.get("/devices"));
-    if (sub === "approve") fail("Agent tokens cannot approve devices or change roles. The owner approves signed-in guests in the page control.", 64);
+    if (sub === "approve") fail("Agent tokens cannot approve devices or change roles. The owner approves signed-in guests in the service utility.", 64);
     if (!id) fail("devices needs a device id", 64);
     if (sub === "rename") {
       if (!name.join(" ").trim()) fail("usage: tendril devices rename <id> <name>", 64);
@@ -475,24 +474,10 @@ const commands = {
     out(Object.keys(body).length ? await api.put("/wake", body) : await api.get("/wake"));
   },
 
-  async preview(args, f) {
-    if (!args[0] || !existsSync(args[0])) fail("usage: tendril preview <dir>");
-    const dir = statSync(args[0]).isDirectory() ? args[0] : fail("preview needs a directory with index.html");
-    const { preview } = await import("../../preview/lib/preview.mjs");
-    const r = await preview(dir, {
-      out: f.out, waitMs: f["wait-ms"] ? Number(f["wait-ms"]) : undefined, eval: f.eval,
-      state: f.state ? JSON.parse(readFileSync(f.state, "utf8")) : undefined,
-      fixture: f.fixture ? JSON.parse(readFileSync(f.fixture, "utf8")) : undefined,
-      desktop: !!f.desktop, headed: !!f.headed,
-      width: f.width ? Number(f.width) : undefined, height: f.height ? Number(f.height) : undefined,
-    });
-    out(r);
-    if (!r.ok) process.exitCode = r.error ? 2 : 1;
-  },
 
 };
 
-const NO_CONFIG = new Set(["new", "adopt", "preview"]);
+const NO_CONFIG = new Set(["new", "adopt"]);
 
 async function main() {
   let parsed;

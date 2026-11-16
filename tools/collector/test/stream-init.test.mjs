@@ -74,7 +74,7 @@ test('init creates scoped private configurations from source and a standalone do
     let script = entry;
     if (standalone) {
       script = join(f.dir, 'tendril-stream.mjs');
-      await cp(new URL('../../../dist/tendril-stream.mjs', import.meta.url), script);
+      await cp(new URL('../../../dist/tools/bin/tendril-stream.mjs', import.meta.url), script);
     }
     const result = await f.cli(undefined, script);
     assert.equal(result.code, 0, result.stderr); assert.equal(result.stderr, '');
@@ -98,7 +98,7 @@ test('init creates scoped private configurations from source and a standalone do
   });
 });
 
-test('init accepts the page handle saved by the dashboard setup script', async t => {
+test('init accepts the an explicitly wrapped private page handle', async t => {
   const f = await fixture(t);
   await writeFile(f.page, JSON.stringify({ owner: 'owner@example.com', service: 'http://127.0.0.1',
     handle: { api: f.api, token: agent }, producer: 'existing-dashboard-producer' }), { mode: 0o600 });

@@ -82,7 +82,7 @@ test("retired creation, pairing, role and link options fail locally with recover
     [["new", "--owner", "person@example.com", "--pairing", "open"], /does not support/],
     [["meta", "--pairing", "required"], /does not support/],
     [["devices", "approve", "d_example"], /cannot approve devices or change roles/],
-    [["link", "display"], /owner page control/],
+    [["link", "display"], /service utility/],
     [["link", "owner"], /main link is the owner link/],
     [["link", "rm"], /link rm <id>/],
   ];

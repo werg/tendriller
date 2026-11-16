@@ -3,7 +3,6 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../lib/preview.mjs";
-import { savedForOffline, cachedPageAsset } from "../../../test/publication-cache";
 
 let server: any, dir: string;
 test.beforeEach(async () => {
@@ -17,7 +16,7 @@ const url = () => `http://127.0.0.1:${server.address().port}/`;
 async function openWithServiceWorker(page: Page) {
   await page.goto(url());
   await page.waitForFunction(() => window.tendril.connected);
-  await savedForOffline(page);
+  await page.waitForFunction(() => navigator.serviceWorker.controller?.state === "activated", null, { timeout: 20000 });
 }
 
 const readDevices = (page: Page) => page.evaluate(async () => {
@@ -25,7 +24,7 @@ const readDevices = (page: Page) => page.evaluate(async () => {
   return { status: response.status, body: await response.json() };
 });
 
-test("preview loads the real control and state semantics, with server events and rendered reply receipts", async ({ page }) => {
+test("preview runs the headless runtime with a page-owned conversation and presentation receipts", async ({ page }) => {
   await page.goto(url());
   await page.waitForFunction(() => window.tendril.connected);
   expect(await page.evaluate(() => typeof (window.tendril as any).state)).toBe("object");
@@ -35,8 +34,16 @@ test("preview loads the real control and state semantics, with server events and
   await expect.poll(() => server.preview.state.reading).toBeNull();
   server.preview.updateState([{ op: "set", path: ["reading"], value: 42 }]);
   await expect.poll(() => page.evaluate(() => window.tendril.state.get("reading"))).toBe(42);
+  await page.evaluate(() => {
+    const article = document.createElement("article"); article.id = "replies"; document.body.append(article);
+    window.tendril.on("say", message => {
+      const paragraph = document.createElement("p"); paragraph.textContent = message.text; article.append(paragraph);
+      window.tendril.conversation.presented(message.message_id);
+    });
+  });
+  expect(await page.evaluate(() => "control" in window.tendril)).toBe(false);
   server.preview.say({ text: "Your measurement arrived", in_reply_to: 1 });
-  await expect(page.locator("body")).toContainText("Your measurement arrived");
+  await expect(page.locator("#replies")).toContainText("Your measurement arrived");
   await expect.poll(() => server.preview.activity.some((item: any) => item.kind === "say_rendered")).toBe(true);
 });
 
@@ -79,14 +86,17 @@ test("an edited preview script creates a new publication and remains available o
   await openWithServiceWorker(page);
   await expect(page.locator("#marker")).toHaveText("Before the edit");
   const originalPublication = await page.evaluate(() => window.__TENDRIL__.publication.id);
-  const cachedScript = () => cachedPageAsset(page, 'app.js');
+  const cachedScript = () => page.evaluate(async () => {
+    const response = await caches.match(new URL("app.js", document.baseURI).href);
+    return response?.text() ?? null;
+  });
   await expect.poll(cachedScript).toBe(original);
 
   writeFileSync(join(dir, "app.js"), updated);
   await page.goto(url());
   await expect(page.locator("#marker")).toHaveText("After the edit");
   expect(await page.evaluate(() => window.__TENDRIL__.publication.id)).not.toBe(originalPublication);
-  await savedForOffline(page);
+  await page.waitForFunction(() => navigator.serviceWorker.controller?.state === "activated", null, { timeout: 20000 });
   await expect.poll(cachedScript).toBe(updated);
 
   await context.setOffline(true);
