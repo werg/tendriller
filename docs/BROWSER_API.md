@@ -232,6 +232,26 @@ Each new call creates a runtime-owned capture ID; use an application ID in `data
 to correlate a reviewed draft before asynchronous work, and `retryCapture` to
 retry the original operation. Unknown options, including a supplied `cid`, fail
 before any local queue write.
+
+Capture outcomes are durable phases of that same queue entry. A rejection is
+reported only after its failed record and outcome are saved; its bytes and original
+intent remain available for explicit `retryCapture` or `discardCapture`. Retry
+durably clears the saved rejection before resuming, keeping the original upload,
+pin, and event command IDs and generation guards. An acceptance is saved before
+the queue entry is durably removed, then reported through the promise and
+`upload_event`. After reload, a saved acceptance finishes local cleanup without
+uploading, pinning, or sending the semantic event again.
+
+If saving a known outcome or removing its queue entry fails, the capture remains
+`queued` with an uncertain local result. The runtime retries local persistence;
+while it retains that outcome, it does not repeat network work. If the page reloads
+before the outcome could be saved, only the original unresolved intent survives
+and can be replayed against current server authority. `storage_unavailable` on
+initial admission means the capture was never durably queued. Discard completes
+only after local removal succeeds and cannot undo server acceptance. If acceptance
+is already known when discard is requested, cleanup reports that accepted receipt
+once, without a competing discarded result.
+
 `upload(blob,{name?,keep?,scope?,expected_generations?})` durably queues a standalone
 immutable upload and returns its verified blob metadata after completion. Optional
 pinning preserves its own original command ID and guards across retries.
