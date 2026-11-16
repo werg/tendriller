@@ -7,7 +7,7 @@ import { addEvent } from "../src/events";
 import { exportBundle } from "../src/portability";
 import { fileKey } from "../src/files";
 import { KEEP_VERSIONS } from "../src/limits";
-import { api, apiJson, advance, inDO, PageClient, req, type Handle } from "./helpers";
+import { api, apiJson, advance, inDO, PageClient, publishedFile, publishFilesJson, req, uploadBlobJson, type Handle } from "./helpers";
 
 beforeAll(async () => {
   await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations"));
@@ -117,9 +117,8 @@ it("daily recurrence respects IANA time zones, DST gaps and repeated times", () 
 
 it("preserves context, restores bundles with rewritten media, and refuses stale publication", async () => {
   const { handle: h, page } = await setup(); const socket = await listener(h);
-  const blobResponse = await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" });
-  const blob = await blobResponse.json<any>(); expect(blobResponse.status).toBe(200);
-  await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blob/${blob.id}">Asset</a>` } });
+  const blob = await uploadBlobJson(h, "asset", { type: "text/plain" });
+  await publishFilesJson(h, { "index.html": `<h1>Notebook</h1><a href="_tendril/blobs/${blob.id}">Asset</a>` });
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { notebook: { asset: blob.id }, _device: { old: { secret: "do not copy" } } } });
   await apiJson(h, "PUT", "session", { purpose: "Observe the garden", current_task: "Compare leaves", open_questions: ["What changed?"], completed: [], decisions: [], last_handled_seq: 0 });
   expect((await api(h, "PUT", "session", { purpose: "Stale context", expected_revision: 0 })).status).toBe(409);
@@ -138,7 +137,7 @@ it("preserves context, restores bundles with rewritten media, and refuses stale 
 
 it("remix creates an independent unpublished copy and preserves the listener gate", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>A reusable tool</h1>" } });
+  await publishFilesJson(h, { "index.html": "<h1>A reusable tool</h1>" });
   const copy = await apiJson(h, "POST", "remix", { owner: "new-owner@example.com", name: "My new copy" }, 201);
   expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token); expect(copy.remix.staged).toBe(true);
   expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(428);
@@ -157,7 +156,7 @@ it("validates bundle paths before writing and blocks publishing without review",
 
 it("stages an unchanged bundle at the page storage limit", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Keep this page</h1>" } });
+  await publishFilesJson(h, { "index.html": "<h1>Keep this page</h1>" });
   const bundle = await apiJson(h, "GET", "bundle");
   await inDO(h.id, t => {
     const used = t.storageUsed();
@@ -185,7 +184,7 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
   const copy = await setup(); const copySocket = await listener(copy.handle);
   expect((await api(copy.handle, "PUT", "bundle", exported)).status).toBe(202);
   expect((await api(copy.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
-  expect(await inDO(copy.handle.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
+  expect(await inDO(copy.handle.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs WHERE id NOT IN (SELECT blob_id FROM publication_blobs)")?.n)).toBe(201);
   socket.close(); copySocket.close();
 }, 60_000);
 
@@ -220,20 +219,20 @@ it("keeps prepared files through orphan cleanup and later publishes them", async
   await advance(h.id, 2 * 3600000);
   await inDO(h.id, t => t.pruneOrphanFiles(t.now()));
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Prepared yesterday");
+  expect(await (await publishedFile(h, "index.html")).text()).toContain("Prepared yesterday");
   socket.close();
 });
 
 it("protects a prepared hash when its old published version is pruned", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Restore this older page</h1>" } });
+  await publishFilesJson(h, { "index.html": "<h1>Restore this older page</h1>" });
   const bundle = await apiJson(h, "GET", "bundle");
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  for (let n = 0; n < KEEP_VERSIONS; n++) await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Revision ${n}</h1>` } });
+  for (let n = 0; n < KEEP_VERSIONS; n++) await publishFilesJson(h, { "index.html": `<h1>Revision ${n}</h1>` });
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Restore this older page");
+  expect(await (await publishedFile(h, "index.html")).text()).toContain("Restore this older page");
   socket.close();
 });
 
@@ -256,23 +255,32 @@ it.each(["file", "media"])("refuses publication if prepared %s bytes are missing
 
 it("exports one logical data snapshot while new captures arrive during media reads", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Notebook</h1>" } });
-  const original = await (await api(h, "PUT", "blobs", "old media", { "Content-Type": "text/plain" })).json<any>();
+  await publishFilesJson(h, { "index.html": "<h1>Notebook</h1>" });
+  const original = await uploadBlobJson(h, "old media", { type: "text/plain" });
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { asset: original.id } });
   await apiJson(h, "PUT", "session", { purpose: "Original context" });
   const bundle = await inDO(h.id, async t => {
     let changed = false;
-    const exporting = { db: t.db, tid: t.tid, blobKey: (id: string) => t.blobKey(id), getState: () => t.getState(), env: { ...t.env, FILES: {
-      get: async (key: string) => {
-        if (!changed && key.includes("/blobs/")) {
+    const files = new Proxy(t.env.FILES, { get(target, name) {
+      if (name === "get") return async (key: string) => {
+        if (!changed && key === fileKey(t, original.sha256)) {
           changed = true;
+          // Fault injection inside the storage read: a new capture arrives after
+          // the exporter captured its logical state and media list.
           const next = await t.storeBlob(new TextEncoder().encode("new media").buffer as ArrayBuffer, "text/plain", "new.txt", null, "agent");
           t.db.set("state", { asset: next.id });
           t.db.set("session_brief", { purpose: "New context", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 });
         }
-        return t.env.FILES.get(key);
-      },
-    } } } as any;
+        return target.get(key);
+      };
+      const value = Reflect.get(target, name);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const exporting = new Proxy(t, { get(target, name) {
+      if (name === "env") return { ...target.env, FILES: files };
+      const value = Reflect.get(target, name);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
     const result = await exportBundle(exporting, true);
     expect(changed).toBe(true);
     return result;
