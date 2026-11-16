@@ -2,11 +2,11 @@
  * browsers, Workers and Node. Matching declarations are in index.d.mts. */
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
-import { blobSchemas } from "./blobs.mjs";
+import { blobSchemas, blobNameSchema, isWellFormedUnicode } from "./blobs.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
-export const CORE_RELEASE = "0.3.0-rc.1";
+export const CORE_RELEASE = "0.3.0-rc.6";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -21,9 +21,7 @@ const nullableTime = { anyOf: [integer, { type: "null" }] };
 const shortText = { type: "string", minLength: 1, maxLength: 200 };
 const sayProperties = { text: string, speak: boolean, in_reply_to: { type: "integer", minimum: 1 }, device: string, speak_on: string };
 const error = object({ code: string, message: string, details: { type: "array", items: object({ path: string, message: string }, ["path", "message"]) } }, ["code", "message"], true);
-const blobReference = object({ id: { type: "string", pattern: "^b_[a-z2-7]{20}$" }, url: string,
-  retention: object({ keep: { type: "boolean" }, expires_at: { anyOf: [integer, { type: "null" }] }, reason: { enum: ["pinned", "page_default", "agent_asset", "icon"] } }, ["keep", "expires_at"]),
-}, ["id", "url"]);
+const blobReference = blobSchemas.blobMetadata;
 const stateOperation = { anyOf: [
   object({ op: { const: "set" }, path, value: {} }, ["op", "path", "value"]),
   object({ op: { const: "delete" }, path }, ["op", "path"]),
@@ -86,7 +84,7 @@ const coreSchemas = {
   probeNonce: { type: "string", pattern: "^[a-z2-7]{20}$" },
   deliveryProbe: object({ nonce: { type: "string", pattern: "^[a-z2-7]{20}$" }, seq: { type: "integer", minimum: 1 },
     created_at: integer, ack_at: nullableTime, status_url: string, ack_url: string }, ["nonce", "seq", "created_at", "ack_at", "status_url", "ack_url"]),
-  sayMessage: object({ ...sayProperties, message_id: string, ts: integer, present: boolean }, ["text"], true),
+  sayMessage: object({ ...sayProperties, message_id: { type: "string", minLength: 1 }, ts: integer, present: boolean }, ["text", "message_id", "ts"], true),
   stateOperation,
   stateOperations: { type: "array", items: stateOperation },
   stateUpdate: { anyOf: [
@@ -99,7 +97,8 @@ const coreSchemas = {
     object({ status: { const: "rejected" }, error: string, message: string }, ["status", "error"]),
   ] },
   blobReference,
-  captureOptions: object({ ...guards, name: string, data: jsonObject, dataPath: { type: "array", items: string }, keep: { type: "boolean" }, wake: { type: "boolean" } }, ["data"]),
+  captureOptions: object({ scope: scopeId, expected_generations: generationMap, name: blobNameSchema, data: jsonObject,
+    dataPath: { type: "array", items: string }, keep: { type: "boolean" }, wake: { type: "boolean" } }, ["data"]),
   captureResult: { anyOf: [
     object({ capture_id: string, status: { const: "accepted" }, seq: { type: "integer", minimum: 1 }, blob: blobReference }, ["capture_id", "status", "seq", "blob"]),
     object({ capture_id: string, status: { const: "queued" } }, ["capture_id", "status"]),
@@ -126,14 +125,12 @@ const coreSchemas = {
     timers: { type: "array", items: timer }, devices: { type: "array", items: deviceInfo },
     recent_activity: { type: "array", items: object({ ts: integer, kind: string, summary: string }, ["ts", "kind", "summary"]) },
   }, ["session", "revision", "version", "staged_remix", "pending_inputs", "timers", "devices", "recent_activity"]),
-  bundle: object({ format: { const: "tendriller-bundle" }, version: { const: 2 }, name: { type: "string", minLength: 1, maxLength: 200 },
-    files: { type: "array", minItems: 1, maxItems: 2000, items: object({ path: string, type: { type: "string", maxLength: 200 }, base64: string }, ["path", "type", "base64"]) },
-    state: jsonObject, session,
-    media: { type: "array", items: object({ id: blobReference.properties.id, type: { type: "string", maxLength: 200 }, name: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] }, base64: string }, ["id", "type", "name", "base64"]) },
-    shared_files: { type: "array", maxItems: 1000, items: object({ path: string, blob_id: blobReference.properties.id,
-      name: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] }, type: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] } }, ["path", "blob_id", "name", "type"]) },
-  }, ["format", "version", "name", "files", "media", "shared_files"]),
-  bundlePublish: object({ ...guards, expected_version: integer }, ["cid", "expected_generations", "expected_version"]),
+  bundle: object({ format: { const: "tendriller-bundle" }, version: { const: 3 }, entry: blobSchemas.filePath, name: { type: "string", minLength: 1, maxLength: 200 },
+    files: { type: "array", minItems: 1, maxItems: 2000, items: object({ path: string, type: blobReference.properties.type, base64: string }, ["path", "type", "base64"]) },
+    state: jsonObject, session, shared_files: { type: "array", maxItems: 512, items: object({ path: blobSchemas.filePath, blob_id: blobSchemas.blobId, name: blobNameSchema, type: blobReference.properties.type }, ["path", "blob_id"]) },
+    media: { type: "array", items: object({ id: blobReference.properties.id, type: blobReference.properties.type, name: { anyOf: [blobNameSchema, { type: "null" }] }, base64: string }, ["id", "type", "name", "base64"]) },
+  }, ["format", "version", "entry", "name", "files", "media"]),
+  bundlePublish: object({ ...guards, expected_head_revision: integer }, ["cid", "expected_generations", "expected_head_revision"]),
   remix: object({ owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, name: { type: "string", maxLength: 200 }, include_data: boolean }, ["owner"]),
   remixPage: object({ name: { type: "string", maxLength: 200 }, include_data: boolean }),
 
@@ -152,9 +149,9 @@ export const schemas = Object.freeze({
   timerList: object({ timers: list(timer), execution: { const: "server" }, lifetime: { enum: ["ad_hoc", "resident"] }, expires_at: nullableTime }, ["timers", "execution", "lifetime", "expires_at"], true),
   timerHistory: object({ runs: list(coreSchemas.timerRun) }, ["runs"], true),
   sessionResult: object({ session, revision: integer }, ["session", "revision"], true),
-  bundleStage: object({ staged: { const: true }, files: integer, media: integer, expected_version: integer, requires_publication: { const: true } }, ["staged", "files", "media", "expected_version", "requires_publication"], true),
-  publicationResult: object({ version: integer }, ["version"], true),
-  remixResult: object({ ...pageHandle.properties, remix: object({ staged: { const: true }, requires_receiver: { const: true }, publish_url: string, expected_version: integer }, ["staged", "requires_receiver", "publish_url", "expected_version"], true) }, [...pageHandle.required, "remix"], true),
+  bundleStage: object({ staged: { const: true }, files: integer, media: integer, expected_head_revision: integer, requires_publication: { const: true } }, ["staged", "files", "media", "expected_head_revision", "requires_publication"], true),
+  bundleReceipt: object({ version: integer, head_revision: integer, restored: { const: true } }, ["version", "head_revision", "restored"]),
+  remixResult: object({ ...pageHandle.properties, remix: object({ staged: { const: true }, requires_receiver: { const: true }, publish_url: string, expected_head_revision: integer }, ["staged", "requires_receiver", "publish_url", "expected_head_revision"], true) }, [...pageHandle.required, "remix"], true),
 
 });
 
@@ -196,6 +193,7 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
     if (schema.minLength !== undefined && value.length < schema.minLength) issue(`Minimum length is ${schema.minLength}`);
     if (schema.maxLength !== undefined && value.length > schema.maxLength) issue(`Maximum length is ${schema.maxLength}`);
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) issue("Value does not match the required format");
+    if (schema["x-well-formed-unicode"] && !isWellFormedUnicode(value)) issue("Value must contain well-formed Unicode");
     if (schema["x-canonical-nfc"] && value.normalize("NFC") !== value) issue("Value must use canonical Unicode NFC");
   }
   if (typeof value === "number") {

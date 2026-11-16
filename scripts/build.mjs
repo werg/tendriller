@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync, watch
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { CORE_RELEASE, CONTRACT_VERSION } from "../contract/index.mjs";
 import { RUNTIME_FEATURES, RUNTIME_RESOURCES } from "../runtime/resources.mjs";
@@ -22,14 +23,26 @@ const contentType = path => ({ ".js": "text/javascript", ".mjs": "text/javascrip
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 
 export async function buildPublicArtifacts() {
+  const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  if (packageVersion !== CORE_RELEASE) throw new Error("Package and public core release identities must agree");
   mkdirSync(dist, { recursive: true });
+  for (const name of readdirSync(dist)) {
+    const artifact = /^tendriller-(sdk|runtime|engine|tools)-(.+)\.tgz$/.exec(name);
+    if (artifact && artifact[2] !== CORE_RELEASE) rmSync(join(dist, name));
+  }
   const runtime = join(dist, "runtime"), assets = join(runtime, "assets"), sdk = join(dist, "sdk");
   rmSync(runtime, { recursive: true, force: true });
   rmSync(sdk, { recursive: true, force: true });
   mkdirSync(assets, { recursive: true }); mkdirSync(sdk, { recursive: true });
   const common = { bundle: true, format: "iife", target: "es2022", minify: !watching && !process.env.NO_MINIFY, sourcemap: watching ? "inline" : false, logLevel: "warning" };
-  for (const [source, target] of [["runtime/src/index.ts", "tendril.js"], ["runtime/src/sw.ts", "sw.js"], ["runtime/src/control/speech-worker.ts", "speech-worker.js"]])
-    await build({ ...common, entryPoints: [join(root, source)], outfile: join(assets, target) });
+  const graphs = {};
+  for (const [source, target, format] of [["runtime/src/index.ts", "tendril.js", "iife"], ["runtime/src/kernel.ts", "kernel.mjs", "esm"], ["runtime/src/sw.ts", "sw.js", "iife"], ["runtime/src/voice/index.ts", "voice.mjs", "esm"], ["runtime/src/voice/worker.ts", "voice-worker.js", "iife"]]) {
+    const result = await build({ ...common, format, entryPoints: [join(root, source)], outfile: join(assets, target), metafile: true });
+    const inputs = Object.keys(result.metafile.inputs).map(path => relative(root, join(process.cwd(), path)).replaceAll("\\", "/")).sort();
+    graphs[target] = { inputs, bytes: readFileSync(join(assets, target)).length, gzip: gzipSync(readFileSync(join(assets, target))).length };
+  }
+  writeJson(join(runtime, "inputs.json"), graphs["kernel.mjs"].inputs);
+  writeJson(join(runtime, "build-metrics.json"), graphs);
   cpSync(join(root, "node_modules/phonon-tts"), join(assets, "tts"), { recursive: true });
   for (const [source, target] of [["axe.min.js", "axe.min.js"], ["LICENSE", "axe-LICENSE.txt"], ["LICENSE-3RD-PARTY.txt", "axe-LICENSE-3RD-PARTY.txt"]])
     copyFileSync(join(root, "node_modules/axe-core", source), join(assets, target));
@@ -38,7 +51,7 @@ export async function buildPublicArtifacts() {
     copyFileSync(join(root, "docs/assets", source), join(assets, "brand", target));
   const resources = RUNTIME_RESOURCES.map(({url,sha256,type}) => ({url,sha256,type}));
   writeJson(join(assets, "resources.json"), { features: RUNTIME_FEATURES, resources });
-  const entries = filesUnder(assets).map(path => { const data = readFileSync(path); return { path: relative(assets, path).replaceAll("\\", "/"), sha256: sha256(data), size: data.length, type: contentType(path) }; });
+  const entries = filesUnder(assets).map(path => { const data = readFileSync(path); return { path: relative(assets, path).replaceAll("\\", "/"), sha256: sha256(data), size: data.length, type: contentType(path), preload: ["tendril.js", "sw.js"].includes(relative(assets, path).replaceAll("\\", "/")) }; });
   const manifest = runtimeManifest({ version: CORE_RELEASE, contract: CONTRACT_VERSION, assets: entries, resources });
   const { id } = manifest;
   writeJson(join(assets, "manifest.json"), manifest);
@@ -52,15 +65,17 @@ export async function buildPublicArtifacts() {
   cpSync(join(assets, "brand"), join(out, "_tendril/brand"), { recursive: true });
   await build({ stdin: { contents: 'export { applyOps, validateOps } from "./server/src/state.ts"; export { historyPage, historyGap, mergeHistoryGaps } from "./server/src/streams/history.ts"; export { captureContext, matchesContext, requiredScopes } from "./runtime/src/generations.ts";', resolveDir: root, loader: "js" }, outfile: join(runtime, "preview-support.mjs"), bundle: true, platform: "neutral", format: "esm", target: "es2022", logLevel: "warning" });
   copyFileSync(join(root, "preview-support/index.d.mts"), join(runtime, "preview-support.d.mts"));
-  const runtimeExports = { "./preview-support": { types: "./preview-support.d.mts", import: "./preview-support.mjs" }, "./manifest": "./assets/manifest.json", "./assets/*": "./assets/*" };
+  copyFileSync(join(root, "preview-support/kernel.d.mts"), join(runtime, "kernel.d.mts"));
+  copyFileSync(join(root, "preview-support/voice.d.mts"), join(runtime, "voice.d.mts"));
+  const runtimeExports = { "./kernel": { types: "./kernel.d.mts", import: "./assets/kernel.mjs" }, "./voice": { types: "./voice.d.mts", import: "./assets/voice.mjs" }, "./preview-support": { types: "./preview-support.d.mts", import: "./preview-support.mjs" }, "./manifest": "./assets/manifest.json", "./assets/*": "./assets/*" };
   if (existsSync(join(root, "runtime/src/preview.ts"))) {
     await build({ entryPoints: [join(root, "runtime/src/preview.ts")], outfile: join(runtime, "preview.mjs"), bundle: true, platform: "neutral", format: "esm", target: "es2022", logLevel: "warning" });
     copyFileSync(join(root, "preview-support/preview.d.mts"), join(runtime, "preview.d.mts"));
     runtimeExports["./preview"] = { types: "./preview.d.mts", import: "./preview.mjs" };
   }
-  writeJson(join(runtime, "package.json"), { name: "@tendriller/runtime", version: CORE_RELEASE, type: "module", description: "Released Tendriller runtime and public preview primitives", exports: runtimeExports, files: ["assets", "preview-support.mjs", "preview-support.d.mts", "preview.mjs", "preview.d.mts"], tendriller: { contract: CONTRACT_VERSION, runtime: id } });
-  for (const file of readdirSync(join(root, "contract"))) if (/\.(mjs|mts|json)$/.test(file) && file !== "tsconfig.json") copyFileSync(join(root, "contract", file), join(sdk, file));
-  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller public client, protocol and trusted host interfaces", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./browser": { types: "./browser.d.mts" }, "./host": { types: "./host.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./scopes": { types: "./scopes.d.mts", import: "./scopes.mjs" }, "./schema": "./v3.json" }, tendriller: { contract: CONTRACT_VERSION } });
+  writeJson(join(runtime, "package.json"), { name: "@tendriller/runtime", version: CORE_RELEASE, type: "module", description: "Released Tendriller runtime and public preview primitives", exports: runtimeExports, files: ["assets", "preview-support.mjs", "preview-support.d.mts", "preview.mjs", "preview.d.mts", "kernel.d.mts", "voice.d.mts", "inputs.json", "build-metrics.json"], tendriller: { contract: CONTRACT_VERSION, runtime: id } });
+  for (const file of readdirSync(join(root, "contract"))) if (/\.(mjs|mts|json)$/.test(file) && !["tsconfig.json", "engine.d.mts", "testing.d.mts"].includes(file)) copyFileSync(join(root, "contract", file), join(sdk, file));
+  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller public client, protocol and trusted host interfaces", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./browser": { types: "./browser.d.mts" }, "./voice": { types: "./voice.d.mts" }, "./host": { types: "./host.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./scopes": { types: "./scopes.d.mts", import: "./scopes.mjs" }, "./schema": "./v3.json" }, tendriller: { contract: CONTRACT_VERSION } });
   for (const [name, directory] of [["sdk", sdk], ["runtime", runtime]]) {
     const result = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", dist], { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))[0];
     const target = join(dist, `tendriller-${name}-${CORE_RELEASE}.tgz`);
@@ -70,7 +85,10 @@ export async function buildPublicArtifacts() {
   for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
-    for (const name of readdirSync(join(root, directory))) if (/\.(md|html)$/.test(name)) copyFileSync(join(root, directory, name), join(target, name));
+    for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path))) {
+      const destination = join(target, relative(join(root, directory), source));
+      mkdirSync(dirname(destination), { recursive: true }); copyFileSync(source, destination);
+    }
   }
   mkdirSync(join(out, "contract"), { recursive: true });
   copyFileSync(join(root, "contract/v3.json"), join(out, "contract/v3.json"));
@@ -81,6 +99,8 @@ export async function buildEngine() {
   mkdirSync(join(dist, "engine"), { recursive: true });
   const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], metafile: true, logLevel: "warning" });
   writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
+  mkdirSync(join(dist, "service"), { recursive: true });
+  await build({ entryPoints: [join(root, "server/src/deploy-entry.ts")], outfile: join(dist, "service/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], logLevel: "warning" });
 }
 export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }
 if (!process.argv.includes("--skip-initial")) await buildAll();

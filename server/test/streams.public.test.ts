@@ -4,7 +4,7 @@ import { assertValid } from "../../contract/index.mjs";
 import { addEvent } from "../src/events";
 import { sha256Hex } from "../src/ids";
 import { appendRecords, MAX_STREAM_BYTES } from "../src/streams";
-import { api, apiJson, advance, create, inDO, PageClient, publishTestFiles, req, sleep, uploadAgent, type Handle } from "./helpers";
+import { api, apiJson, publishFiles, advance, create, inDO, PageClient, req, sleep, type Handle } from "./helpers";
 
 const pages: PageClient[] = [];
 afterEach(() => { for (const page of pages.splice(0)) page.close(); });
@@ -306,12 +306,10 @@ it("keeps existing service gates for producers and page publication", async () =
 it("allows explicit dashboard publication without an agent listener and keeps interactive gating", async () => {
   const dashboard = await create({ mode: "dashboard", listener: false });
   expect((dashboard as any).mode).toBe("dashboard");
-  expect((await publishTestFiles(dashboard, { files: { "index.html": "<!doctype html><title>Dashboard</title>" } })).version).toBe(1);
+  expect((await publishFiles(dashboard, { "index.html": "<!doctype html><title>Dashboard</title>" })).status).toBe(200);
   expect((await apiJson(dashboard, "GET", "")).agent_delivery.mode).toBe("none");
   const normal = await create({ listener: false });
-  const blob = await uploadAgent(normal, "<!doctype html><title>Interactive</title>", "text/html", "index.html");
-  expect((await api(normal, "POST", "publications", { cid: "interactive-before-listener", expected_generations: {},
-    expected_head_revision: 0, entry: "index.html", files: [{ path: "index.html", blob_id: blob.id, type: "text/html" }] })).status).toBe(428);
+  expect((await publishFiles(normal, { "index.html": "<!doctype html><title>Interactive</title>" })).status).toBe(428);
   await stream(dashboard); const p = await producer(dashboard);
   await advance(dashboard.id, 86_000_000);
   await publish(dashboard, p.token, [record("keep-dashboard-alive")]);

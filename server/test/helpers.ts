@@ -116,61 +116,6 @@ export async function apiJson<T = any>(h: Handle, method: string, path: string, 
   return (text ? JSON.parse(text) : null) as T;
 }
 
-/** Contract 3 transfer used by integration tests that need real immutable bytes. */
-export async function uploadAgent(h: Handle, value: string | Uint8Array, type = "application/octet-stream", name?: string): Promise<any> {
-  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
-  const started = await apiJson(h, "POST", "uploads", { cid: crypto.randomUUID(), sha256: await sha256Hex(bytes),
-    size: bytes.byteLength, type, ...(name ? { name } : {}) }, 201);
-  if (started.upload_required) {
-    const sent = await api(h, "PUT", `uploads/${started.id}/content`, bytes, { "Content-Type": "application/octet-stream" });
-    if (sent.status !== 204) throw new Error(`upload content failed: ${sent.status} ${await sent.text()}`);
-  }
-  return (await apiJson(h, "POST", `uploads/${started.id}/complete`, {})).blob;
-}
-
-export async function uploadPage(h: Handle, value: string | Uint8Array, type = "application/octet-stream", name?: string,
-  device?: PageClient, sessionHeaders: Record<string, string> = {}): Promise<any> {
-  const ownDevice = device ?? await PageClient.connect(h.page_url, { headers: sessionHeaders });
-  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
-  const headers = { ...sessionHeaders, "X-Tendril-Device": ownDevice.deviceId, "X-Tendril-Device-Secret": ownDevice.secret };
-  try {
-    const started = await req(h.page_url + "_tendril/uploads", { method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ cid: crypto.randomUUID(), sha256: await sha256Hex(bytes), size: bytes.byteLength, type,
-        ...(name ? { name } : {}) }) });
-    if (started.status !== 201) throw new Error(`page upload start failed: ${started.status} ${await started.text()}`);
-    const session = await started.json<any>();
-    if (session.upload_required) {
-      const sent = await req(h.page_url + `_tendril/uploads/${session.id}/content`, { method: "PUT", body: bytes,
-        headers: { ...headers, "Content-Type": "application/octet-stream" } });
-      if (sent.status !== 204) throw new Error(`page upload content failed: ${sent.status} ${await sent.text()}`);
-    }
-    const done = await req(h.page_url + `_tendril/uploads/${session.id}/complete`, { method: "POST", headers });
-    if (!done.ok) throw new Error(`page upload completion failed: ${done.status} ${await done.text()}`);
-    return (await done.json<any>()).blob;
-  } finally { if (!device) ownDevice.close(); }
-}
-
-/** Build a complete publication from test files, optionally retaining the current manifest. */
-export async function publishTestFiles(h: Handle, input: { files: Record<string, string>; replace?: boolean; message?: string }): Promise<any> {
-  const head = await apiJson(h, "GET", "publications");
-  const previous = !input.replace && head.current ? await apiJson(h, "GET", `publications/${head.current}`) : null;
-  const files = new Map<string, { path: string; blob_id: string; type: string }>((previous?.files ?? []).map((file: any) => [file.path, file]));
-  if (!files.has("index.html") && !Object.hasOwn(input.files, "index.html")) {
-    const entry = await uploadAgent(h, "<!doctype html><title>Test page</title>", "text/html", "index.html");
-    files.set("index.html", { path: "index.html", blob_id: entry.id, type: "text/html" });
-  }
-  for (const [path, content] of Object.entries(input.files)) {
-    const type = path.endsWith(".html") ? "text/html" : path.endsWith(".js") ? "text/javascript" : "text/plain";
-    const blob = await uploadAgent(h, content, type, path);
-    files.set(path, { path, blob_id: blob.id, type });
-  }
-  const result = await apiJson(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {},
-    expected_head_revision: head.head_revision, entry: "index.html", files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)),
-    ...(input.message ? { message: input.message } : {}) });
-  return { ...result, files: [...files.keys()] };
-}
-
 export function stub(id: string): DurableObjectStub {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
 }
@@ -282,9 +227,20 @@ export class PageClient {
 
   /** Sends a request with a cid and waits for the reply carrying that cid. */
   async request(m: Record<string, unknown>, timeoutMs = 3000): Promise<any> {
-    const cid = "c" + rb32(10);
+    const cid = typeof m.cid === 'string' ? m.cid : "c" + rb32(10);
     this.send({ ...m, cid });
-    return this.next((x) => x.cid === cid, timeoutMs);
+    return this.next((x) => x.cid === cid && x.t !== 'instruction_echo', timeoutMs);
+  }
+
+  /** Page HTTP operations carry the device proof established by this socket. */
+  http(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
+    const allHeaders = new Headers({ ...this.headers, "X-Tendril-Device": this.deviceId, "X-Tendril-Device-Secret": this.secret, ...headers });
+    let content: BodyInit | undefined;
+    if (body !== undefined) {
+      if (typeof body === "string" || body instanceof ArrayBuffer || body instanceof Uint8Array) content = body as BodyInit;
+      else { content = JSON.stringify(body); allHeaders.set("Content-Type", "application/json"); }
+    }
+    return req(this.pageUrl + "_tendril/" + path, { method, headers: allHeaders, ...(content === undefined ? {} : { body: content }), anonymous: true });
   }
 
   drain(): any[] {
@@ -300,4 +256,103 @@ export class PageClient {
       /* ignore */
     }
   }
+}
+
+export type FixtureBytes = string | Uint8Array | ArrayBuffer;
+export interface UploadFixtureOptions {
+  cid?: string;
+  type?: string;
+  name?: string;
+  token?: string;
+  page?: PageClient;
+}
+
+/** Exercise the staged byte API; return the actual failing phase or completion response. */
+export async function uploadBlob(h: Handle, input: FixtureBytes, options: UploadFixtureOptions = {}): Promise<Response> {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input instanceof Uint8Array ? input : new Uint8Array(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  const send = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => options.page
+    ? options.page.http(method, path, body, headers)
+    : api(h, method, path, body, headers, options.token ?? h.token);
+  const started = await send("POST", "uploads", {
+    cid: options.cid ?? crypto.randomUUID(), sha256, size: bytes.byteLength,
+    type: options.type ?? "application/octet-stream", ...(options.name === undefined ? {} : { name: options.name }),
+  });
+  if (!started.ok) return started;
+  const session = await started.json<any>();
+  if (session.upload_required && !["received", "completed"].includes(session.phase)) {
+    const content = await send("PUT", `uploads/${session.id}/content`, bytes, { "Content-Type": "application/octet-stream" });
+    if (!content.ok) return content;
+    await content.arrayBuffer();
+  }
+  return send("POST", `uploads/${session.id}/complete`, {});
+}
+
+export async function uploadBlobJson(h: Handle, input: FixtureBytes, options: UploadFixtureOptions = {}): Promise<any> {
+  const response = await uploadBlob(h, input, options), body = await response.json<any>();
+  if (!response.ok) throw Error(`Fixture upload failed (${response.status}): ${JSON.stringify(body)}`);
+  return body.blob;
+}
+
+export type FixtureFile = FixtureBytes | { bytes: FixtureBytes; type: string };
+export interface PublicationFixtureOptions {
+  cid?: string;
+  entry?: string;
+  replace?: boolean;
+  expected_head_revision?: number;
+  expected_generations?: Record<string, string>;
+  scope?: string;
+  token?: string;
+}
+
+const fixtureType = (path: string) => path.endsWith(".html") ? "text/html"
+  : path.endsWith(".js") || path.endsWith(".mjs") ? "text/javascript"
+  : path.endsWith(".css") ? "text/css" : path.endsWith(".json") ? "application/json"
+  : path.endsWith(".txt") ? "text/plain" : "application/octet-stream";
+
+/** Author explicit bytes, then commit one complete manifest against the captured head. */
+export async function publishFiles(h: Handle, files: Record<string, FixtureFile>, options: PublicationFixtureOptions = {}): Promise<Response> {
+  const cid = options.cid ?? crypto.randomUUID(), token = options.token ?? h.token;
+  const headResponse = await api(h, "GET", "publications", undefined, {}, token);
+  if (!headResponse.ok) return headResponse;
+  const head = await headResponse.json<any>();
+  let previous: any = null;
+  if (!options.replace && head.current) {
+    const response = await api(h, "GET", `publications/${head.current}`, undefined, {}, token);
+    if (!response.ok) return response;
+    previous = await response.json<any>();
+  }
+  const manifest = new Map<string, { path: string; blob_id: string; type: string }>();
+  for (const file of previous?.files ?? []) manifest.set(file.path, { path: file.path, blob_id: file.blob_id, type: file.type });
+  for (const [path, value] of Object.entries(files)) {
+    const explicit = typeof value === "object" && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && "bytes" in value;
+    const type = explicit ? value.type : fixtureType(path), bytes = explicit ? value.bytes : value as FixtureBytes;
+    const response = await uploadBlob(h, bytes, { name: path, type, token });
+    if (!response.ok) return response;
+    const { blob } = await response.json<any>();
+    manifest.set(path, { path, blob_id: blob.id, type });
+  }
+  return api(h, "POST", "publications", {
+    cid, expected_generations: options.expected_generations ?? {},
+    ...(options.scope ? { scope: options.scope } : {}),
+    expected_head_revision: options.expected_head_revision ?? head.head_revision,
+    entry: options.entry ?? previous?.entry ?? "index.html",
+    files: [...manifest.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  }, {}, token);
+}
+
+export async function publishFilesJson(h: Handle, files: Record<string, FixtureFile>, options: PublicationFixtureOptions = {}): Promise<any> {
+  const response = await publishFiles(h, files, options), body = await response.json<any>();
+  if (!response.ok) throw Error(`Fixture publication failed (${response.status}): ${JSON.stringify(body)}`);
+  return body;
+}
+
+/** Resolve the current complete manifest before requesting its immutable bytes. */
+export async function publishedFile(h: Handle, path: string): Promise<Response> {
+  const head = await apiJson(h, "GET", "publications");
+  const manifest = await apiJson(h, "GET", `publications/${head.current}`);
+  const file = manifest.files.find((entry: any) => entry.path === path);
+  if (!file) throw Error(`No authored file ${path} in publication ${head.current}`);
+  return api(h, "GET", `blobs/${file.blob_id}`);
 }

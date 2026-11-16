@@ -21,7 +21,7 @@ function release(id, runtimeId = id, lazyResources = {}) {
   const resources = new Map(Object.entries(sources).map(([path, body]) => [new URL(path, base).href, () => new Response(path === "index.html" ? html : body, { headers: { "X-Tendril-Publication": id } })]));
   const onDemand = Object.entries(lazyResources).map(([name, body]) => ({ url: `_tendril/assets/${sha(body)}/${name}`, sha256: sha(body), type: "application/octet-stream" }));
   for (const [name, body] of Object.entries(lazyResources)) resources.set(absolute(`_tendril/assets/${sha(body)}/${name}`), () => new Response(body));
-  resources.set(runtimeBase + "manifest.json", () => json({ id: hash, version: "0.2.0-rc.1", assets: [{ path: "tendril.js", sha256: sha(`runtime-${runtimeId}`), type: "text/javascript" }], resources: onDemand }));
+  resources.set(runtimeBase + "manifest.json", () => json({ id: hash, version: "0.2.0-rc.1", assets: [{ path: "tendril.js", preload: true, sha256: sha(`runtime-${runtimeId}`), type: "text/javascript" }], resources: onDemand }));
   resources.set(runtimeBase + "tendril.js", () => new Response(`runtime-${runtimeId}`));
   return { publication, resources, html, onDemand };
 }
@@ -73,9 +73,10 @@ async function worker(net, stores = new Map(), clients = new Map(), { beforePut 
   }
   return { stores, clients, sent, caches,
     install: () => dispatch("install"), activate: () => dispatch("activate"),
-    async announce(clientId, publication, replies) {
-      clients.set(clientId, scope);
-      await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url: scope },
+    async announce(clientId, publication, replies, documentPath = publication.entry) {
+      const url = new URL(documentPath.split('/').map(encodeURIComponent).join('/'), publication.base).href;
+      clients.set(clientId, url);
+      await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url },
         ports: replies ? [{ postMessage(value) { replies.push(structuredClone(value)); } }] : [] });
     },
     request: (path, clientId = "a", navigation = false) => dispatch("fetch", { request: { url: absolute(path), method: "GET", headers: new Headers(), mode: navigation ? "navigate" : "cors" }, clientId: navigation ? "" : clientId, replacesClientId: navigation ? clientId : "", resultingClientId: navigation ? clientId : "" }),
@@ -252,4 +253,99 @@ test("lazy resources reject changed bytes, respect no-store, and leave undeclare
   net.online = false;
   await assert.rejects(sw.request(url), /offline/);
   await assert.rejects(sw.request(undeclared), /offline/);
+});
+
+test("optional runtime modules are verified and cached only after deliberate use", async () => {
+  const a = release("1"), net = network(a);
+  const url = a.publication.runtime.base + "voice.mjs", manifestURL = a.publication.runtime.base + "manifest.json";
+  const manifest = await a.resources.get(manifestURL)().json();
+  manifest.assets.push({ path: "voice.mjs", sha256: sha("explicit voice module"), type: "text/javascript", preload: false });
+  net.resources.set(manifestURL, () => json(manifest)); net.resources.set(url, () => new Response("tampered module"));
+  const sw = await worker(net); await sw.install(); await sw.announce("a", a.publication);
+  assert.equal(net.calls.includes(url), false, "plain page readiness does not fetch voice");
+  await assert.rejects(sw.request(url, "a"), /integrity mismatch/);
+  net.resources.set(url, () => new Response("explicit voice module"));
+  assert.equal(await (await sw.request(url, "a")).text(), "explicit voice module");
+  net.online = false;
+  assert.equal(await (await sw.request(url, "a")).text(), "explicit voice module");
+});
+
+test("nested logical filenames are encoded exactly and offline navigation never substitutes another page", async () => {
+  const a = release("1"), path = "notes & charts/reading ? # 100%.html";
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  a.publication.assets.push({ path, sha256: sha("nested authored page"), type: "text/html" });
+  a.resources.set(a.publication.base + encoded, () => new Response("nested authored page", { headers: { "X-Tendril-Publication": "1" } }));
+  const net = network(a), sw = await worker(net); await sw.install(); await sw.announce("a", a.publication);
+  assert.ok(net.calls.includes(a.publication.base + encoded)); net.online = false;
+  assert.equal(await (await sw.request(encoded, "a", true)).text(), "nested authored page");
+  assert.equal((await sw.request("missing.html", "a", true)).status, 503);
+});
+
+test("offline root navigation uses the declared HTML entry even when index.html also exists", async () => {
+  for (const entry of ["app.html", "pages/home.html"]) {
+    const a = release("1");
+    a.publication.entry = entry;
+    const entryHtml = `<!doctype html><script>window.__TENDRIL__=${JSON.stringify({ publication: a.publication })};</script><h1>declared: ${entry}</h1>`;
+    a.publication.assets.push({ path: entry, sha256: sha(entryHtml), type: "text/html" });
+    a.resources.set(new URL(entry, a.publication.base).href, () => new Response(entryHtml, { headers: { "X-Tendril-Publication": "1" } }));
+    a.html = entryHtml;
+    const net = network(a), initial = await worker(net);
+    await initial.install(); await initial.announce("a", a.publication);
+    net.online = false;
+    // A worker restart, a PWA launch at the root, and an explicit publication
+    // root all use the same authored entry, not a coincidental index.html.
+    const resumed = await worker(net, initial.stores, initial.clients);
+    assert.equal(await (await resumed.request("", "a", true)).text(), entryHtml);
+    assert.equal(await (await resumed.request(a.publication.base, "a", true)).text(), entryHtml);
+    assert.equal((await (await resumed.request("index.html", "a", true)).text()).includes("<h1>1</h1>"), true);
+    assert.equal((await resumed.request("pages/", "a", true)).status, 503,
+      "explicit nested directory navigation must not borrow the publication entry");
+  }
+});
+
+test("nested document announcements keep the canonical root across offline worker restart", async () => {
+  const a = release("1"), entry = "app.html", documentPath = "notes #1?/café 100%/help.html";
+  const entryHtml = "<h1>Canonical root</h1>", documentHtml = "<h1>Nested help</h1>";
+  a.publication.entry = entry;
+  const encode = path => path.split('/').map(encodeURIComponent).join('/');
+  for (const [path, body] of [[entry, entryHtml], [documentPath, documentHtml]]) {
+    a.publication.assets.push({ path, sha256: sha(body), type: "text/html" });
+    a.resources.set(new URL(encode(path), a.publication.base).href,
+      () => new Response(body, { headers: { "X-Tendril-Publication": "1" } }));
+  }
+  a.html = entryHtml;
+  const net = network(a), initial = await worker(net);
+  await initial.install();
+  await initial.announce("root", a.publication);
+  await initial.announce("nested", a.publication, undefined, documentPath);
+  net.online = false;
+  const restarted = await worker(net, initial.stores, initial.clients);
+  assert.equal(await (await restarted.request("", "root", true)).text(), entryHtml);
+  assert.equal(await (await restarted.request(a.publication.base, "nested", true)).text(), entryHtml);
+  assert.equal(await (await restarted.request(encode(documentPath), "nested", true)).text(), documentHtml);
+  assert.equal(await (await restarted.request(a.publication.base + encode(documentPath), "nested", true)).text(), documentHtml);
+  assert.equal((await restarted.request(encode(documentPath.slice(0, documentPath.lastIndexOf('/') + 1)), "nested", true)).status, 503);
+});
+
+test("pinned and ordinary directory navigation resolves only declared index files with equivalent URL encoding", async () => {
+  const a = release("1"), b = release("2"), directory = "notes & charts/question ? # 100%/";
+  const encode = path => path.split("/").map(encodeURIComponent).join("/");
+  for (const item of [a, b]) for (const path of ["docs/index.html", directory + "index.html"]) {
+    const body = `${item.publication.id}: ${path}`;
+    item.publication.assets.push({ path, sha256: sha(body), type: "text/html" });
+    item.resources.set(item.publication.base + encode(path), () => new Response(body, { headers: { "X-Tendril-Publication": item.publication.id } }));
+  }
+  const net = network(a), sw = await worker(net); await sw.install(); await sw.announce("a", a.publication);
+  net.current = b; await sw.install(); await sw.announce("b", b.publication); net.online = false;
+  for (const [client, item] of [["a", a], ["b", b]]) {
+    for (const base of ["", item.publication.base]) {
+      assert.equal(await (await sw.request(base + "docs/", client, true)).text(), `${item.publication.id}: docs/index.html`);
+      for (const path of [encode(directory), encode(directory + "index.html").replace(/%[0-9A-F]{2}/g, part => part.toLowerCase())])
+        assert.equal(await (await sw.request(base + path, client, true)).text(), `${item.publication.id}: ${directory}index.html`);
+      for (const path of ["missing/", "docs", "docs/missing.html", "bad%escape/"])
+        assert.equal((await sw.request(base + path, client, true)).status, 503, `No implicit page fallback for ${path}`);
+    }
+  }
+  // An explicit publication pin takes precedence over the current client binding.
+  assert.equal(await (await sw.request(a.publication.base + "docs/", "b", true)).text(), "1: docs/index.html");
 });

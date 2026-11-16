@@ -22,7 +22,7 @@ it('accepts publication preconditions for the full active-scope allowance', asyn
   const h = await create();
   const expected_generations = Object.fromEntries(Array.from({ length: RESOURCE_LIMITS.active_scopes }, (_, index) =>
     [`scope-${String(index).padStart(3, '0')}-${'x'.repeat(120)}`, crypto.randomUUID()]));
-  const body = command({ expected_generations, expected_version: 0 });
+  const body = command({ expected_generations, expected_head_revision: 0 });
   expect(JSON.stringify(body).length).toBeGreaterThan(4096);
   expect((await api(h, 'POST', 'bundle/publish', body)).status).toBe(404);
 });
@@ -198,12 +198,12 @@ it('MCP state writes use the same admission and cannot hide guards in app JSON',
 it('bundle restore checks current guards atomically and an acknowledged retry never repeats the restore', async () => {
   const h = await create({ mode: 'dashboard' });
   const entry = await apiJson(h, 'PUT', 'scopes/job', command({ paths: [['protected']], operations: [] }));
-  const bundle = { format: 'tendriller-bundle', version: 2, name: 'Scoped restore', files: [{ path: 'index.html', type: 'text/html', base64: btoa('<h1>Fresh</h1>') }], media: [], shared_files: [], state: { protected: { session_id: 'only application JSON' } } };
+  const bundle = { format: 'tendriller-bundle', version: 3, entry: 'index.html', name: 'Scoped restore', files: [{ path: 'index.html', type: 'text/html', base64: btoa('<h1>Fresh</h1>') }], media: [], state: { protected: { session_id: 'only application JSON' } } };
   expect((await api(h, 'PUT', 'bundle', { ...bundle, scopes: [entry] })).status).toBe(400);
   await apiJson(h, 'PUT', 'bundle', bundle, 202);
-  expect((await api(h, 'POST', 'bundle/publish', command({ expected_version: 0 }))).status).toBe(428);
+  expect((await api(h, 'POST', 'bundle/publish', command({ expected_head_revision: 0 }))).status).toBe(428);
   expect((await apiJson(h, 'GET', 'state')).state).toEqual({});
-  const accepted = command({ expected_generations: { job: entry.generation }, expected_version: 0 });
+  const accepted = command({ expected_generations: { job: entry.generation }, expected_head_revision: 0 });
   const publication = await apiJson(h, 'POST', 'bundle/publish', accepted);
   expect((await apiJson(h, 'GET', 'state')).state).toEqual(bundle.state);
   const next = await apiJson(h, 'POST', 'scopes/job/rotate', command({ expected_generations: { job: entry.generation } }));

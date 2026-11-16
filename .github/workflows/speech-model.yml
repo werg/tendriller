@@ -7,7 +7,7 @@ on:
   push:
     branches: [master]
     paths:
-      - "runtime/src/control/speech-worker.ts"
+      - "runtime/src/voice/**"
       - "scripts/e2e-speech-assets.mjs"
       - "scripts/build.mjs"
       - "package.json"
@@ -19,7 +19,7 @@ on:
       - ".github/workflows/speech-model.yml"
   pull_request:
     paths:
-      - "runtime/src/control/speech-worker.ts"
+      - "runtime/src/voice/**"
       - "scripts/e2e-speech-assets.mjs"
       - "scripts/build.mjs"
       - "package.json"

@@ -12,7 +12,8 @@ import { handleScopes, handleWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
 import { STREAM_ROUTE, handleStreams } from "./streams";
 import { allows, authenticatePage } from "./access";
-import { handleStorageV3, STORAGE_V3_ROUTE } from "./storage-v3";
+import { handleManagement } from "./management";
+import { handleStorage, STORAGE_ROUTE } from "./storage";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -52,6 +53,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (sub === 'manage') return handleManagement(t, req, base, principal);
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t));
   if (sub.startsWith("streams") && STREAM_ROUTE.test(sub))
     return handleStreams(t, req, url, sub, principal);
@@ -143,15 +145,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
-  if (STORAGE_V3_ROUTE.test(sub)) {
-    if (sub.startsWith("publications") && !allows(principal, "page.owner"))
-      throw new HttpError(403, "forbidden", "Only the owner can publish or roll back page code");
-    if (sub.startsWith("file-refs") && !allows(principal, "page.write"))
-      throw new HttpError(403, "forbidden");
-    if (sub === "file-refs/cleanup" && !allows(principal, "page.owner"))
-      throw new HttpError(403, "forbidden", "Only the owner can clean up retired-scope files");
+  if (STORAGE_ROUTE.test(sub)) {
+    if (sub.startsWith("publications")) throw new HttpError(403, "forbidden", "Only an agent can publish page code");
     if ((sub === "blobs" || /^blobs\/[^/]+\/info$/.test(sub)) && !allows(principal, "page.owner"))
-      throw new HttpError(403, "forbidden", "Only the owner can enumerate captures");
+      throw new HttpError(403, "forbidden", "Only the owner can enumerate capture metadata");
     if (m !== "GET" && m !== "HEAD" && !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
     if (/^blobs\/[^/]+\/pin$/.test(sub) && !allows(principal, "page.owner"))
       throw new HttpError(403, "forbidden", "Only the owner can keep captures");
@@ -159,7 +156,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (/^uploads(?:\/|$)/.test(sub) && !device) throw new HttpError(401, "device_required", "Register this device before uploading");
     const completion = /^uploads\/(u_[a-z2-7]{20})\/complete$/.exec(sub);
     const wasCompleted = completion && t.db.one<{ phase: string }>("SELECT phase FROM upload_sessions WHERE id=?", completion[1])?.phase === "completed";
-    const response = await handleStorageV3(t, req, url, `page:${device?.id ?? principal.name}`, sub, "page", device?.id ?? null);
+    const response = await handleStorage(t, req, url, `page:${device?.id ?? principal.name}`, sub, "page", device?.id ?? null);
     if (completion && !wasCompleted && response.ok && device) {
       const receipt = await response.clone().json() as { blob?: { id: string; size: number; type: string; name?: string } };
       if (receipt.blob) addActivity(t, { kind: "blob", summary: `${blobLabel(receipt.blob.type)} sent${receipt.blob.name ? ` (${receipt.blob.name.slice(0, 80)})` : ""}, ${formatSize(receipt.blob.size)}`, blob: receipt.blob.id, device: device.id });

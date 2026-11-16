@@ -1,94 +1,91 @@
-# Hands-free wake phrase (core widget)
+# Explicit voice interaction
 
-The always-present **Tendriller control** owns hands-free recognition. A page does not
-need to load a contrib snippet or modify its app code. Open the control → Talk →
-**Hands-free wake phrase** to start/stop; use Configure (or Settings and history →
-Hands-free wake phrase) to change the phrase, recognition mode, and test it.
+Voice is an optional adapter, loaded with
+`import(tendril.assetUrl("voice.mjs"))` or `@tendriller/runtime/voice`. The headless
+runtime has no voice engine or mandatory microphone UI. Importing and constructing
+`createVoice(runtime, options)` starts no microphone, speech, or download. A stored
+engine choice never resumes listening or unmutes a new visit.
 
-## User flow
+An authored experience supplies its controls, visible active-use state, a stop
+path, typed fallback, consent callback, and transcript callback. The transcript
+callback decides whether to review/edit text, send a semantic event, or call
+`conversation.send(text,{via:"voice"})`. Reading a voice cookbook does not select an
+engine or install a listening behavior.
 
-1. Choose a two-or-more-word phrase (default "Hey Tendril") and recognition mode.
-   These preferences stay in local device/page storage, not in shared app state.
-2. **On-device only** is the default. Use **Check / install on-device language**
-   if your browser needs a speech language pack. Engine and language support
-   vary. If local support is missing, the control does **not** silently change
-   privacy modes.
-3. To use the browser's usual speech recognition instead, explicitly select
-   **Browser recognition (may use cloud)** and save. Browser vendors may process
-   microphone audio remotely; internet access may be required.
-4. Tap **Start hands-free**, then say the phrase and command together ("Hey Tendril,
-   add eggs to my list"), or say the phrase and wait up to eight seconds before
-   the command. The control shows a microphone chip with **Stop** whenever
-   recognition is active. **Test wake phrase** confirms detection without sending
-   a command to the agent.
-5. Commands go through the same conversation instruction path as push-to-talk,
-   including guest rules, receipts, offline handling, rate limits and draft
-   recovery. Nothing is sent merely from overheard background speech.
-6. Listening stops when the user taps Stop, invokes Stop all sensors, initiates
-   push-to-talk, hides the control, changes wake settings, loses input privileges,
-   backgrounds/navigates away from the page, or experiences terminal recognition
-   errors. It **does not restart automatically** on return/reload. Other
-   preferences (like contrast or output volume) do not disarm it.
+## Public lifecycle
 
-The core widget's wake indicator is independent of the page's getUserMedia
-sensor tracker: speech-recognition implementations may obtain microphone audio
-internally rather than through a MediaStream exposed to the page. The browser
-itself still enforces microphone permissions and indicators.
+| Operation | Behavior |
+| --- | --- |
+| `enableOutput("browser" | "neural")` | Requests the supplied consent decision, then enables this visit's output. Neural preparation is explicit. |
+| `speak(text)` | Queues output only after it is enabled and unmuted. |
+| `mute()` | Disables local output and stops current speech. |
+| `prepareCapture()` | Requests transcription consent and prepares the selected local resources without opening a microphone. |
+| `startCapture()` / `finishCapture()` | Record a bounded utterance and deliver transcription to the page callback. |
+| `cancelCapture()` | Discard the active/pending recording or result. |
+| `startWake({phrase,mode})` | Request consent and start foreground wake-phrase recognition in the explicitly selected mode. |
+| `localAvailability()` / `installLocalLanguage()` | Inspect support or explicitly request the browser's local language-pack installation. |
+| `stop()` | Stop output, capture, wake recognition, and pending starts. |
+| `dispose()` | Stop and release worker, audio resources, subscriptions, and page listeners. |
 
-## Scope, privacy and browser reality
+`language(tag)` changes the local choice and stops existing activity.
+`listening`, `speaking`, `muted`, and `outputStatus` are observable; `options.status` reports
+output, capture, and wake progress/errors. `outputStatus` names the selected engine
+and its preparation state; `muted` reports session playback consent separately.
+`options.speakReplies:true` deliberately
+routes suitable authenticated-owner replies to enabled local speech. The default
+is false. Role changes, hidden pages, navigation, and the public sensor-stop signal
+stop active voice use. Backgrounding never automatically rearms recognition.
+Voice choices can persist for a later visit; playback consent is local to this
+adapter session. Another tab cannot unmute this adapter or change its active engine.
 
-This first implementation matches **complete word tokens in final speech
-transcripts**, not raw audio against a trained wake-word classifier. It may
-produce false positives or miss a phrase, especially in noise, with homophones,
-or when the browser punctuates or segments speech unexpectedly. Keep the page
-open, foregrounded and unlocked. Browsers frequently interrupt microphone
-capture in background tabs and locked mobile screens. No web page can promise
-always-on, screen-off listening across platforms.
+## Engines and their limits
 
-- SpeechRecognition compatibility is narrower than general getUserMedia support. The core uses the modern unprefixed interface rather than vendor-prefixed recognition APIs.
-- On-device SpeechRecognition requires both the API support and an installed
-  language pack. processLocally=true is applied *only* when selected, and
-  failure never falls back to the browser/cloud service.
-- The browser-managed mode may send ambient microphone audio to the browser
-  provider, even though Tendriller only sends explicit post-wake commands to
-  the agent.
-- The core's optional Cactus/Whistle **push-to-talk** transcription model is a
-  separate on-device audio path. It does not provide a continuous wake detector.
-- A wake notification cue follows existing display/sound accessibility settings.
-  The confirmation test does not submit the following spoken words.
+Push-to-talk uses the content-addressed Cactus/Whistle engine and model described
+by the selected runtime's `resources.json`. The optional worker checks the declared
+WASM and model hashes. Recording is bounded to 30 seconds, audio is decoded through
+`OfflineAudioContext`, and transcription occurs on the device. Preparation,
+permission denial, decoding failure, cancellation, and a stalled worker all have
+explicit outcomes. A cancelled result never becomes a late submitted command.
+The page should preserve typed input throughout preparation and failures.
 
-## Modern options evaluated (November 2026)
+Wake input has two explicit choices:
 
-| Approach | Benefits | Costs / decision |
-| --- | --- | --- |
-| Web Speech on-device | Platform-managed local ASR, little bundled code, language pack provisioning API | Availability and installed languages vary; still full speech recognition. **Default where available.** |
-| Browser-managed Web Speech | Broadest practical compatibility on supported browsers, no model bundle | May be cloud-based; network/privacy tradeoff. **Explicit opt-in only.** |
-| Purpose-built local wake classifier (e.g. Picovoice Porcupine Web) | Lower compute cost than continuous ASR; can be fully local; supports custom keyword models | SDK access key and distribution terms, keyword assets, licensing, worker/AudioWorklet integration, platform test matrix. **Candidate for a future independently reviewed engine.** |
-| AudioWorklet + WASM/custom model | Local audio frames, device privacy, custom inference, no vendor ASR service | Model accuracy/licensing, memory/battery budget, resampling, accessibility and browser suspension must be tested. **Not shipping without a validated model and benchmarks.** |
-| Native OS assistant/background service | Better support for screen-off and mobile lifecycle | Requires explicit OS integration, not a web-only capability. **Out of scope for page UI.** |
+- **`local`** requires on-device `SpeechRecognition`, sets `processLocally`, and
+  needs a supported installed language pack. An unsupported browser or language
+  fails without switching to a cloud recognizer.
+- **`browser`** deliberately selects the browser recognition provider. It can use
+  a network service; its consent description makes that tradeoff visible.
 
-Before changing engines, measure false-accepts per hour, missed activations,
-time-to-ready, 8-second follow-up command accuracy, on-device power usage,
-model download/storage and latency on low-end Android, iOS Safari, desktop
-Chrome/Edge/Firefox and assistive input devices. Ensure model integrity,
-license/redistribution compliance, prompt/permission UX and disposal semantics
-match the core runtime's shipping gate.
+This adapter matches final speech transcripts against whole phrase words. It is
+not a dedicated low-power acoustic wake-word model. It ignores output while the
+adapter or browser is speaking, limits its command window, bounds repeated
+recognizer restarts, and never treats unrelated background transcripts as input.
+A different wake engine requires deliberate selection and device evidence rather
+than an unsupported accuracy claim.
 
-## Verification
+Browser synthesis is the lightweight output choice. Optional neural English output
+uses pinned `phonon-tts@0.7.1` code and the Phonon model revision explicitly selected
+by the adapter. Its first use is about 65 MB; the consent request says so. Other
+languages and unavailable neural output use browser synthesis. Partially played
+neural replies are not repeated in a fallback voice. Queued output can be stopped,
+and an interrupted synthesis cannot block subsequent speech indefinitely.
 
-- runtime/test/wakeword.test.mjs covers complete-word matching, same-utterance
-  commands, post-wake command turns, duplicate results, explicit privacy choice,
-  denied permission and background stop.
-- runtime/test/control/wakeword.spec.ts covers the shipping Shadow DOM widget,
-  settings/persistence, live indicator, routing, test-only flow, reload and
-  access changes.
-- Run npm run check plus npm run test:browser in core. Browser automation
-  fakes SpeechRecognition; real microphone/service and on-device language pack
-  behavior require explicit device tests before a production release.
+Runtime code, worker code, and declared resources retain exact publication
+identity. Only `tendril.js` and `sw.js` are eagerly saved for the hosted runtime;
+voice and other optional runtime files are verified and cached on deliberate use.
+The adapter's upstream model cache remains an explicit optional dependency.
 
-## References
+## Verification and evidence
 
-- [Chrome 139 — on-device Web Speech API](https://developer.chrome.com/blog/new-in-chrome-139)
-- [MDN — Web Speech and local pack installation](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API/Using_the_Web_Speech_API)
-- [MDN — getUserMedia permissions and secure contexts](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia)
-- [Porcupine Web quick start](https://picovoice.ai/docs/quick-start/porcupine-web/)
+Unit tests exercise strict local recognition, consent/disabled behavior, whole-word
+matching, duplicate results, output exclusion, permission errors, background stop,
+failed construction, queue interruption, and unchanged durable input identity.
+The service/browser specimens in `test/e2e/authored-pages.ts` use their own markup
+and callbacks; they do not import a control product. A deterministic worker test
+covers the WASM i64 model-length call and decoding without autoplay playback.
+
+`npm run test:e2e:speech-real` separately exercises the pinned engine/model against
+silence and the recorded speech fixture. Browser/provider availability and real
+microphone quality require current device testing; mocked transcription never
+establishes recognition accuracy. Report which checks actually ran and the exact
+artifact revision rather than calling every supported API an exercised device.

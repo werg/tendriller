@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { assertValid } from "../../contract/index.mjs";
 import { api, apiJson, create, inDO, PageClient, req, sleep } from "./helpers";
 
 describe("eval relay", () => {
@@ -253,7 +254,31 @@ describe("links", () => {
   });
 });
 
-describe("say, notify, rules, logs, voice and rule events", () => {
+describe("say, notify, logs and voice events", () => {
+  it("correlates repeated text by command and message identity across reconnects", async () => {
+    const h = await create();
+    const page = await PageClient.connect(h.page_url);
+    const echoes: any[] = [];
+    for (const cid of ['same-text-first', 'same-text-second']) {
+      await page.request({ t: 'send', cid, expected_generations: {}, kind: 'instruction', text: 'again', via: 'text' });
+      echoes.push(await page.next('instruction_echo'));
+    }
+    expect(echoes.map(message => message.cid)).toEqual(['same-text-first', 'same-text-second']);
+    expect(new Set(echoes.map(message => message.message_id)).size).toBe(2);
+    expect(echoes.every(message => message.device === page.deviceId)).toBe(true);
+    const reply = await apiJson(h, 'POST', 'say', { text: 'Recorded twice', speak: false });
+    const spoken = await page.next('say');
+    assertValid('sayMessage', spoken);
+    expect(spoken).not.toHaveProperty('in_reply_to');
+    expect(spoken).not.toHaveProperty('speak_on');
+    const again = await PageClient.connect(h.page_url);
+    expect(again.welcome.transcript.map((message: any) => message.message_id)).toEqual([...echoes.map(message => message.message_id), spoken.message_id]);
+    expect(again.welcome.transcript.slice(0, 2).map((message: any) => message.cid)).toEqual(['same-text-first', 'same-text-second']);
+    expect(await page.request({ t: 'say_rendered', message_id: spoken.message_id })).not.toHaveProperty('error');
+    expect(await page.request({ t: 'say_rendered', message_id: crypto.randomUUID() })).toMatchObject({ error: 'unknown_message' });
+    page.close(); again.close();
+  });
+
   it("say reaches all devices and the transcript", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
@@ -281,27 +306,6 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     expect(await apiJson(h, "POST", "notify", { title: "x" })).toEqual({ sent: 0, failed: 0, deliveries: [] });
     page.close();
   });
-
-  it("rules are stored, broadcast and in welcome; rule_fired becomes a waking event", async () => {
-    const h = await create();
-    const page = await PageClient.connect(h.page_url);
-    const rules = [{ id: "shop", when: { type: "interval", minutes: 5 }, do: [{ type: "event" }] }];
-    await apiJson(h, "PUT", "rules", { rules });
-    expect(await page.next("rules")).toEqual({ t: "rules", rules });
-    expect(await apiJson(h, "GET", "rules")).toEqual({ rules });
-    const again = await PageClient.connect(h.page_url);
-    expect(again.welcome.rules).toEqual(rules);
-    const ack = await page.request({ t: "rule_fired", rule_id: "shop", detail: { at: 1 } });
-    expect(ack.seq).toEqual(expect.any(Number));
-    const ev = (await apiJson(h, "GET", "events")).events.find((e: any) => e.type === "rule");
-    expect(ev).toMatchObject({ data: { rule_id: "shop", detail: { at: 1 } }, wake: true });
-    const bad = await api(h, "PUT", "rules", { rules: [{}] });
-    expect(bad.status).toBe(400);
-    await bad.text();
-    page.close();
-    again.close();
-  });
-
 
   it("logs are stored with device and version, newest 2000 kept", async () => {
     const h = await create();

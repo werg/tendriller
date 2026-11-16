@@ -34,8 +34,9 @@ export function toErrorResponse(err: unknown): Response {
 
 export const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Tendril-Name, X-Tendril-Lease, Mcp-Protocol-Version, Mcp-Session-Id",
+  "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, Range, X-Tendril-Name, X-Tendril-Lease, Mcp-Protocol-Version, Mcp-Session-Id",
+  "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Disposition",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -51,9 +52,26 @@ export function withCors(res: Response): Response {
 export async function readBody(req: Request, max: number): Promise<ArrayBuffer> {
   const len = Number(req.headers.get("Content-Length") ?? "NaN");
   if (Number.isFinite(len) && len > max) throw new HttpError(413, "too_large", `Body exceeds ${max} bytes`);
-  const buf = await req.arrayBuffer();
-  if (buf.byteLength > max) throw new HttpError(413, "too_large", `Body exceeds ${max} bytes`);
-  return buf;
+  if (!req.body) return new ArrayBuffer(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel();
+        throw new HttpError(413, "too_large", `Body exceeds ${max} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes.buffer;
 }
 
 export async function readJson<T = any>(req: Request, max = 1_000_000): Promise<T> {

@@ -22,17 +22,18 @@ export class OfflineStore {
   get persistent(): boolean { return this.db !== null; }
   private db: IDBDatabase | null = null;
   private writes = new Set<Promise<unknown>>();
+  private removing = new Set<string>();
   private lsKey: string;
 
   constructor(private tendrilId: string) {
-    this.lsKey = `tendril:v2:${tendrilId}:snapshot`;
+    this.lsKey = `tendril:v3:${tendrilId}:snapshot`;
   }
 
   /** Opens IndexedDB and merges persisted outbox items (older) before items added in memory meanwhile. */
   async init(): Promise<Snapshot | null> {
     try {
       this.db = await new Promise<IDBDatabase>((res, rej) => {
-        const r = indexedDB.open(`tendril:v2:${this.tendrilId}`, 1);
+        const r = indexedDB.open(`tendril:v3:${this.tendrilId}`, 1);
         r.onupgradeneeded = () => {
           const db = r.result;
           if (!db.objectStoreNames.contains("outbox")) db.createObjectStore("outbox", { keyPath: "key" });
@@ -83,6 +84,9 @@ export class OfflineStore {
 
   /** Persist an operation phase before sending its dependent event. */
   async updateDurable(item: OutboxItem, msg: any): Promise<void> {
+    // A response may arrive while an earlier delete is committing. Never queue
+    // a later put that could recreate that discarded item on disk.
+    if (!this.has(item.cid)) return;
     const next = { ...item, msg };
     await this.commit((store) => store.put(next));
     item.msg = msg;
@@ -91,8 +95,11 @@ export class OfflineStore {
   async removeDurable(cid: string): Promise<void> {
     const item = this.items.find((entry) => entry.cid === cid);
     if (!item) return;
-    await this.commit((store) => store.delete(item.key));
-    this.items = this.items.filter((entry) => entry.cid !== cid);
+    this.removing.add(cid);
+    try {
+      await this.commit((store) => store.delete(item.key));
+      this.items = this.items.filter((entry) => entry.cid !== cid);
+    } finally { this.removing.delete(cid); }
   }
 
   private commit(write: (store: IDBObjectStore) => void): Promise<void> {
@@ -108,7 +115,7 @@ export class OfflineStore {
     return promise;
   }
 
-  has(cid: string): boolean { return this.items.some((i) => i.cid === cid); }
+  has(cid: string): boolean { return !this.removing.has(cid) && this.items.some((i) => i.cid === cid); }
 
   remove(cid: string): OutboxItem | undefined {
     const i = this.items.findIndex((x) => x.cid === cid);

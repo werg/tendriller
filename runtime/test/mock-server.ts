@@ -10,6 +10,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const asset = (p: string) => readFileSync(join(root, "dist/runtime/assets", p));
 const runtimeManifest = JSON.parse(asset("manifest.json").toString());
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const storageId = (prefix: string, number: number) => {
+  let value = "";
+  do { value = "abcdefghijklmnopqrstuvwxyz234567"[number % 32] + value; number = Math.floor(number / 32); } while (number);
+  return prefix + value.padStart(20, "a");
+};
 
 export interface MockTendril {
   id: string;
@@ -28,11 +33,13 @@ export interface MockTendril {
   msgs: any[];
   refuse: boolean;
   dedupe: Set<string>;
-  blobs: Map<string, { type: string; body: Buffer; name?: string }>;
-  uploadReceipts: Map<string, any>;
-  uploadSessions: Map<string, { cid: string; id: string; sha256: string; size: number; type: string; name?: string; body?: Buffer }>;
+  blobs: Map<string, { type: string; body: Buffer; name?: string; sha256: string; size: number; created_at: number; retention: { expires_at: number | null; reasons: string[] } }>;
+  uploads: Map<string, { command: any; actor: string; session: any; body?: Buffer }>;
+  pinReceipts: Map<string, { command: any; receipt: any }>;
+  transferRequests: { path: string; method: string; body?: any }[];
   uploadFailureStatus: number;
-  dropUploadResponses: number;
+  holdCompletionResponses: number;
+  dropPinResponses: number;
   sendReceipts: Map<string, any>;
   pageLoads: number;
   welcomeExtra: any;
@@ -66,7 +73,7 @@ export class MockServer {
     const t: MockTendril = {
       id, version: 1, html: "<h1>Hello</h1>", publications: new Map(), files: {}, noSw: true, preview: false, state: {}, scopes: [], rev: 0, seq: 0,
       sockets: new Set(), msgs: [], refuse: false, dedupe: new Set(), blobs: new Map(), pageLoads: 0, welcomeExtra: {},
-      uploadReceipts: new Map(), uploadSessions: new Map(), uploadFailureStatus: 0, dropUploadResponses: 0, sendReceipts: new Map(),
+      uploads: new Map(), pinReceipts: new Map(), transferRequests: [], uploadFailureStatus: 0, holdCompletionResponses: 0, dropPinResponses: 0, sendReceipts: new Map(),
       ...over,
     };
     this.tendrils.set(id, t);
@@ -86,7 +93,7 @@ export class MockServer {
       runtime: { version: runtimeManifest.version, id: runtimeManifest.id, base: this.runtimeUrl(t) },
       assets: [{ path: "index.html", sha256: hash(t.html), type: "text/html" }, ...Object.entries(files).map(([path, file]) => ({ path, sha256: hash(file.body), type: file.type }))],
     };
-    const cfg = { id: t.id, base, publication: manifest, preview: t.preview, version, ws: base + "_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: { model: "fixture", url: "model", sha256: "0".repeat(64), engine: { script: "engine.js", wasm: "engine.wasm", wasm_sha256: "0".repeat(64) } } } };
+    const cfg = { id: t.id, base, documentPath: "index.html", publication: manifest, preview: t.preview, version, ws: base + "_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: { model: "fixture", url: "model", sha256: "0".repeat(64), engine: { script: "engine.js", wasm: "engine.wasm", wasm_sha256: "0".repeat(64) } } } };
     const html = `<!doctype html><html><head><base href="${publicationBase}"><script>window.__TENDRIL__=${JSON.stringify(cfg)};</script>` +
       (t.noSw ? "<script>window.__TENDRIL_NO_SW__=true</script>" : "") +
       `<script src="${this.runtimeUrl(t)}tendril.js"></script><title>Test ${t.id} v${version}</title></head><body>${t.html}</body></html>`;
@@ -123,60 +130,76 @@ export class MockServer {
     const send = (status: number, type: string, body: string | Buffer, extra: Record<string, string> = {}) => {
       res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-cache", ...extra }).end(body);
     };
-    if (req.method === "POST" && rel === "_tendril/uploads") {
+    if (rel.startsWith("_tendril/uploads") || rel.startsWith("_tendril/blobs/")) {
+      const respond = (value: any, status = 200) => send(status, "application/json", JSON.stringify(value));
+      const fail = (status: number, code: string, message: string) => respond({ error: { code, message } }, status);
+      const actor = String(req.headers["x-tendril-device"] || "");
+      if (!actor || !req.headers["x-tendril-device-secret"]) return fail(403, "forbidden", "Device proof required");
+      const metadata = (id: string) => {
+        const { body, ...blob } = t.blobs.get(id)!;
+        return { id, ...blob, url: this.base(t) + "_tendril/blobs/" + id };
+      };
       const chunks: Buffer[] = [];
-      req.on("data", (c) => chunks.push(c));
+      req.on("data", chunk => chunks.push(chunk));
       req.on("end", () => {
-        if (t.uploadFailureStatus) return send(t.uploadFailureStatus, "application/json", JSON.stringify({ error: { code: "quota", message: "Capture storage is full." } }));
-        const input = JSON.parse(Buffer.concat(chunks).toString());
-        const cid = input.cid;
-        let session = t.uploadSessions.get(cid);
-        if (!session) {
-        const id = "b_" + String(t.blobs.size + 2).padStart(20, "a");
-          session = { cid, id, sha256: input.sha256, size: input.size, type: input.type, name: input.name };
-          t.uploadSessions.set(cid, session);
+        const bytes = Buffer.concat(chunks);
+        let body: any;
+        try { body = req.headers["content-type"] === "application/json" ? JSON.parse(bytes.toString()) : bytes; }
+        catch { return fail(400, "bad_request", "Invalid JSON"); }
+        t.transferRequests.push({ path: rel, method: req.method!, body });
+        if (rel === "_tendril/uploads" && req.method === "POST") {
+          if (t.uploadFailureStatus) return fail(t.uploadFailureStatus, "quota", "Capture storage is full.");
+          const previous = [...t.uploads.values()].find(upload => upload.actor === actor && upload.command.cid === body.cid);
+          if (previous) return JSON.stringify(previous.command) === JSON.stringify(body) ? respond(previous.session)
+            : fail(409, "command_conflict", "Upload CID belongs to different bytes");
+          const id = storageId("u_", t.uploads.size + 1), blob_id = storageId("b_", t.uploads.size + 1);
+          const session = { id, blob_id, sha256: body.sha256, size: body.size, phase: "ready", upload_required: true, expires_at: Date.now() + 3600000 };
+          t.uploads.set(id, { actor, command: body, session });
+          return respond(session, 201);
         }
-        send(201, "application/json", JSON.stringify({ id: "u_" + cid, blob_id: session.id, sha256: session.sha256, size: session.size,
-          phase: session.body ? "received" : "reserved", upload_required: !session.body, expires_at: Date.now() + 60_000 }));
-      });
-      return;
-    }
-    const upload = /^_tendril\/uploads\/([^/]+)\/(content|complete)$/.exec(rel);
-    if (upload) {
-      const session = t.uploadSessions.get(upload[1].slice(2));
-      if (!session) return send(404, "application/json", JSON.stringify({ error: { code: "not_found" } }));
-      if (upload[2] === "content" && req.method === "PUT") {
-        const chunks: Buffer[] = [];
-        req.on("data", (c) => chunks.push(c));
-        req.on("end", () => {
-          const body = Buffer.concat(chunks);
-          if (body.byteLength !== session.size || hash(body) !== session.sha256) return send(422, "application/json", JSON.stringify({ error: { code: "digest_mismatch" } }));
-          session.body = body;
-          res.writeHead(204).end();
-        });
-        return;
-      }
-      if (upload[2] === "complete" && req.method === "POST") {
-        if (!session.body) return send(409, "application/json", JSON.stringify({ error: { code: "upload_incomplete" } }));
-        t.blobs.set(session.id, { type: session.type, body: session.body, name: session.name });
-        const receipt = { id: session.id, sha256: session.sha256, size: session.size, type: session.type,
-          url: "_tendril/blobs/" + session.id, created_at: Date.now(), retention: { expires_at: Date.now() + 30 * 86_400_000, reasons: ["page_default"] } };
-        t.uploadReceipts.set(session.cid, receipt);
-        if (t.dropUploadResponses > 0) { t.dropUploadResponses--; req.socket.destroy(); return; }
-        send(200, "application/json", JSON.stringify({ status: "completed", blob: receipt }));
-        return;
-      }
-    }
-    const pin = /^_tendril\/blobs\/(b_[a-z2-7]{20})\/pin$/.exec(rel);
-    if (pin && req.method === "PUT") {
-      const receipt = [...t.uploadReceipts.values()].find(r => r.id === pin[1]);
-      if (!receipt) return send(404, "application/json", JSON.stringify({ error: { code: "not_found" } }));
-      const chunks: Buffer[] = [];
-      req.on("data", c => chunks.push(c));
-      req.on("end", () => {
-        const { keep } = JSON.parse(Buffer.concat(chunks).toString());
-        receipt.retention = { expires_at: keep ? null : Date.now() + 30 * 86_400_000, reasons: [keep ? "pinned" : "page_default"] };
-        send(200, "application/json", JSON.stringify(receipt));
+        const transfer = /^_tendril\/uploads\/([^/]+)(?:\/(content|complete))?$/.exec(rel);
+        if (transfer) {
+          const upload = t.uploads.get(transfer[1]);
+          if (!upload || upload.actor !== actor) return fail(404, "not_found", "Upload session not found");
+          if (!transfer[2] && req.method === "GET") return respond(upload.session);
+          if (transfer[2] === "content" && req.method === "PUT") {
+            if (bytes.length !== upload.command.size || createHash("sha256").update(bytes).digest("hex") !== upload.command.sha256)
+              return fail(400, "content_mismatch", "Upload bytes differ from their reservation");
+            upload.body = bytes; upload.session.phase = "received"; upload.session.upload_required = false;
+            return send(204, "application/octet-stream", "");
+          }
+          if (transfer[2] === "complete" && req.method === "POST") {
+            if (!upload.body) return fail(409, "upload_incomplete", "Upload has no content");
+            const id = upload.session.blob_id;
+            if (!t.blobs.has(id)) t.blobs.set(id, { type: upload.command.type, body: upload.body,
+              ...(upload.command.name === undefined ? {} : { name: upload.command.name }),
+              sha256: upload.command.sha256, size: upload.command.size, created_at: Date.now(),
+              retention: { expires_at: Date.now() + 30 * 86_400_000, reasons: [] } });
+            upload.session.phase = "completed"; upload.session.upload_required = false;
+            // Reload must happen after completion but before the browser receives its receipt.
+            // Resetting a reused connection before headers can trigger a transparent Chromium retry.
+            if (t.holdCompletionResponses > 0) { t.holdCompletionResponses--; return; }
+            return respond({ status: "completed", blob: metadata(id) });
+          }
+        }
+        const blobPath = /^_tendril\/blobs\/([^/]+)(?:\/(info|pin))?$/.exec(rel);
+        const blob = blobPath && t.blobs.get(blobPath[1]);
+        if (blobPath && blob) {
+          if (blobPath[2] === "info" && req.method === "GET") return respond(metadata(blobPath[1]));
+          if (!blobPath[2] && req.method === "GET") return send(200, blob.type, blob.body);
+          if (blobPath[2] === "pin" && req.method === "PUT") {
+            const key = actor + ":" + body.cid, prior = t.pinReceipts.get(key);
+            if (prior) return JSON.stringify(prior.command) === JSON.stringify(body) ? respond(prior.receipt)
+              : fail(409, "command_conflict", "Pin CID belongs to another command");
+            for (const scope of t.scopes.filter(scope => scope.id === body.scope || scope.operations.includes("blob.pin")))
+              if (body.expected_generations?.[scope.id] !== scope.generation) return fail(409, "stale_generation", "The pin scope changed");
+            blob.retention = { expires_at: body.keep ? null : Date.now() + 30 * 86_400_000, reasons: body.keep ? ["pinned"] : [] };
+            const receipt = metadata(blobPath[1]); t.pinReceipts.set(key, { command: body, receipt });
+            if (t.dropPinResponses > 0) { t.dropPinResponses--; req.socket.destroy(); return; }
+            return respond(receipt);
+          }
+        }
+        return fail(404, "not_found", "Unknown storage operation");
       });
       return;
     }
@@ -221,7 +244,7 @@ export class MockServer {
             t: "welcome", device_id: m.device_id, role: "owner", pending: false, primary: true,
             tendril: { id: t.id, name: "Test" }, version: { current: t.version, latest: t.version, healthy: t.version },
             state: t.state, rev: t.rev, scopes: t.scopes, presence: { state: "listening", text: "Listening", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" },
-            transcript: [], rules: [], features: {}, budget: { owner_per_hour: 60, page_per_hour: 12 }, ...t.welcomeExtra,
+            transcript: [], features: {}, budget: { owner_per_hour: 60, page_per_hour: 12 }, ...t.welcomeExtra,
           });
           break;
         case "capture_complete":

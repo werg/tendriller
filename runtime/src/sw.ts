@@ -1,3 +1,4 @@
+import { encodePublicationPath, validPublicationPath } from "./paths";
 // A publication owns an immutable page/runtime asset graph. Live APIs are never
 // cached. Client-to-publication bindings survive worker restarts, so a deferred
 // reload cannot mix an old executing page with a new component or runtime.
@@ -40,18 +41,15 @@ async function writeRegistry(value: Registry) {
 function noStore(response: Response): boolean {
   return (response.headers.get("Cache-Control") || "").split(",").some(value => value.trim().toLowerCase() === "no-store");
 }
-function safePath(path: unknown): path is string {
-  if (typeof path !== "string" || !path || path.startsWith("/") || /[?#\\]/.test(path)) return false;
-  try { return decodeURIComponent(path).split("/").every(part => part !== ".." && part !== "." && part !== ""); }
-  catch { return false; }
-}
+const safePath = validPublicationPath;
+
 function validManifest(value: any): value is PublicationManifest {
   if (!value || !/^[A-Za-z0-9_-]{1,128}$/.test(value.id) || !Array.isArray(value.assets) || !value.runtime) return false;
   try {
     const base = new URL(value.base, SCOPE), runtime = new URL(value.runtime.base, SCOPE), origin = new URL(SCOPE).origin;
     if (base.origin !== origin || runtime.origin !== origin || base.search || runtime.search || base.hash || runtime.hash) return false;
     if (!base.pathname.endsWith(`/_publications/${value.id}/`) || !/\/_tendril\/runtime\/[a-f0-9]{64}\/$/.test(runtime.pathname)) return false;
-    if (!safePath(value.entry || "index.html")) return false;
+    if (!safePath(value.entry) || !value.assets.some((asset: any) => asset.path === value.entry && typeof asset.type === "string" && /^text\/html(?:;|$)/i.test(asset.type))) return false;
     return value.assets.every((asset: any) => safePath(asset.path) && /^[a-f0-9]{64}$/.test(asset.sha256) && typeof asset.type === "string");
   } catch { return false; }
 }
@@ -96,8 +94,8 @@ async function savePublication(publication: PublicationManifest, latest = false)
   if (!Array.isArray(runtime.resources) || !runtime.resources.every(validResource)) throw new Error("Invalid runtime resource manifest");
   await cache.put(runtimeURL, runtimeResponse);
   await Promise.all([
-    ...publication.assets.map(asset => saveAsset(cache, absolute(asset.path, absolute(publication.base)), asset, publication)),
-    ...runtime.assets.map((asset: PublicationAsset) => saveAsset(cache, absolute(asset.path, absolute(publication.runtime.base)), asset, publication)),
+    ...publication.assets.map(asset => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.base)), asset, publication)),
+    ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.runtime.base)), asset, publication)),
   ]);
   if (!meta.complete.includes(publication.id)) meta.complete.push(publication.id);
   if (latest) meta.latest = publication.id;
@@ -150,11 +148,19 @@ function offlinePage(): Response {
 async function navigate(event: FetchEvent): Promise<Response> {
   const meta = await readRegistry();
   const requested = new URL(event.request.url);
-  const pin = /\/_publications\/([A-Za-z0-9_-]+)\//.exec(requested.pathname)?.[1];
+  let relative: string | undefined;
+  try { relative = decodeURIComponent(requested.pathname.slice(new URL(SCOPE).pathname.length)); }
+  catch { /* Malformed paths cannot select a saved file. */ }
+  const pinned = relative === undefined ? null : /^_publications\/([A-Za-z0-9_-]+)\/(.*)$/.exec(relative);
+  const pin = pinned?.[1];
   const replaced = (event as FetchEvent & { replacesClientId?: string }).replacesClientId;
   const prior = pin || meta.clients[replaced || event.clientId] || meta.latest;
   const publication = prior && meta.complete.includes(prior) ? meta.publications[prior] : undefined;
-  const savedURL = pin ? requested.origin + requested.pathname : publication && absolute(publication.entry || "index.html", absolute(publication.base));
+  const path = pinned ? pinned[2] : relative;
+  const filename = path === "" ? publication?.entry : path?.endsWith("/") ? path + "index.html" : path;
+  const declared = safePath(filename) ? publication?.assets.find(asset => asset.path === filename && asset.type.split(";", 1)[0] === "text/html") : undefined;
+  // Ordinary file routing: an offline nested URL must never show another entry page.
+  const savedURL = publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;
   const saved = publication && savedURL ? await (await caches.open(cacheName(publication.id))).match(savedURL) : undefined;
   const network = fetch(event.request).then(async response => {
     if (response.ok && !noStore(response)) {
@@ -205,7 +211,10 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
     }
     const manifest = await cache.match(absolute("manifest.json", runtimeBase));
     if (manifest) {
-      const asset = (await manifest.json()).resources.find((resource: RuntimeResource) => absolute(resource.url) === url);
+      const declared = await manifest.json();
+      const optional = declared.assets.find((asset: PublicationAsset) => absolute(encodePublicationPath(asset.path), runtimeBase) === url);
+      const asset = optional ? { url, sha256: optional.sha256, type: optional.type }
+        : declared.resources.find((resource: RuntimeResource) => absolute(resource.url) === url);
       if (asset) resources.push({ cache, asset });
     }
   }

@@ -19,7 +19,7 @@ test("schemas distinguish accepted, queued and rejected results", () => {
     assert.equal(validate("sendResult", result).length, 0);
   assert.ok(validate("sendResult", { queued: false }).length);
   assert.ok(validate("sendResult", { status: "queued", seq: 1 }).length);
-  const blob = { id: "b_" + "a".repeat(20), url: "_tendril/blobs/photo", retention: { keep: false, expires_at: 1000 } };
+  const blob = { id: "b_" + "a".repeat(20), sha256: "a".repeat(64), size: 3, type: "image/png", url: "_tendril/blobs/photo", created_at: 0, retention: { reasons: ["unreferenced_upload"], expires_at: 1000 } };
   assert.equal(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1, blob }).length, 0);
   assert.ok(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1 }).length);
   assert.ok(validate("captureResult", { status: "queued" }).length);
@@ -28,6 +28,13 @@ test("schemas distinguish accepted, queued and rejected results", () => {
 test("set(null) and delete are distinct public operations", () => {
   assert.deepEqual(assertValid("stateOperations", [{ op: "set", path: ["reading"], value: null }]), [{ op: "set", path: ["reading"], value: null }]);
   assert.ok(validate("stateOperations", [{ op: "delete", path: ["reading"], value: 1 }]).length);
+});
+
+test("capture options carry application correlation while runtime owns command identity", () => {
+  const options = { data: { submission_id: "review-1" }, scope: "review", expected_generations: { review: "generation-1" } };
+  assert.deepEqual(assertValid("captureOptions", options), options);
+  assert.throws(() => assertValid("captureOptions", { ...options, cid: "caller-command" }), ContractError);
+  assert.throws(() => assertValid("captureOptions", { ...options, capture_id: "caller-capture" }), ContractError);
 });
 
 test("generated schemas match the executable and MCP-facing schema", () => {
@@ -81,16 +88,17 @@ test("experience write contracts preserve revision checks, roles and bounded sch
 });
 
 test("exported bundle media can have no name and multi-file templates keep the service bounds", () => {
-  const bundle = { format: "tendriller-bundle", version: 2, name: "N".repeat(200), files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
-    media: [{ id: "b_" + "a".repeat(20), type: "image/png", name: null, base64: "AA==" }], shared_files: [] };
+  const bundle = { format: "tendriller-bundle", version: 3, entry: "index.html", name: "N".repeat(200), files: [{ path: "index.html", type: "text/html", base64: "AA==" }],
+    media: [{ id: "b_" + "a".repeat(20), type: "image/png", name: null, base64: "AA==" }] };
   assert.equal(validate("bundle", bundle).length, 0);
-  assert.ok(validate("bundle", { ...bundle, version: 1 }).length);
+  assert.ok(validate("bundle", { ...bundle, version: 2 }).length);
   assert.ok(validate("bundle", { ...bundle, files: [] }).length);
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   const manyCaptures = Array.from({ length: 201 }, (_, i) => ({ ...bundle.media[0],
     id: "b_" + "a".repeat(18) + alphabet[Math.floor(i / 32)] + alphabet[i % 32] }));
   assert.equal(validate("bundle", { ...bundle, media: manyCaptures }).length, 0);
-  assert.equal(validate("sayMessage", { t: "say", text: "Look here", present: false, speak: true }).length, 0);
+  assert.equal(validate("sayMessage", { t: "say", text: "Look here", message_id: "reply-1", ts: 1, present: false, speak: true }).length, 0);
+  assert.ok(validate("sayMessage", { t: "say", text: "Uncorrelated reply" }).length);
   assert.ok(validate("say", { text: "Look here", present: false }).length);
 });
 

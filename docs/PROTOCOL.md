@@ -12,7 +12,10 @@ Agent tokens authorize `A`, the `api` URL in a page handle. Scoped producer toke
 
 `GET /api/service` exposes `contract`, `core_release`, installed workflow interface/schema and implementation revisions, and shared resource policy. `GET A/service` exposes the page's installed interfaces and limits. Browser/device capabilities remain separate. A tool checks its declared requirements before provisioning or writing application data.
 
-Core release, contrib release and page publication are distinct identities. A contrib component release can reuse an existing workflow interface. Trusted implementation changes require deployment composition. A catalog never activates server code.
+Core software releases, cookbook content revisions and page publications are distinct identities. Trusted implementations are deliberately selected by a deployment. Cookbook discovery cannot activate code. Core builds and releases do not depend on contrib executable artifacts.
+
+The [MCP interface](MCP.md) invokes the same authenticated routes and command
+semantics as HTTP. It does not define a separate storage or publication model.
 
 ## Lifecycle and delivery
 
@@ -41,7 +44,7 @@ Generic `POST A/events` and browser `send` accept a command envelope:
 
 ## Authoritative scopes and generations
 
-A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets include `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
+A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
 
 - `GET A/scopes` reads active descriptors.
 - `PUT A/scopes/<id>` registers or rebinds `{cid,expected_generations,paths,operations}`.
@@ -72,11 +75,11 @@ HTTP, MCP, WebSocket, whole replacement, bundle restore and trusted-module state
 
 ## Trusted workflows
 
-The engine's workflow registry is empty. A reviewed deployment statically selects a hash-pinned Worker artifact. `POST A/workflows/<module>/<operation>` invokes one declared operation using the generic command envelope. Page payloads cannot register implementations.
+The engine's workflow registry is empty. A reviewed deployment entry explicitly selects exact implementations through `configureWorkflows`. `POST A/workflows/<module>/<operation>` invokes one declared operation using the generic command envelope. Page payloads cannot register implementations.
 
 Modules declare their operation permissions, schemas and explicit scope targets. The host passes authenticated identity, namespaced records, state/scopes, blob pinning, participant identities and post-commit effects. It never passes private SQL or the full Durable Object. The operation runs synchronously under the core transaction. A private response stays outside shared page state; archive/reset and generation rotation commit together. Module replacement or removal rotates/retires owned generations even if the interface revision is unchanged.
 
-Contrib owns workflow-specific APIs, defaults, presentation and documentation. Core exposes validated workflow context separately from event `data`.
+Each selected implementation owns its operation schema and application policy. Cookbook references explain defaults, alternatives and verification; they are not installed by discovery. Core exposes validated workflow context separately from event `data`. Private records have per-record, count and aggregate-byte quotas, enforced within the operation transaction; a quota failure rolls back state, records, generations and effects together.
 
 ## Durable browser operations and captures
 
@@ -84,24 +87,91 @@ Before delivery or optimistic application, the runtime durably stores the comman
 
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
 
+## Conversation and interaction
+
+A transcript entry has a persistent message ID; owner messages also retain their original command ID and device. Replies can reference the exact owner message. Repeated identical text is never used to match acknowledgements. Retries and reconnect history preserve those identities. `conversation.presented(messageId)` records presentation of an actual stored agent message; merely receiving the socket frame is not presentation.
+
+The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and active-sensor stop. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
+
+## Immutable bytes and shared files
+
+`POST A/uploads` reserves `{cid,sha256,size,type,name?}` and returns an immutable
+upload/session identity. Send raw bytes with `PUT A/uploads/<id>/content`
+(`application/octet-stream`), then `POST A/uploads/<id>/complete`. Start/status,
+completion and retries agree on the original digest, length and blob ID. A known
+digest is reused only when its authoritative stored length also matches.
+`GET A/uploads/<id>` resumes status and `DELETE A/uploads/<id>` aborts unfinished
+work. Upload receipts retain their IDs within a bounded page budget; reaching the
+budget rejects new work without forgetting accepted identities.
+
+`GET A/blobs?after=<id>&limit=100` lists metadata in ID order with an explicit
+continuation cursor. `GET A/blobs/<id>/info` returns `{id,sha256,size,type,url,
+created_at,retention}` and optional name. `GET`/`HEAD A/blobs/<id>` retrieve bytes
+with optional single byte ranges. Downloads default to attachment disposition;
+`?disposition=inline` remains sandboxed. `PUT A/blobs/<id>/pin` is a guarded
+`{cid,expected_generations,scope?,keep}` command. Pins, icons, current shared files,
+retained file history, staged imports and publications retain their content. Unreferenced uploads
+expire after 30 days regardless of who uploaded them. Application JSON containing
+a blob ID is not itself a retention root.
+
+Shared files are mutable names pointing to immutable bytes. `GET A/file-refs?path=…`
+returns the current head, including a tombstone's retained revision. `PUT` writes
+`{cid,expected_generations,scope?,path,expected_revision,blob_id,name?,type?}`;
+`DELETE` uses the same original guards/path/revision without a blob. Missing or
+stale revisions reject. A file write targets `file.write` and `["files",path]`,
+where the canonical whole file path is one segment. Names must use NFC, with no
+traversal, empty segments or reserved service paths.
+
+The authoritative scope registry is the sole source of file bindings. To protect
+one file, register `paths: [["files","reports/result.json"]], operations: []`.
+Bindings combine by OR: an operation binding of `file.write` protects every file
+mutation. Every write checks all matching current registry generations, even if
+the command omits `scope`. Optional command `scope` adds a precondition for that
+operation; it never establishes a persistent file binding and is not file metadata.
+Retiring a scope rejects old commands carrying that guard. Fresh authorized work
+uses the current file revision and any remaining active registry guards. An
+ordinary `DELETE` then creates the next tombstone; there is no separate cleanup
+operation and deletion never resets the revision to zero.
+
+`GET A/file-refs/snapshot` returns the complete bounded active set plus cursor.
+Capacity and UTF-8 metadata-byte bounds are enforced atomically on writes;
+snapshots never silently truncate. History retains the current revision and up
+to ten prior revisions for 30 days. `GET A/file-refs/history?path=…` exposes that
+history. `GET A/file-refs/changes?after=N&limit=100` returns ordered changes;
+`410 file_cursor_expired` means history was pruned and requires a fresh snapshot.
+Deletion does not erase the path's CAS identity.
+
+The same upload/blob/file-reference paths under `P_tendril/` use page session and
+same-origin authorization. Uploads also require a registered device proof.
+Owner/approved-guest sessions can write shared data; displays can read but cannot
+write. Only owners may change blob pins. Page sessions cannot publish code.
+These shared-data routes provide no private-record or per-participant media
+policy; that requires a deliberately selected trusted capability.
+
 ## Publications and browser assets
 
-`POST A/uploads` reserves an immutable blob by `cid`, SHA-256, size and type. Send exact bytes to `PUT A/uploads/<id>/content` when `upload_required` is true, then call `POST A/uploads/<id>/complete`. `GET A/blobs/<id>/info` returns verified metadata and retention reasons. Byte reads support `Range`. `PUT A/blobs/<id>/pin` changes explicit retention with a guarded command. A page capture uses the same route family under `P_tendril/` and a verified device.
+`GET A/publications` exposes current/latest/healthy/served versions and a monotonic
+`head_revision`. `GET A/publications/<version>` gives the exact declared entry and
+sorted files with blob IDs, types, verified digests and byte counts.
+`POST A/publications` accepts `{cid,expected_generations,scope?,expected_head_revision,
+entry,files,message?}`. Its files are the complete graph of `{path,blob_id,type}`;
+the entry must be one of its authored HTML files. A replacement targets
+`publication.publish` and the whole `["publications"]` namespace, including removed
+paths. `POST A/publications/rollback` requires the same guards/head plus an explicit
+version. Every publication selection, including recovery and health fallback,
+advances the head revision. Retried accepted commands return their saved receipt;
+stale new work requires review.
 
-`GET A/file-refs/snapshot` reads active shared file references. `GET A/file-refs?path=<canonical path>` reads one current reference. `PUT` and `DELETE A/file-refs` use `expected_revision`, a stable `cid` and captured generation guards; `GET A/file-refs/changes?after=<cursor>` streams changes. Content remains in immutable blobs, and a reference updates atomically. Owner pages can use the corresponding `P_tendril/file-refs` routes.
-
-`GET A/publications` returns the current manifest head and `head_revision`. `POST A/publications` accepts a complete manifest of blob references, an HTML `entry`, `expected_head_revision`, `cid` and generation guards. A stale head fails rather than overwriting another publisher. `POST A/publications/rollback` selects a retained version under the same head check. Each accepted command has one durable receipt.
-
-Publishing files snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies.
+Publishing snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at the requested HTML file’s encoded directory under `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies. `publication.base` is the immutable root and required `publication.entry` is the canonical authored HTML entry, unchanged across document responses. Required `documentPath` carries the decoded logical path of the current HTML document; it is `null` only without a publication. Current-document base, pinning, and update reload use `documentPath`; service-worker announcements and root navigation use the canonical manifest. Path segments are URL-encoded separately. Publication roots select the canonical entry; explicit nested directory URLs select their declared `index.html`. Missing routes return 404. Hash routing and explicit multi-page publications need no application framework. An authored install manifest is preserved.
 
 The executing page pins its browser URL to its publication. Accepting an update navigates to the canonical latest page; a deferred update leaves the existing graph intact. The service worker caches complete, hash-verified graphs and keeps active client/publication associations. Injected HTML is validated by its `X-Tendril-Publication` response header. Non-HTML bytes match their manifest hashes.
 
-Offline readiness is acknowledged for one exact publication. Send `{ t: "publication", publication: <manifest> }` to the activated controlling service worker with a transferred `MessageChannel` port. It replies on that port with `{ t: "publication", id: <publication-id>, status: "ready" }` only after the complete asset graph, client binding and cleanup metadata have been committed. A failed request replies with `status: "error"` and `error: { code, message }`; the codes are `invalid_publication` and `publication_save_failed`. Asset visibility in the Cache API alone does not establish readiness. Optional lazy runtime resources are cached and verified when first used.
+Offline readiness is acknowledged for one exact publication. Page code calls `tendril.publication.saveOffline()` and awaits success. At the transport boundary, send `{ t: "publication", publication: <manifest> }` to the activated controlling service worker with a transferred `MessageChannel` port. It replies on that port with `{ t: "publication", id: <publication-id>, status: "ready" }` only after the complete asset graph, client binding and cleanup metadata have been committed. A failed request replies with `status: "error"` and `error: { code, message }`; the codes are `invalid_publication` and `publication_save_failed`. Asset visibility in the Cache API alone does not establish readiness. Optional lazy runtime resources are cached and verified when first used.
 
 Core retains runtime artifacts in the existing FILES bucket across deployments. Page-file pruning preserves current/recent publications, open sockets and thirty-day offline leases. Normal publication A/B and offline recovery operate within this contract; this is not a promise to run historical pre-release clients.
 
 ## Remaining platform APIs
 
-Core owns files and versions, health/rollback, authenticated conversation, device purpose/focus, timers, agent context/checkpoints, portability, blobs, streams, activity, delivery and lifecycle. Optional tools, host bridges, preview, components and examples are downloaded from [contrib releases](https://github.com/werg/tendriller-contrib/releases).
+Core owns files and versions, health/rollback, authenticated conversation, device purpose/focus, timers, agent context/checkpoints, portability, blobs, streams, activity, delivery and lifecycle. Optional CLI, host bridges, exact-file preview and collectors are distributed as the separate core tools archive. [Cookbooks](https://github.com/werg/tendriller-contrib) guide page-owned presentation and domain decisions.
 
 Limits are defined in `contract/limits.mjs`, imported by enforcement, and exposed in metadata. [Streams](STREAMS.md) documents stream retention, producer grants and replay. [Architecture](ARCHITECTURE.md) documents artifact composition and verification. [Operations](OPERATIONS.md) documents provisioning, immutable runtime publication and deployment.

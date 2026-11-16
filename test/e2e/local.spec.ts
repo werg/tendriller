@@ -1,5 +1,6 @@
+import { conversationPage } from "./authored-pages";
 import { test, expect } from "@playwright/test";
-import { agent, claim, createPage, deletePage, localPageUrl, openClaimed, publish, requester, signInFixture, uploadAsset, OTHER_TOKEN } from "./local-helpers";
+import { agent, claim, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles, requester, signInFixture, OTHER_TOKEN } from "./local-helpers";
 
 test("email invitation auto-claims for a verified account and opens the published page", async ({ page, context }) => {
   const h = await createPage();
@@ -44,11 +45,8 @@ test("agent reminder and each event poll point to the next continuous poll", asy
 test("first interactive publication requires a live listener", async () => {
   const h = await createPage();
   try {
-    const blob = await uploadAsset(h, "<!doctype html><button>Tap</button>");
-    const res = await agent(h, "/publications", "POST", { cid: "before-listener", expected_generations: {},
-      expected_head_revision: 0, entry: "index.html", files: [{ path: "index.html", blob_id: blob.id, type: "text/html" }] });
-    expect(res.status).toBe(428);
-    expect(JSON.stringify(res.data)).toMatch(/listener_required|listen|poll/i);
+    await expect(publishFiles(h, { "index.html": { type: "text/html", body: "<!doctype html><button>Tap</button>" } }))
+      .rejects.toMatchObject({ status: 428, code: "listener_required" });
     await publish(h, "<button>Tap</button>");
   } finally { await deletePage(h); }
 });
@@ -56,13 +54,13 @@ test("first interactive publication requires a live listener", async () => {
 test("page tap reaches a held poll and agent speech reply reaches the page", async ({ page, context }) => {
   const h = await createPage();
   try {
-    await publish(h, '<button id="send" onclick="tendril.send({kind:\'tap\',value:7})">Send</button>');
+    await publish(h, '<button id="tap-send" onclick="tendril.send({kind:\'tap\',value:7})">Send tap</button>' + conversationPage);
     await signInFixture(context);
     await openClaimed(page, h);
     const initial = await agent(h, "/events?wait=0");
     const poll = agent(h, `/events?after=${initial.data.cursor}&wait=300`);
     await expect.poll(async () => (await agent(h)).data.presence.state).toBe("listening");
-    await page.locator("#send").click();
+    await page.locator("#tap-send").click();
     const events = await poll;
     expect(events.data.events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "event", role: "owner", data: { kind: "tap", value: 7 } })]));
     const say = await agent(h, "/say", "POST", { text: "I heard your tap", speak: false });
@@ -74,27 +72,25 @@ test("page tap reaches a held poll and agent speech reply reaches the page", asy
 test("owner chat message becomes sent and stays single after reply and reload", async ({ page, context }) => {
   const h = await createPage();
   try {
-    await publish(h, "<h1>Chat delivery check</h1>");
+    await publish(h, conversationPage);
     await signInFixture(context);
     await openClaimed(page, h);
-    await page.locator("tendril-control .presence").click();
     const box = page.getByRole("textbox", { name: "Message to the agent" });
     await box.fill("production chat check");
-    await box.press("Enter");
-    const userRow = page.locator("tendril-control .log li.user");
+    await page.locator("#send").click();
+    const userRow = page.locator("#messages li.user");
     await expect(userRow).toHaveCount(1);
-    await expect(userRow.locator(".who")).toHaveText("You");
+    await expect(userRow.locator("strong")).toHaveText("You");
     const events = await agent(h, "/events?after=0&wait=0");
     expect(events.data.events).toEqual(expect.arrayContaining([expect.objectContaining({
       type: "instruction", role: "owner", data: { text: "production chat check", via: "text" },
     })]));
     await agent(h, "/say", "POST", { text: "I heard your message", speak: false });
-    await expect(page.locator("tendril-control .log li.agent")).toContainText("I heard your message");
+    await expect(page.locator("#messages li.agent")).toContainText("I heard your message");
     await page.reload();
     await page.waitForFunction(() => (window as any).tendril?.connected === true);
-    await page.locator("tendril-control .presence").click();
-    await expect(page.locator("tendril-control .log li.user")).toHaveCount(1);
-    await expect(page.locator("tendril-control .log li.user .who")).toHaveText("You");
+    await expect(page.locator("#messages li.user")).toHaveCount(1);
+    await expect(page.locator("#messages li.user strong")).toHaveText("You");
   } finally { await deletePage(h); }
 });
 

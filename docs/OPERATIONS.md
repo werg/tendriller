@@ -1,8 +1,27 @@
 # Public service operations
 
-The application has one service model: `https://tendriller.dev` for accounts and the API, and one page origin per tendril under `tendriller.site`. Staging and production are deployed; page creation remains controlled by service state.
+The service uses `https://tendriller.dev` for accounts and the API, and a separate page origin per tendril under `tendriller.site`. Staging uses `https://staging.tendriller.dev` and per-page hosts under `tendriller.dev`. The default deployed engine has an empty trusted-extension registry. Node tools and cookbook code are not part of its Worker bundle.
 
 Tendriller does not require Email Routing or Email Sending. Public reports use `/report`; owner notices and appeals appear in the authenticated dashboard, including a restricted view for suspended owners.
+
+## Fresh storage baseline
+
+The canonical staging and production Workers use separate empty revision-4 D1
+databases and R2 buckets. The first D1 migration installs the account schema;
+the second records a one-time cutover marker. New `TendrilV4` and `AdmissionV4`
+Durable Object namespaces hold page and admission state. The page storage revision
+is **4**; `node scripts/storage-schema.mjs` reads it from the authoritative
+server definition. The schema guard rejects incompatible storage. Independent
+branch previews use the generic engine classes in their own new Workers.
+
+The canonical configs bind `tendriller-{staging,production}-v4-accounts` and
+`tendriller-{staging,production}-v4-files`. The prior databases and buckets are
+left untouched and unbound. There is no translator for their contents. Recreate
+disposable development accounts and pages normally. There is no preserved
+sessions package, account migration sequence, or old-runtime serving mode.
+New account storage starts with `service_state.mode='creation_paused'`. After the
+new Worker passes its live smoke check, the workflow consumes the cutover marker
+and opens creation once. A later intentional pause survives ordinary deploys.
 
 ## Why `workers.dev` cannot host the public page service
 
@@ -19,26 +38,35 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 
 ## Provision and deploy
 
-For local provisioning, sign in with `npx wrangler login`. `provision.mjs` uses that Wrangler session to create or reuse D1 databases and R2 buckets. If Wrangler shows multiple accounts, set `CLOUDFLARE_ACCOUNT_ID` to select one. Keep OAuth secrets out of the repository.
+The canonical revision-4 resources and their IDs are already selected in the
+checked-in staging and production configs. Keep OAuth secrets out of the
+repository. For a separate named deployment, sign in with `npx wrangler login`,
+set `CLOUDFLARE_ACCOUNT_ID` if needed, and use `provision.mjs --name ... --fresh`
+with separate service and page origins.
 
 ```sh
-node scripts/provision.mjs staging
-node scripts/provision.mjs production
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.production.jsonc
 npm run build
-npm run build:service
 node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
 node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
 ```
 
-`provision.mjs` is idempotent. It writes Wrangler configs with the resource IDs. In Cloudflare DNS, add a proxied `AAAA` record with content `100::` for `*.tendriller.dev` (staging) and `*.tendriller.site` (production) before deploying. The default staging page host is `<id>.tendriller.dev`, separate from its service host `staging.tendriller.dev`; the Worker uses the service hostname to route service requests. Use `STAGING_PUBLIC_BASE` and `STAGING_PAGE_BASE_DOMAIN` to change staging hostnames within the `tendriller.dev` zone. Review and commit the configs before enabling CI.
+`provision.mjs` creates isolated named Workers with the generic engine entry;
+it refuses to overwrite the canonical configs. The canonical Worker retains its
+existing hostname and OAuth secrets. Its first revision-4 deployment has two
+steps because Cloudflare cannot delete the currently bound old Durable Object
+namespace in the same deploy that removes the binding. A short-lived Worker
+rebinds to V4 while exposing inert, unbound old classes; the final Worker
+deletes the old namespaces. Subsequent deploys skip that first step. The old D1
+and R2 resources are retained but no longer bound. The default staging page host
+is `<id>.tendriller.dev`, separate from `staging.tendriller.dev`.
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
 For off-page device notifications, generate a separate stable VAPID key pair for each environment using `node scripts/vapid-keys.mjs`. Supply `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and the recommended `VAPID_SUBJECT` when running `scripts/set-secrets.mjs`; these variables are already supported by the script. Keep private keys out of git and do not rotate them during normal deployment: rotation requires devices to renew subscriptions. See the [Web Push operations and verification guide](PUSH_NOTIFICATIONS.md) and test delivery with all page tabs closed, including the installed iOS web app.
 
-GitHub Actions runs typecheck, Worker tests, public artifact and composition checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. Set these variables only after selecting and verifying storage created for that schema. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
+GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run deploys staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. The selected empty revision-4 resources require both schema variables to be `4`. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
@@ -112,14 +140,14 @@ cleanup runs before assuming resources are gone.
 
 Branch previews deliberately configure `triggers.crons=[]`: they do not run
 scheduled reconciliation. This keeps each preview from allocating another
-account-wide Cron Trigger (Workers Free permits only five). The Worker still
+account-wide Cron Trigger. The Worker still
 supports normal requests and Durable Object alarms. Exercise scheduled
 maintenance in core tests or a dedicated staging environment with cron capacity;
 do not assume that a preview validates scheduled cleanup or retention behavior.
 A retry explicitly clears any schedule from the same isolated preview Worker;
 staging and production configurations are unchanged.
 
-The initial preview is a live service for the branch's home page, starter gallery,
+The initial preview is a live service for the branch's home page, documentation,
 agent guide, assets and API. Its fresh D1 database starts with
 `service_state.mode='creation_paused'`. The workflow never imports staging or
 production accounts, sessions, page indexes, files or secrets.
@@ -141,9 +169,7 @@ bucket before deployment, including resources loaded only when a feature is used
 must be registered exactly; [GitHub callback compatibility](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#redirect-urls)
 must be checked against that OAuth app's settings.
 Push delivery likewise needs the preview's own VAPID settings. These integrations
-are separate from a successful branch deployment and health check. Branches
-created before this feature need to merge or rebase onto `PAGE_HOST_SUFFIX`
-support before their per-tendril page routes can work.
+are separate from a successful branch deployment and health check.
 
 ### Manual deployment and page checks
 
@@ -179,8 +205,8 @@ origins. Return creation to `creation_paused` if these checks fail. Successful
 deployment smoke checks cover `/health`, `/`, `/api/service`, `/agent.md` and `/status`.
 The `/health` response must report the checked commit, and the guide must point
 to the preview's own service URL. The source checkout's shared
-`scripts/check-deployment.mjs` also requires the locked workflow implementation
-hash and runtime identity before the preview is reported successful. These checks do
+`scripts/check-deployment.mjs` also verifies the contract, target runtime identity,
+and empty default trusted-extension registry before reporting success. These checks do
 not certify OAuth, page claims, speech or push delivery.
 
 ### Cleanup and recovery
@@ -212,8 +238,9 @@ that stale deployment.
 - Create pages for a verified email and open them to claim automatically, approve an agent guest invite, revoke all agent tokens, create a display link, and release a claim before a guest is approved.
 - Exercise each rate and quota boundary, including concurrent writes to two tendrils of one account. Check D1 reserved bytes against Durable Object file ledgers.
 - Submit page and external reports; verify automatic holds, account suspension, appeals, restore, notices, and audit entries.
-- Verify speech input on a mid-range phone. The transcription download occurs only after a deliberate microphone tap; confirm model hash, 30-second limit, transcription time, and that audio never leaves the browser.
-- Verify spoken replies on a mid-range phone: browser speech is immediate by default. Preparing the optional natural voice explicitly downloads roughly 65 MB and caches it locally; replies continue through browser speech while preparation runs. Check first/cached startup, autoplay after a tap, interruption, mute, and browser fallback with a failed download or a non-English language setting. The build serves the pinned `phonon-tts` ES modules/workers/Wasm and notices under `_tendril/tts/`; the package downloads its pinned Apache-2.0 model from Hugging Face. No R2 installation, speech API key, or cross-origin isolation headers are needed for TTS. Do not block its worker/Wasm or Hugging Face downloads with page CSPs; if blocked, browser speech remains the fallback.
+- Verify the page-owned conversation UI with keyboard and text input. Check queued, accepted, and rejected states, delayed receipts, reconnect, and the distinction between a reply arriving and the page acknowledging its presentation.
+- For pages that explicitly enable the optional voice adapter, verify speech input on a representative phone. Check consent, model integrity, transcription latency, active-use feedback, stop, and the chosen recognizer's local or remote processing boundary. There is no automatically enabled microphone or wake-phrase mode.
+- Test the selected speech-output path on actual devices: first and cached startup, autoplay after a deliberate tap, interruption, mute, background behavior, and failed or blocked downloads. Optional neural output uses the pinned `phonon-tts` resources in the immutable runtime and its model download; a page must deliberately enable it. Check the application's text alternative and fallback policy. See [voice behavior](HANDS_FREE.md) and [pinned-model verification](E2E_TESTING.md#optional-speech-and-pinned-model-verification).
 - Put legally reviewed `terms.html`, `privacy.html`, `acceptable-use.html`, `copyright.html`, and `law-enforcement.html` in `legal/`. Run `node scripts/check-legal.mjs` before deploy. The sign-in screen and dashboard must link to those published pages. Verify the minimum age and rights process in the reviewed text.
 - Monitor Free-tier limits or, if paid usage is enabled, verify spending limits and email budget alerts. Automatic `service_state` budget transitions require a compatible webhook policy and staging test before they can be relied upon.
 
@@ -229,50 +256,29 @@ that stale deployment.
 
 **OAuth outage:** Keep creation paused if claims cannot complete. Check provider status and callback URLs. Restore only after both real sign-in paths pass.
 
+## Runtime publication and release verification
 
-## Contract 3 direct cutover
+`npm run build` produces the SDK, runtime, and generic engine. Operational tools
+are optional and are built with `npm run build:tools`; they never enter the
+Worker graph. `npm run check:release` validates all four artifacts and the browser
+behavior before `npm run release:artifacts` records their exact source and hashes.
+See [development and release commands](DEVELOPMENT.md).
 
-This pre-release release uses the existing staging and production origins, OAuth
-configuration, D1 databases and R2 buckets. The Worker binds `TENDRIL` to the
-fresh `TendrilV3` Durable Object namespace (storage schema revision 3).
-The Wrangler `exports` map declares the old page classes deleted and keeps
-`TendrilV3` and `Admission` live. The D1 migration `0011_contract3_discard_old_pages.sql`
-deletes old page registrations, claims and invitations, resets page storage
-reservations, and pauses new page creation. Accounts, sign-in sessions and audit
-records remain. Old page links and their unpublished data cease to work. Old R2
-objects are left unreferenced; there is no data translator or compatibility path.
+Runtime resource definitions live in `runtime/resources.mjs`. The runtime
+publisher verifies SHA-256 hashes and uploads the declared resources to immutable
+keys in the selected `FILES` bucket before Worker deployment. A page publication
+identifies its authored files and exact target runtime so relative assets, lazy
+modules, preview, and offline execution use a coherent graph. Reading a cookbook
+or installing the CLI adds no implicit page assets.
 
-1. Publish the Contract 3 SDK/runtime assets and pin their SHA-256 hashes in
-   Contrib's `core.lock.json`. Build and test the Contrib workflow artifact against
-   those exact bytes.
-2. Pin the Contrib archive and its source commit in `composition.lock.json`.
-   Run `npm run check`, `npm run test:pair`, `npm run test:browser` and the
-   composed Contrib integration suite. The CI service workflow uses the same
-   checks before any deploy.
-3. Set `STAGING_STORAGE_SCHEMA` and `PRODUCTION_STORAGE_SCHEMA` to `3` in the
-   GitHub environment or repository variables used by the deployment workflow.
-   Confirm the ready gates remain enabled. A push to `master` applies D1
-   migrations and uploads the immutable runtime. Each environment then gets
-   a short-lived Worker that rebinds pages to `TendrilV3` while retaining inert
-   old classes, followed by the normal Worker that deletes the old namespaces.
-   Staging is verified before production starts.
-4. After each deployed Worker passes its public smoke check, the workflow
-   consumes the one-time cutover marker and opens page creation automatically.
-   Check a fresh page, OAuth access and an agent session in each environment.
-   Later intentional pauses remain in place across deploys.
+After deployment, run `node scripts/check-deployment.mjs <https-service-origin>`.
+It verifies public health and agent instructions, normal automated-client access,
+the target service contract, an empty trusted-extension registry, and the runtime
+manifest identity. Then create a fresh authenticated page and verify owner
+claiming, event delivery, a published update, and separate page origins. Open page
+creation only after those checks and the environment's identity callbacks pass.
 
-The storage schema identity check must remain in place. A future incompatible
-schema needs a new namespace and an explicit D1 cutover.
-
-### Branch previews are optional
-
-Live `preview/**` branches continue to provide isolated pre-release Workers
-and storage for smoke tests, and do not allocate additional account-wide cron
-triggers. They are not required for the direct canonical cutover. For other
-fresh deployments the `scripts/provision.mjs --fresh` tool remains available,
-but no new origins or resources are needed for the direct path above.
-
-Runtime resource selection lives in `runtime/resources.mjs`. The installer
-verifies SHA-256 hashes and uploads to immutable keys in the selected FILES
-bucket. Publication manifests pin their complete runtime and component asset
-sets, so an already-open page keeps its matching assets.
+Deliberately extended deployments need their own public metadata and real host
+checks for the selected module's authorization and transactions. The ordinary
+service check intentionally requires no installed workflow. A preview fixture
+cannot substitute for those enforcement checks.

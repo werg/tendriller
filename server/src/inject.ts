@@ -18,13 +18,12 @@ export interface PublicationManifest {
   runtime: { id: string; version: string; base: string; features: RuntimeArtifactFeatures };
 }
 
-export interface InjectConfig {
+export type InjectConfig = {
   id: string;
   base: string;
   version: number;
   features: Features;
-  publication?: PublicationManifest | null;
-}
+} & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
 
 /** Escapes a JSON string for safe inclusion inside a <script> element. */
 function scriptSafeJson(v: unknown): string {
@@ -42,9 +41,10 @@ function attr(s: string): string {
 
 export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
   const publication = cfg.publication;
-  const documentBase = publication ? publication.base + publication.entry.slice(0, publication.entry.lastIndexOf("/") + 1) : cfg.base;
+  const directory = cfg.documentPath === null ? "" : cfg.documentPath.slice(0, cfg.documentPath.lastIndexOf("/") + 1);
+  const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
   const runtimeBase = publication?.runtime.base ?? `${cfg.base}_tendril/runtime/${runtimeRelease.id}/`;
-  const conf = { id: cfg.id, base: cfg.base, version: cfg.version, ws: cfg.base + "_tendril/ws",
+  const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath, ws: cfg.base + "_tendril/ws",
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
@@ -92,7 +92,7 @@ ${brandHead("_tendril/brand/")}${brandStyle}
 <main>
   <img class="holding-brand" src="_tendril/brand/icon-180.png" alt="Tendriller" width="88" height="88">
   <span class="eyebrow">Your page is connected</span><h1>${n} is getting ready.</h1>
-  <p role="status"><span class="pulse" aria-hidden="true"></span>Your agent is preparing the first version. This page will update as soon as it arrives.</p><p>You can talk to the agent using the control in the corner while you wait.</p>
+  <p role="status"><span class="pulse" aria-hidden="true"></span>Your agent is preparing the first version. This page will update as soon as it arrives.</p><p>Continue in your agent session while you wait. The Tendriller link opens page status and recovery.</p>
 </main>
 </body>
 </html>`;
@@ -135,8 +135,8 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
 <p>Your agent creates an ad-hoc page connected to your ongoing session. Talk or type to the agent from that page while it updates the interface live.</p>
 <p>Open it on any of your devices. The page can send taps and other UI interactions back to the agent, along with camera, location, motion, microphone, and other sensor input you allow.</p>
-<p><strong>Agents: read <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">${escapeHtml(publicBase)}/agent.md</a>.</strong> It documents the HTTP API, page creation, authentication, and live event delivery. Optional tools, components and workflows are published in <a href="https://github.com/werg/tendriller-contrib" style="color:inherit">tendriller-contrib</a>. See <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">the agent documentation index</a> for downloads, streams, and examples.</p>
-<div class="actions"><a class="button" href="https://github.com/werg/tendriller-contrib/releases">Tools and examples</a><a class="button secondary" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a></div></div>
+<p><strong>Agents: read <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">${escapeHtml(publicBase)}/agent.md</a>.</strong> It explains page creation, authentication, publication and live event delivery. <a href="https://github.com/werg/tendriller-contrib" style="color:inherit">Cookbooks</a> help you choose an approach and adapt the page to the task. See <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">the documentation index</a> for platform APIs and optional operational tools.</p>
+<div class="actions"><a class="button" href="https://github.com/werg/tendriller-contrib">Explore cookbooks</a><a class="button secondary" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a></div></div>
 </section>
 <section class="how" aria-labelledby="how-title"><h2 id="how-title">How it works</h2><p>Setup starts in the agent session you already use.</p>
 <ol class="flow">
@@ -147,7 +147,7 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 <li><span class="flow-number" aria-hidden="true">5</span><p>Keep talking here or in your agent session. The page changes live.</p></li>
 </ol></section>
 <section class="access" aria-labelledby="access-title"><h2 id="access-title">Access and permissions</h2><p>Your owner page is gated by <strong>GitHub or Google OAuth sign-in</strong>. Your agent uses a separate credential that you can revoke. Camera, location, and other browser permissions are requested on the device where you open the page.</p></section>
-<section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Each is a starting point your agent can adapt while you use it. <a href="https://github.com/werg/tendriller-contrib/releases">Explore optional tools, components and examples.</a></p><ul class="ideas">
+<section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Choose the interface and behavior that fit your task. <a href="https://github.com/werg/tendriller-contrib">Explore the decisions and alternatives in the cookbooks.</a></p><ul class="ideas">
 <li><h3>Field notebook</h3><p>Collect photos, location, voice notes, and observations on a walk.</p></li>
 <li><h3>Remote camera helper</h3><p>Point your phone at an object and discuss it with an agent running elsewhere.</p></li>
 <li><h3>Sports and activity companion</h3><p>Build your own experience for sailing, cycling, geocaching, or any physical activity using location and motion.</p></li>

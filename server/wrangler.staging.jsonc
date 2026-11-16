@@ -15,32 +15,32 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "TendrilV3"
+        "class_name": "TendrilV4"
       },
       {
         "name": "ADMISSION",
-        "class_name": "Admission"
+        "class_name": "AdmissionV4"
       }
     ]
   },
   "exports": {
-    "Tendril": { "type": "durable-object", "state": "deleted" },
-    "TendrilV2": { "type": "durable-object", "state": "deleted" },
-    "TendrilV3": { "type": "durable-object", "storage": "sqlite" },
-    "Admission": { "type": "durable-object", "storage": "sqlite" }
+    "TendrilV3": { "type": "durable-object", "state": "deleted" },
+    "Admission": { "type": "durable-object", "state": "deleted" },
+    "TendrilV4": { "type": "durable-object", "storage": "sqlite" },
+    "AdmissionV4": { "type": "durable-object", "storage": "sqlite" }
   },
   "d1_databases": [
     {
       "binding": "ACCOUNTS",
-      "database_name": "tendriller-staging-accounts",
-      "database_id": "fd412d48-e42c-4fba-a227-d5dc3c5eed80",
+      "database_name": "tendriller-staging-v4-accounts",
+      "database_id": "26a4ff52-2f75-4820-9d0b-563ef0751cf6",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [
     {
       "binding": "FILES",
-      "bucket_name": "tendriller-staging-files"
+      "bucket_name": "tendriller-staging-v4-files"
     }
   ],
   "triggers": {
@@ -57,7 +57,6 @@
         "period": 60
       }
     },
-
     {
       "name": "AGENT_RATE",
       "namespace_id": "102",

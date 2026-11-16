@@ -1,2 +1,0 @@
-DROP TABLE IF EXISTS device_codes;
-DROP TABLE IF EXISTS api_keys;

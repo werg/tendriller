@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { advance, api, apiJson, create, inDO, PageClient, publishTestFiles, req, runAlarm, sleep, uploadAgent, uploadPage } from "./helpers";
+import { advance, api, apiJson, create, inDO, PageClient, publishedFile, publishFilesJson, req, runAlarm, sleep, uploadBlobJson } from "./helpers";
 
 describe("tokens and shared tendrils", () => {
   it("issues named tokens, attributes changes, lists and revokes", async () => {
@@ -17,14 +17,12 @@ describe("tokens and shared tendrils", () => {
     const note = await api(h, "POST", "activity", { text: "added an item" }, {}, t2.token);
     expect(note.status).toBe(201);
     await note.text();
-    const pageBlob = await uploadAgent(h, "<p>x</p>", "text/html", "index.html");
-    await api(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {},
-      expected_head_revision: 0, entry: "index.html", files: [{ path: "index.html", blob_id: pageBlob.id, type: "text/html" }] }, {}, t2.token).then((r) => r.text());
+    await publishFilesJson(h, { "index.html": "<p>x</p>" }, { token: t2.token });
     const act = await apiJson(h, "GET", "activity");
     expect(act.entries.find((e: any) => e.kind === "note")).toMatchObject({ summary: "added an item", by: "alice-agent", source: "agent" });
-    expect(act.entries.find((e: any) => e.kind === "version")).toMatchObject({ by: "alice-agent", source: "server" });
+    expect(act.entries.find((e: any) => e.kind === "version")).toMatchObject({ by: "agent:alice-agent", source: "server" });
     const versions = await apiJson(h, "GET", "publications");
-    expect(versions.versions[0].by).toBe("alice-agent");
+    expect(versions.versions[0].by).toBe("agent:alice-agent");
 
     const list = await apiJson(h, "GET", "tokens");
     expect(list.tokens.map((t: any) => t.name)).toEqual(["main", "alice-agent"]);
@@ -71,9 +69,14 @@ describe("blobs and activity", () => {
   it("page uploads a blob; agent reads it; activity references it; owner deletion removes the bytes", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
-    const blob = await uploadPage(h, new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg", "drawer.jpg", page);
-    expect(blob).toMatchObject({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `_tendril/blobs/${blob.id}`,
-      retention: { expires_at: expect.any(Number), reasons: ["page_default"] } });
+    const cid = crypto.randomUUID();
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+    const blob = await uploadBlobJson(h, bytes, { page, cid, type: "image/jpeg", name: "drawer.jpg" });
+    const repeated = await uploadBlobJson(h, bytes, { page, cid, type: "image/jpeg", name: "drawer.jpg" });
+    expect(repeated).toEqual(blob);
+    expect(blob).toEqual({ id: expect.stringMatching(/^b_[a-z2-7]{20}$/), url: `_tendril/blobs/${blob.id}`,
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/), size: 3, type: "image/jpeg", name: "drawer.jpg", created_at: expect.any(Number),
+      retention: { expires_at: expect.any(Number), reasons: ["unreferenced_upload"] } });
     const viaPage = await req(new URL(blob.url, h.page_url).href);
     expect(viaPage.headers.get("Content-Type")).toBe("image/jpeg");
     expect(new Uint8Array(await viaPage.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
@@ -81,10 +84,11 @@ describe("blobs and activity", () => {
     expect((await viaApi.arrayBuffer()).byteLength).toBe(3);
     const list = await apiJson(h, "GET", "blobs");
     expect(list.blobs[0]).toMatchObject({ id: blob.id, type: "image/jpeg", size: 3, name: "drawer.jpg" });
-    expect(await inDO(h.id, t => t.db.one<{ device: string }>("SELECT device FROM blobs WHERE id=?", blob.id)?.device)).toBe(page.deviceId);
 
     const act = await page.request({ t: "activity" });
-    const entry = act.entries.find((e: any) => e.kind === "blob");
+    const entries = act.entries.filter((e: any) => e.kind === "blob");
+    expect(entries).toHaveLength(1); // A repeated completion receipt does not duplicate the audit.
+    const entry = entries[0];
     expect(entry).toMatchObject({ blob: blob.id, device: page.deviceId, source: "server" });
     expect(entry.summary).toContain("Photo");
     const del = await page.request({ t: "activity_delete", seq: entry.seq });
@@ -96,9 +100,9 @@ describe("blobs and activity", () => {
     page.close();
   });
 
-  it("agent uploads immutable blobs and can use one as the icon", async () => {
+  it("agent uploads verified bytes and can keep them through an icon reference", async () => {
     const h = await create();
-    const up = await uploadAgent(h, new Uint8Array([1, 2]));
+    const up = await uploadBlobJson(h, new Uint8Array([1, 2]));
     expect(up.url).toBe(`_tendril/blobs/${up.id}`);
     const info = await apiJson(h, "PATCH", "", { icon: up.id });
     expect(info.meta.icon).toBe(up.id);
@@ -114,7 +118,7 @@ describe("blobs and activity", () => {
     for (let i = 0; i < 3; i++) await page.request({ t: "send", expected_generations: {}, data: { type: "location", i }, wake: false });
     await page.request({ t: "send", expected_generations: {}, data: { type: "tap" }, wake: false });
     await apiJson(h, "POST", "eval", { code: "return 1" });
-    await publishTestFiles(h, { files: { "index.html": "<p>x</p>" } });
+    await publishFilesJson(h, { "index.html": "<p>x</p>" });
     await apiJson(h, "POST", "activity", { text: "note" }, 201);
     const { entries, cursor } = await apiJson(h, "GET", "activity");
     const kinds = entries.map((e: any) => e.kind);
@@ -148,31 +152,46 @@ describe("blobs and activity", () => {
     expect(entries.map((e: any) => e.summary)).toEqual(["new"]);
   });
 
-  it("page blobs expire after 30 days; agent blobs and the icon stay", async () => {
+  it("unreferenced page and agent uploads expire after 30 days while pins and the icon stay", async () => {
     const h = await create();
-    const pageBlob = await uploadPage(h, "photo", "text/plain");
-    const iconBlob = await uploadPage(h, "icon", "image/png");
-    const agentBlob = await uploadAgent(h, "asset", "text/plain");
+    const page = await PageClient.connect(h.page_url);
+    const pageBlob = await uploadBlobJson(h, "photo", { page, type: "text/plain" });
+    const iconBlob = await uploadBlobJson(h, "icon", { page, type: "image/png" });
+    const agentBlob = await uploadBlobJson(h, "temporary asset", { type: "text/plain" });
+    const pinnedBlob = await uploadBlobJson(h, "kept asset", { type: "text/plain" });
+    await apiJson(h, "PUT", `blobs/${pinnedBlob.id}/pin`, { cid: crypto.randomUUID(), expected_generations: {}, keep: true });
     await apiJson(h, "PATCH", "", { icon: iconBlob.id });
     await advance(h.id, 31 * 86400_000);
     await inDO(h.id, (t) => t.cleanup());
     const ids = (await apiJson(h, "GET", "blobs")).blobs.map((b: any) => b.id).sort();
-    expect(ids).toEqual([iconBlob.id, agentBlob.id].sort());
+    expect(ids).toEqual([iconBlob.id, pinnedBlob.id].sort());
     expect(await env.FILES.get(`t/${h.id}/files/${pageBlob.sha256}`)).toBeNull();
+    expect(await env.FILES.get(`t/${h.id}/files/${agentBlob.sha256}`)).toBeNull();
+    expect((await api(h, "GET", `blobs/${iconBlob.id}`)).status).toBe(200);
+    expect((await api(h, "GET", `blobs/${pinnedBlob.id}`)).status).toBe(200);
+    page.close();
   });
 
-  it("prunes versions beyond the newest 50 while retaining referenced blob bytes", async () => {
+  it("prunes old publications and releases their unreferenced bytes after the upload window", async () => {
     const h = await create();
-    await publishTestFiles(h, { files: { "old.txt": "only in v1" } });
-    for (let i = 0; i < 55; i++) await publishTestFiles(h, { files: { "index.html": `<p>${i}</p>` }, replace: true });
-    const hashOld = await inDO(h.id, (t) => t.db.one<{ hash: string }>("SELECT hash FROM version_files WHERE path = 'old.txt'")!.hash);
+    await publishFilesJson(h, { "index.html": "<p>First</p>", "old.txt": "only in v1" });
+    const first = await apiJson(h, "GET", "publications/1");
+    const hashOld = first.files.find((file: any) => file.path === "old.txt").sha256;
+    const current = await uploadBlobJson(h, "<p>Current</p>", { type: "text/html" });
+    let head = (await apiJson(h, "GET", "publications")).head_revision;
+    for (let i = 0; i < 55; i++) {
+      const published = await apiJson(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: head,
+        entry: "index.html", files: [{ path: "index.html", blob_id: current.id, type: current.type }] });
+      head = published.head_revision;
+    }
+    await advance(h.id, 31 * 86400_000);
     await inDO(h.id, (t) => t.cleanup());
     const vs = (await apiJson(h, "GET", "publications")).versions;
     expect(vs.length).toBe(50);
     expect(vs[0].version).toBe(56);
-    expect(await env.FILES.head(`t/${h.id}/files/${hashOld}`)).not.toBeNull(); // retained agent blob still owns these bytes
+    expect(await env.FILES.head(`t/${h.id}/files/${hashOld}`)).toBeNull();
     // files of kept versions are still served
-    expect(await (await req(h.page_url + "index.html")).text()).toContain("<p>54</p>");
+    expect(await (await publishedFile(h, "index.html")).text()).toBe("<p>Current</p>");
   });
 
 });
@@ -180,8 +199,8 @@ describe("blobs and activity", () => {
 describe("lifetime and deletion", () => {
   it("ad_hoc tendrils expire after 24 h with no check-in and no device; storage and R2 wiped", async () => {
     const h = await create();
-    await publishTestFiles(h, { files: { "index.html": "<p>x</p>" } });
-    await uploadAgent(h, new Uint8Array([1]));
+    await publishFilesJson(h, { "index.html": "<p>x</p>" });
+    await uploadBlobJson(h, new Uint8Array([1]));
     expect((await env.FILES.list({ prefix: `t/${h.id}/` })).objects.length).toBe(2);
     await advance(h.id, 23 * 3600_000);
     await runAlarm(h.id);
@@ -209,7 +228,7 @@ describe("lifetime and deletion", () => {
 
   it("DELETE wipes everything and closes sockets", async () => {
     const h = await create();
-    await publishTestFiles(h, { files: { "index.html": "<p>x</p>" } });
+    await publishFilesJson(h, { "index.html": "<p>x</p>" });
     const page = await PageClient.connect(h.page_url);
     const del = await api(h, "DELETE", "");
     expect(del.status).toBe(204);

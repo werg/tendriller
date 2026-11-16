@@ -16,7 +16,7 @@ import { apiUrl } from "./urls";
 import { queueMcpWake } from "./mcpEvents";
 import { emitBuiltinRecord } from "./streams";
 
-export type EventType = "event" | "instruction" | "version_failed" | "version_healthy" | "device" | "rule" | "voice";
+export type EventType = "event" | "instruction" | "version_failed" | "version_healthy" | "device" | "voice";
 
 /** Timestamp HMAC-SHA256: a replay-bounded HMAC of timestamp and exact JSON bytes. */
 export async function timestampHmacHeaders(secret: string, payload: string, timestamp: number): Promise<Record<string, string>> {

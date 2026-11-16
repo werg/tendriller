@@ -11,6 +11,9 @@ export const RESOURCE_LIMITS = Object.freeze({
   scope_bindings: 4096,
   command_receipts: 20_000,
   command_receipt_bytes: 32 * 1024 * 1024,
+  private_record_bytes: 1024 * 1024,
+  private_records: 4096,
+  private_records_bytes: 8 * 1024 * 1024,
   // Hard transport ceiling is separate from the actor's effective per-body quota.
   owned_body_bytes: 5 * 1024 * 1024,
   unclaimed_body_bytes: 1 * 1024 * 1024,

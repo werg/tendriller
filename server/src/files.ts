@@ -3,14 +3,13 @@ import type { Tendril } from "./tendril";
 import { addActivity } from "./activity";
 import { addEvent } from "./events";
 import { HttpError, json } from "./http";
-import { sha256Hex } from "./ids";
+import { newBlobId, sha256Hex } from "./ids";
 import runtimeRelease from "./runtime-release.json";
 import { holdingPage, injectRuntime, type PublicationManifest } from "./inject";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 
-function scanContent(body: ArrayBuffer, type: string): number {
-  if (!/(text|javascript|json|xml|svg)/i.test(type)) return 0;
+function scanContent(body: ArrayBuffer): number {
   const text = new TextDecoder().decode(body.slice(0, 1024 * 1024));
   let score = 0;
   if (/<input\b[^>]*type\s*=\s*["']?password\b/i.test(text)) score += 5;
@@ -27,6 +26,7 @@ export interface VersionFile {
   hash: string;
   type: string;
   size: number;
+  blob_id?: string;
 }
 
 export interface Pointers {
@@ -90,7 +90,7 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string,
   retain?: (hash: string) => void): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
   await contentOperation(t, hash, async () => {
-    const riskScore = scanContent(body, type);
+    const riskScore = scanContent(body);
     const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore);
     let globalReserved = false;
     let uploaded = false;
@@ -102,8 +102,10 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string,
       }
       const head = await t.env.FILES.head(key);
       if (!head) { await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }); uploaded = true; }
-      t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
-      retain?.(hash);
+      t.transaction(() => {
+        t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
+        retain?.(hash);
+      });
     } catch (err) {
       if (reserved) {
         t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
@@ -130,7 +132,9 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
-  options: { expectedCurrent?: number; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  options: { entry?: string; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  const entry = options.entry ?? "index.html";
+  if (!files.has(entry) || !isHtmlType(files.get(entry)!.type)) throw new HttpError(400, "bad_publication", "The publication requires its declared HTML entry");
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
   let riskScore = 0;
   const riskFlags: string[] = [];
@@ -151,9 +155,6 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   }
   const n = t.transaction(() => {
     assertStoredContent(t, files.values());
-    const current = t.db.get<number>("current", 0);
-    if (options.expectedCurrent !== undefined && current !== options.expectedCurrent)
-      throw new HttpError(409, "version_conflict", "The page changed; review the current version before replacing it", { current });
     if (options.expectedHeadRevision !== undefined && t.db.get<number>("publication_head_revision", 0) !== options.expectedHeadRevision)
       throw new HttpError(409, "publication_conflict", "The publication head changed; inspect it before retrying",
         { head_revision: t.db.get<number>("publication_head_revision", 0) });
@@ -162,9 +163,18 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
       next, t.now(), runtimeRelease.id, runtimeRelease.version, JSON.stringify(runtimeRelease.features), message, by, riskScore, JSON.stringify(riskFlags));
     for (const f of files.values()) {
       t.db.run("INSERT INTO version_files (version, path, hash, type, size) VALUES (?, ?, ?, ?, ?)", next, f.path, f.hash, f.type, f.size);
+      const blob = f.blob_id ? t.db.one<{ id: string; sha256: string; size: number }>("SELECT id,sha256,size FROM blobs WHERE id=?", f.blob_id) : null;
+      if (f.blob_id && (!blob || blob.sha256 !== f.hash || blob.size !== f.size))
+        throw new HttpError(409, "blob_unavailable", "Publication content no longer matches its immutable blob");
+      const blobId = blob?.id ?? newBlobId();
+      if (!blob) t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,NULL,'agent',0)",
+        blobId, f.hash, f.type, f.size, f.path, t.now());
+      t.db.run("INSERT INTO publication_blobs(version,path,blob_id) VALUES(?,?,?)", next, f.path, blobId);
     }
+    t.db.run("UPDATE versions SET entry=? WHERE version=?", entry, next);
     t.db.set("latest", next);
     t.db.set("current", next);
+    t.db.set("publication_head_revision", t.db.get<number>("publication_head_revision", 0) + 1);
     options.commit?.(next);
     addActivity(t, {
       kind: "version",
@@ -177,14 +187,6 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   options.beforeReload?.();
   t.broadcast({ t: "reload", version: n });
   return n;
-}
-
-/** The latest version's file map, the base for incremental uploads. */
-export function latestFileMap(t: Tendril): Map<string, VersionFile> {
-  const latest = t.db.get<number>("latest", 0);
-  const map = new Map<string, VersionFile>();
-  if (latest > 0) for (const f of versionFiles(t, latest)) map.set(f.path, f);
-  return map;
 }
 
 /** Serving rule: current unless failed, then healthy; else current; 0 = nothing uploaded. */
@@ -214,6 +216,7 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
   const healthy = t.db.get<number>("healthy", 0);
   if (t.db.get<number>("current", 0) === version && healthy > 0) {
     t.db.set("current", healthy);
+    t.db.set("publication_head_revision", t.db.get<number>("publication_head_revision", 0) + 1);
     rolledBackTo = healthy;
     t.broadcast({ t: "reload", version: healthy });
   }
@@ -246,6 +249,7 @@ export function rollback(t: Tendril, target: number | null | undefined, by: stri
     v = row.version;
   }
   t.db.set("current", v);
+  t.db.set("publication_head_revision", t.db.get<number>("publication_head_revision", 0) + 1);
   addActivity(t, { kind: "rollback", summary: `Rolled back from version ${current} to ${v}`, by, device });
   t.broadcast({ t: "reload", version: v });
   return v;
@@ -264,13 +268,13 @@ export function listVersions(t: Tendril) {
 }
 
 /** The actual immutable URLs used by this publication, including its runtime. */
-export function publicationManifest(t: Tendril, version: number, base: string, entry?: string): PublicationManifest {
+export function publicationManifest(t: Tendril, version: number, base: string): PublicationManifest {
   const release = version > 0
     ? t.db.one<{ runtime_id: string; runtime_version: string; runtime_features: string }>("SELECT runtime_id,runtime_version,runtime_features FROM versions WHERE version=?", version)
     : { runtime_id: runtimeRelease.id, runtime_version: runtimeRelease.version, runtime_features: JSON.stringify(runtimeRelease.features) };
   if (!release) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
   const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
-  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: entry ?? defaultEntry,
+  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: defaultEntry,
     assets: versionFiles(t, version).map(file => ({ path: file.path, sha256: file.hash, type: file.type, size: file.size })),
     runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `${base}_tendril/runtime/${release.runtime_id}/` } };
 }
@@ -319,7 +323,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, features: t.features(), publication: null });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, documentPath: null, features: t.features(), publication: null });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -334,7 +338,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, features: t.features(), publication: publicationManifest(t, version, base, path) });
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
     return new Response(req.method === "HEAD" ? null : html, { headers });
   }
   headers.set("Content-Length", String(file.size));

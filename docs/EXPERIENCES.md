@@ -2,7 +2,7 @@
 
 Tendriller can hold a task across devices, browser closures, and agent sessions.
 This guide covers the generic platform capabilities and their limits. Optional
-application workflows, components, and recipes are documented in
+application policies and interaction choices are explained in cookbooks in
 [contrib](https://github.com/werg/tendriller-contrib). The engine has no workflow
 module installed by default.
 `A` means the private handle’s API base. Agent calls use its bearer token. Page
@@ -14,8 +14,7 @@ same-origin checks. A page never needs an agent token.
 Access roles remain `owner`, `guest`, and `display`. A device’s **purpose** is a
 separate presentation preference: `general`, `camera`, `controller`, `display`,
 or `speaker`. A camera-purpose guest is still a guest; changing a purpose never
-grants owner access. Purposes persist through reconnects. The owner can rename
-devices, choose their purpose, and select **Continue here** in the control.
+grants owner access. Purposes persist through reconnects. Page-authored owner controls can rename devices, choose their purpose, and move focus through the public APIs.
 
 | Operation | Agent API | Owner page API |
 |---|---|---|
@@ -37,8 +36,7 @@ owner device with speaker purpose, the originating device, then the primary
 device. Only one socket speaks, even if the device has several tabs. An explicit
 offline speaker does not silently redirect speech to another device.
 
-Browser speech is immediately available where supported. Neural speech is an
-optional preparation/download, enabled by the person. Muting and stopping speech
+The explicitly loaded voice adapter can use browser speech where supported. Neural speech is an optional preparation/download, enabled by the person. Muting and stopping speech
 remain local choices; an agent cannot override them.
 
 ## Timers that survive a closed page
@@ -69,8 +67,7 @@ with `lifetime_required`.
 | Remove | `DELETE A/timers/<id>` |
 | Execution history | `GET A/timers/history` |
 
-The owner page has the same operations under `_tendril/timers`. Settings exposes
-creation, cancellation, removal, and recent runs. At most 32 timers can be stored.
+The owner page has the same operations under `_tendril/timers`; it authors its own creation, cancellation and history controls. At most 32 timers can be stored.
 
 Omit `repeat` for a one-shot timer. Use `{every_minutes:N}` for an interval or
 `{at:"09:00",days:[1,2,3,4,5]}` for a calendar recurrence in the supplied IANA time
@@ -115,17 +112,15 @@ prove that a person saw a notification; failure never erases the event. See
 
 `GET A/session` returns the brief and its `revision` plus current version, pending input count,
 available-history gap information, devices, timers, recent activity, and whether
-a bundle is staged. The owner page uses `_tendril/session`. Settings can edit the brief and copy a continuation
-prompt without including credentials. Supply `expected_revision` on PUT to reject
-stale edits. The owner form preserves the latest agent checkpoint/decisions when
-editing other fields and asks for review if the same field changed concurrently.
+a bundle is staged. The owner page uses `_tendril/session` and may offer an editor or continuation prompt without including credentials. Supply `expected_revision` on PUT to reject
+stale edits. An authored editor should preserve agent checkpoints and decisions when editing other fields, and ask for review if the same field changed concurrently.
 
 The brief is a checkpoint, not a replacement for the event log. Write its cursor
 only after actually handling those events; updating it does not advance the
 agent’s event-read cursor. History retains its existing bounds. When a gap is
 reported, use the saved context and ask for any missing evidence instead of
 claiming that expired inputs were processed. A new agent still needs a private
-handle through **Connect an agent** and an active host receiver.
+handle through the service-owned recovery page and an active host receiver.
 
 An unattended worker can additionally use a named [event consumer](DURABILITY.md#named-event-consumers)
 for a server-stored handled checkpoint and leased failover. Reading does not
@@ -135,38 +130,57 @@ records with distinct purposes.
 
 ## Portable bundles and independent remixes
 
-`GET A/bundle` returns versioned JSON containing the served page files and its
-purpose. `?include_data=true` additionally includes shared state, the complete
-session brief, and media bytes. A template without data starts from the page’s
-code defaults. Tendriller’s credentials, account sessions, device identities,
-timers, scope bindings/generations, workflow records, consumers, and delivery
-jobs are never exported.
-Anything deliberately embedded in a user-authored page file is still file
-content; inspect your code before sharing a template.
+`GET A/bundle` returns the served page's complete file graph, declared HTML
+entry, and purpose. `?include_data=true` also includes shared state, the session
+brief, active shared-file heads, and selected immutable media. The exporter captures
+these logical records before reading bytes. Publication-only handles are excluded
+from media unless state or an active shared file explicitly refers to them, so
+copying a page repeatedly does not accumulate duplicate code as application media.
 
-The bundle has `format:"tendriller-bundle"`, `version:2`, a name, files with MIME
-types and base64 bytes, optional state/session, media entries, and current
-shared-file references. Restoration allocates new media IDs and rewrites their
-references in text files, state and shared files. Imported shared files have no
-scope binding. Create a new scoped path if a workflow needs a bound reference.
-Files are validated before storage: normalized paths, no duplicates, index page,
-and existing file/state/storage limits. Media retain ordinary quota accounting.
+A template without data starts from the page's code defaults. Credentials, account
+sessions, device identities, timers, scope bindings/generations, workflow records,
+consumers, delivery jobs, and shared-file revision history are never imported.
+Anything deliberately embedded in authored page bytes remains file content;
+inspect those files before sharing a template.
+
+The sole bundle format is `format:"tendriller-bundle", version:3`. It requires the
+actual HTML `entry`, a name, a complete `files` array with MIME types and base64
+bytes, and a `media` array. Optional `state`, `session`, and
+`shared_files:[{path,blob_id,name?,type?}]` carry application data. Every shared-file
+reference must name media included in that bundle. No historical format is accepted.
+Restoration allocates new immutable IDs and rewrites their references in authored
+text files and state keys/values. It copies current heads, creating new destination
+revision records, rather than replaying the source file history.
+
+Validation rejects unsafe, noncanonical or ill-formed Unicode paths, duplicate
+paths/IDs, missing or non-HTML entries, invalid shared-file references, and exceeded
+file/state/storage limits before writing bytes. The complete encoded transfer is
+bounded to 36 MiB, even when many logical names share one physical object. Export
+and publication check both byte length and digest. Staged references retain their
+prepared media while the copy is being reviewed.
 
 Restoring is explicitly staged:
 
-1. `PUT A/bundle` validates and prepares the bundle.
-   The response gives file/media counts and `expected_version`.
-2. Review it and capture the current scope generations for every path it will
-   replace. `POST A/bundle/publish` accepts
-   `{cid,expected_generations,expected_version:N}` with optional `scope`. It
-   publishes an immutable version and restores included state/context in the same
-   transaction as guard validation and the command receipt. Reuse that exact
-   command after a lost acknowledgement. A changed page or scope causes a
-   conflict. Connected clients receive restored state before reload.
-3. `DELETE A/bundle` discards prepared assets that are not used by a published
-   version. Only one stage/publish/discard operation runs at a time.
+1. `PUT A/bundle` validates and prepares the copy. Its response gives file/media
+   counts and `expected_head_revision`, captured before asynchronous preparation.
+   Destination shared-file revisions are captured at the same stage boundary.
+2. Review the copy and current scope generations. `POST A/bundle/publish` accepts
+   `{cid,expected_generations,expected_head_revision:N}` with optional `scope`.
+   It guards the `publications` namespace and both `publication.publish` and
+   `bundle.publish` operations. Imported shared files additionally require
+   `file.write` and their `files` path guards; included state requires its normal
+   state-path guards. Publication, imported heads, state/context, and the command
+   receipt commit in one transaction. A concurrent destination-file edit rejects
+   the entire import without partially replacing the page or state.
+3. Retry a lost acknowledgement using that exact original command. The monotonic
+   head revision detects a rollback that returns to the same version number.
+   An accepted retry returns its original `{version,head_revision,restored:true}`
+   receipt. A conflict requires another deliberate review; never substitute a
+   fresh guard automatically. Connected clients receive restored state before reload.
+4. `DELETE A/bundle` discards prepared assets that no live reference uses. Only one
+   stage/publish/discard operation runs at a time.
 
-The same owner-only controls are in Settings. Publishing the first version still
+An owner page can offer the same operations through its authenticated page APIs. Publishing the first version still
 requires an active agent socket, held poll, or configured receiver. Preparing a
 copy does not bypass that gate. Earlier page versions remain available, but their
 history does not roll back shared state; export current data before replacing it
@@ -232,7 +246,5 @@ media, and [durability](DURABILITY.md) for timer delivery and processing leases.
 
 Core tests cover authenticated roles, device focus, timer recurrence and delivery,
 saved context revisions, scope admission across all writers, atomic bundle
-publication, immutable asset graphs, and independent remixes. Contrib tests own
-application workflow scenarios and their browser assets. A composition test
-consumes an exact released workflow artifact through the public host interface.
+publication, immutable asset graphs, and independent remixes. Cookbook checks own application-specific reference scenarios and page adaptations. They consume exact public core artifacts through the documented engine/host interface.
 See [E2E testing](E2E_TESTING.md) for the corresponding gates and fixture limits.

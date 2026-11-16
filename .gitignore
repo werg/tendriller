@@ -14,5 +14,4 @@ server/wrangler.branch-preview.json
 server/.wrangler.*.cutover.jsonc
 
 dist/
-.composition/
 .consumer-*/

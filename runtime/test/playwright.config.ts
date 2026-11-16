@@ -3,8 +3,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: ["runtime.spec.ts", "real-server.spec.ts"],
-  testIgnore: ["**/control/**", "**/push/**", "**/voice/**"],
+  testMatch: ["runtime.spec.ts"],
+  testIgnore: ["**/push/**", "**/tts/**"],
   timeout: 30_000,
   fullyParallel: false,
   workers: 2,

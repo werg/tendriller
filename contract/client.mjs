@@ -59,7 +59,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     acknowledgeDeliveryProbe: nonce => request(`/wake/probe/${assertValid("probeNonce", nonce)}/ack`, { method: "POST" }, "deliveryProbe"),
     say: body => request("/say", { method: "POST", body: assertValid("say", body) }, "sayResult"),
     // Push works without a browser tab. Consent and server registrations are
-    // managed by the page's built-in control, never by this agent token.
+    // managed by the authored page, never by this agent token.
     notificationStatus: () => request("/notify"),
     notify: body => request("/notify", { method: "POST", body }),
     state: () => request("/state", undefined, "stateSnapshot"),
@@ -76,7 +76,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     updateSession: body => request("/session", { method: "PUT", body: assertValid("sessionWrite", body) }, "sessionResult"),
     exportBundle: ({ includeData = false } = {}) => request(`/bundle?include_data=${includeData}`, undefined, "bundle"),
     stageBundle: body => request("/bundle", { method: "PUT", body: assertValid("bundle", body) }, "bundleStage"),
-    publishBundle: body => request("/bundle/publish", { method: "POST", body: assertValid("bundlePublish", body) }, "publicationResult"),
+    publishBundle: body => request("/bundle/publish", { method: "POST", body: assertValid("bundlePublish", body) }, "bundleReceipt"),
     discardBundle: () => request("/bundle", { method: "DELETE" }),
     remix: body => request("/remix", { method: "POST", body: assertValid("remix", body) }, "remixResult"),
     service: () => request("/service", undefined, "serviceDescriptor"),

@@ -196,7 +196,6 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
     scopes: scopes(t),
     presence: t.presence(),
     transcript: t.transcript(),
-    rules: t.db.get("rules", []),
     features: t.features(),
     budget: t.wakeConfig().budget,
   };
@@ -235,7 +234,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   say_rendered(c) {
     const id = c.msg.message_id;
     if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) { if (c.msg.cid) ack(c, { error: "bad_message" }); return; }
-    const sent = c.t.db.one("SELECT 1 AS x FROM activity WHERE kind = 'say' AND summary LIKE ? LIMIT 1", `Message ${id}%`);
+    const sent = c.t.db.one("SELECT 1 AS x FROM transcript WHERE src='agent' AND message_id=?", id);
     if (!sent) { if (c.msg.cid) ack(c, { error: "unknown_message" }); return; }
     const existing = c.t.db.one("SELECT 1 AS x FROM activity WHERE kind = 'say_rendered' AND device = ? AND summary = ? LIMIT 1", c.dev.id, `Message ${id} rendered`);
     if (!existing) addActivity(c.t, { kind: "say_rendered", summary: `Message ${id} rendered`, device: c.dev.id });
@@ -337,7 +336,9 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     const { t, dev, msg } = c;
     const result = await t.dedupe(dev.id, msg.cid, () => {
       try {
-        return { version: rollback(t, typeof msg.version === "number" ? msg.version : null, null, dev.id) };
+        if (!Number.isSafeInteger(msg.expected_head_revision) || msg.expected_head_revision < 0) throw new HttpError(400, "bad_request", "Capture the publication head revision before choosing a version");
+        if (t.db.get<number>("publication_head_revision", 0) !== msg.expected_head_revision) throw new HttpError(409, "publication_conflict", "The publication changed; review its current head");
+        return { version: rollback(t, typeof msg.version === "number" ? msg.version : null, null, dev.id), head_revision: t.db.get<number>("publication_head_revision", 0) };
       } catch (err) {
         return { error: err instanceof HttpError ? err.code : "internal", message: err instanceof Error ? err.message : String(err) };
       }
@@ -346,7 +347,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
   },
 
   versions(c) {
-    c.t.send(c.ws, { t: "versions", cid: c.msg.cid, versions: listVersions(c.t), ...pointers(c.t) });
+    c.t.send(c.ws, { t: "versions", cid: c.msg.cid, versions: listVersions(c.t), head_revision: c.t.db.get<number>("publication_head_revision", 0), ...pointers(c.t) });
   },
 
   activity(c) {
@@ -439,28 +440,15 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
       status: result.deliveries[0]?.status ?? null });
   },
 
-  async rule_fired(c) {
-    const { t, dev, msg } = c;
-    const result = await t.dedupe(dev.id, msg.cid, () => {
-      if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot send" };
-      const data = { rule_id: String(msg.rule_id ?? ""), detail: msg.detail ?? null };
-      if (new TextEncoder().encode(JSON.stringify(data)).byteLength > MAX_EVENT_DATA) return { error: "too_large", message: "detail exceeds 64 KB" };
-      const ev = addEvent(t, { type: "rule", data, device: dev.id, role: dev.role, wake: true, cls: "page" });
-      addActivity(t, { kind: "rule", summary: `Device rule "${data.rule_id}" fired`, device: dev.id });
-      return { seq: ev.seq };
-    });
-    ack(c, result);
-  },
-
 };
 
-/** Speech or text from the control/voice layer: an instruction from owners, data from anyone else. */
+/** Authored text or speech input: an instruction from owners, data from anyone else. */
 function instruction(c: Ctx, text: string, via: string, context: ValidatedContext): number {
-  const { t, dev, ws } = c;
+  const { t, dev, ws, msg } = c;
   const isOwner = dev.role === "owner" && !dev.pending;
-  const ts = t.addTranscript("user", text);
+  const entry = t.addTranscript("user", text, { cid: msg.cid, device: dev.id });
   // Include the sender so its optimistic chat row can become a delivered row.
-  t.broadcast({ t: "instruction_echo", text, via, device: dev.id, ts });
+  t.broadcast({ ...entry, t: "instruction_echo", via });
   if (isOwner) {
     const ev = addEvent(t, { type: "instruction", data: { text, via }, context, device: dev.id, role: dev.role, wake: true, cls: "owner" });
     addActivity(t, { kind: "instruction", summary: `Instruction (${via}): ${preview(text, 300)}`, device: dev.id });

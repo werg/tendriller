@@ -71,13 +71,21 @@ export async function describeCapabilities(active: string[] = []): Promise<Capab
   return { captured_at: Date.now(), secure: window.isSecureContext, device: navigator.userAgent, capabilities };
 }
 
-/** Watch the browser signals that can change the report without reloading. */
-export function observeCapabilities(active: () => string[], changed: (report: Awaited<ReturnType<typeof describeCapabilities>>) => void): () => void {
+/** One owner orders reports from browser signals and explicit sensor refreshes. */
+export function observeCapabilities(active: () => string[], changed: (report: Awaited<ReturnType<typeof describeCapabilities>>) => void): { refresh(): void; dispose(): void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let stopped = false;
+  let stopped = false, generation = 0;
   const refresh = () => {
+    if (stopped) return;
+    const current = ++generation;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { if (!stopped) void describeCapabilities(active()).then(changed).catch(() => {}); }, 100);
+    timer = setTimeout(() => {
+      if (stopped) return;
+      void describeCapabilities(active()).then(report => {
+        // Permission queries may resolve after a newer report or after pagehide.
+        if (!stopped && current === generation) changed(report);
+      }).catch(() => {});
+    }, 100);
   };
   const statuses: PermissionStatus[] = [];
   if (navigator.permissions?.query) {
@@ -92,12 +100,15 @@ export function observeCapabilities(active: () => string[], changed: (report: Aw
   navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
   window.addEventListener("online", refresh);
   window.addEventListener("offline", refresh);
-  return () => {
+  const dispose = () => {
+    if (stopped) return;
     stopped = true;
+    generation++;
     if (timer) clearTimeout(timer);
     for (const status of statuses) status.removeEventListener("change", refresh);
     navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
     window.removeEventListener("online", refresh);
     window.removeEventListener("offline", refresh);
   };
+  return { refresh, dispose };
 }

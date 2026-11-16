@@ -2,6 +2,7 @@ export const RESOURCE_LIMITS: Readonly<{
   file_bytes: number; blob_bytes: number; event_bytes: number; state_bytes: number;
   files_per_publication: number; path_characters: number;
   active_scopes: number; scope_bindings: number; command_receipts: number; command_receipt_bytes: number;
+  private_record_bytes: number; private_records: number; private_records_bytes: number;
   owned_body_bytes: number; unclaimed_body_bytes: number; owned_page_bytes: number; unclaimed_page_bytes: number;
   upload_sessions_per_actor: number; upload_sessions_per_page: number; upload_expiry_seconds: number;
   shared_files: number; shared_file_paths: number; file_snapshot_bytes: number; file_history: number; file_history_seconds: number;

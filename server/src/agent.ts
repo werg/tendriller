@@ -22,7 +22,7 @@ import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
 import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
 import { authenticateAgent, authenticateAgentToken, requireAccess } from "./access";
 import { pushAvailable, validatePushSubscription } from "./push";
-import { STORAGE_V3_ROUTE, handleStorageV3 } from "./storage-v3";
+import { STORAGE_ROUTE, handleStorage } from "./storage";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -45,11 +45,11 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
-  if (STORAGE_V3_ROUTE.test(rest)) {
+  if (STORAGE_ROUTE.test(rest)) {
     const principal = await authenticateAgent(t, req);
     requireAccess(principal, "agent.manage");
     t.checkin(principal.name);
-    return handleStorageV3(t, req, url, principal.name, rest);
+    return handleStorage(t, req, url, `agent:${principal.name}`, rest);
   }
   if (STREAM_ROUTE.test(rest) || CONSUMER_ROUTE.test(rest) || EXPERIENCE_ROUTE.test(rest) || /^(?:scopes|workflows)(?:\/|$)/.test(rest)) {
     const principal = await authenticateAgent(t, req);
@@ -478,7 +478,7 @@ route("POST", /^links\/([^/]+)\/rotate$/, async (t, req, url, by, [id]) => {
   return json(row);
 });
 
-// ------------------------------------------------------------------ wake, activity, tokens, rules, notify
+// ------------------------------------------------------------------ wake, activity, tokens, notify
 
 route("GET", /^wake$/, (t) => json(t.renderWake()));
 
@@ -595,18 +595,6 @@ route("DELETE", /^tokens\/([^/]+)$/, (t, req, url, by, [name]) => {
   t.db.run("DELETE FROM tokens WHERE name = ?", name);
   t.refreshPresence();
   return new Response(null, { status: 204 });
-});
-
-route("GET", /^rules$/, (t) => json({ rules: t.db.get("rules", []) }));
-
-route("PUT", /^rules$/, async (t, req) => {
-  const b = await readJson(req, 256 * 1024);
-  if (!Array.isArray(b.rules) || !b.rules.every((r: unknown) => isPlainObject(r) && typeof r.id === "string" && r.id)) {
-    throw new HttpError(400, "bad_request", "rules must be an array of objects with a string id");
-  }
-  t.db.set("rules", b.rules);
-  t.broadcast({ t: "rules", rules: b.rules });
-  return json({ rules: b.rules });
 });
 
 // The agent can inspect readiness without spending a notification or learning

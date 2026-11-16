@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createRequire } from "node:module";
+import { CONTRACT_VERSION } from "../contract/index.mjs";
 
 const ZONE = "tendriller.dev";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -43,19 +44,20 @@ function validateTemplate(template) {
 export function previewConfig(identity, template, databaseId, accountId) {
   if (!UUID.test(databaseId) || !/^[a-f0-9]{32}$/.test(accountId)) throw new Error("Invalid Cloudflare resource ID");
   validateTemplate(template);
-  const bindings = template.durable_objects.bindings;
   return {
     $schema: "../node_modules/wrangler/config-schema.json",
     name: identity.worker,
     account_id: accountId,
-    main: "../dist/service/worker.mjs",
+    main: "../dist/engine/worker.mjs",
     compatibility_date: template.compatibility_date,
     compatibility_flags: template.compatibility_flags,
     workers_dev: false,
     preview_urls: false,
     assets: { directory: "./public", binding: "ASSETS", run_worker_first: true },
-    durable_objects: { bindings: bindings.map(({ name, class_name }) => ({ name, class_name })) },
-    migrations: template.migrations,
+    // Every preview Worker is new and uses the public generic engine classes.
+    // The canonical service's V4 aliases/tombstones belong only to its Worker.
+    durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }] },
+    migrations: [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }],
     d1_databases: [{ binding: "ACCOUNTS", database_name: identity.database,
       database_id: databaseId, migrations_dir: "migrations" }],
     r2_buckets: [{ binding: "FILES", bucket_name: identity.bucket }],
@@ -184,7 +186,7 @@ export async function smokePreview(identity, { fetcher = fetch, provenance = tru
         const response = await fetcher(`${identity.url}${path}`, { signal: AbortSignal.timeout(15_000), redirect: "error" });
         if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
         const body = await response.text();
-        if (path === "/api/service") { if (JSON.parse(body).contract !== 2) throw new Error("Service contract mismatch"); }
+        if (path === "/api/service") { if (JSON.parse(body).contract !== CONTRACT_VERSION) throw new Error("Service contract mismatch"); }
         else if (!body.includes("Tendriller")) throw new Error(`${path}: missing service content`);
         if (path === "/agent.md" && !body.includes(identity.url)) throw new Error("Agent guide points at another environment");
       }

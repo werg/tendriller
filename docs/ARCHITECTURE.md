@@ -1,78 +1,72 @@
-# Core, trusted composition, and contrib
+# Core mechanisms, authored pages and cookbooks
 
-This document is the architecture decision for contract **3** and release **0.3.0-rc.1**. It replaces the pre-release combined package. Existing prototypes are rebuilt; there are no old-client adapters or storage translators.
+Tendriller separates dependable platform behavior from application design. Core is independently buildable. Contrib is a collection of adaptable decision guides, with optional page-owned snippets and deliberately selected trusted references.
 
 ## Ownership and dependency direction
 
-| Surface | Owner | Public dependency |
+| Surface | Owner | Dependency boundary |
 | --- | --- | --- |
-| Authentication, authorization, state, events, blobs, streams, lifecycle | Core engine | Core contract |
-| Browser transport, durable commands, conversation, required controls | Core runtime | Core contract |
-| Workflow records and execution transaction | Core host | Narrow `WorkflowHost` interface |
-| Session workflows, decisions, assignments, private responses, archive/reset | Contrib workflows | `@tendriller/core/host` |
-| CLI, collectors, bridges, preview | Contrib tools | Released SDK/runtime artifacts |
-| Components, recipes, examples | Contrib | Pinned page assets |
-| Deployed selection of reviewed modules | Core `composition/` | Exact contrib workflow archive |
+| Identity, roles, state, events, files, blobs, streams and lifecycle | Core engine | Public core contract |
+| Durable commands, conversation data, sensor tracking and publication readiness | Headless core runtime | Public core contract |
+| Active-use stop and recovery link | Hosted utility | Public browser API |
+| Spoken input/output | Explicit optional runtime adapter | Public conversation, captures and asset URLs |
+| Private records and synchronous atomic operations | Core trusted host | `@tendriller/core/host` |
+| Publication, preview, delivery and collector plumbing | Optional core tools | Built SDK/runtime artifacts |
+| Layout, navigation, domain data and presentation | Authored page | Public browser APIs and ordinary web dependencies |
+| Decisions, alternatives, algorithms and illustrative policies | Contrib cookbooks | Markdown and optional verification against public core artifacts |
+| Installed application-specific server policy | Explicit deployment entry | Reviewed reference plus public engine/host interfaces |
 
-The engine has an empty workflow registry. Only the deployment entry calls `configureWorkflows`. Neither page JSON nor event payloads can add modules. An explicit `/workflows/<module>/<operation>` invocation selects an installed implementation; its permission and precondition checks run before the implementation.
+Core does not download a contrib release, compile a sessions package, or infer a workflow from application JSON. `npm run build` produces an engine with an empty registry. A trusted deployment entry calls `configureWorkflows` with exact reviewed implementations before serving requests. Page code cannot register modules.
 
-`npm run build:engine` needs no contrib installation. `npm run build:service` checks the SHA-256 digest in `composition.lock.json`, extracts the Worker-compatible workflow artifact, and statically compiles it with the engine. CLI and component code never enter that graph. The import-boundary check rejects optional implementation imports in engine code and inspects both build input graphs.
+Build checks reject cookbook, tool and application imports in the Worker or runtime. The kernel graph excludes the rich control, speech engine and domain rule implementation. Operational tools are separately bundled; their dependencies never enter the Worker.
+
+## Public artifacts
+
+| Archive | Package | Purpose |
+| --- | --- | --- |
+| `tendriller-sdk-<version>.tgz` | `@tendriller/core` | Client, wire schema, limits and public browser/host declarations |
+| `tendriller-runtime-<version>.tgz` | `@tendriller/runtime` | Exact browser assets, headless kernel, optional voice and preview primitives |
+| `tendriller-engine-<version>.tgz` | `@tendriller/engine` | Generic Worker, fresh account schema and separate public host test fixture |
+| `tendriller-tools-<version>.tgz` | `@tendriller/tools` | Self-contained optional operational commands and libraries |
+
+Release metadata records exact source, version, contract, runtime identity, sizes and SHA-256 digests. Cookbook snapshots have independent content revisions. A recorded test pairing describes the bytes exercised; it does not create a circular release dependency or install anything for a reader.
+
+The engine's `./testing` entry is a separate fixture bundle. It creates synthetic accounts and exercises the real Worker, authentication, command admission and transactions through public requests. It is excluded from the production Worker input graph. Cookbook checks install the public SDK/engine archives in a temporary directory; they need no private server imports or sibling checkout.
+
+## Browser and UI boundary
+
+Importing `@tendriller/runtime/kernel` mounts nothing and asks for no permissions. `startRuntime` supplies one connection, durable commands, state, streams, conversation records, capture lifecycle, publication identity and capability inspection. The hosted entry starts this kernel and adds only a recovery link plus active-sensor status/stop.
+
+Pages author their own conversation and status presentation. They receive stable message IDs and the distinction between queued, accepted and rejected commands. `conversation.presented(messageId)` acknowledges that the particular agent message was presented; receipt or an open socket does not imply presentation. Voice loads only when a page imports its optional module and explicitly starts the chosen behavior. Voice preferences belong to that adapter rather than a universal core presentation preference.
+
+The recovery route is service-owned HTML, independent of the page runtime. It authorizes the signed-in owner before changing agent connections, guest access or the selected publication. The floating link is convenience, not a security boundary. Selecting a retained publication changes files and preserves application data.
 
 ## One transaction boundary
 
-Platform concurrency fields are outside application data:
+A protected command carries a stable `cid`, an optional opaque scope, original `expected_generations`, and its payload. Scopes are authoritative records with protected paths and operation targets. They are separate from application JSON. Binding changes, reset and retirement deliberately change command meaning and therefore generations.
 
-```json
-{
-  "cid": "persisted-command-id",
-  "scope": "opaque-scope",
-  "expected_generations": { "opaque-scope": "captured-token" },
-  "data": { "type": "job.status", "session": "application value" }
-}
-```
+Admission derives required guards from every overlapping path and operation target. A protected descendant also guards an ancestor write or whole-state replacement. Every supplied guard is checked. Generation tokens are concurrency observations, never access grants.
 
-Scopes are records in authoritative storage, separate from shared state. Each has an opaque ID and generation, protected paths, operation targets, and an optional trusted module owner. Binding registration, rebinding, rotation and retirement are explicit authorized operations. A new binding meaning receives a new token. Retired scope IDs remain tombstoned so queued work cannot silently acquire a new meaning.
+Browser operations, agent HTTP/MCP, capture completion, bundle publication and trusted-module mutations use this admission rule inside the local transaction. Idempotency is keyed by authenticated actor and stable command ID. Reuse with different content rejects; an accepted retry returns its saved result even after later generation rotation. The mutation and result commit together. Broadcasts and notifications run only after commit.
 
-The admission function derives required scopes from operation targets and every changed state path. A protected descendant also guards writes to its ancestors and the whole document. All supplied guards are validated, including guards for a removed scope. A token is a concurrency observation, never an access grant.
-
-Browser state/events, agent HTTP/MCP, capture completion, bundle publication and workflow mutations use this admission rule inside the local transaction. Idempotency is keyed by authenticated actor and stable command ID; reuse with different content is rejected. A repeated accepted command returns its saved result, including after a generation rotation. Storage changes and the command result commit together. Broadcasts and other effects run after commit.
-
-Application state and event payloads have no workflow dispatch semantics. Names such as `experiment`, `notebook`, `guide_progress`, `facilitation`, `session` and `session_id` are ordinary JSON. Validated scope/workflow context is attached separately to accepted events.
-
-## Durable browser work
-
-The browser stores command ID, original scope and captured generation map before applying optimistic state or sending a command. Reconnect and reload reuse this record verbatim. Current authoritative scope metadata filters optimistic reconstruction; an obsolete command cannot obscure a newer session. Rejection remains an explicit result that an application can explain or discard.
-
-A capture records this metadata with its bytes and application payload. Uploading bytes and accepting their event are distinct operations; `capture_complete` performs guarded admission. A familiar `data.type` cannot invoke that operation.
+The browser persists identity, payload and captured guards before optimism or delivery. Reload and reconnect reuse that record. Obsolete work cannot overwrite a newer generation, and a rejection remains observable to page-owned UI. Uploading capture bytes and admitting their event are distinct steps, so a failed command can retain a reviewable draft.
 
 ## Narrow trusted host
 
-`contract/host.d.mts` is the complete server integration interface. A module declares named operations, access policies, input schemas, affected targets and a synchronous `run` function. The host supplies authenticated identity, namespaced records, state access, generation operations, participant identities, blob pinning, event emission and post-commit notifications.
+A module declares its own operation names, schemas, permission policies, implementation identity and scope targets. Its synchronous `run` receives authenticated identity, namespaced bounded records, shared state, explicit scopes, participant identities, media retention and post-commit effects. It receives neither SQL nor the Durable Object.
 
-Modules receive neither the Durable Object nor a database connection. They cannot import server implementation paths. Synchronous operation execution prevents yielding in the middle of the local transaction. Private workflow records do not live in shared page state, and access is checked before returning them.
+Private records stay outside shared state. One record, total record count and aggregate bytes have enforced limits; quota failure rolls back the complete operation. Module-owned scopes rotate or retire when their installed meaning changes. Domain choices such as assignment policy, a summary path, approval expiry and archive contents belong to the selected implementation.
 
-## Public artifacts and release order
+The private-response and exact-proposal cookbooks contain small reference policies. They are not a default sessions product. Their verification uses fresh text-only records. Private-media authorization and retention require a separately established storage policy; a text-record test makes no claim about those bytes.
 
-1. Core publishes `tendriller-sdk-<version>.tgz` (`@tendriller/core`) and `tendriller-runtime-<version>.tgz` (`@tendriller/runtime`). The runtime includes compiled browser code, its content manifest, and public pure state/history primitives.
-2. Contrib installs these exact archives using its lockfile and builds tools, components/catalog and a separate workflow archive.
-3. Core composition pins the workflow archive digest. A release-pair manifest records the tested versions and hashes.
+## Publication and serving contract
 
-`/api/service` describes deployed contract and workflow interface/schema revisions. A contrib tool release is a separate identity: changing a chart or collector does not change an installed workflow interface. Tools check this descriptor before provisioning or writing application data.
+A publication locks complete page files and the current runtime artifact. `publication.base` identifies its immutable root; `publication.entry` identifies its canonical authored HTML entry. The separate `documentPath` identifies the actual requested logical HTML file. Each HTML response inserts a first base URL for that document's encoded directory, so nested pages resolve sibling assets correctly. Asset paths are encoded by segment, including spaces, Unicode and URL punctuation. Publication roots select the canonical entry; explicit nested directory requests select their declared `index.html`. An arbitrary missing route returns 404. Applications may use hash routing or publish explicit route files.
 
-Release assets carry source commit, filename, size, content type and SHA-256. A discovery URL may point to the latest release, but dependency records contain immutable release URLs and hashes.
+An existing author manifest is retained. External dependencies remain an explicit page choice and do not acquire platform offline guarantees. Preview and publication receive the same authored asset set; preview cannot silently supply a missing library.
 
-## Publication and offline asset identity
+The service worker verifies manifest-declared bytes and commits a complete graph before acknowledging `publication.saveOffline()`. HTML is identified by its publication response header because runtime injection changes its bytes. Optional runtime assets are verified when used instead of being fetched by every page. Open tabs stay attached to their publication until an explicit update transition; normal target-system publication retention preserves active work and offline leases.
 
-A page publication locks its core runtime ID at creation. The server manifest lists the complete page files and their hashes, served under `_publications/<publication>/`. Injected HTML has its first base URL set to that immutable directory and loads the exact runtime under `_tendril/runtime/<digest>/`. Components are ordinary vendored page files and resolve siblings within their own asset set.
+## Validation ownership
 
-The service worker caches manifest-declared assets per publication and persists client associations. It verifies asset hashes; injected HTML is identified by the server's `X-Tendril-Publication` header because injection changes the source bytes. Existing tabs retain their graph when a newer publication is available. Active sockets and thirty-day publication leases preserve server files for ordinary offline recovery; local caches retain the publications still associated with clients.
-
-Runtime archives are retained under content-addressed keys in the existing service `FILES` bucket before deployment. The currently bundled artifact is served by `ASSETS`; older publication runtime URLs resolve to the retained immutable object. This uses the existing storage service and does not retain old helper URL aliases.
-
-## Preview boundary
-
-The contrib preview embeds the actual released runtime and imports `@tendriller/runtime/preview-support`. Its fixture socket/transport is a documented runtime boundary. It does not access a private event bus or import private server files. Fixtures explicitly reject unimplemented service operations. Real Worker tests remain authoritative for identity, authorization, quotas and transactions.
-
-## Resource policy
-
-`contract/limits.mjs` owns public state, file, blob, event and stream limits. Server enforcement imports those values; the descriptor exposes them to tools and preview. A larger single retained snapshot uses the same batch and total storage budgets. No policy depends on table names, metric fields or particular applications.
+Core owns protocol, authorization, transaction, runtime and operational-tool tests. Preview simulates explicitly supported operations and rejects the rest. It cannot prove real service privacy, quotas or atomicity. Contrib owns guide metadata, provenance, links, numerical examples, different page adaptations and selected trusted-reference scenarios. See [development](DEVELOPMENT.md), [browser tests](E2E_TESTING.md) and the [protocol](PROTOCOL.md) for executable gates and limits.

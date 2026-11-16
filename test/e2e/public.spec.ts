@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { createHash, randomUUID } from "node:crypto";
+import { createClient } from "../../dist/sdk/client.mjs";
+import { publishAssetGraph } from "./publication-helpers";
 
 type Handle = { id: string; page_url: string; api: string; token: string };
 const base = process.env.E2E_SERVICE_BASE;
@@ -13,26 +14,8 @@ async function makePage(name: string): Promise<Handle> {
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner, mode: "dashboard" }) });
   expect(created.status, await created.clone().text()).toBe(201);
   const handle = await created.json() as Handle;
-  const bytes = Buffer.from(`<!doctype html><html><title>${name}</title><p>${name}</p></html>`);
-  const auth = { Authorization: `Bearer ${handle.token}` };
-  const start = await fetch(`${handle.api}/uploads`, { method: "POST",
-    headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ cid: randomUUID(),
-      sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length, type: "text/html" }) });
-  expect(start.ok, await start.clone().text()).toBeTruthy();
-  const session = await start.json();
-  if (session.upload_required) {
-    const sent = await fetch(`${handle.api}/uploads/${session.id}/content`, { method: "PUT",
-      headers: { ...auth, "Content-Type": "application/octet-stream" }, body: bytes });
-    expect(sent.status, await sent.clone().text()).toBe(204);
-  }
-  const done = await fetch(`${handle.api}/uploads/${session.id}/complete`, { method: "POST", headers: auth });
-  expect(done.ok, await done.clone().text()).toBeTruthy();
-  const blob = (await done.json()).blob;
-  const published = await fetch(`${handle.api}/publications`, { method: "POST",
-    headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ cid: randomUUID(),
-      expected_generations: {}, expected_head_revision: 0, entry: "index.html",
-      files: [{ path: "index.html", blob_id: blob.id, type: "text/html" }] }) });
-  expect(published.ok, await published.clone().text()).toBeTruthy();
+  await publishAssetGraph(createClient(handle), { "index.html": { type: "text/html",
+    body: `<!doctype html><html><title>${name}</title><p>${name}</p></html>` } });
   return handle;
 }
 

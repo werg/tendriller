@@ -1,6 +1,6 @@
 # Streams: delivery and bounded history
 
-Streams are transport-independent envelopes. Core owns admission, permissions, retention, sequence numbers, producer grants and lifecycle. Contrib owns collectors, transforms, visual components and application examples.
+Streams are transport-independent envelopes. Core owns admission, permissions, retention, sequence numbers, producer grants and lifecycle. Optional core tools own collectors and source adapters. Contrib cookbooks explain modeling, transformation and presentation choices for page-owned implementations.
 
 ## Policies
 
@@ -35,7 +35,7 @@ Use `client.streams.read(name,{after})` with an explicit nonnegative cursor. Res
 
 `client.streams.latest(name)` returns the latest retained durable record or null without scanning its whole history. Trimming requires an explicit observed `through` bound and reports the removed count. It does not reset producer identities, quotas or sequence numbers.
 
-In browser code, use `const {record,cursor} = await tendril.streams.latest("telemetry.samples")`, then `tendril.streams.subscribe("telemetry.samples", handler, {after:cursor,onGap})` to avoid missing writes between snapshot and subscription. `tendril.streams.read(name,{after:0})` explicitly reads retained history and `tendril.streams.publish(name,{records})` requires a connected owner. See [Browser API](BROWSER_API.md). In browser code, subscribe through `tendril.streams`; the runtime maintains reconnect cursors and reports replay gaps. Application rendering may aggregate or batch records. Rendering options and reusable chart/view components are documented in [contrib](https://github.com/werg/tendriller-contrib).
+In browser code, use `const {record,cursor} = await tendril.streams.latest("telemetry.samples")`, then `tendril.streams.subscribe("telemetry.samples", handler, {after:cursor,onGap})` to avoid missing writes between snapshot and subscription. `tendril.streams.read(name,{after:0})` explicitly reads retained history and `tendril.streams.publish(name,{records})` requires a connected owner. See [Browser API](BROWSER_API.md). The runtime maintains reconnect cursors and reports replay gaps. Application rendering may aggregate or batch records independently of ingestion. [Cookbooks](https://github.com/werg/tendriller-contrib) explain display budgets, smoothing, honest gaps and checkpoint choices.
 
 ## Authoritative resource policy
 
@@ -68,4 +68,4 @@ Routine telemetry does not need to wake a conversation. Applications can separat
 
 ## Optional tools
 
-[Contrib releases](https://github.com/werg/tendriller-contrib/releases) contain the collector, initialization tools, source adapters, spool manager, components and examples. Their manifests pin the core contract and runtime artifacts they were tested with. A tool update can ship without redeploying the core service.
+[Core tools](tools/COLLECTOR.md) contain the collector, initialization command, source adapters and bounded spool manager. Their archive records its exact core contract and runtime. They are optional Node programs excluded from the Worker dependency graph. Cookbook prose has an independent content revision.

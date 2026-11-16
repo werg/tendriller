@@ -16,7 +16,7 @@ import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
 import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
-import { RESOURCE_LIMITS } from "../../contract/index.mjs";
+import { pruneFileHistory } from "./storage";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
@@ -219,6 +219,8 @@ export class Tendril extends DurableObject<Env> {
           versions: this.db.all("SELECT version, created_at, status, message FROM versions ORDER BY version"),
           version_files: this.db.all("SELECT version, path, hash, type, size FROM version_files ORDER BY version, path"),
           blobs: this.db.all("SELECT id, sha256, type, size, name, ts FROM blobs ORDER BY ts"),
+          file_refs: this.db.all("SELECT * FROM file_refs ORDER BY path"),
+          publication_blobs: this.db.all("SELECT * FROM publication_blobs ORDER BY version,path"),
           stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
         });
         if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
@@ -921,7 +923,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   reserveStoredFile(hash: string, size: number, riskScore: number): boolean {
-    if (this.db.one("SELECT 1 AS x FROM stored_files WHERE hash = ?", hash)) return false;
+    const stored = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=?", hash);
+    if (stored) {
+      if (stored.size !== size) throw new HttpError(422, "digest_size_mismatch", "Stored content has a different size");
+      return false;
+    }
     this.checkLocalStorage(size);
     this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score, status) VALUES (?, ?, ?, ?, 'writing')",
       hash, size, this.now(), riskScore);
@@ -963,7 +969,7 @@ export class Tendril extends DurableObject<Env> {
     return blobReference(this, id);
   }
 
-  async getBlob(id: string, rangeHeader?: string | null, head = false): Promise<Response> {
+  async getBlob(id: string, rangeHeader?: string | null, head = false, inline = false): Promise<Response> {
     const row = this.db.one<{ type: string; name: string | null; size: number }>("SELECT type, name, size FROM blobs WHERE id = ?", id);
     if (!row) throw new HttpError(404, "not_found", "No such blob");
     let range: { offset: number; length: number } | undefined;
@@ -978,9 +984,13 @@ export class Tendril extends DurableObject<Env> {
     }
     const obj = await this.env.FILES.get(this.blobKey(id), range ? { range } : undefined);
     if (!obj || !("body" in obj)) throw new HttpError(404, "not_found", "Blob content missing");
+    const filename = encodeURIComponent(new TextDecoder().decode(new TextEncoder().encode(row.name || id)))
+      .replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
     const headers = new Headers({ "Content-Type": row.type || "application/octet-stream",
       "Cache-Control": "private, max-age=31536000, immutable", "Accept-Ranges": "bytes",
-      "Content-Length": String(range?.length ?? row.size) });
+      "Content-Length": String(range?.length ?? row.size), "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${filename}`,
+      "Content-Security-Policy": "default-src 'none'; sandbox" });
     if (range) headers.set("Content-Range", `bytes ${range.offset}-${range.offset + range.length - 1}/${row.size}`);
     return new Response(head ? null : obj.body, { status: range ? 206 : 200, headers });
   }
@@ -988,46 +998,48 @@ export class Tendril extends DurableObject<Env> {
   async deleteBlob(id: string): Promise<void> {
     const hash = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id)?.sha256;
     if (this.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id) ||
-        this.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? AND updated_at>=? LIMIT 1", id,
-          this.now() - RESOURCE_LIMITS.file_history_seconds * 1000) ||
+        this.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? LIMIT 1", id) ||
         this.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) return;
+    if (this.db.get<{ media: string[] } | null>("staged_bundle", null)?.media.includes(id)) return;
     this.db.run("DELETE FROM blobs WHERE id = ?", id);
     if (hash) await deleteUnreferencedContent(this, hash);
   }
 
   // ---------------------------------------------------------------- transcript, say, notify
 
-  addTranscript(src: "agent" | "user", text: string): number {
-    return this.transaction(() => this.appendTranscript(src, text));
+  addTranscript(src: "agent" | "user", text: string, context: { cid?: string; device?: string; in_reply_to?: number | null } = {}) {
+    return this.transaction(() => this.appendTranscript(src, text, context));
   }
 
-  private appendTranscript(src: "agent" | "user", text: string): number {
-    const ts = this.now();
-    const row = this.db.one<{ seq: number }>("INSERT INTO transcript (ts, src, text) VALUES (?, ?, ?) RETURNING seq", ts, src, text.slice(0, 4000));
+  private appendTranscript(src: "agent" | "user", text: string, context: { cid?: string; device?: string; in_reply_to?: number | null }) {
+    const ts = this.now(), message_id = crypto.randomUUID();
+    const row = this.db.one<{ seq: number }>("INSERT INTO transcript (message_id, ts, src, text, cid, device, in_reply_to) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq",
+      message_id, ts, src, text.slice(0, 4000), context.cid ?? null, context.device ?? null, context.in_reply_to ?? null);
     this.db.run("DELETE FROM transcript WHERE seq <= (SELECT seq FROM transcript ORDER BY seq DESC LIMIT 1 OFFSET ?)", MAX_TRANSCRIPT);
     emitBuiltinRecord(this, "system.transcript", row!.seq);
-    return ts;
+    return { message_id, ts, from: src, text: text.slice(0, 4000), ...context };
   }
 
   transcript() {
     return this.db
-      .all<{ ts: number; src: string; text: string }>("SELECT * FROM (SELECT * FROM transcript ORDER BY seq DESC LIMIT 50) ORDER BY seq ASC")
-      .map((r) => ({ ts: r.ts, from: r.src as "agent" | "user", text: r.text }));
+      .all<{ message_id: string; ts: number; src: string; text: string; cid: string | null; device: string | null; in_reply_to: number | null }>("SELECT * FROM (SELECT * FROM transcript ORDER BY seq DESC LIMIT 50) ORDER BY seq ASC")
+      .map((r) => ({ message_id: r.message_id, ts: r.ts, from: r.src as "agent" | "user", text: r.text,
+        ...(r.cid ? { cid: r.cid } : {}), ...(r.device ? { device: r.device } : {}), ...(r.in_reply_to !== null ? { in_reply_to: r.in_reply_to } : {}) }));
   }
 
   say(text: string, speak: boolean, by: string | null, replyTo: number | null = null, routing: { device?: string; speak_on?: string } = {}): string {
     if (routing.device && routing.device !== "all" && !this.device(routing.device)) throw new HttpError(404, "not_found", "No such destination device");
     const origin = replyTo ? this.db.one<{ device: string | null }>("SELECT device FROM events WHERE seq=?", replyTo)?.device : null;
     const speaker = speak ? speechTarget(this, routing.speak_on, routing.device && routing.device !== "all" ? routing.device : origin) : null;
-    const ts = this.addTranscript("agent", text);
-    const messageId = crypto.randomUUID();
+    const entry = this.addTranscript("agent", text, { in_reply_to: replyTo });
+    const messageId = entry.message_id;
     const sockets = this.deviceSockets();
     for (const { ws, att } of this.connectedSockets()) {
       const present = !routing.device || routing.device === "all" || att.deviceId === routing.device;
       const play = att.deviceId === speaker && sockets.get(att.deviceId) === ws;
       if (!present && !play) continue;
       this.send(ws, { t: "say", text, present, speak: play,
-        ts, message_id: messageId, in_reply_to: replyTo, speak_on: speaker });
+        ts: entry.ts, message_id: messageId, ...(replyTo !== null ? { in_reply_to: replyTo } : {}), ...(speaker !== null ? { speak_on: speaker } : {}) });
     }
     addActivity(this, { kind: "say", summary: `Message ${messageId}${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
     return messageId;
@@ -1211,18 +1223,9 @@ export class Tendril extends DurableObject<Env> {
     pruneActivity(this);
     pruneMcpSubs(this);
     pruneTimerHistory(this);
-    const expiredUploads = this.db.all<{ id: string; blob_id: string; phase: string }>(
-      "SELECT id,blob_id,phase FROM upload_sessions WHERE expires_at < ?", now);
-    for (const upload of expiredUploads) {
-      this.db.run("DELETE FROM upload_sessions WHERE id=?", upload.id);
-      if (upload.phase !== "completed") await this.deleteBlob(upload.blob_id);
-    }
-    this.db.run(`DELETE FROM file_ref_changes WHERE cursor IN (
-      SELECT cursor FROM (SELECT cursor,updated_at,
-        ROW_NUMBER() OVER (PARTITION BY path ORDER BY cursor DESC) AS rank FROM file_ref_changes)
-      WHERE rank > ? OR updated_at < ?)`, RESOURCE_LIMITS.file_history, now - RESOURCE_LIMITS.file_history_seconds * 1000);
-    await this.pruneBlobs(now);
+    this.transaction(() => pruneFileHistory(this));
     await this.pruneVersions();
+    await this.pruneBlobs(now);
     await this.pruneOrphanFiles(now);
     await this.reconcileStorage();
     this.db.run("DELETE FROM dedupe WHERE ts < ?", now - DEDUPE_RETENTION);
@@ -1236,12 +1239,12 @@ export class Tendril extends DurableObject<Env> {
   }
 
   /**
-   * Photos, clips and other page uploads expire with the activity record (30 days). Agent
-   * uploads, explicitly kept captures and the install icon stay until deleted explicitly.
+   * Unreferenced uploads expire after 30 days. Pins, the install icon, retained file
+   * history and publication references retain their bytes until those roots are removed.
    */
   async pruneBlobs(now: number): Promise<void> {
     const icon = this.db.get<string | null>("icon", null);
-    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE source = 'page' AND pinned = 0 AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
+    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE pinned = 0 AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
     for (const { id } of old) await this.deleteBlob(id);
   }
 
@@ -1262,10 +1265,10 @@ export class Tendril extends DurableObject<Env> {
     if (drop.length === 0) return;
     const before = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     for (const v of drop) {
-      this.db.run("DELETE FROM publication_blobs WHERE version = ?", v);
       this.db.run("DELETE FROM version_files WHERE version = ?", v);
       this.db.run("DELETE FROM versions WHERE version = ?", v);
       this.db.run("DELETE FROM publication_leases WHERE version = ?", v);
+      this.db.run("DELETE FROM publication_blobs WHERE version = ?", v);
     }
     const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);

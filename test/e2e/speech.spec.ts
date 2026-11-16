@@ -1,12 +1,13 @@
+import { voicePage } from "./authored-pages";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { test, expect } from "@playwright/test";
-import { agent, createPage, deletePage, openClaimed, signInFixture } from "./local-helpers";
+import { agent, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 test("speech Worker passes model length as bigint to an i64 WASM export", async ({ page }) => {
-  const source = await readFile("dist/runtime/assets/speech-worker.js", "utf8");
+  const source = await readFile("dist/runtime/assets/voice-worker.js", "utf8");
   const wasm = new Uint8Array([1, 2, 3]);
   const model = new Uint8Array([4, 5, 6, 7]);
   await page.goto("https://service.localhost:8790/health");
@@ -44,7 +45,7 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
       (window as any).Worker = class {
         onmessage: ((event: MessageEvent) => void) | null = null;
         onerror: ((event: ErrorEvent) => void) | null = null;
-        constructor(url: string | URL) { if (!String(url).includes("speech-worker.js")) return new NativeWorker(url) as any; }
+        constructor(url: string | URL) { if (!String(url).includes("voice-worker.js")) return new NativeWorker(url) as any; }
         postMessage(msg: any) {
           if (msg.action === "transcribe") (window as any).__speechE2E.transcribes++;
           queueMicrotask(() => this.onmessage?.({ data: msg.action === "init" ? { id: msg.id, ready: true } : { id: msg.id, text: "recognized voice" } } as MessageEvent));
@@ -59,14 +60,15 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
         }
       };
     });
+    await publish(h, voicePage);
     await signInFixture(context);
     await openClaimed(page, h);
+    await page.waitForFunction(() => !!(window as any).voice);
     const warnings: string[] = [];
     page.on("console", message => { if (message.type() === "warning") warnings.push(message.text()); });
-    const mic = page.locator('[data-tendril="control"] .mic').first();
+    const mic = page.locator("#record");
     await expect(mic).toBeVisible();
     await mic.click();
-    await page.getByRole("button", { name: "Download and continue" }).click();
     await expect(mic).toHaveAttribute("aria-pressed", "true");
     await mic.click();
     await expect.poll(async () => (await page.evaluate(() => (window as any).__speechE2E)).transcribes).toBe(1);
