@@ -72,7 +72,8 @@ export async function exportBundle(t: Tendril, includeData: boolean): Promise<Po
   // state edits must not reference media that was absent from this export.
   const version = servedVersion(t);
   const fileRows = versionFiles(t, version);
-  const mediaRows = includeData ? t.db.all<{ id: string; type: string; name: string | null }>("SELECT id, type, name FROM blobs ORDER BY id") : [];
+  const mediaRows = includeData ? t.db.all<{ id: string; type: string; name: string | null }>(
+    "SELECT id,type,name FROM blobs WHERE id NOT IN (SELECT blob_id FROM publication_blobs) ORDER BY id") : [];
   const brief = structuredClone(t.db.get<SessionBrief>("session_brief", EMPTY_BRIEF));
   const state = structuredClone(t.getState().state);
   const name = t.db.get("name", "Tendril");

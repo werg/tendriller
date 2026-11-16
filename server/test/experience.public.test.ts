@@ -5,9 +5,9 @@ import { sha256Hex } from "../src/ids";
 import { deleteTimer, nextDaily, runTimers, saveTimer } from "../src/timers";
 import { addEvent } from "../src/events";
 import { exportBundle } from "../src/portability";
-import { fileKey } from "../src/files";
+import { createVersion, fileKey } from "../src/files";
 import { KEEP_VERSIONS } from "../src/limits";
-import { api, apiJson, advance, inDO, PageClient, req, type Handle } from "./helpers";
+import { api, apiJson, advance, inDO, PageClient, publishTestFiles, req, uploadAgent, type Handle } from "./helpers";
 
 beforeAll(async () => {
   await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations"));
@@ -30,6 +30,11 @@ async function setup() {
   const page = (path: string, method = "GET", body?: unknown, url = handle.page_url, useCookie = cookie) => req(url + "_tendril/" + path, {
     method, headers: { Cookie: useCookie, Origin: new URL(url).origin, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { handle, account, cookie, origin, page };
+}
+async function currentHtml(h: Handle) {
+  const hash = await inDO(h.id, t => t.db.one<{ hash: string }>(
+    "SELECT hash FROM version_files WHERE version=? AND path='index.html'", t.db.get("current", 0))!.hash);
+  return (await env.FILES.get(`t/${h.id}/files/${hash}`))!.text();
 }
 async function listener(h: Handle) {
   const response = await api(h, "GET", "events/socket", undefined, { Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}` });
@@ -117,9 +122,8 @@ it("daily recurrence respects IANA time zones, DST gaps and repeated times", () 
 
 it("preserves context, restores bundles with rewritten media, and refuses stale publication", async () => {
   const { handle: h, page } = await setup(); const socket = await listener(h);
-  const blobResponse = await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" });
-  const blob = await blobResponse.json<any>(); expect(blobResponse.status).toBe(200);
-  await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blob/${blob.id}">Asset</a>` } });
+  const blob = await uploadAgent(h, "asset", "text/plain");
+  await publishTestFiles(h, { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blobs/${blob.id}">Asset</a>` } });
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { notebook: { asset: blob.id }, _device: { old: { secret: "do not copy" } } } });
   await apiJson(h, "PUT", "session", { purpose: "Observe the garden", current_task: "Compare leaves", open_questions: ["What changed?"], completed: [], decisions: [], last_handled_seq: 0 });
   expect((await api(h, "PUT", "session", { purpose: "Stale context", expected_revision: 0 })).status).toBe(409);
@@ -138,7 +142,7 @@ it("preserves context, restores bundles with rewritten media, and refuses stale 
 
 it("remix creates an independent unpublished copy and preserves the listener gate", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>A reusable tool</h1>" } });
+  await publishTestFiles(h, { files: { "index.html": "<h1>A reusable tool</h1>" } });
   const copy = await apiJson(h, "POST", "remix", { owner: "new-owner@example.com", name: "My new copy" }, 201);
   expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token); expect(copy.remix.staged).toBe(true);
   expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(428);
@@ -157,7 +161,7 @@ it("validates bundle paths before writing and blocks publishing without review",
 
 it("stages an unchanged bundle at the page storage limit", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Keep this page</h1>" } });
+  await publishTestFiles(h, { files: { "index.html": "<h1>Keep this page</h1>" } });
   const bundle = await apiJson(h, "GET", "bundle");
   await inDO(h.id, t => {
     const used = t.storageUsed();
@@ -220,20 +224,25 @@ it("keeps prepared files through orphan cleanup and later publishes them", async
   await advance(h.id, 2 * 3600000);
   await inDO(h.id, t => t.pruneOrphanFiles(t.now()));
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Prepared yesterday");
+  expect(await currentHtml(h)).toContain("Prepared yesterday");
   socket.close();
 });
 
 it("protects a prepared hash when its old published version is pruned", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Restore this older page</h1>" } });
+  await publishTestFiles(h, { files: { "index.html": "<h1>Restore this older page</h1>" } });
   const bundle = await apiJson(h, "GET", "bundle");
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  for (let n = 0; n < KEEP_VERSIONS; n++) await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Revision ${n}</h1>` } });
+  for (let n = 0; n < KEEP_VERSIONS; n++) await inDO(h.id, async t => {
+    const bytes = new TextEncoder().encode(`<h1>Revision ${n}</h1>`);
+    await t.storeBlob(bytes.buffer as ArrayBuffer, "text/html", null, null, "agent");
+    await createVersion(t, new Map([["index.html", { path: "index.html", hash: await sha256Hex(bytes),
+      size: bytes.byteLength, type: "text/html" }]]), null, "test");
+  });
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("Restore this older page");
+  expect(await currentHtml(h)).toContain("Restore this older page");
   socket.close();
 });
 
@@ -256,15 +265,15 @@ it.each(["file", "media"])("refuses publication if prepared %s bytes are missing
 
 it("exports one logical data snapshot while new captures arrive during media reads", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
-  await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Notebook</h1>" } });
-  const original = await (await api(h, "PUT", "blobs", "old media", { "Content-Type": "text/plain" })).json<any>();
+  await publishTestFiles(h, { files: { "index.html": "<h1>Notebook</h1>" } });
+  const original = await uploadAgent(h, "old media", "text/plain");
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { asset: original.id } });
   await apiJson(h, "PUT", "session", { purpose: "Original context" });
   const bundle = await inDO(h.id, async t => {
     let changed = false;
     const exporting = { db: t.db, tid: t.tid, blobKey: (id: string) => t.blobKey(id), getState: () => t.getState(), env: { ...t.env, FILES: {
       get: async (key: string) => {
-        if (!changed && key.includes("/blobs/")) {
+        if (!changed && key === t.blobKey(original.id)) {
           changed = true;
           const next = await t.storeBlob(new TextEncoder().encode("new media").buffer as ArrayBuffer, "text/plain", "new.txt", null, "agent");
           t.db.set("state", { asset: next.id });

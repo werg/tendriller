@@ -129,10 +129,10 @@ export async function uploadAgent(h: Handle, value: string | Uint8Array, type = 
 }
 
 export async function uploadPage(h: Handle, value: string | Uint8Array, type = "application/octet-stream", name?: string,
-  device?: PageClient): Promise<any> {
-  const ownDevice = device ?? await PageClient.connect(h.page_url);
+  device?: PageClient, sessionHeaders: Record<string, string> = {}): Promise<any> {
+  const ownDevice = device ?? await PageClient.connect(h.page_url, { headers: sessionHeaders });
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
-  const headers = { "X-Tendril-Device": ownDevice.deviceId, "X-Tendril-Device-Secret": ownDevice.secret };
+  const headers = { ...sessionHeaders, "X-Tendril-Device": ownDevice.deviceId, "X-Tendril-Device-Secret": ownDevice.secret };
   try {
     const started = await req(h.page_url + "_tendril/uploads", { method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
