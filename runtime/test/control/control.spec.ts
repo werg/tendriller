@@ -498,3 +498,43 @@ test('prepared-copy publishing sends stable command preconditions and retries th
   expect(posts[0].cid).toMatch(/^[0-9a-f-]{36}$/);
   await expect(page.getByText('Prepared copy published.')).toBeVisible();
 });
+
+test("owner enables and tests push notifications in the embedded device menu", async ({ page }) => {
+  await load(page, { push: true });
+  await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
+  await page.getByText("Device notifications", { exact: true }).click();
+  const toggle = page.getByRole("checkbox", { name: "Allow agent alerts on this device" });
+  const testButton = page.getByRole("button", { name: "Send test notification" });
+  await expect(toggle).not.toBeChecked();
+  await expect(testButton).toBeDisabled();
+  await toggle.check();
+  await expect(toggle).toBeChecked();
+  await expect(testButton).toBeEnabled();
+  await testButton.click();
+  await expect(page.getByText("Push service accepted the test. Check this device's notifications.")).toBeVisible();
+  expect((await calls(page)).request.some((call: any) => call.t === "push_test")).toBe(true);
+  await toggle.uncheck();
+  await expect(toggle).not.toBeChecked();
+  await expect(testButton).toBeDisabled();
+});
+
+test("a transient status error does not flip a successful notification opt-in off", async ({ page }) => {
+  await load(page, { push: true, pushStatusFailsAfterSubscribe: true });
+  await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
+  await page.getByText("Device notifications", { exact: true }).click();
+  const toggle = page.getByRole("checkbox", { name: "Allow agent alerts on this device" });
+  await toggle.check();
+  await expect(toggle).toBeChecked();
+  await expect(page.getByRole("button", { name: "Send test notification" })).toBeEnabled();
+});
+
+test("the common device menu explains when off-page notifications cannot be enabled", async ({ page }) => {
+  await load(page);
+  await openSheet(page);
+  await page.getByRole("tab", { name: "Settings and history", exact: true }).click();
+  await page.getByText("Device notifications", { exact: true }).click();
+  await expect(page.getByText("Notifications are not supported here.", { exact: false })).toBeVisible();
+  await expect(page.getByText(/Home Screen/)).toBeVisible();
+});

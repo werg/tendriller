@@ -179,6 +179,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const body = {
       name,
       short_name: meta.short_name ?? name.slice(0, 12),
+      id: base,
       start_url: base,
       scope: base,
       display: "standalone",

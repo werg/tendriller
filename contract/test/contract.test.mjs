@@ -48,6 +48,27 @@ test("client keeps explicit cursor, validates writes and returns actionable erro
   await assert.rejects(denied.info(), error => error instanceof ApiError && error.status === 428 && error.code === "listener_required" && error.message === "Attach this conversation");
 });
 
+test("agent SDK checks push readiness and sends notifications without a live page", async () => {
+  const calls = [];
+  const response = { sent: 1, failed: 0, deliveries: [{ device: "d_owner", ok: true, status: 201, gone: false }] };
+  const readiness = { available: true, subscribed_devices: [{ id: "d_owner", name: "Phone" }],
+    count: 1, quota: { limit: 20, used: 0, remaining: 20 } };
+  const client = createClient({ api: "https://service.example/api/t/abc", token: "tk_test" }, {
+    fetch: async (url, init) => {
+      calls.push({ url, method: init.method, headers: init.headers, body: init.body ? JSON.parse(init.body) : null });
+      return new Response(JSON.stringify(init.method === "POST" ? response : readiness));
+    },
+  });
+  assert.deepEqual(await client.notificationStatus(), readiness);
+  assert.deepEqual(await client.notify({ title: "Done", body: "Ready to review", device: "d_owner", tag: "run-1" }), response);
+  assert.deepEqual(calls.map(c => [c.method, c.url]), [
+    ["GET", "https://service.example/api/t/abc/notify"],
+    ["POST", "https://service.example/api/t/abc/notify"],
+  ]);
+  assert.equal(calls[1].headers.Authorization, "Bearer tk_test");
+  assert.deepEqual(calls[1].body, { title: "Done", body: "Ready to review", device: "d_owner", tag: "run-1" });
+});
+
 test("experience write contracts preserve revision checks, roles and bounded schedules", () => {
   assert.equal(validate("sessionWrite", { current_task: "Review readings", expected_revision: 2 }).length, 0);
   assert.ok(validate("sessionWrite", { expected_revision: -1 }).length);

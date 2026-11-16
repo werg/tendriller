@@ -444,11 +444,11 @@ class Control {
       this.section("guest-invites", "Guest invitations", icon("link"), p => void this.loadGuestInvites(p)));
     u.sharePanel.append(u.ownerSections);
     u.ownerSettings = h("div", null,
+      this.section("notify", "Device notifications", icon("bell"), p => void this.renderNotify(p)),
       this.section("experiences", "Saved work and timers", icon("scheduled"), p => mountExperienceSettings(p, this.core)),
       this.section("versions", "Earlier versions", icon("undo"), p => void this.loadVersions(p)),
       this.section("activity", "Activity record", icon("bell"), p => void this.loadActivity(p)),
-      this.section("budget", "Wake limits", icon("scheduled"), p => this.renderBudget(p)),
-      this.section("notify", "Notifications", icon("bell"), p => void this.renderNotify(p)));
+      this.section("budget", "Wake limits", icon("scheduled"), p => this.renderBudget(p)));
     u.settingsPanel.append(u.ownerSettings);
     u.prefsSection = this.section("prefs", "Display and sound", icon("text"), p => this.renderPrefs(p)); u.settingsPanel.append(u.prefsSection);
     u.settingsPanel.append(this.section("report", "Report this page", icon("bell"), p => {
@@ -1085,26 +1085,70 @@ class Control {
   private async renderNotify(panel: HTMLElement) {
     const push = registry.push;
     if (!push?.available) {
-      clear(panel, h("p", { class: "muted", text: "Notifications aren't available here. On iPhone and iPad they work only after adding the page to the home screen." }));
+      clear(panel,
+        h("p", { class: "muted", text: push?.reason || "Notifications are not supported here. They require a secure page, browser support and server configuration." }),
+        h("p", { class: "muted", text: "On iPhone or iPad, add this page to the Home Screen and open it there to enable notifications." }));
       return;
     }
-    let on = false;
-    try { on = await push.subscribed(); } catch { /* ignore */ }
-    const msg = h("p", { class: "muted", "aria-live": "polite" });
-    const box = h("input", {
-      type: "checkbox", checked: on, onchange: async () => {
-        const want = (box as HTMLInputElement).checked;
-        try {
-          if (want) { const ok = await push.subscribe(); (box as HTMLInputElement).checked = ok; msg.textContent = ok ? "Notifications are on." : "Notifications were not allowed."; }
-          else { await push.unsubscribe(); msg.textContent = "Notifications are off."; }
-        } catch { (box as HTMLInputElement).checked = !want; msg.textContent = "Couldn't change notifications."; }
-      },
-    });
+    const msg = h("p", { class: "muted", role: "status", "aria-live": "polite", text: "Checking this device…" });
+    const test = h("button", { type: "button", class: "btn", disabled: true, onclick: async () => {
+      (test as HTMLButtonElement).disabled = true;
+      msg.textContent = "Sending a test notification…";
+      try {
+        const result = await push.test();
+        if (!active()) return;
+        msg.textContent = result.sent > 0
+          ? "Push service accepted the test. Check this device's notifications."
+          : result.reason === "not_subscribed" ? "Subscribe on this device before testing."
+            : `The test was not accepted (status ${result.status ?? "unknown"}). Check browser and server settings.`;
+      } catch (error: any) { if (active()) msg.textContent = error?.message || "Test notification failed."; }
+      finally { if (active()) test.disabled = !box.checked; }
+    } }, "Send test notification") as HTMLButtonElement;
+    const box = h("input", { type: "checkbox", disabled: true, onchange: async () => {
+      const wanted = (box as HTMLInputElement).checked;
+      (box as HTMLInputElement).disabled = true;
+      test.disabled = true;
+      msg.textContent = wanted ? "Requesting notification permission and registering…" : "Turning notifications off…";
+      try {
+        if (wanted) {
+          // Must run from this change gesture so browsers allow the permission prompt.
+          const ok = await push.subscribe();
+          if (!active()) return;
+          box.checked = ok;
+          msg.textContent = ok ? "Notifications enabled on this device." :
+            push.reason || "Could not register. Check permission and connection, then try again.";
+        } else {
+          await push.unsubscribe();
+          if (!active()) return;
+          box.checked = false;
+          msg.textContent = "Notifications disabled on this device.";
+        }
+      } catch (error: any) {
+        if (!active()) return;
+        box.checked = !wanted;
+        msg.textContent = error?.message || "Could not change notification settings.";
+      }
+      const state = await push.status().catch(() => null);
+      if (!active()) return;
+      if (state) box.checked = state.subscribed;
+      box.disabled = false;
+      test.disabled = state ? !state.registered : !box.checked;
+      if (state?.reason) msg.textContent = state.reason;
+    } }) as HTMLInputElement;
     clear(panel,
-      h("label", { class: "switch" }, box, "Let the agent notify this device"),
-      h("p", { class: "muted", text: "For example when a job needs your decision." }),
-      msg,
-    );
+      h("label", { class: "switch" }, box, "Allow agent alerts on this device"),
+      h("p", { class: "muted", text: "Agents and timers can alert this device while the page is closed. You choose on each device; the browser and operating system control delivery." }),
+      test, msg);
+    const active = () => panel.isConnected && panel.contains(box);
+    try {
+      const state = await push.status();
+      if (!active()) return;
+      box.checked = state.subscribed;
+      test.disabled = !state.registered;
+      msg.textContent = state.reason || (state.registered ? "Ready for agent notifications, even with the page closed." :
+        state.subscribed ? "Enabled locally; waiting for server registration." : "Notifications are off on this device.");
+    } catch { if (active()) msg.textContent = "Cannot check notification status at the moment."; }
+    finally { if (active()) box.disabled = false; }
   }
 }
 

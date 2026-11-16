@@ -66,7 +66,17 @@ const core: Core = {
 
 if (opts.push) {
   let sub = false;
-  registry.push = { available: true, subscribed: async () => sub, subscribe: async () => (sub = true), unsubscribe: async () => { sub = false; } };
+  registry.push = {
+    available: true,
+    subscribed: async () => sub,
+    status: async () => {
+      if (opts.pushStatusFailsAfterSubscribe && sub) throw new Error("temporary status failure");
+      return { permission: "granted", subscribed: sub, registered: sub };
+    },
+    subscribe: async () => (sub = true),
+    unsubscribe: async () => { sub = false; },
+    test: async () => { calls.request.push({ t: "push_test" }); return { sent: 1, failed: 0, status: 201 }; },
+  };
 }
 
 const api = mountControl(core);

@@ -7,13 +7,13 @@ Tendriller connects an authenticated page to an agent through shared state, even
 Fetch `GET https://tendriller.dev/api/service` before creating a page. It returns `contract`, `core_release`, installed `workflows` (each with independent `interface_version` and `schema_version`), and effective `limits`. Check requirements from the chosen tool or page manifest. Device/browser capabilities are a separate endpoint and do not describe installed server modules.
 
 - [Core SDK and runtime archives](https://github.com/werg/tendriller/releases)
-- [Contrib release catalogs and compatibility metadata](https://github.com/werg/tendriller-contrib/releases)
+- [Tested contrib catalog, 0.2.0-rc.2](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.2/catalog.json)
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Contrib immutable release assets](https://github.com/werg/tendriller-contrib/releases)
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)
 - [CLI, collector, preview and examples](https://github.com/werg/tendriller-contrib)
 
-**Do not assume a contrib release uses the currently deployed core release**: verify its recorded `core_release` / `requires` and the service descriptor. The release index includes release candidates. Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
+**Confirm contrib compatibility with `GET /api/service` rather than relying on version-number equality.** The pinned contrib rc.2 catalog is the current tested pairing for core rc.4; future releases have their own immutable manifests. The release index includes release candidates. Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
 
 ## Create and establish delivery
 
@@ -26,7 +26,9 @@ Content-Type: application/json
 {"owner":"owner@example.test","name":"My page","mode":"interactive"}
 ```
 
-Save the returned handle (`id`, `api`, `token`, `page_url`) in private host storage. `api` is the page's agent API base, called `A` below. Send `Authorization: Bearer <token>` for agent operations. Give the person only `page_url`. **The human owner must open it in a visible browser tab and sign in** with the verified owner identity to claim it; an agent token or a server-side request cannot claim on their behalf. The page key is not a login credential. The response's `expires_at` is an absolute Unix-millisecond deadline. Until claimed, an `ad_hoc` page expires 24 hours after creation (or release of an earlier claim), even if a collector keeps publishing. After claim, an `ad_hoc` page expires after 24 hours of inactivity; use `PATCH A` with `{"lifetime":"resident"}` after owner claim to retain it. The creation response also returns `next_step`.
+Save the returned handle (`id`, `api`, `token`, `page_url`) in private host storage. `api` is the page's agent API base, called `A` below. Send `Authorization: Bearer <token>` for agent operations. Give the person only `page_url`. **The human owner must open it in a visible tab and sign in with the verified owner identity** to claim it. The agent token and page key cannot sign in for the owner. `expires_at` is an absolute Unix-millisecond timestamp. An unclaimed ad_hoc page expires after 24 hours even if a collector is publishing; once claimed, ad_hoc expires after 24 hours of inactivity. After claim, `PATCH A` with `{"lifetime":"resident"}` for a long-lived page. The creation response also provides a `next_step`.
+
+To notify the owner even when the page is closed, configure Web Push on the service and have each owner device opt in through the embedded control. Use authenticated `GET A/notify` to inspect readiness and quota, then `POST A/notify` with `title`, optional `body`, `device`, `url`, and `tag`. The MCP tools are `notification_status` and `notify`. See [Web Push setup and usage](docs/PUSH_NOTIFICATIONS.md). Push notifications are distinct from the agent wake listener: delivering a notification does not resume an agent conversation.
 
 For an interactive page, attach a host receiver before publishing. Read `GET A/events?after=<handled-sequence>&wait=300` and continue after every response, or keep an authenticated agent socket connected at `A/events/socket`. A receiver must actually resume the intended agent conversation; a background poll that merely saves data does not establish that behavior. First publication returns `428 listener_required` when delivery has not been established.
 

@@ -4,7 +4,7 @@ import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 2;
-export const CORE_RELEASE = "0.2.0-rc.2";
+export const CORE_RELEASE = "0.2.0-rc.4";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);

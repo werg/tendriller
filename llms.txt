@@ -9,7 +9,7 @@ Application-neutral pages connected to agents. Core contract 2; application stat
 - [Contract schema](https://tendriller.dev/contract/v2.json): executable public wire schema.
 - [Protocol](https://tendriller.dev/docs/PROTOCOL.md): authority, generation preconditions and transaction semantics.
 - [Streams](https://tendriller.dev/docs/STREAMS.md): transport-independent delivery and resource policy.
-- [Browser API](https://tendriller.dev/docs/BROWSER_API.md): `tendril.send`, `on`, state, streams, subscriptions, captures and lifecycle.
+- [Browser API](https://tendriller.dev/docs/BROWSER_API.md): `tendril.send`, `on`, state, streams, subscriptions, and captures.
 - [Captures](https://tendriller.dev/docs/CAPTURES.md): durable media and event completion.
 - [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md): ownership, artifacts, composition and publication coherence.
 - [Core releases](https://github.com/werg/tendriller/releases): SDK and runtime/support archives.
@@ -17,7 +17,7 @@ Application-neutral pages connected to agents. Core contract 2; application stat
 ## Optional tools, components and workflows
 
 - [Contrib](https://github.com/werg/tendriller-contrib): CLI, collectors, bridges, complete preview, components, recipes and examples.
-- [Versioned contrib catalogs](https://github.com/werg/tendriller-contrib/releases): select the catalog and manifest from a release whose declared requirements match `/api/service`; do not infer compatibility from a matching version string.
+- [Tested contrib catalog](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.2/catalog.json): tools/components/examples with requirements, files and hashes for the recorded 0.2.0-rc.2 pairing.
 - [Release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases): machine-readable releases, including candidates, with immutable catalog and manifest download URLs.
 - [Contrib releases](https://github.com/werg/tendriller-contrib/releases): installable tools, standalone commands, static bundles and trusted workflow archives.
 
