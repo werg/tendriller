@@ -20,7 +20,8 @@ try {
   else {
     if (!file) throw Object.assign(new Error(usage), { exit: 64 });
     const [command = "pending", sequence] = args;
-    if (!["pending", "ack", "send"].includes(command) || args.length !== (command === "ack" ? 2 : 1)
+    if (!["pending", "ack", "send"].includes(command)
+      || (command === "pending" ? args.length > 1 : args.length !== (command === "ack" ? 2 : 1))
       || (command === "send" && !flags.wake)) throw Object.assign(new Error(usage), { exit: 64 });
     for (const flag of Object.keys(flags)) {
       if (!["limit", "checkpoint-file", "pretty", "wake"].includes(flag)
