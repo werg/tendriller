@@ -69,6 +69,8 @@ export async function deleteUnreferencedContent(t: Tendril, hash: string, olderT
       const stored = t.db.one<{ size: number; created_at: number }>('SELECT size,created_at FROM stored_files WHERE hash=?', hash);
       if (!stored || (olderThan !== undefined && stored.created_at >= olderThan)) return null;
       if (t.db.one('SELECT 1 AS present FROM version_files WHERE hash=? LIMIT 1', hash)) return null;
+      if (t.db.one('SELECT 1 AS present FROM blobs WHERE sha256=? LIMIT 1', hash)) return null;
+      if (t.db.one('SELECT 1 AS present FROM file_refs f JOIN blobs b ON b.id=f.blob_id WHERE b.sha256=? LIMIT 1', hash)) return null;
       const staged = t.db.get<{ files: { hash: string }[] } | null>('staged_bundle', null);
       if (staged?.files.some(file => file.hash === hash)) return null;
       t.db.run("UPDATE stored_files SET status='deleting' WHERE hash=?", hash);
@@ -84,7 +86,8 @@ export async function deleteUnreferencedContent(t: Tendril, hash: string, olderT
 }
 
 /** Stores the bytes content-addressed in R2 (skipped if already present). */
-export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
+export async function storeContent(t: Tendril, body: ArrayBuffer, type: string,
+  retain?: (hash: string) => void): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
   await contentOperation(t, hash, async () => {
     const riskScore = scanContent(body, type);
@@ -99,6 +102,7 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
       const head = await t.env.FILES.head(key);
       if (!head) await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } });
       t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
+      retain?.(hash);
     } catch (err) {
       if (reserved) {
         t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);

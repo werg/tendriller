@@ -16,7 +16,8 @@ const guards = { cid, expected_generations: expected, scope };
 const requiredGuards = ["cid", "expected_generations"];
 export const filePathSchema = {
   type: "string", minLength: 1, maxLength: RESOURCE_LIMITS.path_characters,
-  pattern: "^(?!/)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$",
+  "x-canonical-nfc": true,
+  pattern: "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$",
 };
 /** Reject unsafe or non-canonical names rather than translating them to other paths. */
 export function assertFilePath(path) {

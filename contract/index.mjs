@@ -194,6 +194,7 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
     if (schema.minLength !== undefined && value.length < schema.minLength) issue(`Minimum length is ${schema.minLength}`);
     if (schema.maxLength !== undefined && value.length > schema.maxLength) issue(`Maximum length is ${schema.maxLength}`);
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) issue("Value does not match the required format");
+    if (schema["x-canonical-nfc"] && value.normalize("NFC") !== value) issue("Value must use canonical Unicode NFC");
   }
   if (typeof value === "number") {
     if (schema.minimum !== undefined && value < schema.minimum) issue(`Minimum is ${schema.minimum}`);
