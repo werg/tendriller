@@ -28,6 +28,13 @@ provide transport setup without granting database membership. See
 [application backends](APPLICATION_BACKENDS.md) and
 [peer connections](PEER_CONNECTIONS.md) for the public contracts.
 
+`tendril.members` exposes the host's portable membership administration and
+device-request API. Login identifies the account; a signed device request and
+explicit approval grant group capabilities. Approved readers can download the
+certified control history before their first authenticated peer connection.
+See [membership administration](MEMBERSHIP.md) for configuration, key ownership,
+bootstrap ordering and readiness.
+
 The state, conversation, input, timer, and stream operations below belong to the
 Cloudflare application deployment. A peer-selected page rejects these operations
 and stores application work only in its selected replica. Host publication,

@@ -125,7 +125,7 @@ retry a changed head internally. Notifications happen after durable commit.
 
 ## Recovery and deployment
 
-This unreleased baseline uses page schema revision **7**, with no compatibility or
+This unreleased baseline uses page schema revision **8**, with no compatibility or
 data migration. The checked-in canonical deployments still name revision-5 storage.
 Deploy this code only to fresh resources selected deliberately; changing a schema
 environment variable does not translate an existing namespace.
@@ -138,5 +138,8 @@ conflicting retained prefix rather than treating the copy as a fresh history.
 
 An optional authority can compose around the public engine handler and read this
 log through its public client. It must obtain the committed head itself and keep
-its certificates outside the log it certifies. Neither authority keys nor database
-membership tables are part of Tendriller core.
+its certificates outside the log it certifies. Native ordering authority keys
+remain outside Tendriller. The separate [membership administrator](MEMBERSHIP.md)
+stores its own private root/key material and roster decisions in the page's
+private durable store; it uses the native certified ledger and does not provision
+this optional retained Cloudflare log.

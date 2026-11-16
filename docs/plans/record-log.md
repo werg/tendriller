@@ -81,4 +81,6 @@ optional. The new public application and peer boundaries are documented in
 [application backends](../APPLICATION_BACKENDS.md) and
 [peer connections](../PEER_CONNECTIONS.md). Current verification and remaining
 work are recorded in [the implementation checkpoint](../P2P_EVENTS_STATUS.md).
-This increment uses rc.9 and fresh page schema 7, with no legacy migration.
+This increment uses rc.9 and fresh page schema 8, with no legacy migration. The
+default portable [membership administrator](../MEMBERSHIP.md) verifies the small
+native ledger while full replicas fetch detached application bodies.

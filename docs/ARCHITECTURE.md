@@ -18,6 +18,13 @@ record, signal, and control domains with receiver backpressure. Host sessions an
 relay quotas remain separate from database grants. Retained record storage is an
 optional adapter, not a mandatory checkpoint on the native commit path.
 
+The default [membership administrator](MEMBERSHIP.md) runs inside the existing
+Durable Object using a pinned public portable artifact. It stores private
+root/epoch keys and account-bound roster decisions, verifies the native ordered
+descriptor prefix, and applies inline governance. Application bodies are fetched
+by full replicas. Native ordering, schema administration and membership keys
+are explicitly separate. Normal application writes do not wait for this host.
+
 ## Ownership and dependency direction
 
 | Surface | Owner | Dependency boundary |
@@ -27,6 +34,7 @@ optional adapter, not a mandatory checkpoint on the native commit path.
 | Active-use stop and recovery link | Hosted utility | Public browser API |
 | Spoken input/output | Explicit optional runtime adapter | Public conversation, captures and asset URLs |
 | Private records and synchronous atomic operations | Core trusted host | `@tendriller/core/host` |
+| Account-to-device membership and key administration | Core host with portable implementation | Bundled public `@chronolog/membership` artifact |
 | Publication, preview, delivery and collector plumbing | Optional core tools | Built SDK/runtime artifacts |
 | Layout, navigation, domain data and presentation | Authored page | Public browser APIs and ordinary web dependencies |
 | Decisions, alternatives, algorithms and illustrative policies | Contrib cookbooks | Markdown and optional verification against public core artifacts |
@@ -34,7 +42,7 @@ optional adapter, not a mandatory checkpoint on the native commit path.
 
 Core does not download a contrib release, compile a sessions package, or infer a workflow from application JSON. `npm run build` produces an engine with an empty registry. A trusted deployment entry calls `configureWorkflows` with exact reviewed implementations before serving requests. Page code cannot register modules.
 
-Build checks reject cookbook, tool and application imports in the Worker or runtime. The kernel graph excludes the rich control, speech engine and domain rule implementation. Operational tools are separately bundled; their dependencies never enter the Worker.
+Build checks reject cookbook, tool and application implementation imports in the Worker or runtime. The one explicit membership dependency is a self-contained public artifact; private Chronolog source, SQL materializers and native transports are excluded. The kernel graph excludes the rich control, speech engine and domain rule implementation. Operational tools are separately bundled; their dependencies never enter the Worker.
 
 ## Public artifacts
 
@@ -48,6 +56,11 @@ Build checks reject cookbook, tool and application imports in the Worker or runt
 Release metadata records exact source, version, contract, runtime identity, sizes and SHA-256 digests. Cookbook snapshots have independent content revisions. A recorded test pairing describes the bytes exercised; it does not create a circular release dependency or install anything for a reader.
 
 The engine's `./testing` entry is a separate fixture bundle. It creates synthetic accounts and exercises the real Worker, authentication, command admission and transactions through public requests. It is excluded from the production Worker input graph. Cookbook checks install the public SDK/engine archives in a temporary directory; they need no private server imports or sibling checkout.
+
+The engine also ships `./membership-provenance`, copied from its exact installed
+membership artifact after checking module/declaration hashes and the portable
+input graph. Isolated consumers can audit the embedded administrator's source
+commit and inputs without a sibling checkout or an unpublished dependency.
 
 ## Browser and UI boundary
 

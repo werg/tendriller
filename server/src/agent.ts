@@ -1,4 +1,5 @@
 import { PEER_ROUTE, handlePeers } from "./peers";
+import { MEMBERSHIP_ROUTE, handleMembership } from "./membership";
 import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
 // Agent API (PROTOCOL section 2.2), executed inside the Tendril Durable Object.
 import { assertValid } from "../../contract/index.mjs";
@@ -49,6 +50,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) { requireCloudflareApplication(t); return handleProducer(t, req, rest); }
   if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, await authenticateAgent(t, req));
+  if (MEMBERSHIP_ROUTE.test(rest)) return handleMembership(t, req, url, rest, await authenticateAgent(t, req));
   if (APPLICATION_ROUTE.test(rest)) return handleApplication(t, req, url, rest, await authenticateAgent(t, req));
   if (isApplicationPath(rest)) requireCloudflareApplication(t);
   if (RECORD_LOG_ROUTE.test(rest)) return handleRecordLog(t, req, url, rest, await authenticateAgent(t, req));
@@ -218,6 +220,8 @@ route("PATCH", /^$/, async (t, req) => {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
     if (b.lifetime !== "resident" && t.db.one("SELECT id FROM record_log WHERE id=1"))
       throw new HttpError(409, "record_log_requires_resident", "A Tendril with retained history must remain resident until explicitly deleted");
+    if (b.lifetime !== "resident" && t.db.get('membership_configuration', null))
+      throw new HttpError(409, "membership_requires_resident", "A membership administrator must remain resident until explicitly deleted");
     if (b.lifetime === "resident" && !t.db.get<string | null>("owner_account", null)) throw new HttpError(403, "account_required", "Open the page as its owner before making it resident");
     try {
       await t.env.ACCOUNTS.prepare("UPDATE tendrils SET lifetime = ? WHERE id = ?").bind(b.lifetime, t.tid).run();

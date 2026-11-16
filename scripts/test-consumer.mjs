@@ -1,7 +1,7 @@
 // Verify that only public release artifacts are needed in a clean consumer.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CORE_RELEASE } from '../contract/index.mjs';
@@ -26,6 +26,12 @@ try {
   assert.equal(core.dependencies, undefined); assert.equal(runtime.dependencies, undefined);
   assert.deepEqual(engine.dependencies, { '@cloudflare/workers-types': workersTypes.version });
   assert.deepEqual(engine.peerDependencies, { '@tendriller/core': CORE_RELEASE });
+  const membershipProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/membership-provenance.json')));
+  assert.deepEqual(membershipProof, JSON.parse(readFileSync(join(root, 'node_modules/@chronolog/membership/provenance.json'))));
+  assert.equal(membershipProof.dirty, false); assert.match(membershipProof.source, /^[a-f0-9]{40}$/);
+  assert.ok(membershipProof.inputs.length > 0);
+  assert.ok(membershipProof.inputs.every(input => !/(?:materializer|transport-ssb|node-core\/src\/node\.ts|node:)/.test(input)));
+  assert.equal(existsSync(join(directory, 'node_modules/@chronolog')), false, 'The engine must embed membership without an undeclared external runtime dependency');
   writeFileSync(join(directory, 'consumer.mjs'), `
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -34,6 +40,8 @@ import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/c
 import { RECORD_LOG_FORMAT, recordGenesisRoot, recordEntryRoot, recordId, encodeRecord, verifyRecordEntry } from '@tendriller/core/records';
 import { createApplicationBinding, validateCloudflareProgram } from '@tendriller/core/application';
 import { encodePeerFrame, decodePeerFrame } from '@tendriller/core/peers';
+import { createMembersClient } from '@tendriller/core/members';
+import membershipProvenance from '@tendriller/engine/membership-provenance' with {type: 'json'};
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 import {applyOps, validateOps, validateStateChecks, checkState, historyPage} from '@tendriller/runtime/preview-support';
@@ -60,6 +68,11 @@ assert.equal(validateCloudflareProgram({version:1,expected_generations:{},steps:
 assert.equal(decodePeerFrame(encodePeerFrame({domain:'signals',payload:new Uint8Array([7])})).domain, 'signals');
 assert.equal(typeof client.application, 'function');
 assert.equal(typeof client.peers.connect, 'function');
+assert.equal(typeof client.members.approve, 'function');
+assert.equal(typeof createMembersClient({base:'https://example.test'}).history, 'function');
+assert.equal(membershipProvenance.dirty, false);
+assert.match(membershipProvenance.sha256['index.mjs'], /^[a-f0-9]{64}$/);
+assert.match(membershipProvenance.sha256['index.d.ts'], /^[a-f0-9]{64}$/);
 assert.equal(typeof client.records.read, 'function');
 assert.equal(RECORD_LOG_FORMAT, 'record-log/v1');
 const historyId = 'h_' + '1'.repeat(32), recordBytes = new Uint8Array([0,255,17]);
@@ -76,6 +89,7 @@ import {type WorkflowModule} from '@tendriller/core/host';
 import {type RecordLogClient, type RecordLogHead} from '@tendriller/core/records';
 import {type ApplicationBackend, type ApplicationOperation, type CloudflareApplicationProgram, createApplicationBinding, publishConversation} from '@tendriller/core/application';
 import {type PeerConnection, createPeerConnection, type PeerSocket} from '@tendriller/core/peers';
+import {type MembershipConfiguration, type MembersClient} from '@tendriller/core/members';
 import {createFixtureTransport} from '@tendriller/runtime/preview';
 import type {} from '@tendriller/core/browser';
 const command: CommandMetadata = {cid:'durable-command',expected_generations:{}};
@@ -86,6 +100,10 @@ void client.updateState({...command,conditions:[{path:['job'],exists:false}],exp
 void client.updateState({ops:[]});
 declare const page: RuntimeApi<{count:number}>;
 const log: RecordLogClient = page.records;
+const members: MembersClient = page.members;
+declare const configuration: MembershipConfiguration;
+void members.configure(configuration);
+void members.history({after:0, limit:128});
 const backend: ApplicationBackend = await page.application.ready();
 const operation: ApplicationOperation | null = await backend.operations.get('stable-operation');
 for await (const status of backend.operations.subscribe({operationId:'stable-operation'})) { const id:string = status.proposalId; void id; }

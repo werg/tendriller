@@ -10,8 +10,16 @@ export async function initializeTestService(migrations: Parameters<typeof applyD
 }
 
 /** Fresh synthetic identities exercise the real session and module authorization paths. */
-export async function createTestPage() {
-  const handle = await create({ mode: 'dashboard', listener: false });
+export async function createTestPage(options: { application?: { kind: 'cloudflare' | 'peer'; id: string }; lifetime?: 'ad_hoc' | 'resident' } = {}) {
+  const { lifetime, ...selection } = options;
+  const handle = await create({ mode: 'dashboard', listener: false, ...selection });
+  if (lifetime === 'resident') {
+    const response = await api(handle, 'PATCH', '', { lifetime });
+    if (!response.ok) throw new Error(`Resident test page setup failed: ${response.status} ${await response.text()}`);
+  }
+  const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown) => req(
+    `${url}_tendril/${path}`, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const workflow = (url: string, headers: Record<string, string>) =>
     (module: string, operation: string, data: unknown = {}, guards: Record<string, string> = {}, cid = crypto.randomUUID()) => req(
       `${url}workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, {
@@ -24,6 +32,7 @@ export async function createTestPage() {
     api(handle, 'POST', `workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, { cid, expected_generations: guards, data });
   return {
     owner, agent,
+    ownerApi: pageApi(handle.page_url, ownerHeaders(handle.page_url)),
     api: (method: string, path: string, body?: unknown) => api(handle, method, path, body),
     async participant() {
       const account = crypto.randomUUID(), secret = crypto.randomUUID();
@@ -34,7 +43,8 @@ export async function createTestPage() {
         t.db.run('INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,?,?)', await sha256Hex(secret), account, 'guest', t.now() + 86400_000);
         return t.renderLink(invitation);
       });
-      return { account, call: workflow(link.url + '_tendril/', { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin }) };
+      const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
+      return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers) };
     },
     async display() {
       const link = await inDO(handle.id, async t => t.renderLink(await t.createLink('display', 'test display', null)));
@@ -43,6 +53,13 @@ export async function createTestPage() {
     async advance(milliseconds: number) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError('Advance by a finite nonnegative duration');
       await inDO(handle.id, t => { t.skew += milliseconds; });
+    },
+    async restart() {
+      // Exercise crash recovery, including a caller that lost an HTTP body.
+      // Graceful eviction would wait for that caller's unread response to drain.
+      let requested = false;
+      try { await inDO(handle.id, t => { requested = true; t.ctx.abort('Public test fixture restart'); }); }
+      catch (error) { if (!requested) throw error; }
     },
   };
 }
