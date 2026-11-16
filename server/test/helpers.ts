@@ -116,6 +116,41 @@ export async function apiJson<T = any>(h: Handle, method: string, path: string, 
   return (text ? JSON.parse(text) : null) as T;
 }
 
+/** Contract 3 test transfer: bytes are verified separately from final acceptance. */
+export async function uploadAgentBlob(h: Handle, body: Uint8Array | string,
+  { type = "application/octet-stream", name }: { type?: string; name?: string } = {}): Promise<any> {
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const session = await apiJson(h, "POST", "uploads", {
+    cid: crypto.randomUUID(), sha256: await sha256Hex(bytes), size: bytes.byteLength, type, name,
+  }, 201);
+  if (session.upload_required) {
+    const uploaded = await api(h, "PUT", `uploads/${session.id}/content`, bytes,
+      { "Content-Type": "application/octet-stream" });
+    if (uploaded.status !== 204) throw new Error(`upload failed: ${uploaded.status} ${await uploaded.text()}`);
+  }
+  const complete = await apiJson(h, "POST", `uploads/${session.id}/complete`, {});
+  return complete.blob;
+}
+
+/** Contract 3 browser transfer with caller-supplied owner/device proof. */
+export async function uploadPageBlob(h: Handle, body: Uint8Array | string,
+  headers: Record<string, string>, { type = "application/octet-stream", name }: { type?: string; name?: string } = {}): Promise<any> {
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const request = async (path: string, init: RequestInit): Promise<any> => {
+    const response = await req(h.page_url + "_tendril/" + path, { ...init, headers: { ...headers, ...init.headers } });
+    if (!response.ok) throw new Error(`page upload ${path}: ${response.status} ${await response.text()}`);
+    return response.status === 204 ? null : response.json();
+  };
+  const session = await request("uploads", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cid: crypto.randomUUID(), sha256: await sha256Hex(bytes), size: bytes.byteLength, type, name }) });
+  if (session.upload_required) {
+    await request(`uploads/${session.id}/content`, { method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" }, body: bytes });
+  }
+  return (await request(`uploads/${session.id}/complete`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: "{}" })).blob;
+}
+
 export function stub(id: string): DurableObjectStub {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
 }
