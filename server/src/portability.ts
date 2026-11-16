@@ -1,15 +1,22 @@
 import type { Tendril } from "./tendril";
 import { checkGenerations, preconditions, mutate, replay, type Preconditions } from "./scopes";
 import { addActivity } from "./activity";
-import { assertStoredContent, createVersion, deleteUnreferencedContent, fileKey, latestFileMap, servedVersion, storeContent, versionFiles, type VersionFile } from "./files";
+import { assertStoredContent, createVersion, deleteUnreferencedContent, fileKey, servedVersion, storeContent, versionFiles, type VersionFile } from "./files";
 import { HttpError, isPlainObject, json } from "./http";
-import { BLOB_ID_RE, fromBase64, toBase64 } from "./ids";
-import { MAX_FILES_PER_VERSION, MAX_STATE } from "./limits";
-import { normalizeFilePath, publicBase } from "./urls";
+import { fromBase64, sha256Hex, toBase64 } from "./ids";
+import { MAX_STATE } from "./limits";
+import { publicBase } from "./urls";
+import { commitImportedFiles } from "./storage";
+import { assertFilePath, assertValid } from "../../contract/index.mjs";
 import { listTimers } from "./timers";
 import type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
 export type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
-interface StagedBundle { name: string; entry: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief; media: string[] }
+type SharedFile = NonNullable<PortableBundle["shared_files"]>[number];
+interface StagedBundle {
+  name: string; entry: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief;
+  media: string[]; shared_files: SharedFile[]; expected_file_revisions: Record<string, number>;
+}
+export const MAX_BUNDLE_BYTES = 36 * 1024 * 1024;
 const EMPTY_BRIEF: SessionBrief = { purpose: "", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
 const bundleOperations = new WeakSet<Tendril>();
 async function withBundleLock<T>(t: Tendril, work: () => Promise<T>): Promise<T> {
@@ -67,30 +74,63 @@ export function putSession(t: Tendril, value: unknown, by: string): SessionResul
   return { session: brief, revision: previous + 1 };
 }
 
+/** Find immutable IDs in application values without treating arbitrary state as a retention root. */
+function referencedBlobs(value: unknown, ids = new Set<string>()): Set<string> {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/(?:^|[^A-Za-z0-9_])(b_[a-z2-7]{20})(?![A-Za-z0-9_])/g)) ids.add(match[1]);
+  } else if (Array.isArray(value)) for (const item of value) referencedBlobs(item, ids);
+  else if (isPlainObject(value)) for (const [key, item] of Object.entries(value)) { referencedBlobs(key, ids); referencedBlobs(item, ids); }
+  return ids;
+}
+
+async function snapshotBytes(t: Tendril, hash: string, size: number, label: string): Promise<ArrayBuffer> {
+  const object = await t.env.FILES.get(fileKey(t, hash));
+  if (!object) throw new HttpError(409, "incomplete_bundle", `Missing ${label}`);
+  const bytes = await object.arrayBuffer();
+  if (bytes.byteLength !== size || await sha256Hex(bytes) !== hash)
+    throw new HttpError(409, "incomplete_bundle", `Changed ${label}; prepare a verified copy again`);
+  return bytes;
+}
+
 export async function exportBundle(t: Tendril, includeData: boolean): Promise<PortableBundle> {
-  // Capture the logical snapshot before the first asynchronous R2 read. Later
-  // state edits must not reference media that was absent from this export.
-  const version = servedVersion(t);
-  const fileRows = versionFiles(t, version);
+  // Snapshot every logical reference before the first asynchronous content read.
+  const version = servedVersion(t), fileRows = versionFiles(t, version);
   const entry = t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry;
   if (!entry || !fileRows.some(file => file.path === entry)) throw new HttpError(409, "no_publication", "Publish a complete page before exporting a portable bundle");
-  const mediaRows = includeData ? t.db.all<{ id: string; type: string; name: string | null }>("SELECT id, type, name FROM blobs ORDER BY id") : [];
   const brief = structuredClone(t.db.get<SessionBrief>("session_brief", EMPTY_BRIEF));
-  const state = structuredClone(t.getState().state);
-  const name = t.db.get("name", "Tendril");
-  const files = await Promise.all(fileRows.map(async file => {
-    const data = await t.env.FILES.get(fileKey(t, file.hash));
-    if (!data) throw new HttpError(409, "incomplete_bundle", `Missing file ${file.path}`);
-    return { path: file.path, type: file.type, base64: toBase64(await data.arrayBuffer()) };
-  }));
-  const media = await Promise.all(mediaRows.map(async item => {
-    const data = await t.env.FILES.get(t.blobKey(item.id));
-    if (!data) throw new HttpError(409, "incomplete_bundle", `Missing media ${item.id}`);
-    return { ...item, base64: toBase64(await data.arrayBuffer()) };
-  }));
-  return { format: "tendriller-bundle", version: 3, entry, name, files, media,
-    ...(includeData ? { state, session: { ...brief, last_handled_seq: 0 } }
-      : { session: { ...EMPTY_BRIEF, purpose: brief.purpose, source: brief.source } }) };
+  const state = structuredClone(t.getState().state), name = t.db.get("name", "Tendril");
+  const sharedFiles: SharedFile[] = includeData ? t.db.all<{ path: string; blob_id: string; name: string | null; type: string | null }>(
+    "SELECT path,blob_id,name,type FROM file_refs WHERE blob_id IS NOT NULL ORDER BY path").map(file => ({
+      path: file.path, blob_id: file.blob_id, ...(file.name === null ? {} : { name: file.name }), ...(file.type === null ? {} : { type: file.type }),
+    })) : [];
+  const explicit = referencedBlobs(state);
+  for (const file of sharedFiles) explicit.add(file.blob_id);
+  const publicationBlobs = new Set(t.db.all<{ blob_id: string }>("SELECT DISTINCT blob_id FROM publication_blobs").map(row => row.blob_id));
+  const mediaRows = includeData ? t.db.all<{ id: string; sha256: string; size: number; type: string; name: string | null }>(
+    "SELECT id,sha256,size,type,name FROM blobs ORDER BY id").filter(row => !publicationBlobs.has(row.id) || explicit.has(row.id)) : [];
+  const selected = new Set(mediaRows.map(row => row.id));
+  if (sharedFiles.some(file => !selected.has(file.blob_id))) throw new HttpError(409, "incomplete_bundle", "A shared-file head has no retained immutable content");
+  const bundle: PortableBundle = {
+    format: "tendriller-bundle", version: 3, entry, name,
+    files: fileRows.map(file => ({ path: file.path, type: file.type, base64: "" })),
+    media: mediaRows.map(item => ({ id: item.id, type: item.type, name: item.name, base64: "" })),
+    ...(includeData ? { state, shared_files: sharedFiles, session: { ...brief, last_handled_seq: 0 } }
+      : { session: { ...EMPTY_BRIEF, purpose: brief.purpose, source: brief.source } }),
+  };
+  // Logical aliases can exceed physical storage: bound the actual portable payload
+  // before fetching repeated bodies rather than allocating an unbounded export.
+  const encodedBytes = [...fileRows, ...mediaRows].reduce((sum, row) => sum + 4 * Math.ceil(row.size / 3), 0);
+  if (new TextEncoder().encode(JSON.stringify(bundle)).byteLength + encodedBytes > MAX_BUNDLE_BYTES)
+    throw new HttpError(413, "bundle_too_large", "Selected portable content exceeds the bundle transfer limit", { limit: MAX_BUNDLE_BYTES });
+  for (let i = 0; i < fileRows.length; i++) {
+    const file = fileRows[i];
+    bundle.files[i].base64 = toBase64(await snapshotBytes(t, file.hash, file.size, `file ${file.path}`));
+  }
+  for (let i = 0; i < mediaRows.length; i++) {
+    const item = mediaRows[i];
+    bundle.media[i].base64 = toBase64(await snapshotBytes(t, item.sha256, item.size, `media ${item.id}`));
+  }
+  return bundle;
 }
 
 function decode(value: unknown, limit: number): Uint8Array {
@@ -104,7 +144,7 @@ function decode(value: unknown, limit: number): Uint8Array {
 function rewrite(value: unknown, mapping: Map<string, string>): any {
   if (typeof value === "string") { let text = value; for (const [before, after] of mapping) text = text.replaceAll(before, after); return text; }
   if (Array.isArray(value)) return value.map(v => rewrite(v, mapping));
-  if (isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, rewrite(v, mapping)]));
+  if (isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [rewrite(k, mapping), rewrite(v, mapping)]));
   return value;
 }
 
@@ -113,30 +153,39 @@ export async function stageBundle(t: Tendril, value: unknown, by: string): Promi
   return withBundleLock(t, () => stageBundleUnlocked(t, value, by));
 }
 async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Promise<StagedBundle> {
-  if (!isPlainObject(value) || value.format !== "tendriller-bundle" || value.version !== 3) throw new HttpError(400, "bad_bundle", "Unsupported bundle format or version");
+  const bundle = assertValid("bundle", value);
   if (t.db.get("staged_bundle", null)) throw new HttpError(409, "staged_bundle_exists", "Publish or discard the prepared copy first");
-  if (typeof value.name !== "string" || !value.name.trim() || value.name.length > 200) throw new HttpError(400, "bad_bundle", "Invalid bundle name");
-  if (!Array.isArray(value.files) || !value.files.length || value.files.length > MAX_FILES_PER_VERSION || !Array.isArray(value.media))
-    throw new HttpError(400, "bad_bundle", "Invalid bundle entries");
+  if (new TextEncoder().encode(JSON.stringify(bundle)).byteLength > MAX_BUNDLE_BYTES)
+    throw new HttpError(413, "bundle_too_large", "Portable content exceeds the bundle transfer limit", { limit: MAX_BUNDLE_BYTES });
   const seen = new Set<string>();
-  const files = value.files.map((f: any) => {
-    if (!isPlainObject(f) || typeof f.path !== "string" || normalizeFilePath(f.path) !== f.path || seen.has(f.path) || typeof f.type !== "string" || f.type.length > 200)
-      throw new HttpError(400, "bad_bundle", "Invalid or duplicate file path");
+  const files = bundle.files.map(f => {
+    try { assertFilePath(f.path); } catch { throw new HttpError(400, "bad_bundle", "Invalid file path"); }
+    if (seen.has(f.path)) throw new HttpError(400, "bad_bundle", "Duplicate file path");
     seen.add(f.path);
     return { path: f.path, type: f.type, bytes: decode(f.base64, t.fileLimit()) };
   });
-  const entry = files.find(file => file.path === value.entry);
+  const entry = files.find(file => file.path === bundle.entry);
   if (!entry || !/\.html?$/i.test(entry.path) || !/^text\/html(?:;|$)/i.test(entry.type))
     throw new HttpError(400, "bad_bundle", "The bundle requires its declared authored HTML entry");
   const seenMedia = new Set<string>();
-  const media = value.media.map((m: any) => {
-    if (!isPlainObject(m) || typeof m.id !== "string" || !BLOB_ID_RE.test(m.id) || seenMedia.has(m.id) || typeof m.type !== "string" || m.type.length > 200 || (m.name !== null && (typeof m.name !== "string" || m.name.length > 200)))
-      throw new HttpError(400, "bad_bundle", "Invalid media entry");
+  const media = bundle.media.map(m => {
+    if (seenMedia.has(m.id)) throw new HttpError(400, "bad_bundle", "Duplicate media identity");
     seenMedia.add(m.id);
     return { id: m.id, type: m.type, name: m.name, bytes: decode(m.base64, t.blobLimit()) };
   });
-  if (value.state !== undefined && (!isPlainObject(value.state) || JSON.stringify(value.state).length > MAX_STATE)) throw new HttpError(400, "bad_bundle", "Invalid shared state");
-  const session = value.session === undefined ? undefined : { ...validateBrief(value.session), last_handled_seq: 0 };
+  const sharedPaths = new Set<string>();
+  const sharedFiles = (bundle.shared_files ?? []).map(file => {
+    assertValid("fileWrite", { ...file, cid: "bundle-stage", expected_generations: {}, expected_revision: 0 });
+    if (sharedPaths.has(file.path) || !seenMedia.has(file.blob_id))
+      throw new HttpError(400, "bad_bundle", "Shared-file paths must be unique and reference media included in this bundle");
+    sharedPaths.add(file.path);
+    return { ...file };
+  });
+  // Capture the destination preconditions now, before storage awaits allow another writer.
+  const expectedRevisions = Object.fromEntries(sharedFiles.map(file => [file.path,
+    t.db.one<{ revision: number }>("SELECT revision FROM file_refs WHERE path=?", file.path)?.revision ?? 0]));
+  if (bundle.state !== undefined && JSON.stringify(bundle.state).length > MAX_STATE) throw new HttpError(400, "bad_bundle", "Invalid shared state");
+  const session = bundle.session === undefined ? undefined : { ...validateBrief(bundle.session), last_handled_seq: 0 };
   // Existing content-addressed files consume no additional storage. Each write
   // below checks the actual new bytes; failed staging rolls its writes back.
   const mapping = new Map<string, string>(), createdMedia: string[] = [];
@@ -155,8 +204,10 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
       if (!originalHashes.has(saved.hash)) createdHashes.push(saved.hash);
       prepared.push({ path: f.path, type: f.type, ...saved });
     }
-    const state = value.state === undefined ? undefined : rewrite(value.state, mapping);
-    const staged: StagedBundle = { name: value.name.trim(), entry: entry.path, files: prepared, media: createdMedia, ...(state ? { state } : {}), ...(session ? { session } : {}) };
+    const state = bundle.state === undefined ? undefined : rewrite(bundle.state, mapping);
+    const staged: StagedBundle = { name: bundle.name.trim(), entry: entry.path, files: prepared, media: createdMedia,
+      shared_files: sharedFiles.map(file => ({ ...file, blob_id: mapping.get(file.blob_id)! })), expected_file_revisions: expectedRevisions,
+      ...(state ? { state } : {}), ...(session ? { session } : {}) };
     t.transaction(() => {
       assertStoredContent(t, prepared);
       t.db.set("staged_bundle", staged);
@@ -182,27 +233,24 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
   if (!staged) throw new HttpError(404, "not_found", "No prepared copy");
   const current = t.db.get("current", 0);
   if (expectedVersion !== current) throw new HttpError(409, "version_conflict", "The page changed; review its current version before replacing it", { current });
-  if (!latestFileMap(t).has("index.html")) {
+  if (!t.db.get<number>("latest", 0)) {
     const facts = t.presenceFacts();
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !facts.agentSocket && !facts.longPollHeld && !facts.webhook)
       throw new HttpError(428, "listener_required", "Connect this page to its agent conversation before publishing the prepared copy");
   }
   // Staging may be reviewed across browser closures and deployments. Do not
   // publish broken references if storage was removed before the review finished.
-  for (const file of staged.files) {
-    const stored = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=?", file.hash);
-    const object = stored ? await t.env.FILES.head(fileKey(t, file.hash)) : null;
-    if (!object || object.size !== file.size) throw new HttpError(409, "incomplete_bundle", `Prepared file ${file.path} is missing; discard and prepare the bundle again`);
-  }
+  for (const file of staged.files) await snapshotBytes(t, file.hash, file.size, `prepared file ${file.path}`);
   for (const id of staged.media) {
-    const stored = t.db.one<{ size: number }>("SELECT size FROM blobs WHERE id=?", id);
-    const object = stored ? await t.env.FILES.head(t.blobKey(id)) : null;
-    if (!object || object.size !== stored!.size) throw new HttpError(409, "incomplete_bundle", "Prepared media is missing; discard and prepare the bundle again");
+    const stored = t.db.one<{ sha256: string; size: number }>("SELECT sha256,size FROM blobs WHERE id=?", id);
+    if (!stored) throw new HttpError(409, "incomplete_bundle", "Prepared media is missing; discard and prepare the bundle again");
+    await snapshotBytes(t, stored.sha256, stored.size, `prepared media ${id}`);
   }
   const version = await createVersion(t, new Map(staged.files.map(f => [f.path, f])), "Restored from a portable bundle", by, {
     entry: staged.entry, expectedCurrent: current,
     commit: () => { mutate(t, actor, command, targets, payload, () => {
-      checkGenerations(t, command, { paths: staged.state ? [[]] : [], operations: ["bundle.publish"] });
+      checkGenerations(t, command, { paths: [...(staged.state ? [[]] : []), ...(staged.shared_files.length ? [["files"]] : [])], operations: ["bundle.publish"] });
+      commitImportedFiles(t, staged.shared_files, staged.expected_file_revisions, actor, command.cid);
       if (staged.state) t.applyState([{ op: "set", path: [], value: staged.state }], `agent:${by}`, undefined, command);
       if (staged.session) { t.db.set("session_brief", staged.session); t.db.set("session_revision", t.db.get("session_revision", 0) + 1); }
       t.db.del("staged_bundle");

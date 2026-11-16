@@ -228,7 +228,13 @@ it("protects a prepared hash when its old published version is pruned", async ()
   await publishFilesJson(h, { "index.html": "<h1>Restore this older page</h1>" });
   const bundle = await apiJson(h, "GET", "bundle");
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  for (let n = 0; n < KEEP_VERSIONS; n++) await publishFilesJson(h, { "index.html": `<h1>Revision ${n}</h1>` });
+  const next = await uploadBlobJson(h, "<h1>A newer publication</h1>", { type: "text/html" });
+  let head = (await apiJson(h, "GET", "publications")).head_revision;
+  for (let n = 0; n < KEEP_VERSIONS; n++) {
+    const published = await apiJson(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: head,
+      entry: "index.html", files: [{ path: "index.html", blob_id: next.id, type: next.type }] });
+    head = published.head_revision;
+  }
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
   expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);

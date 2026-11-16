@@ -663,15 +663,17 @@ it("exports files and deletes an account with its tendrils", async () => {
   await claimAs(h, account, "export@example.com", session);
   await enableWake(h);
   await publishFilesJson(h, { "index.html": "<title>Export</title>", "data.txt": "hello world" });
+  const published = await (await api(h, "GET", "publications/1")).json<any>();
+  const dataHash = published.files.find((file: any) => file.path === "data.txt").sha256;
   const cookie = `__Host-tendriller=${session}`;
   await inDO(h.id, t => t.db.run("INSERT INTO activity (ts, kind, summary, device, source) VALUES (?, 'sensor', 'Page used camera', 'd_test', 'server')", t.now()));
   const sensors = await req(`/dashboard/t/${h.id}`, { headers: { Cookie: cookie } });
   expect(await sensors.text()).toContain("Page used camera");
   const exported = await req("/dashboard/export", { headers: { Cookie: cookie } });
   expect(exported.status).toBe(200);
-  const archive = await exported.json<{ tendrils: { id: string; files: { path: string; base64: string }[] }[] }>();
+  const archive = await exported.json<{ tendrils: { id: string; files: { hash: string; base64: string }[] }[] }>();
   expect(archive.tendrils[0].id).toBe(h.id);
-  expect(atob(archive.tendrils[0].files.find(file => file.path === "data.txt")!.base64)).toBe("hello world");
+  expect(atob(archive.tendrils[0].files.find(file => file.hash === dataHash)!.base64)).toBe("hello world");
   const deleted = await req("/dashboard/delete", { method: "POST", redirect: "manual", headers: { Cookie: cookie,
     Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ confirm: "DELETE" }) });
   expect(deleted.status).toBe(303);
