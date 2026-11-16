@@ -75,7 +75,7 @@ test("a saved custom phrase routes a command through ordinary conversation; relo
   await page.getByRole("button", { name: "Configure" }).click();
   await page.getByLabel("Wake phrase (2+ words)").fill("Hey Kitchen");
   await page.getByLabel("Recognition and privacy").selectOption("browser");
-  await expect(page.getByText("May send microphone audio to your browser vendor", { exact: false })).toBeVisible();
+  await expect(page.getByText("The browser may send microphone audio to its speech provider", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Save phrase and mode" }).click();
   await page.getByRole("tab", { name: "Talk", exact: true }).click();
   await page.getByRole("button", { name: "Start hands-free" }).click();
