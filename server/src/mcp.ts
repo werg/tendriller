@@ -127,7 +127,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "update_state",
-    description: "Apply explicit state operations or replace the document using captured generation preconditions.",
+    description: "Atomically apply state operations or replace the document with captured generation guards and optional conditions/expected_revision. State conflicts retain their command receipt; review current state and use a new command ID for revised work.",
     inputSchema: { type: "object", ...schemas.stateUpdate },
     call: (a) => ({ method: "PATCH", rest: "state", body: a }),
   },

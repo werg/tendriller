@@ -83,7 +83,7 @@ function host(t: Tendril, module: WorkflowModule, who: WorkflowIdentity, command
   return {
     identity: Object.freeze({ ...who }), context: Object.freeze({ ...context, generations: Object.freeze({ ...context.generations }), workflow: owner }), now: () => { alive(); return t.now(); }, id: () => { alive(); return crypto.randomUUID(); },
     fail: (status, code, message): never => { alive(); throw new HttpError(status, code, message); }, records,
-    state: { get: () => { alive(); return structuredClone(t.getState()); }, apply: ops => { write(); return t.applyState(validateOps(ops), `workflow:${owner}`, undefined, command); } },
+    state: { get: () => { alive(); return structuredClone(t.getState()); }, apply: (ops, checks = {}) => { write(); return t.applyState(validateOps(ops), `workflow:${owner}`, undefined, { ...command, ...checks }); } },
     scopes: {
       get: id => { alive(); owned(id); return scope(t, id); },
       register: (id, bindings, expected) => { write(); if (!id.startsWith(owner + ':')) throw new HttpError(400, 'bad_scope', 'Module scope IDs must start with the module namespace'); owned(id); return registerScope(t, id, bindings, owner, expected); },

@@ -3,6 +3,7 @@
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
 import { blobSchemas, blobNameSchema, isWellFormedUnicode } from "./blobs.mjs";
+import { normalizeStateChecks, normalizeStateOps, STATE_CONDITIONS_MAX } from "./state.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
@@ -26,6 +27,11 @@ const stateOperation = { anyOf: [
   object({ op: { const: "set" }, path, value: {} }, ["op", "path", "value"]),
   object({ op: { const: "delete" }, path }, ["op", "path"]),
 ] };
+const stateCondition = { anyOf: [
+  object({ path, equals: {} }, ["path", "equals"]),
+  object({ path, exists: boolean }, ["path", "exists"]),
+] };
+const stateChecks = { conditions: { type: "array", maxItems: STATE_CONDITIONS_MAX, items: stateCondition }, expected_revision: integer };
 const deviceInfo = object({ id: string, name: nullableString, role: { enum: ROLES }, purpose: { enum: DEVICE_PURPOSES },
   pending: boolean, connected: boolean, primary: boolean, last_seen: nullableTime, ua: nullableString, link: nullableString,
 }, ["id", "name", "role", "purpose", "pending", "connected", "primary", "last_seen", "ua", "link"]);
@@ -88,9 +94,11 @@ const coreSchemas = {
   sayMessage: object({ ...sayProperties, message_id: { type: "string", minLength: 1 }, ts: integer, present: boolean }, ["text", "message_id", "ts"], true),
   stateOperation,
   stateOperations: { type: "array", items: stateOperation },
+  stateCondition,
+  stateChecks: object(stateChecks),
   stateUpdate: { anyOf: [
-    object({ ...guards, ops: { type: "array", items: stateOperation } }, ["cid", "expected_generations", "ops"]),
-    object({ ...guards, state: jsonObject }, ["cid", "expected_generations", "state"]),
+    object({ ...guards, ...stateChecks, ops: { type: "array", items: stateOperation } }, ["cid", "expected_generations", "ops"]),
+    object({ ...guards, ...stateChecks, state: jsonObject }, ["cid", "expected_generations", "state"]),
   ] },
   sendResult: { anyOf: [
     object({ status: { const: "accepted" }, seq: { type: "integer", minimum: 1 } }, ["status", "seq"]),
@@ -224,7 +232,17 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
 
 export function validate(name, value) {
   if (!Object.hasOwn(schemas, name)) throw new TypeError(`Unknown contract schema: ${name}`);
-  return validateSchema(schemas[name], value);
+  const issues = validateSchema(schemas[name], value);
+  // Wire JSON cannot carry undefined, accessors, cycles or sparse arrays. Apply
+  // the same restrictions before in-process SDK/runtime serialization as well.
+  if (!issues.length) try {
+    if (name === "stateOperation") normalizeStateOps([value]);
+    if (name === "stateOperations") normalizeStateOps(value);
+    if (name === "stateCondition") normalizeStateChecks({ conditions: [value] });
+    if (name === "stateChecks" || name === "stateUpdate") normalizeStateChecks(value);
+    if (name === "stateUpdate") normalizeStateOps("state" in value ? [{ op: "set", path: [], value: value.state }] : value.ops);
+  } catch (error) { issues.push({ path: "$", message: error.message }); }
+  return issues;
 }
 
 export class ContractError extends TypeError {

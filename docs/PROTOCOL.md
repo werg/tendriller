@@ -78,7 +78,62 @@ for payloads, recurrence, lifetime gates, and notification semantics.
 {"cid":"replace-1","expected_generations":{},"state":{"count":1}}
 ```
 
-`set(null)` is a value; `delete` removes a path. Root state remains an object. Prototype-polluting keys, malformed paths, invalid JSON and excessive sizes are rejected. There is no raw merge-patch HTTP body that hides command metadata. The browser's convenience `state.patch` derives explicit operations, persists their original guards, then applies optimism.
+`set(null)` is a value; `delete` removes a path. Root state remains an object.
+Array path segments are literal keys; dots and slashes inside them do not split.
+Dotted strings split on dots and ignore empty segments. Numeric segments become
+object keys; arrays are whole values, never indexed update containers. Missing
+object parents can be created, but explicit traversal through an existing array,
+scalar or null fails atomically with `state_conflict`. Replace that parent with
+an explicit `set` when replacement is intended. The browser's RFC 7396 merge
+patch conversion deliberately emits such parent replacements.
+
+State-write envelopes also accept `conditions` and `expected_revision`:
+
+```json
+{
+  "cid": "claim-item-1",
+  "expected_generations": {},
+  "conditions": [{"path":["claims","item-1"],"exists":false}],
+  "ops": [
+    {"op":"set","path":["claims","item-1"],"value":"device-a"},
+    {"op":"set","path":["items","item-1","status"],"value":"claimed"}
+  ]
+}
+```
+
+Every condition is exactly `{path,equals:<JSON>}` or `{path,exists:<boolean>}`.
+All conditions are checked against the same authoritative pre-mutation state,
+then all operations commit together. Missing differs from null. Object equality
+ignores key order; arrays compare as complete ordered values. A condition whose
+path crosses a non-object ancestor fails, including an `exists:false` condition.
+The empty path denotes the whole object. Up to 128 conditions and 64 KiB of
+normalized condition JSON are allowed; paths and JSON nesting are bounded to
+128 levels. Non-JSON values, sparse arrays, prototype keys and excessive sizes
+are rejected before admission.
+
+`expected_revision` is an optional nonnegative safe integer matched to the global
+state revision. It detects change-and-change-back (ABA) as well as unrelated
+writes. Field conditions allow independent edits to different fields. Both may
+be supplied, including with an empty operation list for a conditional check.
+Every nonempty accepted batch advances the revision once, even for equal values.
+
+Scope selection includes condition-read paths as well as write paths. Generation
+guards, conditions and operations run under the same transaction. A failed
+condition or incompatible write path returns HTTP 409 `state_conflict`, with the
+observed `rev` and `conflict` (`kind`, optional condition index and path), without
+state, revision, activity or state-stream effects. It reveals no current field
+values. WebSocket rejection is followed by an authoritative `state_reset`.
+The terminal conflict receipt is durable: retrying the same command returns that
+same rejection even if the condition later becomes true. Accepted receipts also
+replay unchanged. Changed predicates under the same ID produce `command_conflict`.
+After review, revised intent needs a new command ID. Malformed, authorization,
+generation and receipt-quota failures do not consume the ID; receipt-quota
+failure rolls back the entire attempted mutation.
+
+These checks provide optimistic concurrency, not permission or application
+policy. An otherwise authorized writer can omit a condition. Enforced ownership,
+private records or booking rules require an authorized trusted operation.
+There is no raw merge-patch HTTP body that hides command metadata.
 
 HTTP, MCP, WebSocket, whole replacement, bundle restore and trusted-module state changes all use the same protected-operation rule. Imports cannot install authoritative bindings or generations from application JSON. A staged bundle's state is checked against current guards atomically at publication.
 
