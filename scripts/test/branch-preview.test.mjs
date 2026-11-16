@@ -53,6 +53,12 @@ test("preview config cannot carry staging resources, routes, or variables into d
   assert.equal(config.vars.BRANCH_PREVIEW_SHA, commit);
   assert.deepEqual(config.d1_databases.map(d => [d.database_name, d.database_id]), [[identity.database, dbId]]);
   assert.deepEqual(config.r2_buckets.map(b => b.bucket_name), [identity.bucket]);
+  assert.equal(config.main, '../dist/engine/worker.mjs');
+  assert.deepEqual(config.durable_objects.bindings, [
+    { name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' },
+  ]);
+  assert.deepEqual(config.migrations, [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }]);
+  assert.equal(config.exports, undefined, 'canonical tombstones cannot enter a fresh preview Worker');
   assert.ok(template.triggers.crons.length > 0, "staging has scheduled maintenance");
   assert.deepEqual(config.triggers, { crons: [] }, "preview never consumes account-wide cron quota");
   assert.ok(config.routes.every(r => identity.routes.includes(r.pattern) && !r.custom_domain));

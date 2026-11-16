@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tendriller-staging",
-  "main": "../dist/engine/worker.mjs",
+  "main": "../dist/service/worker.mjs",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": [
     "nodejs_compat"
@@ -15,35 +15,32 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "Tendril"
+        "class_name": "TendrilV4"
       },
       {
         "name": "ADMISSION",
-        "class_name": "Admission"
+        "class_name": "AdmissionV4"
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "baseline",
-      "new_sqlite_classes": [
-        "Tendril",
-        "Admission"
-      ]
-    }
-  ],
+  "exports": {
+    "TendrilV3": { "type": "durable-object", "state": "deleted" },
+    "Admission": { "type": "durable-object", "state": "deleted" },
+    "TendrilV4": { "type": "durable-object", "storage": "sqlite" },
+    "AdmissionV4": { "type": "durable-object", "storage": "sqlite" }
+  },
   "d1_databases": [
     {
       "binding": "ACCOUNTS",
-      "database_name": "tendriller-staging-accounts",
-      "database_id": "fd412d48-e42c-4fba-a227-d5dc3c5eed80",
+      "database_name": "tendriller-staging-v4-accounts",
+      "database_id": "26a4ff52-2f75-4820-9d0b-563ef0751cf6",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [
     {
       "binding": "FILES",
-      "bucket_name": "tendriller-staging-files"
+      "bucket_name": "tendriller-staging-v4-files"
     }
   ],
   "triggers": {

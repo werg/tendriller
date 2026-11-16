@@ -99,6 +99,8 @@ export async function buildEngine() {
   mkdirSync(join(dist, "engine"), { recursive: true });
   const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], metafile: true, logLevel: "warning" });
   writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
+  mkdirSync(join(dist, "service"), { recursive: true });
+  await build({ entryPoints: [join(root, "server/src/deploy-entry.ts")], outfile: join(dist, "service/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], logLevel: "warning" });
 }
 export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }
 if (!process.argv.includes("--skip-initial")) await buildAll();

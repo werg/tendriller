@@ -44,7 +44,6 @@ function validateTemplate(template) {
 export function previewConfig(identity, template, databaseId, accountId) {
   if (!UUID.test(databaseId) || !/^[a-f0-9]{32}$/.test(accountId)) throw new Error("Invalid Cloudflare resource ID");
   validateTemplate(template);
-  const bindings = template.durable_objects.bindings;
   return {
     $schema: "../node_modules/wrangler/config-schema.json",
     name: identity.worker,
@@ -55,8 +54,10 @@ export function previewConfig(identity, template, databaseId, accountId) {
     workers_dev: false,
     preview_urls: false,
     assets: { directory: "./public", binding: "ASSETS", run_worker_first: true },
-    durable_objects: { bindings: bindings.map(({ name, class_name }) => ({ name, class_name })) },
-    migrations: template.migrations,
+    // Every preview Worker is new and uses the public generic engine classes.
+    // The canonical service's V4 aliases/tombstones belong only to its Worker.
+    durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }] },
+    migrations: [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }],
     d1_databases: [{ binding: "ACCOUNTS", database_name: identity.database,
       database_id: databaseId, migrations_dir: "migrations" }],
     r2_buckets: [{ binding: "FILES", bucket_name: identity.bucket }],

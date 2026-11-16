@@ -11,6 +11,7 @@ playwright-report/
 .preview.png
 .e2e-auth.json
 server/wrangler.branch-preview.json
+server/.wrangler.*.cutover.jsonc
 
 dist/
 .consumer-*/
