@@ -718,7 +718,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     deviceHeaders,
     blobUrl(id: string) {
       if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
-      return new URL(`_tendril/blob/${id}`, new URL(cfg.base, location.href)).href;
+      return new URL(`_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href;
     },
     bus,
     config: cfg,
