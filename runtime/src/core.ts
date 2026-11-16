@@ -4,7 +4,7 @@ import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, Transc
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
-import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
+import type { ConversationResult, OperationOptions, PendingTimerCommand, ScopeDescriptor, ServiceDescriptor, StateResult, TimerIntent, TimerMutationResult } from "../../contract/index.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
@@ -16,6 +16,7 @@ import { deliveryPolicy } from "./delivery";
 import { createRequests, createCommandReceipts } from "./requests";
 import { captureData, type BlobReference, type CaptureOptions, type CaptureResult, type PendingCapture, type SendResult } from "./capture";
 import { createBrowserBlobs, BlobHttpError } from "./blob-transfer";
+import { createBrowserTimers, TimerHttpError } from "./timers";
 
 export type { Bus, Core } from "./types";
 
@@ -189,6 +190,11 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captureWaiters = new Map<string, Set<(result: CaptureResult) => void>>();
   const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const captureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const timerRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const timerAttempts = new Map<string, number>();
+  // Hold a server receipt until its durable queue removal succeeds. Retrying
+  // local cleanup must not reinterpret a terminal rejection as new server work.
+  const timerOutcomes = new Map<string, TimerMutationResult>();
   let welcome: any = null;
   let presence: Presence | null = null;
 
@@ -234,6 +240,21 @@ export function createCore(cfg: TendrilConfig): Internal {
   });
 
   // ---------- outbox ----------
+  const pendingTimers = (): PendingTimerCommand[] => store.items.filter(item => item.msg.t === "timer_command")
+    .map(item => ({ ...clone(item.msg.intent), cid: item.cid, status: "queued" }));
+  const timerQueueChanged = () => bus.emit("timer_queue", pendingTimers());
+  const retryTimer = (item: OutboxItem, error: unknown) => {
+    if (!store.has(item.cid) || timerRetryTimers.has(item.cid)) return;
+    if (error instanceof TimerHttpError && error.code === "invalid_response")
+      bus.emit("error", { code: error.code, message: error.message, cid: item.cid });
+    const attempts = (timerAttempts.get(item.cid) || 0) + 1;
+    timerAttempts.set(item.cid, attempts);
+    timerRetryTimers.set(item.cid, setTimeout(() => {
+      timerRetryTimers.delete(item.cid);
+      sentThisConn.delete(item.cid);
+      void pump();
+    }, Math.min(30_000, 5000 * 2 ** Math.min(attempts - 1, 3))));
+  };
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
     capture_id: item.cid, name: item.msg.name, data: clone(item.msg.data),
     scope: item.msg.scope, expected_generations: clone(item.msg.expected_generations),
@@ -310,6 +331,27 @@ export function createCore(cfg: TendrilConfig): Internal {
         const item = store.items.find((i) => !i.msg.failed && !sentThisConn.has(i.cid));
         if (!item) break;
         sentThisConn.add(item.cid);
+        if (item.msg.t === "timer_command") {
+          try {
+            const result = timerOutcomes.get(item.cid) || await timers.deliver(item.msg.intent);
+            timerOutcomes.set(item.cid, result);
+            await store.removeDurable(item.cid);
+            timerOutcomes.delete(item.cid);
+            const retry = timerRetryTimers.get(item.cid);
+            if (retry) clearTimeout(retry);
+            timerRetryTimers.delete(item.cid);
+            timerAttempts.delete(item.cid);
+            // The original promise can be gone after reload. Its exact command
+            // remains in the event so the page can identify the reviewed intent.
+            bus.emit("timer_result", clone({ ...item.msg.intent, ...result }));
+            receipts.acknowledge(item.cid, clone(result));
+            timerQueueChanged();
+          } catch (error) {
+            retryTimer(item, error);
+            break;
+          }
+          continue;
+        }
         if (item.msg.t === "upload_event") {
           try {
             if (!await ensureUploaded(item)) continue;
@@ -390,6 +432,23 @@ export function createCore(cfg: TendrilConfig): Internal {
   const deviceHeaders = (): Record<string, string> => ({ "X-Tendril-Device": stored.id, "X-Tendril-Device-Secret": stored.secret });
 
   const blobs = createBrowserBlobs(cfg.base, deviceHeaders);
+  const timers = createBrowserTimers({
+    base: cfg.base, headers: deviceHeaders, scopes: () => scopes, newCid, pending: pendingTimers,
+    async queue(intent: TimerIntent) {
+      const cid = intent.command.cid;
+      let saved = false;
+      const result = await sendAcked({ t: "timer_command", cid, intent }, () => {
+        saved = true;
+        timerQueueChanged();
+        bus.emit("timer_result", { ...clone(intent), cid, status: "queued" });
+      });
+      if (saved) return result || { cid, status: "queued" };
+      const rejected: TimerMutationResult = { cid, status: "rejected", error: result.error,
+        message: result.message || "Could not save this timer command. Keep the reviewed settings and try again." };
+      bus.emit("timer_result", { ...clone(intent), ...rejected });
+      return rejected;
+    },
+  });
 
   // ---------- incoming ----------
   const addTranscript = (e: TranscriptEntry) => {
@@ -733,6 +792,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     get welcome() { return welcome; },
     get rev() { return rev; },
     state,
+    timers: timers.api,
     streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.transportRequest(message) }),
     health,
     scopes: {
@@ -797,6 +857,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         events: store.items.filter(item => item.msg.t === "send").length,
         state: savingState + new Set([...pendingState.map(item => item.cid), ...store.items.filter(item => item.msg.t === "state").map(item => item.cid)]).size,
         captures: store.items.filter(item => item.msg.t === "upload_event" || item.msg.t === "upload").length,
+        timers: store.items.filter(item => item.msg.t === "timer_command").length,
       };
     },
     async uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult> {
@@ -885,6 +946,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     rebuild();
     if (JSON.stringify(local) !== before) emitState([], "cache");
     captureQueueChanged();
+    timerQueueChanged();
   }).catch(() => {}).finally(() => {
     connection.start();
   });

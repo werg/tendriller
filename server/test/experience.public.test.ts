@@ -13,6 +13,7 @@ beforeAll(async () => {
   await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations"));
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run();
 });
+const command = (extra: Record<string, unknown> = {}) => ({ cid: crypto.randomUUID(), expected_generations: {}, ...extra });
 let index = 0;
 async function setup() {
   const account = crypto.randomUUID(), email = `${account}@example.com`, raw = crypto.randomUUID();
@@ -58,7 +59,7 @@ it("device purpose does not grant privileges; focused speech uses only one socke
 it("runs a durable timer once without a page, coalesces missed intervals, and records cancellation", async () => {
   const { handle: h } = await setup();
   const now = await inDO(h.id, t => t.now());
-  const timer = await apiJson(h, "POST", "timers", { title: "Read the sensor", due_at: now + 10000, repeat: { every_minutes: 5 }, missed: "fire_once" }, 201);
+  const timer = await apiJson(h, "POST", "timers", { ...command(), title: "Read the sensor", due_at: now + 10000, repeat: { every_minutes: 5 }, missed: "fire_once" }, 201);
   await advance(h.id, 31 * 60000);
   await inDO(h.id, t => runTimers(t)); await inDO(h.id, t => runTimers(t));
   const events = await apiJson(h, "GET", "events?after=0");
@@ -66,7 +67,7 @@ it("runs a durable timer once without a page, coalesces missed intervals, and re
   expect(events.events.find((e: any) => e.data?.type === "timer").role).toBe(null);
   const history = await apiJson(h, "GET", "timers/history"); expect(history.runs).toHaveLength(1);
   const current = (await apiJson(h, "GET", "timers")).timers[0]; expect(current.due_at).toBeGreaterThan(now + 31 * 60000);
-  await apiJson(h, "PATCH", `timers/${timer.id}`, { state: "cancelled" });
+  await apiJson(h, "PATCH", `timers/${timer.id}`, command({ expected_revision: current.revision, state: "cancelled" }));
   await advance(h.id, 3600000); await inDO(h.id, t => runTimers(t));
   expect((await apiJson(h, "GET", "timers/history")).runs).toHaveLength(1);
 });
@@ -74,9 +75,9 @@ it("runs a durable timer once without a page, coalesces missed intervals, and re
 it("supports skip-late policy and rejects invalid timer input", async () => {
   const { handle: h } = await setup();
   const now = await inDO(h.id, t => t.now());
-  expect((await api(h, "POST", "timers", { title: "bad", due_at: now, timezone: "Not/A_Zone" })).status).toBe(400);
-  expect((await api(h, "POST", "timers", { title: "bad", due_at: now, repeat: { every_minutes: 0 } })).status).toBe(400);
-  await apiJson(h, "POST", "timers", { title: "Do not catch up", due_at: now - 180000, missed: "skip" }, 201);
+  expect((await api(h, "POST", "timers", { ...command(), title: "bad", due_at: now, timezone: "Not/A_Zone" })).status).toBe(400);
+  expect((await api(h, "POST", "timers", { ...command(), title: "bad", due_at: now, repeat: { every_minutes: 0 } })).status).toBe(400);
+  await apiJson(h, "POST", "timers", { ...command(), title: "Do not catch up", due_at: now - 180000, missed: "skip" }, 201);
   await inDO(h.id, t => runTimers(t));
   expect((await apiJson(h, "GET", "timers/history")).runs[0].status).toBe("skipped");
   expect((await apiJson(h, "GET", "events?after=0")).events.some((e: any) => e.data?.type === "timer")).toBe(false);
@@ -85,8 +86,8 @@ it("supports skip-late policy and rejects invalid timer input", async () => {
 it("pauses timer execution during service read-only and bounds it to the page lifetime", async () => {
   const { handle: h } = await setup();
   const now = await inDO(h.id, t => t.now());
-  expect((await api(h, "POST", "timers", { title: "Too far away", due_at: now + 365 * 86400000 })).status).toBe(409);
-  const timer = await apiJson(h, "POST", "timers", { title: "Wait for service", due_at: now + 1000 }, 201);
+  expect((await api(h, "POST", "timers", { ...command(), title: "Too far away", due_at: now + 365 * 86400000 })).status).toBe(409);
+  const timer = await apiJson(h, "POST", "timers", { ...command(), title: "Wait for service", due_at: now + 1000 }, 201);
   await advance(h.id, 2000);
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='read_only' WHERE id=1").run();
   try {
@@ -96,13 +97,13 @@ it("pauses timer execution during service read-only and bounds it to the page li
   await advance(h.id, 61000);
   await inDO(h.id, t => runTimers(t));
   expect((await apiJson(h, "GET", "timers/history")).runs).toHaveLength(1);
-  expect((await api(h, "PATCH", `timers/${timer.id}`, { state: "scheduled" })).status).toBe(409);
+  expect((await api(h, "PATCH", `timers/${timer.id}`, command({ expected_revision: timer.revision + 1, state: "scheduled" }))).status).toBe(409);
 });
 
 it("does not fire scheduled work for a suspended owner", async () => {
   const { handle: h, account } = await setup();
   const now = await inDO(h.id, t => t.now());
-  await apiJson(h, "POST", "timers", { title: "Paused account", due_at: now + 1000 }, 201);
+  await apiJson(h, "POST", "timers", { ...command(), title: "Paused account", due_at: now + 1000 }, 201);
   await env.ACCOUNTS.prepare("UPDATE accounts SET suspended_at=? WHERE id=?").bind(now, account).run();
   await advance(h.id, 2000); await inDO(h.id, t => runTimers(t));
   expect(await inDO(h.id, t => t.db.all("SELECT id FROM timer_runs"))).toHaveLength(0);
@@ -191,15 +192,15 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
 it.each(["cancel", "reschedule", "delete"])("honors a %s while an earlier timer notification is in flight", async (change) => {
   const { handle: h } = await setup();
   const now = await inDO(h.id, t => t.now());
-  const first = await apiJson(h, "POST", "timers", { title: "First reminder", due_at: now + 1000, notify: true }, 201);
-  const later = await apiJson(h, "POST", "timers", { title: "Changed reminder", due_at: now + 2000 }, 201);
+  const first = await apiJson(h, "POST", "timers", { ...command(), title: "First reminder", due_at: now + 1000, notify: true }, 201);
+  const later = await apiJson(h, "POST", "timers", { ...command(), title: "Changed reminder", due_at: now + 2000 }, 201);
   await advance(h.id, 3000);
   await inDO(h.id, async t => {
     const notify = t.notify;
     t.notify = async () => {
       // Represents another request served while delivery awaits an external push service.
-      if (change === "delete") deleteTimer(t, later.id, "owner");
-      else saveTimer(t, change === "cancel" ? { state: "cancelled" } : { due_at: t.now() + 60000 }, "owner", later.id);
+      if (change === "delete") deleteTimer(t, later.id, command({ expected_revision: later.revision }), "page:owner");
+      else saveTimer(t, command({ expected_revision: later.revision, ...(change === "cancel" ? { state: "cancelled" } : { due_at: t.now() + 60000 }) }), "page:owner", later.id);
       return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] };
     };
     try { await runTimers(t); } finally { t.notify = notify; }

@@ -190,7 +190,7 @@ test("pending work stays counted until acknowledgement and keeps authoritative g
     window.tendril.state.set(["notebook", "entries", "draft"], { id: "draft", note: "An older session observation" });
     void window.tendril.send({ type: "notebook.observation", session: "application-value" }, { scope: "scope-a" });
   });
-  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0, timers: 0 });
   await page.waitForFunction(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(`tendril:v3:${window.__TENDRIL__.id}`);
@@ -205,7 +205,7 @@ test("pending work stays counted until acknowledgement and keeps authoritative g
     } finally { db.close(); }
   });
   await page.reload();
-  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0, timers: 0 });
   // Another device archived the scope while this device was offline. Hold the
   // replays so the test observes metadata and counts before server acknowledgement.
   t.state = { notebook: { session_id: "application-value", entries: {} } }; t.rev++; t.scopes[0].generation = "new-generation";
@@ -220,10 +220,10 @@ test("pending work stays counted until acknowledgement and keeps authoritative g
   await expect.poll(() => held.length).toBe(2);
   expect(held.find(item => item.message.t === "state").message.expected_generations["scope-a"]).toBe("old-generation");
   expect(held.find(item => item.message.t === "send").message.data.session).toBe("application-value");
-  expect(await page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0 });
+  expect(await page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 1, state: 1, captures: 0, timers: 0 });
   for (const { message, socket } of held) socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "stale_generation", message: "The scope generation changed." }));
   mock.broadcast(t, { t: "state_reset", state: t.state, rev: t.rev });
-  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 0, state: 0, captures: 0 });
+  await expect.poll(() => page.evaluate(() => window.tendril.pendingWork())).toEqual({ events: 0, state: 0, captures: 0, timers: 0 });
   expect(await page.evaluate(() => window.tendril.state.get("notebook.session_id"))).toBe("application-value");
 });
 

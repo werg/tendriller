@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { webcrypto, createHash } from "node:crypto";
 import { build } from "esbuild";
+import { assertValid } from "../../contract/index.mjs";
 const built = await build({ stdin: { contents: 'export { createCore } from "./core"; export { createFixtureTransport } from "./preview";', resolveDir: new URL("../src/", import.meta.url).pathname, loader: "ts" }, bundle: true, format: "iife", globalName: "Runtime", platform: "browser", write: false });
 const flush = async () => {
   for (let round = 0; round < 3; round++) {
@@ -116,17 +117,17 @@ function storage() {
   const values = new Map();
   return { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
-async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true, blobs = blobService(), configuration = {} } = {}) {
+async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true, blobs = blobService(), configuration = {}, fetcher = blobs.fetch, onCore } = {}) {
   const timers = new Map(); let next = 0;
-  const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
+  const clock = { setTimeout(fn, ms) { const id = ++next; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
   const navigations = [];
   const globals = { window, document, localStorage, sessionStorage: storage(), indexedDB: database.indexedDB,
-    crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, ArrayBuffer, TextEncoder, URLSearchParams, structuredClone, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
+    crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, ArrayBuffer, TextEncoder, URLSearchParams, structuredClone, AbortController, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
     location: { href: "https://fixture.test/page/?review=1#draft", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", search: "?review=1", hash: "#draft", assign(url) { navigations.push(url); }, reload() {} },
     navigator: { onLine: online, userAgent: "Fixture", language: "en", userActivation: { isActive: false } }, screen: { width: 800, height: 600 },
     console: { log() {}, info() {}, warn() {}, error() {} }, queueMicrotask, ...clock,
-    fetch: blobs.fetch,
+    fetch: fetcher,
   };
   runInNewContext(built.outputFiles[0].text, globals);
   const transport = globals.Runtime.createFixtureTransport(), sent = [];
@@ -136,14 +137,248 @@ async function environment({ database = new Database(), localStorage = storage()
     if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev: 1, role: "owner", pending: false, transcript: [] });
   });
   const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, documentPath: null, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null}, ...configuration });
+  onCore?.(core);
   await flush();
   return { core, database, localStorage, transport, sent, window, blobs, navigations,
     async commit() { database.commit(); await flush(); },
-    async settle() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } await flush(); },
+    async settle() { for (const [id, timer] of [...timers]) { timers.delete(id); timer.fn(); } await flush(); },
+    async expire(ms) { for (const [id, timer] of [...timers]) if (timer.ms === ms) { timers.delete(id); timer.fn(); } await flush(); },
   };
 }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
+
+const timerScope = { id: "schedule", generation: "reviewed", paths: [], operations: ["timer.write"] };
+const plain = value => JSON.parse(JSON.stringify(value));
+function timerService() {
+  const calls = [], receipts = new Map();
+  const initial = { id: "timer-1", revision: 1, title: "Reviewed timer", due_at: 4000, timezone: "UTC", missed: "fire_once",
+    notify: false, state: "scheduled", created_at: 1000, updated_at: 1000 };
+  const service = {
+    calls, receipts, current: { ...initial }, reject: null, drop: 0, dropBody: 0, response: null,
+    fetch: async (url, options) => {
+      const path = new URL(url, "https://fixture.test").pathname.replace("/page/_tendril/", "");
+      const body = options.body === undefined ? undefined : JSON.parse(options.body);
+      const call = { path, method: options.method, body };
+      calls.push(call);
+      assert.equal(options.credentials, "same-origin"); assert.equal(options.cache, "no-store");
+      assert.ok(options.headers["X-Tendril-Device"]); assert.ok(options.headers["X-Tendril-Device-Secret"]);
+      if (options.method !== "GET") assertValid(options.method === "POST" ? "timerCreate" : options.method === "PATCH" ? "timerWrite" : "timerDelete", body);
+      if (service.response) return service.response(call, options);
+      if (service.reject) return json({ error: service.reject.error }, service.reject.status);
+      if (path === "timers" && options.method === "GET")
+        return json({ timers: [service.current], execution: "server", lifetime: "resident", expires_at: null });
+      if (path === "timers/history" && options.method === "GET") return json({ runs: [] });
+      let receipt = receipts.get(body.cid);
+      if (receipt) assert.deepEqual(call, receipt.call, "replay must preserve the entire original command");
+      else {
+        const { cid, scope, expected_generations, expected_revision, ...settings } = body;
+        const id = options.method === "POST" ? `timer-${receipts.size + 1}` : path.slice("timers/".length);
+        const value = options.method === "DELETE" ? { id, revision: expected_revision + 1, deleted: true }
+          : { ...(options.method === "POST" ? initial : service.current), ...settings, id,
+            revision: options.method === "POST" ? 1 : expected_revision + 1 };
+        assertValid(options.method === "DELETE" ? "timerDeleted" : "timer", value);
+        receipt = { call, value }; receipts.set(cid, receipt);
+        if (options.method !== "DELETE") service.current = value;
+      }
+      if (service.drop > 0) { service.drop--; throw new TypeError("Connection lost after timer commit"); }
+      if (service.dropBody > 0) {
+        service.dropBody--;
+        return new Response(new ReadableStream({ start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"id":'));
+          controller.error(new TypeError("Timer response body interrupted"));
+        } }));
+      }
+      return json(receipt.value);
+    },
+  };
+  return service;
+}
+
+test("timer commands capture immutable settings and guards before storage, then expose correlated durable receipts", async () => {
+  const service = timerService(), results = [], queues = [];
+  const env = await environment({ fetcher: service.fetch, scopes: [timerScope] });
+  env.core.bus.on("timer_result", result => results.push(plain(result)));
+  env.core.bus.on("timer_queue", queue => queues.push(plain(queue)));
+  const settings = { title: "Reviewed", due_at: 4000, timezone: "UTC", repeat: { at: "09:00", days: [1, 3] } };
+  const promise = env.core.timers.create(settings);
+  settings.title = "New draft"; settings.repeat.days.push(5);
+  env.transport.receive({ t: "scopes", scopes: [{ ...timerScope, generation: "new-review" }] });
+  await flush();
+  assert.equal(service.calls.length, 0); assert.equal(env.core.pendingWork().timers, 0);
+  assert.deepEqual(plain(env.core.timers.pending()), []); assert.equal(results.length, 0);
+  await env.commit();
+  assert.equal(service.calls.length, 1); assert.equal(env.core.pendingWork().timers, 1);
+  const original = service.calls[0].body;
+  assert.deepEqual(original.expected_generations, { schedule: "reviewed" });
+  assert.equal(original.title, "Reviewed"); assert.deepEqual(original.repeat.days, [1, 3]);
+  assert.equal(results[0].status, "queued"); assert.equal(queues[0][0].cid, original.cid);
+  const copy = env.core.timers.pending(); copy[0].command.title = "changed copy";
+  assert.equal(env.core.timers.pending()[0].command.title, "Reviewed");
+  await env.commit();
+  const result = await promise;
+  assert.equal(result.status, "accepted"); assert.equal(result.cid, original.cid); assert.equal(result.value.revision, 1);
+  assert.deepEqual(results.map(result => result.status), ["queued", "accepted"]);
+  assert.deepEqual(results[1].command, original); assert.equal(env.core.pendingWork().timers, 0);
+  assert.deepEqual(queues.at(-1), []);
+});
+
+test("unsaved timer work rejects without sending or claiming a queued timer", async () => {
+  const service = timerService(), results = [];
+  const env = await environment({ fetcher: service.fetch });
+  env.core.bus.on("timer_result", result => results.push(result));
+  env.database.failure = true;
+  const promise = env.core.timers.create({ title: "Keep this draft", due_at: 4000 });
+  await flush(); await env.commit();
+  const result = await promise;
+  assert.equal(result.status, "rejected"); assert.equal(result.error, "storage_unavailable");
+  assert.equal(results.length, 1); assert.equal(results[0].command.title, "Keep this draft");
+  assert.equal(service.calls.length, 0); assert.equal(env.core.pendingWork().timers, 0);
+});
+
+test("offline timer edits replay the original revision and guards after reload without rebasing", async () => {
+  const service = timerService(), restored = [], results = [];
+  const first = await environment({ fetcher: service.fetch, scopes: [timerScope] });
+  first.transport.disconnect();
+  const promise = first.core.timers.update("timer-1", { due_at: 4000 }, { expected_revision: 7, scope: "schedule" });
+  await flush(); await first.commit(); await first.expire(3000);
+  assert.equal((await promise).status, "queued"); assert.equal(service.calls.length, 0);
+  const original = plain(first.core.timers.pending()[0]);
+  service.reject = { status: 409, error: { code: "stale_generation", message: "Review the active schedule" } };
+  const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher: service.fetch,
+    scopes: [{ ...timerScope, generation: "rotated" }], onCore(core) {
+      core.bus.on("timer_queue", queue => restored.push(plain(queue)));
+      core.bus.on("timer_result", result => results.push(plain(result)));
+    } });
+  assert.deepEqual(service.calls[0].body, original.command);
+  assert.equal(service.calls[0].body.expected_revision, 7); assert.deepEqual(restored[0], [original]);
+  await second.commit();
+  assert.equal(results[0].cid, original.cid); assert.equal(results[0].error, "stale_generation");
+  assert.equal(results[0].operation, "update"); assert.deepEqual(results[0].command, original.command);
+  assert.equal(second.core.pendingWork().timers, 0);
+});
+
+test("lost timer success or body interruption replays one intent and reports its historical receipt after reload", async () => {
+  for (const failure of ["drop", "dropBody"]) {
+    const service = timerService(), results = []; service[failure] = 1;
+    const first = await environment({ fetcher: service.fetch });
+    const promise = first.core.timers.create({ title: "Original", due_at: 4000 });
+    await flush(); await first.commit(); await first.expire(8000);
+    const queued = await promise; assert.equal(queued.status, "queued");
+    assert.equal(service.receipts.size, 1);
+    service.current = { ...service.current, revision: 3, title: "Changed elsewhere" };
+    const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher: service.fetch,
+      onCore(core) { core.bus.on("timer_result", result => results.push(plain(result))); } });
+    await second.commit();
+    assert.equal(service.receipts.size, 1); assert.deepEqual(service.calls[1], service.calls[0]);
+    assert.equal(results[0].cid, queued.cid); assert.equal(results[0].status, "accepted");
+    assert.equal(results[0].value.revision, 1); assert.equal(results[0].value.title, "Original");
+    assert.equal((await second.core.timers.list()).timers[0].revision, 3);
+  }
+});
+
+test("timer revision, authority and explicit capacity rejections terminate without automatic new work", async () => {
+  for (const [status, code] of [[409, "timer_conflict"], [403, "forbidden"], [429, "quota"], [429, "resource_quota"], [428, "generation_required"]]) {
+    const service = timerService();
+    service.reject = { status, error: { code, message: "Review this operation", ...(code === "timer_conflict" ? { current: 4 } : {}) } };
+    const env = await environment({ fetcher: service.fetch });
+    const promise = env.core.timers.update("timer-1", { title: "Review" }, { expected_revision: 2 });
+    await flush(); await env.commit(); await env.commit();
+    const result = await promise;
+    assert.equal(result.status, "rejected"); assert.equal(result.error, code);
+    if (code === "timer_conflict") assert.equal(result.details.current, 4);
+    assert.equal(env.core.pendingWork().timers, 0);
+    await env.expire(5000); assert.equal(service.calls.length, 1);
+  }
+});
+
+test("timer terminal cleanup retries storage without falsely settling or repeating the HTTP operation", async () => {
+  for (const rejected of [false, true]) {
+    const service = timerService(), results = [];
+    if (rejected) service.reject = { status: 403, error: { code: "forbidden", message: "Owner access required" } };
+    const env = await environment({ fetcher: service.fetch });
+    env.core.bus.on("timer_result", result => results.push(plain(result)));
+    const promise = env.core.timers.create({ title: "Reviewed", due_at: 4000 });
+    await flush(); await env.commit();
+    env.database.failure = true;
+    await env.commit(); await env.expire(8000);
+    assert.equal((await promise).status, "queued"); assert.equal(env.core.pendingWork().timers, 1);
+    assert.deepEqual(results.map(result => result.status), ["queued"]);
+    service.reject = null; env.database.failure = false;
+    await env.expire(5000); await env.commit();
+    assert.equal(service.calls.length, 1, "a known terminal receipt only retries durable cleanup");
+    assert.equal(results.at(-1).status, rejected ? "rejected" : "accepted");
+    assert.equal(env.core.pendingWork().timers, 0);
+  }
+});
+
+test("transient timer errors retry unchanged with delay, and malformed success never claims rejection", async () => {
+  for (const mode of ["rate_limited", "read_only", "invalid_response"]) {
+    const service = timerService(), results = [];
+    service.response = () => mode === "invalid_response" ? json({ accepted: true })
+      : json({ error: { code: mode, message: "Try again" } }, mode === "rate_limited" ? 429 : 503);
+    const env = await environment({ fetcher: service.fetch });
+    env.core.bus.on("timer_result", result => results.push(plain(result)));
+    const promise = env.core.timers.create({ title: "Keep exact intent", due_at: 4000 });
+    await flush(); await env.commit(); await env.expire(8000);
+    assert.equal((await promise).status, "queued"); assert.equal(service.calls.length, 1);
+    await flush(); assert.equal(service.calls.length, 1, "no hot-loop retry");
+    await env.expire(5000); assert.equal(service.calls.length, 2);
+    service.response = null;
+    await env.expire(10000); await env.commit();
+    assert.equal(service.calls.length, 3); assert.deepEqual(service.calls[1], service.calls[0]); assert.deepEqual(service.calls[2], service.calls[0]);
+    assert.deepEqual(results.map(result => result.status), ["queued", "accepted"]);
+  }
+});
+
+test("a hung timer attempt has a deadline and retains its original command for a later attempt", async () => {
+  const service = timerService(); service.response = () => new Promise(() => {});
+  const env = await environment({ fetcher: service.fetch });
+  const promise = env.core.timers.create({ title: "Bounded attempt", due_at: 4000 });
+  await flush(); await env.commit(); await env.expire(8000);
+  assert.equal((await promise).status, "queued");
+  await env.expire(15000);
+  service.response = null;
+  await env.expire(5000); await env.commit();
+  assert.deepEqual(service.calls[1], service.calls[0]); assert.equal(env.core.pendingWork().timers, 0);
+});
+
+test("timer delete requires a matching deletion receipt and reads expose fresh validated server data", async () => {
+  const service = timerService(), results = [];
+  const env = await environment({ fetcher: service.fetch });
+  env.core.bus.on("timer_result", result => results.push(plain(result)));
+  service.response = () => json({ id: "other-timer", revision: 2, deleted: true });
+  const promise = env.core.timers.remove("timer-1", { expected_revision: 1 });
+  await flush(); await env.commit(); await env.expire(8000);
+  assert.equal((await promise).status, "queued"); assert.equal(env.core.pendingWork().timers, 1);
+  service.response = null;
+  await env.expire(5000); await env.commit();
+  assert.equal(results.at(-1).operation, "remove");
+  assert.deepEqual(results.at(-1).value, { id: "timer-1", revision: 2, deleted: true });
+  assert.equal(service.calls[0].method, "DELETE"); assert.deepEqual(service.calls[1], service.calls[0]);
+  const listing = await env.core.timers.list(); assert.equal(listing.execution, "server");
+  assert.deepEqual(plain(await env.core.timers.history()), { runs: [] });
+  service.reject = { status: 403, error: { code: "forbidden", message: "Owner access required" } };
+  await assert.rejects(env.core.timers.list(), error => error.code === "forbidden" && error.status === 403);
+  service.response = () => json({ timers: [] });
+  await assert.rejects(env.core.timers.list(), error => error.code === "invalid_response");
+});
+
+test("invalid timer metadata and missing review revisions fail before any local queue write", async () => {
+  const service = timerService(); const env = await environment({ fetcher: service.fetch });
+  const bad = [
+    () => env.core.timers.create({ title: "Review", due_at: 4000, cid: "injected" }),
+    () => env.core.timers.create({ title: "Review", due_at: 4000 }, { cid: "injected" }),
+    () => env.core.timers.create({ title: "Review", repeat: { at: "29:00" } }),
+    () => env.core.timers.update("timer-1", { title: "Review" }, {}),
+    () => env.core.timers.update("timer-1", { expected_revision: 2 }, { expected_revision: 1 }),
+    () => env.core.timers.remove("timer-1", { expected_revision: 0 }),
+    () => env.core.timers.remove("../timer-1", { expected_revision: 1 }),
+  ];
+  for (const run of bad) assert.throws(run);
+  await flush();
+  assert.equal(service.calls.length, 0); assert.equal(env.database.pending.length, 0); assert.equal(env.core.pendingWork().timers, 0);
+});
 
 test("publication updates preserve the explicit current document after draft deferral", async () => {
   for (const documentPath of [null, 'notes #1?/café 100%/review.html']) {

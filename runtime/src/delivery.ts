@@ -25,6 +25,7 @@ export const DELIVERY_POLICIES = Object.freeze({
   send: ACKED,
   capture_complete: ACKED,
   state: ACKED,
+  timer_command: ACKED,
   log: WRITTEN,
   upload: WRITTEN,
   eval_result: TRANSIENT,
