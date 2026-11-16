@@ -25,8 +25,11 @@ export function createBrowserBlobs(base: string, deviceHeaders: () => Record<str
     const response = await raw(path, { method, signal, ...(body === undefined ? {} : {
       body: new TextEncoder().encode(JSON.stringify(body)), headers: { "Content-Type": "application/json" },
     }) });
+    // Body-stream interruptions are transport failures, even after HTTP headers
+    // arrive. Only a complete but malformed JSON body is an invalid receipt.
+    const text = await response.text();
     let value;
-    try { value = await response.json(); }
+    try { value = JSON.parse(text); }
     catch { throw new BlobHttpError(response.status, "The blob service returned a non-JSON response", "invalid_response"); }
     if (schema && validate(schema, value).length)
       throw new BlobHttpError(response.status, `The blob service response does not match ${schema}`, "invalid_response");
