@@ -83,4 +83,6 @@ test('client construction is quiet and agent credentials stay in the protocol he
   assert.deepEqual(await client.bootstrap(), { version: 1, endpoints: [] });
   assert.deepEqual(calls, [['peers/bootstrap']]);
   assert.throws(() => client.rendezvous('bad/path', 'endpoint'), { code: 'invalid_rendezvous' });
+  assert.throws(() => client.rendezvous('room', 'endpoint', { timeoutMs: 0 }), { code: 'invalid_rendezvous' });
+  assert.equal(sockets.length, 1, 'Invalid options must not open an abandoned socket');
 });

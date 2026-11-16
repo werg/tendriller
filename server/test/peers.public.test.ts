@@ -47,6 +47,15 @@ it('has no hosted binary peer relay endpoint or protocol', async () => {
     { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' })).status).toBe(400);
 });
 
+it('does not register hosted application devices or sockets for a peer page', async () => {
+  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'quiet-history' } });
+  const response = await req(`${h.page_url}_tendril/ws`, { headers: { Upgrade: 'websocket' } });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: { code: 'application_backend' } });
+  expect(await inDO(h.id, t => ({ devices: t.db.one('SELECT COUNT(*) AS n FROM devices'), sockets: t.ctx.getWebSockets().length })))
+    .toEqual({ devices: { n: 0 }, sockets: 0 });
+});
+
 it('isolates pairs and closes an incomplete rendezvous when either participant leaves', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
   const first = await open(h, 'channel', 'first');
@@ -140,4 +149,20 @@ it('bounds authorization work and forwards no pending description after a repeat
   expect((await first.closed).code).toBe(1008);
   expect(second.connection.stats.receivedDescriptions).toBe(0);
   second.connection.close();
+});
+
+it('retires both endpoints when asynchronous host authorization fails', async () => {
+  const h = await create({ mode: 'dashboard', listener: false });
+  const first = await open(h, 'failed-auth', 'first'), second = await open(h, 'failed-auth', 'second');
+  const [a] = await Promise.all([first.connection.ready, second.connection.ready]);
+  await inDO(h.id, async t => {
+    const original = t.env.ACCOUNTS;
+    const sender = t.ctx.getWebSockets('rendezvous').find(ws => ws.deserializeAttachment().peerId === 'first')!;
+    t.env.ACCOUNTS = { prepare() { throw new Error('Injected account storage failure'); } } as unknown as D1Database;
+    try { await t.webSocketMessage(sender, JSON.stringify({ t: 'description', session: a.session, description: offer })); }
+    finally { t.env.ACCOUNTS = original; }
+  });
+  expect((await first.closed).code).toBe(1011);
+  expect((await second.closed).code).toBe(1013);
+  expect(second.connection.stats.receivedDescriptions).toBe(0);
 });

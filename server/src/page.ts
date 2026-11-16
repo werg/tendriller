@@ -140,6 +140,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "ws") {
+    requireCloudflareApplication(t);
     if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required", "Expected a WebSocket upgrade");
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];

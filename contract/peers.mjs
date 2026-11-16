@@ -250,7 +250,12 @@ export function createPeersClient({ base, request, protocols = [PEER_RENDEZVOUS_
     rendezvous(channel, peerId, options = {}) {
       if (![channel, peerId].every(value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value)))
         fail('invalid_rendezvous', 'Expected bounded channel and endpoint identities');
+      const timeoutMs = options.timeoutMs ?? PEER_RENDEZVOUS_LIMITS.lifetimeMs;
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > PEER_RENDEZVOUS_LIMITS.lifetimeMs)
+        fail('invalid_rendezvous', 'Invalid rendezvous timeout');
       const url = new URL(prefix + '/peers/rendezvous');
+      if (!['https:', 'http:'].includes(url.protocol) || url.search)
+        fail('invalid_rendezvous', 'Expected an HTTP service base without query parameters');
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       if (url.username || url.password || url.hash || url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
         fail('invalid_rendezvous', 'Rendezvous requires a secure URL without credentials');

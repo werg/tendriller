@@ -6,6 +6,8 @@ import { build } from 'esbuild';
 
 const compiled = await build({ entryPoints: [new URL('../src/kernel.ts', import.meta.url).pathname],
   bundle: true, format: 'iife', globalName: 'Kernel', platform: 'browser', write: false });
+const bootstrap = await build({ entryPoints: [new URL('../src/index.ts', import.meta.url).pathname],
+  bundle: true, format: 'iife', target: 'es2022', minify: true, platform: 'browser', write: false });
 const flush = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -28,12 +30,23 @@ function backend() {
   };
 }
 
-function environment() {
+class Element extends EventTarget {
+  constructor(tagName) { super(); this.tagName = tagName; this.style = {}; this.children = []; this.attributes = new Map(); this.parentNode = null; }
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  append(...children) { for (const child of children) { child.remove(); child.parentNode = this; this.children.push(child); } }
+  remove() { if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; }
+  attachShadow() { return this.shadowRoot = new Element('shadow-root'); }
+}
+
+function environment({ defaultEntry = false } = {}) {
   const calls = { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] };
   let nextTimer = 0;
   const timers = new Map(), intervals = new Map();
   const window = Object.assign(new EventTarget(), { isSecureContext: true, Notification: { permission: 'granted' }, PushManager: class {} });
-  const document = Object.assign(new EventTarget(), { visibilityState: 'visible', readyState: 'complete' });
+  const observers = new Set();
+  const document = Object.assign(new EventTarget(), { visibilityState: 'visible', readyState: 'complete',
+    body: new Element('body'), documentElement: new Element('html'), createElement: tag => new Element(tag) });
+  document.documentElement.append(document.body);
   const publication = { id: '1', base: '/page/_publications/1/', entry: 'app.html',
     assets: [{ path: 'app.html', type: 'text/html', sha256: 'a'.repeat(64) }], runtime: { base: '/runtime/' } };
   const registration = { scope: 'https://fixture.test/page/', active: { postMessage(message, ports) {
@@ -62,12 +75,25 @@ function environment() {
         this.port1.other = this.port2; this.port2.other = this.port1;
       }
     },
+    MutationObserver: class {
+      constructor(callback) { this.callback = callback; }
+      observe() { observers.add(this); }
+      disconnect() { observers.delete(this); }
+    },
   };
-  runInNewContext(compiled.outputFiles[0].text, context);
-  const api = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 1, documentPath: 'app.html', publication,
+  const configuration = { id: 'page', base: '/page/', version: 1, documentPath: 'app.html', publication,
     ws: '/page/_tendril/ws', application: { kind: 'peer', id: 'history-one' },
-    features: { push: true, vapid: 'AAAA', shared_by: 'Fixture', speech: null } });
+    features: { push: true, vapid: 'AAAA', shared_by: 'Fixture', speech: null } };
+  let api;
+  if (defaultEntry) {
+    window.__TENDRIL__ = configuration;
+    runInNewContext(bootstrap.outputFiles[0].text, context); api = window.tendril;
+  } else {
+    runInNewContext(compiled.outputFiles[0].text, context); api = context.Kernel.startRuntime(configuration);
+  }
   return { api, context, calls, window, document,
+    mutate() { for (const observer of observers) observer.callback(); },
+    reloadScript() { runInNewContext(bootstrap.outputFiles[0].text, context); },
     async advance() {
       for (const [id, { fn }] of [...timers]) { timers.delete(id); fn(); }
       for (const { fn } of intervals.values()) fn();
@@ -97,6 +123,41 @@ test('a peer runtime operates with no host connection, host outbox, background f
   assert.deepEqual(plain(env.api.sensors.status().active), ['motion']);
   assert.deepEqual(plain(env.api.pendingWork()), { events: 0, state: 0, captures: 0, timers: 0 });
   assert.equal(env.api.notifications.available, false);
+  assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
+});
+
+test('the served bootstrap mounts working management and sensor controls without touching hosted application services', async () => {
+  const env = environment({ defaultEntry: true });
+  assert.equal(env.window.tendril, env.api);
+  const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
+  assert.ok(host, 'the complete default entry must mount its operational utility');
+  const nav = host.shadowRoot.children.find(element => element.tagName === 'nav');
+  const link = nav.children.find(element => element.tagName === 'a');
+  const indicator = nav.children.find(element => element.tagName === 'span');
+  const stop = nav.children.find(element => element.tagName === 'button');
+  assert.equal(link.textContent, 'Manage page');
+  assert.equal(link.href, 'https://fixture.test/page/_tendril/manage');
+  assert.equal(link.target, '_blank');
+  assert.equal(link.rel, 'noopener');
+  assert.equal(stop.hidden, true);
+
+  env.api.application.install(backend()); await env.api.application.ready();
+  env.window.addEventListener('devicemotion', () => {});
+  await env.advance();
+  assert.equal(indicator.textContent, 'Motion active');
+  assert.equal(stop.hidden, false);
+  stop.dispatchEvent(new Event('click')); await env.advance();
+  assert.deepEqual(plain(env.api.sensors.status()), { active: [], pending: [] });
+  assert.equal(stop.hidden, true);
+
+  host.remove(); env.mutate();
+  assert.equal(host.parentNode, env.document.body, 'page DOM replacement cannot remove sensor cancellation');
+  env.reloadScript();
+  assert.equal(env.document.body.children.filter(element => element.tagName === 'tendril-utility').length, 1);
+  for (const type of ['load', 'online', 'offline', 'pagehide']) env.window.dispatchEvent(new Event(type));
+  env.window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+  env.document.dispatchEvent(new Event('visibilitychange'));
+  for (let i = 0; i < 3; i++) await env.advance();
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
 });
 

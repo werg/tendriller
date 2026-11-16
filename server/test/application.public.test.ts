@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { api, apiJson, create, inDO, PageClient, publishFiles, req } from './helpers';
+import { api, apiJson, create, inDO, publishFiles, req } from './helpers';
 import type { ApplicationEventBatch, ApplicationOperation } from '../../contract/application.mjs';
 
 const program = (...steps: unknown[]) => ({ version: 1, steps, expected_generations: {} });
@@ -63,8 +63,8 @@ it('peer pages disable Cloudflare application paths and retain host publication 
   expect((await api(h, 'POST', 'streams/telemetry/records', {}, {}, 'tp_' + 'a'.repeat(40))).status).toBe(409);
   await publishFiles(h, { 'index.html': '<!doctype html><title>Peer application</title>' });
   expect(await (await req(h.page_url)).text()).toContain('"application":{"kind":"peer","id":"history-one"}');
-  const page = await PageClient.connect(h.page_url);
-  expect(await page.request({ t: 'send', cid: 'ignored', expected_generations: {}, data: { arbitrary: true } })).toMatchObject({ error: 'application_backend' });
-  page.close();
+  const hostedSocket = await req(h.page_url + '_tendril/ws', { headers: { Upgrade: 'websocket' } });
+  expect(hostedSocket.status).toBe(409);
+  expect(await hostedSocket.json()).toMatchObject({ error: { code: 'application_backend' } });
   expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM application_changes'))).toEqual({ n: 0 });
 });
