@@ -13,7 +13,7 @@ Fetch `GET https://tendriller.dev/api/service` before creating a page. It return
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)
 - [CLI, collector, preview and examples](https://github.com/werg/tendriller-contrib)
 
-**Confirm contrib compatibility with `GET /api/service` rather than relying on version-number equality.** The pinned contrib rc.2 catalog is the current tested pairing for core rc.4; future releases have their own immutable manifests. The release index includes release candidates. Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
+**Confirm contrib compatibility with `GET /api/service` rather than relying on version-number equality.** The pinned contrib rc.3 catalog is the tested pairing for core rc.5; future releases have their own immutable manifests. The release index includes release candidates. Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
 
 ## Create and establish delivery
 
