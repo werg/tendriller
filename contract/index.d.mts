@@ -69,6 +69,30 @@ export type CreateTimer = WireContracts["timerCreate"];
 export type TimerDelete = WireContracts["timerDelete"];
 export type TimerDeleted = WireContracts["timerDeleted"];
 export type TimerRun = WireContracts["timerRun"];
+/** Browser authors supply timer settings; the runtime owns command identity. */
+export type TimerSettings = Omit<CreateTimer, "cid" | "scope" | "expected_generations">;
+export type TimerChanges = Omit<TimerWrite, "cid" | "scope" | "expected_generations" | "expected_revision">;
+export type TimerRevisionOptions = OperationOptions & { expected_revision: number };
+export type TimerMutationResult<T = DurableTimer | TimerDeleted> = { cid: string } & (
+  { status: "queued" } | { status: "accepted"; value: T }
+  | { status: "rejected"; error: string; message: string; details?: PublicError }
+);
+/** The exact original command, including the guards captured before persistence. */
+export type TimerIntent = { operation: "create"; command: CreateTimer }
+  | { operation: "update"; id: string; command: TimerWrite }
+  | { operation: "remove"; id: string; command: TimerDelete };
+export type PendingTimerCommand = TimerIntent & { cid: string; status: "queued" };
+export type TimerResultEvent = (Extract<TimerIntent, { operation: "create" | "update" }> & TimerMutationResult<DurableTimer>)
+  | (Extract<TimerIntent, { operation: "remove" }> & TimerMutationResult<TimerDeleted>);
+export interface BrowserTimers {
+  list(): Promise<WireContracts["timerList"]>;
+  history(): Promise<WireContracts["timerHistory"]>;
+  create(settings: TimerSettings, context?: OperationOptions): Promise<TimerMutationResult<DurableTimer>>;
+  update(id: string, changes: TimerChanges, context: TimerRevisionOptions): Promise<TimerMutationResult<DurableTimer>>;
+  remove(id: string, context: TimerRevisionOptions): Promise<TimerMutationResult<TimerDeleted>>;
+  /** Local commands still awaiting a durable terminal receipt; never a server timer list. */
+  pending(): PendingTimerCommand[];
+}
 export type PortableBundle = WireContracts["bundle"];
 export type BundleStageResult = WireContracts["bundleStage"];
 export type BundlePublish = WireContracts["bundlePublish"];
@@ -132,6 +156,7 @@ export interface RuntimeEventMap {
   scopes: ScopeDescriptor[];
   workflow: { module: string; topic: string; [key: string]: unknown };
   state_result: StateResult & StateWriteOptions & { cid: string };
+  timer_result: TimerResultEvent; timer_queue: PendingTimerCommand[];
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
   stream_gap: { stream: string; history: StreamHistory };
@@ -152,6 +177,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
   request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<T>;
   scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };
+  timers: BrowserTimers;
   readonly service: ServiceDescriptor | null;
   conversation: {
     entries(): TranscriptEntry[];
@@ -163,7 +189,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   upload(blob: Blob, opts?: OperationOptions & { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
   /** Durable local work retained until its acknowledgement. */
-  pendingWork(): { events: number; state: number; captures: number };
+  pendingWork(): { events: number; state: number; captures: number; timers: number };
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
   setBlobRetention(id: string, options: OperationOptions & { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;

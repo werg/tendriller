@@ -66,7 +66,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
   const api: RuntimeApi = {
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
-    state: core.state, scopes: core.scopes,
+    state: core.state, scopes: core.scopes, timers: core.timers,
     get service() { return core.service; },
     conversation: core.conversation, streams: core.streams,
     on: (type, listener) => core.bus.on(type, listener),

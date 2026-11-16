@@ -177,6 +177,99 @@ syntax. It is not a generic agent-token or private-transport escape hatch. The
 service applies authorization to each request; errors expose `code` and `status`.
 Typed caller results can be supplied as `request<Result>(...)` in TypeScript.
 
+## Durable timers
+
+`timers` manages server schedules through the runtime's durable command queue:
+
+| Method | Result |
+| --- | --- |
+| `timers.list()` | Fresh `{timers, execution:"server", lifetime, expires_at}` with each timer's current `revision`. |
+| `timers.history()` | Fresh `{runs}` with occurrence and notification-delivery receipts. |
+| `timers.create(settings, context?)` | A queued, accepted, or rejected creation command. |
+| `timers.update(id, changes, {expected_revision,...context})` | A command against the exact timer revision the person reviewed. |
+| `timers.remove(id, {expected_revision,...context})` | A command removing the reviewed timer revision. |
+| `timers.pending()` | Copies of this browser's restored commands still awaiting a durable terminal receipt. |
+
+Settings include `title`, `due_at`, `timezone`, `repeat`, `missed`, `device`,
+`notify`, and `state`. Creation requires a title and a usable first schedule;
+calendar recurrence can omit `due_at`. Context is optional `scope` and
+`expected_generations`. Revision belongs in the update/remove context. Unknown
+settings or context options, a supplied `cid`, and missing/invalid revision
+preconditions fail before queuing. See the [timer schedule reference](EXPERIENCES.md#timers-that-survive-a-closed-page)
+for recurrence, time zones, missed runs, claim, lifetime, and notification limits.
+
+```js
+// Register observers before loading the current list or creating work.
+tendril.on("timer_queue", commands => renderPendingCommands(commands));
+tendril.on("timer_result", result => {
+  showCommandStatus(result.cid, result.status);
+  if (result.status === "rejected") showReviewError(result.message);
+  // An accepted value is this command's receipt, possibly replayed after reload.
+  if (result.status === "accepted") refreshCurrentTimers();
+});
+renderPendingCommands(tendril.timers.pending());
+
+const result = await tendril.timers.create({
+  title: "Review the inspection", due_at: reviewedDeadline,
+  timezone: reviewedTimeZone, notify: true,
+});
+// Call once for this reviewed intent. Queued work retries automatically.
+if (result.status === "accepted") showScheduledReceipt(result.value);
+```
+
+Every mutation result has a stable runtime-generated `cid`. An `accepted` result
+has `value`: the timer for create/update, or `{id,revision,deleted:true}` for
+remove. A `rejected` result has `error` and `message`; a service rejection also
+includes `details`, the original error object. For `timer_conflict`,
+`details.current` identifies the newer revision. A `queued` result has no
+accepted value. It means the command is durably stored on this device; it does
+not prove a timer exists on the server. After a lost reply the service may already
+have accepted it, so another create call would be a different operation.
+
+The runtime copies settings and captures all known required `timer.write`
+generations at invocation, before asynchronous storage. It persists that exact
+command and ID before transport. Reconnect, reload, timeout, and interrupted
+responses reuse those bytes and the original revision and guards. Storage
+failure before queuing returns `rejected` with `storage_unavailable` and sends
+nothing. A disconnected or slow command returns `queued` after a bounded wait.
+Queued commands need the page runtime to run and reconnect; only an accepted
+server timer can run while the browser is closed.
+
+`timer_result` fires when durable queuing succeeds and at terminal completion,
+including a replay after the original promise disappeared. It includes `cid`,
+`operation` (`create`, `update`, or `remove`), `id` for update/remove, the exact
+original `command`, and the result. `command` contains the runtime-generated ID,
+settings, captured generations, optional scope, and reviewed revision. Use that
+identity to reconcile the submitted intent without replacing newer draft
+settings. `timer_queue` emits the pending array on restoration and queue changes;
+`pendingWork().timers` counts those commands. These local commands are separate
+from `timers.list()`, which always reads current server state and can fail offline
+or when the current viewer lacks owner access.
+
+Each HTTP attempt has a 15-second deadline. Ambiguous transport/body failures,
+temporary rate limits, and service outages retry with delays of 5, 10, 20, then
+30 seconds while the runtime is connected. Reconnection can retry sooner.
+Malformed or mismatched success receipts remain queued and report an `error`
+event; they never become invented acceptance or rejection. Explicit authority,
+generation, revision, timer-capacity (`quota`), and command-allowance
+(`resource_quota`) rejections end the command. Terminal results are emitted only
+after durable local removal succeeds. A failed cleanup remains pending and
+retries cleanup; a reload can safely recover the original server receipt.
+
+An edit or removal must use the revision from the reviewed timer:
+
+```js
+const result = await tendril.timers.update(reviewedTimer.id,
+  {state: "cancelled"}, {expected_revision: reviewedTimer.revision});
+```
+
+The runtime never fetches a newer revision or generation to make stale work
+succeed. On conflict, load the current list, show what changed, and let the person
+review a new command. Timer revisions advance on edits and on automatic firing
+or rescheduling. An accepted replay returns the original receipt, which can be
+older than the current schedule; refresh `list()` when presenting current state.
+Acceptance does not prove a notification was displayed, read, or acted on.
+
 ## Streams and captures
 
 ```js
