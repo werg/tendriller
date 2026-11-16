@@ -65,6 +65,28 @@ test('an edited page creates a new publication while existing lazy asset URLs re
   assert.equal(await (await get(current.base + 'lazy.js')).text(), 'after');
 });
 
+test('pinned directory links resolve only their authored index, including encoded nested names', async t => {
+  const directories = ['docs', 'reports #1?/café 100%'];
+  const files = { 'index.html': '<!doctype html><head></head><a href="docs/">Documentation</a>' };
+  for (const directory of directories) files[directory + '/index.html'] = '<!doctype html><head></head><p>Authored nested index</p>';
+  const { get } = await fixture(t, files);
+  const publication = (await (await get('/_tendril/info')).json()).publication;
+  for (const directory of directories) {
+    const encoded = directory.split('/').map(encodeURIComponent).join('/');
+    for (const path of new Set([encoded, encoded.replace(/%[0-9A-F]{2}/g, value => value.toLowerCase())])) {
+      const response = await get(publication.base + path + '/');
+      assert.equal(response.status, 200);
+      const html = await response.text();
+      const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)[1]);
+      assert.equal(config.publication.entry, directory + '/index.html');
+      assert.equal(/<base href="([^"]+)"/.exec(html)[1], publication.base + encoded + '/');
+    }
+    assert.equal((await get(publication.base + encoded)).status, 404, 'a non-directory URL is not an implicit alias');
+    assert.equal((await get(publication.base + encoded + '/missing/')).status, 404);
+  }
+  assert.equal((await get(publication.base + 'missing/')).status, 404);
+});
+
 test('service capabilities are explicit fixtures and unsupported operations fail visibly', async t => {
   const { get } = await fixture(t, { 'index.html': '<!doctype html><p>Plain page</p>',
     'app-settings.json': '{"service":{"workflows":["secret"]}}' });
