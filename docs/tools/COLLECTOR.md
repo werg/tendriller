@@ -6,14 +6,20 @@ listener. The running collector holds only a scoped `tp_` producer credential an
 cannot publish page files, execute browser code, or wake an agent.
 
 Build or obtain an exact core tools artifact and verify its hash with
-`tools-manifest.json` before extracting. Run `bin/tendril-stream.mjs` from that
+the tools archive entry in the published `manifest.json` or `SHA256SUMS`
+before extracting (`dist/tools-manifest.json` is build-local only). Run
+`bin/tendril-stream.mjs` from that
 package, or `tools/collector/bin/tendril-stream.mjs` from a source checkout after
 installing the optional tool dependencies. Node.js 22.15 or newer is required.
 The package contains no dashboard template. Author a page and choose streams
 suited to its task; the cookbook collection explains those decisions.
 
 Before beginning a large backlog, claim the page and inspect its current stream
-limits through the service descriptor. A collector heartbeat neither claims a
+limits through the service descriptor. Creation includes machine-readable
+`unclaimed_limits.stream_retained_bytes` and
+`unclaimed_limits.request_body_bytes` (each 1048576 bytes / 1 MiB).
+Starting the collector before the owner opens and claims the page can exhaust
+this unclaimed retention budget during ordinary telemetry collection. A collector heartbeat neither claims a
 page nor keeps an agent conversation available. For a long-running process,
 choose the page's resident lifetime deliberately after claim.
 
@@ -239,6 +245,11 @@ until a second sample establishes an interval. Optional GPU sampling invokes
 driver/tool reports `gpu_status:"unavailable"`; CPU and RAM collection continues.
 This initial adapter does not collect per-process, disk, or network counters.
 
+Each GPU record includes `model` (the `nvidia-smi` name) and
+`unified_memory:true` for a recognized NVIDIA GB10 device. Other/unknown models
+have `unified_memory:null`, **not** `false`: an unavailable framebuffer counter
+does not prove unified memory or independent VRAM.
+
 GPU fields retain actual zero readings, but unavailable measurements remain
 `null`, including memory counters. An optional per-GPU `unavailable` object gives
 the reason for each missing field:
@@ -271,10 +282,12 @@ affect reported GPU memory on NUMA systems. An absent counter does not identify
 a shared/unified-memory architecture. Host RAM remains a separate measurement.
 Consumers should check for `null` before converting bytes to GiB.
 
-On known unified-memory hardware such as
+On known unified-memory hardware such as GB10-powered
 [DGX Spark](https://docs.nvidia.com/dgx/dgx-spark/known-issues.html), the GPU shares
 system RAM and has no separate dedicated framebuffer total to add to RAM.
 NVIDIA documents an unsupported GPU memory-usage counter on these systems.
+Use the `unified_memory` flag for a recognized GB10 instead of inferring it
+from null `memory_total_bytes`; host RAM must not be added to framebuffer RAM.
 Show that counter as unavailable, with its reason, and explain that GPU memory
 is part of system RAM; the host RAM measurement is not GPU-only usage. The
 training dashboard preserves `null` through unit conversion and displays the
@@ -568,7 +581,9 @@ are never copied into those notices. Check `spool_full`, `buffering`,
 
 ## Source adapter boundary
 
-Source readers live in `cli/lib/stream-sources/`. Each adapter owns its input
+In the source checkout, source readers live in
+`tools/collector/lib/stream-sources/` (these source paths are not installed
+inside the extracted release). Each adapter owns its input
 resources, parsing, and health notices. The collector coordinates scheduling,
 bounded buffering, upload acknowledgements, and retry timing.
 
@@ -585,7 +600,8 @@ destination stream's `durability`. A durable SSH stream stores records that
 arrive; it cannot recover output lost before arrival. An ephemeral destination
 never makes its samples enter the disk spool.
 
-The small adapter interface is documented in `stream-sources/index.mjs`:
+The small adapter interface is implemented in
+`tools/collector/lib/stream-sources/index.mjs`:
 `read()` returns a polled batch, or `stream()` yields batches for one live session;
 both report source health, and `close()` releases active resources. Adapters do
 not own credentials, uploads, persistence, or retry loops. A file reader merely
@@ -593,12 +609,12 @@ proposes a checkpoint. The collector commits it atomically with the records, and
 can retry a smaller prefix when a batch will not fit a small spool. Failed SSH
 input is reported as a gap rather than treated as replayable file input.
 
-Tests: `node --test cli/test/stream-collector.test.mjs` exercises lost
+Tests: `node --test tools/collector/test/stream-collector.test.mjs` exercises lost
 acknowledgements/restart, bounded atomic checkpoints, ephemeral nonpersistence,
 UTF-8 and rotation, SSH argument safety, lock ownership, invalid acknowledgements,
-and process shutdown. `node --test cli/test/stream-sources.test.mjs` covers adapter
+and process shutdown. `node --test tools/collector/test/stream-sources.test.mjs` covers adapter
 capabilities, file resume, host sampling state and GPU availability, bounded SSH input and cancellation,
-and live-input backpressure. `node --test cli/test/stream-source-options.test.mjs`
+and live-input backpressure. `node --test tools/collector/test/stream-source-options.test.mjs`
 covers large-line projection, bounded subtree flattening and path escaping,
 larger snapshot uploads, split UTF-8, command argument boundaries,
 finite output/timeout/cancellation, and concurrent source scheduling with durable
