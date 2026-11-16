@@ -73,9 +73,10 @@ async function worker(net, stores = new Map(), clients = new Map(), { beforePut 
   }
   return { stores, clients, sent, caches,
     install: () => dispatch("install"), activate: () => dispatch("activate"),
-    async announce(clientId, publication, replies) {
-      clients.set(clientId, scope);
-      await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url: scope },
+    async announce(clientId, publication, replies, documentPath = publication.entry) {
+      const url = new URL(documentPath.split('/').map(encodeURIComponent).join('/'), publication.base).href;
+      clients.set(clientId, url);
+      await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url },
         ports: replies ? [{ postMessage(value) { replies.push(structuredClone(value)); } }] : [] });
     },
     request: (path, clientId = "a", navigation = false) => dispatch("fetch", { request: { url: absolute(path), method: "GET", headers: new Headers(), mode: navigation ? "navigate" : "cors" }, clientId: navigation ? "" : clientId, replacesClientId: navigation ? clientId : "", resultingClientId: navigation ? clientId : "" }),
@@ -300,6 +301,30 @@ test("offline root navigation uses the declared HTML entry even when index.html 
     assert.equal((await resumed.request("pages/", "a", true)).status, 503,
       "explicit nested directory navigation must not borrow the publication entry");
   }
+});
+
+test("nested document announcements keep the canonical root across offline worker restart", async () => {
+  const a = release("1"), entry = "app.html", documentPath = "notes #1?/café 100%/help.html";
+  const entryHtml = "<h1>Canonical root</h1>", documentHtml = "<h1>Nested help</h1>";
+  a.publication.entry = entry;
+  const encode = path => path.split('/').map(encodeURIComponent).join('/');
+  for (const [path, body] of [[entry, entryHtml], [documentPath, documentHtml]]) {
+    a.publication.assets.push({ path, sha256: sha(body), type: "text/html" });
+    a.resources.set(new URL(encode(path), a.publication.base).href,
+      () => new Response(body, { headers: { "X-Tendril-Publication": "1" } }));
+  }
+  a.html = entryHtml;
+  const net = network(a), initial = await worker(net);
+  await initial.install();
+  await initial.announce("root", a.publication);
+  await initial.announce("nested", a.publication, undefined, documentPath);
+  net.online = false;
+  const restarted = await worker(net, initial.stores, initial.clients);
+  assert.equal(await (await restarted.request("", "root", true)).text(), entryHtml);
+  assert.equal(await (await restarted.request(a.publication.base, "nested", true)).text(), entryHtml);
+  assert.equal(await (await restarted.request(encode(documentPath), "nested", true)).text(), documentHtml);
+  assert.equal(await (await restarted.request(a.publication.base + encode(documentPath), "nested", true)).text(), documentHtml);
+  assert.equal((await restarted.request(encode(documentPath.slice(0, documentPath.lastIndexOf('/') + 1)), "nested", true)).status, 503);
 });
 
 test("pinned and ordinary directory navigation resolves only declared index files with equivalent URL encoding", async () => {

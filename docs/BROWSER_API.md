@@ -163,6 +163,15 @@ are public, and no settings panel is required. See [Notifications](PUSH_NOTIFICA
 
 ## Identity, publication, and health
 
+The injected configuration and the public kernel's `RuntimeConfiguration` separate
+publication identity from document context. `publication.entry` is the required
+canonical root HTML entry and is identical for every document in that publication.
+`documentPath` is the required decoded logical path of the current HTML document;
+it is `null` only for built-in pages without a publication. Both authored paths must
+identify declared HTML assets. The current document determines its relative asset
+base, pinned URL, and update reload target. Offline root navigation uses the
+canonical publication entry, including after a nested document announces itself.
+
 `identity` is readonly: `{page,version,publication,base,managementUrl}`.
 `device` is a readonly current snapshot; reread it after `role` or `device_config`
 events. `connected`, `presence`, `service`, `version`, and `pendingWork()` expose
@@ -179,7 +188,7 @@ runtime modules and models are fetched and verified when used, so offline page
 readiness does not promise an unused speech model is downloaded.
 
 Publication filenames are logical paths. Runtime URLs percent-encode each segment,
-including spaces, literal `%`, `?`, and `#`. Nested entry pages resolve relative
+including spaces, literal `%`, `?`, and `#`. Nested documents resolve relative
 assets within their own directory. Offline navigation serves the requested saved
 HTML file; a missing file does not silently display another entry page.
 

@@ -15,6 +15,38 @@ test('importing the kernel works without browser globals and performs no mountin
   assert.deepEqual(Object.keys(context).sort(), ['Kernel']);
 });
 
+const publication = {
+  id: '7', base: '/page/_publications/7/', entry: 'app.html',
+  runtime: { version: 'fixture', base: '/runtime/' },
+  assets: ['app.html', 'index.html', 'notes #1?/café 100%/review.html'].map(path => ({ path, type: 'text/html', sha256: 'a'.repeat(64) })),
+};
+const configuration = { id: 'page', base: '/page/', version: 7, ws: '/page/_tendril/ws',
+  features: { push: false, vapid: null, shared_by: 'Fixture', speech: null }, publication, documentPath: 'app.html' };
+test('startup rejects missing or undeclared document context before browser side effects', () => {
+  const context = {};
+  runInNewContext(compiled.outputFiles[0].text, context);
+  for (const documentPath of [undefined, null, 'missing.html', '../app.html'])
+    assert.throws(() => context.Kernel.startRuntime({ ...configuration, documentPath }), /documentPath must identify/);
+  for (const entry of [undefined, 'missing.html'])
+    assert.throws(() => context.Kernel.startRuntime({ ...configuration, publication: { ...publication, entry } }), /canonical declared HTML entry/);
+  assert.throws(() => context.Kernel.startRuntime({ ...configuration, publication: undefined }), /documentPath: null/);
+  const script = { path: 'app.js', type: 'text/javascript', sha256: 'a'.repeat(64) };
+  assert.throws(() => context.Kernel.startRuntime({ ...configuration, documentPath: script.path,
+    publication: { ...publication, assets: [...publication.assets, script] } }), /documentPath must identify/);
+});
+test('startup pins the explicit current document while preserving search and fragment', () => {
+  for (const documentPath of ['index.html', 'notes #1?/café 100%/review.html']) {
+    const pinned = [], stop = new Error('stop before connecting the core');
+    const context = { URL, location: new URL('https://fixture.test/page/?review=1#draft'),
+      history: { state: { draft: true }, replaceState(state, title, url) { pinned.push({ state, title, url }); throw stop; } } };
+    runInNewContext(compiled.outputFiles[0].text, context);
+    assert.throws(() => context.Kernel.startRuntime({ ...configuration, documentPath }), error => error === stop);
+    assert.deepEqual(pinned, [{ state: { draft: true }, title: '',
+      url: 'https://fixture.test/page/_publications/7/' + documentPath.split('/').map(encodeURIComponent).join('/') + '?review=1#draft' }]);
+    assert.equal(publication.entry, 'app.html');
+  }
+});
+
 // Expose only this internal lifecycle to the VM; the shipped kernel still exports
 // startRuntime alone. Exercise registration and later browser/protocol callbacks.
 const registration = await build({ stdin: {

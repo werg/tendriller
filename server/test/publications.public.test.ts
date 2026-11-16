@@ -68,6 +68,26 @@ it('keeps logical nested paths separate from encoded document URLs', async () =>
   expect(await (await req(new URL('details.js', base).href)).text()).toBe('nested source');
 });
 
+it('injects one canonical publication manifest with explicit context for each HTML document', async () => {
+  const page = await create(), entry = 'pages/home.html';
+  const written = await publishFilesJson(page, {
+    [entry]: '<head></head>Canonical home', 'index.html': '<head></head>Another document',
+    'docs/index.html': '<head></head>Directory index', 'docs/help.html': '<head></head>Help',
+  }, { replace: true, entry });
+  const manifest = (await (await req(page.page_url + '_tendril/info')).json<any>()).publication;
+  expect(manifest.entry).toBe(entry);
+  for (const [requested, documentPath] of [['', entry], ['index.html', 'index.html'], ['docs/', 'docs/index.html'], ['docs/help.html', 'docs/help.html']]) {
+    for (const prefix of ['', `_publications/${written.version}/`]) {
+      const html = await (await req(page.page_url + prefix + requested)).text();
+      const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
+      expect(config.publication).toEqual(manifest);
+      expect(config.documentPath).toBe(documentPath);
+      const directory = documentPath.slice(0, documentPath.lastIndexOf('/') + 1);
+      expect(html).toContain(`<base href="${manifest.base}${directory}">`);
+    }
+  }
+});
+
 it('serves retained immutable runtime objects after the bundled runtime changes',async()=>{
   const id='f'.repeat(64),path=`runtime/${id}/module.js`;
   await env.FILES.put(path,'export const archived=true',{httpMetadata:{contentType:'text/javascript'}});
