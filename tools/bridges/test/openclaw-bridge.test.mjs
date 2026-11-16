@@ -31,7 +31,7 @@ if(previous===0){process.exitCode=1;}else console.log('ok');
     assert.equal(req.headers.authorization,'Bearer tk_secret');
     res.setHeader('Content-Type','application/json');
     const after=Number(u.searchParams.get('after')||0);
-    assert.equal(u.searchParams.get('wait'),'0');
+    assert.equal(u.searchParams.has('wait'), false);
     if(after>=1) await pause(70);
     const all=[{seq:1,type:'event',role:null,wake:true,by:'agent_probe',data:{kind:'delivery_probe',secret:'DO_NOT_QUEUE_PAGE_DATA'}}];
     if(secondEvent) all.push({seq:2,type:'instruction',role:'owner',wake:true,data:{text:'another request'}});

@@ -7,7 +7,7 @@ Worker and browser runtime and impose no page layout or application schema.
 | --- | --- |
 | `tendril` | Authenticated API requests, exact authored-file publication and health |
 | `tendril-preview` | Production runtime with explicit local service fixtures |
-| `tendril-events`, `tendril-wait`, `tendril-watch` | Pending input, durable handled checkpoints and live delivery |
+| `tendril-events`, `tendril-wait`, `tendril-watch` | Immediate pending reads, durable handled checkpoints and WebSocket live delivery |
 | `tendril-stream` | Bounded durable collector spools and explicit backpressure/loss |
 | `codex-bridge`, `claude-channel`, `hermes-bridge`, `openclaw-bridge` | Explicit host-specific delivery adapters |
 

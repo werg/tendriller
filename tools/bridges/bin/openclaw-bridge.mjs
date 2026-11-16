@@ -76,7 +76,7 @@ async function run(configPath) {
   let state=readJson(cfg.state_path,{poll_cursor:0,pending_seq:0,pending_at:0,attempts:0});
   async function processPending() {
     const ack=readJson(cfg.ack_path,{cursor:0}).cursor||0;
-    const pending=await api(cfg,`/events?after=${ack}&wait=0`);
+    const pending=await api(cfg,`/events?after=${ack}`);
     state.poll_cursor=Math.max(state.poll_cursor,Number(pending.cursor)||0);
     if(ack>=state.pending_seq) {state.pending_seq=0;state.pending_at=0;state.attempts=0;}
     saveJson(cfg.state_path,state);

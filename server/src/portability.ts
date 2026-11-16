@@ -242,7 +242,7 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedHeadRevisio
   checkGenerations(t, command, writeTargets);
   if (!t.db.get<number>("latest", 0)) {
     const facts = t.presenceFacts();
-    if (t.db.get<string>("mode", "interactive") !== "dashboard" && !facts.agentSocket && !facts.longPollHeld && !facts.webhook)
+    if (t.db.get<string>("mode", "interactive") !== "dashboard" && !facts.agentSocket && !facts.webhook)
       throw new HttpError(428, "listener_required", "Connect this page to its agent conversation before publishing the prepared copy");
   }
   // Staging may be reviewed across browser closures and deployments. Do not

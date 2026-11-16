@@ -159,7 +159,7 @@ export function newSubId(): string {
   return `sub_${randomB32(20)}`;
 }
 
-/** Called on a delivered wake when no long-poll is held: owe every live subscription a delivery. */
+/** Queues a delivery for each live MCP Events subscription when no agent socket owns the wake. */
 export function queueMcpWake(t: Tendril, seq: number): void {
   const ids = mcpSubs(t).map((s) => s.id);
   if (!ids.length) return;

@@ -11,7 +11,7 @@ async function setup(body: Record<string, unknown> = {}) {
   return { h, page };
 }
 
-describe("events and long-poll", () => {
+describe("events and socket delivery", () => {
   it("agent socket listens without a held poll and receives only wake-eligible events", async () => {
     const h = await create();
     const denied = await req(h.api + "/events/socket", { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "tendriller.agent.v2" } });
@@ -42,47 +42,31 @@ describe("events and long-poll", () => {
     page.close();
   });
 
-  it("wait>0 returns immediately when a wake event is already queued", async () => {
-    const { h, page } = await setup();
-    await page.request({ t: "send", expected_generations: {}, data: { hi: 1 } });
-    const t0 = Date.now();
-    const r = await apiJson(h, "GET", "events?wait=10");
-    expect(Date.now() - t0).toBeLessThan(2000);
-    expect(r.events.some((e: any) => e.type === "event" && e.wake)).toBe(true);
-    page.close();
-  });
-
-  it("accepts a five-minute wait and rejects longer waits", async () => {
-    const { h, page } = await setup();
-    await page.request({ t: "send", expected_generations: {}, data: { ready: true } });
-    const accepted = await api(h, "GET", "events?wait=300");
-    expect(accepted.status).toBe(200);
-    expect((await accepted.json() as any).events.some((e: any) => e.data?.ready)).toBe(true);
-    const rejected = await api(h, "GET", "events?wait=301");
-    expect(rejected.status).toBe(400);
-    page.close();
-  });
-
-  it("holds a long-poll and releases it on a wake event (after a debounce)", async () => {
-    const { h, page } = await setup();
+  it("returns retained events immediately without a listener", async () => {
+    const { h, page } = await setup({ listener: false });
     const { cursor } = await apiJson(h, "GET", "events");
-    const t0 = Date.now();
-    const pending = apiJson(h, "GET", `events?after=${cursor}&wait=10`);
-    await sleep(300);
-    // listening while held
-    const pres = await page.next((m) => m.t === "presence" && m.state === "listening" && m.wake === "long_poll");
-    expect(pres.wake).toBe("long_poll");
-    await page.request({ t: "send", expected_generations: {}, data: { nowake: true }, wake: false });
-    await page.request({ t: "send", expected_generations: {}, data: { go: 1 } });
-    const r = await pending;
-    const dt = Date.now() - t0;
-    expect(dt).toBeGreaterThanOrEqual(500);
-    expect(dt).toBeLessThan(5000);
-    expect(r.timeout).toBeUndefined();
-    expect(r.events.map((e: any) => e.data)).toEqual([{ nowake: true }, { go: 1 }]);
+    const before = Date.now();
+    const empty = await apiJson(h, "GET", `events?after=${cursor}`);
+    expect(empty.events).toEqual([]);
+    expect(Date.now() - before).toBeLessThan(2000);
+    expect((await apiJson(h, "GET", "")).agent_delivery.mode).not.toBe("live_poll");
+    await page.request({ t: "send", expected_generations: {}, data: { passive: true }, wake: false });
+    await page.request({ t: "send", expected_generations: {}, data: { waking: true } });
+    const batch = await apiJson(h, "GET", `events?after=${cursor}`);
+    expect(batch.events.map((e: any) => e.data)).toEqual([{ passive: true }, { waking: true }]);
+    expect(batch).not.toHaveProperty("next_poll");
+    expect(batch).not.toHaveProperty("agent_reminder");
     page.close();
   });
 
+  it("rejects all legacy wait values, including zero, instead of holding HTTP requests", async () => {
+    const h = await create();
+    for (const wait of ["0", "1", "300", "301", "not-a-number"]) {
+      const response = await api(h, "GET", `events?after=0&wait=${wait}`);
+      expect(response.status).toBe(400);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe("bad_request");
+    }
+  });
 
   it("limit caps the batch", async () => {
     const { h, page } = await setup();
@@ -131,9 +115,10 @@ describe("page-wake cap", () => {
     ]);
     expect(r.withheld).toBe(2);
     expect((await apiJson(h, "GET", "wake")).withheld).toBe(0);
-    // withheld events do not release a long-poll
-    const lp = await apiJson(h, "GET", `events?after=${r.cursor}&wait=1`);
-    expect(lp.timeout).toBe(true);
+    // Withheld events remain replayable; an immediate read does not fabricate a wake.
+    const empty = await apiJson(h, "GET", `events?after=${r.cursor}`);
+    expect(empty.events).toEqual([]);
+    expect(empty.cursor).toBe(r.cursor);
     // no clock frees the cap: a day later the page still cannot wake the agent on its own
     await advance(h.id, 86_400_000);
     await send(6);
@@ -254,18 +239,17 @@ describe("webhook delivery", () => {
     page.close();
   });
 
-  it("not delivered when a long-poll is held", async () => {
+  it("delivers webhook wakes after an immediate read with no held request", async () => {
     const calls = mockFetch([200]);
     const { h, page } = await setup();
     await apiJson(h, "PUT", "wake", { webhook: { url: "https://hook.example/x" } });
     const { cursor } = await apiJson(h, "GET", "events");
-    const lp = apiJson(h, "GET", `events?after=${cursor}&wait=5`);
-    await sleep(200);
+    expect((await apiJson(h, "GET", `events?after=${cursor}`)).events).toEqual([]);
     await page.request({ t: "send", expected_generations: {}, data: { x: 1 } });
-    const r = await lp;
-    expect(r.events).toHaveLength(1);
-    expect(await inDO(h.id, (t) => t.db.get("webhook_job", null))).toBeNull();
-    expect(calls).toHaveLength(0);
+    await advance(h.id, 2500);
+    await runAlarm(h.id);
+    expect(calls).toHaveLength(1);
+    expect((await apiJson(h, "GET", `events?after=${cursor}`)).events).toHaveLength(1);
     page.close();
   });
 });
@@ -274,17 +258,15 @@ describe("presence", () => {
 
 
 
-  it("status overrides the label until the next long-poll or 10 minutes", async () => {
+  it("status remains through reads and expires after 10 minutes", async () => {
     const { h, page } = await setup();
     const r = await apiJson(h, "POST", "status", { text: "Building the map", state: "working" });
     expect(r.presence).toMatchObject({ state: "working", text: "Building the map" });
     await advance(h.id, 5 * 60_000);
+    await apiJson(h, "GET", "events");
     expect((await inDO(h.id, (t) => t.presence())).text).toBe("Building the map");
-    const done = await apiJson(h, "POST", "status", { text: "All set", state: "done" });
-    expect(done.presence.text).toBe("All set");
-    await apiJson(h, "GET", "events?wait=1");
-    const after = await inDO(h.id, (t) => t.presence());
-    expect(after.text).not.toBe("All set");
+    await advance(h.id, 5 * 60_000 + 1);
+    expect((await inDO(h.id, (t) => t.presence())).text).not.toBe("Building the map");
     page.close();
   });
 });

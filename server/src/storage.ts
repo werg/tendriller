@@ -283,7 +283,7 @@ export async function handleStorage(t: Tendril, req: Request, url: URL, actor: s
     if (prior.found) return json(prior.result);
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
       const facts = t.presenceFacts();
-      if (!facts.agentSocket && !facts.longPollHeld && !facts.webhook)
+      if (!facts.agentSocket && !facts.webhook)
         throw new HttpError(428, "listener_required", "Attach a verified agent receiver before launching an interactive page");
     }
     const files = new Map<string, VersionFile>();

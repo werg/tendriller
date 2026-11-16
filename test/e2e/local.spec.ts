@@ -1,6 +1,6 @@
 import { conversationPage } from "./authored-pages";
 import { test, expect } from "@playwright/test";
-import { agent, claim, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles, requester, signInFixture, OTHER_TOKEN } from "./local-helpers";
+import { agent, claim, connectAgentSocket, disconnectAgentSocket, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles, requester, signInFixture, OTHER_TOKEN } from "./local-helpers";
 
 test("email invitation auto-claims for a verified account and opens the published page", async ({ page, context }) => {
   const h = await createPage();
@@ -26,19 +26,22 @@ test("unverified email cannot claim another person's page", async ({ page, conte
   } finally { await deletePage(h); }
 });
 
-test("agent reminder and each event poll point to the next continuous poll", async () => {
+test("cursor reads return immediately and legacy long-poll options are refused", async () => {
   const h = await createPage();
   try {
-    expect(JSON.stringify(h)).toMatch(/poll|listen/i);
-    const first = await agent(h, "/events?wait=0");
+    expect(h.agent_setup?.next_step).toContain("events/socket");
+    const first = await agent(h, "/events?after=0");
     expect(first.status).toBe(200);
-    expect(first.data.next_poll).toContain(`/api/t/${h.id}/events?after=`);
-    expect(first.data.agent_reminder).toMatch(/poll|listen/i);
-    const next = await agent(h, `/events?after=${first.data.cursor}&wait=1`);
+    expect(first.data).not.toHaveProperty("next_poll");
+    expect(first.data).not.toHaveProperty("agent_reminder");
+    const next = await agent(h, `/events?after=${first.data.cursor}`);
     expect(next.status).toBe(200);
     expect(next.data.events).toEqual([]);
-    expect(next.data.next_poll).toContain("wait=300");
-    expect(next.data.agent_reminder).toMatch(/poll|listen/i);
+    for (const value of [0, 25, 300]) {
+      const old = await agent(h, `/events?after=0&wait=${value}`);
+      expect(old.status).toBe(400);
+      expect(old.data.error.code).toBe("bad_request");
+    }
   } finally { await deletePage(h); }
 });
 
@@ -51,17 +54,17 @@ test("first interactive publication requires a live listener", async () => {
   } finally { await deletePage(h); }
 });
 
-test("page tap reaches a held poll and agent speech reply reaches the page", async ({ page, context }) => {
+test("page tap is replayable immediately and agent speech reply reaches the page", async ({ page, context }) => {
   const h = await createPage();
   try {
     await publish(h, '<button id="tap-send" onclick="tendril.send({kind:\'tap\',value:7})">Send tap</button>' + conversationPage);
     await signInFixture(context);
     await openClaimed(page, h);
-    const initial = await agent(h, "/events?wait=0");
-    const poll = agent(h, `/events?after=${initial.data.cursor}&wait=300`);
+    const initial = await agent(h, "/events");
     await expect.poll(async () => (await agent(h)).data.presence.state).toBe("listening");
     await page.locator("#tap-send").click();
-    const events = await poll;
+    await expect.poll(async () => (await agent(h, `/events?after=${initial.data.cursor}`)).data.events.length).toBeGreaterThan(0);
+    const events = await agent(h, `/events?after=${initial.data.cursor}`);
     expect(events.data.events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "event", role: "owner", data: { kind: "tap", value: 7 } })]));
     const say = await agent(h, "/say", "POST", { text: "I heard your tap", speak: false });
     expect(say.status).toBe(200);
@@ -81,7 +84,7 @@ test("owner chat message becomes sent and stays single after reply and reload", 
     const userRow = page.locator("#messages li.user");
     await expect(userRow).toHaveCount(1);
     await expect(userRow.locator("strong")).toHaveText("You");
-    const events = await agent(h, "/events?after=0&wait=0");
+    const events = await agent(h, "/events?after=0");
     expect(events.data.events).toEqual(expect.arrayContaining([expect.objectContaining({
       type: "instruction", role: "owner", data: { text: "production chat check", via: "text" },
     })]));
@@ -94,17 +97,16 @@ test("owner chat message becomes sent and stays single after reply and reload", 
   } finally { await deletePage(h); }
 });
 
-test("presence distinguishes active polling from away and explicit working", async ({ page, context }) => {
+test("presence distinguishes a connected socket from away and explicit working", async ({ page, context }) => {
   const h = await createPage();
   try {
     await signInFixture(context);
     await openClaimed(page, h);
-    await agent(h, "/events?wait=0");
+    await agent(h, "/events");
     await expect.poll(async () => (await agent(h)).data.presence.state).toBe("away");
-    const cursor = (await agent(h, "/events?wait=0")).data.cursor;
-    const held = agent(h, `/events?after=${cursor}&wait=3`);
-    await expect.poll(async () => (await agent(h)).data.presence.state).toBe("listening");
-    await held;
+    await connectAgentSocket(h);
+    await expect.poll(async () => (await agent(h)).data.presence).toMatchObject({ state: "listening", wake: "socket" });
+    await disconnectAgentSocket(h);
     await expect.poll(async () => (await agent(h)).data.presence.state).toBe("away");
     expect((await agent(h, "/status", "POST", { state: "working", text: "Thinking" })).data.presence.state).toBe("working");
   } finally { await deletePage(h); }
@@ -143,17 +145,18 @@ test("agent can change the live DOM and a new published version reloads the brow
   } finally { await deletePage(h); }
 });
 
-test("browser event remains queued until the agent polls and is not duplicated", async ({ page, context }) => {
+test("browser event stays queued for immediate cursor replay without duplication", async ({ page, context }) => {
   const h = await createPage();
   try {
     await publish(h, '<button id="tap" onclick="tendril.send({reading:19})">Record</button>');
     await signInFixture(context);
     await openClaimed(page, h);
-    const before = (await agent(h, "/events?wait=0")).data.cursor;
+    const before = (await agent(h, "/events")).data.cursor;
     await page.locator("#tap").click();
-    const first = await agent(h, `/events?after=${before}&wait=2`);
+    await expect.poll(async () => (await agent(h, `/events?after=${before}`)).data.events.filter((e: any) => e.data?.reading === 19).length).toBe(1);
+    const first = await agent(h, `/events?after=${before}`);
     expect(first.data.events.filter((e: any) => e.data?.reading === 19)).toHaveLength(1);
-    const second = await agent(h, `/events?after=${first.data.cursor}&wait=0`);
+    const second = await agent(h, `/events?after=${first.data.cursor}`);
     expect(second.data.events.filter((e: any) => e.data?.reading === 19)).toHaveLength(0);
   } finally { await deletePage(h); }
 });

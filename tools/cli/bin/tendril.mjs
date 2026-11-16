@@ -11,6 +11,7 @@ import {
 } from "../lib/config.mjs";
 import { request, client, ApiError, sleep } from "../lib/api.mjs";
 import { pendingEvents, acknowledgeEvents } from "../../bridges/lib/pending-events.mjs";
+import { waitForAgentWake } from "../../bridges/bin/agent-socket.mjs";
 import { pack, guessType } from "../lib/pack.mjs";
 import { uploadBlob, downloadBlob, blobInfo } from "../lib/blobs.mjs";
 import { putSharedFile, getSharedFile, deleteSharedFile, listSharedFiles, fileHistory } from "../lib/shared-files.mjs";
@@ -58,8 +59,8 @@ Talk to the page
 Hear from the page
   pending [--limit N]          read pending input; auto-handle delivery probes only
   ack <sequence>              save handled progress after replies/updates succeed
-  events [--wait N] [--after C] [--limit N] [--peek] [--follow [--wakes]]
-  wait [--timeout S]           block until a wake event, print events JSON, exit 0
+  events [--after C] [--limit N] [--peek] [--follow [--wakes]]
+  wait [--timeout S]           wait over a WebSocket for one wake, print events JSON
   logs [--after C] [--follow]
   activity [--after C] [--note TEXT]
   journey [--since UNIX_MS]     ordered event/read/reply/error timeline
@@ -100,6 +101,12 @@ function boundedInteger(value, name, fallback, min, max = Number.MAX_SAFE_INTEGE
   return number;
 }
 const retryable = e => !(e instanceof ApiError) || [408, 425, 429].includes(e.status) || e.status >= 500;
+const sleepUntilAbort = (ms, signal) => new Promise(resolve => {
+  if (signal.aborted) return resolve();
+  const timer = setTimeout(done, ms);
+  function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
+  signal.addEventListener("abort", done, { once: true });
+});
 
 function transferRecord(cfg, what, key, flag) {
   if (flag) return resolve(flag);
@@ -332,57 +339,99 @@ const commands = {
   },
 
   async events(args, f, api, cfg) {
+    if (args.length) fail("usage: tendril events [--after C] [--limit N] [--peek] [--follow [--wakes]]", 64);
+    if (f.wait !== undefined) fail("--wait (long polling) was removed; use --follow for WebSocket delivery", 64);
     const cpath = cursorPath(cfg, f);
     const explicit = f.after !== undefined;
     let after = explicit ? boundedInteger(f.after, "after", 0, 0) : readCursor(cpath);
-    const limit = f.limit !== undefined ? `&limit=${boundedInteger(f.limit, "limit", 100, 1, 500)}` : "";
-    const wait = boundedInteger(f.wait, "wait", f.follow ? 300 : 0, 0, 300);
-    const save = (c) => { if (!explicit && !f.peek) writeCursor(cpath, c); };
+    const limit = boundedInteger(f.limit, "limit", 100, 1, 500);
+    const save = c => { if (!explicit && !f.peek) writeCursor(cpath, c); };
+    let failures = 0, backoff = 1000;
+    const readAvailable = async (signal) => {
+      for (;;) {
+        if (signal.aborted) return;
+        const old = after;
+        const r = await api.get(`/events?after=${after}&limit=${limit}`, { signal });
+        if (signal.aborted) return;
+        failures = 0;
+        backoff = 1000;
+        if (old !== after) return;
+        for (const event of r.events || []) if (!f.wakes || event.wake) out(event);
+        if (!Number.isSafeInteger(r.cursor) || r.cursor < old) throw Error("Event cursor regressed");
+        after = r.cursor;
+        save(after);
+        if (!r.events?.length || r.events.length < limit || after === old) return;
+      }
+    };
     if (!f.follow) {
-      const r = await api.get(`/events?after=${after}&wait=${wait}${limit}`);
+      const r = await api.get(`/events?after=${after}&limit=${limit}`);
       save(r.cursor);
       return out(r);
     }
-    const w = wait;
-    for (let backoff = 1000; ;) {
+    for (;;) {
       try {
-        let r = await api.get(`/events?after=${after}&wait=${w}${limit}`, { signal: AbortSignal.timeout(w * 1000 + 30000) });
-        if (!r.events?.length) r = await api.get(`/events?after=${after}&wait=0${limit}`);
-        for (const e of r.events || []) if (!f.wakes || e.wake) out(e);
-        if (typeof r.cursor === "number") { after = r.cursor; save(after); }
-        backoff = 1000;
-      } catch (e) {
-        if (!retryable(e)) throw e;
-        note(`events: ${e.message}; retrying in ${backoff / 1000}s`);
+        await waitForAgentWake(cfg, readAvailable);
+      } catch (error) {
+        if (!retryable(error) || /protocol was not accepted|sockets need Node/i.test(error.message) || ++failures >= 5) throw error;
+        note(`events: ${error.message}; socket reconnect in ${backoff / 1000}s`);
         await sleep(backoff);
-        backoff = Math.min(backoff * 2, 60000);
+        backoff = Math.min(backoff * 2, 30000);
       }
     }
   },
 
   async wait(args, f, api, cfg) {
+    if (args.length) fail("usage: tendril wait [--timeout S]", 64);
+    const timeoutS = f.timeout === undefined ? null : boundedInteger(f.timeout, "timeout", 0, 0);
     const cpath = cursorPath(cfg, f);
-    const deadline = f.timeout !== undefined ? Date.now() + boundedInteger(f.timeout, "timeout", 0, 0) * 1000 : Infinity;
-    for (let backoff = 2000; ;) {
-      if (Date.now() >= deadline) { out({ timeout: true, cursor: readCursor(cpath) }); process.exitCode = 2; return; }
-      const after = readCursor(cpath);
-      try {
-        const waitSeconds = Math.min(300, Math.max(1, Math.ceil((deadline - Date.now()) / 1000)));
-        const r = await api.get(`/events?after=${after}&wait=${waitSeconds}`, { signal: AbortSignal.timeout(waitSeconds * 1000 + 30000) });
-        backoff = 2000;
-        if (r.events && r.events.length && !r.timeout) {
-          writeCursor(cpath + ".prev", after);
-          writeCursor(cpath, r.cursor);
-          const owner = r.events.filter((e) => e.type === "instruction" && e.role === "owner").length;
-          note(`tendril: ${r.events.length} event(s), ${owner} owner instruction(s); cursor ${after} -> ${r.cursor}`);
-          return out(r);
+    const controller = new AbortController();
+    const timer = timeoutS === null ? null : setTimeout(() => controller.abort(), timeoutS * 1000);
+    let finished = false;
+    let failures = 0, backoff = 1000;
+    const readAvailable = async (signal) => {
+      if (finished || controller.signal.aborted) return;
+      const start = readCursor(cpath);
+      let cursor = start;
+      const events = [];
+      for (;;) {
+        if (finished || controller.signal.aborted || signal.aborted) return;
+        const r = await api.get(`/events?after=${cursor}&limit=500`, { signal });
+        if (finished || controller.signal.aborted || signal.aborted) return;
+        failures = 0;
+        backoff = 1000;
+        if (!Number.isSafeInteger(r.cursor) || r.cursor < cursor) throw Error("Event cursor regressed");
+        events.push(...(r.events || []));
+        const previous = cursor;
+        cursor = r.cursor;
+        if (r.events?.some(event => event.wake)) {
+          writeCursor(cpath + ".prev", start);
+          writeCursor(cpath, cursor);
+          const owner = events.filter(event => event.type === "instruction" && event.role === "owner").length;
+          note(`tendril: ${events.length} event(s), ${owner} owner instruction(s); cursor ${start} -> ${cursor}`);
+          finished = true;
+          out({ ...r, events, cursor });
+          controller.abort();
+          return;
         }
-      } catch (e) {
-        if (!retryable(e)) throw e;
-        note(`wait: ${e.message}; retrying in ${backoff / 1000}s`);
-        await sleep(backoff);
-        backoff = Math.min(backoff * 2, 60000);
+        if (!r.events?.length || r.events.length < 500 || cursor === previous) return;
       }
+    };
+    try {
+      for (; !finished && !controller.signal.aborted;) {
+        try {
+          await waitForAgentWake(cfg, readAvailable, undefined, controller.signal);
+        } catch (error) {
+          if (controller.signal.aborted) break;
+          if (!retryable(error) || /protocol was not accepted|sockets need Node/i.test(error.message) || ++failures >= 5) throw error;
+          note(`wait: ${error.message}; socket reconnect in ${backoff / 1000}s`);
+          await sleepUntilAbort(backoff, controller.signal);
+          if (controller.signal.aborted) break;
+          backoff = Math.min(backoff * 2, 30000);
+        }
+      }
+      if (!finished) { out({ timeout: true, cursor: readCursor(cpath) }); process.exitCode = 2; }
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   },
 

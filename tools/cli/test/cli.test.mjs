@@ -22,8 +22,6 @@ test("parseArgs: positional, value flags, boolean flags, = form, --", () => {
   const d = parseArgs(["eval", "--", "--not-a-flag"]);
   assert.deepEqual(d.args, ["--not-a-flag"]);
   assert.deepEqual(parseArgs(["events", "--follow=false"]).flags, { follow: false });
-  assert.throws(() => parseArgs(["events", "--wait"]), /needs a value/);
-  assert.throws(() => parseArgs(["events", "--wait", "--peek"]), /needs a value/);
   assert.throws(() => parseArgs(["eval", "-f", "--pretty"]), /needs a value/);
   assert.throws(() => parseArgs(["-z"]), /unknown flag/);
   assert.equal(intFlag("3", "limit", 100), 3);

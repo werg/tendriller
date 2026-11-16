@@ -43,6 +43,12 @@ its runtime errors before retrying.
 
 ## Operational boundaries
 
+`events` is an immediate cursor-based replay command. `events --follow` and
+`wait` use authenticated agent WebSockets for wake notifications and fetch the
+available queue after connection and each wake. The legacy `--wait` option and
+held HTTP event requests are no longer supported. `pending` and `ack` still
+keep handled checkpoints separate from reads.
+
 | Commands | Responsibility |
 | --- | --- |
 | `state`, `say`, `status`, `eval` | Explicit state, reply, presence and browser requests |

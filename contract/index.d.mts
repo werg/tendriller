@@ -48,7 +48,7 @@ export type DeviceConfiguration = WireContracts["deviceConfiguration"];
 /** Guest/display broadcasts expose only each device's identity and presentation. */
 export interface DevicePresentation { id: string; purpose: DevicePurpose }
 export interface DeviceConfigMessage { t?: "device_config"; devices: (DeviceInfo | DevicePresentation)[]; focus: Focus | null }
-export interface Presence { state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent"; text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number; wake: "socket" | "long_poll" | "webhook" | "schedule" | "none" }
+export interface Presence { state: "listening" | "working" | "done" | "scheduled" | "not_responding" | "away" | "no_agent"; text: string; last_seen: number | null; schedule_minutes: number | null; withheld: number; wake: "socket" | "webhook" | "schedule" | "none" }
 export interface TranscriptEntry { ts: number; from: "agent" | "user"; text: string; message_id?: string; in_reply_to?: number; cid?: string; device?: string; status?: "queued" | "accepted" | "rejected"; error?: string; message?: string }
 export type ConversationResult = { cid: string } & ({ status: "queued" } | { status: "accepted"; seq?: number } | { status: "rejected"; error: string; message: string });
 export interface StateApi<T = Record<string, unknown>> {
@@ -227,7 +227,7 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 3;
-export const CORE_RELEASE: "0.3.0-rc.7";
+export const CORE_RELEASE: "0.3.0-rc.8";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export const ROLES: readonly Role[];

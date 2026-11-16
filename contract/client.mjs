@@ -86,10 +86,10 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     retireScope: (scope, body) => request(`/scopes/${id(scope)}`, { method: "DELETE", body }),
     send: body => request("/events", { method: "POST", body: assertValid("command", body) }),
     workflow: (module, operation, body) => request(`/workflows/${id(module)}/${id(operation)}`, { method: "POST", body: assertValid("command", body) }),
-    readEvents: ({ after, wait = 0, signal }) => {
+    readEvents: ({ after, signal, ...unsupported }) => {
       if (!Number.isSafeInteger(after) || after < 0) throw new TypeError("readEvents requires an explicit nonnegative after cursor");
-      if (!Number.isInteger(wait) || wait < 0 || wait > 300) throw new TypeError("wait must be 0..300 seconds");
-      const query = new URLSearchParams({ after: String(after), wait: String(wait) });
+      if (Object.hasOwn(unsupported, "wait")) throw new TypeError("Long polling is no longer supported; use a socket or MCP Events subscription for wake notifications");
+      const query = new URLSearchParams({ after: String(after) });
       return request(`/events?${query}`, { signal }, "eventBatch");
     },
   };
