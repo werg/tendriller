@@ -6,7 +6,7 @@ import { timestampHmacHeaders } from "../src/events";
 import { signedHeaders } from "../src/mcpEvents";
 import { routeAuth } from "../src/accounts/auth";
 import { reconcileSuspensions } from "../src/abuse/reconcile";
-import { api, BASE, inDO, PageClient, req, type Handle } from "./helpers";
+import { api, BASE, inDO, PageClient, req, type Handle, uploadPageBlob } from "./helpers";
 
 const db = env.ACCOUNTS!;
 const creatorHeaders = { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.10" };
@@ -55,43 +55,58 @@ async function captureFixture() {
   return { h, headers };
 }
 
-it("reports media expiry separately from residency and retains explicitly kept captures", async () => {
+it("separates media retention from residency and keeps pinned Contract 3 captures", async () => {
   const { h, headers } = await captureFixture();
   expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(200);
-  const upload = (name: string, keep = false) => req(h.page_url + "_tendril/blob", {
-    method: "POST", headers: { ...headers, "Content-Type": "image/jpeg", "X-Tendril-Name": name, "X-Tendril-Keep": String(keep) }, body: "picture",
-  }).then((response) => response.json<any>());
-  const ordinary = await upload("temporary.jpg"), kept = await upload("keep.jpg", true);
-  expect(ordinary.retention).toMatchObject({ keep: false, reason: "page_default", expires_at: expect.any(Number) });
-  expect(kept.retention).toEqual({ keep: true, reason: "pinned", expires_at: null });
+  const owner = await PageClient.connect(h.page_url, { headers });
+  const deviceHeaders = { ...headers, "X-Tendril-Device": owner.deviceId,
+    "X-Tendril-Device-Secret": owner.secret };
+  const ordinary = await uploadPageBlob(h, "picture", deviceHeaders,
+    { type: "image/jpeg", name: "temporary.jpg" });
+  const kept = await uploadPageBlob(h, "picture", deviceHeaders,
+    { type: "image/jpeg", name: "keep.jpg" });
+  expect(ordinary.retention).toMatchObject({ expires_at: expect.any(Number), reasons: ["page_default"] });
+  const pin = { cid: crypto.randomUUID(), expected_generations: {}, keep: true };
+  const pinned = await apiJson(h, "PUT", `blobs/${kept.id}/pin`, pin);
+  expect(pinned.retention).toMatchObject({ expires_at: null, reasons: ["pinned"] });
   const info = await (await api(h, "GET", `blobs/${kept.id}/info`)).json<any>();
-  expect(info).toMatchObject({ name: "keep.jpg", size: 7, pinned: true, retention: { expires_at: null } });
-  await inDO(h.id, async (t) => { t.skew += 31 * 86_400_000; await t.cleanup(); });
+  expect(info).toMatchObject({ name: "keep.jpg", size: 7, retention: { expires_at: null, reasons: ["pinned"] } });
+  owner.close();
+  await inDO(h.id, async t => { t.skew += 31 * 86_400_000; await t.cleanup(); });
   expect((await api(h, "GET", `blobs/${ordinary.id}`)).status).toBe(404);
   expect((await api(h, "GET", `blobs/${kept.id}`)).status).toBe(200);
-  const unpin = await (await api(h, "PATCH", `blobs/${kept.id}`, { keep: false })).json<any>();
-  expect(unpin.retention).toMatchObject({ keep: false, expires_at: expect.any(Number) });
-  await inDO(h.id, (t) => t.cleanup());
+  const unpin = await apiJson(h, "PUT", `blobs/${kept.id}/pin`,
+    { cid: crypto.randomUUID(), expected_generations: {}, keep: false });
+  expect(unpin.retention).toMatchObject({ expires_at: expect.any(Number), reasons: ["page_default"] });
+  await inDO(h.id, t => t.cleanup());
   expect((await api(h, "GET", `blobs/${kept.id}`)).status).toBe(404);
 });
 
-it("lets the owner pin captures, rejects display mutations, and validates retention bodies", async () => {
+it("lets the owner pin captures, rejects display mutations and validates Contract 3 bodies", async () => {
   const { h, headers } = await captureFixture();
-  const uploaded = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers, body: "capture" })).json<any>();
-  const url = h.page_url + `_tendril/blob/${uploaded.id}/retention`;
-  const keep = await req(url, { method: "PATCH", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ keep: true }) });
-  expect(keep.status).toBe(200);
-  expect(await keep.json()).toMatchObject({ id: uploaded.id, retention: { keep: true, expires_at: null } });
-  expect((await api(h, "PATCH", `blobs/${uploaded.id}`, { keep: "yes" })).status).toBe(400);
   const owner = await PageClient.connect(h.page_url, { headers });
+  const deviceHeaders = { ...headers, "X-Tendril-Device": owner.deviceId,
+    "X-Tendril-Device-Secret": owner.secret };
+  const uploaded = await uploadPageBlob(h, "capture", deviceHeaders, { type: "text/plain" });
+  const url = h.page_url + `_tendril/blobs/${uploaded.id}/pin`;
+  const keep = await req(url, { method: "PUT", headers: {
+    ...headers, "Content-Type": "application/json",
+  }, body: JSON.stringify({ cid: crypto.randomUUID(), expected_generations: {}, keep: true }) });
+  expect(keep.status).toBe(200);
+  expect(await keep.json()).toMatchObject({ id: uploaded.id, retention: { expires_at: null, reasons: ["pinned"] } });
+  expect((await api(h, "PUT", `blobs/${uploaded.id}/pin`,
+    { cid: crypto.randomUUID(), expected_generations: {}, keep: "yes" })).status).toBe(400);
   const result = await owner.request({ t: "links", create: { role: "display", label: "Screen" } });
   const display = result.created;
   expect(display.url).toBeTruthy();
-  const denied = await req(display.url + `_tendril/blob/${uploaded.id}/retention`, {
-    method: "PATCH", headers: { Origin: new URL(display.url).origin, "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }),
+  const denied = await req(display.url + `_tendril/blobs/${uploaded.id}/pin`, {
+    method: "PUT", anonymous: true,
+    headers: { Origin: new URL(display.url).origin, "Content-Type": "application/json" },
+    body: JSON.stringify({ cid: crypto.randomUUID(), expected_generations: {}, keep: false }),
   });
   expect(denied.status).toBe(403);
-  expect((await (await api(h, "GET", `blobs/${uploaded.id}/info`)).json<any>()).retention.keep).toBe(true);
+  expect((await (await api(h, "GET", `blobs/${uploaded.id}/info`)).json<any>())
+    .retention.reasons).toContain("pinned");
   owner.close();
 });
 
