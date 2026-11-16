@@ -76,6 +76,46 @@ Hosts without WebSocket support should use a verified webhook, MCP Events
 subscription or explicitly scheduled worker. A wake notice or task completion is
 not proof that the intended agent conversation resumed.
 
+### Claude-based hosts: prefer background commands
+
+In Claude-based hosts such as Claude Code and Duet, run the receiver as a
+background shell command (the Bash tool with `run_in_background: true`) rather
+than through a Monitor or watch tool. Monitors and watches are time-limited:
+they expire and must be re-armed, which wakes the agent frequently for no page
+activity. A background command can run for much longer (up to the host's
+background timeout) and re-invokes the conversation only when it exits.
+
+```sh
+# Bash tool, run_in_background: true
+TENDRIL_AFTER=<handled-seq> node /path/to/tools/bin/tendril-wait.mjs
+```
+
+`tendril-wait.mjs` exits on the first waking event, which resumes the
+conversation. Read and handle the batch, advance the handled cursor, then start a
+fresh background wait. Set the background timeout to the host's maximum; if it
+expires without a wake, simply restart the wait. Do not run the wait in the
+foreground: a blocking foreground command cannot arrange its own future turn.
+
+The same pattern applies when the agent watches logs or services in the
+background, for example while a page's collector or a local server runs. Each run
+ends and is relaunched later, so the watcher must close the gap between runs
+itself instead of tailing from "now":
+
+- **Persist a cursor per source.** Keep a byte offset for each log file and a
+  journal cursor for each systemd unit (`journalctl -u <unit> --cursor-file
+  <private path>`) in private storage. The next run resumes exactly where the
+  previous one stopped, so nothing falls between watches however late it is
+  relaunched.
+- **Hold back half-written lines.** Advance a file offset only past a complete,
+  newline-terminated line; the partial remainder is read again on the next run.
+- **Report when a watched unit stops.** Treat a unit leaving the active state as
+  an event that ends the run, not as silence.
+- **Advance cursors only after handling.** As with the handled event cursor, an
+  output line that was printed but not yet acted on must be replayable.
+
+`tendril-wait.mjs` already follows this rule for page events through
+`TENDRIL_AFTER` and the handled checkpoint.
+
 ## Explicit host adapters
 
 The implementations below are the supported command surfaces in this source
