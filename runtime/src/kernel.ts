@@ -1,3 +1,4 @@
+import { encodePublicationPath } from "./paths";
 // Importing this module mounts nothing and requests no device permissions.
 // startRuntime creates one page connection. A page owns all application UI.
 import { createCore } from "./core";
@@ -5,6 +6,7 @@ import { setupPush } from "./push";
 import { describeCapabilities, observeCapabilities } from "./capabilities";
 import { installSensorWrappers } from "./sensors";
 import { runtimeAsset } from "./assets";
+import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi } from "../../contract/index.mjs";
 
@@ -26,7 +28,7 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
 
 export function startRuntime(cfg: TendrilConfig): RuntimeApi {
   if (cfg.publication && cfg.version > 0) {
-    const pinned = new URL(cfg.publication.entry || "index.html", new URL(cfg.publication.base, location.href));
+    const pinned = new URL(encodePublicationPath(cfg.publication.entry || "index.html"), new URL(cfg.publication.base, location.href));
     pinned.search = location.search; pinned.hash = location.hash;
     if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
   }
@@ -66,6 +68,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
     get connected() { return core.connected; },
     get presence() { return core.presence ? { ...core.presence } : null; },
     identity,
+    publication: { saveOffline: () => savePublicationOffline(cfg.base, cfg.publication) },
     assetUrl(path) {
       if (!path || /[?#\\]/.test(path) || path.startsWith("/") || /^[a-z]+:/i.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || decodeURIComponent(path) !== path)
         throw new TypeError("Runtime assets require an unencoded relative path");

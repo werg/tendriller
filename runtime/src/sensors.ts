@@ -23,7 +23,7 @@ export function installSensorWrappers(): SensorTracker {
   const w = window as any;
   const tracks = new Map<MediaStreamTrack, SensorKind>();
   const watches = new Set<number>();
-  const motion: { type: string; listener: any; options: any }[] = [];
+  const motion: { type: string; listener: any; options: any; wrapped: any; cleanup(): void }[] = [];
   const recognizers = new Set<any>();
   const subs = new Set<() => void>();
   let recentLocationUntil = 0;
@@ -129,23 +129,35 @@ export function installSensorWrappers(): SensorTracker {
   try {
     w.addEventListener = function addEventListener(this: any, type: string, listener: any, options?: any) {
       const target = this ?? window;
-      if (target === window && listener && MOTION_TYPES.has(type)) {
-        if (!motion.some((m) => m.type === type && m.listener === listener && capture(m.options) === capture(options))) {
-          motion.push({ type, listener, options });
-          notify();
-        }
-      }
-      return origAdd.call(target, type, listener, options);
+      if (target !== window || !listener || !MOTION_TYPES.has(type)) return origAdd.call(target, type, listener, options);
+      if (options?.signal?.aborted) return;
+      const existing = motion.find(m => m.type === type && m.listener === listener && capture(m.options) === capture(options));
+      if (existing) return origAdd.call(target, type, existing.wrapped, options);
+      const record = { type, listener, options, wrapped: null as any, cleanup: () => {} };
+      const remove = () => {
+        const index = motion.indexOf(record);
+        if (index >= 0) motion.splice(index, 1);
+        options?.signal?.removeEventListener("abort", remove);
+        notify();
+      };
+      record.cleanup = remove;
+      record.wrapped = function(this: any, event: Event) {
+        if (options?.once) remove();
+        if (typeof listener === "function") return listener.call(this, event);
+        return listener.handleEvent(event);
+      };
+      origAdd.call(target, type, record.wrapped, options);
+      motion.push(record); options?.signal?.addEventListener("abort", remove, { once: true }); notify();
     };
     w.removeEventListener = function removeEventListener(this: any, type: string, listener: any, options?: any) {
       const target = this ?? window;
       if (target === window && MOTION_TYPES.has(type)) {
-        const i = motion.findIndex((m) => m.type === type && m.listener === listener && capture(m.options) === capture(options));
-        if (i >= 0) { motion.splice(i, 1); notify(); }
+        const record = motion.find(m => m.type === type && m.listener === listener && capture(m.options) === capture(options));
+        if (record) { record.cleanup(); return origRemove.call(target, type, record.wrapped, options); }
       }
       return origRemove.call(target, type, listener, options);
     };
-  } catch { /* ignore */ }
+  } catch { /* observation is best-effort; browser controls remain authoritative */ }
 
   // --- Page-owned speech recognition (microphone) ---
   const SR: any = w.SpeechRecognition || w.webkitSpeechRecognition;
@@ -179,7 +191,7 @@ export function installSensorWrappers(): SensorTracker {
       for (const id of [...watches]) { try { origClear?.(id); n++; } catch { /* ignore */ } }
       watches.clear();
       recentLocationUntil = 0;
-      for (const m of motion.splice(0)) { try { origRemove.call(window, m.type, m.listener, m.options); n++; } catch { /* ignore */ } }
+      for (const m of [...motion]) { try { origRemove.call(window, m.type, m.wrapped, m.options); n++; } catch { /* ignore */ } m.cleanup(); }
       for (const k of ["ondevicemotion", "ondeviceorientation", "ondeviceorientationabsolute"]) {
         if (w[k]) { try { w[k] = null; n++; } catch { /* ignore */ } }
       }

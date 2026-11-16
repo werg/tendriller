@@ -1,3 +1,4 @@
+import { encodePublicationPath, validPublicationPath } from "./paths";
 // A publication owns an immutable page/runtime asset graph. Live APIs are never
 // cached. Client-to-publication bindings survive worker restarts, so a deferred
 // reload cannot mix an old executing page with a new component or runtime.
@@ -40,11 +41,8 @@ async function writeRegistry(value: Registry) {
 function noStore(response: Response): boolean {
   return (response.headers.get("Cache-Control") || "").split(",").some(value => value.trim().toLowerCase() === "no-store");
 }
-function safePath(path: unknown): path is string {
-  if (typeof path !== "string" || !path || path.startsWith("/") || /[?#\\]/.test(path)) return false;
-  try { return decodeURIComponent(path).split("/").every(part => part !== ".." && part !== "." && part !== ""); }
-  catch { return false; }
-}
+const safePath = validPublicationPath;
+
 function validManifest(value: any): value is PublicationManifest {
   if (!value || !/^[A-Za-z0-9_-]{1,128}$/.test(value.id) || !Array.isArray(value.assets) || !value.runtime) return false;
   try {
@@ -96,8 +94,8 @@ async function savePublication(publication: PublicationManifest, latest = false)
   if (!Array.isArray(runtime.resources) || !runtime.resources.every(validResource)) throw new Error("Invalid runtime resource manifest");
   await cache.put(runtimeURL, runtimeResponse);
   await Promise.all([
-    ...publication.assets.map(asset => saveAsset(cache, absolute(asset.path, absolute(publication.base)), asset, publication)),
-    ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => saveAsset(cache, absolute(asset.path, absolute(publication.runtime.base)), asset, publication)),
+    ...publication.assets.map(asset => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.base)), asset, publication)),
+    ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.runtime.base)), asset, publication)),
   ]);
   if (!meta.complete.includes(publication.id)) meta.complete.push(publication.id);
   if (latest) meta.latest = publication.id;
@@ -154,7 +152,12 @@ async function navigate(event: FetchEvent): Promise<Response> {
   const replaced = (event as FetchEvent & { replacesClientId?: string }).replacesClientId;
   const prior = pin || meta.clients[replaced || event.clientId] || meta.latest;
   const publication = prior && meta.complete.includes(prior) ? meta.publications[prior] : undefined;
-  const savedURL = pin ? requested.origin + requested.pathname : publication && absolute(publication.entry || "index.html", absolute(publication.base));
+  const relative = requested.pathname.slice(new URL(SCOPE).pathname.length) || "index.html";
+  const filename = relative.endsWith("/") ? relative + "index.html" : relative;
+  const declared = publication?.assets.find(asset => encodePublicationPath(asset.path) === filename && asset.type.split(";", 1)[0] === "text/html");
+  // Ordinary file routing: an offline nested URL must never show another entry page.
+  const savedURL = pin ? requested.origin + requested.pathname
+    : publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;
   const saved = publication && savedURL ? await (await caches.open(cacheName(publication.id))).match(savedURL) : undefined;
   const network = fetch(event.request).then(async response => {
     if (response.ok && !noStore(response)) {
@@ -206,7 +209,7 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
     const manifest = await cache.match(absolute("manifest.json", runtimeBase));
     if (manifest) {
       const declared = await manifest.json();
-      const optional = declared.assets.find((asset: PublicationAsset) => absolute(asset.path, runtimeBase) === url);
+      const optional = declared.assets.find((asset: PublicationAsset) => absolute(encodePublicationPath(asset.path), runtimeBase) === url);
       const asset = optional ? { url, sha256: optional.sha256, type: optional.type }
         : declared.resources.find((resource: RuntimeResource) => absolute(resource.url) === url);
       if (asset) resources.push({ cache, asset });

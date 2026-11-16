@@ -1,3 +1,4 @@
+import { encodePublicationPath } from "./paths";
 // Runtime core (PROTOCOL 7, 11.1): socket, bus, state, offline queue, eval, logs, health.
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
 import { runtimeAsset } from "./assets";
@@ -414,7 +415,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (snapTimer) { clearTimeout(snapTimer); snapTimer = 0; }
       store.saveSnapshot(snapshot());
       void store.flush(1000).then(() => {
-        const latest = new URL(cfg.publication?.entry || "index.html", new URL(cfg.base, location.href));
+        const latest = new URL(encodePublicationPath(cfg.publication?.entry || "index.html"), new URL(cfg.base, location.href));
         latest.search = location.search; latest.hash = location.hash;
         location.assign(latest.href);
       });

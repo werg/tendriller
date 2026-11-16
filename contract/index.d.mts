@@ -161,6 +161,8 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
+  /** Resolves only after the exact required publication graph is saved by its service worker. */
+  publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
   sensors: { active(): SensorKind[]; on(listener: (active: SensorKind[]) => void): () => void; stopAll(): number };
   notifications: NotificationsApi;
 }
