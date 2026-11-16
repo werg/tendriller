@@ -14,7 +14,7 @@ import type { RuntimePreferences } from "../../../contract/index.mjs";
 import { registry } from "../registry";
 import { CSS } from "./styles";
 import { h, clear, icon, relTime } from "./dom";
-import { installSensorWrappers, type SensorKind, type SensorTracker } from "./sensors";
+import { installSensorWrappers, type SensorKind, type SensorTracker } from "../sensors";
 import { installAudioUnlock, playCue, haptic, type Cue } from "./feedback";
 import { SpeechCapture } from "./speech";
 import { WakeWordCapture, type WakeState } from "./wakeword";

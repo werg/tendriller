@@ -1,5 +1,5 @@
 // Push-to-talk recording and in-browser Cactus Whistle transcription.
-import type { SensorTracker } from "./sensors";
+import type { SensorTracker } from "../sensors";
 import type { Features } from "../types";
 
 export type CaptureMode = "local" | null;

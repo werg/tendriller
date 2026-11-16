@@ -1,5 +1,5 @@
-// Tracks live sensor use by page code so the control can show indicators and offer
-// one stop switch. Wrappers are installed at mount time, which happens synchronously
+// Tracks live sensor use by page code so independent utilities can show indicators and offer
+// one stop switch. Wrappers are installed during runtime bootstrap, synchronously
 // from tendril.js before any page script runs.
 
 export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";

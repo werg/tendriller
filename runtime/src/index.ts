@@ -6,7 +6,7 @@ import { mountControl } from "./control";
 import { startRules } from "./rules";
 import { registry } from "./registry";
 import { describeCapabilities, observeCapabilities } from "./capabilities";
-import { installSensorWrappers } from "./control/sensors";
+import { installSensorWrappers } from "./sensors";
 import type { ControlApi, TendrilConfig } from "./types";
 import type { CaptureOptions } from "./capture";
 import type { RuntimeApi, OperationOptions } from "../../contract/index.mjs";
