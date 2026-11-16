@@ -237,7 +237,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
     capture_id: item.cid, name: item.msg.name, data: clone(item.msg.data),
     scope: item.msg.scope, expected_generations: clone(item.msg.expected_generations),
-    status: item.msg.failed ? "rejected" : "queued", ...(item.msg.uploaded ? { blob: item.msg.uploaded } : {}),
+    status: item.msg.failed ? "rejected" : "queued", ...(item.msg.uploaded ? { blob: clone(item.msg.uploaded) } : {}),
     ...(item.msg.failed || {}),
   }));
   const captureQueueChanged = () => bus.emit("capture_queue", captures());
@@ -256,9 +256,11 @@ export function createCore(cfg: TendrilConfig): Internal {
     captureQueueChanged();
   };
   const captureFailed = async (item: OutboxItem, error: string, message: string) => {
+    if (!store.has(item.cid)) return;
     // A rejected capture remains visible and retryable; it must not silently disappear.
     const msg = { ...item.msg, failed: { error, message } };
     try { await store.updateDurable(item, msg); } catch { item.msg = msg; }
+    if (!store.has(item.cid)) return;
     captureReceipt({ capture_id: item.cid, status: "rejected", error, message });
   };
   const waitForCapture = (item: OutboxItem): Promise<CaptureResult> => {
@@ -282,6 +284,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   };
 
   const ensureUploaded = async (item: OutboxItem): Promise<BlobReference | null> => {
+    if (!store.has(item.cid)) return null;
     if (!item.msg.uploaded) {
       const uploaded = await blobs.upload(item.blob!, item.msg.name, item.cid);
       if (!store.has(item.cid)) return null;
@@ -719,7 +722,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     deviceHeaders,
     blobUrl(id: string) {
       if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
-      return new URL(`_tendril/blob/${id}`, new URL(cfg.base, location.href)).href;
+      return new URL(`_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href;
     },
     bus,
     config: cfg,
@@ -835,7 +838,8 @@ export function createCore(cfg: TendrilConfig): Internal {
       await storeReady;
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
       if (!item) return;
-      await store.removeDurable(capture_id);
+      try { await store.removeDurable(capture_id); }
+      catch (error) { sentThisConn.delete(capture_id); void pump(); throw error; }
       captureReceipt({ capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." });
     },
     async setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference> {

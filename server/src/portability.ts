@@ -14,7 +14,7 @@ export type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from
 type SharedFile = NonNullable<PortableBundle["shared_files"]>[number];
 interface StagedBundle {
   name: string; entry: string; files: VersionFile[]; state?: Record<string, unknown>; session?: SessionBrief;
-  media: string[]; shared_files: SharedFile[]; expected_file_revisions: Record<string, number>;
+  media: string[]; shared_files: SharedFile[]; expected_head_revision: number; expected_file_revisions: Record<string, number>;
 }
 export const MAX_BUNDLE_BYTES = 36 * 1024 * 1024;
 const EMPTY_BRIEF: SessionBrief = { purpose: "", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
@@ -182,6 +182,7 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
     return { ...file };
   });
   // Capture the destination preconditions now, before storage awaits allow another writer.
+  const expectedHeadRevision = t.db.get<number>("publication_head_revision", 0);
   const expectedRevisions = Object.fromEntries(sharedFiles.map(file => [file.path,
     t.db.one<{ revision: number }>("SELECT revision FROM file_refs WHERE path=?", file.path)?.revision ?? 0]));
   if (bundle.state !== undefined && JSON.stringify(bundle.state).length > MAX_STATE) throw new HttpError(400, "bad_bundle", "Invalid shared state");
@@ -206,7 +207,7 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
     }
     const state = bundle.state === undefined ? undefined : rewrite(bundle.state, mapping);
     const staged: StagedBundle = { name: bundle.name.trim(), entry: entry.path, files: prepared, media: createdMedia,
-      shared_files: sharedFiles.map(file => ({ ...file, blob_id: mapping.get(file.blob_id)! })), expected_file_revisions: expectedRevisions,
+      shared_files: sharedFiles.map(file => ({ ...file, blob_id: mapping.get(file.blob_id)! })), expected_head_revision: expectedHeadRevision, expected_file_revisions: expectedRevisions,
       ...(state ? { state } : {}), ...(session ? { session } : {}) };
     t.transaction(() => {
       assertStoredContent(t, prepared);
@@ -221,18 +222,24 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
   }
 }
 
-export async function publishStaged(t: Tendril, by: string, expectedVersion: unknown, command: Preconditions) {
-  return withBundleLock(t, () => publishStagedUnlocked(t, by, expectedVersion, command));
+export async function publishStaged(t: Tendril, by: string, expectedHeadRevision: number, command: Preconditions) {
+  return withBundleLock(t, () => publishStagedUnlocked(t, by, expectedHeadRevision, command));
 }
-async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: unknown, command: Preconditions) {
+async function publishStagedUnlocked(t: Tendril, by: string, expectedHeadRevision: number, command: Preconditions) {
   preconditions(command);
-  const actor = `agent:${by}`, targets = { operations: ["bundle.publish"] }, payload = { expected_version: expectedVersion };
-  const previous = replay<{ version: number; restored: boolean }>(t, actor, command, targets, payload);
+  const actor = `agent:${by}`, targets = { paths: [["publications"]], operations: ["bundle.publish", "publication.publish"] },
+    payload = { expected_head_revision: expectedHeadRevision };
+  const previous = replay<{ version: number; head_revision: number; restored: true }>(t, actor, command, targets, payload);
   if (previous.found) return previous.result;
   const staged = t.db.get<StagedBundle | null>("staged_bundle", null);
   if (!staged) throw new HttpError(404, "not_found", "No prepared copy");
-  const current = t.db.get("current", 0);
-  if (expectedVersion !== current) throw new HttpError(409, "version_conflict", "The page changed; review its current version before replacing it", { current });
+  const headRevision = t.db.get<number>("publication_head_revision", 0);
+  if (expectedHeadRevision !== headRevision) throw new HttpError(409, "publication_conflict", "The publication head changed; review it before replacing the page", { head_revision: headRevision });
+  const writeTargets = {
+    paths: [...targets.paths, ...(staged.state ? [[]] : []), ...(staged.shared_files.length ? [["files"]] : [])],
+    operations: [...targets.operations, ...(staged.shared_files.length ? ["file.write"] : [])],
+  };
+  checkGenerations(t, command, writeTargets);
   if (!t.db.get<number>("latest", 0)) {
     const facts = t.presenceFacts();
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !facts.agentSocket && !facts.longPollHeld && !facts.webhook)
@@ -247,19 +254,19 @@ async function publishStagedUnlocked(t: Tendril, by: string, expectedVersion: un
     await snapshotBytes(t, stored.sha256, stored.size, `prepared media ${id}`);
   }
   const version = await createVersion(t, new Map(staged.files.map(f => [f.path, f])), "Restored from a portable bundle", by, {
-    entry: staged.entry, expectedCurrent: current,
+    entry: staged.entry, expectedHeadRevision,
     commit: () => { mutate(t, actor, command, targets, payload, () => {
-      checkGenerations(t, command, { paths: [...(staged.state ? [[]] : []), ...(staged.shared_files.length ? [["files"]] : [])], operations: ["bundle.publish"] });
+      checkGenerations(t, command, writeTargets);
       commitImportedFiles(t, staged.shared_files, staged.expected_file_revisions, actor, command.cid);
       if (staged.state) t.applyState([{ op: "set", path: [], value: staged.state }], `agent:${by}`, undefined, command);
       if (staged.session) { t.db.set("session_brief", staged.session); t.db.set("session_revision", t.db.get("session_revision", 0) + 1); }
       t.db.del("staged_bundle");
-      return { version: t.db.get("current", 0), restored: true };
+      return { version: t.db.get("current", 0), head_revision: t.db.get<number>("publication_head_revision", 0), restored: true };
     }); },
     beforeReload: () => { if (staged.state) t.broadcast({ t: "state_reset", ...t.getState() }); },
   });
   addActivity(t, { kind: "remix", summary: `Published prepared copy as version ${version}`, by });
-  return { version, restored: true };
+  return { version, head_revision: t.db.get<number>("publication_head_revision", 0), restored: true as const };
 }
 
 export async function discardStaged(t: Tendril): Promise<void> {
@@ -295,7 +302,7 @@ export async function remix(t: Tendril, req: Request, body: unknown, by: string,
     return staged;
   }
   addActivity(t, { kind: "remix", summary: "Created an independent copy", by });
-  const setup = { staged: true, requires_receiver: true, publish_url: `${handle.api}/bundle/publish`, expected_version: 0 };
+  const setup = { staged: true, requires_receiver: true, publish_url: `${handle.api}/bundle/publish`, expected_head_revision: (await staged.json<{ expected_head_revision: number }>()).expected_head_revision };
   return json(ownerPage ? { page_url: handle.page_url, remix: setup,
     next_step: "Open your copy, then use Connect an agent to continue and publish it." } : { ...handle, remix: setup }, 201);
 }

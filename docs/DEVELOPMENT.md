@@ -22,7 +22,7 @@ classes, account schema, and an explicit test fixture. The tools archive is a
 self-contained Node distribution: extracting it does not require an npm install
 or a source checkout. See [operational artifact details](tools/ARTIFACTS.md).
 
-`npm run contract:generate` refreshes `contract/wire.d.mts` and `contract/v2.json`
+`npm run contract:generate` refreshes `contract/wire.d.mts` and `contract/v3.json`
 from the executable schemas. `npm run contract:check` rejects stale generated
 files. This repository defines one target contract and storage baseline. Tests
 create their own accounts, pages, commands, captures, and records under that

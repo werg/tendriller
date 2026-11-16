@@ -36,11 +36,11 @@ export async function handleExperience(t: Tendril, req: Request, url: URL, by: s
   if (rest === "bundle" && method === "PUT") {
     const body = assertValid("bundle", await readJson(req, MAX_BUNDLE_BYTES));
     const staged = await stageBundle(t, body, by);
-    return json({ staged: true, files: staged.files.length, media: staged.media.length, expected_version: t.db.get("current", 0), requires_publication: true }, 202);
+    return json({ staged: true, files: staged.files.length, media: staged.media.length, expected_head_revision: staged.expected_head_revision, requires_publication: true }, 202);
   }
   if (rest === "bundle/publish" && method === "POST") {
     const body = assertValid("bundlePublish", await readJson(req, 32 * 1024));
-    return json(await publishStaged(t, by, body.expected_version, body));
+    return json(await publishStaged(t, by, body.expected_head_revision, body));
   }
   if (rest === "bundle" && method === "DELETE") { await discardStaged(t); return new Response(null, { status: 204 }); }
   if (rest === "remix" && method === "POST") return remix(t, req, assertValid(ownerPage ? "remixPage" : "remix", await readJson(req, 4096)), by, ownerPage);

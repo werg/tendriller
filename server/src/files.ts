@@ -132,7 +132,7 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
-  options: { entry?: string; expectedCurrent?: number; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  options: { entry?: string; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
   const entry = options.entry ?? "index.html";
   if (!files.has(entry) || !isHtmlType(files.get(entry)!.type)) throw new HttpError(400, "bad_publication", "The publication requires its declared HTML entry");
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
@@ -155,9 +155,6 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   }
   const n = t.transaction(() => {
     assertStoredContent(t, files.values());
-    const current = t.db.get<number>("current", 0);
-    if (options.expectedCurrent !== undefined && current !== options.expectedCurrent)
-      throw new HttpError(409, "version_conflict", "The page changed; review the current version before replacing it", { current });
     if (options.expectedHeadRevision !== undefined && t.db.get<number>("publication_head_revision", 0) !== options.expectedHeadRevision)
       throw new HttpError(409, "publication_conflict", "The publication head changed; inspect it before retrying",
         { head_revision: t.db.get<number>("publication_head_revision", 0) });

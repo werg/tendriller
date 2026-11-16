@@ -79,7 +79,7 @@ it("serves a publication's declared HTML entry at the page root", async () => {
 it("rejects false size attestations on both deduplicated reservation and completion", async () => {
   const page = await create();
   const bytes = new TextEncoder().encode("known immutable bytes");
-  const blob = await inDO(page.id, t => t.storeBlob(bytes.buffer, "text/plain", null, null, "agent"));
+  const blob = await inDO(page.id, t => t.storeBlob(bytes.buffer as ArrayBuffer, "text/plain", null, null, "agent"));
   const request = { cid: "dedupe-correct", sha256: blob.sha256, size: bytes.byteLength, type: "text/plain" };
   const wrong = await api(page, "POST", "uploads", { ...request, cid: "dedupe-wrong", size: bytes.byteLength + 1 });
   expect(wrong.status).toBe(422);
@@ -148,7 +148,7 @@ it("bounds history while preserving tombstone revisions and reporting cursor gap
 
 it("advances publication CAS when service recovery selects a different version", async () => {
   const page = await create({ mode: "dashboard" });
-  const blob = await inDO(page.id, t => t.storeBlob(new TextEncoder().encode("<h1>Version</h1>").buffer, "text/html", null, null, "agent"));
+  const blob = await inDO(page.id, t => t.storeBlob(new TextEncoder().encode("<h1>Version</h1>").buffer as ArrayBuffer, "text/html", null, null, "agent"));
   const manifest = { expected_generations: {}, entry: "index.html", files: [{ path: "index.html", blob_id: blob.id, type: "text/html" }] };
   await apiJson(page, "POST", "publications", { ...manifest, cid: "head-1", expected_head_revision: 0 });
   await apiJson(page, "POST", "publications", { ...manifest, cid: "head-2", expected_head_revision: 1 });

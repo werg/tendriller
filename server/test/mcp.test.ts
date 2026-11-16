@@ -59,7 +59,9 @@ describe("MCP connector", () => {
     expect(events.result.structuredContent.events.some((e: any) => e.data?.timer === "done")).toBe(true);
     const again = await rpc(h, "tools/call", { name: "read_events", arguments: {} });
     expect(again.result.structuredContent.events).toEqual([]); // continues after the last read
-    const bad = await rpc(h, "tools/call", { name: "rollback", arguments: { version: 99 } });
+    const bad = await rpc(h, "tools/call", { name: "rollback_publication", arguments: {
+      cid: "missing-publication", expected_generations: {}, expected_head_revision: 0, version: 99,
+    } });
     expect(bad.result.isError).toBe(true);
     page.close();
   });

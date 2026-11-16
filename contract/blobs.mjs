@@ -14,15 +14,24 @@ const scope = { type: "string", pattern: "^(?!(?:__proto__|constructor|prototype
 const expected = { type: "object", maxProperties: 128, propertyNames: scope, additionalProperties: s(160) };
 const guards = { cid, expected_generations: expected, scope };
 const requiredGuards = ["cid", "expected_generations"];
+/** A lone surrogate cannot be represented faithfully in a URL or UTF-8 name. */
+export function isWellFormedUnicode(value) {
+  for (const point of value) {
+    const code = point.charCodeAt(0);
+    if (point.length === 1 && code >= 0xd800 && code <= 0xdfff) return false;
+  }
+  return true;
+}
+export const blobNameSchema = { type: "string", maxLength: 200, "x-well-formed-unicode": true };
 export const filePathSchema = {
   type: "string", minLength: 1, maxLength: RESOURCE_LIMITS.path_characters,
-  "x-canonical-nfc": true,
+  "x-canonical-nfc": true, "x-well-formed-unicode": true,
   pattern: "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$",
 };
 /** Reject unsafe or non-canonical names rather than translating them to other paths. */
 export function assertFilePath(path) {
   if (typeof path !== "string" || !path || path.length > RESOURCE_LIMITS.path_characters ||
-    path.normalize("NFC") !== path || !new RegExp(filePathSchema.pattern).test(path) ||
+    !isWellFormedUnicode(path) || path.normalize("NFC") !== path || !new RegExp(filePathSchema.pattern).test(path) ||
     path.split("/").some(part => !part || part === "." || part === "..")) {
     throw new TypeError("Invalid canonical shared file path");
   }
@@ -31,21 +40,20 @@ export function assertFilePath(path) {
 const metadata = {
   id: blobIdSchema, sha256: sha256Schema,
   size: { type: "integer", minimum: 0, maximum: RESOURCE_LIMITS.blob_bytes },
-  type: { ...s(), pattern: "^[^\\x00-\\x1f\\x7f]+$" }, name: { type: "string", maxLength: 200 },
+  type: { ...s(), pattern: "^[^\\x00-\\x1f\\x7f]+$" }, name: blobNameSchema,
   url: s(2048), created_at: n,
   retention: obj({ expires_at: { type: ["integer", "null"], minimum: 0 }, reasons: arr(s(), 32) }, ["expires_at", "reasons"]),
 };
 const blob = obj(metadata, ["id", "sha256", "size", "type", "url", "created_at", "retention"]);
-const attachment = obj({ blob_id: blobIdSchema, name: { type: "string", maxLength: 200 } }, ["blob_id"]);
+const attachment = obj({ blob_id: blobIdSchema, name: blobNameSchema }, ["blob_id"]);
 const file = obj({
   path: filePathSchema, revision: { type: "integer", minimum: 1 },
   blob_id: { anyOf: [blobIdSchema, { type: "null" }] },
-  name: { type: "string", maxLength: 200 }, type: s(),
+  name: blobNameSchema, type: metadata.type,
   scope: { anyOf: [scope, { type: "null" }] },
   updated_at: n, by: s(),
 }, ["path", "revision", "blob_id"]);
-const publicationFile = obj({ path: filePathSchema, blob_id: blobIdSchema, type: s() }, ["path", "blob_id", "type"]);
-const transferError = obj({ code: s(), message: s(1000), retryable: bool, details: { type: "object" } }, ["code", "message"]);
+const publicationFile = obj({ path: filePathSchema, blob_id: blobIdSchema, type: metadata.type }, ["path", "blob_id", "type"]);
 const fileChange = obj({ cursor: n, file, cid, actor: s(), at: n }, ["cursor", "file", "cid", "actor", "at"]);
 export const blobSchemas = Object.freeze({
   blobId: blobIdSchema,
@@ -55,7 +63,7 @@ export const blobSchemas = Object.freeze({
   blobList: obj({ blobs: arr(blob, 1000), cursor: { type: ["string", "null"] } }, ["blobs", "cursor"]),
   blobAttachment: attachment,
   blobAttachments: arr(attachment, 16),
-  uploadStart: obj({ cid, sha256: sha256Schema, size: metadata.size, type: metadata.type, name: { type: "string", maxLength: 200 } }, ["cid", "sha256", "size", "type"]),
+  uploadStart: obj({ cid, sha256: sha256Schema, size: metadata.size, type: metadata.type, name: blobNameSchema }, ["cid", "sha256", "size", "type"]),
   uploadSession: obj({
     id: uploadIdSchema, blob_id: blobIdSchema, sha256: sha256Schema, size: metadata.size,
     phase: { enum: ["reserved", "ready", "receiving", "received", "completed", "aborted", "expired"] },
@@ -68,7 +76,7 @@ export const blobSchemas = Object.freeze({
   fileHistory: obj({ path: filePathSchema, versions: arr(file, RESOURCE_LIMITS.file_history + 1) }, ["path", "versions"]),
   fileWrite: obj({
     ...guards, path: filePathSchema, expected_revision: n, blob_id: blobIdSchema,
-    name: { type: "string", maxLength: 200 }, type: s(),
+    name: blobNameSchema, type: metadata.type,
   }, [...requiredGuards, "path", "expected_revision", "blob_id"]),
   fileDelete: obj({ ...guards, path: filePathSchema, expected_revision: n }, [...requiredGuards, "path", "expected_revision"]),
   fileResult: obj({ file, cursor: n }, ["file", "cursor"]),
@@ -92,14 +100,6 @@ export const blobSchemas = Object.freeze({
   publicationDetails: obj({ version: { type: "integer", minimum: 1 }, entry: filePathSchema,
     files: arr(obj({ ...publicationFile.properties, sha256: sha256Schema, size: metadata.size },
       ["path", "blob_id", "type", "sha256", "size"]), RESOURCE_LIMITS.files_per_publication) }, ["version", "entry", "files"]),
-  transferDescriptor: obj({
-    transfer_id: s(), phase: { enum: ["queued", "uploading", "ready", "committing", "accepted", "rejected"] },
-    blob, file, error: transferError, progress: n,
-  }, ["transfer_id", "phase"]),
-  exportSnapshot: obj({ id: s(), expires_at: n, created_at: n, sha256: sha256Schema, size: n },
-    ["id", "expires_at", "created_at"]),
-  importStage: obj({ ...guards, sha256: sha256Schema, expected_head_revision: n, expected_files: { type: "object" } },
-    [...requiredGuards, "sha256", "expected_head_revision", "expected_files"]),
 });
 
 /** Cross-field invariants cannot be expressed by the supported schema subset. */
@@ -109,7 +109,7 @@ export function assertAttachments(attachments) {
   for (const item of attachments) {
     const id = item?.blob_id;
     if (typeof id !== "string" || !new RegExp(blobIdSchema.pattern).test(id) || seen.has(id) ||
-      (item.name !== undefined && (typeof item.name !== "string" || item.name.length > 200)))
+      (item.name !== undefined && (typeof item.name !== "string" || item.name.length > 200 || !isWellFormedUnicode(item.name))))
       throw new TypeError("Invalid or duplicate attachment");
     seen.add(id);
   }

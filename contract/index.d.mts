@@ -23,7 +23,6 @@ export type SharedFileWrite = WireContracts["fileWrite"];
 export type SharedFileDelete = WireContracts["fileDelete"];
 export type PagePublicationWrite = WireContracts["publicationWrite"];
 export type PagePublicationRollback = WireContracts["publicationRollback"];
-export type TransferDescriptor = WireContracts["transferDescriptor"];
 export type SendResult = WireContracts["sendResult"];
 export type CaptureOptions = WireContracts["captureOptions"] & OperationOptions;
 export type CaptureResult = WireContracts["captureResult"];
@@ -63,6 +62,7 @@ export type TimerRun = WireContracts["timerRun"];
 export type PortableBundle = WireContracts["bundle"];
 export type BundleStageResult = WireContracts["bundleStage"];
 export type BundlePublish = WireContracts["bundlePublish"];
+export type BundleReceipt = WireContracts["bundleReceipt"];
 export type RemixRequest = WireContracts["remix"];
 export type RemixPageRequest = WireContracts["remixPage"];
 /** Platform concurrency metadata never belongs inside application data. */

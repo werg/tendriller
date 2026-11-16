@@ -13,6 +13,7 @@ export function blobInfo(t: Tendril, id: string) {
   if (!row) throw new HttpError(404, "not_found", "No such blob");
   const reasons: string[] = [];
   if (row.pinned) reasons.push("pinned");
+  if (t.db.get<{ media: string[] } | null>("staged_bundle", null)?.media.includes(id)) reasons.push("staged_import");
   if (row.id === t.db.get<string | null>("icon", null)) reasons.push("icon");
   if (t.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id)) reasons.push("shared_file");
   if (t.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? LIMIT 1", id)) reasons.push("file_history");

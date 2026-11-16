@@ -76,7 +76,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     updateSession: body => request("/session", { method: "PUT", body: assertValid("sessionWrite", body) }, "sessionResult"),
     exportBundle: ({ includeData = false } = {}) => request(`/bundle?include_data=${includeData}`, undefined, "bundle"),
     stageBundle: body => request("/bundle", { method: "PUT", body: assertValid("bundle", body) }, "bundleStage"),
-    publishBundle: body => request("/bundle/publish", { method: "POST", body: assertValid("bundlePublish", body) }, "publicationResult"),
+    publishBundle: body => request("/bundle/publish", { method: "POST", body: assertValid("bundlePublish", body) }, "bundleReceipt"),
     discardBundle: () => request("/bundle", { method: "DELETE" }),
     remix: body => request("/remix", { method: "POST", body: assertValid("remix", body) }, "remixResult"),
     service: () => request("/service", undefined, "serviceDescriptor"),
