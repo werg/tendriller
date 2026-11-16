@@ -1,4 +1,5 @@
 import type { OperationOptions, ScopeDescriptor } from "../../contract/index.mjs";
+import { assertValid } from "../../contract/index.mjs";
 import { toPath, type Op } from "./state";
 
 export interface OperationContext {
@@ -15,6 +16,11 @@ export function requiredScopes(scopes: readonly ScopeDescriptor[], operation: st
 
 /** A context is captured once when work is created; delivery never refreshes it. */
 export function captureContext(scopes: readonly ScopeDescriptor[], operation: string, options: OperationOptions = {}, ops: readonly Op[] = []): OperationContext {
+  if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("Operation context must be an object");
+  // Validate before copying: a string, array or null must not silently become
+  // a different guard map. Omission still selects the operation's known scopes.
+  if (options.scope !== undefined) assertValid("scopeId", options.scope);
+  if (options.expected_generations !== undefined) assertValid("generationMap", options.expected_generations);
   const required = requiredScopes(scopes, operation, ops.map(op => toPath(op.path)), options.scope);
   if (options.scope && !scopes.some(binding => binding.id === options.scope)) {
     throw Object.assign(new Error(`Scope ${options.scope} is not active on this page.`), { code: "unknown_scope" });

@@ -55,3 +55,14 @@ test("explicit expectations are copied without rebasing and stale expectations n
   assert.equal(context.expected_generations["opaque-a"], "old");
   assert.equal(matchesContext(scopes, context, "event"), false);
 });
+
+test("every operation rejects malformed supplied guards before copying or choosing scopes", () => {
+  for (const operation of ["event", "state", "capture", "blob.pin", "timer.write"]) {
+    for (const expected_generations of [null, [], "abc", false, { "opaque-a": 2 }, { "opaque-a": "" }])
+      assert.throws(() => captureContext(scopes, operation, { expected_generations }), { code: "bad_request" });
+    for (const scope of [null, "", 0, "constructor", "has spaces"])
+      assert.throws(() => captureContext(scopes, operation, { scope }), { code: "bad_request" });
+    for (const options of [null, [], "abc"])
+      assert.throws(() => captureContext(scopes, operation, options), TypeError);
+  }
+});
