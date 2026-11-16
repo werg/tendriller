@@ -394,12 +394,12 @@ test("capture and its semantic input survive offline reload as one transaction",
   mock.goOnline(t);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => page.evaluate(() => (window as any).receipts.find((result: any) => result.status === "accepted"))).toMatchObject({
-    capture_id: queued.capture_id, status: "accepted", blob: { retention: { keep: true, expires_at: null } },
+    capture_id: queued.capture_id, status: "accepted", blob: { retention: { expires_at: null, reasons: ["pinned"] } },
   });
   const sends = mock.messages(t, "capture_complete");
   expect(sends).toHaveLength(1);
   expect(sends[0].data).toEqual({ type: "ui", block: "sketch", capture_id: queued.capture_id, value: { width: 640, height: 320,
-    blob: expect.any(String), url: expect.stringContaining("_tendril/blob/") } });
+    blob: expect.any(String), url: expect.stringContaining("_tendril/blobs/") } });
   expect(t.blobs.size).toBe(1);
   expect([...t.blobs.values()][0].body.toString()).toBe("drawing-bytes");
   expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
@@ -813,7 +813,7 @@ test("upload posts the blob", async ({ page }) => {
   await open(page, t);
   const r = await page.evaluate(() => (window as any).tendril.upload(new Blob(["abc"], { type: "text/plain" }), { name: "a.txt" }));
   expect(r.id).toMatch(/^b_/);
-  expect(r.url).toBe(mock.url(t) + "_tendril/blob/" + r.id);
+  expect(r.url).toBe(mock.url(t) + "_tendril/blobs/" + r.id);
   const b = t.blobs.get(r.id)!;
   expect(b.body.toString()).toBe("abc");
   expect(b.type).toBe("text/plain");
