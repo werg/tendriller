@@ -2,8 +2,10 @@
  * browsers, Workers and Node. Matching declarations are in index.d.mts. */
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
+import { blobSchemas } from "./blobs.mjs";
+export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
-export const CONTRACT_VERSION = 2;
+export const CONTRACT_VERSION = 3;
 export const CORE_RELEASE = "0.3.0-rc.1";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
@@ -19,9 +21,7 @@ const nullableTime = { anyOf: [integer, { type: "null" }] };
 const shortText = { type: "string", minLength: 1, maxLength: 200 };
 const sayProperties = { text: string, speak: boolean, in_reply_to: { type: "integer", minimum: 1 }, device: string, speak_on: string };
 const error = object({ code: string, message: string, details: { type: "array", items: object({ path: string, message: string }, ["path", "message"]) } }, ["code", "message"], true);
-const blobReference = object({ id: { type: "string", pattern: "^b_[a-z2-7]{20}$" }, url: string,
-  retention: object({ keep: { type: "boolean" }, expires_at: { anyOf: [integer, { type: "null" }] }, reason: { enum: ["pinned", "page_default", "agent_asset", "icon"] } }, ["keep", "expires_at"]),
-}, ["id", "url"]);
+const blobReference = blobSchemas.blobMetadata;
 const stateOperation = { anyOf: [
   object({ op: { const: "set" }, path, value: {} }, ["op", "path", "value"]),
   object({ op: { const: "delete" }, path }, ["op", "path"]),
@@ -51,7 +51,7 @@ const identifier = { type: "string", minLength: 1, maxLength: 200 };
 const scopeId = { type: "string", pattern: "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$" };
 const generationToken = { type: "string", minLength: 1, maxLength: 160 };
 const commandId = { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" };
-const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
+const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
 const generationMap = { type: "object", maxProperties: 128, propertyNames: scopeId, additionalProperties: generationToken };
 const guards = { cid: commandId, scope: scopeId, expected_generations: generationMap };
 const scopeDescriptor = object({ id: scopeId, generation: generationToken,
@@ -63,6 +63,7 @@ const workflowDescriptor = object({ id: identifier, interface_version: identifie
 const coreSchemas = {
   ...durabilitySchemas,
   ...streamSchemas,
+  ...blobSchemas,
   scopeId,
   scopeOperation,
   scopeBindings: object({paths: {type:"array",maxItems:128,items:path},operations:{type:"array",maxItems:128,items:scopeOperation}}, ["paths","operations"]),
@@ -73,7 +74,7 @@ const coreSchemas = {
   scopeWrite: object({ ...guards, paths: { type: "array", items: path }, operations: { type: "array", items: scopeOperation } }, ["cid", "expected_generations", "paths", "operations"]),
   command: object({ ...guards, data: {} }, ["cid", "expected_generations", "data"]),
   workflowDescriptor,
-  serviceDescriptor: object({ contract: { const: 2 }, core_release: identifier,
+  serviceDescriptor: object({ contract: { const: 3 }, core_release: identifier,
     workflows: { type: "array", items: workflowDescriptor }, limits: jsonObject,
   }, ["contract", "core_release", "workflows", "limits"]),
   error,
@@ -156,8 +157,8 @@ export const schemas = Object.freeze({
 
 export const schemaDocument = Object.freeze({
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://tendriller.dev/contract/v2.json",
-  title: "Tendriller public contract v2",
+  $id: "https://tendriller.dev/contract/v3.json",
+  title: "Tendriller public contract v3",
   $defs: schemas,
 });
 
@@ -192,6 +193,7 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
     if (schema.minLength !== undefined && value.length < schema.minLength) issue(`Minimum length is ${schema.minLength}`);
     if (schema.maxLength !== undefined && value.length > schema.maxLength) issue(`Maximum length is ${schema.maxLength}`);
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) issue("Value does not match the required format");
+    if (schema["x-canonical-nfc"] && value.normalize("NFC") !== value) issue("Value must use canonical Unicode NFC");
   }
   if (typeof value === "number") {
     if (schema.minimum !== undefined && value < schema.minimum) issue(`Minimum is ${schema.minimum}`);

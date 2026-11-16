@@ -15,7 +15,7 @@ import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
-import { deleteUnreferencedContent } from "./files";
+import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
@@ -896,7 +896,9 @@ export class Tendril extends DurableObject<Env> {
   // ---------------------------------------------------------------- blobs
 
   blobKey(id: string): string {
-    return `t/${this.tid}/blobs/${id}`;
+    const row = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id);
+    if (!row) throw new HttpError(404, "not_found", "No such blob");
+    return fileKey(this, row.sha256);
   }
 
   fileLimit(): number {
@@ -908,9 +910,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   storageUsed(): number {
-    const files = this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0;
-    const blobs = this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM blobs")?.n ?? 0;
-    return files + blobs;
+    return this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0;
   }
 
   checkLocalStorage(additional: number): void {
@@ -955,34 +955,41 @@ export class Tendril extends DurableObject<Env> {
 
   async storeBlob(body: ArrayBuffer, type: string, name: string | null, device: string | null, source: "page" | "agent", keep = false) {
     const id = newBlobId();
-    this.checkLocalStorage(body.byteLength);
-    this.db.run("INSERT INTO blobs (id, type, size, name, ts, device, source, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, type, body.byteLength, name, this.now(), device, source, keep ? 1 : 0);
-    let globalReserved = false;
-    try {
-      await this.reserveGlobalBytes(body.byteLength);
-      globalReserved = true;
-      await this.env.FILES.put(this.blobKey(id), body, { httpMetadata: { contentType: type } });
-    } catch (err) {
-      this.db.run("DELETE FROM blobs WHERE id = ?", id);
-      if (globalReserved) await this.releaseGlobalBytes(body.byteLength);
-      throw err;
-    }
+    await storeContent(this, body, type, hash => {
+      this.db.run("INSERT INTO blobs (id, sha256, type, size, name, ts, device, source, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        id, hash, type, body.byteLength, name, this.now(), device, source, keep ? 1 : 0);
+    });
     return blobReference(this, id);
   }
 
-  async getBlob(id: string): Promise<Response> {
-    const row = this.db.one<{ type: string; name: string | null }>("SELECT type, name FROM blobs WHERE id = ?", id);
+  async getBlob(id: string, rangeHeader?: string | null, head = false): Promise<Response> {
+    const row = this.db.one<{ type: string; name: string | null; size: number }>("SELECT type, name, size FROM blobs WHERE id = ?", id);
     if (!row) throw new HttpError(404, "not_found", "No such blob");
-    const obj = await this.env.FILES.get(this.blobKey(id));
-    if (!obj) throw new HttpError(404, "not_found", "Blob content missing");
-    return new Response(obj.body, { headers: { "Content-Type": row.type || "application/octet-stream", "Cache-Control": "private, max-age=31536000, immutable" } });
+    let range: { offset: number; length: number } | undefined;
+    if (rangeHeader) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+      if (!match || (!match[1] && !match[2])) throw new HttpError(416, "bad_range", "Only one byte range is supported");
+      const start = match[1] ? Number(match[1]) : Math.max(0, row.size - Number(match[2]));
+      const end = match[1] ? (match[2] ? Number(match[2]) : row.size - 1) : row.size - 1;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= row.size)
+        throw new HttpError(416, "bad_range", "Requested byte range is unavailable");
+      range = { offset: start, length: Math.min(end, row.size - 1) - start + 1 };
+    }
+    const obj = await this.env.FILES.get(this.blobKey(id), range ? { range } : undefined);
+    if (!obj || !("body" in obj)) throw new HttpError(404, "not_found", "Blob content missing");
+    const headers = new Headers({ "Content-Type": row.type || "application/octet-stream",
+      "Cache-Control": "private, max-age=31536000, immutable", "Accept-Ranges": "bytes",
+      "Content-Length": String(range?.length ?? row.size) });
+    if (range) headers.set("Content-Range", `bytes ${range.offset}-${range.offset + range.length - 1}/${row.size}`);
+    return new Response(head ? null : obj.body, { status: range ? 206 : 200, headers });
   }
 
   async deleteBlob(id: string): Promise<void> {
-    const size = this.db.one<{ size: number }>("SELECT size FROM blobs WHERE id = ?", id)?.size ?? 0;
+    const hash = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id)?.sha256;
+    if (this.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id) ||
+        this.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) return;
     this.db.run("DELETE FROM blobs WHERE id = ?", id);
-    await this.env.FILES.delete(this.blobKey(id));
-    if (size) await this.releaseGlobalBytes(size);
+    if (hash) await deleteUnreferencedContent(this, hash);
   }
 
   // ---------------------------------------------------------------- transcript, say, notify

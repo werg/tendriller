@@ -150,7 +150,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
-  if (path === "/contract/v2.json") return json(schemaDocument);
+  if (path === "/contract/v3.json") return json(schemaDocument);
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   }

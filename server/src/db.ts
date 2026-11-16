@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, secret_hash TEXT NOT NU
   pending INTEGER NOT NULL DEFAULT 0, pair_code TEXT, link TEXT, ua TEXT, caps TEXT,
   created_at INTEGER NOT NULL, last_seen INTEGER, last_active INTEGER);
 CREATE TABLE IF NOT EXISTS versions (version INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, runtime_id TEXT NOT NULL, runtime_version TEXT NOT NULL, runtime_features TEXT NOT NULL,
-  message TEXT, errors TEXT, by TEXT, failed_event INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, risk_flags TEXT NOT NULL DEFAULT '[]');
+  entry TEXT NOT NULL DEFAULT 'index.html', message TEXT, errors TEXT, by TEXT, failed_event INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, risk_flags TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS publication_leases (device TEXT NOT NULL, version INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(device,version));
 CREATE TABLE IF NOT EXISTS version_files (version INTEGER NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL,
   type TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (version, path));
@@ -46,8 +46,21 @@ CREATE TABLE IF NOT EXISTS event_consumers (name TEXT PRIMARY KEY, handled_seq I
   generation INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS logs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, device TEXT, version INTEGER,
   level TEXT NOT NULL, message TEXT NOT NULL, stack TEXT);
-CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT, size INTEGER NOT NULL, name TEXT, ts INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, type TEXT, size INTEGER NOT NULL, name TEXT, ts INTEGER NOT NULL,
   device TEXT, source TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS blobs_content ON blobs(sha256);
+CREATE TABLE IF NOT EXISTS upload_sessions (id TEXT PRIMARY KEY, actor TEXT NOT NULL, cid TEXT NOT NULL,
+  sha256 TEXT NOT NULL, size INTEGER NOT NULL, type TEXT NOT NULL, name TEXT, blob_id TEXT NOT NULL,
+  source TEXT NOT NULL, device TEXT, phase TEXT NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(actor,cid));
+CREATE INDEX IF NOT EXISTS upload_sessions_expiry ON upload_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS file_refs (path TEXT PRIMARY KEY, revision INTEGER NOT NULL, blob_id TEXT,
+  name TEXT, type TEXT, scope TEXT, updated_at INTEGER NOT NULL, by_actor TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS file_ref_changes (cursor INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL,
+  revision INTEGER NOT NULL, blob_id TEXT, name TEXT, type TEXT, scope TEXT, updated_at INTEGER NOT NULL,
+  by_actor TEXT NOT NULL, cid TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS file_ref_history ON file_ref_changes(path,cursor DESC);
+CREATE TABLE IF NOT EXISTS publication_blobs (version INTEGER NOT NULL, path TEXT NOT NULL, blob_id TEXT NOT NULL,
+  PRIMARY KEY(version,path));
 CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL, risk_score INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK(status IN ('writing','ready','deleting')));
 CREATE TABLE IF NOT EXISTS trusted_versions (account_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (account_id, version));
