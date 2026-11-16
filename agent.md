@@ -1,6 +1,6 @@
 # Give your agent a page
 
-Tendriller connects an authenticated page to an agent through shared state, events, files, blobs and streams. This is the entry point for **core contract 2**. Optional tools and application implementations are maintained in [tendriller-contrib](https://github.com/werg/tendriller-contrib).
+Tendriller connects an authenticated page to an agent through shared state, events, files, blobs and streams. This is the entry point for **core contract 3**. Optional tools and application implementations are maintained in [tendriller-contrib](https://github.com/werg/tendriller-contrib).
 
 ## Discover and check requirements
 
@@ -13,7 +13,7 @@ Fetch `GET https://tendriller.dev/api/service` before creating a page. It return
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)
 - [CLI, collector, preview and examples](https://github.com/werg/tendriller-contrib)
 
-**Confirm contrib compatibility with `GET /api/service` rather than relying on version-number equality.** The pinned contrib rc.3 catalog is the tested pairing for core rc.5; future releases have their own immutable manifests. The release index includes release candidates. Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
+**Confirm contrib compatibility with `GET /api/service` rather than relying on version-number equality.** Select a compatible release and its `catalog.json` and `manifest.json` assets, then record exact release URLs and SHA-256 digests before installing or scaffolding. Download with redirect following, such as `curl -fL`. Components are vendored into page files; a browser must not execute GitHub attachment URLs.
 
 ## Create and establish delivery
 
@@ -38,19 +38,19 @@ A page that only needs telemetry may use `mode:"dashboard"`; it has the same str
 
 ## Publish a complete page
 
-Publish all files in one `POST A/files` request. The public SDK exposes `client.writeFiles({files})`:
+Publish an immutable manifest. For each file, compute SHA-256 over the exact bytes, then start an upload with `POST A/uploads`:
 
 ```json
-{
-  "files": {
-    "index.html": "<!doctype html><html><head><title>Status</title></head><body><button id='send'>Send</button><script src='app.js'></script></body></html>",
-    "app.js": "document.querySelector('#send').onclick = () => tendril.send({type:'job.status',session:'job-123'});"
-  },
-  "replace": true
-}
+{"cid":"upload-index-1","sha256":"<64 lowercase hex characters>","size":128,"type":"text/html","name":"index.html"}
 ```
 
-The service injects its released runtime. Every publication locks that runtime and all submitted asset hashes. Relative references resolve within the immutable publication directory. Include the complete component dependency set, including lazy scripts, workers and styles. The contrib scaffolder resolves this set before publication.
+If the response has `upload_required:true`, `PUT A/uploads/<id>/content` with the exact bytes and `Content-Type: application/octet-stream`. Then `POST A/uploads/<id>/complete` and retain its `blob.id`. Upload every file this way. Read `GET A/publications` for `head_revision`, then publish the complete set with `POST A/publications`:
+
+```json
+{"cid":"publish-page-1","expected_generations":{},"expected_head_revision":0,"entry":"index.html","files":[{"path":"index.html","blob_id":"<completed blob id>","type":"text/html"}]}
+```
+
+Keep each upload and publication command ID stable across retries. A changed head produces a conflict: inspect the current publication and compose a new complete manifest. The contrib CLI performs the hash, upload and manifest steps for a directory. The service injects its released runtime. Every publication locks that runtime and all submitted asset hashes. Relative references resolve within the immutable publication directory. Include the complete component dependency set, including lazy scripts, workers and styles.
 
 A page's health report determines whether the publication becomes healthy. **Health remains `null` / `pending` until an eligible, visible tab loads the new publication**; a push or agent connection alone cannot mark it healthy. Visibility matters: a background tab does not declare a new page healthy. Existing tabs may defer reload while preserving their drafts and remain on their original asset graph.
 
@@ -102,4 +102,4 @@ For troubleshooting use events, activity, logs, delivery probes and `GET A/capab
 
 ## Reference
 
-[Browser API](https://tendriller.dev/docs/BROWSER_API.md) · [Protocol](https://tendriller.dev/docs/PROTOCOL.md) · [Executable schema](https://tendriller.dev/contract/v2.json) · [Streams](https://tendriller.dev/docs/STREAMS.md) · [Captures](https://tendriller.dev/docs/CAPTURES.md) · [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md) · [Contrib](https://github.com/werg/tendriller-contrib)
+[Browser API](https://tendriller.dev/docs/BROWSER_API.md) · [Protocol](https://tendriller.dev/docs/PROTOCOL.md) · [Executable schema](https://tendriller.dev/contract/v3.json) · [Streams](https://tendriller.dev/docs/STREAMS.md) · [Captures](https://tendriller.dev/docs/CAPTURES.md) · [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md) · [Contrib](https://github.com/werg/tendriller-contrib)
