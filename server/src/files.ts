@@ -268,13 +268,13 @@ export function listVersions(t: Tendril) {
 }
 
 /** The actual immutable URLs used by this publication, including its runtime. */
-export function publicationManifest(t: Tendril, version: number, base: string, entry?: string): PublicationManifest {
+export function publicationManifest(t: Tendril, version: number, base: string): PublicationManifest {
   const release = version > 0
     ? t.db.one<{ runtime_id: string; runtime_version: string; runtime_features: string }>("SELECT runtime_id,runtime_version,runtime_features FROM versions WHERE version=?", version)
     : { runtime_id: runtimeRelease.id, runtime_version: runtimeRelease.version, runtime_features: JSON.stringify(runtimeRelease.features) };
   if (!release) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
   const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
-  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: entry ?? defaultEntry,
+  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: defaultEntry,
     assets: versionFiles(t, version).map(file => ({ path: file.path, sha256: file.hash, type: file.type, size: file.size })),
     runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `${base}_tendril/runtime/${release.runtime_id}/` } };
 }
@@ -323,7 +323,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, features: t.features(), publication: null });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, documentPath: null, features: t.features(), publication: null });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -338,7 +338,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, features: t.features(), publication: publicationManifest(t, version, base, path) });
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
     return new Response(req.method === "HEAD" ? null : html, { headers });
   }
   headers.set("Content-Length", String(file.size));

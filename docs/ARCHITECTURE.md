@@ -61,7 +61,7 @@ The private-response and exact-proposal cookbooks contain small reference polici
 
 ## Publication and serving contract
 
-A publication locks complete page files and the current runtime artifact. `publication.base` identifies its immutable root; `publication.entry` identifies the actual requested logical HTML file. Each HTML response inserts a first base URL for that file's encoded directory, so nested pages resolve sibling assets correctly. Asset paths are encoded by segment, including spaces, Unicode and URL punctuation. Directory requests select `index.html`; an arbitrary missing route returns 404. Applications may use hash routing or publish explicit route files.
+A publication locks complete page files and the current runtime artifact. `publication.base` identifies its immutable root; `publication.entry` identifies its canonical authored HTML entry. The separate `documentPath` identifies the actual requested logical HTML file. Each HTML response inserts a first base URL for that document's encoded directory, so nested pages resolve sibling assets correctly. Asset paths are encoded by segment, including spaces, Unicode and URL punctuation. Publication roots select the canonical entry; explicit nested directory requests select their declared `index.html`. An arbitrary missing route returns 404. Applications may use hash routing or publish explicit route files.
 
 An existing author manifest is retained. External dependencies remain an explicit page choice and do not acquire platform offline guarantees. Preview and publication receive the same authored asset set; preview cannot silently supply a missing library.
 

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../lib/preview.mjs";
@@ -77,6 +77,25 @@ test("a page reload preserves an offline outbox and replays each event once", as
   await page.reload();
   await page.waitForFunction(() => window.tendril.connected);
   expect(server.preview.events).toHaveLength(1);
+});
+
+test("saving a nested document offline preserves the canonical publication root", async ({ page, context }) => {
+  mkdirSync(join(dir, "reports"));
+  writeFileSync(join(dir, "reports", "detail.html"), '<!doctype html><html><head><title>Report</title></head><body><h1>Nested report</h1></body></html>');
+  await page.goto(url() + "reports/detail.html");
+  await page.waitForFunction(() => window.tendril.connected);
+  const publication = await page.evaluate(() => window.tendril.publication.saveOffline());
+  const pinnedRoot = url() + "_publications/" + publication.id + "/";
+  await expect(page).toHaveURL(pinnedRoot + "reports/detail.html");
+  await expect(page.locator("h1")).toHaveText("Nested report");
+
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.locator("h1")).toHaveText("Nested report");
+  for (const root of [url(), pinnedRoot]) {
+    await page.goto(root);
+    await expect(page.locator("h1")).toHaveText("Real runtime");
+  }
 });
 
 test("an edited preview script creates a new publication and remains available offline", async ({ page, context }) => {

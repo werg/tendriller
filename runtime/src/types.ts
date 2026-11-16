@@ -1,10 +1,10 @@
 // Runtime internals use the same public identities and browser API as the wire contract.
-import type { RuntimeApi, OperationOptions, StateResult, PublicationManifest, RuntimeSocket, ConversationResult } from "../../contract/index.mjs";
+import type { RuntimeApi, OperationOptions, StateResult, RuntimeConfiguration, RuntimeSocket, ConversationResult } from "../../contract/index.mjs";
 export type { Role, Presence, TranscriptEntry, Device } from "../../contract/index.mjs";
 import type { Role, Presence, TranscriptEntry, Device } from "../../contract/index.mjs";
 export interface Features { push: boolean; vapid: string | null; shared_by: string;
   speech: { model: string; url: string; sha256: string; engine: { script: string; wasm: string; wasm_sha256: string } } | null }
-export interface TendrilConfig { id: string; base: string; version: number; ws: string; features: Features; publication?: PublicationManifest; preview?: boolean }
+export type TendrilConfig = RuntimeConfiguration;
 export type { Path } from "../../contract/index.mjs";
 import type { Path } from "../../contract/index.mjs";
 export interface StateApi {

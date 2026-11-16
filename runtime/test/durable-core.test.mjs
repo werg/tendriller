@@ -116,13 +116,14 @@ function storage() {
   const values = new Map();
   return { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
-async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true, blobs = blobService() } = {}) {
+async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, online = true, blobs = blobService(), configuration = {} } = {}) {
   const timers = new Map(); let next = 0;
   const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
+  const navigations = [];
   const globals = { window, document, localStorage, sessionStorage: storage(), indexedDB: database.indexedDB,
     crypto: webcrypto, Blob, URL, Headers, Response, Uint8Array, ArrayBuffer, TextEncoder, URLSearchParams, structuredClone, Event, CustomEvent: class extends Event { constructor(type, options) { super(type, options); this.detail = options?.detail; } },
-    location: { href: "https://fixture.test/page/", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", reload() {} },
+    location: { href: "https://fixture.test/page/?review=1#draft", origin: "https://fixture.test", host: "fixture.test", pathname: "/page/", protocol: "https:", search: "?review=1", hash: "#draft", assign(url) { navigations.push(url); }, reload() {} },
     navigator: { onLine: online, userAgent: "Fixture", language: "en", userActivation: { isActive: false } }, screen: { width: 800, height: 600 },
     console: { log() {}, info() {}, warn() {}, error() {} }, queueMicrotask, ...clock,
     fetch: blobs.fetch,
@@ -134,15 +135,33 @@ async function environment({ database = new Database(), localStorage = storage()
     sent.push(structuredClone(frame));
     if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev: 1, role: "owner", pending: false, transcript: [] });
   });
-  const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null} });
+  const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, documentPath: null, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null}, ...configuration });
   await flush();
-  return { core, database, localStorage, transport, sent, window, blobs,
+  return { core, database, localStorage, transport, sent, window, blobs, navigations,
     async commit() { database.commit(); await flush(); },
     async settle() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } await flush(); },
   };
 }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
+
+test("publication updates preserve the explicit current document after draft deferral", async () => {
+  for (const documentPath of [null, 'notes #1?/café 100%/review.html']) {
+    const configuration = documentPath === null ? { documentPath } : { documentPath,
+      publication: { id: '1', base: '/page/_publications/1/', entry: 'app.html', runtime: { base: '/runtime/', version: 'fixture' },
+        assets: [{ path: 'app.html', type: 'text/html', sha256: 'a'.repeat(64) }, { path: documentPath, type: 'text/html', sha256: 'b'.repeat(64) }] } };
+    const env = await environment({ configuration });
+    let pending;
+    env.window.addEventListener('tendril:before-reload', event => { event.preventDefault(); pending = event.detail; });
+    env.transport.receive({ t: 'reload', version: 2 });
+    await flush();
+    assert.equal(pending.version, 2); assert.deepEqual(env.navigations, []);
+    pending.apply(); pending.apply();
+    await flush();
+    const path = documentPath === null ? '' : documentPath.split('/').map(encodeURIComponent).join('/');
+    assert.deepEqual(env.navigations, ['https://fixture.test/page/' + path + '?review=1#draft']);
+  }
+});
 
 test("Contract 3 opens only its own persistence and ignores obsolete snapshots", async () => {
   const localStorage = storage();

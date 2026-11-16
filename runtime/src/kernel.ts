@@ -1,4 +1,4 @@
-import { encodePublicationPath } from "./paths";
+import { documentUrl, validateDocumentContext } from "./document";
 // Importing this module mounts nothing and requests no device permissions.
 // startRuntime creates one page connection. A page owns all application UI.
 import { createCore } from "./core";
@@ -30,8 +30,9 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
 }
 
 export function startRuntime(cfg: TendrilConfig): RuntimeApi {
+  validateDocumentContext(cfg);
   if (cfg.publication && cfg.version > 0) {
-    const pinned = new URL(encodePublicationPath(cfg.publication.entry || "index.html"), new URL(cfg.publication.base, location.href));
+    const pinned = documentUrl(cfg, new URL(cfg.publication.base, location.href));
     pinned.search = location.search; pinned.hash = location.hash;
     if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
   }
