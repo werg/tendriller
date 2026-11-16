@@ -89,6 +89,26 @@ fresh background wait. Set the background timeout to the host's maximum; if it
 expires without a wake, simply restart the wait. Do not run the wait in the
 foreground: a blocking foreground command cannot arrange its own future turn.
 
+The same pattern applies when the agent watches logs or services in the
+background, for example while a page's collector or a local server runs. Each run
+ends and is relaunched later, so the watcher must close the gap between runs
+itself instead of tailing from "now":
+
+- **Persist a cursor per source.** Keep a byte offset for each log file and a
+  journal cursor for each systemd unit (`journalctl -u <unit> --cursor-file
+  <private path>`) in private storage. The next run resumes exactly where the
+  previous one stopped, so nothing falls between watches however late it is
+  relaunched.
+- **Hold back half-written lines.** Advance a file offset only past a complete,
+  newline-terminated line; the partial remainder is read again on the next run.
+- **Report when a watched unit stops.** Treat a unit leaving the active state as
+  an event that ends the run, not as silence.
+- **Advance cursors only after handling.** As with the handled event cursor, an
+  output line that was printed but not yet acted on must be replayable.
+
+`tendril-wait.mjs` already follows this rule for page events through
+`TENDRIL_AFTER` and the handled checkpoint.
+
 ## Explicit host adapters
 
 The implementations below are the supported command surfaces in this source
