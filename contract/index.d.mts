@@ -13,7 +13,17 @@ export type CreateRequest = WireContracts["create"];
 export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
 export interface SayMessage extends SayRequest { t?: "say"; message_id: string; ts: number; present?: boolean }
-export type BlobReference = WireContracts["blobReference"];
+export type BlobReference = WireContracts["blobMetadata"];
+export type BlobUploadStart = WireContracts["uploadStart"];
+export type BlobUploadSession = WireContracts["uploadSession"];
+export type BlobUploadCompletion = WireContracts["uploadCompletion"];
+export type SharedFileHead = WireContracts["fileHead"];
+export type SharedFileSnapshot = WireContracts["fileSnapshot"];
+export type SharedFileWrite = WireContracts["fileWrite"];
+export type SharedFileDelete = WireContracts["fileDelete"];
+export type PagePublicationWrite = WireContracts["publicationWrite"];
+export type PagePublicationRollback = WireContracts["publicationRollback"];
+export type TransferDescriptor = WireContracts["transferDescriptor"];
 export type SendResult = WireContracts["sendResult"];
 export type CaptureOptions = WireContracts["captureOptions"] & OperationOptions;
 export type CaptureResult = WireContracts["captureResult"];
@@ -128,12 +138,12 @@ export interface RuntimeApi<T = Record<string, unknown>> {
     presented(messageId: string): void;
   };
   blobUrl(id: string): string;
-  upload(blob: Blob, opts?: { name?: string; keep?: boolean }): Promise<BlobReference>;
+  upload(blob: Blob, opts?: OperationOptions & { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
   /** Durable local work retained until its acknowledgement. */
   pendingWork(): { events: number; state: number; captures: number };
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
-  setBlobRetention(id: string, options: { keep: boolean }): Promise<BlobReference>;
+  setBlobRetention(id: string, options: OperationOptions & { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
   streams: BrowserStreams;
   on<K extends keyof RuntimeEventMap & string>(type: K, fn: (payload: RuntimeEventMap[K]) => void): () => void;
@@ -153,9 +163,10 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
   StreamAppendResult, StreamReadOptions, StreamSubscribeOptions, BrowserStreams, Producer, ProducerCreate, ProducerResult } from "./streams.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
-export const CONTRACT_VERSION: 2;
+export const CONTRACT_VERSION: 3;
 export const CORE_RELEASE: "0.3.0-rc.1";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
+export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export const ROLES: readonly Role[];
 export const DEVICE_PURPOSES: readonly DevicePurpose[];
 export const schemas: Readonly<Record<keyof Contracts, Record<string, any>>>;

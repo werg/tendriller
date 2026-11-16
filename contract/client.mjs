@@ -1,6 +1,7 @@
 import { assertValid, validate, CONTRACT_VERSION } from "./index.mjs";
 import { createDurabilityClient } from "./durability-client.mjs";
 import { createStreamsClient } from "./streams-client.mjs";
+import { createBlobClient } from "./blobs-client.mjs";
 
 export class ApiError extends Error {
   constructor(status, error) {
@@ -36,7 +37,19 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     if (!response.ok) throw new ApiError(response.status, result?.error);
     return responseSchema ? checked(responseSchema, result, response.status) : result;
   }
+  async function raw(path, { method = "GET", body, signal, headers = {} } = {}) {
+    const response = await fetcher(base + path, { method, signal,
+      headers: { ...headers, Authorization: `Bearer ${token}` }, body,
+    });
+    if (!response.ok) {
+      let parsed;
+      try { parsed = await response.json(); } catch { /* Binary errors are not JSON. */ }
+      throw new ApiError(response.status, parsed?.error || { code: "http_error", message: `HTTP ${response.status}` });
+    }
+    return response;
+  }
   return {
+    ...createBlobClient(request, raw),
     ...createDurabilityClient(request),
     ...createStreamsClient(request),
     request,
@@ -46,12 +59,11 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     acknowledgeDeliveryProbe: nonce => request(`/wake/probe/${assertValid("probeNonce", nonce)}/ack`, { method: "POST" }, "deliveryProbe"),
     say: body => request("/say", { method: "POST", body: assertValid("say", body) }, "sayResult"),
     // Push works without a browser tab. Consent and server registrations are
-    // managed by the page's built-in control, never by this agent token.
+    // managed by the authored page, never by this agent token.
     notificationStatus: () => request("/notify"),
     notify: body => request("/notify", { method: "POST", body }),
     state: () => request("/state", undefined, "stateSnapshot"),
     updateState: body => request("/state", { method: "PATCH", body: assertValid("stateUpdate", body) }, "stateRevision"),
-    writeFiles: body => request("/files", { method: "POST", body }, "publicationResult"),
     devices: () => request("/devices", undefined, "deviceConfiguration"),
     updateDevice: (device, body) => request(`/devices/${id(device)}`, { method: "PATCH", body: assertValid("deviceUpdate", body) }, "deviceInfo"),
     focus: body => request("/focus", { method: "POST", body: assertValid("focusRequest", body) }, "deviceConfiguration"),
