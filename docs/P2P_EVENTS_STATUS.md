@@ -40,8 +40,9 @@ public snapshot/hash contracts, and resumable resident-lifetime changes that
 cannot race membership or retained-log provisioning into expiring storage.
 
 The current embedded administrator comes from clean Chronolog source
-`3067dc6d07103f0249b5e3268f194b10a38f9b0e`, with 53 audited portable inputs.
-It includes the follow-up ledger, governance and peer-recovery corrections.
+`cc18d15ed5b5580b386fb2fc3e986afab935c7de`, with 56 audited portable inputs.
+It includes the follow-up ledger, governance and peer-recovery corrections,
+and the current upstream main merge.
 The earlier full CI numbers below describe their explicitly identified source
 pins; current review validation is recorded in the PR description.
 
