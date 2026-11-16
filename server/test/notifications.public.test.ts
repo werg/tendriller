@@ -43,6 +43,18 @@ describe("Web Push readiness", () => {
     rejoined.close();
   });
 
+  it("removes stored push endpoints when the owner releases the page", async () => {
+    const h = await create();
+    const owner = await PageClient.connect(h.page_url);
+    await inDO(h.id, t => t.db.run("INSERT INTO push_subs(device,sub,created_at) VALUES(?,?,?)",
+      owner.deviceId, JSON.stringify({ endpoint: "https://push.example.com/send/stale" }), t.now()));
+    expect(await inDO(h.id, t => t.db.one("SELECT device FROM push_subs LIMIT 1"))).toBeTruthy();
+    const released = await api(h, "POST", "release");
+    expect(released.status).toBe(200);
+    expect(await inDO(h.id, t => t.db.one("SELECT device FROM push_subs LIMIT 1"))).toBeNull();
+    owner.close();
+  });
+
   it("enforces server configuration and rejects anonymous agent status access", async () => {
     const h = await create();
     const owner = await PageClient.connect(h.page_url);
