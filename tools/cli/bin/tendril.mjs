@@ -77,7 +77,7 @@ Durable work and trusted extensions
   timers cancel <id> | timers rm <id>
   session [get] | session set <json|@file>
   bundle export [new-file.json] [--include-data] | bundle stage <file.json>
-  bundle publish --expected-version N | bundle discard
+  bundle publish --expected-head N | bundle discard
   remix --owner EMAIL [--name N] [--include-data] [--as CONFIG]
   workflow <module> <operation> [json]  explicit trusted workflow command
   scopes list|register|rotate|remove     authoritative generation controls
@@ -469,12 +469,12 @@ const commands = {
       return out(await api.put("/bundle", JSON.parse(readFileSync(file, "utf8"))));
     }
     if (sub === "publish") {
-      const version = Number(f["expected-version"]);
-      if (!Number.isSafeInteger(version) || version < 0) fail("Review the prepared copy, then use bundle publish --expected-version <current-version>", 64);
-      return out(await api.post("/bundle/publish", { ...commandMetadata(f), expected_version: version }));
+      const head = intFlag(f["expected-head"], "expected-head");
+      if (!Number.isSafeInteger(head) || head < 0) fail("Review the prepared copy, then use bundle publish --expected-head <head-revision>", 64);
+      return out(await api.post("/bundle/publish", { ...commandMetadata(f), expected_head_revision: head }));
     }
     if (sub === "discard") { await api.del("/bundle"); return out({ discarded: true }); }
-    fail("usage: tendril bundle export [new-file.json] [--include-data] | stage <file.json> | publish --expected-version N | discard", 64);
+    fail("usage: tendril bundle export [new-file.json] [--include-data] | stage <file.json> | publish --expected-head N | discard", 64);
   },
 
   async remix(args, f, api, cfg) {
@@ -483,7 +483,7 @@ const commands = {
     const handle = await api.post("/remix", { owner, ...(f.name ? { name: f.name } : {}), include_data: f["include-data"] === true });
     const saved = saveConfig(handle, f.as || handle.id, process.env, new URL(cfg.api).origin);
     printHandle(handle, saved);
-    note("The independent copy is prepared. Open its page, attach the receiver, then publish the bundle with --expected-version 0.");
+    note("The independent copy is prepared. Open its page, attach the receiver, then publish the bundle with --expected-head 0.");
   },
 
   async scopes(args, f, api) {
