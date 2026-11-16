@@ -60,6 +60,7 @@ test("preview binary transfers attest exact bytes and replay the same completed 
   assert.equal(receipt.blob.id, session.blob_id);
   assert.equal(receipt.blob.sha256, sha(payload));
   assert.equal(receipt.blob.size, payload.length);
+  assert.deepEqual(receipt.blob.retention, { expires_at: receipt.blob.created_at + 30 * 86400000, reasons: ["unreferenced_upload"] });
   assert.deepEqual(await (await call(`/uploads/${session.id}/complete`, "POST", {})).json(), receipt);
   assert.deepEqual(await (await call(`/blobs/${receipt.blob.id}/info`)).json(), receipt.blob);
   assert.deepEqual(Buffer.from(await (await call(`/blobs/${receipt.blob.id}`)).arrayBuffer()), payload);
@@ -91,12 +92,18 @@ test("preview deduplication rejects a false size and isolates device upload iden
   assert.equal((await call("/uploads", "POST", {}, { "X-Tendril-Device-Secret": "wrong" })).status, 401);
   server.preview.setRole("display");
   assert.equal((await start("display-upload")).status, 403);
+  assert.equal((await call("/blobs")).status, 403);
+  assert.equal((await call(`/blobs/${original.receipt.blob.id}/info`)).status, 403);
+  assert.equal((await call(`/blobs/${original.receipt.blob.id}`)).status, 200);
+  server.preview.setRole("guest");
+  assert.equal((await call("/blobs")).status, 403);
+  assert.equal((await call(`/blobs/${original.receipt.blob.id}/info`)).status, 403);
 });
 
 test("preview blobs default to safe downloads and preserve headers for inline ranges and HEAD", async t => {
   const { call } = await fixture(t);
   const data = Buffer.from("<!doctype html><script>throw Error('must not execute')</script>");
-  const name = "résumé #1.html";
+  const name = "résumé's (#1)*.html";
   const session = await (await call("/uploads", "POST", {
     cid: "untrusted-html", sha256: sha(data), size: data.length, type: "text/html", name,
   })).json();
@@ -108,7 +115,7 @@ test("preview blobs default to safe downloads and preserve headers for inline ra
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.equal(response.headers.get("content-security-policy"), "default-src 'none'; sandbox");
     assert.equal(response.headers.get("cache-control"), "private, max-age=31536000, immutable");
-    assert.equal(response.headers.get("content-disposition"), `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
+    assert.equal(response.headers.get("content-disposition"), `${disposition}; filename*=UTF-8''r%C3%A9sum%C3%A9%27s%20%28%231%29%2A.html`);
   };
   const download = await call(path);
   check(download, "attachment");
@@ -154,6 +161,10 @@ test("preview pin commands preserve original guards and accepted receipts", asyn
   assert.deepEqual(await (await call(path, "PUT", command)).json(), result);
   assert.equal((await call(path, "PUT", { ...command, keep: false })).status, 409);
   assert.equal((await call(path, "PUT", { ...command, cid: "stale-pin" })).status, 409);
+  const unpinned = await (await call(path, "PUT", {
+    ...command, cid: "unpin-current", expected_generations: { photos: "second" }, keep: false,
+  })).json();
+  assert.deepEqual(unpinned.retention, receipt.blob.retention);
   server.preview.setRole("guest");
   assert.equal((await call(path, "PUT", command)).status, 403);
 });

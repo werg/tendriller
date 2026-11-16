@@ -55,9 +55,6 @@ type Wire_publicationRollback = { "cid": string; "expected_generations": { [key:
 type Wire_publicationReceipt = { "version": number; "head_revision": number; };
 type Wire_publicationList = { "current": number; "latest": number; "healthy": number; "head_revision": number; "served": number; "versions": Array<{ "version": number; "created_at": number; "status": "pending" | "healthy" | "failed"; "message": string | null; "files": number; "errors"?: Array<unknown>; "by"?: string; }>; };
 type Wire_publicationDetails = { "version": number; "entry": string; "files": Array<{ "path": string; "blob_id": string; "type": string; "sha256": string; "size": number; }>; };
-type Wire_transferDescriptor = { "transfer_id": string; "phase": "queued" | "uploading" | "ready" | "committing" | "accepted" | "rejected"; "blob"?: { "id": string; "sha256": string; "size": number; "type": string; "name"?: string; "url": string; "created_at": number; "retention": { "expires_at": number | null; "reasons": Array<string>; }; }; "file"?: { "path": string; "revision": number; "blob_id": (string) | (null); "name"?: string; "type"?: string; "scope"?: (string) | (null); "updated_at"?: number; "by"?: string; }; "error"?: { "code": string; "message": string; "retryable"?: boolean; "details"?: { [key: string]: unknown; }; }; "progress"?: number; };
-type Wire_exportSnapshot = { "id": string; "expires_at": number; "created_at": number; "sha256"?: string; "size"?: number; };
-type Wire_importStage = { "cid": string; "expected_generations": { [key: string]: string; }; "scope"?: string; "sha256": string; "expected_head_revision": number; "expected_files": { [key: string]: unknown; }; };
 type Wire_scopeId = string;
 type Wire_scopeOperation = string;
 type Wire_scopeBindings = { "paths": Array<(string) | (Array<(string) | (number)>)>; "operations": Array<string>; };
@@ -99,7 +96,7 @@ type Wire_session = { "purpose": string; "current_task": string; "completed": Ar
 type Wire_sessionWrite = { "purpose"?: string; "current_task"?: string; "completed"?: Array<string>; "decisions"?: Array<string>; "open_questions"?: Array<string>; "last_handled_seq"?: number; "source"?: string; "expected_revision"?: number; };
 type Wire_sessionSummary = { "session": { "purpose": string; "current_task": string; "completed": Array<string>; "decisions": Array<string>; "open_questions": Array<string>; "last_handled_seq": number; "source"?: string; }; "revision": number; "version": number; "staged_remix": boolean; "pending_inputs": { "after": number; "count": number; "earliest_available_seq": (number) | (null); "history_gap": boolean; }; "timers": Array<{ "title": string; "due_at": number; "timezone": string; "repeat"?: ({ "every_minutes": number; }) | ({ "at": string; "days"?: Array<number>; }); "missed": "fire_once" | "skip"; "device"?: string; "notify": boolean; "state": "scheduled" | "cancelled" | "completed"; "id": string; "created_at": number; "updated_at": number; }>; "devices": Array<{ "id": string; "name": string | null; "role": "owner" | "guest" | "display"; "purpose": "general" | "camera" | "controller" | "display" | "speaker"; "pending": boolean; "connected": boolean; "primary": boolean; "last_seen": (number) | (null); "ua": string | null; "link": string | null; }>; "recent_activity": Array<{ "ts": number; "kind": string; "summary": string; }>; };
 type Wire_bundle = { "format": "tendriller-bundle"; "version": 3; "entry": string; "name": string; "files": Array<{ "path": string; "type": string; "base64": string; }>; "state"?: { [key: string]: unknown; }; "session"?: { "purpose": string; "current_task": string; "completed": Array<string>; "decisions": Array<string>; "open_questions": Array<string>; "last_handled_seq": number; "source"?: string; }; "shared_files"?: Array<{ "path": string; "blob_id": string; "name"?: string; "type"?: string; }>; "media": Array<{ "id": string; "type": string; "name": (string) | (null); "base64": string; }>; };
-type Wire_bundlePublish = { "cid": string; "scope"?: string; "expected_generations": { [key: string]: string; }; "expected_version": number; };
+type Wire_bundlePublish = { "cid": string; "scope"?: string; "expected_generations": { [key: string]: string; }; "expected_head_revision": number; };
 type Wire_remix = { "owner": string; "name"?: string; "include_data"?: boolean; };
 type Wire_remixPage = { "name"?: string; "include_data"?: boolean; };
 type Wire_pageHandle = { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; "expires_at"?: (number) | (null); "next_step"?: string; [key: string]: unknown; };
@@ -111,9 +108,9 @@ type Wire_eventBatch = { "events": Array<{ "seq": number; "ts": number; "type": 
 type Wire_timerList = { "timers": Array<{ "title": string; "due_at": number; "timezone": string; "repeat"?: ({ "every_minutes": number; }) | ({ "at": string; "days"?: Array<number>; }); "missed": "fire_once" | "skip"; "device"?: string; "notify": boolean; "state": "scheduled" | "cancelled" | "completed"; "id": string; "created_at": number; "updated_at": number; }>; "execution": "server"; "lifetime": "ad_hoc" | "resident"; "expires_at": (number) | (null); [key: string]: unknown; };
 type Wire_timerHistory = { "runs": Array<{ "id": string; "timer_id": string; "scheduled_at": number; "fired_at": number; "status": "fired" | "skipped"; "event_seq": (number) | (null); "delivery": ({ "state": "pending" | "sending" | "sent" | "failed" | "cancelled" | "unavailable"; "attempts": number; "next_attempt_at": (number) | (null); "last_attempt_at": (number) | (null); "last_error": string | null; "sent": number; "failed": number; }) | (null); }>; [key: string]: unknown; };
 type Wire_sessionResult = { "session": { "purpose": string; "current_task": string; "completed": Array<string>; "decisions": Array<string>; "open_questions": Array<string>; "last_handled_seq": number; "source"?: string; }; "revision": number; [key: string]: unknown; };
-type Wire_bundleStage = { "staged": true; "files": number; "media": number; "expected_version": number; "requires_publication": true; [key: string]: unknown; };
-type Wire_publicationResult = { "version": number; [key: string]: unknown; };
-type Wire_remixResult = { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; "expires_at"?: (number) | (null); "next_step"?: string; "remix": { "staged": true; "requires_receiver": true; "publish_url": string; "expected_version": number; [key: string]: unknown; }; [key: string]: unknown; };
+type Wire_bundleStage = { "staged": true; "files": number; "media": number; "expected_head_revision": number; "requires_publication": true; [key: string]: unknown; };
+type Wire_bundleReceipt = { "version": number; "head_revision": number; "restored": true; };
+type Wire_remixResult = { "id": string; "api": string; "token": string; "page_url": string; "name"?: string; "expires_at"?: (number) | (null); "next_step"?: string; "remix": { "staged": true; "requires_receiver": true; "publish_url": string; "expected_head_revision": number; [key: string]: unknown; }; [key: string]: unknown; };
 
 export interface WireContracts {
   "consumerName": Wire_consumerName;
@@ -172,9 +169,6 @@ export interface WireContracts {
   "publicationReceipt": Wire_publicationReceipt;
   "publicationList": Wire_publicationList;
   "publicationDetails": Wire_publicationDetails;
-  "transferDescriptor": Wire_transferDescriptor;
-  "exportSnapshot": Wire_exportSnapshot;
-  "importStage": Wire_importStage;
   "scopeId": Wire_scopeId;
   "scopeOperation": Wire_scopeOperation;
   "scopeBindings": Wire_scopeBindings;
@@ -229,6 +223,6 @@ export interface WireContracts {
   "timerHistory": Wire_timerHistory;
   "sessionResult": Wire_sessionResult;
   "bundleStage": Wire_bundleStage;
-  "publicationResult": Wire_publicationResult;
+  "bundleReceipt": Wire_bundleReceipt;
   "remixResult": Wire_remixResult;
 }

@@ -38,6 +38,9 @@ describe("public routes", () => {
     expect(pre.status).toBe(204);
     expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect(pre.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
+    expect(pre.headers.get("Access-Control-Allow-Headers")).toContain("Range");
+    expect(pre.headers.get("Access-Control-Allow-Methods")).toContain("HEAD");
+    expect(pre.headers.get("Access-Control-Expose-Headers")).toContain("Content-Range");
     const h = await create();
     const res = await api(h, "GET", "");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");

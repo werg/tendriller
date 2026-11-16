@@ -19,10 +19,11 @@ test("saved context, due timer, staged restore and independent remix use the act
     expect(session.revision).toBe(saved.revision); expect(session.pending_inputs.count).toBeGreaterThan(0);
     const bundle = await (await context.request.get(`${base}bundle?include_data=true`)).json();
     expect(bundle.session.current_task).toBe("Measure tomorrow");
-    expect((await context.request.put(`${base}bundle`, { headers: { Origin: origin }, data: bundle })).status()).toBe(202);
+    const staging = await context.request.put(`${base}bundle`, { headers: { Origin: origin }, data: bundle });
+    expect(staging.status()).toBe(202); const staged = await staging.json();
     const prepared = await (await context.request.get(`${base}session`)).json(); expect(prepared.staged_remix).toBe(true);
-    expect((await context.request.post(`${base}bundle/publish`, { headers: { Origin: origin }, data: { cid: crypto.randomUUID(), expected_generations: {}, expected_version: prepared.version - 1 } })).status()).toBe(409);
-    expect((await context.request.post(`${base}bundle/publish`, { headers: { Origin: origin }, data: { cid: crypto.randomUUID(), expected_generations: {}, expected_version: prepared.version } })).status()).toBe(200);
+    expect((await context.request.post(`${base}bundle/publish`, { headers: { Origin: origin }, data: { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: staged.expected_head_revision - 1 } })).status()).toBe(409);
+    expect((await context.request.post(`${base}bundle/publish`, { headers: { Origin: origin }, data: { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: staged.expected_head_revision } })).status()).toBe(200);
     const remix = await agent(h, "/remix", "POST", { owner: "owner@example.test", name: "Independent garden notebook", include_data: true });
     expect(remix.status).toBe(201); copy = remix.data;
     expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token);

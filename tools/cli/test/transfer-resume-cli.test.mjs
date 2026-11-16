@@ -85,3 +85,81 @@ test("CLI changed bytes at the same path get a new transfer; identical retries r
     rmSync(root,{recursive:true,force:true});
   }
 });
+
+test("CLI rollback and file deletion replay their original preconditions after a lost accepted reply", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tendriller-command-resume-"));
+  const requests = [], receipts = new Map();
+  let publicationHead = 8, fileRevision = 3, headReads = 0, fileReads = 0;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://localhost"), path = url.pathname.replace("/api/t/abcdefghijkl", "");
+    let raw = ""; for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : undefined;
+    const json = (value, status = 200) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
+    if (path === "/api/service") return json({ contract: 3, core_release: "0.3.0-rc.1", workflows: [], limits: {} });
+    if (path === "/publications" && req.method === "GET") {
+      headReads++;
+      return json({ current: 3, latest: 3, healthy: 3, served: 3, head_revision: publicationHead, versions: [] });
+    }
+    if (path === "/file-refs" && req.method === "GET") {
+      fileReads++;
+      assert.equal(url.searchParams.get("path"), "reports/latest.json");
+      return json({ path: "reports/latest.json", revision: fileRevision, blob_id: "b_aaaaaaaaaaaaaaaaaaaa" });
+    }
+    if ((path === "/publications/rollback" && req.method === "POST") || (path === "/file-refs" && req.method === "DELETE")) {
+      requests.push({ path, body });
+      const prior = receipts.get(body.cid);
+      if (prior) {
+        assert.deepEqual(body, prior.body, "a retry must keep its original revision, guards and CID");
+        return json(prior.result);
+      }
+      assert.deepEqual(body.expected_generations, { documents: "first" });
+      let result;
+      if (path === "/publications/rollback") {
+        assert.equal(body.expected_head_revision, 8); assert.equal(body.version, 2);
+        result = { version: 2, head_revision: 9 };
+        publicationHead = 99; // A different writer advances after the accepted command.
+      } else {
+        assert.equal(body.expected_revision, 3); assert.equal(body.path, "reports/latest.json");
+        result = { file: { path: body.path, revision: 4, blob_id: null }, cursor: 10 };
+        fileRevision = 20;
+      }
+      receipts.set(body.cid, { body, result });
+      res.destroy(); // Acceptance was durable; its network reply was lost.
+      return;
+    }
+    return json({ error: { code: "unexpected_route", message: path } }, 404);
+  });
+  try {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const env = { TENDRIL_API: `http://127.0.0.1:${server.address().port}/api/t/abcdefghijkl`,
+      TENDRIL_TOKEN: "tk_test", TENDRIL_CONFIG_DIR: join(root, "config") };
+    for (const [cid, args] of [
+      ["rollback-once", ["rollback", "2"]],
+      ["delete-once", ["file", "delete", "reports/latest.json", "--resume-file", join(root, "delete.json")]],
+    ]) {
+      const command = [...args, "--cid", cid, "--generations", '{"documents":"first"}'];
+      const lost = await run(command, env);
+      assert.notEqual(lost.code, 0, "the lost reply should require a retry");
+      const retried = await run(command, env);
+      assert.equal(retried.code, 0, retried.stderr);
+      assert.deepEqual(JSON.parse(retried.stdout), receipts.get(cid).result);
+      const count = requests.length;
+      const completed = await run(command, env);
+      assert.equal(completed.code, 0, completed.stderr);
+      assert.deepEqual(JSON.parse(completed.stdout), receipts.get(cid).result);
+      assert.equal(requests.length, count, "a known accepted command needs no repeated mutation");
+    }
+    assert.equal(headReads, 1); assert.equal(fileReads, 1);
+    assert.equal(requests.length, 4);
+    const changed = await run(["file", "delete", "reports/latest.json", "--resume-file", join(root, "delete.json"),
+      "--cid", "delete-once", "--generations", '{"documents":"second"}'], env);
+    assert.notEqual(changed.code, 0);
+    assert.match(changed.stderr, /does not match this intent/);
+    assert.equal(requests.length, 4);
+    assert.equal(fileReads, 1, "changed intent must fail before refreshing its precondition");
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  }
+});

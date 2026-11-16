@@ -137,7 +137,7 @@ test("durable work commands preserve targets, revisions and explicit publication
     [["timers", "add", '{"title":"Check","due_at":1794810000000}'], "POST", "/timers", { title: "Check", due_at: 1794810000000 }],
     [["timers", "cancel", "timer-id"], "PATCH", "/timers/timer-id", { state: "cancelled" }],
     [["session", "set", '{"purpose":"Garden","expected_revision":4}'], "PUT", "/session", { purpose: "Garden", expected_revision: 4 }],
-    [["bundle", "publish", "--expected-version", "0"], "POST", "/bundle/publish", { expected_version: 0 }],
+    [["bundle", "publish", "--expected-head", "0"], "POST", "/bundle/publish", { expected_head_revision: 0 }],
 
   ]) {
     const result = await cli(args); assert.equal(result.code, 0, result.stderr);
@@ -145,6 +145,8 @@ test("durable work commands preserve targets, revisions and explicit publication
   }
   const count = requests.length;
   assert.equal((await cli(["bundle", "publish"])).code, 64);
+  assert.equal((await cli(["bundle", "publish", "--expected-version", "0"])).code, 64);
+  assert.equal((await cli(["bundle", "publish", "--expected-head", ""])).code, 64);
   assert.equal((await cli(["devices", "purpose", "d_example", "owner"])).code, 64);
   assert.equal((await cli(["remix"])).code, 64);
   assert.equal(requests.length, count);

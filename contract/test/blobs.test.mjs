@@ -65,3 +65,24 @@ test("scope operation contract accepts publication and shared-file generation gu
   for (const operation of ["file.read", "publication.write", "file.write.extra", "_tendril"])
     assert.ok(validate("scopeOperation", operation).length > 0, operation);
 });
+
+test("paths and transfer names preserve valid Unicode and reject lone surrogates", () => {
+  const valid = "観測/🌒.txt";
+  assert.equal(assertFilePath(valid), valid);
+  assert.deepEqual(validate("filePath", valid), []);
+  for (const name of ["high\ud800.txt", "low\udfff.txt", "pair\ud800x\udc00.txt"]) {
+    assert.throws(() => assertFilePath(name), TypeError);
+    assert.ok(validate("filePath", name).length);
+    assert.ok(validate("uploadStart", { cid: guards.cid, sha256, size: 0, type: "text/plain", name }).length);
+    assert.ok(validate("fileWrite", { ...guards, path: "valid.txt", expected_revision: 0, blob_id, name }).length);
+    assert.ok(validate("captureOptions", { name }).length);
+    assert.ok(validate("blobMetadata", { id: blob_id, sha256, size: 0, type: "text/plain", name,
+      url: `_tendril/blobs/${blob_id}`, created_at: 0, retention: { reasons: ["unreferenced_upload"], expires_at: 1000 } }).some(issue => issue.path === "$.name"));
+    assert.ok(validate("blobAttachment", { blob_id, name }).length);
+    assert.throws(() => assertAttachments([{ blob_id, name }]), TypeError);
+    assert.ok(validate("bundle", { format: "tendriller-bundle", version: 3, name: "Copy", entry: "index.html",
+      files: [{ path: "index.html", type: "text/html", base64: "AA==" }], media: [{ id: blob_id, type: "text/plain", name, base64: "AA==" }] }).length);
+  }
+  assert.deepEqual(validate("uploadStart", { cid: guards.cid, sha256, size: 0, type: "text/plain", name: "🌒.txt" }), []);
+  assert.equal(assertAttachments([{ blob_id, name: "🌒.txt" }])[0].name, "🌒.txt");
+});

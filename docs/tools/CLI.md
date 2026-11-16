@@ -100,7 +100,7 @@ still uses compare-and-swap. Conflicts exit with status 4 and preserve the origi
 uploaded blob and operation identity. `file get` downloads the exact blob named
 by the captured head, even if that shared path subsequently changes.
 
-Uploads, shared-file writes and pushes save private resume records under the
+Uploads, shared-file writes/deletions, pushes and rollbacks save private resume records under the
 selected configuration directory. Their keys include the destination service,
 content bytes and command intent. Repeating the same command resumes that
 operation or returns its accepted receipt; changed bytes create a new operation.
@@ -108,8 +108,12 @@ operation or returns its accepted receipt; changed bytes create a new operation.
 identity. To deliberately repeat a completed operation as new work, choose a new
 CID. Changing bytes or guards while reusing an explicit record is rejected.
 
-Publication rollback selects a particular retained version against the current
-head revision; it requires an explicit version. No command rewrites an original
+Publication rollback selects a particular retained version against a head
+revision captured once before its first request; `--expected-head` supplies an
+explicit reviewed revision. File deletion similarly preserves its first observed
+revision or the supplied `--revision`. A lost reply replays the exact saved
+command even if another writer has since changed the head. Rollback requires an
+explicit publication version. No command rewrites an original
 failed operation with newer generations or revisions automatically.
 
 ## Delivery and checkpoints

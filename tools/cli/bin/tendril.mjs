@@ -14,7 +14,7 @@ import { pendingEvents, acknowledgeEvents } from "../../bridges/lib/pending-even
 import { pack, guessType } from "../lib/pack.mjs";
 import { uploadBlob, downloadBlob, blobInfo } from "../lib/blobs.mjs";
 import { putSharedFile, getSharedFile, deleteSharedFile, listSharedFiles, fileHistory } from "../lib/shared-files.mjs";
-import { publishFiles } from "../lib/publications.mjs";
+import { publishFiles, rollbackPublication } from "../lib/publications.mjs";
 import { terminalQr } from "../lib/qr.mjs";
 
 const MAX_TRANSFER_BYTES = 5 * 1024 * 1024;
@@ -37,14 +37,14 @@ Create / attach
 
 Content
   push <dir|file> [--message M] [--no-replace] [--as <path>] [--entry <html-path>] [--no-wait] [--timeout S]
-  publications | publication <version> | rollback <version>
+  publications | publication <version> | rollback <version> [--expected-head N] [--resume-file PATH]
   blob upload <file> [--name N] [--type T] [--resume-file PATH]
   blob download <id> <destination> [--overwrite] | blob info <id>
   blob list [--after <blob-id>] [--limit N]
   blob pin <id> --keep true|false [--cid C --generations JSON]
   file put <path> <file> [--revision N] [--resume-file PATH]
   file get <path> <destination> [--overwrite] | file list | file history <path>
-  file delete <path> [--revision N] [--cid C --generations JSON]
+  file delete <path> [--revision N] [--resume-file PATH] [--cid C --generations JSON]
 
 Talk to the page
   eval <js> | eval -f <file> | eval -   [--device primary|all|<id>] [--timeout-ms N]
@@ -77,7 +77,7 @@ Durable work and trusted extensions
   timers cancel <id> | timers rm <id>
   session [get] | session set <json|@file>
   bundle export [new-file.json] [--include-data] | bundle stage <file.json>
-  bundle publish --expected-version N | bundle discard
+  bundle publish --expected-head N | bundle discard
   remix --owner EMAIL [--name N] [--include-data] [--as CONFIG]
   workflow <module> <operation> [json]  explicit trusted workflow command
   scopes list|register|rotate|remove     authoritative generation controls
@@ -213,11 +213,14 @@ const commands = {
     if (args.length !== 1 || !/^[1-9]\d*$/.test(args[0])) fail("usage: tendril publication <version>", 64);
     out(await api.get(`/publications/${args[0]}`));
   },
-  async rollback(args, f, api) {
+  async rollback(args, f, api, cfg) {
     if (args.length !== 1 || !/^[1-9]\d*$/.test(args[0])) fail("usage: tendril rollback <version>", 64);
-    const head = await api.get("/publications");
-    if (!Number.isSafeInteger(head.head_revision)) fail("Service did not provide a publication head revision", 3);
-    out(await api.post("/publications/rollback", { ...commandMetadata(f), expected_head_revision:head.head_revision, version:Number(args[0]) }));
+    const version = boundedInteger(args[0], "version", undefined, 1);
+    const expectedHeadRevision = f["expected-head"] === undefined ? undefined : boundedInteger(f["expected-head"], "expected-head", undefined, 0);
+    const generations = generationsOf(f);
+    const intent = JSON.stringify({version,expectedHeadRevision:expectedHeadRevision??null,generations,scope:f.scope??null,cid:f.cid??null});
+    out(await rollbackPublication(api, version, { expectedHeadRevision, generations, scope:f.scope, cid:f.cid,
+      resumeFile:transferRecord(cfg,"rollback",intent,f["resume-file"]) }));
   },
 
   async blob(args, f, api, cfg) {
@@ -263,9 +266,12 @@ const commands = {
         type,expectedRevision,cid:f.cid,expectedGenerations,scope:f.scope,
         resumeFile:record,maxBytes:MAX_TRANSFER_BYTES}));
     }
-    if (verb === "delete" && path && args.length === 2)
-      return out(await deleteSharedFile(api,path,{cid:f.cid || randomUUID(),expectedRevision:revisionOf(f),
-        expectedGenerations:generationsOf(f),scope:f.scope}));
+    if (verb === "delete" && path && args.length === 2) {
+      const expectedRevision = revisionOf(f), expectedGenerations = generationsOf(f);
+      const intent = JSON.stringify({path,expectedRevision:expectedRevision??null,expectedGenerations,scope:f.scope??null,cid:f.cid??null});
+      return out(await deleteSharedFile(api,path,{cid:f.cid,expectedRevision,expectedGenerations,scope:f.scope,
+        resumeFile:transferRecord(cfg,"file-delete",intent,f["resume-file"])}));
+    }
     fail("usage: tendril file put|get|list|history|delete",64);
   },
 
@@ -469,12 +475,12 @@ const commands = {
       return out(await api.put("/bundle", JSON.parse(readFileSync(file, "utf8"))));
     }
     if (sub === "publish") {
-      const version = Number(f["expected-version"]);
-      if (!Number.isSafeInteger(version) || version < 0) fail("Review the prepared copy, then use bundle publish --expected-version <current-version>", 64);
-      return out(await api.post("/bundle/publish", { ...commandMetadata(f), expected_version: version }));
+      const head = intFlag(f["expected-head"], "expected-head");
+      if (!Number.isSafeInteger(head) || head < 0) fail("Review the prepared copy, then use bundle publish --expected-head <head-revision>", 64);
+      return out(await api.post("/bundle/publish", { ...commandMetadata(f), expected_head_revision: head }));
     }
     if (sub === "discard") { await api.del("/bundle"); return out({ discarded: true }); }
-    fail("usage: tendril bundle export [new-file.json] [--include-data] | stage <file.json> | publish --expected-version N | discard", 64);
+    fail("usage: tendril bundle export [new-file.json] [--include-data] | stage <file.json> | publish --expected-head N | discard", 64);
   },
 
   async remix(args, f, api, cfg) {
@@ -483,7 +489,7 @@ const commands = {
     const handle = await api.post("/remix", { owner, ...(f.name ? { name: f.name } : {}), include_data: f["include-data"] === true });
     const saved = saveConfig(handle, f.as || handle.id, process.env, new URL(cfg.api).origin);
     printHandle(handle, saved);
-    note("The independent copy is prepared. Open its page, attach the receiver, then publish the bundle with --expected-version 0.");
+    note("The independent copy is prepared. Open its page, attach the receiver, then publish the bundle with --expected-head 0.");
   },
 
   async scopes(args, f, api) {

@@ -3,7 +3,7 @@ import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
-  PortableBundle, BundleStageResult, BundlePublish, RemixRequest, ScopeDescriptor } from "./index.mjs";
+  PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
   expires_at?: number | null; next_step?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
@@ -36,9 +36,9 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   updateSession(body: SessionWrite): Promise<SessionResult>;
   exportBundle(options?: { includeData?: boolean }): Promise<PortableBundle>;
   stageBundle(body: PortableBundle): Promise<BundleStageResult>;
-  publishBundle(body: BundlePublish): Promise<{ version: number; [key: string]: unknown }>;
+  publishBundle(body: BundlePublish): Promise<BundleReceipt>;
   discardBundle(): Promise<void>;
-  remix(body: RemixRequest): Promise<PageHandle & { remix: { staged: true; requires_receiver: true; publish_url: string; expected_version: number } }>;
+  remix(body: RemixRequest): Promise<PageHandle & { remix: { staged: true; requires_receiver: true; publish_url: string; expected_head_revision: number } }>;
   service(): Promise<ServiceDescriptor>;
   scopes(): Promise<{scopes: ScopeDescriptor[]}>;
   putScope(id: string, body: CommandMetadata & {paths: string[][]; operations: string[]}): Promise<ScopeDescriptor>;

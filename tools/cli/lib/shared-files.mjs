@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { uploadBlob, downloadBlob } from "./blobs.mjs";
 import { assertFilePath, assertValid } from "@tendriller/core/contract";
+import { runSavedCommand } from "./command-record.mjs";
 
 export function assertRemotePath(path) {
   return assertFilePath(path);
@@ -70,14 +71,23 @@ export async function putSharedFile(api, remotePath, sourceBytes, {
   return result;
 }
 export async function deleteSharedFile(api, remotePath, {
-  expectedRevision, expectedGenerations = {}, scope, cid = randomUUID(),
+  expectedRevision, expectedGenerations = {}, scope, cid, resumeFile,
 } = {}) {
   const path = assertRemotePath(remotePath);
-  const revision = expectedRevision === undefined ? (await readFileHead(api, path))?.revision ?? 0 : expectedRevision;
-  if (!Number.isSafeInteger(revision) || revision <= 0) throw new Error("Delete requires an existing exact revision");
-  return assertValid("fileResult", await api.del("/file-refs", { json: assertValid("fileDelete", {
-    cid, expected_generations: expectedGenerations, ...(scope ? {scope}:{}), path, expected_revision: revision,
-  }) }));
+  if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1))
+    throw new TypeError("Delete requires an existing exact revision");
+  return runSavedCommand({ resumeFile,
+    intent: { operation: "file.delete", path, expectedRevision: expectedRevision ?? null,
+      expectedGenerations, scope: scope ?? null, cid: cid ?? null },
+    requestSchema: "fileDelete", resultSchema: "fileResult",
+    async prepare(original) {
+      const revision = original.expectedRevision ?? (await readFileHead(api, original.path))?.revision ?? 0;
+      if (revision < 1) throw new Error("Delete requires an existing exact revision");
+      return { cid: original.cid ?? randomUUID(), expected_generations: original.expectedGenerations,
+        ...(original.scope === null ? {} : { scope: original.scope }), path: original.path, expected_revision: revision };
+    },
+    send: request => api.del("/file-refs", { json: request }),
+  });
 }
 export async function getSharedFile(api, remotePath, destination, {overwrite = false,signal} = {}) {
   const head = await readFileHead(api, remotePath);

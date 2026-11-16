@@ -147,6 +147,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (STORAGE_ROUTE.test(sub)) {
     if (sub.startsWith("publications")) throw new HttpError(403, "forbidden", "Only an agent can publish page code");
+    if ((sub === "blobs" || /^blobs\/[^/]+\/info$/.test(sub)) && !allows(principal, "page.owner"))
+      throw new HttpError(403, "forbidden", "Only the owner can enumerate capture metadata");
     if (m !== "GET" && m !== "HEAD" && !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
     if (/^blobs\/[^/]+\/pin$/.test(sub) && !allows(principal, "page.owner"))
       throw new HttpError(403, "forbidden", "Only the owner can keep captures");

@@ -77,10 +77,11 @@ export function createPreviewStorage({ role, verifyDevice, scopes, matchesContex
       if (row.phase === "aborted") throw failure(409, "upload_closed", "Upload was aborted");
       const data = contents.get(row.sha256);
       if (!data || data.length !== row.size) throw failure(409, "upload_incomplete", "Upload content is not ready");
+      const created_at = now();
       if (!blobs.has(row.blob_id)) blobs.set(row.blob_id, { data, device, metadata: {
         id: row.blob_id, sha256: row.sha256, size: row.size, type: row.type,
         ...(row.name === undefined ? {} : { name: row.name }), url: `_tendril/blobs/${row.blob_id}`,
-        created_at: now(), retention: { expires_at: now() + 30 * 86400000, reasons: ["page_default"] },
+        created_at, retention: { expires_at: created_at + 30 * 86400000, reasons: ["unreferenced_upload"] },
       } });
       row.phase = "completed";
       return assertValid("uploadCompletion", { status: "completed", blob: metadata(blobs.get(row.blob_id)) });
@@ -89,6 +90,8 @@ export function createPreviewStorage({ role, verifyDevice, scopes, matchesContex
       const path = url.pathname, method = req.method === "HEAD" ? "GET" : req.method;
       if (!/^\/_tendril\/(?:uploads|blobs)(?:\/|$)/.test(path)) return null;
       open();
+      if ((path === "/_tendril/blobs" || /^\/_tendril\/blobs\/[^/]+\/info$/.test(path)) && role() !== "owner")
+        throw failure(403, "forbidden", "Only owners can enumerate capture metadata");
       const isUpload = path.startsWith("/_tendril/uploads");
       const device = verifyDevice(req.headers);
       if (isUpload && !device) throw failure(401, "device_required", "Register this device before uploading");
@@ -137,17 +140,19 @@ export function createPreviewStorage({ role, verifyDevice, scopes, matchesContex
             return result(200, structuredClone(prior.value));
           }
           if (!matchesContext(scopes(), input, "blob.pin", [])) throw failure(409, "stale_generation", "Pin scope generation changed");
-          stored.metadata.retention = { expires_at: input.keep ? null : now() + 30 * 86400000,
-            reasons: [input.keep ? "pinned" : "page_default"] };
+          stored.metadata.retention = { expires_at: input.keep ? null : stored.metadata.created_at + 30 * 86400000,
+            reasons: [input.keep ? "pinned" : "unreferenced_upload"] };
           const value = metadata(stored); pins.set(key, { intent, value });
           return result(200, value);
         }
         if (!found[2] && method === "GET") {
           let data = stored.data, status = 200;
+          const filename = encodeURIComponent(new TextDecoder().decode(new TextEncoder().encode(stored.metadata.name || stored.metadata.id)))
+            .replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
           const headers = {
             "content-type": stored.metadata.type, "accept-ranges": "bytes", "content-length": data.length,
             "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff",
-            "content-disposition": `${url.searchParams.get("disposition") === "inline" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.metadata.name || stored.metadata.id)}`,
+            "content-disposition": `${url.searchParams.get("disposition") === "inline" ? "inline" : "attachment"}; filename*=UTF-8''${filename}`,
             "content-security-policy": "default-src 'none'; sandbox",
           };
           if (req.headers.range) {

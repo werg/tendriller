@@ -96,6 +96,12 @@ Unreferenced uploads expire 30 days after upload, including on resident tendrils
 
 Owners may select “Keep” during capture (`uploadEvent(..., {keep: true})`) or use `await tendril.setBlobRetention(id, {keep: true, ...context})` later. Pin commands include a separate command ID and captured scope generations. Guests can upload ordinary captures but cannot pin them.
 
-Pinned blobs, current shared files, retained file history, publication graphs, and the install icon are explicit retention roots. Their metadata has `expires_at: null` and reports the applicable `reasons`, such as `"pinned"`, `"shared_file"`, `"file_history"`, `"publication"`, or `"icon"`. They count toward storage quota. Unpinning removes only the pin reason: other references continue retaining the blob. Once no references remain, the original upload expiry applies and may already be past. A blob ID written into arbitrary application JSON does not retain its bytes. Making a page resident does not change these rules.
+Pinned blobs, current shared files, retained file history, staged imports, publication graphs, and the install icon are explicit retention roots. Their metadata has `expires_at: null` and reports the applicable `reasons`, such as `"pinned"`, `"shared_file"`, `"file_history"`, `"staged_import"`, `"publication"`, or `"icon"`. They count toward storage quota. Unpinning removes only the pin reason: other references continue retaining the blob. Once no references remain, the original upload expiry applies and may already be past. A blob ID written into arbitrary application JSON does not retain its bytes. Making a page resident does not change these rules.
 
 The HTTP protocol is the same under the agent API base and the page's `_tendril` base: `POST /uploads`, `PUT /uploads/<id>/content`, and `POST /uploads/<id>/complete` transfer bytes; `GET /blobs/<id>/info` reads metadata; `GET /blobs/<id>` reads bytes; and `PUT /blobs/<id>/pin` accepts `{cid,expected_generations,scope?,keep}`. The agent SDK exposes `client.blobs`; browser captures use the narrow upload primitive internally. Neither path encodes upload bytes as base64.
+
+On the page origin, only the owner can list blobs, inspect arbitrary blob metadata,
+or change pins. Approved guests can upload through their verified device and receive
+their own completion metadata. Authorized page viewers can read specific blob bytes
+whose IDs the application shares with them. Blob IDs do not grant access outside
+the page's authenticated access rules.

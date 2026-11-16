@@ -127,8 +127,8 @@ it("preserves context, restores bundles with rewritten media, and refuses stale 
   const destination = await setup(); const targetSocket = await listener(destination.handle);
   expect((await api(destination.handle, "PUT", "bundle", bundle)).status).toBe(202);
   expect((await api(destination.handle, "PUT", "bundle", bundle)).status).toBe(409);
-  expect((await api(destination.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 9 })).status).toBe(409);
-  expect((await api(destination.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
+  expect((await api(destination.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 9 })).status).toBe(409);
+  expect((await api(destination.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(200);
   const restored = await apiJson(destination.handle, "GET", "state");
   expect(restored.state.notebook.asset).not.toBe(blob.id);
   expect((await apiJson(destination.handle, "GET", "session")).session.purpose).toBe("Observe the garden");
@@ -140,9 +140,9 @@ it("remix creates an independent unpublished copy and preserves the listener gat
   await publishFilesJson(h, { "index.html": "<h1>A reusable tool</h1>" });
   const copy = await apiJson(h, "POST", "remix", { owner: "new-owner@example.com", name: "My new copy" }, 201);
   expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token); expect(copy.remix.staged).toBe(true);
-  expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(428);
+  expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(428);
   const nextSocket = await listener(copy);
-  expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
+  expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(200);
   expect((await apiJson(h, "GET", "")).version.current).toBe(1);
   socket.close(); nextSocket.close();
 });
@@ -164,7 +164,7 @@ it("stages an unchanged bundle at the page storage limit", async () => {
   });
   expect(await inDO(h.id, t => t.storageUsed())).toBe(25 * 1024 * 1024);
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
-  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 1 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 1 })).status).toBe(200);
   socket.close();
 });
 
@@ -178,12 +178,12 @@ it("accepts a portable bundle with more than 200 media entries", async () => {
   ], media };
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   expect(await inDO(h.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs")?.n)).toBe(201);
-  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(200);
   const exported = await apiJson(h, "GET", "bundle?include_data=true");
   expect(exported.media).toHaveLength(201);
   const copy = await setup(); const copySocket = await listener(copy.handle);
   expect((await api(copy.handle, "PUT", "bundle", exported)).status).toBe(202);
-  expect((await api(copy.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
+  expect((await api(copy.handle, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(200);
   expect(await inDO(copy.handle.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM blobs WHERE id NOT IN (SELECT blob_id FROM publication_blobs)")?.n)).toBe(201);
   socket.close(); copySocket.close();
 }, 60_000);
@@ -218,7 +218,7 @@ it("keeps prepared files through orphan cleanup and later publishes them", async
   expect((await api(h, "PUT", "bundle", bundle)).status).toBe(202);
   await advance(h.id, 2 * 3600000);
   await inDO(h.id, t => t.pruneOrphanFiles(t.now()));
-  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(200);
   expect(await (await publishedFile(h, "index.html")).text()).toContain("Prepared yesterday");
   socket.close();
 });
@@ -237,7 +237,7 @@ it("protects a prepared hash when its old published version is pruned", async ()
   }
   await inDO(h.id, t => t.pruneVersions());
   expect(await inDO(h.id, t => t.db.one("SELECT version FROM versions WHERE version=1"))).toBeNull();
-  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: KEEP_VERSIONS + 1 })).status).toBe(200);
+  expect((await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: KEEP_VERSIONS + 1 })).status).toBe(200);
   expect(await (await publishedFile(h, "index.html")).text()).toContain("Restore this older page");
   socket.close();
 });
@@ -252,7 +252,7 @@ it.each(["file", "media"])("refuses publication if prepared %s bytes are missing
     const staged = t.db.get<any>("staged_bundle", null);
     await t.env.FILES.delete(missing === "file" ? fileKey(t, staged.files[0].hash) : t.blobKey(staged.media[0]));
   });
-  const rejected = await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_version: 0 });
+  const rejected = await api(h, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 });
   expect(rejected.status).toBe(409); expect((await rejected.json<any>()).error.code).toBe("incomplete_bundle");
   expect(await inDO(h.id, t => t.db.get("current", 0))).toBe(0);
   expect((await apiJson(h, "GET", "session")).staged_remix).toBe(true);

@@ -22,7 +22,7 @@ function blobService() {
   const metadata = session => ({ id: blobId, sha256: session.sha256, size: session.size, type: session.type,
     url: "/page/_tendril/blobs/" + blobId, created_at: 1000, retention: { expires_at: 100000, reasons: [] } });
   const service = {
-    calls, sessions, pins, dropComplete: 0, dropPin: 0, rejectPin: false, beforeComplete: null,
+    calls, sessions, pins, dropComplete: 0, dropCompleteBody: 0, dropPin: 0, rejectPin: false, beforeComplete: null,
     fetch: async (url, init) => {
       const path = new URL(url, "https://fixture.test").pathname.replace("/page/_tendril", "");
       const body = init.headers["Content-Type"] === "application/json" ? JSON.parse(new TextDecoder().decode(init.body)) : init.body;
@@ -50,6 +50,13 @@ function blobService() {
         session.phase = "completed";
         if (service.beforeComplete) await service.beforeComplete();
         if (service.dropComplete > 0) { service.dropComplete--; throw new TypeError("Connection lost after completion"); }
+        if (service.dropCompleteBody > 0) {
+          service.dropCompleteBody--;
+          return new Response(new ReadableStream({ start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"status":"completed","blob":'));
+            controller.error(new TypeError("Connection lost during response body"));
+          } }), { headers: { "Content-Type": "application/json" } });
+        }
         return json({ status: "completed", blob: metadata(session) });
       }
       if (path === `/blobs/${blobId}/pin`) {
@@ -312,7 +319,29 @@ test("pinning persists its original guarded command and replays a lost pin recei
   const event = second.sent.find(frame => frame.t === "capture_complete");
   assert.equal(event.cid, original.msg.event_cid);
   assert.equal(event.expected_generations[descriptor.id], "original");
-  assert.deepEqual(second.core.captures()[0].blob.retention.reasons, ["pinned"]);
+  assert.deepEqual([...second.core.captures()[0].blob.retention.reasons], ["pinned"]);
+});
+
+test("an interrupted completion body stays queued and resumes after reload instead of claiming rejection", async () => {
+  const blobs = blobService(); blobs.dropCompleteBody = 1;
+  const first = await environment({ blobs });
+  void first.core.uploadEvent(new Blob(["reviewed bytes"]), { data: { submission_id: "partial-response" } });
+  await flush(); await first.commit();
+  await until(() => blobs.calls.some(call => call.path.endsWith("/complete")));
+  await flush(); await first.commit();
+  const capture = first.core.captures()[0];
+  assert.equal(capture.status, "queued");
+  assert.equal(capture.error, undefined);
+  first.transport.disconnect();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs });
+  await until(() => second.database.pending.length > 0 && blobs.calls.filter(call => call.path.endsWith("/complete")).length === 2);
+  await second.commit();
+  const event = second.sent.find(frame => frame.t === "capture_complete");
+  assert.equal(event.data.capture_id, capture.capture_id);
+  assert.equal(event.data.submission_id, "partial-response");
+  const starts = blobs.calls.filter(call => call.path === "/uploads");
+  assert.deepEqual(starts[0].body, starts[1].body);
+  assert.equal(blobs.calls.filter(call => call.path.endsWith("/content")).length, 1);
 });
 
 test("a stale pin rejects the retained capture and retry keeps the original pin guards", async () => {

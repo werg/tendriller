@@ -121,6 +121,11 @@ it("requires verified page upload identity and enforces file read/write roles", 
   const write = { cid: "page-file", expected_generations: {}, expected_revision: 0, path: "shared.txt", blob_id: blob.id };
   expect((await req(page.page_url + "_tendril/file-refs", { method: "PUT", headers, body: JSON.stringify(write) })).status).toBe(200);
   const display = await inDO(page.id, async t => t.renderLink(await t.createLink("display", null, null)));
+  expect((await req(page.page_url + "_tendril/blobs")).status).toBe(200);
+  expect((await req(page.page_url + `_tendril/blobs/${blob.id}/info`)).status).toBe(200);
+  expect((await req(display.url + "_tendril/blobs", { anonymous: true })).status).toBe(403);
+  expect((await req(display.url + `_tendril/blobs/${blob.id}/info`, { anonymous: true })).status).toBe(403);
+  expect(await (await req(display.url + `_tendril/blobs/${blob.id}`, { anonymous: true })).text()).toBe("page data");
   expect((await req(display.url + "_tendril/file-refs/snapshot", { anonymous: true })).status).toBe(200);
   expect((await req(display.url + "_tendril/file-refs", { anonymous: true, method: "PUT", headers: { "Content-Type": "application/json", Origin: new URL(display.url).origin }, body: JSON.stringify(write) })).status).toBe(403);
   device.close();

@@ -2,6 +2,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { uploadBlob } from "./blobs.mjs";
+import { assertValid } from "@tendriller/core/contract";
+import { runSavedCommand } from "./command-record.mjs";
 const digest = value => createHash("sha256").update(value).digest("hex");
 const sorted = entries => [...entries].sort((a,b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 function readRecord(path) { return path && existsSync(path) ? JSON.parse(readFileSync(path,"utf8")) : null; }
@@ -86,4 +88,24 @@ export async function publishFiles(api, enumeration, {
   const result = {...published,files:files.length,reused:results.filter((_,i)=>matching.has(contentKey(filesToUpload[i]))).length};
   saveRecord(resumeFile,{...record,result,status:"accepted"});
   return result;
+}
+
+/** Select a retained publication using the head captured before its first send. */
+export async function rollbackPublication(api, version, {
+  expectedHeadRevision, generations = {}, scope, cid, resumeFile,
+} = {}) {
+  if (!Number.isSafeInteger(version) || version < 1) throw new TypeError("Rollback needs a positive publication version");
+  if (expectedHeadRevision !== undefined && (!Number.isSafeInteger(expectedHeadRevision) || expectedHeadRevision < 0))
+    throw new TypeError("Expected publication head revision must be a nonnegative integer");
+  return runSavedCommand({ resumeFile,
+    intent: { operation: "publication.rollback", version, expectedHeadRevision: expectedHeadRevision ?? null,
+      generations, scope: scope ?? null, cid: cid ?? null },
+    requestSchema: "publicationRollback", resultSchema: "publicationReceipt",
+    async prepare(original) {
+      const head = original.expectedHeadRevision ?? assertValid("publicationList", await api.get("/publications")).head_revision;
+      return { cid: original.cid ?? randomUUID(), expected_generations: original.generations,
+        ...(original.scope === null ? {} : { scope: original.scope }), expected_head_revision: head, version: original.version };
+    },
+    send: request => api.post("/publications/rollback", request),
+  });
 }

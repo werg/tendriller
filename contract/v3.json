@@ -1680,6 +1680,7 @@
       "minLength": 1,
       "maxLength": 512,
       "x-canonical-nfc": true,
+      "x-well-formed-unicode": true,
       "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
     },
     "blobMetadata": {
@@ -1706,7 +1707,8 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 200
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         },
         "url": {
           "type": "string",
@@ -1784,7 +1786,8 @@
               },
               "name": {
                 "type": "string",
-                "maxLength": 200
+                "maxLength": 200,
+                "x-well-formed-unicode": true
               },
               "url": {
                 "type": "string",
@@ -1857,7 +1860,8 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 200
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         }
       },
       "required": [
@@ -1876,7 +1880,8 @@
           },
           "name": {
             "type": "string",
-            "maxLength": 200
+            "maxLength": 200,
+            "x-well-formed-unicode": true
           }
         },
         "required": [
@@ -1910,7 +1915,8 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 200
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         }
       },
       "required": [
@@ -1983,7 +1989,8 @@
             },
             "name": {
               "type": "string",
-              "maxLength": 200
+              "maxLength": 200,
+              "x-well-formed-unicode": true
             },
             "url": {
               "type": "string",
@@ -2074,7 +2081,8 @@
             },
             "name": {
               "type": "string",
-              "maxLength": 200
+              "maxLength": 200,
+              "x-well-formed-unicode": true
             },
             "url": {
               "type": "string",
@@ -2173,6 +2181,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "revision": {
@@ -2192,7 +2201,8 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 200
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         },
         "type": {
           "type": "string",
@@ -2241,6 +2251,7 @@
                 "minLength": 1,
                 "maxLength": 512,
                 "x-canonical-nfc": true,
+                "x-well-formed-unicode": true,
                 "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
               },
               "revision": {
@@ -2260,7 +2271,8 @@
               },
               "name": {
                 "type": "string",
-                "maxLength": 200
+                "maxLength": 200,
+                "x-well-formed-unicode": true
               },
               "type": {
                 "type": "string",
@@ -2317,6 +2329,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "versions": {
@@ -2329,6 +2342,7 @@
                 "minLength": 1,
                 "maxLength": 512,
                 "x-canonical-nfc": true,
+                "x-well-formed-unicode": true,
                 "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
               },
               "revision": {
@@ -2348,7 +2362,8 @@
               },
               "name": {
                 "type": "string",
-                "maxLength": 200
+                "maxLength": 200,
+                "x-well-formed-unicode": true
               },
               "type": {
                 "type": "string",
@@ -2422,6 +2437,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "expected_revision": {
@@ -2434,7 +2450,8 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 200
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         },
         "type": {
           "type": "string",
@@ -2481,6 +2498,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "expected_revision": {
@@ -2507,6 +2525,7 @@
               "minLength": 1,
               "maxLength": 512,
               "x-canonical-nfc": true,
+              "x-well-formed-unicode": true,
               "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
             },
             "revision": {
@@ -2526,7 +2545,8 @@
             },
             "name": {
               "type": "string",
-              "maxLength": 200
+              "maxLength": 200,
+              "x-well-formed-unicode": true
             },
             "type": {
               "type": "string",
@@ -2588,6 +2608,7 @@
               "minLength": 1,
               "maxLength": 512,
               "x-canonical-nfc": true,
+              "x-well-formed-unicode": true,
               "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
             },
             "revision": {
@@ -2607,7 +2628,8 @@
             },
             "name": {
               "type": "string",
-              "maxLength": 200
+              "maxLength": 200,
+              "x-well-formed-unicode": true
             },
             "type": {
               "type": "string",
@@ -2686,6 +2708,7 @@
                     "minLength": 1,
                     "maxLength": 512,
                     "x-canonical-nfc": true,
+                    "x-well-formed-unicode": true,
                     "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
                   },
                   "revision": {
@@ -2705,7 +2728,8 @@
                   },
                   "name": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-well-formed-unicode": true
                   },
                   "type": {
                     "type": "string",
@@ -2785,6 +2809,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "blob_id": {
@@ -2838,6 +2863,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "files": {
@@ -2850,6 +2876,7 @@
                 "minLength": 1,
                 "maxLength": 512,
                 "x-canonical-nfc": true,
+                "x-well-formed-unicode": true,
                 "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
               },
               "blob_id": {
@@ -3041,6 +3068,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "files": {
@@ -3053,6 +3081,7 @@
                 "minLength": 1,
                 "maxLength": 512,
                 "x-canonical-nfc": true,
+                "x-well-formed-unicode": true,
                 "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
               },
               "blob_id": {
@@ -3091,274 +3120,6 @@
         "version",
         "entry",
         "files"
-      ],
-      "additionalProperties": false
-    },
-    "transferDescriptor": {
-      "type": "object",
-      "properties": {
-        "transfer_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200
-        },
-        "phase": {
-          "enum": [
-            "queued",
-            "uploading",
-            "ready",
-            "committing",
-            "accepted",
-            "rejected"
-          ]
-        },
-        "blob": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^b_[a-z2-7]{20}$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 26214400
-            },
-            "type": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "name": {
-              "type": "string",
-              "maxLength": 200
-            },
-            "url": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 2048
-            },
-            "created_at": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "retention": {
-              "type": "object",
-              "properties": {
-                "expires_at": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 0
-                },
-                "reasons": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 200
-                  },
-                  "maxItems": 32
-                }
-              },
-              "required": [
-                "expires_at",
-                "reasons"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "id",
-            "sha256",
-            "size",
-            "type",
-            "url",
-            "created_at",
-            "retention"
-          ],
-          "additionalProperties": false
-        },
-        "file": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 512,
-              "x-canonical-nfc": true,
-              "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
-            },
-            "revision": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "blob_id": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "pattern": "^b_[a-z2-7]{20}$"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "name": {
-              "type": "string",
-              "maxLength": 200
-            },
-            "type": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "scope": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "updated_at": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "by": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200
-            }
-          },
-          "required": [
-            "path",
-            "revision",
-            "blob_id"
-          ],
-          "additionalProperties": false
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200
-            },
-            "message": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1000
-            },
-            "retryable": {
-              "type": "boolean"
-            },
-            "details": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message"
-          ],
-          "additionalProperties": false
-        },
-        "progress": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "transfer_id",
-        "phase"
-      ],
-      "additionalProperties": false
-    },
-    "exportSnapshot": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200
-        },
-        "expires_at": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "created_at": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "size": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "id",
-        "expires_at",
-        "created_at"
-      ],
-      "additionalProperties": false
-    },
-    "importStage": {
-      "type": "object",
-      "properties": {
-        "cid": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
-        },
-        "expected_generations": {
-          "type": "object",
-          "maxProperties": 128,
-          "propertyNames": {
-            "type": "string",
-            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-          },
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 160
-          }
-        },
-        "scope": {
-          "type": "string",
-          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "expected_head_revision": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "expected_files": {
-          "type": "object"
-        }
-      },
-      "required": [
-        "cid",
-        "expected_generations",
-        "sha256",
-        "expected_head_revision",
-        "expected_files"
       ],
       "additionalProperties": false
     },
@@ -4317,7 +4078,8 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 200
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         },
         "url": {
           "type": "string",
@@ -4387,7 +4149,9 @@
           }
         },
         "name": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 200,
+          "x-well-formed-unicode": true
         },
         "data": {
           "type": "object"
@@ -4449,7 +4213,8 @@
                 },
                 "name": {
                   "type": "string",
-                  "maxLength": 200
+                  "maxLength": 200,
+                  "x-well-formed-unicode": true
                 },
                 "url": {
                   "type": "string",
@@ -5824,6 +5589,7 @@
           "minLength": 1,
           "maxLength": 512,
           "x-canonical-nfc": true,
+          "x-well-formed-unicode": true,
           "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
         },
         "name": {
@@ -5925,6 +5691,7 @@
                 "minLength": 1,
                 "maxLength": 512,
                 "x-canonical-nfc": true,
+                "x-well-formed-unicode": true,
                 "pattern": "^(?!/)(?!.*\\/$)(?!(?:_tendril|_publications)(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\\\\\x00-\\x1f\\x7f]+$"
               },
               "blob_id": {
@@ -5932,7 +5699,9 @@
                 "pattern": "^b_[a-z2-7]{20}$"
               },
               "name": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 200,
+                "x-well-formed-unicode": true
               },
               "type": {
                 "type": "string"
@@ -5962,7 +5731,8 @@
                 "anyOf": [
                   {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-well-formed-unicode": true
                   },
                   {
                     "type": "null"
@@ -6017,7 +5787,7 @@
             "maxLength": 160
           }
         },
-        "expected_version": {
+        "expected_head_revision": {
           "type": "integer",
           "minimum": 0
         }
@@ -6025,7 +5795,7 @@
       "required": [
         "cid",
         "expected_generations",
-        "expected_version"
+        "expected_head_revision"
       ],
       "additionalProperties": false
     },
@@ -6675,7 +6445,7 @@
           "type": "integer",
           "minimum": 0
         },
-        "expected_version": {
+        "expected_head_revision": {
           "type": "integer",
           "minimum": 0
         },
@@ -6687,23 +6457,32 @@
         "staged",
         "files",
         "media",
-        "expected_version",
+        "expected_head_revision",
         "requires_publication"
       ],
       "additionalProperties": true
     },
-    "publicationResult": {
+    "bundleReceipt": {
       "type": "object",
       "properties": {
         "version": {
           "type": "integer",
           "minimum": 0
+        },
+        "head_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "restored": {
+          "const": true
         }
       },
       "required": [
-        "version"
+        "version",
+        "head_revision",
+        "restored"
       ],
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "remixResult": {
       "type": "object",
@@ -6749,7 +6528,7 @@
             "publish_url": {
               "type": "string"
             },
-            "expected_version": {
+            "expected_head_revision": {
               "type": "integer",
               "minimum": 0
             }
@@ -6758,7 +6537,7 @@
             "staged",
             "requires_receiver",
             "publish_url",
-            "expected_version"
+            "expected_head_revision"
           ],
           "additionalProperties": true
         }
