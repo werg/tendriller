@@ -5,6 +5,9 @@ import { reconcileSuspensions } from "./abuse/reconcile";
 
 import { Tendril } from "./tendril";
 export { Tendril };
+// Explicit trusted deployment entry points may select modules before serving.
+// The ordinary service never installs an application workflow.
+export { configureWorkflows } from "./workflows";
 // Contract 2 uses a fresh namespace under the existing Worker and public URLs.
 // The original namespace is no longer bound and cannot leak pre-release state.
 export class TendrilV2 extends Tendril {}

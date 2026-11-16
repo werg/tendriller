@@ -253,7 +253,7 @@ describe("links", () => {
   });
 });
 
-describe("say, notify, rules, logs, voice and rule events", () => {
+describe("say, notify, logs and voice events", () => {
   it("say reaches all devices and the transcript", async () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
@@ -281,27 +281,6 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     expect(await apiJson(h, "POST", "notify", { title: "x" })).toEqual({ sent: 0, failed: 0, deliveries: [] });
     page.close();
   });
-
-  it("rules are stored, broadcast and in welcome; rule_fired becomes a waking event", async () => {
-    const h = await create();
-    const page = await PageClient.connect(h.page_url);
-    const rules = [{ id: "shop", when: { type: "interval", minutes: 5 }, do: [{ type: "event" }] }];
-    await apiJson(h, "PUT", "rules", { rules });
-    expect(await page.next("rules")).toEqual({ t: "rules", rules });
-    expect(await apiJson(h, "GET", "rules")).toEqual({ rules });
-    const again = await PageClient.connect(h.page_url);
-    expect(again.welcome.rules).toEqual(rules);
-    const ack = await page.request({ t: "rule_fired", rule_id: "shop", detail: { at: 1 } });
-    expect(ack.seq).toEqual(expect.any(Number));
-    const ev = (await apiJson(h, "GET", "events")).events.find((e: any) => e.type === "rule");
-    expect(ev).toMatchObject({ data: { rule_id: "shop", detail: { at: 1 } }, wake: true });
-    const bad = await api(h, "PUT", "rules", { rules: [{}] });
-    expect(bad.status).toBe(400);
-    await bad.text();
-    page.close();
-    again.close();
-  });
-
 
   it("logs are stored with device and version, newest 2000 kept", async () => {
     const h = await create();

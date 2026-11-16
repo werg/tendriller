@@ -196,7 +196,6 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
     scopes: scopes(t),
     presence: t.presence(),
     transcript: t.transcript(),
-    rules: t.db.get("rules", []),
     features: t.features(),
     budget: t.wakeConfig().budget,
   };
@@ -439,22 +438,9 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
       status: result.deliveries[0]?.status ?? null });
   },
 
-  async rule_fired(c) {
-    const { t, dev, msg } = c;
-    const result = await t.dedupe(dev.id, msg.cid, () => {
-      if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot send" };
-      const data = { rule_id: String(msg.rule_id ?? ""), detail: msg.detail ?? null };
-      if (new TextEncoder().encode(JSON.stringify(data)).byteLength > MAX_EVENT_DATA) return { error: "too_large", message: "detail exceeds 64 KB" };
-      const ev = addEvent(t, { type: "rule", data, device: dev.id, role: dev.role, wake: true, cls: "page" });
-      addActivity(t, { kind: "rule", summary: `Device rule "${data.rule_id}" fired`, device: dev.id });
-      return { seq: ev.seq };
-    });
-    ack(c, result);
-  },
-
 };
 
-/** Speech or text from the control/voice layer: an instruction from owners, data from anyone else. */
+/** Authored text or speech input: an instruction from owners, data from anyone else. */
 function instruction(c: Ctx, text: string, via: string, context: ValidatedContext): number {
   const { t, dev, ws } = c;
   const isOwner = dev.role === "owner" && !dev.pending;

@@ -580,7 +580,7 @@ route("POST", /^links\/([^/]+)\/rotate$/, async (t, req, url, by, [id]) => {
   return json(row);
 });
 
-// ------------------------------------------------------------------ wake, activity, tokens, rules, notify
+// ------------------------------------------------------------------ wake, activity, tokens, notify
 
 route("GET", /^wake$/, (t) => json(t.renderWake()));
 
@@ -697,18 +697,6 @@ route("DELETE", /^tokens\/([^/]+)$/, (t, req, url, by, [name]) => {
   t.db.run("DELETE FROM tokens WHERE name = ?", name);
   t.refreshPresence();
   return new Response(null, { status: 204 });
-});
-
-route("GET", /^rules$/, (t) => json({ rules: t.db.get("rules", []) }));
-
-route("PUT", /^rules$/, async (t, req) => {
-  const b = await readJson(req, 256 * 1024);
-  if (!Array.isArray(b.rules) || !b.rules.every((r: unknown) => isPlainObject(r) && typeof r.id === "string" && r.id)) {
-    throw new HttpError(400, "bad_request", "rules must be an array of objects with a string id");
-  }
-  t.db.set("rules", b.rules);
-  t.broadcast({ t: "rules", rules: b.rules });
-  return json({ rules: b.rules });
 });
 
 // The agent can inspect readiness without spending a notification or learning
