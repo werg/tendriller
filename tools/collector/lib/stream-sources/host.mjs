@@ -8,9 +8,28 @@ const capabilities = Object.freeze({ mode: 'poll', replay: 'none', checkpoint: f
 const gpuFields = [['index', 1], ['utilization_percent', 1], ['memory_used_bytes', 1024 * 1024],
   ['memory_total_bytes', 1024 * 1024], ['temperature_c', 1]];
 
+function csvValues(line) {
+  const values = [];
+  let value = '', quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') { value += '"'; i++; }
+      else quoted = !quoted;
+    } else if (char === ',' && !quoted) { values.push(value); value = ''; }
+    else value += char;
+  }
+  if (quoted) throw Error('Malformed nvidia-smi output');
+  values.push(value);
+  return values;
+}
+
 function gpuRow(line) {
-  const values = line.split(','), result = {}, unavailable = {};
-  if (values.length !== gpuFields.length) throw Error('Malformed nvidia-smi output');
+  const values = csvValues(line);
+  if (values.length !== gpuFields.length + 1) throw Error('Malformed nvidia-smi output');
+  const model = values.shift().trim();
+  const result = { model: model || null, unified_memory: /\bGB10\b/i.test(model) ? true : null }, unavailable = {};
+  // A missing framebuffer counter alone does not identify unified memory.
   for (const [offset, [field, scale]] of gpuFields.entries()) {
     const text = values[offset].trim();
     let reason = !text ? 'not_reported' : /^(?:N\/A|\[N\/A\])$/i.test(text) ? 'not_available'
@@ -39,7 +58,7 @@ export async function sampleHost(previous, { gpu = false } = {}, { executeGpu = 
   }, gpus: [] };
   if (gpu) {
     try {
-      const { stdout } = await executeGpu('nvidia-smi', ['--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'],
+      const { stdout } = await executeGpu('nvidia-smi', ['--query-gpu=name,index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'],
         { timeout: 3000, maxBuffer: 64 * 1024, windowsHide: true });
       sample.gpus = stdout.split('\n').filter(line => line.trim()).map(gpuRow);
       sample.gpu_status = sample.gpus.length ? 'available' : 'unavailable';

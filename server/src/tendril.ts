@@ -2,6 +2,7 @@ import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer } from "./peers";
 import { applicationSelection } from "../../contract/application.mjs";
 import runtimeRelease from "./runtime-release.json";
+import { RESOURCE_LIMITS, STREAM_LIMITS } from "../../contract/limits.mjs";
 // The Tendril Durable Object: owns all per-tendril state and logic.
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
@@ -357,7 +358,9 @@ export class Tendril extends DurableObject<Env> {
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
-      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Publication health stays pending until a visible tab loads the new version. Once claimed, set lifetime to resident for a long-lived page.",
+      unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes,
+        stream_retained_bytes: STREAM_LIMITS.unclaimed_retained_bytes },
+      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Before claim, stream retention and request bodies are each limited to 1 MiB: claim the page before starting a collector or uploading a large backlog. Publication health stays pending until a visible tab loads the new version. Once claimed, set lifetime to resident for a long-lived page.",
       agent_setup: {
         event_delivery: "not_configured",
         next_step: this.db.get<string>("mode", "interactive") === "dashboard"

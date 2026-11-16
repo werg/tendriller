@@ -24,6 +24,11 @@ before(async () => {
       res.end(JSON.stringify({ id: "abcdefghijkl", name: "Contract page", lifetime: "ad_hoc", token: "tk_private",
         mode: body ? JSON.parse(body).mode || "interactive" : "interactive",
         api: `${origin}/api/t/abcdefghijkl`, page_url: `${origin}/page/`, agent_setup: { event_delivery: "not_configured" } }));
+    } else if (req.url === "/api/t/abcdefghijkl" && req.method === "GET") {
+      res.end(JSON.stringify({ id: "abcdefghijkl", mode: "dashboard", page_url: `${origin}/page/private-secret/` }));
+    } else if (req.url === "/api/t/abcdefghijkl/wake/probe" && req.method === "POST") {
+      res.statusCode = 201;
+      res.end(JSON.stringify({ nonce: "probe-nonce", seq: 1, ack_at: null }));
     } else if (/\/timers(?:\/[^/]+)?$/.test(req.url)) {
       const input = JSON.parse(body), revision = (input.expected_revision ?? 0) + 1;
       res.end(JSON.stringify(req.method === "DELETE" ? { id: "timer-id", revision, deleted: true } : {
@@ -165,4 +170,49 @@ test("durable work commands preserve targets, revisions and explicit publication
   assert.equal(requests.length, count);
   assert.equal((await cli(["bundle", "export", "--include-data"])).code, 0);
   assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/bundle?include_data=true");
+});
+
+test("info redacts the secret page URL even with --pretty; explicit opt-in reveals it", async () => {
+  for (const flags of [[], ["--pretty"]]) {
+    const result = await cli(["info", ...flags]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).page_url, /REDACTED/);
+    assert.doesNotMatch(result.stdout, /private-secret/);
+  }
+  const exposed = await cli(["info", "--show-url"]);
+  assert.equal(exposed.code, 0, exposed.stderr);
+  assert.match(JSON.parse(exposed.stdout).page_url, /private-secret/);
+});
+
+test("push rejects contradictory health flags and invalid timeout before publishing", async () => {
+  const before = requests.length;
+  for (const flags of [["--wait", "--no-wait"], ["--timeout", "bad"], ["--timeout", "-1"]]) {
+    const result = await cli(["push", "missing-page-directory", ...flags]);
+    assert.equal(result.code, 64, result.stderr);
+  }
+  assert.equal(requests.length, before);
+});
+
+test("events send --wake uses the existing rate-limited diagnostic endpoint", async () => {
+  const withoutWake = await cli(["events", "send"]);
+  assert.equal(withoutWake.code, 64);
+  const result = await cli(["events", "send", "--wake"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).diagnostic, "delivery_probe");
+  assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/wake/probe");
+  assert.equal(requests.at(-1).method, "POST");
+});
+
+test("standalone receiver --help works without secrets and documents checkpoints", async () => {
+  const scripts = [
+    [fileURLToPath(new URL("../../bridges/bin/tendril-events.mjs", import.meta.url)), /handled_cursor/],
+    [fileURLToPath(new URL("../../bridges/bin/tendril-wait.mjs", import.meta.url)), /TENDRIL_AFTER/],
+  ];
+  for (const [path, expected] of scripts) {
+    const result = await new Promise(resolve => execFile(process.execPath, [path, "--help"],
+      { timeout: 5000, env: { ...process.env, TENDRIL_API: "", TENDRIL_TOKEN: "" } },
+      (error, stdout, stderr) => resolve({ code: error?.code || 0, stdout, stderr })));
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, expected);
+  }
 });

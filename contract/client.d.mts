@@ -6,7 +6,8 @@ import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperat
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerDelete, TimerDeleted, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
-  expires_at?: number | null; next_step?: string }
+  expires_at?: number | null; next_step?: string;
+  unclaimed_limits?: { request_body_bytes: number; stream_retained_bytes: number } }
 export interface ClientOptions { fetch?: typeof globalThis.fetch; recordLogHints?: RecordLogClientOptions["subscribeHints"] }
 export interface EventBatch { events: PublicEvent[]; cursor: number; withheld: number; [key: string]: unknown }
 export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }

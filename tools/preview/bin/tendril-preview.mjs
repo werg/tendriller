@@ -4,17 +4,17 @@ import { resolve } from "node:path";
 import { parseArgs, intFlag } from "../../cli/lib/args.mjs";
 import { startServer, preview } from "../lib/preview.mjs";
 
-const usage = "Usage: tendril-preview.mjs <page-directory> [--fixture scenario.json] [--headless] [--out screenshot.png] [--state state.json] [--wait-ms N] [--desktop] [--headed]";
+const usage = "Usage: tendril-preview.mjs <page-directory> [--fixture scenario.json] [--headless] [--out screenshot.png] [--state state.json] [--wait-ms N] [--desktop] [--headed] [--playwright-path MODULE_PATH]";
 async function main() {
   const { cmd: directory, args, flags } = parseArgs(process.argv.slice(2));
   if (flags.help || directory === "help") { console.log(usage); return; }
   if (!directory || args.length) throw Object.assign(new Error(usage), { exit: 64 });
-  for (const key of Object.keys(flags)) if (!["fixture", "headless", "out", "state", "wait-ms", "desktop", "headed"].includes(key))
+  for (const key of Object.keys(flags)) if (!["fixture", "headless", "out", "state", "wait-ms", "desktop", "headed", "playwright-path"].includes(key))
     throw Object.assign(new Error(`Unknown option --${key}. ${usage}`), { exit: 64 });
   if (!statSync(directory).isDirectory()) throw new Error("Preview needs a directory containing index.html");
   const fixture = flags.fixture ? JSON.parse(readFileSync(flags.fixture, "utf8")) : {};
   const state = flags.state ? JSON.parse(readFileSync(flags.state, "utf8")) : undefined;
-  const options = { fixture, state, out: flags.out, waitMs: intFlag(flags["wait-ms"], "wait-ms", 2500), desktop: !!flags.desktop, headed: !!flags.headed };
+  const options = { fixture, state, out: flags.out, waitMs: intFlag(flags["wait-ms"], "wait-ms", 2500), desktop: !!flags.desktop, headed: !!flags.headed, playwrightPath: flags["playwright-path"] };
   if (options.waitMs < 0) throw Object.assign(new Error("--wait-ms must be nonnegative"), { exit: 64 });
   if (flags.headless) {
     const result = await preview(directory, options);
