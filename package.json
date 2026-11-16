@@ -20,7 +20,7 @@
     "check": "npm run contract:check && npm run typecheck && npm run build && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:push && npm run test:server && npm run test:consumer",
     "test:ci": "node --test scripts/test/*.test.mjs",
     "check:release": "npm run check && npm run test:pair && npm run test:browser",
-    "test:runtime-unit": "node --test runtime/test/*.test.mjs",
+    "test:runtime-unit": "node --test --test-concurrency=1 runtime/test/*.test.mjs",
     "test:server": "vitest run --config server/vitest.public.config.ts",
     "test:consumer": "node scripts/test-consumer.mjs",
     "build:engine": "node scripts/build.mjs",
