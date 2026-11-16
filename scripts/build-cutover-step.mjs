@@ -10,7 +10,7 @@ if (!/\/server\/wrangler\.(staging|production)\.jsonc$/.test(configPath))
   throw Error('Usage: node scripts/build-cutover-step.mjs server/wrangler.staging.jsonc');
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
-for (const name of ['TendrilV3', 'Admission']) {
+for (const name of ['TendrilV4', 'AdmissionV4']) {
   if (config.exports?.[name]?.state !== 'deleted') throw Error(`Expected ${name} tombstone`);
   config.exports[name] = { type: 'durable-object', storage: 'sqlite' };
 }
@@ -21,10 +21,10 @@ writeFileSync(output, JSON.stringify(config, null, 2) + '\n');
 await build({
   stdin: {
     contents: `import { DurableObject } from 'cloudflare:workers';
-export { default, TendrilV4, AdmissionV4 } from './server/src/deploy-entry.ts';
+export { default, TendrilV5, AdmissionV5 } from './server/src/deploy-entry.ts';
 class Retired extends DurableObject { async fetch() { return new Response('Retired', { status: 410 }); } }
-export class TendrilV3 extends Retired {}
-export class Admission extends Retired {}
+export class TendrilV4 extends Retired {}
+export class AdmissionV4 extends Retired {}
 `,
     resolveDir: resolve(import.meta.dirname, '..'),
     sourcefile: 'cutover-entry.ts',

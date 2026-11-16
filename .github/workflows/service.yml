@@ -74,7 +74,7 @@ jobs:
         run: npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
         id: cutover
-        run: node scripts/check-contract4-cutover.mjs server/wrangler.staging.jsonc
+        run: node scripts/check-contract5-cutover.mjs server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
         run: node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
@@ -86,7 +86,7 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: node scripts/check-deployment.mjs https://staging.tendriller.dev
       - if: steps.current.outputs.current == 'true'
-        run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.staging.jsonc --file scripts/open-contract4-cutover.sql
+        run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.staging.jsonc --file scripts/open-contract5-cutover.sql
       - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
         run: node scripts/check-service-open.mjs https://staging.tendriller.dev
 
@@ -121,7 +121,7 @@ jobs:
         run: npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
         id: cutover
-        run: node scripts/check-contract4-cutover.mjs server/wrangler.production.jsonc
+        run: node scripts/check-contract5-cutover.mjs server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
         run: node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
@@ -133,6 +133,6 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: node scripts/check-deployment.mjs https://tendriller.dev
       - if: steps.current.outputs.current == 'true'
-        run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.production.jsonc --file scripts/open-contract4-cutover.sql
+        run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.production.jsonc --file scripts/open-contract5-cutover.sql
       - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
         run: node scripts/check-service-open.mjs https://tendriller.dev
