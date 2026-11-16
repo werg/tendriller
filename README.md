@@ -2,7 +2,7 @@
 
 Tendriller is an application-neutral engine for pages connected to an agent. The core provides authenticated pages, browser transport, shared state, events, blobs, streams, durable delivery, timers and publication lifecycle.
 
-**Contract 2 is a pre-release redesign.** New clients use explicit commands and authoritative scope generations. Application JSON is opaque. Existing prototypes must be rebuilt for this contract.
+**Contract 3 is the current pre-release contract.** New clients use explicit commands and authoritative scope generations. Application JSON is opaque. Existing prototypes must be rebuilt for this contract.
 
 ## Start here
 

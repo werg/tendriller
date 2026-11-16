@@ -1,4 +1,4 @@
-# Browser API (contract 2)
+# Browser API (contract 3)
 
 The service injects its released browser runtime into a published page. Do **not** import the
 minified runtime, bundle a second copy, or scrape it for an API. Use `window.tendril`
