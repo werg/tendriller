@@ -33,3 +33,27 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   expect(deleted.file.blob_id).toBeNull();
   expect((await api(page, "GET", "file-refs?path=notes%2Fnote.txt")).status).toBe(404);
 });
+
+it("publishes complete blob manifests with head CAS and replays the same command", async () => {
+  const page = await create({ mode: "dashboard" });
+  const bytes = new TextEncoder().encode("<!doctype html><h1>Field notes</h1>");
+  const sha256 = await sha256Hex(bytes);
+  const upload = await apiJson(page, "POST", "uploads", { cid: "upload-index", sha256,
+    size: bytes.byteLength, type: "text/html", name: "index.html" }, 201);
+  expect((await api(page, "PUT", `uploads/${upload.id}/content`, bytes,
+    { "Content-Type": "application/octet-stream" })).status).toBe(204);
+  await apiJson(page, "POST", `uploads/${upload.id}/complete`, {});
+  const publish = { cid: "publish-index", expected_generations: {}, expected_head_revision: 0,
+    entry: "index.html", files: [{ path: "index.html", blob_id: upload.blob_id, type: "text/html" }] };
+  const first = await apiJson(page, "POST", "publications", publish);
+  expect(first).toEqual({ version: 1, head_revision: 1 });
+  expect(await apiJson(page, "POST", "publications", publish)).toEqual(first);
+  expect((await apiJson(page, "GET", "publications")).versions).toHaveLength(1);
+  expect((await apiJson(page, "GET", "publications/1")).files).toEqual(publish.files);
+  expect((await api(page, "POST", "publications", { ...publish, cid: "stale-publish" })).status).toBe(409);
+  const second = await apiJson(page, "POST", "publications", { ...publish, cid: "publish-index-2", expected_head_revision: 1 });
+  expect(second).toEqual({ version: 2, head_revision: 2 });
+  const rollback = { cid: "restore-index", expected_generations: {}, expected_head_revision: 2, version: 1 };
+  expect(await apiJson(page, "POST", "publications/rollback", rollback)).toEqual({ version: 1, head_revision: 3 });
+  expect(await apiJson(page, "POST", "publications/rollback", rollback)).toEqual({ version: 1, head_revision: 3 });
+});

@@ -1,11 +1,11 @@
 /** Contract 3's agent-facing immutable transfers and shared file references. */
-import { assertFilePath, assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
+import { assertFilePath, assertPublicationEntries, assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
 import type { Tendril } from "./tendril";
 import { blobInfo } from "./blob-retention";
-import { fileKey, storeContent } from "./files";
+import { createVersion, listVersions, pointers, rollback, storeContent, type VersionFile } from "./files";
 import { HttpError, intParam, json, readBody, readJson } from "./http";
 import { newBlobId, randomB32, sha256Hex } from "./ids";
-import { mutate } from "./scopes";
+import { mutate, replay } from "./scopes";
 
 export const STORAGE_V3_ROUTE = /^(?:uploads|blobs|file-refs|publications)(?:\/|$)/;
 
@@ -198,6 +198,76 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     const rows = t.db.all<FileRow & { cursor: number; cid: string }>("SELECT * FROM file_ref_changes WHERE cursor>? ORDER BY cursor LIMIT 100", after);
     return json({ changes: rows.map(row => ({ cursor: row.cursor, file: fileValue(row), cid: row.cid, actor: row.by_actor, at: row.updated_at })),
       cursor: rows.at(-1)?.cursor ?? after });
+  }
+  if (rest === "publications" && method === "GET") {
+    const head = pointers(t);
+    return json({ current: head.current ?? 0, latest: head.latest ?? 0, healthy: head.healthy ?? 0,
+      head_revision: t.db.get<number>("publication_head_revision", 0), needs_republication: false,
+      versions: listVersions(t) });
+  }
+  const publication = /^publications\/([1-9][0-9]*)$/.exec(rest);
+  if (publication && method === "GET") {
+    const version = Number(publication[1]);
+    const row = t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version);
+    if (!row) throw new HttpError(404, "not_found", "No such publication");
+    const files = t.db.all<{ path: string; blob_id: string; type: string }>(
+      "SELECT f.path, b.blob_id, f.type FROM version_files f JOIN publication_blobs b ON b.version=f.version AND b.path=f.path WHERE f.version=? ORDER BY f.path", version);
+    return json({ version, entry: row.entry, files });
+  }
+  if (rest === "publications" && method === "POST") {
+    const input = assertValid("publicationWrite", await readJson(req, 2 * 1024 * 1024));
+    assertPublicationEntries(input.files, input.entry);
+    const targets = { operations: ["publication.write"], paths: input.files.map(file => ["publications", file.path]) };
+    const prior = replay<{ version: number; head_revision: number }>(t, actor, input, targets, input);
+    if (prior.found) return json(prior.result);
+    if (t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
+      const facts = t.presenceFacts();
+      if (!facts.agentSocket && !facts.longPollHeld && !facts.webhook)
+        throw new HttpError(428, "listener_required", "Attach a verified agent receiver before launching an interactive page");
+    }
+    const files = new Map<string, VersionFile>();
+    for (const file of input.files) {
+      const blob = requireBlob(t, file.blob_id);
+      files.set(file.path, { path: file.path, hash: blob.sha256, size: blob.size, type: file.type });
+    }
+    let receipt: { version: number; head_revision: number } | null = null;
+    try {
+      await createVersion(t, files, input.message ?? null, actor, {
+        expectedHeadRevision: input.expected_head_revision,
+        commit(version) {
+          receipt = mutate(t, actor, input, targets, input, () => {
+            for (const file of input.files) {
+              const blob = requireBlob(t, file.blob_id);
+              if (blob.sha256 !== files.get(file.path)?.hash) throw new HttpError(409, "blob_changed", "A publication blob changed during preparation");
+              t.db.run("INSERT INTO publication_blobs(version,path,blob_id) VALUES(?,?,?)", version, file.path, file.blob_id);
+            }
+            t.db.run("UPDATE versions SET entry=? WHERE version=?", input.entry, version);
+            const head_revision = input.expected_head_revision + 1;
+            t.db.set("publication_head_revision", head_revision);
+            return { version, head_revision };
+          });
+        },
+      });
+    } catch (error) {
+      const accepted = replay<{ version: number; head_revision: number }>(t, actor, input, targets, input);
+      if (accepted.found) return json(accepted.result);
+      throw error;
+    }
+    if (!receipt) throw new HttpError(500, "publication_receipt", "Publication committed without a receipt");
+    return json(receipt);
+  }
+  if (rest === "publications/rollback" && method === "POST") {
+    const input = assertValid("publicationRollback", await readJson(req, 4096));
+    const result = mutate(t, actor, input, { operations: ["publication.write"] }, input, () => {
+      const current = t.db.get<number>("publication_head_revision", 0);
+      if (current !== input.expected_head_revision)
+        throw new HttpError(409, "publication_conflict", "The publication head changed", { head_revision: current });
+      const version = rollback(t, input.version, actor, null);
+      const head_revision = current + 1;
+      t.db.set("publication_head_revision", head_revision);
+      return { version, head_revision };
+    });
+    return json(result);
   }
   throw new HttpError(404, "not_found", `No Contract 3 storage route ${rest}`);
 }

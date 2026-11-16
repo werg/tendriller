@@ -130,7 +130,7 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
-  options: { expectedCurrent?: number; commit?: () => void; beforeReload?: () => void } = {}): Promise<number> {
+  options: { expectedCurrent?: number; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
   let riskScore = 0;
   const riskFlags: string[] = [];
@@ -154,6 +154,9 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     const current = t.db.get<number>("current", 0);
     if (options.expectedCurrent !== undefined && current !== options.expectedCurrent)
       throw new HttpError(409, "version_conflict", "The page changed; review the current version before replacing it", { current });
+    if (options.expectedHeadRevision !== undefined && t.db.get<number>("publication_head_revision", 0) !== options.expectedHeadRevision)
+      throw new HttpError(409, "publication_conflict", "The publication head changed; inspect it before retrying",
+        { head_revision: t.db.get<number>("publication_head_revision", 0) });
     const next = t.db.get<number>("latest", 0) + 1;
     t.db.run("INSERT INTO versions (version, created_at, status, runtime_id, runtime_version, runtime_features, message, by, risk_score, risk_flags) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
       next, t.now(), runtimeRelease.id, runtimeRelease.version, JSON.stringify(runtimeRelease.features), message, by, riskScore, JSON.stringify(riskFlags));
@@ -162,7 +165,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     }
     t.db.set("latest", next);
     t.db.set("current", next);
-    options.commit?.();
+    options.commit?.(next);
     addActivity(t, {
       kind: "version",
       summary: `Version ${next} pushed (${files.size} file${files.size === 1 ? "" : "s"})${message ? `: ${message}` : ""}`,

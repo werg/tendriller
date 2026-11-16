@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, secret_hash TEXT NOT NU
   pending INTEGER NOT NULL DEFAULT 0, pair_code TEXT, link TEXT, ua TEXT, caps TEXT,
   created_at INTEGER NOT NULL, last_seen INTEGER, last_active INTEGER);
 CREATE TABLE IF NOT EXISTS versions (version INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, status TEXT NOT NULL, runtime_id TEXT NOT NULL, runtime_version TEXT NOT NULL, runtime_features TEXT NOT NULL,
-  message TEXT, errors TEXT, by TEXT, failed_event INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, risk_flags TEXT NOT NULL DEFAULT '[]');
+  entry TEXT NOT NULL DEFAULT 'index.html', message TEXT, errors TEXT, by TEXT, failed_event INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, risk_flags TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS publication_leases (device TEXT NOT NULL, version INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(device,version));
 CREATE TABLE IF NOT EXISTS version_files (version INTEGER NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL,
   type TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (version, path));
