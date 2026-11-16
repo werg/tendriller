@@ -1,7 +1,8 @@
 # Agent delivery operations
 
 The core tools package contains optional receivers and host adapters. Install an
-exact package from a core build, verify `tools-manifest.json`, and keep the whole
+exact package from a core build; for GitHub releases verify `manifest.json`
+and the matching tool archive entry in `SHA256SUMS`, then keep the whole
 extracted directory at a persistent path. Node.js 22.15 or newer is required.
 Host integration is explicit: a live Tendriller socket alone does not resume an
 agent conversation.
@@ -25,6 +26,9 @@ can repeat a delivered batch. Acknowledging before effects risks losing work;
 replaying effects without stable IDs risks duplicates. A checkpoint never turns
 an external side effect into an exactly-once operation.
 
+Send a diagnostic with `tendril events send --wake` or
+`node /path/to/tools/bin/tendril-events.mjs /private/page.json send --wake`.
+It uses the service's bounded delivery-probe endpoint, which is not owner input.
 Run two end-to-end delivery probes before promising responsiveness: one after
 attachment and one after handling and rearming. A successful HTTP request or
 listening process proves only its own stage of delivery.
@@ -44,8 +48,11 @@ the checkpoint to the page identity, rejects corrupt or mismatched files, locks
 concurrent updates, and preserves replayability after write failures. A checkpoint
 cannot be advanced beyond the delivered batch. Probe acknowledgements are
 validated against the service response and are the only automatic handled work.
-Use `--checkpoint-file` to select an explicit private destination and `--limit`
-to bound reads.
+The default checkpoint file is `/private/page.json.events.json` in this example.
+Its JSON `handled_cursor` and `delivered_cursor` are separate from the
+`events`/`wait` read cursor; inspect it only in private diagnostics and never
+advance it by hand. Use `--checkpoint-file` to select an explicit private
+destination and `--limit` to bound reads.
 
 ## Live watch or one wake
 

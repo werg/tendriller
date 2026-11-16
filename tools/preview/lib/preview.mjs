@@ -12,7 +12,15 @@ import { attachRuntime, FIXTURE_TRANSPORT, resolveFixture } from "./preview-runt
 import { assets as runtimeAssets, implementation as runtimeSupport, manifest as runtimeManifest } from "./preview-bundle.mjs";
 import { schemaDocument, CONTRACT_VERSION, assertValid } from "@tendriller/core/contract";
 
-export function loadPlaywright(cwd = process.cwd()) {
+export function loadPlaywright(cwd = process.cwd(), explicitPath) {
+  if (explicitPath) {
+    const req = createRequire(join(cwd, "noop.js"));
+    let module;
+    try { module = req(resolve(cwd, explicitPath)); }
+    catch (error) { throw new Error(`Cannot load Playwright at --playwright-path ${explicitPath}: ${error.message}`); }
+    if (!module?.chromium) throw new Error(`--playwright-path ${explicitPath} must export chromium`);
+    return module;
+  }
   for (const base of [join(cwd, "noop.js"), import.meta.url]) {
     const req = createRequire(base);
     for (const name of ["playwright", "@playwright/test"]) {
@@ -188,10 +196,10 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
 }
 
 export async function preview(dir, opts = {}) {
-  const pw = loadPlaywright();
+  const pw = loadPlaywright(process.cwd(), opts.playwrightPath);
   if (!pw) {
     return { ok: false, error: "playwright_missing",
-      message: "Install Playwright in this project to use preview: npm i -D playwright && npx playwright install chromium" };
+      message: "Install Playwright in this project (npm i -D playwright && npx playwright install chromium), or pass --playwright-path /absolute/path/to/node_modules/playwright" };
   }
   const fixture = opts.fixture || {};
   const server = await startServer(dir, opts.state, fixture, opts);
@@ -206,7 +214,8 @@ export async function preview(dir, opts = {}) {
         args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
       });
     } catch (e) {
-      return { ok: false, error: "browser_missing", message: `Could not launch Chromium (${String(e.message).split("\n")[0]}). Try: npx playwright install chromium` };
+      return { ok: false, error: "browser_missing", expected_chromium: pw.chromium.executablePath?.(),
+        message: `Could not launch Chromium (${String(e.message).split("\n")[0]}). Install Chromium matching the selected Playwright module with: npx playwright install chromium` };
     }
     const mobile = !opts.desktop;
     const context = await browser.newContext({

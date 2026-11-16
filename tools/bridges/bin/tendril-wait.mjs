@@ -2,6 +2,22 @@
 // Wait for one wake in a host background task, then exit with the event batch.
 import { waitForAgentWake } from './agent-socket.mjs';
 
+const usage = `Usage: tendril-wait [--help]
+Wait for one waking event over the authenticated agent WebSocket and print its JSON.
+Set TENDRIL_API and TENDRIL_TOKEN privately; TENDRIL_AFTER is an optional
+nonnegative event read cursor (default 0). This command does NOT acknowledge
+handled events or write the private handled checkpoint. Use tendril-events
+pending and ack to maintain <private-handle.json>.events.json separately.
+Exit 2 for invalid configuration; network failures are retried.`;
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  process.stdout.write(usage + '\n');
+  process.exit(0);
+}
+if (process.argv.length > 2) {
+  process.stderr.write(usage + '\n');
+  process.exit(64);
+}
+
 const api = process.env.TENDRIL_API;
 const token = process.env.TENDRIL_TOKEN;
 const after = Number(process.env.TENDRIL_AFTER || 0);

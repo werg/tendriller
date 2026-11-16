@@ -10,12 +10,25 @@ component graph, or upstream source lock participates in preview.
 ```sh
 node tools/preview/bin/tendril-preview.mjs ./page
 node tools/preview/bin/tendril-preview.mjs ./page --headless --fixture ./scenario.json --out ./page.png
+# If Playwright is elsewhere, choose that module explicitly:
+node tools/preview/bin/tendril-preview.mjs ./page --headless --playwright-path /path/to/node_modules/playwright
 ```
 
 The directory must contain `index.html`. The first command prints a local URL and
 keeps serving until stopped. The second requires Playwright and Chromium, runs
 ordered fixture steps, saves a screenshot and emits a JSON report. `--desktop`
 chooses a wider viewport; `--headed` opens the automation browser visibly.
+These commands are source-checkout paths. From the extracted release use
+`node /path/to/private-tools/bin/tendril-preview.mjs` instead.
+
+Install Playwright (or `@playwright/test`) and its matching Chromium revision:
+`npm i -D playwright` and `npx playwright install chromium` in the project that
+owns that module. `--playwright-path` resolves an explicit local module/directory
+instead of relying on package resolution from the current working directory.
+On Chromium launch failure the JSON report includes `expected_chromium`, the
+path requested by the selected Playwright version. Supplying an independently
+installed Chromium via `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` remains an advanced
+option and must be compatible with that module.
 
 Page files and the runtime are recorded in an immutable local publication.
 Opening the canonical page URL selects current authored bytes; an already-loaded

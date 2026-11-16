@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { startServer } from "../lib/preview.mjs";
+import { startServer, loadPlaywright } from "../lib/preview.mjs";
 
 async function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "tendril-preview-shutdown-"));
@@ -91,4 +91,13 @@ test("preview shutdown stops admission immediately and shares one close promise 
   assert.equal(reconnectOpened, false);
   assert.strictEqual(server.stopPreview(), stopping);
   assert.strictEqual(server.preview.close(), adapterClosed);
+});
+
+test("explicit Playwright module selection reports bad paths and accepts a local module", t => {
+  const dir = mkdtempSync(join(tmpdir(), "tendril-preview-playwright-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "mock-playwright.cjs"),
+    "module.exports = { chromium: { executablePath() { return '/expected/chromium'; } } };");
+  assert.equal(loadPlaywright(dir, "mock-playwright.cjs").chromium.executablePath(), "/expected/chromium");
+  assert.throws(() => loadPlaywright(dir, "missing.cjs"), /Cannot load Playwright at --playwright-path/);
 });
