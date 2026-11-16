@@ -379,11 +379,14 @@ const commands = {
     const timer = timeoutS === null ? null : setTimeout(() => controller.abort(), timeoutS * 1000);
     let finished = false;
     const readAvailable = async () => {
+      if (finished || controller.signal.aborted) return;
       const start = readCursor(cpath);
       let cursor = start;
       const events = [];
       for (;;) {
-        const r = await api.get(`/events?after=${cursor}&limit=500`);
+        if (finished || controller.signal.aborted) return;
+        const r = await api.get(`/events?after=${cursor}&limit=500`, { signal: controller.signal });
+        if (finished || controller.signal.aborted) return;
         if (!Number.isSafeInteger(r.cursor) || r.cursor < cursor) throw Error("Event cursor regressed");
         events.push(...(r.events || []));
         const previous = cursor;
