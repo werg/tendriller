@@ -150,11 +150,26 @@ active use. Presence is not proof that a device or provider will work.
 
 `sensors.active()` returns observed camera, microphone, screen, location, and motion
 use. `sensors.on(listener)` subscribes to changes; `sensors.stopAll()` stops tracked
-media tracks/clones, geolocation watches, motion listeners, and recognition. The
-`sensors_stopped` event lets optional adapters cancel pending/restarting work too.
-One-shot and aborted motion listeners stop counting as active. This observation is
-best-effort browser instrumentation, not a security boundary; browser permission
-controls and service authorization remain authoritative.
+media tracks/clones, geolocation watches, motion listeners, and recognition. It is
+also a cancellation boundary: wrapped `getUserMedia()` and `getDisplayMedia()`
+requests started before Stop reject immediately with `AbortError`. The native
+browser chooser may remain open, but any stream it grants afterward is stopped
+instead of becoming a successful result. Core retains acquisition provenance for
+late stream tracks, track clones, and whole-stream clones, including manually
+composed streams containing known captured tracks. A new intentional acquisition
+after Stop remains usable. Unknown external tracks are not classified as captured
+resources merely because they share a stream.
+
+Stop also abandons callbacks from pending one-shot location reads and stopped
+watches; it does not claim that the browser or operating system can cancel a
+one-shot acquisition. The returned count includes cancelled pending media and
+one-shot location requests, as well as stopped live resources. `active()` continues
+to describe observed live/recent use, not an unanswered permission prompt.
+
+The `sensors_stopped` event lets optional adapters cancel their pending/restarting
+work too. One-shot and aborted motion listeners stop counting as active. Observation
+remains best-effort browser instrumentation, not a security boundary; browser
+permission controls and service authorization remain authoritative.
 
 `notifications.status()` distinguishes browser permission, local subscription, and
 server registration. `subscribe()` must be called from a user gesture;

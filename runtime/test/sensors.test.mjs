@@ -3,18 +3,62 @@ import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
 const built = await build({ entryPoints: [new URL('../src/sensors.ts', import.meta.url).pathname], bundle: true, platform: 'browser', format: 'iife', globalName: 'Sensors', write: false });
-const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
-function environment() {
-  const window = new EventTarget(), watches = new Set(); let calls = 0, track;
-  class Track extends EventTarget { kind = 'video'; readyState = 'live'; stop() { this.readyState = 'ended'; } clone() { return new Track(); } }
+const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+function environment(media = {}) {
+  const window = new EventTarget(), watches = new Set(), watchRequests = new Map(), locationRequests = [];
+  let calls = 0, track, nextWatch = 0;
+  class Track extends EventTarget {
+    constructor(kind = 'video') { super(); this.kind = kind; this.readyState = 'live'; this.stopCalls = 0; this.source = Symbol(); }
+    stop() { this.stopCalls++; this.readyState = 'ended'; }
+    clone() { return nativeCloneTrack(this); }
+  }
+  const nativeCloneTrack = source => {
+    const copy = new Track(source.kind); copy.readyState = source.readyState; copy.source = source.source; return copy;
+  };
+  class Stream extends EventTarget {
+    constructor(tracks = []) { super(); this.tracks = [...tracks]; this.reads = 0; }
+    getTracks() { return this.unstableOrder && ++this.reads % 2 ? [...this.tracks].reverse() : [...this.tracks]; }
+    // Native MediaStream.clone creates clones internally, without invoking the
+    // JavaScript override of MediaStreamTrack.prototype.clone.
+    clone() { return new Stream(this.tracks.map(nativeCloneTrack)); }
+    addTrack(track) { if (!this.tracks.includes(track)) this.tracks.push(track); }
+    addRemoteTrack(track) {
+      this.addTrack(track);
+      this.dispatchEvent(Object.assign(new Event('addtrack'), { track }));
+    }
+  }
   class Recognition extends EventTarget { start() {} abort() { this.dispatchEvent(new Event('end')); } }
-  Object.assign(window, { MediaStreamTrack: Track, SpeechRecognition: Recognition });
-  const navigator = { mediaDevices: { async getUserMedia() { calls++; track = new Track(); return Object.assign(new EventTarget(), { getTracks: () => [track] }); } },
-    geolocation: { watchPosition() { const id = watches.size + 1; watches.add(id); return id; }, clearWatch(id) { watches.delete(id); } } };
-  const context = { window, navigator, queueMicrotask, setInterval() {}, setTimeout() {}, Date };
+  Object.assign(window, { MediaStreamTrack: Track, MediaStream: Stream, SpeechRecognition: Recognition });
+  const defaultMedia = constraints => {
+    const tracks = [];
+    if (constraints?.video) tracks.push(new Track('video'));
+    if (constraints?.audio) tracks.push(new Track('audio'));
+    track = tracks[0]; return Promise.resolve(new Stream(tracks));
+  };
+  const navigator = {
+    mediaDevices: {
+      getUserMedia(...args) { calls++; return (media.getUserMedia ?? defaultMedia)(...args); },
+      getDisplayMedia(...args) { calls++; return (media.getDisplayMedia ?? defaultMedia)(...args); },
+    },
+    geolocation: {
+      watchPosition(success, error, options) {
+        const id = ++nextWatch; watches.add(id); watchRequests.set(id, { success, error, options }); return id;
+      },
+      getCurrentPosition(success, error, options) { locationRequests.push({ success, error, options }); },
+      // Retain callbacks in the fixture to exercise an already queued native
+      // delivery even after clearWatch has stopped future acquisition.
+      clearWatch(id) { watches.delete(id); },
+    },
+  };
+  const context = { window, navigator, queueMicrotask, setInterval() {}, setTimeout() {}, Date, DOMException };
   runInNewContext(built.outputFiles[0].text, context);
   const tracker = context.Sensors.installSensorWrappers();
-  return { tracker, window, navigator, watches, Track, Recognition, get calls() { return calls; }, get track() { return track; } };
+  return { tracker, window, navigator, watches, watchRequests, locationRequests, Track, Stream, Recognition, get calls() { return calls; }, get track() { return track; } };
 }
 test('observation never requests permissions, and stop covers tracks, clones, location, motion and recognition', async () => {
   const env = environment(); assert.equal(env.calls, 0);
@@ -33,4 +77,169 @@ test('once, aborted, explicitly removed and duplicate motion subscriptions refle
   signal.abort(); await flush(); assert.deepEqual([...env.tracker.active()], []);
   env.window.addEventListener('devicemotion', fn); env.window.addEventListener('devicemotion', fn);
   env.window.removeEventListener('devicemotion', fn); await flush(); assert.deepEqual([...env.tracker.active()], []);
+});
+
+test('Stop all rejects pending camera, microphone and screen requests immediately and stops every late track', async t => {
+  for (const [name, method, constraints, kinds] of [
+    ['camera', 'getUserMedia', { video: true }, ['video']],
+    ['microphone', 'getUserMedia', { audio: true }, ['audio']],
+    ['camera and microphone', 'getUserMedia', { video: true, audio: true }, ['video', 'audio']],
+    ['screen and system audio', 'getDisplayMedia', { video: true, audio: true }, ['video', 'audio']],
+  ]) await t.test(name, async () => {
+    const native = deferred(), env = environment({ [method]: () => native.promise });
+    const request = env.navigator.mediaDevices[method](constraints);
+    const cancelled = assert.rejects(request, { name: 'AbortError' });
+    assert.equal(env.calls, 1, 'native acquisition still starts synchronously');
+    assert.equal(env.tracker.stopAll(), 1);
+    await cancelled; // The native chooser has not returned yet.
+    assert.equal(env.tracker.stopAll(), 0, 'the cancelled request is counted only once');
+    const tracks = kinds.map(kind => new env.Track(kind));
+    native.resolve(new env.Stream(tracks));
+    await flush();
+    assert.ok(tracks.every(track => track.readyState === 'ended' && track.stopCalls === 1));
+    assert.deepEqual([...env.tracker.active()], []);
+  });
+});
+
+test('Stop all also cancels a native grant whose promise continuation has not run', async () => {
+  const native = deferred(), env = environment({ getUserMedia: () => native.promise });
+  const request = env.navigator.mediaDevices.getUserMedia({ video: true });
+  const cancelled = assert.rejects(request, { name: 'AbortError' });
+  const track = new env.Track(), stream = new env.Stream([track]);
+  native.resolve(stream);
+  env.tracker.stopAll();
+  await cancelled; await flush();
+  assert.equal(track.readyState, 'ended');
+  assert.deepEqual([...env.tracker.active()], []);
+});
+
+test('native acquisition errors are preserved, including a late rejection after cancellation', async () => {
+  const denied = new DOMException('Permission denied', 'NotAllowedError');
+  const env = environment({ getUserMedia: () => Promise.reject(denied) });
+  await assert.rejects(env.navigator.mediaDevices.getUserMedia({ video: true }), error => error === denied);
+  assert.equal(env.tracker.stopAll(), 0);
+  const thrown = new TypeError('Invalid constraints');
+  const invalid = environment({ getUserMedia: () => { throw thrown; } });
+  await assert.rejects(invalid.navigator.mediaDevices.getUserMedia({ video: true }), error => error === thrown);
+  assert.equal(invalid.tracker.stopAll(), 0);
+  const native = deferred(), pending = environment({ getUserMedia: () => native.promise });
+  const cancelled = assert.rejects(pending.navigator.mediaDevices.getUserMedia({ video: true }), { name: 'AbortError' });
+  pending.tracker.stopAll(); await cancelled;
+  native.reject(denied); await flush();
+  assert.equal(pending.tracker.stopAll(), 0);
+});
+
+test('whole-stream clones, track clones and dynamically added tracks remain covered by Stop all', async () => {
+  const env = environment();
+  const stream = await env.navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  const copy = stream.clone(), trackCopy = stream.getTracks()[0].clone();
+  const added = new env.Track('audio'); copy.addRemoteTrack(added);
+  assert.deepEqual([...env.tracker.active()], ['camera', 'microphone']);
+  assert.equal(env.tracker.stopAll(), 6);
+  for (const track of [...stream.getTracks(), ...copy.getTracks(), trackCopy]) assert.equal(track.readyState, 'ended');
+  const late = new env.Track('video'); copy.addRemoteTrack(late);
+  assert.equal(late.readyState, 'ended');
+  const afterStop = copy.clone();
+  const later = new env.Track('audio'); afterStop.addRemoteTrack(later);
+  assert.equal(later.readyState, 'ended', 'a clone of a stopped stream retains the cancellation boundary');
+  assert.deepEqual([...env.tracker.active()], []);
+});
+
+test('a cancelled late stream cannot add capture again, while fresh media requests and their clones work', async () => {
+  const native = deferred(); let first = true;
+  const env = environment({ getDisplayMedia: () => {
+    if (first) { first = false; return native.promise; }
+    return Promise.resolve(new env.Stream([new env.Track('video'), new env.Track('audio')]));
+  } });
+  const cancelled = assert.rejects(env.navigator.mediaDevices.getDisplayMedia({ video: true }), { name: 'AbortError' });
+  env.tracker.stopAll(); await cancelled;
+  const old = new env.Stream([new env.Track('video')]); native.resolve(old); await flush();
+  const late = new env.Track('audio'); old.addRemoteTrack(late);
+  assert.equal(late.readyState, 'ended');
+  const fresh = await env.navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  const copied = fresh.clone();
+  assert.ok([...fresh.getTracks(), ...copied.getTracks()].every(track => track.readyState === 'live'));
+  assert.deepEqual([...env.tracker.active()], ['screen']);
+  old.addRemoteTrack(fresh.getTracks()[0]);
+  assert.equal(fresh.getTracks()[0].readyState, 'live', 'reusing a fresh track in an old stream does not revoke its new acquisition');
+  assert.equal(env.tracker.stopAll(), 4);
+  assert.ok([...fresh.getTracks(), ...copied.getTracks()].every(track => track.readyState === 'ended'));
+});
+
+test('cloning a manually composed stream preserves each captured source without adopting unknown external tracks', async () => {
+  const env = environment();
+  const camera = (await env.navigator.mediaDevices.getUserMedia({ video: true })).getTracks()[0];
+  const screen = (await env.navigator.mediaDevices.getDisplayMedia({ video: true })).getTracks()[0];
+  const externalVideo = new env.Track('video'), externalAudio = new env.Track('audio');
+  const composed = new env.Stream([camera, externalVideo, screen, externalAudio]);
+  composed.unstableOrder = true;
+  const copy = composed.clone(); copy.unstableOrder = true;
+  const secondCopy = copy.clone();
+  const copiedTracks = [...copy.getTracks(), ...secondCopy.getTracks()];
+  assert.equal(copiedTracks.length, 8);
+  assert.ok(copiedTracks.every(track => track.readyState === 'live'));
+  assert.deepEqual([...env.tracker.active()], ['camera', 'screen'], 'unobserved external audio is not classified as a microphone');
+  assert.equal(env.tracker.stopAll(), 6);
+  for (const track of [camera, screen, ...copiedTracks.filter(track => track.source === camera.source || track.source === screen.source)]) {
+    assert.equal(track.readyState, 'ended');
+  }
+  for (const track of [externalVideo, externalAudio, ...copiedTracks.filter(track => track.source === externalVideo.source || track.source === externalAudio.source)]) {
+    assert.equal(track.readyState, 'live', 'unknown external tracks are not given a fabricated sensor acquisition');
+  }
+  assert.deepEqual([...env.tracker.active()], []);
+});
+
+test('a clone of an old stream preserves a freshly acquired track epoch and leaves unrelated additions unknown', async () => {
+  const env = environment();
+  const old = await env.navigator.mediaDevices.getUserMedia({ video: true });
+  const original = old.getTracks()[0]; env.tracker.stopAll();
+  const fresh = (await env.navigator.mediaDevices.getUserMedia({ video: true })).getTracks()[0];
+  const external = new env.Track('audio');
+  // Script addTrack does not fire a native addtrack event. The wrapper must
+  // inspect original track provenance instead of assuming the container's age.
+  old.addTrack(fresh); old.addTrack(external); old.unstableOrder = true;
+  const copy = old.clone();
+  const bySource = source => copy.getTracks().find(track => track.source === source);
+  assert.equal(bySource(original.source).readyState, 'ended');
+  assert.equal(bySource(fresh.source).readyState, 'live');
+  assert.equal(bySource(external.source).readyState, 'live');
+  assert.deepEqual([...env.tracker.active()], ['camera']);
+  assert.equal(env.tracker.stopAll(), 2);
+  assert.equal(fresh.readyState, 'ended'); assert.equal(bySource(fresh.source).readyState, 'ended');
+  assert.equal(external.readyState, 'live'); assert.equal(bySource(external.source).readyState, 'live');
+});
+
+test('Stop all abandons one-shot location callbacks and watch deliveries without blocking new requests', () => {
+  const env = environment(), delivered = [], options = { maximumAge: 0 };
+  env.navigator.geolocation.getCurrentPosition(value => delivered.push(value), error => delivered.push(error), options);
+  const watch = env.navigator.geolocation.watchPosition(value => delivered.push(value), error => delivered.push(error), options);
+  const oldPosition = env.locationRequests[0], oldWatch = env.watchRequests.get(watch);
+  assert.equal(oldPosition.options, options); assert.equal(oldWatch.options, options);
+  assert.equal(env.tracker.stopAll(), 2);
+  assert.equal(env.watches.size, 0);
+  oldPosition.success('old position'); oldPosition.error('old position failure');
+  oldWatch.success('old watch'); oldWatch.error('old watch failure');
+  assert.deepEqual(delivered, []);
+  assert.deepEqual([...env.tracker.active()], []);
+  env.navigator.geolocation.getCurrentPosition(value => delivered.push(value));
+  const freshWatch = env.navigator.geolocation.watchPosition(value => delivered.push(value));
+  env.locationRequests[1].success('new position'); env.watchRequests.get(freshWatch).success('new watch');
+  assert.deepEqual(delivered, ['new position', 'new watch']);
+  assert.equal(env.tracker.stopAll(), 1, 'a finished one-shot read is no longer pending');
+});
+
+test('cleared watches suppress queued callbacks, and one-shot native errors release pending bookkeeping', () => {
+  const env = environment(), delivered = [];
+  const id = env.navigator.geolocation.watchPosition(value => delivered.push(value), error => delivered.push(error));
+  env.navigator.geolocation.clearWatch(id);
+  env.watchRequests.get(id).success('old'); env.watchRequests.get(id).error('old error');
+  assert.deepEqual(delivered, []);
+  env.navigator.geolocation.getCurrentPosition(value => delivered.push(value));
+  env.locationRequests[0].error({ code: 1, message: 'Denied' });
+  assert.equal(env.tracker.stopAll(), 0, 'a failed read is removed even without an application error callback');
+  env.navigator.geolocation.getCurrentPosition(() => {}, error => delivered.push(error));
+  const failure = { code: 2, message: 'Unavailable' };
+  env.locationRequests[1].error(failure);
+  assert.deepEqual(delivered, [failure]);
+  assert.equal(env.tracker.stopAll(), 0);
 });
