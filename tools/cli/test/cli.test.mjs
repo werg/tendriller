@@ -8,7 +8,6 @@ import { pack, listFiles, guessType, shouldSkip } from "../lib/pack.mjs";
 import {
   resolveConfig, saveConfig, configDir, cursorPath, checkpointPath, readCursor, writeCursor, idFromApi, slug, serverBase,
 } from "../lib/config.mjs";
-import { injectRuntime } from "../../preview/lib/preview.mjs";
 import { terminalQr } from "../lib/qr.mjs";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "tendril-cli-"));
@@ -156,14 +155,6 @@ test("config: dirs, server base, cursor files", () => {
   assert.equal(checkpointPath(cfg, {}, { TENDRIL_CHECKPOINT_FILE: "/env" }), "/env");
   const withoutFile = { ...cfg, configFile: null };
   assert.notEqual(checkpointPath(withoutFile, {}, { HOME: dir }), checkpointPath({ ...withoutFile, api: "https://other.test/api/t/abc" }, {}, { HOME: dir }));
-});
-
-test("preview: runtime injected right after <head>", () => {
-  const out = injectRuntime('<html><head lang="x"><title>t</title></head></html>');
-  assert.match(out, /^<html><head lang="x"><base href="[^"]+"><script>window.__TENDRIL__=/);
-  assert.match(out, /<script src="\/_tendril\/runtime\/[a-f0-9]+\/tendril.js"><\/script><script>/);
-  assert.match(out, /fixture_event|_preview\/events/); // public fixture transport boundary
-  assert.match(injectRuntime("<p>no head</p>"), /^<base href="[^"]+"><script>window.__TENDRIL__/);
 });
 
 test("qr renders when qrcode-generator resolves", () => {

@@ -20,6 +20,18 @@ async function fixture(t, files, scenario = {}) {
   return { dir, server, origin, get: path => fetch(origin + path) };
 }
 
+test('preview injects the runtime after an authored head or before headless markup', async t => {
+  const { get } = await fixture(t, {
+    'index.html': '<html><head lang="x"><title>t</title></head></html>',
+    'plain.html': '<p>no head</p>',
+  });
+  const html = await (await get('/')).text();
+  assert.match(html, /^<html><head lang="x"><base href="[^"]+"><script>window.__TENDRIL__=/);
+  assert.match(html, /<script src="\/_tendril\/runtime\/[a-f0-9]+\/tendril.js"><\/script><script>/);
+  assert.match(html, /fixture_event|_preview\/events/);
+  assert.match(await (await get('/plain.html')).text(), /^<base href="[^"]+"><script>window.__TENDRIL__/);
+});
+
 test('preview and packing enumerate identical authored bytes without completing a missing import', async t => {
   const files = { 'index.html': '<!doctype html><script src="missing.js"></script>',
     'reading.js': '// adapted algorithm', 'data/notes.json': '{"reading": 42}' };

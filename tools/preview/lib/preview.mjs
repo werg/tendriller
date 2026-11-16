@@ -22,7 +22,7 @@ export function loadPlaywright(cwd = process.cwd()) {
   return null;
 }
 
-export function injectRuntime(html, publication = { id: "preview", base:"/_publications/preview/", entry:"index.html", version:1, runtime:{id:runtimeManifest.id,version:runtimeManifest.version,base:"/_tendril/runtime/"+runtimeManifest.id+"/"}, assets:[] }, documentPath = "index.html") {
+export function injectRuntime(html, publication, documentPath) {
   const config = { id: "preview", base: "/", version: publication.version, preview: true, publication, documentPath, ws: "/_tendril/ws", features: {
     push: false, vapid: null, shared_by: "Local preview", speech: null,
   } };
