@@ -325,7 +325,9 @@ test("an acknowledgement behind a newer delta resyncs without losing own writes 
   });
   expect(await page.evaluate(() => (window.tendril as any).state.revision)).toBe(t.rev);
   const sends = mock.messages(t, "state");
-  expect(sends).toHaveLength(2); expect(sends[1]).toEqual(sends[0]);
+  // The ACK was saved before reconnecting. The full welcome lets its original
+  // command finish local cleanup without resending the mutation.
+  expect(sends).toHaveLength(1);
   // Once the full welcome covers the receipt, it must not trigger another
   // reconnect. A subsequent ordinary write proves the connection remains usable.
   t.onMessage = undefined;

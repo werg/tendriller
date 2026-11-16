@@ -234,6 +234,10 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captureWaiters = new Map<string, Set<(result: CaptureResult) => void>>();
   const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const captureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  type CaptureOutcome = Exclude<CaptureResult, { status: "queued" }>;
+  const captureOutcomes = new Map<string, CaptureOutcome>();
+  const settlingCaptures = new Set<string>();
+  const captureRemovals = new Map<string, Promise<void>>();
   const timerRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const timerAttempts = new Map<string, number>();
   // A receipt first becomes a durable outbox phase, then the command is removed.
@@ -314,22 +318,69 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (retry) clearTimeout(retry);
       captureRetryTimers.delete(result.capture_id);
     }
-    bus.emit("upload_event", result);
-    for (const resolve of captureWaiters.get(result.capture_id) || []) resolve(result);
+    bus.emit("upload_event", clone(result));
+    for (const resolve of captureWaiters.get(result.capture_id) || []) resolve(clone(result));
     captureWaiters.delete(result.capture_id);
     const timer = captureTimers.get(result.capture_id);
     if (timer) clearTimeout(timer);
     captureTimers.delete(result.capture_id);
     captureQueueChanged();
   };
-  const captureFailed = async (item: OutboxItem, error: string, message: string) => {
-    if (!store.has(item.cid)) return;
-    // A rejected capture remains visible and retryable; it must not silently disappear.
-    const msg = { ...item.msg, failed: { error, message } };
-    try { await store.updateDurable(item, msg); } catch { item.msg = msg; }
-    if (!store.has(item.cid)) return;
-    captureReceipt({ capture_id: item.cid, status: "rejected", error, message });
+  const removeCapture = (item: OutboxItem, result: CaptureOutcome): Promise<void> => {
+    const removing = captureRemovals.get(item.cid);
+    if (removing) return removing;
+    const removal = (async () => {
+      if (result.status === "accepted" && !item.msg.outcome) {
+        await store.updateDurable(item, { ...item.msg, outcome: clone(result) });
+      }
+      if (!store.has(item.cid)) return;
+      await store.removeDurable(item.cid);
+      captureOutcomes.delete(item.cid);
+      captureReceipt(result);
+    })();
+    captureRemovals.set(item.cid, removal);
+    void removal.then(() => captureRemovals.delete(item.cid), () => captureRemovals.delete(item.cid));
+    return removal;
   };
+  const settleCaptureOutcome = async (item: OutboxItem): Promise<void> => {
+    if (settlingCaptures.has(item.cid) || !store.has(item.cid)) return;
+    const outcome: CaptureOutcome | undefined = item.msg.outcome || captureOutcomes.get(item.cid);
+    if (!outcome) return;
+    settlingCaptures.add(item.cid);
+    try {
+      // Rejections retain their saved bytes and intent for explicit retry. An
+      // accepted receipt must survive reload before its queue row is removed.
+      if (outcome.status === "accepted") await removeCapture(item, outcome);
+      else {
+        if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(outcome),
+          failed: { error: outcome.error, message: outcome.message } });
+        if (!store.has(item.cid)) return; // A concurrent discard owns its durable removal.
+        captureOutcomes.delete(item.cid);
+        captureReceipt(outcome);
+      }
+    } catch {
+      // A known decision only retries local persistence. Do not send another
+      // upload, pin or semantic event while its outcome is still uncertain.
+      if (store.has(item.cid) && !captureRetryTimers.has(item.cid)) {
+        captureRetryTimers.set(item.cid, setTimeout(() => {
+          captureRetryTimers.delete(item.cid);
+          void settleCaptureOutcome(item);
+        }, 5000));
+      }
+    } finally { settlingCaptures.delete(item.cid); }
+  };
+  const captureDecided = (item: OutboxItem, outcome: CaptureOutcome): Promise<void> => {
+    if (item.msg.failed && item.msg.outcome?.status === "rejected") return Promise.resolve();
+    if (!captureOutcomes.has(item.cid)) {
+      captureOutcomes.set(item.cid, clone(item.msg.outcome || outcome));
+      const retry = captureRetryTimers.get(item.cid);
+      if (retry) clearTimeout(retry);
+      captureRetryTimers.delete(item.cid);
+    }
+    return settleCaptureOutcome(item);
+  };
+  const captureFailed = (item: OutboxItem, error: string, message: string) =>
+    captureDecided(item, { capture_id: item.cid, status: "rejected", error, message });
   const waitForCapture = (item: OutboxItem): Promise<CaptureResult> => {
     const promise = new Promise<CaptureResult>((resolve) => {
       const existing = captureWaiters.get(item.cid);
@@ -485,6 +536,10 @@ export function createCore(cfg: TendrilConfig): Internal {
           continue;
         }
         if (item.msg.t === "upload_event") {
+          if (item.msg.outcome || captureOutcomes.has(item.cid)) {
+            await settleCaptureOutcome(item);
+            continue;
+          }
           try {
             if (!await ensureUploaded(item)) continue;
             const msg = item.msg;
@@ -498,6 +553,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             captureRetryTimers.set(item.cid, setTimeout(() => {
               captureRetryTimers.delete(item.cid);
               if (!store.has(item.cid) || item.msg.failed) return;
+              if (item.msg.outcome || captureOutcomes.has(item.cid)) { void settleCaptureOutcome(item); return; }
               sentThisConn.delete(item.cid);
               void pump();
             }, 8000));
@@ -748,8 +804,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         if (capture) {
           if (m.error) void captureFailed(capture, String(m.error?.code || m.error), m.message || m.error?.message || "The capture was rejected. You can retry it.");
           else if (typeof m.seq === "number") {
-            const receipt: CaptureResult = { capture_id: capture.cid, status: "accepted", seq: m.seq, blob: capture.msg.uploaded };
-            void store.removeDurable(capture.cid).catch(() => { store.remove(capture.cid); }).then(() => captureReceipt(receipt));
+            void captureDecided(capture, { capture_id: capture.cid, status: "accepted", seq: m.seq, blob: capture.msg.uploaded });
           }
           break;
         }
@@ -992,9 +1047,11 @@ export function createCore(cfg: TendrilConfig): Internal {
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
       if (!item) return { capture_id, status: "rejected", error: "not_found", message: "This capture is no longer in the queue." };
       if (item.msg.failed) {
-        // Rejected commands have no committed receipt. Retry the same command,
-        // preserving its original identity, payload and captured generations.
-        await store.updateDurable(item, { ...item.msg, failed: undefined });
+        // Explicit retry clears the saved local rejection, preserving the
+        // original command identity, payload and captured generations.
+        const { failed: _failed, outcome: _outcome, ...message } = item.msg;
+        await store.updateDurable(item, message);
+        captureOutcomes.delete(capture_id);
       }
       sentThisConn.delete(item.cid);
       return waitForCapture(item);
@@ -1003,9 +1060,14 @@ export function createCore(cfg: TendrilConfig): Internal {
       await storeReady;
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
       if (!item) return;
-      try { await store.removeDurable(capture_id); }
+      // A known server acceptance owns its receipt even if discard is clicked
+      // during local cleanup. Share that removal instead of emitting a second,
+      // contradictory terminal result.
+      const outcome: CaptureOutcome | undefined = item.msg.outcome || captureOutcomes.get(capture_id);
+      const result: CaptureOutcome = outcome?.status === "accepted" ? outcome :
+        { capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." };
+      try { await removeCapture(item, result); }
       catch (error) { sentThisConn.delete(capture_id); void pump(); throw error; }
-      captureReceipt({ capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." });
     },
     async setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference> {
       if (!/^b_[a-z2-7]{20}$/.test(id) || typeof opts?.keep !== "boolean") throw new TypeError("setBlobRetention needs a blob id and {keep:boolean}");
@@ -1053,6 +1115,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     stateQueueChanged();
     captureQueueChanged();
     timerQueueChanged();
+    // Restored acceptances only need local cleanup, even without a connection.
+    for (const item of store.items) {
+      if (item.msg.t === "upload_event" && item.msg.outcome?.status === "accepted") void settleCaptureOutcome(item);
+    }
   }).catch(() => {}).finally(() => {
     connection.start();
   });

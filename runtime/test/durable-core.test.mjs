@@ -936,6 +936,188 @@ test("reload replays unchanged commands and rotated scopes cannot hide current s
   assert.equal(second.core.scopes.list()[0].generation, "new", "cached ACK metadata cannot rewind authoritative scopes");
 });
 
+async function captureAwaitingAck(env) {
+  const promise = env.core.uploadEvent(new Blob(["reviewed evidence"]), { data: { submission_id: "reviewed-evidence", note: "original" }, scope: descriptor.id });
+  await flush(); await env.commit();
+  await until(() => env.database.pending.length > 0 && env.blobs.calls.some(call => call.path.endsWith("/complete")));
+  await env.commit();
+  const completion = env.sent.find(frame => frame.t === "capture_complete");
+  assert.ok(completion);
+  return { promise, completion, id: env.core.captures()[0].capture_id };
+}
+
+test("capture outcome save failures remain queued and retry only local storage across reconnect", async () => {
+  for (const rejected of [false, true]) {
+    const env = await environment({ scopes: [descriptor] }), results = [];
+    env.core.bus.on("upload_event", result => results.push(plain(result)));
+    const { promise, completion, id } = await captureAwaitingAck(env);
+    const requests = env.blobs.calls.length;
+    env.transport.receive({ t: "ack", cid: completion.cid, ...(rejected ? { error: "forbidden", message: "Review owner access" } : { seq: 11 }) });
+    env.database.failure = true;
+    await env.commit(); await env.expire(8000);
+    assert.equal((await promise).status, "queued");
+    assert.equal(env.core.captures()[0].status, "queued");
+    assert.equal([...env.database.stores.outbox.values()][0].msg.outcome, undefined);
+    assert.deepEqual(results.map(result => result.status), ["queued"]);
+    // retryCapture on an unresolved acceptance must not erase that known result.
+    const retry = env.core.retryCapture(id);
+    await flush();
+    env.transport.disconnect(); env.window.dispatchEvent(new Event("online")); await flush();
+    assert.equal(env.sent.filter(frame => frame.t === "capture_complete").length, 1);
+    assert.equal(env.blobs.calls.length, requests);
+    env.database.failure = false;
+    await env.commit();
+    if (!rejected) await env.commit();
+    const settled = await retry;
+    assert.equal(settled.status, rejected ? "rejected" : "accepted"); assert.equal(settled.capture_id, id);
+    assert.equal(results.at(-1).status, settled.status);
+    if (rejected) {
+      const saved = [...env.database.stores.outbox.values()][0].msg;
+      assert.equal(saved.outcome.error, "forbidden"); assert.equal(saved.failed.error, "forbidden");
+      assert.equal(env.core.captures()[0].status, "rejected");
+    } else assert.equal(env.core.captures().length, 0);
+  }
+});
+
+test("a saved capture acceptance survives failed deletion and offline reload without upload, pin or semantic replay", async () => {
+  const first = await environment({ scopes: [descriptor] }), before = [], after = [];
+  first.core.bus.on("upload_event", result => before.push(plain(result)));
+  const { promise, completion, id } = await captureAwaitingAck(first);
+  const requests = first.blobs.calls.length;
+  first.transport.receive({ t: "ack", cid: completion.cid, seq: 12 });
+  await first.commit();
+  const saved = [...first.database.stores.outbox.values()][0].msg;
+  assert.equal(saved.outcome.status, "accepted"); assert.equal(saved.outcome.capture_id, id);
+  assert.equal(saved.event_cid, completion.cid); assert.equal(before.length, 0);
+  first.database.failure = true;
+  await first.commit(); await first.expire(8000);
+  assert.equal((await promise).status, "queued"); assert.equal(first.core.captures()[0].status, "queued");
+  first.transport.disconnect(); first.database.failure = false;
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs: first.blobs,
+    online: false, scopes: [{ ...descriptor, generation: "rotated" }], onCore(core) { core.bus.on("upload_event", result => after.push(plain(result))); } });
+  assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false);
+  assert.equal(second.blobs.calls.length, requests); assert.equal(after.length, 0);
+  await second.commit();
+  assert.deepEqual(after, [saved.outcome]); assert.equal(after[0].seq, 12);
+  assert.equal(after[0].blob.id, completion.blob); assert.equal(second.core.captures().length, 0);
+  assert.equal(second.database.stores.outbox.size, 0);
+});
+
+test("saved capture rejection restores visibly and explicit retry durably clears only that rejection", async () => {
+  const first = await environment({ scopes: [descriptor] });
+  const { promise, completion, id } = await captureAwaitingAck(first);
+  first.transport.receive({ t: "ack", cid: completion.cid, error: "forbidden", message: "Owner access required" });
+  await first.commit(); assert.equal((await promise).status, "rejected");
+  const saved = [...first.database.stores.outbox.values()][0].msg;
+  const requests = first.blobs.calls.length;
+  first.transport.disconnect();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs: first.blobs,
+    scopes: [{ ...descriptor, generation: "rotated" }] });
+  assert.equal(second.core.captures()[0].status, "rejected");
+  assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false);
+  assert.equal(second.blobs.calls.length, requests);
+  second.database.failure = true;
+  const failedRetry = assert.rejects(second.core.retryCapture(id), /fixture disk failed/);
+  await flush(); await second.commit(); await failedRetry;
+  assert.equal(second.core.captures()[0].status, "rejected");
+  assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false);
+  second.database.failure = false;
+  const retry = second.core.retryCapture(id);
+  await flush();
+  assert.equal([...second.database.stores.outbox.values()][0].msg.outcome.status, "rejected");
+  await second.commit();
+  const fresh = [...second.database.stores.outbox.values()][0].msg;
+  assert.equal(fresh.failed, undefined); assert.equal(fresh.outcome, undefined);
+  assert.deepEqual(fresh.expected_generations, saved.expected_generations);
+  assert.equal(fresh.event_cid, completion.cid); assert.equal(second.core.captures()[0].status, "queued");
+  const retried = second.sent.find(frame => frame.t === "capture_complete");
+  assert.deepEqual(retried, completion); assert.equal(second.blobs.calls.length, requests);
+  second.transport.receive({ t: "ack", cid: retried.cid, seq: 13 });
+  await second.commit(); await second.commit();
+  assert.equal((await retry).status, "accepted"); assert.equal(second.core.captures().length, 0);
+});
+
+test("an unsaved capture rejection remains unresolved through reload and replays the original semantic command", async () => {
+  const first = await environment({ scopes: [descriptor] }), before = [], after = [];
+  first.core.bus.on("upload_event", result => before.push(plain(result)));
+  const { promise, completion, id } = await captureAwaitingAck(first);
+  first.transport.receive({ t: "ack", cid: completion.cid, error: "forbidden", message: "Current owner access required" });
+  first.database.failure = true;
+  await first.commit(); await first.expire(8000);
+  assert.equal((await promise).status, "queued"); assert.deepEqual(before.map(result => result.status), ["queued"]);
+  assert.equal([...first.database.stores.outbox.values()][0].msg.outcome, undefined);
+  first.transport.disconnect(); first.database.failure = false;
+  const second = await environment({ database: first.database, localStorage: first.localStorage, blobs: first.blobs, scopes: [descriptor],
+    onCore(core) { core.bus.on("upload_event", result => after.push(plain(result))); } });
+  const replay = second.sent.find(frame => frame.t === "capture_complete");
+  assert.deepEqual(replay, completion);
+  second.transport.receive({ t: "ack", cid: replay.cid, seq: 14 });
+  await second.commit(); await second.commit();
+  assert.equal(after[0].status, "accepted"); assert.equal(after[0].capture_id, id);
+  assert.equal(second.core.captures().length, 0);
+});
+
+test("a pin rejection whose capture outcome cannot be saved never resumes pinning or semantic delivery", async () => {
+  const blobs = blobService(); blobs.rejectPin = true;
+  const env = await environment({ blobs, scopes: [{ ...descriptor, operations: ["capture", "blob.pin"] }] }), results = [];
+  env.core.bus.on("upload_event", result => results.push(plain(result)));
+  const promise = env.core.uploadEvent(new Blob(["reviewed bytes"]), { data: { submission_id: "pin-failure" }, keep: true, scope: descriptor.id });
+  await flush(); await env.commit();
+  await until(() => env.database.pending.length > 0 && blobs.calls.some(call => call.path.endsWith("/complete")));
+  await env.commit();
+  await until(() => env.database.pending.length > 0 && blobs.calls.some(call => call.path.endsWith("/pin")));
+  env.database.failure = true;
+  await env.commit(); await env.expire(8000);
+  assert.equal((await promise).status, "queued"); assert.equal(env.core.captures()[0].status, "queued");
+  blobs.rejectPin = false;
+  await env.expire(5000); env.database.failure = false; await env.commit();
+  assert.equal(results.at(-1).status, "rejected"); assert.equal(results.at(-1).error, "stale_generation");
+  assert.equal(blobs.calls.filter(call => call.path.endsWith("/pin")).length, 1);
+  assert.equal(env.sent.some(frame => frame.t === "capture_complete"), false);
+  assert.equal(env.core.captures()[0].status, "rejected");
+});
+
+test("discard during accepted capture settlement shares durable cleanup and emits only the accepted receipt", async () => {
+  for (const afterOutcomeSave of [false, true]) {
+    const env = await environment({ scopes: [descriptor] }), results = [];
+    env.core.bus.on("upload_event", result => results.push(plain(result)));
+    const { promise, completion, id } = await captureAwaitingAck(env);
+    env.transport.receive({ t: "ack", cid: completion.cid, seq: 15 });
+    if (afterOutcomeSave) await env.commit();
+    let discarded = false;
+    const discarding = env.core.discardCapture(id).then(() => { discarded = true; });
+    await flush();
+    assert.equal(discarded, false); assert.equal(results.length, 0);
+    await env.commit();
+    if (!afterOutcomeSave) {
+      assert.equal(discarded, false); assert.equal(results.length, 0);
+      await env.commit();
+    }
+    await discarding;
+    assert.equal((await promise).status, "accepted");
+    await env.expire(5000); await env.commit();
+    assert.deepEqual(results.map(result => result.status), ["accepted"]);
+    assert.equal(results[0].seq, 15);
+    assert.equal(env.database.stores.outbox.size, 0); assert.equal(env.core.captures().length, 0);
+    const second = await environment({ database: env.database, localStorage: env.localStorage, blobs: env.blobs });
+    assert.equal(second.sent.some(frame => frame.t === "capture_complete"), false);
+  }
+});
+
+test("discard before a capture decision cannot be resurrected by a late acknowledgement", async () => {
+  const env = await environment({ scopes: [descriptor] }), results = [];
+  env.core.bus.on("upload_event", result => results.push(plain(result)));
+  const { promise, completion, id } = await captureAwaitingAck(env);
+  const first = env.core.discardCapture(id), second = env.core.discardCapture(id);
+  await flush();
+  env.transport.receive({ t: "ack", cid: completion.cid, seq: 16 });
+  await env.commit(); await Promise.all([first, second]);
+  assert.equal((await promise).error, "discarded");
+  await env.expire(5000); await env.commit();
+  assert.deepEqual(results.map(result => result.error), ["discarded"]);
+  assert.equal(env.database.stores.outbox.size, 0); assert.equal(env.core.captures().length, 0);
+});
+
 test("capture completion uses original scope and generation after upload and reload", async () => {
   const first = await environment({ scopes: [{ ...descriptor, operations: ["capture"] }] });
   void first.core.uploadEvent(new Blob(["capture bytes"]), { data: { type: "notebook.observation", session: "uninterpreted" }, scope: descriptor.id });
@@ -1142,7 +1324,7 @@ test("capture IDs belong to the runtime and reviewed inputs retain separate appl
   assert.equal(capture.data.submission_id, "review-1"); assert.equal(queued[0].capture_id, capture.capture_id);
   const completion = env.sent.find(frame => frame.t === "capture_complete");
   assert.equal(completion.data.submission_id, "review-1"); assert.equal(completion.data.capture_id, capture.capture_id);
-  env.transport.receive({ t: "ack", cid: completion.cid, seq: 7 }); await flush(); await env.commit();
+  env.transport.receive({ t: "ack", cid: completion.cid, seq: 7 }); await flush(); await env.commit(); await env.commit();
   const result = await saving; assert.equal(result.status, "accepted"); assert.equal(result.capture_id, capture.capture_id);
   assert.equal(results[0].capture_id, capture.capture_id); assert.equal(results[0].data, undefined);
 });
