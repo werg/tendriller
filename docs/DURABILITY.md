@@ -158,8 +158,9 @@ failure never removes the event or executes the agent’s work on its behalf.
 
 ## Named event consumers
 
-`GET A/events?after=…` reads retained events from an explicit cursor. Long
-polling, WebSocket notices, and webhooks can wake a receiver. Named consumers add
+`GET A/events?after=…` immediately reads retained events from an explicit cursor.
+WebSocket notices, webhooks and MCP Events subscriptions can wake a receiver;
+HTTP long polling is not available. Named consumers add
 a server-stored **handled checkpoint** and leased processing ownership for
 workers that need failover.
 

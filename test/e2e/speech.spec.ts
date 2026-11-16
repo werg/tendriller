@@ -72,7 +72,7 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
     await expect(mic).toHaveAttribute("aria-pressed", "true");
     await mic.click();
     await expect.poll(async () => (await page.evaluate(() => (window as any).__speechE2E)).transcribes).toBe(1);
-    await expect.poll(async () => (await agent(h, "/events?wait=0")).data.events.some((e: any) => JSON.stringify(e.data).includes("recognized voice"))).toBe(true);
+    await expect.poll(async () => (await agent(h, "/events")).data.events.some((e: any) => JSON.stringify(e.data).includes("recognized voice"))).toBe(true);
     expect(await page.evaluate(() => (window as any).__speechE2E.decoderCalls)).toBe(1);
     expect(warnings.join(" ")).not.toMatch(/AudioContext was prevented|autoplay/i);
   } finally { await deletePage(h); }

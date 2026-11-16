@@ -9,14 +9,13 @@ export interface Presence {
   last_seen: number | null;
   schedule_minutes: number | null;
   withheld: number;
-  wake: "socket" | "long_poll" | "webhook" | "schedule" | "none";
+  wake: "socket" | "webhook" | "schedule" | "none";
 }
 
 export interface PresenceFacts {
   now: number;
   tokens: number;
   lastCheckin: number | null;
-  longPollHeld: boolean;
   agentSocket: boolean;
   webhook: boolean;
   scheduleMinutes: number | null;
@@ -40,7 +39,7 @@ export function relativeTime(then: number, now: number): string {
 }
 
 export function computePresence(f: PresenceFacts): Presence {
-  const wake: Presence["wake"] = f.agentSocket ? "socket" : f.longPollHeld ? "long_poll" : f.webhook ? "webhook" : f.scheduleMinutes ? "schedule" : "none";
+  const wake: Presence["wake"] = f.agentSocket ? "socket" : f.webhook ? "webhook" : f.scheduleMinutes ? "schedule" : "none";
   const base = { last_seen: f.lastCheckin, schedule_minutes: f.scheduleMinutes, withheld: f.withheld, wake };
   const p = (state: PresenceState, text: string): Presence => ({ state, text, ...base });
 
@@ -51,7 +50,7 @@ export function computePresence(f: PresenceFacts): Presence {
   if (f.wakePendingSince !== null && f.now - f.wakePendingSince >= f.graceSeconds * 1000) {
     return p("not_responding", "Agent not responding");
   }
-  if (f.agentSocket || f.longPollHeld) return p("listening", "Ready for messages");
+  if (f.agentSocket) return p("listening", "Ready for messages");
 
   const status = f.status && f.now - f.status.at < STATUS_OVERRIDE_TTL ? f.status : null;
   if (status?.state === "working") return p("working", status.text || "Working");

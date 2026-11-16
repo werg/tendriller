@@ -16,7 +16,7 @@ import { Transactions, type CommitEffect } from "./transactions";
 import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
-import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
+import { pageStreak, pruneEvents, runWebhook, type WebhookJob } from "./events";
 import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
 import { pruneFileHistory } from "./storage";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
@@ -119,8 +119,6 @@ export class Tendril extends DurableObject<Env> {
   declare public ctx: DurableObjectState<{}>;
   db: Db;
   private transactions: Transactions;
-  waiters = new Set<Waiter>();
-  releaseTimer: ReturnType<typeof setTimeout> | null = null;
   calls = new Map<string, PendingCall>();
   contentOperations = new Map<string, Promise<unknown>>();
   /** Test hook: milliseconds added to the clock. */
@@ -362,7 +360,7 @@ export class Tendril extends DurableObject<Env> {
         event_delivery: "not_configured",
         next_step: this.db.get<string>("mode", "interactive") === "dashboard"
           ? "This dashboard may publish without an agent listener. Configure scoped producers and stream subscriptions; producer activity does not establish conversational agent delivery."
-          : `Attach this agent conversation to a wake path: the bundled host bridge using a hibernating WebSocket at ${apiUrl(this.env, this.tid)}/events/socket, a verified webhook at ${apiUrl(this.env, this.tid)}/wake, or a continuous long poll when the host has no socket client. Store the event cursor and run two POST A/wake/probe diagnostics before promising live replies. A token or background receiver alone does not wake a conversation.`,
+          : `Attach this agent conversation to a wake path: the bundled host bridge using a hibernating WebSocket at ${apiUrl(this.env, this.tid)}/events/socket, a verified webhook at ${apiUrl(this.env, this.tid)}/wake, or an MCP Events subscription that reaches this host. Store the event cursor and run two POST A/wake/probe diagnostics before promising live replies. A token or background receiver alone does not wake a conversation.`,
       },
     };
   }
@@ -630,7 +628,6 @@ export class Tendril extends DurableObject<Env> {
       now: this.now(),
       tokens: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")!.n,
       lastCheckin: this.db.get<number | null>("last_checkin", null),
-      longPollHeld: this.waiters.size > 0,
       agentSocket: this.agentSockets().length > 0,
       webhook: !!w.webhook || mcpSubs(this).length > 0,
       scheduleMinutes: w.schedule_minutes,
@@ -1306,11 +1303,6 @@ export class Tendril extends DurableObject<Env> {
         /* gone */
       }
     }
-    for (const w of this.waiters) {
-      clearTimeout(w.timer);
-      w.resolve(json({ error: { code: "not_found", message: "Tendril deleted" } }, 404));
-    }
-    this.waiters.clear();
     for (const [, c] of this.calls) {
       clearTimeout(c.timer);
       c.resolve({ ok: false, error: "tendril deleted" });

@@ -8,7 +8,7 @@ import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperat
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
   expires_at?: number | null; next_step?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch; recordLogHints?: RecordLogClientOptions["subscribeHints"] }
-export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
+export interface EventBatch { events: PublicEvent[]; cursor: number; withheld: number; [key: string]: unknown }
 export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }
 export interface NotificationStatus { available: boolean; subscribed_devices: { id: string; name: string | null }[];
   count: number; quota: { limit: number; used: number; remaining: number } }
@@ -51,7 +51,7 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   retireScope(id: string, body: CommandMetadata): Promise<void>;
   send(body: CommandMetadata & {data: unknown}): Promise<{seq: number}>;
   workflow<T = unknown>(module: string, operation: string, body: CommandMetadata & {data: unknown}): Promise<T>;
-  readEvents(options: { after: number; wait?: number; signal?: AbortSignal }): Promise<EventBatch>;
+  readEvents(options: { after: number; signal?: AbortSignal }): Promise<EventBatch>;
 }
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
 export function createClient(handle: Pick<PageHandle, "api" | "token">, options?: ClientOptions): AgentClient;

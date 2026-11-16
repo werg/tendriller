@@ -102,7 +102,7 @@ Cloudflare error 1010 before the Worker can authenticate or rate-limit it.
 `scripts/check-deployment.mjs` probes the API with that user agent after each
 deployment so a zone setting change cannot silently break agent access.
 
-**Idle delivery cost:** The bundled Codex, Claude Code, OpenClaw, and Hermes bridges use a hibernating agent WebSocket. An open socket does not by itself keep the Durable Object active or invoke an agent model. The bridge fetches the queue only on connect, a wake notice, an acknowledgement that releases a pending batch, or a retry. Its JSON ping/pong is answered by Cloudflare without waking the object. Each open socket still counts against Cloudflare's WebSocket and Durable Object limits. Generic five-minute long polls remain available for hosts without a WebSocket client, but their pending request and timer keep the Durable Object active. Webhook and MCP Events receivers also avoid held polls.
+**Idle delivery cost:** The bundled Codex, Claude Code, OpenClaw, and Hermes bridges use a hibernating agent WebSocket. An open socket does not by itself keep the Durable Object active or invoke an agent model. The bridge fetches the queue only on connect, a wake notice, an acknowledgement that releases a pending batch, or a retry. Its JSON ping/pong is answered by Cloudflare without waking the object. Each open socket still counts against Cloudflare's WebSocket and Durable Object limits. HTTP long polling has been removed: `GET /events` is an immediate replay-only read and rejects the former `wait` query parameter. No held event-request timers keep the Durable Object active. Hosts without a WebSocket client can use authenticated webhooks, MCP Events or an explicitly scheduled worker.
 
 ## Live branch previews
 

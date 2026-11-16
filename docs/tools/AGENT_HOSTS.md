@@ -62,11 +62,12 @@ there is a waking event, so a host that resumes the same conversation on backgro
 task completion can use its exit as the notice. The host must create a fresh wait
 after handling. A foreground blocking command cannot arrange its own future turn.
 
-A shell long-poll helper is available in source at
-`tools/bridges/scripts/tendril-wait.sh` for a deliberately managed environment
-without Node. It advances its **read** cursor; the caller still owns handled
-progress and rearming. Select long polling or sockets based on the host, rather
-than treating a detached process as proof the model will resume.
+The historical shell long-poll helper has been removed. `tendril-wait.mjs` and
+`tendril wait` use the agent WebSocket to receive a wake, then perform a bounded,
+immediate queue read; `tendril events --follow` uses the same socket mechanism.
+Hosts without WebSocket support should use a verified webhook, MCP Events
+subscription or explicitly scheduled worker. A wake notice or task completion is
+not proof that the intended agent conversation resumed.
 
 ## Explicit host adapters
 
@@ -104,7 +105,7 @@ batch with the channel tool and acknowledges after effects.
 
 Store the page/API identity, private token, host conversation identity, delivered
 cursor and handled cursor in a private directory. On connection and each wake,
-read `GET A/events?after=<handled>&wait=0`, coalesce at most one pending host
+read `GET A/events?after=<handled>`, coalesce at most one pending host
 notice, and retry failed host admission without advancing handled progress.
 After reconnect, read pending events even when no new socket notice arrives.
 The source modules in `tools/bridges/` demonstrate the protocol and privacy

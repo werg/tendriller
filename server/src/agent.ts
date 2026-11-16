@@ -11,7 +11,7 @@ import { pointers } from "./files";
 import { HttpError, intParam, isPlainObject, json, readJson } from "./http";
 import { BLOB_ID_RE, newPageKey, newSocketTicket, randomB32, safeEqual, sha256Hex, SOCKET_TICKET_RE } from "./ids";
 import {
-  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_EVAL_CODE, MAX_STATE,
+  CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, MAX_EVAL_CODE, MAX_STATE,
 } from "./limits";
 import { stateCommand } from "./state-command";
 import { mutate, preconditions } from "./scopes";
@@ -107,15 +107,15 @@ async function tendrilInfo(t: Tendril) {
 
 function deliveryFeedback(t: Tendril) {
   const facts = t.presenceFacts();
-  const mode = facts.agentSocket ? "live_socket" : facts.longPollHeld ? "live_poll" : facts.webhook ? "wake_configured" : "none";
+  const mode = facts.agentSocket ? "live_socket" : facts.webhook ? "wake_configured" : "none";
   return {
     mode,
-    live_listener: facts.agentSocket || facts.longPollHeld,
+    live_listener: facts.agentSocket,
     reminder: mode === "none"
       ? "No event listener or wake endpoint is active. Attach a receiver that resumes this same agent conversation, then run two POST A/wake/probe diagnostics in this conversation before promising live replies."
       : mode === "live_socket"
         ? "Keep the agent socket connected and the host adapter running. Read events on each wake, reply in this conversation, and acknowledge after handling."
-        : "Keep polling after every response, or ensure the configured wake handler stays available. A single poll does not keep an agent listening.",
+        : "Keep the configured webhook or MCP Events receiver available. Read queued events after each wake and acknowledge only after handling.",
   };
 }
 
@@ -299,14 +299,11 @@ route("POST", /^release$/, async (t) => {
 
 // ------------------------------------------------------------------ events
 
-route("GET", /^events$/, (t, req, url) => {
+route("GET", /^events$/, (t, _req, url) => {
+  if (url.searchParams.has("wait")) throw new HttpError(400, "bad_request", "Long polling has been removed. Use events/socket for wake notices and GET events for immediate replay.");
   const after = intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER);
-  if (Number(url.searchParams.get("wait")) > LONGPOLL_MAX_WAIT_S) {
-    throw new HttpError(400, "bad_request", `wait may be at most ${LONGPOLL_MAX_WAIT_S} seconds`);
-  }
-  const wait = intParam(url, "wait", 0, 0, LONGPOLL_MAX_WAIT_S);
   const limit = intParam(url, "limit", 100, 1, 500);
-  return getEvents(t, url, req.signal, after, wait, limit);
+  return getEvents(t, after, limit);
 });
 
 // ------------------------------------------------------------------ calling into the page

@@ -1,4 +1,4 @@
-// Events, wake budget, long-poll and webhook delivery (PROTOCOL section 8).
+// Events, wake budget, socket and webhook delivery (PROTOCOL section 8).
 import type { Tendril } from "./tendril";
 import { renderEvent } from "./event-format";
 export { renderEvent } from "./event-format";
@@ -9,7 +9,7 @@ import { randomB32 } from "./ids";
 import { addActivity, bumpAggregate } from "./activity";
 import { json } from "./http";
 import {
-  EVENT_RETENTION, HOUR, LONGPOLL_DEBOUNCE, MAX_EVENTS, WAKE_MERGE_WINDOW, WEBHOOK_BACKOFF, WEBHOOK_DEBOUNCE,
+  EVENT_RETENTION, MAX_EVENTS, WAKE_MERGE_WINDOW, WEBHOOK_BACKOFF, WEBHOOK_DEBOUNCE,
   WEBHOOK_TIMEOUT,
 } from "./limits";
 import { apiUrl } from "./urls";
@@ -75,21 +75,6 @@ export interface WebhookJob {
   attempt: number;
   seq: number;
 }
-
-export interface Waiter {
-  after: number;
-  limit: number;
-  resolve: (r: Response) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-function pollReminder(t: Tendril, cursor: number) {
-  return {
-    next_poll: `${apiUrl(t.env, t.tid)}/events?after=${cursor}&wait=300`,
-    agent_reminder: "Keep the host receiver armed. Agent WebSocket receivers read on each wake and reconnect; long-poll receivers request next_poll after every response, even when empty. The receiver must wake this same agent conversation. For real requests, reply with POST A/say; for delivery_probe, acknowledge its diagnostic endpoint without messaging the owner. Acknowledge host notices only after handling. Run two POST A/wake/probe diagnostics before promising live replies.",
-  };
-}
-
 
 /**
  * Decides whether a wake-eligible event wakes, merges into the previous wake, or is withheld.
@@ -168,16 +153,14 @@ function appendEvent(t: Tendril, e: NewEvent): StoredEvent {
   return { ...(e.context ? { context: e.context } : {}), seq, ts, type: e.type, data: e.data ?? null, device: e.device ?? null, role: e.role ?? null, wake, withheld, by: e.by ?? null };
 }
 
-/** Delivery path 1 (held long-polls) or 2 (webhook and MCP Events). Never affects storage of the event. */
+/** Deliver a wake over the agent socket or configured webhook/MCP Events. Storage is independent. */
 function deliverWake(t: Tendril, seq: number): void {
   const agentSocket = t.agentSockets().length > 0;
-  const heldPoll = t.waiters.size > 0;
-  if (heldPoll) scheduleRelease(t);
   if (agentSocket) {
     markWakeDelivered(t);
     t.afterCommit(() => { t.notifyAgentSockets(seq); });
   }
-  if (agentSocket || heldPoll) return;
+  if (agentSocket) return;
   const hook = t.wakeConfig().webhook;
   if (hook) {
     const job = t.db.get<WebhookJob | null>("webhook_job", null);
@@ -201,35 +184,6 @@ export function markWakeDelivered(t: Tendril): void {
   });
 }
 
-function scheduleRelease(t: Tendril): void {
-  t.afterCommit(() => {
-    if (t.releaseTimer) return;
-    t.releaseTimer = setTimeout(() => {
-      t.releaseTimer = null;
-      releaseWaiters(t);
-    }, LONGPOLL_DEBOUNCE);
-  });
-}
-
-function releaseWaiters(t: Tendril): void {
-  if (t.waiters.size === 0) return;
-  let delivered = false;
-  for (const w of [...t.waiters]) {
-    if (!hasWakeAfter(t, w.after)) continue;
-    t.waiters.delete(w);
-    clearTimeout(w.timer);
-    w.resolve(json(readEvents(t, w.after, w.limit)));
-    delivered = true;
-  }
-  if (delivered && t.db.get<number | null>("wake_pending_since", null) === null) t.db.set("wake_pending_since", t.now());
-  t.refreshPresence();
-  t.scheduleAlarm();
-}
-
-export function hasWakeAfter(t: Tendril, after: number): boolean {
-  return !!t.db.one("SELECT 1 AS x FROM events WHERE wake = 1 AND seq > ? LIMIT 1", after);
-}
-
 function withheldTotal(t: Tendril): number {
   return t.db.get<number>("withheld", 0);
 }
@@ -247,33 +201,11 @@ export function readEvents(t: Tendril, after: number, limit: number) {
     t.db.set("agent_cursor", cursor);
     addActivity(t, { kind: "events_read", summary: `Agent read events through #${cursor}` });
   }
-  return { events, cursor, withheld, ...pollReminder(t, cursor) };
+  return { events, cursor, withheld };
 }
 
-export function getEvents(t: Tendril, url: URL, signal: AbortSignal | undefined, after: number, wait: number, limit: number): Promise<Response> | Response {
-  if (wait > 0) t.db.del("status_override"); // "until the next long-poll"
-  if (wait === 0 || hasWakeAfter(t, after)) return json(readEvents(t, after, limit));
-  return new Promise<Response>((resolve) => {
-    const w: Waiter = {
-      after,
-      limit,
-      resolve,
-      timer: setTimeout(() => {
-        t.waiters.delete(w);
-        resolve(json({ events: [], cursor: after, timeout: true, withheld: withheldTotal(t), ...pollReminder(t, after) }));
-        t.refreshPresence();
-      }, wait * 1000),
-    };
-    t.waiters.add(w);
-    signal?.addEventListener("abort", () => {
-      if (!t.waiters.has(w)) return;
-      t.waiters.delete(w);
-      clearTimeout(w.timer);
-      resolve(json({ events: [], cursor: after, timeout: true, withheld: withheldTotal(t), ...pollReminder(t, after) }));
-      t.refreshPresence();
-    });
-    t.refreshPresence();
-  });
+export function getEvents(t: Tendril, after: number, limit: number): Response {
+  return json(readEvents(t, after, limit));
 }
 
 /** Called from the alarm: sends a due webhook, with retries and backoff. */

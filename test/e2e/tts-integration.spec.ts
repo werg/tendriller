@@ -85,14 +85,14 @@ test("voice input interrupts an agent reply, reaches the event queue, and later 
     await page.waitForFunction(() => !!(window as any).voice);
     await page.locator("#enable-speech").click();
     await expect.poll(() => page.evaluate(() => (window as any).voice.outputStatus.state)).toBe("ready");
-    const cursor = (await agent(h, "/events?wait=0")).data.cursor;
+    const cursor = (await agent(h, "/events")).data.cursor;
     expect((await agent(h, "/say", "POST", { text: "long reply", speak: true })).status).toBe(200);
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.spoken)).toEqual(["long reply"]);
     const mic = page.locator("#record");
     await mic.click();
     await expect(mic).toHaveAttribute("aria-pressed", "true");
     await mic.click();
-    await expect.poll(async () => (await agent(h, `/events?after=${cursor}&wait=0`)).data.events.some((e: any) => e.type === "instruction" && JSON.stringify(e.data).includes("voice follow up"))).toBe(true);
+    await expect.poll(async () => (await agent(h, `/events?after=${cursor}`)).data.events.some((e: any) => e.type === "instruction" && JSON.stringify(e.data).includes("voice follow up"))).toBe(true);
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.aborted)).toContain("long reply");
     expect((await agent(h, "/say", "POST", { text: "recovered", speak: true })).status).toBe(200);
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.completed)).toContain("recovered");
