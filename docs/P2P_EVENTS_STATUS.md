@@ -40,16 +40,21 @@ public snapshot/hash contracts, and resumable resident-lifetime changes that
 cannot race membership or retained-log provisioning into expiring storage.
 
 The current embedded administrator comes from clean Chronolog source
-`fca9698a0fbb1e9d1781c46a901f33b7901eac45`, with 56 audited portable inputs.
+`d3b97d0aaedbb95407e09de524fc37b2b30073bd`, with 56 audited portable inputs.
 It includes the follow-up ledger, governance, peer-recovery and explicit
 device-identity reopening corrections, plus atomic membership-page ingestion.
+The upstream checkpoint also initializes browser feed storage before making keys
+usable, fences uncertain feed writes until reopening, and refuses to restart a
+native authority history beneath its retained configuration or certificate.
+Connection-bound cleanup prevents a stale session from detaching a newer route.
 An unchanged verified prefix performs no durable ledger write. A changed bounded
 page validates and commits together; late invalid input or failed storage cannot
 publish partial progress.
 
 The [native cost review](https://github.com/werg/tendriller-contrib/blob/d6e27d660feac31175cf0dc34c9fce18494378d2/cookbooks/run-a-peer-application/notes/membership-cost-review-2026-11-16.md)
-records the actual measured change: 104 to 65 administrator puts and 502,606 to
-131,441 logical value bytes written, with the same 35,812 retained value bytes.
+records the source-pinned `8e497555` to `c5edba7d` batching change: 104 to 65
+administrator puts and 502,606 to 131,441 logical value bytes written, with the
+same 35,812 retained value bytes.
 These are native workload measurements, not provider billing. The full retained
 history and recipient key-wrap costs remain explicit.
 The earlier full CI numbers below describe their explicitly identified source
@@ -125,6 +130,9 @@ remain in contrib issues
 [#15](https://github.com/werg/tendriller-contrib/issues/15),
 [#16](https://github.com/werg/tendriller-contrib/issues/16) and
 [#17](https://github.com/werg/tendriller-contrib/issues/17).
+The [deployment qualification handoff](https://github.com/werg/tendriller-contrib/blob/4dbd25cf2200f3a42cf82b5b1569d8fc1594bceb/cookbooks/run-a-peer-application/notes/deployment-qualification-handoff.md)
+lists the required environments, commands, preserved evidence and completion
+criteria for those remaining checks.
 The implementation claims no production NAT success rate or cost saving.
 Release artifacts identify rc.9/schema 8; deployment resources have not been
 advanced or deployed. [Membership documentation](MEMBERSHIP.md) records the
