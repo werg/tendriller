@@ -1,7 +1,7 @@
 import { sha256Hex } from "../src/ids";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { advance, api, apiJson, create, PageClient, req, runAlarm } from "./helpers";
+import { advance, api, apiJson, create, inDO, PageClient, req, runAlarm } from "./helpers";
 
 const PAGE = `<!doctype html><html><head lang="en"><title>T</title></head><body><h1>Hi</h1></body></html>`;
 
