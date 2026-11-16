@@ -24,7 +24,10 @@ The selection is immutable. `id` is an application-owned stable identifier, not 
 host token, decryption key, grant, or authority key. Omitting `application` selects
 `{kind:'cloudflare', id:'cf:<page-id>'}`. Publication rollback changes code without
 changing the selected history. An unavailable authority never triggers failover
-to Cloudflare or to a different ordering policy.
+to Cloudflare or to a different finality policy. Chronolog replicas always use
+the same signed author-time execution order. A finality provider supplies
+inclusion evidence and closes the author-time frontier; it does not choose that
+execution order.
 
 ## Installation and readiness
 

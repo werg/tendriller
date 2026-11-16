@@ -62,6 +62,27 @@ it("recovers a lost HTTP append reply using the portable public client", async (
   expect(result.position).toBe(1); expect(result).toEqual(committed);
   expect((await client.read({ historyId, after: 0 })).entries).toEqual([result]);
 });
+it("conditionally appends against one exact predecessor and keeps retries stable after the head advances", async () => {
+  const { h, info, historyId } = await setup();
+  const expectedHead = { position: info.head.position, root: info.head.root };
+  const [one, two] = await Promise.all(["closure-a", "closure-b"].map(value => api(h, "POST", "records/entries", {
+    historyId, record: encodeRecord(bytes(value)), expectedHead,
+  })));
+  expect([one.status, two.status].sort()).toEqual([200, 409]);
+  const committed = await (one.status === 200 ? one : two).json<RecordLogEntry>();
+  expect(await (one.status === 409 ? one : two).json()).toMatchObject({ error: { code: "record_head_conflict" } });
+  expect((await read(h, historyId)).entries).toEqual([committed]);
+  await append(h, historyId, "later-record");
+  const retry = await apiJson<RecordLogEntry>(h, "POST", "records/entries", {
+    historyId, record: committed.record, expectedHead,
+  });
+  expect(retry).toEqual(committed);
+  expect((await read(h, historyId)).entries).toHaveLength(2);
+  for (const condition of [{ position: -1, root: info.head.root }, { position: 0, root: "wrong" },
+    { position: 0, root: info.head.root, ignored: true }]) {
+    expect((await api(h, "POST", "records/entries", { historyId, record: "YQ==", expectedHead: condition })).status).toBe(400);
+  }
+});
 it("serializes distinct concurrent appends and bounds the encoded read page", async () => {
   const { h, historyId, info } = await setup();
   const results = await Promise.all(Array.from({ length: 16 }, (_, i) => append(h, historyId, `concurrent-${i}`)));

@@ -7,7 +7,9 @@ Tendriller separates dependable platform behavior from application design. Core 
 Each page selects an immutable backend identity at creation. The preferred
 resident-agent deployment uses the Chronolog public adapter for durable state,
 events, conversation, operation status, and captured revision views. The native
-agent owns final ordering and deterministic workers; Tendriller remains the host.
+agent certifies inclusion and a closed author-time frontier and runs resident
+workers; every replica derives application order from the same signed author-time
+key. Tendriller remains the host.
 A Cloudflare JSON backend implements the same small contract as an alternative.
 Peer pages disable its application routes and never open a second application
 outbox. There is no automatic authority fallback. See
@@ -20,10 +22,12 @@ optional adapter, not a mandatory checkpoint on the native commit path.
 
 The default [membership administrator](MEMBERSHIP.md) runs inside the existing
 Durable Object using a pinned public portable artifact. It stores private
-root/epoch keys and account-bound roster decisions, verifies the native ordered
-descriptor prefix, and applies inline governance. Application bodies are fetched
-by full replicas. Native ordering, schema administration and membership keys
-are explicitly separate. Normal application writes do not wait for this host.
+root/epoch keys and account-bound roster decisions, verifies the native certified
+receipt prefix and closure markers, and applies inline governance at its proved
+author-time boundary. Application bodies are fetched by full replicas. Inclusion
+and finality, schema administration and membership keys are explicitly separate.
+Receipt positions enumerate retained bytes; they never select application
+execution order. Normal application writes do not wait for this host.
 
 ## Ownership and dependency direction
 

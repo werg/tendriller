@@ -1,7 +1,7 @@
 # Retained record logs
 
-The resident-agent deployment uses native Chronolog authority by preference; this
-Cloudflare log is an optional retained-storage/authority adapter. It is not
+The resident-agent deployment uses a native Chronolog finality provider by preference;
+this Cloudflare log is an optional retained-storage/finality adapter. It is not
 required for peer connections or application backends.
 
 A resident Tendril can retain one opaque record history. Each append stores exact
@@ -9,8 +9,10 @@ bytes at a contiguous position, with content identity and a rolling integrity ro
 Identical bytes always return the original entry. No record expires or is trimmed.
 
 This primitive supplies storage and delivery. Applications verify their own author
-signatures, membership, order certificates and SQL outcomes. A log position, hash,
+signatures, membership, inclusion/closure proofs and SQL outcomes. A log position, hash,
 or append response alone makes no assertion about database success or finality.
+Chronolog replicas always derive application execution order from signed author
+time and deterministic tie-breakers; receipt positions only enumerate inclusion.
 
 ## Provisioning and access
 
@@ -88,13 +90,19 @@ Mutation requests on the page path retain the normal same-origin checks.
 | --- | --- | --- |
 | `POST records` | Empty object | `{descriptor, head}` |
 | `GET records` | Optional `historyId` | `{descriptor, head}` |
-| `POST records/entries` | `{historyId, record}` | Original immutable entry |
+| `POST records/entries` | `{historyId, record, expectedHead?}` | Original immutable entry |
 | `GET records/entries` | Required `historyId`, `after`; optional `limit` | Contiguous bounded page and current head |
 
 `record` is canonical padded base64. Entries contain `historyId`, `position`,
 `recordId`, `previousRoot`, `root`, and `record`. A head contains `historyId`,
 `position`, `root`, and total raw payload `bytes`. A page contains `historyId`,
 `after`, `cursor`, `entries`, and `head`. `cursor` is the last returned position.
+
+Optional `expectedHead: {position, root}` makes a fresh append conditional on that
+exact predecessor. A mismatch returns `409 record_head_conflict` without retaining
+the bytes. An exact byte retry returns its original receipt even if the head has
+since advanced. This generic condition lets a finality adapter bind a signed
+closure to its preceding prefix; the host does not interpret that record.
 
 Records contain 1–262,144 bytes. Pages contain at most 128 entries and 1,048,576
 encoded entry bytes; callers continue from the returned cursor. The history holds
@@ -124,8 +132,9 @@ verification, and contract tests cross-check the encoding with Node's SHA-256.
 
 Storage computes hashes outside synchronous transactions. Inside the transaction it
 rechecks the captured head and current local authorization, then commits the entry,
-unique content index, accumulated bytes and root atomically. Concurrent writers
-retry a changed head internally. Notifications happen after durable commit.
+unique content index, accumulated bytes and root atomically. Unconditional concurrent
+writers retry a changed head internally; conditional appends must still match
+their original predecessor. Notifications happen after durable commit.
 
 ## Recovery and deployment
 
@@ -140,10 +149,11 @@ Tendril/history. Resuming an old storage copy under an existing history identity
 could reuse a committed position; it is unsupported. Consumers must halt on any
 conflicting retained prefix rather than treating the copy as a fresh history.
 
-An optional authority can compose around the public engine handler and read this
+An optional finality provider can compose around the public engine handler and read this
 log through its public client. It must obtain the committed head itself and keep
-its certificates outside the log it certifies. Native ordering authority keys
-remain outside Tendriller. The separate [membership administrator](MEMBERSHIP.md)
+its prefix certificates outside the log it certifies. Signed closure markers are
+ordinary retained bytes committed before the covering certificate. Native finality
+signing keys remain outside Tendriller. The separate [membership administrator](MEMBERSHIP.md)
 stores its own private root/key material and roster decisions in the page's
 private durable store; it uses the native certified ledger and does not provision
 this optional retained Cloudflare log.

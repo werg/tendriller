@@ -3,7 +3,7 @@
 ## Goal
 
 Provide a small durable opaque record log for peer applications. Keep SQL, signed
-membership, order certificates, and database finality in the consuming application.
+membership, inclusion certificates, and database finality in the consuming application.
 This is an unreleased architecture: change interfaces directly and avoid migration
 or compatibility layers.
 
@@ -13,6 +13,11 @@ or compatibility layers.
 - Content-address exact bytes with SHA-256.
 - Append atomically stores bytes, their original position, the deduplication index,
   and the rolling root. Retrying identical bytes returns the original entry.
+- Optional `expectedHead: { position, root }` makes a new append conditional on
+  that exact predecessor. A concurrent append returns `record_head_conflict`
+  without writing anything; an exact retry still returns its original entry.
+  Consumers use this primitive to retain a statement about a preceding prefix
+  without racing another writer. The log does not interpret that statement.
 - The root commits to the history identity, contiguous sequence, previous root,
   and content digest using a documented domain-separated canonical encoding.
 - Bounded reads include the descriptor and committed head. Wrong histories,

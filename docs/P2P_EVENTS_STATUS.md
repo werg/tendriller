@@ -21,15 +21,31 @@ The subsequent review and dependency checkpoint is recorded separately.
 - Default membership administration on owned resident peer pages: durable
   root/key state, account-bound signed device requests, explicit owner
   decisions, certified bootstrap history, and recoverable revoke/rotate.
-  Native ordering and SQL schema administration have separately pinned public
+  Native inclusion/finality and SQL schema administration have separately pinned public
   keys. Application bodies remain detached and travel between full replicas.
 
-There is one ordered ledger. Its application records contain small typed
+There is one retained receipt ledger. Its application records contain small typed
 hash descriptors; signed membership and key-delivery operations are inline.
 The administrator follows and verifies those descriptors without fetching
 application bodies or loading SQL. Devices keep their private signing and
 reader keys. The administrator retains shared epoch keys to wrap for approved
 public keys and remains trusted with those keys.
+
+## Author-time finality follow-up
+
+Application execution order is always derived by replicas from the signed author
+timestamp and deterministic tie-breakers. The selected provider certifies an
+included receipt prefix and retains signed closure markers that close author time.
+Receipt arrival order cannot select a SQL conflict winner. The generic record API
+adds optional `expectedHead` conditional append so a closure about a preceding
+prefix cannot race an independent append; the host still stores opaque bytes.
+The signed genesis clock policy bounds future author timestamps relative to
+their first closure. Providers advance only through that necessary horizon after
+the last new receipt; fully closed idle histories add no more markers.
+
+The qualification reports below predate this change and retain their historical
+scope. New finality, closure-recovery and conditional-append results must be tied
+to the new source and packed artifacts.
 
 ## Review and dependency checkpoint
 
@@ -40,9 +56,10 @@ public snapshot/hash contracts, and resumable resident-lifetime changes that
 cannot race membership or retained-log provisioning into expiring storage.
 
 The current embedded administrator comes from clean Chronolog source
-`fca9698a0fbb1e9d1781c46a901f33b7901eac45`, with 56 audited portable inputs.
-It includes the follow-up ledger, governance, peer-recovery and explicit
-device-identity reopening corrections, plus atomic membership-page ingestion.
+`b2f61124631597c9d9ad4d744d15ca57e3771feb`, with 57 audited portable inputs.
+It includes the author-time finality and closure-boundary governance changes,
+plus the earlier ledger, peer-recovery, explicit device-identity reopening and
+atomic membership-page ingestion corrections.
 An unchanged verified prefix performs no durable ledger write. A changed bounded
 page validates and commits together; late invalid input or failed storage cannot
 publish partial progress.

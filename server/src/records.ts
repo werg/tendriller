@@ -1,8 +1,8 @@
 import { hasResidentStorage } from './lifetime';
 // Opaque retained bytes. Application signatures, membership and finality live upstream.
 import { RECORD_LOG_FORMAT, RECORD_LOG_LIMITS, RecordLogError, decodeRecord, encodeRecord,
-  recordBytes, recordEntryRoot, recordGenesisRoot, recordHistoryId, recordId, recordPosition } from "../../contract/records.mjs";
-import type { RecordLogEntry, RecordLogHead, RecordLogInfo, RecordLogPage } from "../../contract/records.mjs";
+  recordAppendCondition, recordBytes, recordEntryRoot, recordGenesisRoot, recordHistoryId, recordId, recordPosition } from "../../contract/records.mjs";
+import type { RecordLogAppendCondition, RecordLogEntry, RecordLogHead, RecordLogInfo, RecordLogPage } from "../../contract/records.mjs";
 import type { Tendril } from "./tendril";
 import { allows, authorizeSocket, currentPrincipal, pageAccessAllowed, type Principal } from "./access";
 import { HttpError, isPlainObject, json, readJson } from "./http";
@@ -45,8 +45,9 @@ export async function provisionRecordLog(t: Store, authorize: () => void = () =>
   });
 }
 /** Hash asynchronously, then compare the captured head within one synchronous commit. */
-export async function appendRecord(t: Store, historyId: string, value: Uint8Array, authorize: () => void = () => {}): Promise<{ entry: RecordLogEntry; fresh: boolean }> {
+export async function appendRecord(t: Store, historyId: string, value: Uint8Array, authorize: () => void = () => {}, expectedHead?: RecordLogAppendCondition): Promise<{ entry: RecordLogEntry; fresh: boolean }> {
   recordHistoryId(historyId);
+  const condition = expectedHead === undefined ? undefined : recordAppendCondition(expectedHead);
   const bytes = recordBytes(value), encoded = encodeRecord(bytes), id = await recordId(bytes);
   for (let attempt = 0; attempt < 64; attempt++) {
     authorize();
@@ -57,6 +58,8 @@ export async function appendRecord(t: Store, historyId: string, value: Uint8Arra
       if (previous.record !== encoded) throw new HttpError(409, "record_id_conflict", "Content digest already names different bytes");
       return { entry: entry(historyId, previous), fresh: false };
     }
+    if (condition && (before.position !== condition.position || before.root !== condition.root))
+      throw new HttpError(409, "record_head_conflict", "The retained head changed before conditional append; reread it before preparing new bytes");
     const position = before.position + 1;
     if (position > RECORD_LOG_LIMITS.records || before.bytes + bytes.length > RECORD_LOG_LIMITS.totalBytes)
       throw new HttpError(413, "record_log_full", "Retained record log quota exhausted; no entries were removed", { limits: RECORD_LOG_LIMITS });
@@ -123,9 +126,10 @@ export async function handleRecordLog(t: Tendril, req: Request, url: URL, path: 
     if (path === "records/entries") {
       if (req.method === "POST") {
         const body = await readJson(req, Math.ceil(RECORD_LOG_LIMITS.recordBytes / 3) * 4 + 1024);
-        if (!isPlainObject(body) || Object.keys(body).sort().join(",") !== "historyId,record")
-          throw new HttpError(400, "bad_request", "Append requires only historyId and record");
-        const accepted = await appendRecord(t, body.historyId, decodeRecord(body.record), authorize);
+        if (!isPlainObject(body) || !["historyId,record", "expectedHead,historyId,record"].includes(Object.keys(body).sort().join(",")))
+          throw new HttpError(400, "bad_request", "Append requires historyId, record and optional expectedHead");
+        const accepted = await appendRecord(t, body.historyId, decodeRecord(body.record), authorize,
+          body.expectedHead === undefined ? undefined : recordAppendCondition(body.expectedHead));
         if (accepted.fresh) {
           const current = getRecordLog(t).head;
           t.afterCommit(() => notifyRecordHead(t, current));

@@ -3,6 +3,7 @@ export declare const RECORD_LOG_LIMITS: Readonly<{ recordBytes: number; readEntr
 export declare class RecordLogError extends Error { readonly code: string; readonly status: number; constructor(code: string, message: string, status?: number); }
 export interface RecordLogDescriptor { historyId: string; format: typeof RECORD_LOG_FORMAT; limits: typeof RECORD_LOG_LIMITS }
 export interface RecordLogHead { historyId: string; position: number; root: string; bytes: number }
+export interface RecordLogAppendCondition { position: number; root: string }
 /** An immutable retained entry. `record` is canonical padded base64 of exact bytes. */
 export interface RecordLogEntry { historyId: string; position: number; recordId: string; previousRoot: string; root: string; record: string }
 export interface RecordLogInfo { descriptor: RecordLogDescriptor; head: RecordLogHead }
@@ -16,12 +17,13 @@ export declare function recordId(bytes: Uint8Array): Promise<string>;
 export declare function recordGenesisRoot(historyId: string): Promise<string>;
 export declare function recordEntryRoot(historyId: string, position: number, previousRoot: string, id: string): Promise<string>;
 export declare function validateRecordHead(value: unknown, historyId?: string): RecordLogHead;
+export declare function recordAppendCondition(value: unknown): RecordLogAppendCondition;
 export declare function verifyRecordEntry(value: unknown, previous?: RecordLogHead): Promise<Uint8Array<ArrayBuffer>>;
 export interface RecordLogClient {
   provision(options?: { signal?: AbortSignal }): Promise<RecordLogInfo>;
   info(options?: { historyId?: string; signal?: AbortSignal }): Promise<RecordLogInfo>;
-  /** Persists exact bytes. An uncertain response is retried with the same bytes and history. */
-  append(bytes: Uint8Array, options: { historyId: string; signal?: AbortSignal }): Promise<RecordLogEntry>;
+  /** Persists exact bytes; a new conditional append requires the exact current predecessor. Exact retries return their original entry. */
+  append(bytes: Uint8Array, options: { historyId: string; expectedHead?: RecordLogAppendCondition; signal?: AbortSignal }): Promise<RecordLogEntry>;
   read(options: { historyId: string; after: number; limit?: number; previous?: RecordLogHead; signal?: AbortSignal }): Promise<RecordLogPage>;
   /** Wake-up hints only: read retained entries and maintain your own durable applied cursor. */
   watch(options: { historyId: string; after: number; signal?: AbortSignal; pollIntervalMs?: number; onError?: (error: Error) => void }, listener: (head: RecordLogHead) => void): () => void;

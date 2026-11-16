@@ -32,7 +32,7 @@ export interface MembersClient {
   requestStatus(requestId: string, options?: { signal?: AbortSignal }): Promise<MemberRequest>;
   approve(input: MemberApproval, options?: { signal?: AbortSignal }): Promise<MemberRequest>;
   revoke(input: { operationId: string; capabilityIds: string[] }, options?: { signal?: AbortSignal }): Promise<{ membershipRevision: string; epoch: string; frontier: string }>;
-  /** Exact CBOR ordered descriptors/certificate; verify with the portable Chronolog membership codec. */
+  /** Exact CBOR receipt entries, closure markers and certificate; verify with the portable Chronolog membership codec. */
   history(options: { after: number; limit?: number; signal?: AbortSignal }): Promise<Uint8Array>;
 }
 export declare function createMembersClient(options: {

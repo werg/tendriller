@@ -14,18 +14,20 @@ opening a guest link, or connecting to its relay does not grant database access.
 
 | Participant | Stores and verifies | Authority |
 | --- | --- | --- |
-| Tendril membership administrator | Root signing key, epoch keys, account-to-device requests, durable decisions, small ordered descriptors and certificates | Approves reader/writer capabilities and rotates keys |
-| Native ordering authority | Ordered descriptors, prefix roots and signing key | Orders the one canonical history and certifies its prefix |
-| Full browser/native replica | Signed encrypted application bodies, verified capabilities, epoch keys for its reader, local database | Executes the selected deterministic application program |
+| Tendril membership administrator | Root signing key, epoch keys, account-to-device requests, durable decisions, small receipt descriptors and closure evidence | Approves reader/writer capabilities and rotates keys at proved author-time boundaries |
+| Native finality authority | Receipt descriptors, signed closure markers, prefix roots and signing key | Certifies inclusion and the closed author-time frontier |
+| Full browser/native replica | Signed encrypted application bodies, verified capabilities, epoch keys for its reader, local database | Derives author-time order and executes the selected deterministic application program |
 | Schema administrator | Its own application signing key | Changes the application's SQL schema under the signed genesis policy |
 
-Provisioning pins the native ordering public key and the schema administrator's
+Provisioning pins the native finality public key and the schema administrator's
 public key explicitly. The membership root is generated and retained by the
 host. It receives no implicit reader, writer, or schema grant. A native agent can
 be both a full replica and the schema administrator; these are explicit grants
-and keys, not consequences of running the ordering endpoint.
+and keys, not consequences of running the finality endpoint.
 
-The administrator verifies the full ordered descriptor prefix. Application
+The administrator verifies the full certified receipt prefix and its signed
+author-time closure markers. Receipt positions never determine application
+execution order. Application
 descriptors contain a group route, kind, epoch, payload hash and byte length;
 their encrypted bodies travel through the replicas' body-by-hash transport.
 Signed capability and epoch envelopes are inline, so a thin administrator can
@@ -93,7 +95,7 @@ The native endpoint is `POST /_chronolog/membership` using the portable bounded
 CBOR protocol. Each request is root-signed and binds the exact group, history,
 genesis/profile/authority configuration, expiry, nonce and operation contents.
 The native endpoint accepts only inline governance descriptors for append and
-returns its own ordered entries and certificates. It does not certify a
+returns its own receipt entries, retained closure markers and certificates. It does not certify a
 caller-supplied head. Production URLs use HTTPS; HTTP is accepted only for local
 loopback qualification.
 

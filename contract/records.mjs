@@ -66,6 +66,12 @@ export function validateRecordHead(value, historyId) {
     throw new RecordLogError("history_mismatch", "The log belongs to another history", 409);
   return value;
 }
+/** Snapshot a generic conditional-append predecessor before asynchronous work. */
+export function recordAppendCondition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).sort().join(",") !== "position,root") invalid("Expected head requires only position and root");
+  return { position: recordPosition(value.position), root: digest(value.root) };
+}
 /** Verify exact content and the entry's hash, optionally against a trusted previous head. */
 export async function verifyRecordEntry(value, previous) {
   if (!value || typeof value !== "object") invalid("Invalid record entry");
@@ -111,10 +117,11 @@ export function createRecordLogClient({ base, headers = () => ({}), fetch: fetch
       if (historyId !== undefined) recordHistoryId(historyId);
       return checkedInfo(await request(historyId === undefined ? "" : `?historyId=${historyId}`, { signal }), historyId);
     },
-    async append(value, { historyId, signal }) {
+    async append(value, { historyId, signal, expectedHead }) {
       recordHistoryId(historyId);
+      const condition = expectedHead === undefined ? undefined : recordAppendCondition(expectedHead);
       const bytes = recordBytes(value), record = encodeRecord(bytes);
-      const result = await request("/entries", { body: { historyId, record }, signal });
+      const result = await request("/entries", { body: { historyId, record, ...(condition === undefined ? {} : { expectedHead: condition }) }, signal });
       if (result?.historyId !== historyId || result.record !== record)
         throw new RecordLogError("invalid_response", "Append response does not identify the submitted bytes and history", 502);
       await verifyRecordEntry(result);

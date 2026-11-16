@@ -49,6 +49,18 @@ test("native client keeps credentials in headers and verifies exact bytes before
   response = { ...f.entry, root: "0".repeat(64) };
   await assert.rejects(client.records.append(f.bytes, { historyId }), error => error.code === "integrity_error");
 });
+test("conditional append sends the reviewed predecessor and preserves an exact retry receipt", async () => {
+  const f = await fixture(), seen = [];
+  const expectedHead = { position: f.empty.position, root: f.empty.root };
+  const client = createRecordLogClient({ base: "https://example.test", fetch: async (_url, options) => {
+    seen.push(JSON.parse(options.body));
+    expectedHead.position = 99;
+    return Response.json(f.entry);
+  } });
+  assert.deepEqual(await client.append(f.bytes, { historyId, expectedHead }), f.entry);
+  assert.deepEqual(seen[0], { historyId, record: f.entry.record, expectedHead: { position: 0, root: f.empty.root } });
+  await assert.rejects(client.append(f.bytes, { historyId, expectedHead: { position: 0, root: "invalid" } }), { code: "bad_request" });
+});
 test("reads verify contiguous prefixes and reject head mismatch, identity changes and fabricated empty progress", async () => {
   const f = await fixture(); let response = f.page;
   const client = createRecordLogClient({ base: "https://example.test", fetch: async () => Response.json(response) });
