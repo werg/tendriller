@@ -3,9 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { checkService } from "../lib/service.mjs";
 import { CONTRACT_VERSION } from "@tendriller/core/contract";
-import { readFileSync, writeFileSync, existsSync, statSync, cpSync, mkdirSync } from "node:fs";
-import { basename, resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
 import {
   resolveConfig, saveConfig, removeConfig, serverBase, cursorPath, readCursor, writeCursor, checkpointPath,

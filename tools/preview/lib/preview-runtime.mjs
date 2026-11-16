@@ -186,7 +186,13 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             case "activity": reply({ t: "activity", entries: activity, cursor: activity.length }); return;
             case "devices": reply({ t: "devices", devices: [...devices.values()] }); return;
             case "links": reply({ t: "links", links: [] }); return;
-            case "say_rendered": log("say_rendered", `Message ${m.message_id} rendered`, device.id); result = {}; break;
+            case "say_rendered": {
+              if (typeof m.message_id !== "string" || !/^[0-9a-f-]{36}$/.test(m.message_id)) { result = { error: "bad_message" }; break; }
+              if (!transcript.some(entry => entry.from === "agent" && entry.message_id === m.message_id)) { result = { error: "unknown_message" }; break; }
+              const summary = `Message ${m.message_id} rendered`;
+              if (!activity.some(entry => entry.kind === "say_rendered" && entry.device === device.id && entry.summary === summary)) log("say_rendered", summary, device.id);
+              result = {}; break;
+            }
             case "health": log("health", m.ok ? "Version healthy" : JSON.stringify(m.errors), device.id); return;
             case "log": for (const entry of m.entries || []) log(entry.level, entry.message, device.id); return;
             case "sensor_usage": log("sensor", JSON.stringify(m.active), device.id); return;
@@ -202,23 +208,8 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
   return api;
 }
 
-/** Records public API use while calling through to the real implementation. */
-export const TRACE_RUNTIME = String.raw`(() => {
-  const calls = window.__tendrilCalls = [];
-  const record = (fn, args) => {
-    const values = args.map(v => v instanceof Blob ? {size:v.size,type:v.type} : v);
-    try { calls.push({at:Date.now(),fn,args:JSON.parse(JSON.stringify(values))}); } catch {}
-  };
-  const wrap = (target, key, name) => {
-    if (typeof target?.[key] !== "function") return;
-    const original = target[key];
-    target[key] = function(...args) { record(name,args); return original.apply(this,args); };
-  };
-  const t = window.tendril;
-  for (const name of ["send","upload","uploadEvent","retryCapture","discardCapture"]) wrap(t,name,name);
-  for (const name of ["send","presented"]) wrap(t.conversation,name,"conversation."+name);
-  for (const name of ["set","delete","patch"]) wrap(t.state,name,"state."+name);
-  for (const name of ["list","info","read","latest","subscribe","publish"]) wrap(t.streams,name,"streams."+name);
+/** Explicit fixture event transport, independent of the production API object. */
+export const FIXTURE_TRANSPORT = String.raw`(() => {
   window.__tendrilEmit = async (event, data) => {
     const response = await fetch("/_preview/events", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({event,data})});
     if (!response.ok) throw Error("Fixture event was rejected");

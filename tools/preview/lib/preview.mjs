@@ -5,15 +5,12 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync, existsSync, statSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve, dirname, sep, posix } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve, sep, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { guessType, listFiles } from "../../cli/lib/pack.mjs";
-import { attachRuntime, TRACE_RUNTIME, resolveFixture } from "./preview-runtime.mjs";
+import { attachRuntime, FIXTURE_TRANSPORT, resolveFixture } from "./preview-runtime.mjs";
 import { assets as runtimeAssets, implementation as runtimeSupport, manifest as runtimeManifest } from "./preview-bundle.mjs";
 import { schemaDocument, CONTRACT_VERSION, assertValid } from "@tendriller/core/contract";
-
-const here = dirname(fileURLToPath(import.meta.url));
 
 export function loadPlaywright(cwd = process.cwd()) {
   for (const base of [join(cwd, "noop.js"), import.meta.url]) {
@@ -33,7 +30,7 @@ export function injectRuntime(html, publication = { id: "preview", base:"/_publi
   const base = publication.base + (directory === "." ? "" : directory.split("/").map(encodeURIComponent).join("/") + "/");
   const escapedBase = base.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   const configJson = JSON.stringify(config).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
-  const tags = `<base href="${escapedBase}"><script>window.__TENDRIL__=${configJson};</script><script src="/_tendril/runtime/${runtimeManifest.id}/tendril.js"></script><script>${TRACE_RUNTIME}</script>`;
+  const tags = `<base href="${escapedBase}"><script>window.__TENDRIL__=${configJson};</script><script src="/_tendril/runtime/${runtimeManifest.id}/tendril.js"></script><script>${FIXTURE_TRANSPORT}</script>`;
   const m = /<head(\s[^>]*)?>/i.exec(html);
   if (m) return html.slice(0, m.index + m[0].length) + tags + html.slice(m.index + m[0].length);
   return tags + html;
@@ -318,8 +315,6 @@ export async function preview(dir, opts = {}) {
         if (step.motion) await page.evaluate((m) => window.dispatchEvent(new DeviceMotionEvent("devicemotion", { accelerationIncludingGravity: m, acceleration: m })), step.motion);
         if (step.hardware_event) await page.evaluate((event) => window.__tendrilHardwareEmit?.(event), step.hardware_event);
         if (step.expect_text) await page.getByText(String(step.expect_text), { exact: false }).first().waitFor({ timeout: 3000 });
-        if (step.expect_send) await page.waitForFunction((expected) => (window.__tendrilCalls || []).some((call) =>
-          call.fn === "send" && Object.entries(expected).every(([key, value]) => call.args?.[0]?.[key] === value)), step.expect_send, { timeout: 3000 });
         if (step.expect_event) {
           const deadline = Date.now() + 5000;
           while (!server.preview.events.some(event => Object.entries(step.expect_event).every(([key, value]) => JSON.stringify(event.data?.[key]) === JSON.stringify(value)))) {
@@ -327,8 +322,6 @@ export async function preview(dir, opts = {}) {
             await page.waitForTimeout(25);
           }
         }
-        if (step.expect_no_send && await page.evaluate(() => (window.__tendrilCalls || []).some((call) => call.fn === "send")))
-          throw new Error("Expected no tendril.send call");
         fixtureTrace.push({ step, ok: true });
       } catch (e) { fixtureTrace.push({ step, ok: false, error: e.message }); errors.push({ message: `fixture: ${e.message}` }); }
     }
@@ -339,7 +332,6 @@ export async function preview(dir, opts = {}) {
         consoleMsgs.push({ level: "eval", text: JSON.stringify(value ?? null) });
       } catch (e) { errors.push({ message: `eval: ${e.message}` }); }
     }
-    const calls = await page.evaluate(() => window.__tendrilCalls || []);
     const title = await page.title();
     const shot = opts.out || join(resolve(dir), ".preview.png");
     await page.screenshot({ path: shot, fullPage: false });
@@ -347,7 +339,7 @@ export async function preview(dir, opts = {}) {
     return {
       ok: errors.length === 0 && consoleErrors.length === 0 && (resp?.ok() ?? false),
       status: resp?.status(), title, uncaught: errors, console_errors: consoleErrors,
-      console: consoleMsgs.slice(-50), calls, fixture_trace: fixtureTrace, screenshot: shot,
+      console: consoleMsgs.slice(-50), fixture_trace: fixtureTrace, screenshot: shot,
       runtime: "production", events: server.preview.events, activity: server.preview.activity, state: server.preview.state,
       mocked_http: server.mockedHttp,
     };

@@ -70,10 +70,13 @@ test("pack preserves authored edits and never completes missing files", () => {
   const dir = tmp();
   writeFileSync(join(dir, "index.html"), '<script src="missing.js"></script>');
   writeFileSync(join(dir, "app.js"), "// adapted for this page");
+  writeFileSync(join(dir, "__proto__"), "ordinary authored bytes");
   const before = listFiles(dir);
   const body = pack(dir);
   assert.deepEqual(listFiles(dir), before);
-  assert.deepEqual(Object.keys(body.files), ["app.js", "index.html"]);
+  assert.deepEqual(Object.keys(body.files), ["__proto__", "app.js", "index.html"]);
+  assert.equal(Object.hasOwn(body.files, "__proto__"), true);
+  assert.equal(body.files.__proto__, "ordinary authored bytes");
   assert.equal(body.files["app.js"], "// adapted for this page");
   writeFileSync(join(dir, "app.js"), "// another deliberate edit");
   assert.equal(pack(dir).files["app.js"], "// another deliberate edit");

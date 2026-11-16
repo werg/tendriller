@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Optional operational tools for the Tendriller public contract",
   "scripts": {
-    "test": "node --test cli/test/*.test.mjs collector/test/*.test.mjs bridges/test/*.test.mjs preview/test/*.test.mjs",
+    "test": "node --test cli/test/*.test.mjs collector/test/*.test.mjs bridges/test/*.test.mjs preview/test/*.test.mjs test/*.test.mjs",
     "test:browser": "playwright test --config preview/test/preview.playwright.config.ts"
   },
   "engines": { "node": ">=22.15.0" },

@@ -1,6 +1,6 @@
 // Packs a directory (or one file) into the body of POST <api>/files.
 // Text files go as UTF-8 strings, everything else as {base64, type}.
-// Skips dotfiles/dot-directories, node_modules and the reserved _tendril/ prefix.
+// Skips dotfiles/dot-directories, node_modules and the reserved _tendril/ and _publications/ prefixes.
 import { readdirSync, readFileSync, lstatSync } from "node:fs";
 import { join, basename, extname, relative, sep } from "node:path";
 
@@ -67,16 +67,19 @@ export function pack(target, { as, merge = false, message } = {}) {
   const st = lstatSync(target);
   if (st.isSymbolicLink()) throw new Error("Refusing publication source symlink");
   const body = { files: {} };
+  const add = (path, bytes) => Object.defineProperty(body.files, canonicalPath(path), {
+    value: encodeFile(bytes, path), enumerable: true, configurable: true, writable: true,
+  });
   if (st.isDirectory()) {
     const paths = listFiles(target);
     if (paths.length === 0) throw new Error(`nothing to upload in ${target}`);
-    for (const p of paths) body.files[canonicalPath(p)] = encodeFile(readFileSync(join(target, p)), p);
+    for (const p of paths) add(p, readFileSync(join(target, p)));
     body.replace = !merge;
     if (!merge && !paths.includes("index.html")) throw new Error(`${target} has no index.html (use --no-replace to add files to the existing version)`);
   } else if (st.isFile()) {
     let name = as || basename(target);
     if (!as && /\.html?$/i.test(name)) name = "index.html";
-    body.files[canonicalPath(name)] = encodeFile(readFileSync(target), name);
+    add(name, readFileSync(target));
   } else throw new Error("Publication source must be a regular file or directory");
   if (message) body.message = message;
   return body;

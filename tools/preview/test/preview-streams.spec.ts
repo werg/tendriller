@@ -43,7 +43,7 @@ test("the real stream client reads snapshots, replays history and catches up aft
   await expect.poll(() => page.evaluate(() => (window as any).records), { timeout: 15000 }).toEqual([1, 2, 3, 4]);
   expect(await page.evaluate(() => (window as any).streamErrors)).toEqual([]);
   expect(server.preview.events).toEqual([]);
-  expect(await page.evaluate(() => (window as any).__tendrilCalls.some((call: any) => call.fn === "streams.subscribe"))).toBe(true);
+  expect(server.preview.messages.some((message: any) => message.t === "stream_subscribe" && message.stream === "metrics")).toBe(true);
 });
 
 test("the real client receives ephemeral live data and reports forbidden or non-replayable reads", async ({ page }) => {
@@ -72,6 +72,5 @@ test("ordered fixture steps feed streams through the production runtime without 
   expect(result.ok, JSON.stringify(result)).toBe(true);
   expect(result.runtime).toBe("production");
   expect(result.fixture_trace.every((step: any) => step.ok)).toBe(true);
-  expect(result.calls.some((call: any) => call.fn === "streams.subscribe")).toBe(true);
   expect(result.events).toEqual([]);
 });

@@ -16,7 +16,7 @@ const url = () => `http://127.0.0.1:${server.address().port}/`;
 async function openWithServiceWorker(page: Page) {
   await page.goto(url());
   await page.waitForFunction(() => window.tendril.connected);
-  await page.waitForFunction(() => navigator.serviceWorker.controller?.state === "activated", null, { timeout: 20000 });
+  await page.evaluate(() => window.tendril.publication.saveOffline());
 }
 
 const readDevices = (page: Page) => page.evaluate(async () => {
@@ -42,6 +42,7 @@ test("preview runs the headless runtime with a page-owned conversation and prese
     });
   });
   expect(await page.evaluate(() => "control" in window.tendril)).toBe(false);
+  expect(await page.evaluate(() => Object.isFrozen(window.tendril))).toBe(true);
   server.preview.say({ text: "Your measurement arrived", in_reply_to: 1 });
   await expect(page.locator("#replies")).toContainText("Your measurement arrived");
   await expect.poll(() => server.preview.activity.some((item: any) => item.kind === "say_rendered")).toBe(true);
@@ -96,7 +97,7 @@ test("an edited preview script creates a new publication and remains available o
   await page.goto(url());
   await expect(page.locator("#marker")).toHaveText("After the edit");
   expect(await page.evaluate(() => window.__TENDRIL__.publication.id)).not.toBe(originalPublication);
-  await page.waitForFunction(() => navigator.serviceWorker.controller?.state === "activated", null, { timeout: 20000 });
+  await page.evaluate(() => window.tendril.publication.saveOffline());
   await expect.poll(cachedScript).toBe(updated);
 
   await context.setOffline(true);
