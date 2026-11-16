@@ -6,11 +6,11 @@ if (!base || !/^https:\/\/[a-z0-9.-]+$/.test(base)) {
   throw new Error("Usage: node scripts/check-deployment.mjs https://service-host");
 }
 
-async function get(path) {
+async function get(path, headers) {
   let error;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const response = await fetch(new URL(path, base), { signal: AbortSignal.timeout(15_000) });
+      const response = await fetch(new URL(path, base), { headers, signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
       return response;
     } catch (cause) {
@@ -28,6 +28,14 @@ if (!guide.includes("Tendriller")) throw new Error("Agent guide is missing or in
 console.log(`Deployment smoke check passed: ${base}`);
 
 const descriptor = await (await get("/api/service")).json();
+// Browser Integrity Check can reject ordinary automated clients before this
+// Worker runs. Keep Python's default urllib user agent in the live smoke test.
+const automated = await get("/api/service", { "User-Agent": "Python-urllib/3.12" });
+if (!(automated.headers.get("content-type") || "").includes("application/json")) {
+  throw new Error("Automated clients are blocked before reaching the API");
+}
+const automatedGuide = await (await get("/agent.md", { "User-Agent": "Python-urllib/3.12" })).text();
+if (!automatedGuide.includes("Tendriller")) throw new Error("Automated clients cannot read the agent guide");
 const lock = JSON.parse(readFileSync(new URL("../composition.lock.json",import.meta.url)));
 requireService(descriptor,{contract:lock.contract,workflows:lock.workflow.interfaces});
 for(const module of descriptor.workflows) if(module.implementation_version!==lock.workflow.sha256) throw new Error(`Unexpected implementation: ${module.id}`);
