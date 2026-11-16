@@ -21,7 +21,7 @@ describe("Web Push readiness", () => {
     const subscription = {
       endpoint: "https://push.example.com/send/example",
       expirationTime: null,
-      keys: { p256dh: base64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
+      keys: { p256dh: base64url(new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer)),
         auth: base64url(crypto.getRandomValues(new Uint8Array(16))) },
     };
     await inDO(h.id, (t) => {
