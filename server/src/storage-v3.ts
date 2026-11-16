@@ -24,9 +24,10 @@ const validBlobId = /^b_[a-z2-7]{20}$/;
 
 function session(t: Tendril, row: UploadRow) {
   const metadata = row.phase === "completed" ? blobMetadata(t, row.blob_id) : undefined;
+  const stored = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=? AND status='ready'", row.sha256);
   return { id: row.id, blob_id: row.blob_id, sha256: row.sha256, size: row.size,
     phase: row.phase, upload_required: row.phase !== "completed" && row.phase !== "received" &&
-      !t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND status='ready'", row.sha256),
+      stored?.size !== row.size,
     expires_at: row.expires_at, ...(metadata ? { blob: metadata } : {}) };
 }
 
@@ -87,7 +88,10 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
       const own = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE actor=? AND phase!='completed' AND expires_at>?", actor, t.now())?.n ?? 0;
       if (active >= RESOURCE_LIMITS.upload_sessions_per_page || own >= RESOURCE_LIMITS.upload_sessions_per_actor)
         throw new HttpError(429, "upload_quota", "Too many unfinished uploads");
-      const ready = !!t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND status='ready'", input.sha256);
+      const stored = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=? AND status='ready'", input.sha256);
+      if (stored && stored.size !== input.size)
+        throw new HttpError(409, "blob_size_conflict", "The existing blob's stored size differs from the upload intent");
+      const ready = !!stored;
       const next: UploadRow = { id: uploadId(), actor, cid: input.cid, sha256: input.sha256,
         size: input.size, type: input.type, name: input.name ?? null, blob_id: newBlobId(), source, device,
         phase: ready ? "ready" : "reserved", expires_at: t.now() + RESOURCE_LIMITS.upload_expiry_seconds * 1000 };
@@ -129,8 +133,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
         const current = t.db.one<UploadRow>("SELECT * FROM upload_sessions WHERE id=?", row.id);
         if (!current || current.phase === "aborted" || (current.phase !== "completed" && current.expires_at <= t.now()))
           throw new HttpError(409, "upload_closed", "Upload is closed");
-        if (!t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND status='ready'", row.sha256))
-          throw new HttpError(409, "upload_incomplete", "Upload content is not ready");
+        if (!t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND size=? AND status='ready'", row.sha256, row.size))
+          throw new HttpError(409, "upload_incomplete", "Upload content is not ready with the reserved size");
         if (!t.db.one("SELECT 1 AS present FROM blobs WHERE id=?", row.blob_id))
           t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,?,?,0)",
             row.blob_id, row.sha256, row.type, row.size, row.name, t.now(), row.device, row.source);
@@ -181,6 +185,11 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
       const current = fileHead(t, input.path);
       if ((current?.revision ?? 0) !== input.expected_revision)
         throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
+      if (!current && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs")?.n ?? 0) >= RESOURCE_LIMITS.shared_file_paths)
+        throw new HttpError(429, "resource_quota", "Shared file path limit reached");
+      if (put && !current?.blob_id &&
+          (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs WHERE blob_id IS NOT NULL")?.n ?? 0) >= RESOURCE_LIMITS.shared_files)
+        throw new HttpError(429, "resource_quota", "Active shared file limit reached");
       if (put) requireBlob(t, put.blob_id);
       const next = input.expected_revision + 1, now = t.now();
       const blobId = put?.blob_id ?? null;
@@ -219,7 +228,7 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   if (rest === "publications" && method === "POST") {
     const input = assertValid("publicationWrite", await readJson(req, 2 * 1024 * 1024));
     assertPublicationEntries(input.files, input.entry);
-    const targets = { operations: ["publication.write"], paths: input.files.map(file => ["publications", file.path]) };
+    const targets = { operations: ["publication.publish"], paths: input.files.map(file => ["publications", file.path]) };
     const prior = replay<{ version: number; head_revision: number }>(t, actor, input, targets, input);
     if (prior.found) return json(prior.result);
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
@@ -260,7 +269,7 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "publications/rollback" && method === "POST") {
     const input = assertValid("publicationRollback", await readJson(req, 4096));
-    const result = mutate(t, actor, input, { operations: ["publication.write"] }, input, () => {
+    const result = mutate(t, actor, input, { operations: ["publication.publish"] }, input, () => {
       const current = t.db.get<number>("publication_head_revision", 0);
       if (current !== input.expected_head_revision)
         throw new HttpError(409, "publication_conflict", "The publication head changed", { head_revision: current });
