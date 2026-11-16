@@ -7,6 +7,7 @@ const suites = [
   ["runtime/test/push/playwright.config.ts"],
   ["runtime/test/tts/playwright.config.ts"],
   ["test/e2e/playwright.config.ts"],
+  ["tools/preview/test/preview.playwright.config.ts"],
 ];
 const failed = [];
 for (const [config, ...files] of suites) {

@@ -1,4 +1,5 @@
-import type { RuntimeApi, SpeechStatus } from "@tendriller/core/contract";
+import type { RuntimeApi } from "@tendriller/core/contract";
+import type { SpeechStatus } from "@tendriller/core/voice";
 export type WakeMode = "local" | "browser";
 export type WakeState = "off" | "starting" | "listening" | "command" | "restarting" | "paused" | "error";
 export interface VoiceOptions {
@@ -8,7 +9,7 @@ export interface VoiceOptions {
   speakReplies?: boolean;
 }
 export interface VoiceAdapter {
-  readonly outputStatus: SpeechStatus; readonly speaking: boolean; readonly listening: boolean;
+  readonly outputStatus: SpeechStatus; readonly muted: boolean; readonly speaking: boolean; readonly listening: boolean;
   enableOutput(engine?: "browser" | "neural"): Promise<boolean>;
   mute(): void; speak(text: string): void; stop(): void; language(tag: string): void;
   prepareCapture(): Promise<void>; startCapture(): Promise<void>; finishCapture(): void; cancelCapture(): void;

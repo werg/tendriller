@@ -855,3 +855,41 @@ for (const preview of [false, true]) test(`publication A and B retain pinned laz
   }
   await context.setOffline(false);
 });
+
+test("authored composer preserves new text typed while an earlier send awaits acceptance", async ({ page }) => {
+  const { conversationPage } = await import("../../test/e2e/authored-pages");
+  let accept: (() => void) | undefined;
+  const t = mock.create({ html: conversationPage, onMessage(message, socket) {
+    if (message.t !== "send" || message.kind !== "instruction") return;
+    accept = () => socket.send(JSON.stringify({ t: "ack", cid: message.cid, seq: 1 })); return true;
+  } });
+  await open(page, t);
+  const input = page.getByRole("textbox", { name: "Message to the agent" });
+  await input.fill("First submitted thought"); await page.getByRole("button", { name: "Send", exact: true }).click();
+  await mock.waitFor(() => accept); await input.fill("Second thought still being written"); accept!();
+  await expect(page.locator("#delivery")).toHaveText("accepted");
+  await expect(input).toHaveValue("Second thought still being written");
+  await page.reload(); await page.waitForFunction(() => window.tendril.connected);
+  await expect(input).toHaveValue("Second thought still being written");
+});
+
+test("the small utility observes active sensors without opening one and stops tracked use", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).mediaCalls = 0;
+    navigator.mediaDevices.getUserMedia = async () => {
+      (window as any).mediaCalls++;
+      const canvas = document.createElement("canvas");
+      const stream = canvas.captureStream(); (window as any).fixtureStream = stream; return stream;
+    };
+  });
+  const t = mock.create({ html: '<button id="camera" onclick="navigator.mediaDevices.getUserMedia({video:true})">Start camera fixture</button>' });
+  await open(page, t);
+  expect(await page.evaluate(() => (window as any).mediaCalls)).toBe(0);
+  expect(await page.evaluate(() => window.tendril.sensors.active())).toEqual([]);
+  await expect(page.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
+  await page.locator("#camera").click();
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.active())).toEqual(["camera"]);
+  await page.getByRole("button", { name: "Stop Camera", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.active())).toEqual([]);
+  expect(await page.evaluate(() => (window as any).fixtureStream.getTracks().every((track: MediaStreamTrack) => track.readyState === "ended"))).toBe(true);
+});

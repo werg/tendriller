@@ -253,3 +253,29 @@ test("lazy resources reject changed bytes, respect no-store, and leave undeclare
   await assert.rejects(sw.request(url), /offline/);
   await assert.rejects(sw.request(undeclared), /offline/);
 });
+
+test("optional runtime modules are verified and cached only after deliberate use", async () => {
+  const a = release("1"), net = network(a);
+  const url = a.publication.runtime.base + "voice.mjs", manifestURL = a.publication.runtime.base + "manifest.json";
+  const manifest = await a.resources.get(manifestURL)().json();
+  manifest.assets.push({ path: "voice.mjs", sha256: sha("explicit voice module"), type: "text/javascript", preload: false });
+  net.resources.set(manifestURL, () => json(manifest)); net.resources.set(url, () => new Response("tampered module"));
+  const sw = await worker(net); await sw.install(); await sw.announce("a", a.publication);
+  assert.equal(net.calls.includes(url), false, "plain page readiness does not fetch voice");
+  await assert.rejects(sw.request(url, "a"), /integrity mismatch/);
+  net.resources.set(url, () => new Response("explicit voice module"));
+  assert.equal(await (await sw.request(url, "a")).text(), "explicit voice module");
+  net.online = false;
+  assert.equal(await (await sw.request(url, "a")).text(), "explicit voice module");
+});
+
+test("nested logical filenames are encoded exactly and offline navigation never substitutes another page", async () => {
+  const a = release("1"), path = "notes & charts/reading ? # 100%.html";
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  a.publication.assets.push({ path, sha256: sha("nested authored page"), type: "text/html" });
+  a.resources.set(a.publication.base + encoded, () => new Response("nested authored page", { headers: { "X-Tendril-Publication": "1" } }));
+  const net = network(a), sw = await worker(net); await sw.install(); await sw.announce("a", a.publication);
+  assert.ok(net.calls.includes(a.publication.base + encoded)); net.online = false;
+  assert.equal(await (await sw.request(encoded, "a", true)).text(), "nested authored page");
+  assert.equal((await sw.request("missing.html", "a", true)).status, 503);
+});

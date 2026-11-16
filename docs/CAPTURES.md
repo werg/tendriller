@@ -10,7 +10,7 @@
 
 Check `status` before clearing an editable field. A connected socket alone does not imply that a request was accepted.
 
-The `send_result` event reports accepted or rejected non-instruction inputs, including inputs replayed after a reload. It contains the result fields, `cid`, original scope/generation metadata, and the original `data`. Include a stable application ID such as `observation_id` in the data to reconcile a locally saved card with its later receipt. Owner instructions use `instruction_ack` or `instruction_rejected` with `cid` and `text`; a rejected instruction is removed from the optimistic transcript so it cannot reappear as still sending.
+The `send_result` event reports accepted or rejected non-instruction inputs, including inputs replayed after a reload. It contains the result fields, `cid`, original scope/generation metadata, and the original `data`. Include a stable application ID such as `observation_id` in the data to reconcile a locally saved card with its later receipt. Conversation input uses `conversation_result` with stable `cid`, `text`, and `status`. A rejected queued input remains in the local transcript as explicitly rejected, including after reload, so an authored interface can recover its text without showing it as still sending.
 
 ## Capture media and its meaning together
 

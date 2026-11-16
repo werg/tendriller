@@ -1,3 +1,4 @@
+import { voicePage } from "./authored-pages";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { agent, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
 
@@ -39,7 +40,7 @@ async function setUpVoice(context: BrowserContext, page: Page, withInput = false
       const NativeWorker = window.Worker;
       w.Worker = class {
         onmessage: ((event: MessageEvent) => void) | null = null;
-        constructor(url: string | URL) { if (!String(url).includes("speech-worker.js")) return new NativeWorker(url) as any; }
+        constructor(url: string | URL) { if (!String(url).includes("voice-worker.js")) return new NativeWorker(url) as any; }
         postMessage(message: any) {
           queueMicrotask(() => this.onmessage?.({ data: message.action === "init" ? { id: message.id, ready: true } : { id: message.id, text: "voice follow up" } } as MessageEvent));
         }
@@ -55,12 +56,13 @@ async function setUpVoice(context: BrowserContext, page: Page, withInput = false
 test("agent reply is displayed and played by neural voice on the owner page", async ({ page, context }) => {
   const h = await createPage();
   try {
-    await publish(h, '<button id="gesture">Ready</button>');
+    await publish(h, voicePage);
     await setUpVoice(context, page);
     await signInFixture(context);
     await openClaimed(page, h);
-    await page.locator("#gesture").click();
-    await page.evaluate(() => window.tendril.tts.enable());
+    await page.waitForFunction(() => !!(window as any).voice);
+    await page.locator("#enable-speech").click();
+    await expect.poll(() => page.evaluate(() => (window as any).voice.outputStatus.state)).toBe("ready");
     const reply = await agent(h, "/say", "POST", { text: "Hello from the agent", speak: true });
     expect(reply.status).toBe(200);
     await expect(page.locator("body")).toContainText("Hello from the agent");
@@ -73,18 +75,18 @@ test("agent reply is displayed and played by neural voice on the owner page", as
 test("voice input interrupts an agent reply, reaches the event queue, and later speech recovers", async ({ page, context }) => {
   const h = await createPage();
   try {
-    await publish(h, '<button id="gesture">Ready</button>');
+    await publish(h, voicePage);
     await setUpVoice(context, page, true);
     await signInFixture(context);
     await openClaimed(page, h);
-    await page.locator("#gesture").click();
-    await page.evaluate(() => window.tendril.tts.enable());
+    await page.waitForFunction(() => !!(window as any).voice);
+    await page.locator("#enable-speech").click();
+    await expect.poll(() => page.evaluate(() => (window as any).voice.outputStatus.state)).toBe("ready");
     const cursor = (await agent(h, "/events?wait=0")).data.cursor;
     expect((await agent(h, "/say", "POST", { text: "long reply", speak: true })).status).toBe(200);
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.spoken)).toEqual(["long reply"]);
-    const mic = page.locator('[data-tendril="control"] .mic').first();
+    const mic = page.locator("#record");
     await mic.click();
-    await page.getByRole("button", { name: "Download and continue" }).click();
     await expect(mic).toHaveAttribute("aria-pressed", "true");
     await mic.click();
     await expect.poll(async () => (await agent(h, `/events?after=${cursor}&wait=0`)).data.events.some((e: any) => e.type === "instruction" && JSON.stringify(e.data).includes("voice follow up"))).toBe(true);

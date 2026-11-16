@@ -41,17 +41,6 @@ export interface StateApi<T = Record<string, unknown>> {
   patch(mergePatch: object, options?: OperationOptions): Promise<StateResult>;
   on(fn: (state: T, ops: StateOperation[], by: string) => void): () => void;
 }
-/** Optional voice adapter settings; never constructed by the headless runtime. */
-export interface RuntimePreferences {
-  audio: boolean; language: string | null; voice: "browser" | "neural";
-  /** Stored configuration only: listening never starts automatically after a reload. */
-  wakePhrase: string; wakeMode: "local" | "browser";
-}
-export interface PreferencesApi {
-  get(): RuntimePreferences;
-  update(patch: Partial<RuntimePreferences>): void;
-  on(listener: (preferences: RuntimePreferences) => void): () => void;
-}
 export type SessionBrief = WireContracts["session"];
 export type SessionWrite = WireContracts["sessionWrite"];
 export type SessionResult = WireContracts["sessionResult"];
@@ -115,13 +104,6 @@ export interface RuntimeEventMap {
   stream_record: StreamRecord;
   stream_gap: { stream: string; history: StreamHistory };
   stream_error: { stream: string; error: Error & { code?: string } };
-}
-export interface SpeechStatus { enabled: boolean; state: "idle" | "loading" | "ready" | "error"; message: string }
-export interface SpeechOutput {
-  readonly status: SpeechStatus;
-  /** True while browser or neural speech is playing or queued for immediate playback. */
-  readonly speaking: boolean;
-  stop(): void; enable(): Promise<void>; disable(): void; speak(text: string): void; dispose(): void;
 }
 export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";
 export interface NotificationStatus { permission: NotificationPermission | "unsupported"; subscribed: boolean; registered: boolean; reason?: string }

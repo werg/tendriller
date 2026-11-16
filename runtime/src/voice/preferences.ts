@@ -1,13 +1,13 @@
-import type { PreferencesApi, RuntimePreferences } from "../../../contract/index.mjs";
+import type { VoicePreferencesApi, VoicePreferences } from "../../../contract/voice.mjs";
 
-const defaults: RuntimePreferences = {
+const defaults: VoicePreferences = {
   audio: false, language: null, voice: "browser",
   wakePhrase: "Hey Tendril", wakeMode: "local",
 };
 
-function validate(patch: unknown): Partial<RuntimePreferences> {
+function validate(patch: unknown): Partial<VoicePreferences> {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TypeError("Preferences require an object");
-  const result: Partial<RuntimePreferences> = {};
+  const result: Partial<VoicePreferences> = {};
   for (const [key, value] of Object.entries(patch)) {
     switch (key) {
       case "audio":
@@ -36,31 +36,30 @@ function validate(patch: unknown): Partial<RuntimePreferences> {
   return result;
 }
 
-/** Optional voice settings are local to this browser device and page. */
-export function createPreferences(page: string): PreferencesApi {
+/** Choices persist for this page; output permission is always local to this adapter session. */
+export function createPreferences(page: string): VoicePreferencesApi {
   const key = `tendril:voice:${page}:preferences`;
-  const read = (value: string | null): RuntimePreferences => {
-    try { return value === null ? { ...defaults } : { ...defaults, ...validate(JSON.parse(value)) }; }
+  const read = (value: string | null): VoicePreferences => {
+    try { return value === null ? { ...defaults } : { ...defaults, ...validate(JSON.parse(value)), audio: false }; }
     catch { return { ...defaults }; }
   };
   let current = { ...defaults };
   try { current = read(localStorage.getItem(key)); } catch { /* This visit still has local preferences when storage is unavailable. */ }
-  const listeners = new Set<(preferences: RuntimePreferences) => void>();
-  const install = (next: RuntimePreferences) => {
+  const listeners = new Set<(preferences: VoicePreferences) => void>();
+  const install = (next: VoicePreferences) => {
     if (JSON.stringify(current) === JSON.stringify(next)) return;
     current = next;
     for (const listener of [...listeners]) {
       try { listener({ ...current }); } catch (error) { setTimeout(() => { throw error; }); }
     }
   };
-  window.addEventListener("storage", event => {
-    if (event.key === key) install(read(event.newValue));
-  });
   return {
     get: () => ({ ...current }),
+    dispose() { listeners.clear(); },
     update(patch) {
       const next = { ...current, ...validate(patch) };
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* Preferences remain effective for this visit. */ }
+      const { audio: _permission, ...choices } = next;
+      try { localStorage.setItem(key, JSON.stringify(choices)); } catch { /* Preferences remain effective for this visit. */ }
       install(next);
     },
     on(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
