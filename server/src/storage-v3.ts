@@ -179,7 +179,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "file-refs" && method === "GET") {
     const row = fileHead(t, queryPath(url));
-    if (!row || !row.blob_id) throw new HttpError(404, "not_found", "No such shared file");
+    if (!row) throw new HttpError(404, "not_found", "No such shared file");
+    // A tombstone is the authoritative revision for subsequent compare-and-swap.
     return json(fileValue(row));
   }
   if (rest === "file-refs" && (method === "PUT" || method === "DELETE")) {
@@ -193,7 +194,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     const result = mutate(t, actor, input, targets, input, () => {
       const current = fileHead(t, input.path);
       if ((current?.revision ?? 0) !== input.expected_revision)
-        throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
+        throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision",
+          { current: current ? fileValue(current) : null });
       if (current && input.scope !== undefined && input.scope !== current.scope)
         throw new HttpError(409, "file_conflict", "An existing shared file cannot change its bound scope");
       const effectiveScope = current ? current.scope : input.scope ?? null;
