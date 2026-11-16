@@ -14,6 +14,7 @@ import { STREAM_ROUTE, handleStreams } from "./streams";
 import { allows, authenticatePage } from "./access";
 import { handleManagement } from "./management";
 import { handleStorage, STORAGE_ROUTE } from "./storage";
+import { RECORD_LOG_ROUTE, handleRecordLog } from "./records";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -53,6 +54,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (RECORD_LOG_ROUTE.test(sub)) return handleRecordLog(t, req, url, sub, principal);
   if (sub === 'manage') return handleManagement(t, req, base, principal);
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t));
   if (sub.startsWith("streams") && STREAM_ROUTE.test(sub))

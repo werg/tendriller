@@ -1,7 +1,7 @@
 // SQLite storage for the Tendril Durable Object (PROTOCOL section 3).
 
 /** Persistent storage identity, independent of runtime and workflow releases. */
-export const STORAGE_SCHEMA_REVISION = 4;
+export const STORAGE_SCHEMA_REVISION = 5;
 
 export class StorageSchemaError extends Error {
   readonly code = 'storage_schema_mismatch';
@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS stream_producers (name TEXT PRIMARY KEY, hash TEXT NO
   created_at INTEGER NOT NULL, last_seen INTEGER);
 CREATE TABLE IF NOT EXISTS stream_rate (principal TEXT PRIMARY KEY, minute INTEGER NOT NULL, requests INTEGER NOT NULL, bytes INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS stream_counters (name TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS record_log (id INTEGER PRIMARY KEY CHECK(id=1), history_id TEXT NOT NULL UNIQUE,
+  position INTEGER NOT NULL, root TEXT NOT NULL, bytes INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS record_log_entries (position INTEGER PRIMARY KEY, record_id TEXT NOT NULL UNIQUE,
+  previous_root TEXT NOT NULL, root TEXT NOT NULL, record TEXT NOT NULL, bytes INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, key TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
   label TEXT, created_at INTEGER NOT NULL, expires_at INTEGER, created_by_agent INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS guest_accounts (account_id TEXT NOT NULL, link_id TEXT NOT NULL, approved INTEGER NOT NULL,

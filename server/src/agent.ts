@@ -23,6 +23,7 @@ import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
 import { authenticateAgent, authenticateAgentToken, requireAccess } from "./access";
 import { pushAvailable, validatePushSubscription } from "./push";
 import { STORAGE_ROUTE, handleStorage } from "./storage";
+import { RECORD_LOG_ROUTE, handleRecordLog } from "./records";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -45,6 +46,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
+  if (RECORD_LOG_ROUTE.test(rest)) return handleRecordLog(t, req, url, rest, await authenticateAgent(t, req));
   if (STORAGE_ROUTE.test(rest)) {
     const principal = await authenticateAgent(t, req);
     requireAccess(principal, "agent.manage");
@@ -208,6 +210,8 @@ route("PATCH", /^$/, async (t, req) => {
   if (b.name !== undefined) t.db.set("name", validName(b.name));
   if (b.lifetime !== undefined) {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
+    if (b.lifetime !== "resident" && t.db.one("SELECT id FROM record_log WHERE id=1"))
+      throw new HttpError(409, "record_log_requires_resident", "A Tendril with retained history must remain resident until explicitly deleted");
     if (b.lifetime === "resident" && !t.db.get<string | null>("owner_account", null)) throw new HttpError(403, "account_required", "Open the page as its owner before making it resident");
     try {
       await t.env.ACCOUNTS.prepare("UPDATE tendrils SET lifetime = ? WHERE id = ?").bind(b.lifetime, t.tid).run();
