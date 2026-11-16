@@ -2647,10 +2647,6 @@
     "captureOptions": {
       "type": "object",
       "properties": {
-        "cid": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
-        },
         "scope": {
           "type": "string",
           "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
