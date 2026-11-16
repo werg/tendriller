@@ -1,8 +1,26 @@
-import type { RuntimeApi, SendResult, SessionBrief, DurableTimer, PortableBundle, DeviceConfigMessage, PublicationManifest, RuntimeConfiguration } from "../index.mjs";
+import type { RuntimeApi, SendResult, SessionBrief, DurableTimer, PortableBundle, DeviceConfigMessage, PublicationManifest, RuntimeConfiguration, SensorStatus } from "../index.mjs";
 import { createClient } from "../client.mjs";
 
 declare const page: RuntimeApi<{ count: number }>;
+const sensors: SensorStatus = page.sensors.status();
+page.sensors.on(status => { const pending: SensorStatus["pending"] = status.pending; void pending; });
+page.on("sensors", status => { const active: SensorStatus["active"] = status.active; void active; });
+// @ts-expect-error sensor observations use one status snapshot, not the removed active-only API.
+page.sensors.active();
+void sensors;
 const count: number = page.state.get().count;
+const snapshotCount: number = (await page.state.snapshot()).state.count;
+void snapshotCount;
+void page.state.apply([{op:"set",path:["count"],value:count+1}],{conditions:[{path:["count"],equals:count}]});
+// @ts-expect-error one condition cannot mean both equality and existence.
+void page.state.apply([],{conditions:[{path:["count"],equals:0,exists:true}]});
+const stateResult = await page.state.apply([]);
+if (stateResult.status === "queued" || stateResult.status === "accepted") { const cid:string = stateResult.cid; void cid; }
+// @ts-expect-error unchanged work has no durable command identity.
+if (stateResult.status === "unchanged") stateResult.cid;
+for (const work of page.state.pending()) { const path:string[] = work.ops[0].path; void path; }
+page.on("state_result", receipt => { const cid:string = receipt.cid; const path:string[] = receipt.ops[0].path; void [cid,path]; });
+page.on("state_queue", commands => { const cid:string|undefined = commands[0]?.cid; void cid; });
 const result: SendResult = await page.send({ count });
 if (result.status === "accepted") { const seq: number = result.seq; void seq; }
 if (result.status === "rejected") { const code: string = result.error; void code; }
@@ -11,7 +29,7 @@ if (result.status === "queued") result.seq;
 // @ts-expect-error require an explicit resume cursor.
 createClient({ api: "https://example.test/api/t/id", token: "tk_private" }).readEvents({});
 const session: SessionBrief = { purpose: "Experiment", current_task: "Measure", completed: [], decisions: [], open_questions: [], last_handled_seq: 1 };
-const timer: DurableTimer = { id: "timer", title: "Check", due_at: 1, timezone: "Europe/Berlin", missed: "fire_once", notify: true, state: "scheduled", created_at: 1, updated_at: 1 };
+const timer: DurableTimer = { id: "timer", revision: 1, title: "Check", due_at: 1, timezone: "Europe/Berlin", missed: "fire_once", notify: true, state: "scheduled", created_at: 1, updated_at: 1 };
 const bundle: PortableBundle = { format: "tendriller-bundle", version: 3, entry: "app.html", name: "Copy", files: [], media: [{ id: "b_media", type: "image/png", name: null, base64: "AA==" }] };
 const guestConfig: DeviceConfigMessage = { devices: [{ id: "d_camera", purpose: "camera" }], focus: null };
 page.on("upload_event", result => { if (result.status === "accepted") { const id: string = result.blob.id; void id; } });

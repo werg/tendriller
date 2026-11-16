@@ -15,19 +15,19 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "TendrilV4"
+        "class_name": "TendrilV5"
       },
       {
         "name": "ADMISSION",
-        "class_name": "AdmissionV4"
+        "class_name": "AdmissionV5"
       }
     ]
   },
   "exports": {
-    "TendrilV3": { "type": "durable-object", "state": "deleted" },
-    "Admission": { "type": "durable-object", "state": "deleted" },
-    "TendrilV4": { "type": "durable-object", "storage": "sqlite" },
-    "AdmissionV4": { "type": "durable-object", "storage": "sqlite" }
+    "TendrilV4": { "type": "durable-object", "state": "deleted" },
+    "AdmissionV4": { "type": "durable-object", "state": "deleted" },
+    "TendrilV5": { "type": "durable-object", "storage": "sqlite" },
+    "AdmissionV5": { "type": "durable-object", "storage": "sqlite" }
   },
   "d1_databases": [
     {
@@ -40,7 +40,7 @@
   "r2_buckets": [
     {
       "binding": "FILES",
-      "bucket_name": "tendriller-staging-v4-files"
+      "bucket_name": "tendriller-staging-v5-files"
     }
   ],
   "triggers": {

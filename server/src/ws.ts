@@ -7,13 +7,13 @@ import { listVersions, pointers, reportHealth, rollback, servedVersion } from ".
 import { HttpError, isPlainObject } from "./http";
 import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from "./ids";
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
-import { validateOps } from "./state";
+import { stateCommand } from "./state-command";
 import { getFocus } from "./device-roles";
 import { mutate, scopes, preconditions, type ValidatedContext } from "./scopes";
 import { synchronizeWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
 import { emitBuiltinRecord, publishFromPage, subscribeStream, unsubscribeStream } from "./streams";
-import { ContractError } from "../../contract/index.mjs";
+import { assertValid, ContractError } from "../../contract/index.mjs";
 import { allows, authorizeSocket } from "./access";
 import { pushAvailable, validatePushSubscription, validPushPublicKey } from "./push";
 
@@ -84,7 +84,7 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
       ws.close(4003, "device removed");
       return;
     }
-    const principal = await authorizeSocket(t, ws, { fresh: msg.t === "stream_subscribe" || msg.t === "stream_publish" });
+    const principal = await authorizeSocket(t, ws, { fresh: msg.t === "stream_subscribe" || msg.t === "stream_publish" || msg.t === "state_snapshot" });
     if (!principal) { ws.close(4003, "page access revoked"); return; }
     const current = t.att(ws) as Att & { deviceId: string };
     const dev = { ...t.device(current.deviceId)!, role: principal.role, pending: 0 };
@@ -280,15 +280,26 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
 
   async capture_complete(c) { return HANDLERS.send(c); },
 
+  state_snapshot({ t, ws, msg }) {
+    // Authorization completed above. All three fields are read synchronously
+    // from one committed state; this read creates no durable command receipt.
+    t.send(ws, { t: "state_snapshot", cid: msg.cid, ...t.getState() });
+  },
+
   async state(c) {
     const { t, dev, msg, ws } = c;
     const result = (() => {
       if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot change state" };
       try {
-        const ops = validateOps(msg.ops);
-        return mutate(t, `device:${dev.id}`, msg, { paths: ops.map(op => op.path), operations: ["state"] }, ops, () => ({ rev: t.applyState(ops, `device:${dev.id}`, ws, preconditions(msg)), scopes: scopes(t) }));
+        // Validate the entire write envelope just as the HTTP boundary does.
+        // Ignoring an unknown guard would turn a misspelled conditional write
+        // into an unconditional mutation.
+        const { t: _type, ...input } = msg;
+        const command = assertValid("stateUpdate", input);
+        if (!("ops" in command)) throw new HttpError(400, "bad_request", "WebSocket state writes require ops");
+        return stateCommand(t, `device:${dev.id}`, command, command.ops, ws);
       } catch (err) {
-        return { error: err instanceof HttpError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };
+        return { error: err instanceof HttpError || err instanceof ContractError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };
       }
     })();
     ack(c, { ...result, scopes: scopes(t) });

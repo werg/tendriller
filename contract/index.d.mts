@@ -9,6 +9,15 @@ export type Role = DeviceInfo["role"];
 export type DevicePurpose = DeviceInfo["purpose"];
 export type Path = string | (string | number)[];
 export type StateOperation = WireContracts["stateOperation"];
+export type NormalizedStateOperation = StateOperation & { path: string[] };
+export type StateCondition = { path: Path; equals: unknown; exists?: never } | { path: Path; exists: boolean; equals?: never };
+export interface StateChecks { conditions?: StateCondition[]; expected_revision?: number }
+export interface StateWriteOptions extends OperationOptions, StateChecks {}
+export interface StateConflict { kind: "revision" | "condition" | "path"; condition?: number; path?: string[] }
+export interface StateSnapshot<T = Record<string, unknown>> { state: T; rev: number; scopes: ScopeDescriptor[] }
+export interface PendingStateCommand extends StateWriteOptions {
+  cid: string; ops: NormalizedStateOperation[]; expected_generations: Record<string, string>; status: "queued";
+}
 export type CreateRequest = WireContracts["create"];
 export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
@@ -45,9 +54,14 @@ export type ConversationResult = { cid: string } & ({ status: "queued" } | { sta
 export interface StateApi<T = Record<string, unknown>> {
   readonly revision: number;
   get(): T; get(path: Path): unknown;
-  set(path: Path, value: unknown, options?: OperationOptions): Promise<StateResult>;
-  delete(path: Path, options?: OperationOptions): Promise<StateResult>;
-  patch(mergePatch: object, options?: OperationOptions): Promise<StateResult>;
+  /** Read a coherent server snapshot while connected; does not flush pending writes or replace the local view. */
+  snapshot(): Promise<StateSnapshot<T>>;
+  /** Detached commands already admitted to this device's durable outbox. */
+  pending(): PendingStateCommand[];
+  apply(ops: StateOperation[], options?: StateWriteOptions): Promise<StateResult>;
+  set(path: Path, value: unknown, options?: StateWriteOptions): Promise<StateResult>;
+  delete(path: Path, options?: StateWriteOptions): Promise<StateResult>;
+  patch(mergePatch: object, options?: StateWriteOptions): Promise<StateResult>;
   on(fn: (state: T, ops: StateOperation[], by: string) => void): () => void;
 }
 export type SessionBrief = WireContracts["session"];
@@ -58,7 +72,33 @@ export type TimerRepeat = WireContracts["timerRepeat"];
 export type DurableTimer = WireContracts["timer"];
 export type TimerWrite = WireContracts["timerWrite"];
 export type CreateTimer = WireContracts["timerCreate"];
+export type TimerDelete = WireContracts["timerDelete"];
+export type TimerDeleted = WireContracts["timerDeleted"];
 export type TimerRun = WireContracts["timerRun"];
+/** Browser authors supply timer settings; the runtime owns command identity. */
+export type TimerSettings = Omit<CreateTimer, "cid" | "scope" | "expected_generations">;
+export type TimerChanges = Omit<TimerWrite, "cid" | "scope" | "expected_generations" | "expected_revision">;
+export type TimerRevisionOptions = OperationOptions & { expected_revision: number };
+export type TimerMutationResult<T = DurableTimer | TimerDeleted> = { cid: string } & (
+  { status: "queued" } | { status: "accepted"; value: T }
+  | { status: "rejected"; error: string; message: string; details?: PublicError }
+);
+/** The exact original command, including the guards captured before persistence. */
+export type TimerIntent = { operation: "create"; command: CreateTimer }
+  | { operation: "update"; id: string; command: TimerWrite }
+  | { operation: "remove"; id: string; command: TimerDelete };
+export type PendingTimerCommand = TimerIntent & { cid: string; status: "queued" };
+export type TimerResultEvent = (Extract<TimerIntent, { operation: "create" | "update" }> & TimerMutationResult<DurableTimer>)
+  | (Extract<TimerIntent, { operation: "remove" }> & TimerMutationResult<TimerDeleted>);
+export interface BrowserTimers {
+  list(): Promise<WireContracts["timerList"]>;
+  history(): Promise<WireContracts["timerHistory"]>;
+  create(settings: TimerSettings, context?: OperationOptions): Promise<TimerMutationResult<DurableTimer>>;
+  update(id: string, changes: TimerChanges, context: TimerRevisionOptions): Promise<TimerMutationResult<DurableTimer>>;
+  remove(id: string, context: TimerRevisionOptions): Promise<TimerMutationResult<TimerDeleted>>;
+  /** Local commands still awaiting a durable terminal receipt; never a server timer list. */
+  pending(): PendingTimerCommand[];
+}
 export type PortableBundle = WireContracts["bundle"];
 export type BundleStageResult = WireContracts["bundleStage"];
 export type BundlePublish = WireContracts["bundlePublish"];
@@ -68,9 +108,11 @@ export type RemixPageRequest = WireContracts["remixPage"];
 /** Platform concurrency metadata never belongs inside application data. */
 export interface OperationOptions { scope?: string; expected_generations?: Record<string, string> }
 export interface ScopeDescriptor { id: string; generation: string; paths: string[][]; operations: string[] }
-export type StateResult = { status: "accepted"; rev: number }
-  | { status: "queued" }
-  | { status: "rejected"; error: string; message?: string };
+export type StateResult = { status: "accepted"; cid: string; rev: number }
+  | { status: "queued"; cid: string }
+  | { status: "rejected"; cid?: string; error: string; message?: string; rev?: number; conflict?: StateConflict }
+  | { status: "unchanged"; rev: number };
+export type StateResultEvent = Exclude<StateResult, { status: "unchanged" }> & StateWriteOptions & { cid: string; ops: NormalizedStateOperation[] };
 export type ServiceDescriptor = WireContracts["serviceDescriptor"];
 export interface PublicationAsset { path: string; sha256: string; type: string }
 export interface RuntimeArtifactFeatures {
@@ -117,17 +159,25 @@ export interface RuntimeEventMap {
   send_result: SendResult & OperationOptions & { cid: string; data: unknown };
   capture_queue: PendingCapture[]; capabilities: CapabilityReport;
   conversation_result: ConversationResult & { text: string };
-  reply: SayMessage; sensors: SensorKind[]; sensors_stopped: { count: number };
+  reply: SayMessage; sensors: SensorStatus; sensors_stopped: { count: number };
   device_config: DeviceConfigMessage;
   scopes: ScopeDescriptor[];
   workflow: { module: string; topic: string; [key: string]: unknown };
-  state_result: StateResult & OperationOptions & { cid: string };
+  state_result: StateResultEvent;
+  state_queue: PendingStateCommand[];
+  timer_result: TimerResultEvent; timer_queue: PendingTimerCommand[];
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
   stream_gap: { stream: string; history: StreamHistory };
   stream_error: { stream: string; error: Error & { code?: string } };
 }
 export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";
+export interface SensorStatus {
+  /** Observed live resources, registered watches/listeners, or a recent location fix. */
+  active: SensorKind[];
+  /** Wrapped media acquisitions and one-shot location reads awaiting a native result. */
+  pending: SensorKind[];
+}
 export interface NotificationStatus { permission: NotificationPermission | "unsupported"; subscribed: boolean; registered: boolean; reason?: string }
 export interface NotificationsApi {
   readonly available: boolean; readonly reason?: string;
@@ -142,6 +192,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
   request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<T>;
   scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };
+  timers: BrowserTimers;
   readonly service: ServiceDescriptor | null;
   conversation: {
     entries(): TranscriptEntry[];
@@ -153,7 +204,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   upload(blob: Blob, opts?: OperationOptions & { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
   /** Durable local work retained until its acknowledgement. */
-  pendingWork(): { events: number; state: number; captures: number };
+  pendingWork(): { events: number; state: number; captures: number; timers: number };
   captures(): PendingCapture[]; retryCapture(captureId: string): Promise<CaptureResult>; discardCapture(captureId: string): Promise<void>;
   setBlobRetention(id: string, options: OperationOptions & { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
@@ -167,7 +218,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   assetUrl(path: string): string;
   /** Resolves only after the exact required publication graph is saved by its service worker. */
   publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
-  sensors: { active(): SensorKind[]; on(listener: (active: SensorKind[]) => void): () => void; stopAll(): number };
+  sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
   notifications: NotificationsApi;
 }
 export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";
@@ -176,7 +227,7 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 3;
-export const CORE_RELEASE: "0.3.0-rc.2";
+export const CORE_RELEASE: "0.3.0-rc.7";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export const ROLES: readonly Role[];

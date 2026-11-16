@@ -7,7 +7,7 @@ The page owns its markup, styling, navigation, drafts, and conversation presenta
 No conversation panel, voice engine, application schema, or browser rule language
 is started by the kernel.
 
-The hosted bootstrap adds only **Manage page** and an active-sensor stop surface.
+The hosted bootstrap adds only **Manage page** and a sensor status/stop surface.
 `@tendriller/runtime/kernel` exports `startRuntime(configuration)` for deliberate
 headless composition. Importing that module mounts nothing and requests no
 permissions. A custom composition must provide its own operational-access link and
@@ -25,15 +25,26 @@ Optional voice types and code are separate exports.
 
 | Status | Meaning | Application behavior |
 | --- | --- | --- |
-| `queued` | The command is durably stored locally; no acceptance has arrived. | Show pending work. Preserve recoverable text and listen for the later result. |
+| `queued` | The command is durably stored locally; delivery or local outcome cleanup is still unresolved. | Show pending work. Preserve recoverable text and listen for the later result. |
 | `accepted` | The service accepted the command; `seq` identifies its event when supplied. | Show acceptance without claiming an agent completed the task. |
 | `rejected` | Storage or authority checks failed; `error` and `message` explain why. | Keep the person's text and offer explicit correction/retry. |
 
 `conversation_result` emits the same `cid`, `text`, and status at durable queuing
 and at terminal acknowledgement, including a rejection after the send promise
-already returned `queued`. A local storage failure returns `rejected` and never
-claims that input was saved. Two identical text submissions have different IDs.
+already returned `queued`. A failure to save the initial command returns
+`rejected` and never claims that input was saved. Two identical text submissions have different IDs.
 Server echoes reconcile by command/device identity rather than matching text.
+
+State writes, `send`, and `conversation.send` save the first received server
+outcome alongside the original command before removing its durable outbox row.
+Their terminal result and result event follow committed removal. A failed
+outcome write or deletion keeps admitted work `queued`; the current runtime
+retries local cleanup without requesting a new server decision. Reload also
+finishes a saved outcome locally, even when current authority would give a
+different answer. If the outcome itself could not be saved before reload, the
+command remains unresolved and may replay with its original ID and guards; no
+terminal result was promised. These result events are live notifications, not
+a retained history of every terminal outcome.
 
 ```js
 const draft = document.querySelector("textarea");
@@ -96,18 +107,220 @@ is `accepted`, `queued`, or `rejected`. `send_result` reports delayed terminal
 receipts with `cid`, original data, and original scope/generation context.
 Use application IDs to reconcile your own records with those receipts.
 
-`state.get(path?)` returns the local view. `set`, `delete`, and `patch` are
-asynchronous durable writes; `state_result` reports terminal results. The runtime
-persists commands before applying optimism or delivery. It keeps their captured
-generations across reconnection and refuses to apply stale optimism over a newer
-scope. `scopes.list()` describes known scopes. Captured options belong to the
-original command: retry does not silently rebase them onto current work.
+`state.get(path?)` returns a copy of the local view, including pending ordinary
+writes. `state.revision` is the last confirmed revision; combining those two
+values does not construct a coherent authoritative snapshot. `set`, `delete`,
+`patch`, and `apply` are asynchronous durable writes; `state_result` reports
+terminal results, including those arriving after the promise returned `queued`.
+The runtime persists commands before applying optimism or delivery.
+
+Every durably admitted write result includes its `cid`: use that identity for
+`queued`, `accepted`, and server-rejected outcomes. `state.pending()` returns
+detached copies of this device's currently unsettled durable commands, including
+`cid`, normalized `ops`, original predicates, revision guard and generation map,
+and `status:"queued"`. It is reconstructed from the existing outbox after reload.
+`state_queue` emits the current list after durable admission, startup recovery,
+and terminal removal. It does not include a save that has not committed locally.
+
+`state_result` includes the same original `ops` and context, so a page can identify
+the affected record even when its original promise no longer exists. Inspect the
+queue at startup and subscribe before submitting work:
+
+```js
+renderPendingState(tendril.state.pending());
+const stopQueue = tendril.on("state_queue", renderPendingState);
+const stopReceipts = tendril.on("state_result", receipt => {
+  showStateOutcome(receipt.cid, receipt.ops, receipt.status, receipt.message);
+});
+```
+
+These rendering functions belong to the page. Commands leave `pending()` after
+their outcome and removal have committed locally. The list can therefore still
+show `queued` while a known server outcome waits for local cleanup. A confirmed
+state update may already be visible during that interval; use the correlated
+result for command completion. This is not a retained rejection history. Keep recoverable
+unsent or rejected text according to the page's draft policy. A failed local
+admission returns `rejected` without a durable `cid`; its `state_result` may carry
+an allocated attempt ID for correlation, but it never appears in the queue.
+Mutating a returned queue entry or one observer's payload cannot alter the
+command, its delivery, or another observer's payload.
+
+An empty unconditional `apply([])`, or a merge patch that produces no operations,
+returns `{status:"unchanged",rev}`. No command was admitted and no server
+acceptance or receipt is implied; there is no `cid`. An empty batch with
+conditions or `expected_revision` is a real authoritative check with its own
+command identity and normal receipt.
+
+`await state.snapshot()` reads `{state,rev,scopes}` together from the service on
+the authenticated connection. It includes accepted server state, without local
+optimistic overlays. It neither flushes nor discards pending writes, and it does
+not replace the local view when the reply arrives. A read is a point-in-time
+observation, so use its revision for a subsequent conditional write. For a
+counter initialized with a numeric `count`:
+
+```js
+const observed = await tendril.state.snapshot();
+const result = await tendril.state.apply([
+  {op: "set", path: ["count"], value: observed.state.count + 1},
+], {
+  expected_revision: observed.rev,
+  expected_generations: Object.fromEntries(
+    observed.scopes.map(scope => [scope.id, scope.generation]),
+  ),
+});
+```
+
+This example guards every observed scope; a task may select only its relevant
+dependencies. Await the write result separately from the read. `snapshot()`
+rejects with `offline` before connection readiness or after a disconnect,
+`timeout` after 15 seconds without a response, and `invalid_response` for a
+malformed reply. It never queues a stale read for later delivery. Ordinary
+offline rendering continues to use `get()` and an explicit pending indicator.
+
+`state.apply(ops, options?)` submits one atomic batch of explicit `set`/`delete`
+operations. `set(null)` stores null; `delete` removes the key. Arrays are complete
+values. Literal array paths support keys containing dots and slashes. Explicit
+paths cannot traverse existing scalar, array or null parents; use a parent `set`
+for a deliberate replacement. `patch` follows RFC 7396: null deletes and an
+object patch intentionally replaces a non-object parent.
+
+All four write methods accept `{scope?,expected_generations?,conditions?,
+expected_revision?}`. For example, one claim can update several fields together:
+
+```js
+const result = await tendril.state.apply([
+  {op: "set", path: ["claims", itemId], value: tendril.device.id},
+  {op: "set", path: ["items", itemId, "status"], value: "claimed"},
+], {conditions: [{path: ["claims", itemId], exists: false}]});
+
+if (result.status === "accepted") showClaimAccepted();
+if (result.status === "queued") showClaimPending();
+if (result.status === "rejected") showClaimNeedsReview(result.message);
+```
+
+Conditions use exactly `equals` or `exists`, with missing distinct from null.
+They all refer to the authoritative state before the batch. A revision guard
+compares the global revision and catches unrelated writes as well as changes
+that were subsequently undone. See [the protocol](PROTOCOL.md#shared-state-writes)
+for limits, array/object equality and error details.
+
+Conditional commands are never applied optimistically. Keep a pending action
+indicator separate from the accepted shared value. A `state_conflict` rejection
+contains the observed `rev` and `conflict` (`kind`, optional condition index and
+path); it carries no current field values. The runtime reconciles current state
+from the service. Preserve the draft and let the person review before creating
+new work. Automatic delivery retries retain the same terminal outcome.
+
+The runtime copies operations, predicates and generation guards when invoked and
+stores their original values before delivery. Reconnection/reload never refresh
+the predicate or silently rebase intent. Scope capture covers both condition-read
+and write paths. Obsolete generation contexts and incompatible pending paths do
+not cover newer shared state. `scopes.list()` describes known scopes. These
+concurrency checks do not grant permissions or enforce ownership against other
+authorized writers who omit them.
 
 `request(path,{method?,body?})` accesses a documented page-side `_tendril/` route
 with current device credentials. Use a relative path without traversal or query
 syntax. It is not a generic agent-token or private-transport escape hatch. The
 service applies authorization to each request; errors expose `code` and `status`.
 Typed caller results can be supplied as `request<Result>(...)` in TypeScript.
+
+## Durable timers
+
+`timers` manages server schedules through the runtime's durable command queue:
+
+| Method | Result |
+| --- | --- |
+| `timers.list()` | Fresh `{timers, execution:"server", lifetime, expires_at}` with each timer's current `revision`. |
+| `timers.history()` | Fresh `{runs}` with occurrence and notification-delivery receipts. |
+| `timers.create(settings, context?)` | A queued, accepted, or rejected creation command. |
+| `timers.update(id, changes, {expected_revision,...context})` | A command against the exact timer revision the person reviewed. |
+| `timers.remove(id, {expected_revision,...context})` | A command removing the reviewed timer revision. |
+| `timers.pending()` | Copies of this browser's restored commands still awaiting a durable terminal receipt. |
+
+Settings include `title`, `due_at`, `timezone`, `repeat`, `missed`, `device`,
+`notify`, and `state`. Creation requires a title and a usable first schedule;
+calendar recurrence can omit `due_at`. Context is optional `scope` and
+`expected_generations`. Revision belongs in the update/remove context. Unknown
+settings or context options, a supplied `cid`, and missing/invalid revision
+preconditions fail before queuing. See the [timer schedule reference](EXPERIENCES.md#timers-that-survive-a-closed-page)
+for recurrence, time zones, missed runs, claim, lifetime, and notification limits.
+
+```js
+// Register observers before loading the current list or creating work.
+tendril.on("timer_queue", commands => renderPendingCommands(commands));
+tendril.on("timer_result", result => {
+  showCommandStatus(result.cid, result.status);
+  if (result.status === "rejected") showReviewError(result.message);
+  // An accepted value is this command's receipt, possibly replayed after reload.
+  if (result.status === "accepted") refreshCurrentTimers();
+});
+renderPendingCommands(tendril.timers.pending());
+
+const result = await tendril.timers.create({
+  title: "Review the inspection", due_at: reviewedDeadline,
+  timezone: reviewedTimeZone, notify: true,
+});
+// Call once for this reviewed intent. Queued work retries automatically.
+if (result.status === "accepted") showScheduledReceipt(result.value);
+```
+
+Every mutation result has a stable runtime-generated `cid`. An `accepted` result
+has `value`: the timer for create/update, or `{id,revision,deleted:true}` for
+remove. A `rejected` result has `error` and `message`; a service rejection also
+includes `details`, the original error object. For `timer_conflict`,
+`details.current` identifies the newer revision. A `queued` result has no
+accepted value. It means the command is durably stored on this device; it does
+not prove a timer exists on the server. After a lost reply the service may already
+have accepted it, so another create call would be a different operation.
+
+The runtime copies settings and captures all known required `timer.write`
+generations at invocation, before asynchronous storage. It persists that exact
+command and ID before transport. Reconnect, reload, timeout, and interrupted
+responses reuse those bytes and the original revision and guards. Storage
+failure before queuing returns `rejected` with `storage_unavailable` and sends
+nothing. A disconnected or slow command returns `queued` after a bounded wait.
+Queued commands need the page runtime to run and reconnect; only an accepted
+server timer can run while the browser is closed.
+
+`timer_result` fires when durable queuing succeeds and at terminal completion,
+including a replay after the original promise disappeared. It includes `cid`,
+`operation` (`create`, `update`, or `remove`), `id` for update/remove, the exact
+original `command`, and the result. `command` contains the runtime-generated ID,
+settings, captured generations, optional scope, and reviewed revision. Use that
+identity to reconcile the submitted intent without replacing newer draft
+settings. `timer_queue` emits the pending array on restoration and queue changes;
+`pendingWork().timers` counts those commands. These local commands are separate
+from `timers.list()`, which always reads current server state and can fail offline
+or when the current viewer lacks owner access.
+
+Each HTTP attempt has a 15-second deadline. Ambiguous transport/body failures,
+temporary rate limits, and service outages retry with delays of 5, 10, 20, then
+30 seconds while the runtime is connected. Reconnection can retry sooner.
+Malformed or mismatched success receipts remain queued and report an `error`
+event; they never become invented acceptance or rejection. Explicit authority,
+generation, revision, timer-capacity (`quota`), and command-allowance
+(`resource_quota`) rejections end the command. The runtime first persists a
+terminal receipt alongside the immutable intent, then removes the outbox item;
+only successful durable removal exposes a terminal result. If removal fails,
+reload reads the saved outcome and completes local cleanup without another HTTP
+command. If saving the outcome itself fails, the operation remains unresolved
+and queued. A later reload retries its original command against current service
+authorization; an unsaved response is not a durable terminal guarantee.
+
+An edit or removal must use the revision from the reviewed timer:
+
+```js
+const result = await tendril.timers.update(reviewedTimer.id,
+  {state: "cancelled"}, {expected_revision: reviewedTimer.revision});
+```
+
+The runtime never fetches a newer revision or generation to make stale work
+succeed. On conflict, load the current list, show what changed, and let the person
+review a new command. Timer revisions advance on edits and on automatic firing
+or rescheduling. An accepted replay returns the original receipt, which can be
+older than the current schedule; refresh `list()` when presenting current state.
+Acceptance does not prove a notification was displayed, read, or acted on.
 
 ## Streams and captures
 
@@ -135,6 +348,31 @@ Each new call creates a runtime-owned capture ID; use an application ID in `data
 to correlate a reviewed draft before asynchronous work, and `retryCapture` to
 retry the original operation. Unknown options, including a supplied `cid`, fail
 before any local queue write.
+
+Capture outcomes are durable phases of that same queue entry. A rejection is
+reported only after its failed record and outcome are saved; its bytes and original
+intent remain available for explicit `retryCapture` or `discardCapture`. Retry
+durably clears the saved rejection before resuming, keeping the original upload,
+pin, and event command IDs and generation guards. An acceptance is saved before
+the queue entry is durably removed, then reported through the promise and
+`upload_event`. After reload, a saved acceptance finishes local cleanup even
+offline, without uploading, pinning, or sending the semantic event again.
+
+If saving a newly known outcome or finishing accepted-result cleanup fails, the
+unresolved capture remains `queued`. The runtime retries local persistence;
+while it retains that outcome, it does not repeat network work. If the page reloads
+before the outcome could be saved, only the original unresolved intent survives
+and can be replayed against current server authority. `storage_unavailable` on
+initial admission means the capture was never durably queued. Discard completes
+only after local removal succeeds and cannot undo server acceptance. If acceptance
+is already known when discard is requested, cleanup reports that accepted receipt
+once, without a competing discarded result.
+
+A failed discard leaves its prior queued or rejected record intact. A `discarded`
+result confirms only local queue removal: an event already sent may still be
+accepted even if its reply arrives later. Every `upload_event` and `capture_queue`
+observer receives its own detached copy, as does each waiting caller.
+
 `upload(blob,{name?,keep?,scope?,expected_generations?})` durably queues a standalone
 immutable upload and returns its verified blob metadata after completion. Optional
 pinning preserves its own original command ID and guards across retries.
@@ -148,13 +386,42 @@ application's authorization policy before display.
 It reports availability, permission, whether a user gesture is expected, and known
 active use. Presence is not proof that a device or provider will work.
 
-`sensors.active()` returns observed camera, microphone, screen, location, and motion
-use. `sensors.on(listener)` subscribes to changes; `sensors.stopAll()` stops tracked
-media tracks/clones, geolocation watches, motion listeners, and recognition. The
-`sensors_stopped` event lets optional adapters cancel pending/restarting work too.
-One-shot and aborted motion listeners stop counting as active. This observation is
-best-effort browser instrumentation, not a security boundary; browser permission
-controls and service authorization remain authoritative.
+`sensors.status()` returns a coherent `{active, pending}` snapshot. Both fields are
+arrays of camera, microphone, screen, location, and motion kinds. `active` describes
+observed live resources, registered watches/listeners, or a recent successful
+one-shot location fix. `pending` describes wrapped media acquisitions and one-shot
+location reads still awaiting a native result, even if a permission prompt stays
+unanswered. A kind can appear in both arrays when a resource is active and another
+request for that kind is pending. `sensors.on(listener)` and the `sensors` event
+deliver the same snapshot whenever either set changes. Reading or subscribing
+requests no permissions.
+
+The hosted utility distinguishes active use from pending requests and keeps its
+Stop control available while either set is nonempty. `sensors.stopAll()` stops tracked
+media tracks/clones, geolocation watches, motion listeners, and recognition. It is
+also a cancellation boundary: wrapped `getUserMedia()` and `getDisplayMedia()`
+requests started before Stop reject immediately with `AbortError`. The native
+browser chooser may remain open, but any stream it grants afterward is stopped
+instead of becoming a successful result. Core retains acquisition provenance for
+late stream tracks, track clones, and whole-stream clones, including manually
+composed streams containing known captured tracks. A new intentional acquisition
+after Stop remains usable. Unknown external tracks are not classified as captured
+resources merely because they share a stream.
+
+Stop also abandons callbacks from pending one-shot location reads and stopped
+watches; it does not claim that the browser or operating system can cancel a
+one-shot acquisition. The returned count includes cancelled pending media and
+one-shot location requests, as well as stopped live resources. Camera, microphone,
+and screen active indicators describe observed live tracks, not unanswered
+permission prompts. Location and motion active indicators can reflect registered
+watches/listeners; they do not prove permission or a usable measurement. An
+unanswered one-shot location read remains pending until its result or Stop,
+independently of the short-lived indicator for a successful fix.
+
+The `sensors_stopped` event lets optional adapters cancel their pending/restarting
+work too. One-shot and aborted motion listeners stop counting as active. Observation
+remains best-effort browser instrumentation, not a security boundary; browser
+permission controls and service authorization remain authoritative.
 
 `notifications.status()` distinguishes browser permission, local subscription, and
 server registration. `subscribe()` must be called from a user gesture;

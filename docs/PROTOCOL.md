@@ -44,7 +44,7 @@ Generic `POST A/events` and browser `send` accept a command envelope:
 
 ## Authoritative scopes and generations
 
-A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
+A scope contains `id`, `generation`, normalized `paths` (arrays of string segments), and explicit operation targets. Supported targets are `state`, `event`, `capture`, `blob.pin`, `file.write`, `publication.publish`, `bundle.publish`, `timer.write` and `workflow:<module>:<operation>`; a workflow namespace can bind `workflow:<module>:*`. Paths independently protect every state writer. Other platform operations retain their own permission and resource policies.
 
 - `GET A/scopes` reads active descriptors.
 - `PUT A/scopes/<id>` registers or rebinds `{cid,expected_generations,paths,operations}`.
@@ -56,6 +56,21 @@ Lifecycle mutations require authorized control access. Rebinding requires the cu
 The server derives required guards from all overlapping paths, explicit operation targets and selected scopes. A write to an ancestor or the document root overlaps a protected descendant. Extra supplied guards are validated too. Missing required guards return `generation_required`; stale, unknown or retired guards return `stale_generation`.
 
 Generation validation, the mutation and its deduplication receipt share the same local transaction. A duplicate accepted command returns its saved result after a lost acknowledgement. It does not apply twice, including after later generation rotation.
+
+Timer creation, edits, cancellation, and deletion target `timer.write` and use
+this same command transaction. Timers also carry a monotonic `revision`;
+`PATCH` and `DELETE` require `expected_revision`, and alarm advances change that
+revision too. A stale review returns `timer_conflict` before any timer or
+notification change. `DELETE` accepts a JSON command body and returns
+`{id,revision,deleted:true}`. Exact accepted retries recover the original result
+even after the timer is removed. Classified timer-domain rejections are also
+retained: resolving quota, lifetime, or claim conditions requires a new command
+identity after review, not reinterpretation of the rejected command. Current
+authorization, envelope validation, generation checks, and receipt-capacity
+failures remain outside these stored domain decisions. See
+[timer receipts](DURABILITY.md#timer-mutation-receipts) and
+[timer operations](EXPERIENCES.md#timers-that-survive-a-closed-page) for boundaries,
+payloads, recurrence, lifetime gates, and notification semantics.
 
 ## Shared-state writes
 
@@ -69,7 +84,76 @@ Generation validation, the mutation and its deduplication receipt share the same
 {"cid":"replace-1","expected_generations":{},"state":{"count":1}}
 ```
 
-`set(null)` is a value; `delete` removes a path. Root state remains an object. Prototype-polluting keys, malformed paths, invalid JSON and excessive sizes are rejected. There is no raw merge-patch HTTP body that hides command metadata. The browser's convenience `state.patch` derives explicit operations, persists their original guards, then applies optimism.
+The browser's connected-only `state.snapshot()` sends
+`{t:"state_snapshot",cid}` on its authenticated socket and receives
+`{t:"state_snapshot",cid,state,rev,scopes}`. The fields describe one committed
+server snapshot. This read has no durable command receipt, queue or optimistic
+overlay. It does not wait for unsent local writes and does not install the reply
+over the browser's evolving local view. A later write can make it stale; capture
+its revision and relevant scope generations as write preconditions. Offline or
+disconnected reads fail explicitly; a missing response times out after 15 seconds.
+
+`set(null)` is a value; `delete` removes a path. Root state remains an object.
+Array path segments are literal keys; dots and slashes inside them do not split.
+Dotted strings split on dots and ignore empty segments. Numeric segments become
+object keys; arrays are whole values, never indexed update containers. Missing
+object parents can be created, but explicit traversal through an existing array,
+scalar or null fails atomically with `state_conflict`. Replace that parent with
+an explicit `set` when replacement is intended. The browser's RFC 7396 merge
+patch conversion deliberately emits such parent replacements.
+
+State-write envelopes also accept `conditions` and `expected_revision`:
+
+```json
+{
+  "cid": "claim-item-1",
+  "expected_generations": {},
+  "conditions": [{"path":["claims","item-1"],"exists":false}],
+  "ops": [
+    {"op":"set","path":["claims","item-1"],"value":"device-a"},
+    {"op":"set","path":["items","item-1","status"],"value":"claimed"}
+  ]
+}
+```
+
+Every condition is exactly `{path,equals:<JSON>}` or `{path,exists:<boolean>}`.
+All conditions are checked against the same authoritative pre-mutation state,
+then all operations commit together. Missing differs from null. Object equality
+ignores key order; arrays compare as complete ordered values. A condition whose
+path crosses a non-object ancestor fails, including an `exists:false` condition.
+The empty path denotes the whole object. Up to 128 conditions and 64 KiB of
+normalized condition JSON are allowed; paths and JSON nesting are bounded to
+128 levels. Non-JSON values, sparse arrays, prototype keys and excessive sizes
+are rejected before admission.
+
+Malformed write envelopes, unknown guard names and invalid input operations
+return `bad_request` consistently over HTTP and WebSocket. A batch of individually
+valid operations whose combined state exceeds the nesting limit returns
+`bad_ops` without changing state. WebSocket rejections also send `state_reset`.
+
+`expected_revision` is an optional nonnegative safe integer matched to the global
+state revision. It detects change-and-change-back (ABA) as well as unrelated
+writes. Field conditions allow independent edits to different fields. Both may
+be supplied, including with an empty operation list for a conditional check.
+Every nonempty accepted batch advances the revision once, even for equal values.
+
+Scope selection includes condition-read paths as well as write paths. Generation
+guards, conditions and operations run under the same transaction. A failed
+condition or incompatible write path returns HTTP 409 `state_conflict`, with the
+observed `rev` and `conflict` (`kind`, optional condition index and path), without
+state, revision, activity or state-stream effects. It reveals no current field
+values. WebSocket rejection is followed by an authoritative `state_reset`.
+The terminal conflict receipt is durable: retrying the same command returns that
+same rejection even if the condition later becomes true. Accepted receipts also
+replay unchanged. Changed predicates under the same ID produce `command_conflict`.
+After review, revised intent needs a new command ID. Malformed, authorization,
+generation and receipt-quota failures do not consume the ID; receipt-quota
+failure rolls back the entire attempted mutation.
+
+These checks provide optimistic concurrency, not permission or application
+policy. An otherwise authorized writer can omit a condition. Enforced ownership,
+private records or booking rules require an authorized trusted operation.
+There is no raw merge-patch HTTP body that hides command metadata.
 
 HTTP, MCP, WebSocket, whole replacement, bundle restore and trusted-module state changes all use the same protected-operation rule. Imports cannot install authoritative bindings or generations from application JSON. A staged bundle's state is checked against current guards atomically at publication.
 
@@ -87,11 +171,31 @@ Before delivery or optimistic application, the runtime durably stores the comman
 
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
 
+For acknowledged browser state and `send` commands, including conversation
+instructions, the original server outcome is a durable phase of the existing
+local outbox row. Terminal result notifications follow committed removal of
+that row. Storage failure during settlement keeps the command unresolved; a
+saved outcome resumes local cleanup without resending the mutation after
+reload. This also prevents an uncached authority or rate-limit rejection from
+later becoming a fresh server decision after the page reported it as terminal.
+An outcome that could not be saved before interruption remains uncertain and
+may replay its unchanged command. Accepted state outcomes still require a full
+state resynchronization when a newer delta arrived before their own ACK.
+
+Admitted browser state results include their command `cid`. `state.pending()`
+and `state_queue` expose detached original commands from the existing durable
+outbox, and `state_result` carries the original normalized operations and guards
+for correlation after reload. Terminal outcomes remove those commands from the
+pending view; it is not a second queue or a retained history. Local admission
+failure has no durable result identity. Empty unconditional work is explicitly
+`unchanged`, with no command or server acceptance. Empty conditional checks are
+admitted commands and still receive an authoritative outcome.
+
 ## Conversation and interaction
 
 A transcript entry has a persistent message ID; owner messages also retain their original command ID and device. Replies can reference the exact owner message. Repeated identical text is never used to match acknowledgements. Retries and reconnect history preserve those identities. `conversation.presented(messageId)` records presentation of an actual stored agent message; merely receiving the socket frame is not presentation.
 
-The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and active-sensor stop. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
+The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and sensor stop for active resources and pending acquisitions. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
 
 ## Immutable bytes and shared files
 

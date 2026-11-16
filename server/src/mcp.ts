@@ -127,7 +127,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "update_state",
-    description: "Apply explicit state operations or replace the document using captured generation preconditions.",
+    description: "Atomically apply state operations or replace the document with captured generation guards and optional conditions/expected_revision. State conflicts retain their command receipt; review current state and use a new command ID for revised work.",
     inputSchema: { type: "object", ...schemas.stateUpdate },
     call: (a) => ({ method: "PATCH", rest: "state", body: a }),
   },
@@ -174,17 +174,18 @@ const TOOLS: Tool[] = [
     inputSchema: obj({}), call: () => ({ method: "GET", rest: "timers" }),
   },
   {
-    name: "create_timer", description: "Schedule a claimed page's durable timer. Supply due_at, or a calendar repeat with timezone; choose fire_once or skip for missed runs. Normal wake budgets and page expiration apply.",
+    name: "create_timer", description: "Schedule a claimed page's durable timer with cid and captured generation guards. Retry the exact command after a lost reply to recover the same timer. Supply due_at, or a calendar repeat with timezone; page expiration and normal wake budgets apply.",
     inputSchema: schemas.timerCreate, call: (a) => ({ method: "POST", rest: "timers", body: a }),
   },
   {
-    name: "update_timer", description: "Change a timer or cancel it with changes.state='cancelled'. A completed occurrence needs a new first-run time to restart.",
+    name: "update_timer", description: "Change or cancel a timer using changes.cid, expected_generations and the reviewed expected_revision. Alarm advances also change the revision. Retry an unchanged command after a lost reply; a completed occurrence needs a new first-run time to restart.",
     inputSchema: obj({ id: { type: "string" }, changes: schemas.timerWrite }, ["id", "changes"]),
     call: (a) => ({ method: "PATCH", rest: `timers/${encodeURIComponent(a.id)}`, body: a.changes }),
   },
   {
-    name: "delete_timer", description: "Remove a stored timer. Its existing execution history is retained within normal history bounds.",
-    inputSchema: obj({ id: { type: "string" } }, ["id"]), call: (a) => ({ method: "DELETE", rest: `timers/${encodeURIComponent(a.id)}` }),
+    name: "delete_timer", description: "Remove a timer using cid, captured generation guards and its reviewed expected_revision. Returns a replayable deletion receipt; execution history keeps its normal retention bounds.",
+    inputSchema: obj({ id: { type: "string" }, ...schemas.timerDelete.properties }, ["id", ...schemas.timerDelete.required]),
+    call: ({ id, ...body }) => ({ method: "DELETE", rest: `timers/${encodeURIComponent(id)}`, body }),
   },
   {
     name: "timer_history", description: "Recent durable occurrences, skipped runs, event sequence and best-effort notification outcomes.",

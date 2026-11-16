@@ -12,6 +12,12 @@ const guest = { kind: 'page' as const, name: 'guest', accountId: 'guest', role: 
 const module: WorkflowModule = { id: 'testmod', interfaceVersion: '1', schemaVersion: '1', implementationVersion: 'test-1', operations: {
   activate: { access: 'controller', mutate: true, run: h => h.scopes.register('testmod:job', { paths: [['payload']], operations: [] }) },
   write: { access: 'controller', mutate: true, scopes: () => ['testmod:job'], run: (h, value: any) => { h.records.put('private', 'record', value); h.state.apply([{ op: 'set', path: ['payload'], value: { public: true } }]); h.emit({ accepted: true }); return { ok: true }; } },
+  guarded: { access: 'controller', mutate: true, scopes: () => ['testmod:job'], run: h => {
+    // An extension cannot replace the host command's scope or generation guard.
+    h.state.apply([{ op: 'set', path: ['payload', 'guarded'], value: true }],
+      { expected_generations: {}, scope: 'forged' } as any);
+    return { ok: true };
+  } },
   read: { access: 'controller', mutate: false, run: h => h.records.get('private', 'record') },
   reject: { access: 'controller', mutate: true, scopes: () => ['testmod:job'], run: h => { h.records.put('private', 'record', { corrupt: true }); h.scopes.rotate('testmod:job'); h.fail(409, 'rejected', 'Rollback required'); } },
 } };
@@ -30,6 +36,8 @@ it('enforces module permissions, transaction isolation, scope meaning and receip
       const revision = t.getState().rev;
       expect(await (await call('write', { private: 'secret' }, guards, agent, cid)).json()).toEqual({ ok: true });
       expect(t.getState().rev).toBe(revision);
+      expect(await (await call('guarded', {}, guards)).json()).toEqual({ ok: true });
+      expect(t.getState().state).toMatchObject({ payload: { guarded: true } });
       await expect(call('read', {}, {}, guest)).rejects.toMatchObject({ code: 'forbidden' });
       await expect(call('reject', {}, guards)).rejects.toMatchObject({ code: 'rejected' });
       expect(await (await call('read')).json()).toEqual({ private: 'secret' });

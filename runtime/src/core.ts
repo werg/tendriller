@@ -4,18 +4,21 @@ import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, Transc
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
-import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
+import type { ConversationResult, OperationOptions, PendingStateCommand, PendingTimerCommand, ScopeDescriptor, ServiceDescriptor, StateResult, StateWriteOptions, TimerIntent, TimerMutationResult } from "../../contract/index.mjs";
+import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError, StateInputError } from "../../contract/state.mjs";
+import type { NormalizedStateChecks } from "../../contract/state.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
-import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
+import { applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
 import { createStreams } from "./streams";
 import { createConnection } from "./connection";
 import { deliveryPolicy } from "./delivery";
 import { createRequests, createCommandReceipts } from "./requests";
 import { captureData, type BlobReference, type CaptureOptions, type CaptureResult, type PendingCapture, type SendResult } from "./capture";
 import { createBrowserBlobs, BlobHttpError } from "./blob-transfer";
+import { createBrowserTimers, TimerHttpError, type TimerTerminalResult } from "./timers";
 
 export type { Bus, Core } from "./types";
 
@@ -37,13 +40,17 @@ export function createBus(): Bus {
       const s = map.get(type);
       if (!s) return;
       for (const fn of [...s]) {
-        try { fn(payload); } catch (e) { setTimeout(() => { throw e; }); }
+        try { fn(["state", "state_result", "state_queue", "timer_result", "timer_queue", "sensors", "upload_event", "capture_queue"].includes(type) ? clone(payload) : payload); } catch (e) { setTimeout(() => { throw e; }); }
       }
     },
   };
 }
 
 function newCid(): string { return "c_" + Date.now().toString(36) + rand32(8); }
+function stateRejection(message: any): Extract<StateResult, { status: "rejected" }> {
+  return { status: "rejected", error: String(message.error?.code || message.error), message: message.message || message.error?.message,
+    ...(typeof message.rev === "number" ? { rev: message.rev } : {}), ...(message.conflict ? { conflict: clone(message.conflict) } : {}) };
+}
 
 const permanentUploadFailure = (error: unknown): boolean => error instanceof BlobHttpError
   ? error.status < 500 && error.status !== 408 && error.status !== 429
@@ -70,12 +77,17 @@ export function createCore(cfg: TendrilConfig): Internal {
   let local: any = {};
   let rev = 0;
   let fullStateRev = 0;
-  type PendingState = { cid: string; ops: Op[] } & OperationContext;
+  type PendingState = { cid: string; ops: Op[] } & OperationContext & NormalizedStateChecks;
+  const conditional = (checks: NormalizedStateChecks) => checks.expected_revision !== undefined || checks.conditions !== undefined;
   let scopes: ScopeDescriptor[] = [];
   let service: ServiceDescriptor | null = null;
   let savingState = 0;
   let pendingState: PendingState[] = [];
   let transcript: TranscriptEntry[] = [];
+  // A received ACK is first saved in its original outbox row. Memory bridges a
+  // failed phase write; only committed cleanup can publish a terminal result.
+  const commandOutcomes = new Map<string, any>();
+  const reconciledStateAcks = new Set<string>();
 
   const snap = store.loadSnapshotSync();
   if (snap) {
@@ -89,7 +101,14 @@ export function createCore(cfg: TendrilConfig): Internal {
     local = clone(confirmed);
     // Old work stays durable and keeps its original generation until a receipt
     // arrives, but it must not cover a newer session received from the server.
-    for (const p of pendingState) if (matchesContext(scopes, p, "state", p.ops)) local = applyOps(local, p.ops);
+    for (const p of pendingState) if (!commandOutcomes.has(p.cid) && !conditional(p) && matchesContext(scopes, p, "state", p.ops)) {
+      try { local = applyOps(local, p.ops); }
+      catch (error) {
+        // A remote parent replacement can make an old path incompatible. Keep
+        // the original command for its receipt, without hiding newer authority.
+        if (!(error instanceof StatePathError) && !(error instanceof StateInputError)) throw error;
+      }
+    }
   };
   rebuild();
 
@@ -108,47 +127,59 @@ export function createCore(cfg: TendrilConfig): Internal {
     const s = clone(local);
     bus.emit("state", { state: s, ops, by });
     for (const fn of [...stateListeners]) {
-      try { fn(clone(local), ops, by); } catch (e) { setTimeout(() => { throw e; }); }
+      try { fn(clone(local), clone(ops), by); } catch (e) { setTimeout(() => { throw e; }); }
     }
   };
   const stateListeners = new Set<(state: any, ops: any[], by: string) => void>();
+  const pendingStateCommands = (): PendingStateCommand[] => clone(store.items.filter(item => item.msg.t === "state").map(item => ({
+    cid: item.cid, ops: item.msg.ops, status: "queued" as const, scope: item.msg.scope,
+    expected_generations: item.msg.expected_generations, conditions: item.msg.conditions, expected_revision: item.msg.expected_revision,
+  })));
+  const stateQueueChanged = () => bus.emit("state_queue", pendingStateCommands());
 
   let saving = Promise.resolve();
-  const localOps = (operation: Op[] | ((state: any) => Op[]), options?: OperationOptions): Promise<StateResult> => {
-    if (Array.isArray(operation) && !operation.length) return Promise.resolve({ status: "accepted", rev });
+  const localOps = (operation: Op[] | ((state: any) => Op[]), options?: StateWriteOptions): Promise<StateResult> => {
+    // A misspelled guard must not silently turn a conditional write into an
+    // unconditional one. Validate the complete option envelope before capture.
+    assertValid("stateWriteOptions", options ?? {});
+    const checks = normalizeStateChecks(options);
+    if (Array.isArray(operation) && !operation.length && !conditional(checks)) return Promise.resolve({ status: "unchanged", rev });
     const cid = newCid();
-    const capturedScopes = clone(scopes), capturedOptions = clone(options);
+    const capturedScopes = clone(scopes), capturedOptions = { ...clone(options), ...checks };
     let context: OperationContext = { expected_generations: {} };
+    let createdOps: Op[] = Array.isArray(operation) ? operation : [];
     let empty = false;
     savingState++;
     // Preserve invocation order even while IndexedDB opens. No optimistic state
     // or network delivery is visible before the command's durable commit.
     const saved = saving.then(async () => {
       await storeReady;
-      const ops = typeof operation === "function" ? operation(local) : operation;
-      if (!ops.length) { empty = true; return; }
+      const ops = normalizeStateOps(typeof operation === "function" ? operation(local) : operation);
+      createdOps = ops;
+      if (!ops.length && !conditional(checks)) { empty = true; return; }
       context = captureContext(capturedScopes, "state", capturedOptions, ops);
-      const pending = { cid, ops, ...context };
+      const pending = { cid, ops, ...context, ...checks };
       await store.addDurable({ t: "state", ...pending });
       pendingState.push(pending);
       rebuild();
       persistSoon();
-      emitState(ops, "device:" + device.id);
+      stateQueueChanged();
+      if (!conditional(checks)) emitState(ops, "device:" + device.id);
     });
     saving = saved.then(() => {}, () => {});
     return saved.then(async () => {
       savingState--;
-      if (empty) return { status: "accepted", rev } as StateResult;
+      if (empty) return { status: "unchanged", rev } as StateResult;
       const receipt = receipts.wait(cid);
       void pump();
       const ack = await receipt;
-      return !ack ? { status: "queued" } as StateResult
-        : ack.error ? { status: "rejected", error: String(ack.error?.code || ack.error), message: ack.message || ack.error?.message } as StateResult
-        : { status: "accepted", rev: ack.rev } as StateResult;
+      return !ack ? { status: "queued", cid } as StateResult
+        : ack.error ? { ...stateRejection(ack), cid }
+        : { status: "accepted", cid, rev: ack.rev } as StateResult;
     }, error => {
       savingState--;
       const result: StateResult = { status: "rejected", error: (error as any)?.code || "storage_unavailable", message: error instanceof Error ? error.message : "Could not save this change." };
-      bus.emit("state_result", { cid, ...context, ...result });
+      bus.emit("state_result", { cid, ops: createdOps, ...context, ...checks, ...result });
       return result;
     });
   };
@@ -156,18 +187,32 @@ export function createCore(cfg: TendrilConfig): Internal {
   const state: StateApi = {
     get revision() { return rev; },
     get(path?: Path) { return clone(getPath(local, toPath(path))); },
-    set(path: Path, value: any, options?: OperationOptions) {
+    pending: pendingStateCommands,
+    async snapshot() {
+      const reply = await requests.request({ t: "state_snapshot" });
+      try {
+        const result = assertValid("stateSnapshot", reply);
+        // The reply may precede a newer broadcast or pending local work. Return
+        // its coherent pair without rolling back the runtime's displayed view.
+        return { state: clone(result.state), rev: result.rev, scopes: clone(result.scopes) };
+      } catch {
+        throw Object.assign(new Error("The service returned an invalid state snapshot"), { code: "invalid_response" });
+      }
+    },
+    apply(ops, options) { return localOps(normalizeStateOps(ops), options); },
+    set(path: Path, value: any, options?: StateWriteOptions) {
       const p = toPath(path);
       if (!p.length) throw new Error("tendril.state.set needs a path");
-      return localOps([value === undefined ? { op: "delete", path: p } : { op: "set", path: p, value: clone(value) }], options);
+      return localOps(normalizeStateOps([value === undefined ? { op: "delete", path: p } : { op: "set", path: p, value }]), options);
     },
-    delete(path: Path, options?: OperationOptions) {
+    delete(path: Path, options?: StateWriteOptions) {
       const p = toPath(path);
       if (!p.length) throw new Error("tendril.state.delete needs a path");
       return localOps([{ op: "delete", path: p }], options);
     },
-    patch(mergePatch: object, options?: OperationOptions) {
+    patch(mergePatch: object, options?: StateWriteOptions) {
       if (!mergePatch || typeof mergePatch !== "object" || Array.isArray(mergePatch)) throw new Error("tendril.state.patch needs an object");
+      assertStateJson(mergePatch);
       const patch = clone(mergePatch);
       return localOps(current => mergePatchToOps(current, patch), options);
     },
@@ -189,6 +234,17 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captureWaiters = new Map<string, Set<(result: CaptureResult) => void>>();
   const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const captureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  type CaptureOutcome = Exclude<CaptureResult, { status: "queued" }>;
+  const captureOutcomes = new Map<string, CaptureOutcome>();
+  const settlingCaptures = new Set<string>();
+  const captureRemovals = new Map<string, Promise<void>>();
+  const timerRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const timerAttempts = new Map<string, number>();
+  // A receipt first becomes a durable outbox phase, then the command is removed.
+  // Memory only bridges failed phase writes; it never implies saved completion.
+  const timerOutcomes = new Map<string, TimerTerminalResult>();
+  const settlingCommands = new Set<string>();
+  const commandRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let welcome: any = null;
   let presence: Presence | null = null;
 
@@ -234,6 +290,21 @@ export function createCore(cfg: TendrilConfig): Internal {
   });
 
   // ---------- outbox ----------
+  const pendingTimers = (): PendingTimerCommand[] => store.items.filter(item => item.msg.t === "timer_command")
+    .map(item => ({ ...clone(item.msg.intent), cid: item.cid, status: "queued" }));
+  const timerQueueChanged = () => bus.emit("timer_queue", pendingTimers());
+  const retryTimer = (item: OutboxItem, error: unknown) => {
+    if (!store.has(item.cid) || timerRetryTimers.has(item.cid)) return;
+    if (error instanceof TimerHttpError && error.code === "invalid_response")
+      bus.emit("error", { code: error.code, message: error.message, cid: item.cid });
+    const attempts = (timerAttempts.get(item.cid) || 0) + 1;
+    timerAttempts.set(item.cid, attempts);
+    timerRetryTimers.set(item.cid, setTimeout(() => {
+      timerRetryTimers.delete(item.cid);
+      sentThisConn.delete(item.cid);
+      void pump();
+    }, Math.min(30_000, 5000 * 2 ** Math.min(attempts - 1, 3))));
+  };
   const captures = (): PendingCapture[] => store.items.filter((item) => item.msg.t === "upload_event").map((item) => ({
     capture_id: item.cid, name: item.msg.name, data: clone(item.msg.data),
     scope: item.msg.scope, expected_generations: clone(item.msg.expected_generations),
@@ -247,22 +318,69 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (retry) clearTimeout(retry);
       captureRetryTimers.delete(result.capture_id);
     }
-    bus.emit("upload_event", result);
-    for (const resolve of captureWaiters.get(result.capture_id) || []) resolve(result);
+    bus.emit("upload_event", clone(result));
+    for (const resolve of captureWaiters.get(result.capture_id) || []) resolve(clone(result));
     captureWaiters.delete(result.capture_id);
     const timer = captureTimers.get(result.capture_id);
     if (timer) clearTimeout(timer);
     captureTimers.delete(result.capture_id);
     captureQueueChanged();
   };
-  const captureFailed = async (item: OutboxItem, error: string, message: string) => {
-    if (!store.has(item.cid)) return;
-    // A rejected capture remains visible and retryable; it must not silently disappear.
-    const msg = { ...item.msg, failed: { error, message } };
-    try { await store.updateDurable(item, msg); } catch { item.msg = msg; }
-    if (!store.has(item.cid)) return;
-    captureReceipt({ capture_id: item.cid, status: "rejected", error, message });
+  const removeCapture = (item: OutboxItem, result: CaptureOutcome): Promise<void> => {
+    const removing = captureRemovals.get(item.cid);
+    if (removing) return removing;
+    const removal = (async () => {
+      if (result.status === "accepted" && !item.msg.outcome) {
+        await store.updateDurable(item, { ...item.msg, outcome: clone(result) });
+      }
+      if (!store.has(item.cid)) return;
+      await store.removeDurable(item.cid);
+      captureOutcomes.delete(item.cid);
+      captureReceipt(result);
+    })();
+    captureRemovals.set(item.cid, removal);
+    void removal.then(() => captureRemovals.delete(item.cid), () => captureRemovals.delete(item.cid));
+    return removal;
   };
+  const settleCaptureOutcome = async (item: OutboxItem): Promise<void> => {
+    if (settlingCaptures.has(item.cid) || !store.has(item.cid)) return;
+    const outcome: CaptureOutcome | undefined = item.msg.outcome || captureOutcomes.get(item.cid);
+    if (!outcome) return;
+    settlingCaptures.add(item.cid);
+    try {
+      // Rejections retain their saved bytes and intent for explicit retry. An
+      // accepted receipt must survive reload before its queue row is removed.
+      if (outcome.status === "accepted") await removeCapture(item, outcome);
+      else {
+        if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(outcome),
+          failed: { error: outcome.error, message: outcome.message } });
+        if (!store.has(item.cid)) return; // A concurrent discard owns its durable removal.
+        captureOutcomes.delete(item.cid);
+        captureReceipt(outcome);
+      }
+    } catch {
+      // A known decision only retries local persistence. Do not send another
+      // upload, pin or semantic event while its outcome is still uncertain.
+      if (store.has(item.cid) && !captureRetryTimers.has(item.cid)) {
+        captureRetryTimers.set(item.cid, setTimeout(() => {
+          captureRetryTimers.delete(item.cid);
+          void settleCaptureOutcome(item);
+        }, 5000));
+      }
+    } finally { settlingCaptures.delete(item.cid); }
+  };
+  const captureDecided = (item: OutboxItem, outcome: CaptureOutcome): Promise<void> => {
+    if (item.msg.failed && item.msg.outcome?.status === "rejected") return Promise.resolve();
+    if (!captureOutcomes.has(item.cid)) {
+      captureOutcomes.set(item.cid, clone(item.msg.outcome || outcome));
+      const retry = captureRetryTimers.get(item.cid);
+      if (retry) clearTimeout(retry);
+      captureRetryTimers.delete(item.cid);
+    }
+    return settleCaptureOutcome(item);
+  };
+  const captureFailed = (item: OutboxItem, error: string, message: string) =>
+    captureDecided(item, { capture_id: item.cid, status: "rejected", error, message });
   const waitForCapture = (item: OutboxItem): Promise<CaptureResult> => {
     const promise = new Promise<CaptureResult>((resolve) => {
       const existing = captureWaiters.get(item.cid);
@@ -300,6 +418,95 @@ export function createCore(cfg: TendrilConfig): Internal {
     return store.has(item.cid) ? item.msg.uploaded : null;
   };
 
+  const hasCommandAck = (item: OutboxItem) => item.msg.t === "state" || item.msg.t === "send";
+  const settleCommandAck = async (item: OutboxItem): Promise<void> => {
+    if (settlingCommands.has(item.cid) || !store.has(item.cid)) return;
+    const ack = item.msg.outcome || commandOutcomes.get(item.cid);
+    if (!ack) return;
+    settlingCommands.add(item.cid);
+    try {
+      if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(ack) });
+      const p = pendingState.find(value => value.cid === item.cid);
+      if (p && !reconciledStateAcks.has(item.cid)) {
+        if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > fullStateRev && ack.rev <= rev) {
+          // N+1 can arrive before our ACK for N. Save that ACK, then obtain the
+          // complete state; its old operations must never cover newer values.
+          connection.close(4000, "state resync");
+          return;
+        }
+        if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > rev &&
+          !matchesContext(scopes, p, "state", p.ops)) {
+          // The accepted write belongs to an older scope generation. Its
+          // revision is authoritative, but applying its old intent locally
+          // after a reset could cover a newer state. Keep it until resync.
+          connection.close(4000, "state resync");
+          return;
+        }
+        const before = JSON.stringify(local);
+        if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
+          try { confirmed = applyOps(confirmed, p.ops); }
+          catch (error) {
+            if (!(error instanceof StatePathError)) throw error;
+            connection.close(4000, "state resync");
+            return;
+          }
+          rev = ack.rev;
+        }
+        // This authoritative update is applied once, even if local deletion
+        // needs retries while later state broadcasts continue to arrive.
+        reconciledStateAcks.add(item.cid);
+        rebuild();
+        if (JSON.stringify(local) !== before) emitState([], "server");
+        persistSoon();
+      }
+      await store.removeDurable(item.cid);
+      const sent = item.msg;
+      if (p) {
+        pendingState = pendingState.filter(value => value.cid !== item.cid);
+        bus.emit("state_result", { cid: p.cid, ops: p.ops, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(ack.error
+          ? stateRejection(ack)
+          : { status: "accepted", rev: ack.rev }) });
+        stateQueueChanged();
+        if (ack.error) emitState([], "rejected");
+        persistSoon();
+      }
+      if (sent.t === "send" && sent.kind !== "instruction") {
+        const result: SendResult = ack.error
+          ? { status: "rejected", error: String(ack.error?.code || ack.error),
+            message: ack.message || ack.error?.message || "The input was rejected. Please try again." }
+          : { status: "accepted", seq: ack.seq };
+        bus.emit("send_result", clone({ cid: item.cid, scope: sent.scope, expected_generations: sent.expected_generations, data: sent.data, ...result }));
+      }
+      if (sent.t === "send" && sent.kind === "instruction") {
+        const mine = transcript.find(entry => entry.cid === item.cid && entry.device === device.id);
+        const result: ConversationResult = ack.error
+          ? { cid: item.cid, status: "rejected", error: String(ack.error?.code || ack.error),
+            message: ack.message || ack.error?.message || "Message rejected. Edit or retry the retained text." }
+          : { cid: item.cid, status: "accepted", seq: ack.seq };
+        if (mine) { Object.assign(mine, result); persistSoon(); bus.emit("transcript", clone(mine)); }
+        bus.emit("conversation_result", { ...result, text: sent.text });
+      }
+      commandOutcomes.delete(item.cid);
+      reconciledStateAcks.delete(item.cid);
+      const retry = commandRetryTimers.get(item.cid);
+      if (retry) clearTimeout(retry);
+      commandRetryTimers.delete(item.cid);
+      requests.receive(clone(ack));
+      receipts.acknowledge(item.cid, clone(ack));
+    } catch {
+      // Neither a failed phase write nor a failed deletion authorizes a new
+      // network decision. Keep the known ACK in memory and retry local storage.
+      if (store.has(item.cid) && !commandRetryTimers.has(item.cid)) {
+        commandRetryTimers.set(item.cid, setTimeout(() => {
+          commandRetryTimers.delete(item.cid);
+          void settleCommandAck(item);
+        }, 5000));
+      }
+    } finally {
+      settlingCommands.delete(item.cid);
+    }
+  };
+
   let pumping = false;
   const pump = async () => {
     if (pumping || !connection.connected) return;
@@ -310,7 +517,37 @@ export function createCore(cfg: TendrilConfig): Internal {
         const item = store.items.find((i) => !i.msg.failed && !sentThisConn.has(i.cid));
         if (!item) break;
         sentThisConn.add(item.cid);
+        if (item.msg.t === "timer_command") {
+          try {
+            const result: TimerTerminalResult = item.msg.outcome || timerOutcomes.get(item.cid) || await timers.deliver(item.msg.intent);
+            timerOutcomes.set(item.cid, result);
+            if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(result) });
+            await store.removeDurable(item.cid);
+            timerOutcomes.delete(item.cid);
+            const retry = timerRetryTimers.get(item.cid);
+            if (retry) clearTimeout(retry);
+            timerRetryTimers.delete(item.cid);
+            timerAttempts.delete(item.cid);
+            // The original promise can be gone after reload. Its exact command
+            // remains in the event so the page can identify the reviewed intent.
+            bus.emit("timer_result", clone({ ...item.msg.intent, ...result }));
+            receipts.acknowledge(item.cid, clone(result));
+            timerQueueChanged();
+          } catch (error) {
+            retryTimer(item, error);
+            break;
+          }
+          continue;
+        }
+        if (hasCommandAck(item) && (item.msg.outcome || commandOutcomes.has(item.cid))) {
+          await settleCommandAck(item);
+          continue;
+        }
         if (item.msg.t === "upload_event") {
+          if (item.msg.outcome || captureOutcomes.has(item.cid)) {
+            await settleCaptureOutcome(item);
+            continue;
+          }
           try {
             if (!await ensureUploaded(item)) continue;
             const msg = item.msg;
@@ -324,6 +561,7 @@ export function createCore(cfg: TendrilConfig): Internal {
             captureRetryTimers.set(item.cid, setTimeout(() => {
               captureRetryTimers.delete(item.cid);
               if (!store.has(item.cid) || item.msg.failed) return;
+              if (item.msg.outcome || captureOutcomes.has(item.cid)) { void settleCaptureOutcome(item); return; }
               sentThisConn.delete(item.cid);
               void pump();
             }, 8000));
@@ -390,6 +628,23 @@ export function createCore(cfg: TendrilConfig): Internal {
   const deviceHeaders = (): Record<string, string> => ({ "X-Tendril-Device": stored.id, "X-Tendril-Device-Secret": stored.secret });
 
   const blobs = createBrowserBlobs(cfg.base, deviceHeaders);
+  const timers = createBrowserTimers({
+    base: cfg.base, headers: deviceHeaders, scopes: () => scopes, newCid, pending: pendingTimers,
+    async queue(intent: TimerIntent) {
+      const cid = intent.command.cid;
+      let saved = false;
+      const result = await sendAcked({ t: "timer_command", cid, intent }, () => {
+        saved = true;
+        timerQueueChanged();
+        bus.emit("timer_result", { ...clone(intent), cid, status: "queued" });
+      });
+      if (saved) return result || { cid, status: "queued" };
+      const rejected: TimerMutationResult = { cid, status: "rejected", error: result.error,
+        message: result.message || "Could not save this timer command. Keep the reviewed settings and try again." };
+      bus.emit("timer_result", { ...clone(intent), ...rejected });
+      return rejected;
+    },
+  });
 
   // ---------- incoming ----------
   const addTranscript = (e: TranscriptEntry) => {
@@ -509,7 +764,8 @@ export function createCore(cfg: TendrilConfig): Internal {
       m = { ...m, t: "ack", error: m.code || "rejected" };
     }
     // Replies correlated by cid.
-    if (requests.receive(m) && m.t !== "ack") return;
+    const durableAck = m.t === "ack" && store.items.some(item => item.cid === m.cid && hasCommandAck(item));
+    if (!durableAck && requests.receive(m) && m.t !== "ack") return;
     switch (m.t) {
       case "stream_record":
         bus.emit("stream_record", m.record);
@@ -556,68 +812,38 @@ export function createCore(cfg: TendrilConfig): Internal {
         if (capture) {
           if (m.error) void captureFailed(capture, String(m.error?.code || m.error), m.message || m.error?.message || "The capture was rejected. You can retry it.");
           else if (typeof m.seq === "number") {
-            const receipt: CaptureResult = { capture_id: capture.cid, status: "accepted", seq: m.seq, blob: capture.msg.uploaded };
-            void store.removeDurable(capture.cid).catch(() => { store.remove(capture.cid); }).then(() => captureReceipt(receipt));
+            void captureDecided(capture, { capture_id: capture.cid, status: "accepted", seq: m.seq, blob: capture.msg.uploaded });
           }
           break;
         }
-        const sent = m.cid ? store.items.find((item) => item.cid === m.cid)?.msg : null;
-        const idx = pendingState.findIndex((p) => p.cid === m.cid);
-        if (idx >= 0) {
-          if (!m.error && typeof m.rev === "number" && m.rev > fullStateRev && m.rev <= rev) {
-            // Different sockets can broadcast N+1 before this socket gets its
-            // ack for N. A delta does not include our write, and reapplying N on
-            // top could overwrite N+1. Keep the item until a reconnect supplies
-            // the full state; its cached ack is then covered by fullStateRev.
-            connection.close(4000, "state resync");
-            break;
-          }
-          const before = JSON.stringify(local);
-          const [p] = pendingState.splice(idx, 1);
-          // A reconnect may install a newer full snapshot before replay returns
-          // a cached success for this cid. Its old ops are already accounted for
-          // by that snapshot; applying them again can resurrect archived data.
-          if (!m.error && typeof m.rev === "number" && m.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
-            confirmed = applyOps(confirmed, p.ops);
-            rev = m.rev;
-          }
-          rebuild();
-          bus.emit("state_result", { cid: p.cid, scope: p.scope, expected_generations: p.expected_generations, ...(m.error
-            ? { status: "rejected", error: String(m.error?.code || m.error), message: m.message || m.error?.message }
-            : { status: "accepted", rev: m.rev }) });
-          if (m.error) emitState([], "rejected");
-          else if (JSON.stringify(local) !== before) emitState([], "server");
-          persistSoon();
-        }
-        if (sent?.t === "send" && sent.kind !== "instruction") {
-          const result: SendResult = m.error
-            ? { status: "rejected", error: String(m.error?.code || m.error),
-              message: m.message || m.error?.message || "The input was rejected. Please try again." }
-            : { status: "accepted", seq: m.seq };
-          // Replayed inputs no longer have their original promise. Keep the input
-          // context in the receipt so pages can reconcile their own durable cards.
-          bus.emit("send_result", { cid: m.cid, scope: sent.scope, expected_generations: sent.expected_generations, data: sent.data, ...result });
+        const item = m.cid ? store.items.find(value => value.cid === m.cid) : undefined;
+        if (item && hasCommandAck(item)) {
+          // Preserve the first received outcome even if the server does not
+          // cache this rejection and a later attempt would be allowed.
+          if (!commandOutcomes.has(item.cid)) commandOutcomes.set(item.cid, clone(item.msg.outcome || m));
+          sentThisConn.add(item.cid);
+          void settleCommandAck(item);
+          break;
         }
         if (m.cid) store.remove(m.cid);
-        if (sent?.t === "send" && sent.kind === "instruction") {
-          const mine = transcript.find(entry => entry.cid === m.cid && entry.device === device.id);
-          const result: ConversationResult = m.error
-            ? { cid: m.cid, status: "rejected", error: String(m.error?.code || m.error),
-              message: m.message || m.error?.message || "Message rejected. Edit or retry the retained text." }
-            : { cid: m.cid, status: "accepted", seq: m.seq };
-          if (mine) { Object.assign(mine, result); persistSoon(); bus.emit("transcript", clone(mine)); }
-          bus.emit("conversation_result", { ...result, text: sent.text });
-        }
         receipts.acknowledge(m.cid, m);
         break;
       }
       case "state": {
         installScopes(m.scopes);
         const ops: Op[] = Array.isArray(m.ops) ? m.ops : [];
-        confirmed = applyOps(confirmed, ops);
+        try { confirmed = applyOps(confirmed, ops); }
+        catch (error) {
+          if (!(error instanceof StatePathError)) throw error;
+          // A later writer can validly traverse a parent created by our own
+          // unacknowledged command. This delta cannot be applied to our older
+          // confirmed snapshot: retain the outbox and obtain the complete state.
+          connection.close(4000, "state resync");
+          break;
+        }
         if (typeof m.rev === "number") rev = m.rev;
         if (pendingState.length) rebuild();
-        else for (const op of ops) local = applyOp(local, op);
+        else local = clone(confirmed);
         persistSoon();
         emitState(ops, m.by || "server");
         break;
@@ -733,6 +959,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     get welcome() { return welcome; },
     get rev() { return rev; },
     state,
+    timers: timers.api,
     streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.transportRequest(message) }),
     health,
     scopes: {
@@ -797,6 +1024,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         events: store.items.filter(item => item.msg.t === "send").length,
         state: savingState + new Set([...pendingState.map(item => item.cid), ...store.items.filter(item => item.msg.t === "state").map(item => item.cid)]).size,
         captures: store.items.filter(item => item.msg.t === "upload_event" || item.msg.t === "upload").length,
+        timers: store.items.filter(item => item.msg.t === "timer_command").length,
       };
     },
     async uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult> {
@@ -827,9 +1055,11 @@ export function createCore(cfg: TendrilConfig): Internal {
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
       if (!item) return { capture_id, status: "rejected", error: "not_found", message: "This capture is no longer in the queue." };
       if (item.msg.failed) {
-        // Rejected commands have no committed receipt. Retry the same command,
-        // preserving its original identity, payload and captured generations.
-        await store.updateDurable(item, { ...item.msg, failed: undefined });
+        // Explicit retry clears the saved local rejection, preserving the
+        // original command identity, payload and captured generations.
+        const { failed: _failed, outcome: _outcome, ...message } = item.msg;
+        await store.updateDurable(item, message);
+        captureOutcomes.delete(capture_id);
       }
       sentThisConn.delete(item.cid);
       return waitForCapture(item);
@@ -838,9 +1068,21 @@ export function createCore(cfg: TendrilConfig): Internal {
       await storeReady;
       const item = store.items.find((entry) => entry.cid === capture_id && entry.msg.t === "upload_event");
       if (!item) return;
-      try { await store.removeDurable(capture_id); }
-      catch (error) { sentThisConn.delete(capture_id); void pump(); throw error; }
-      captureReceipt({ capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." });
+      // A known server acceptance owns its receipt even if discard is clicked
+      // during local cleanup. Share that removal instead of emitting a second,
+      // contradictory terminal result.
+      const outcome: CaptureOutcome | undefined = item.msg.outcome || captureOutcomes.get(capture_id);
+      const result: CaptureOutcome = outcome?.status === "accepted" ? outcome :
+        { capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." };
+      try { await removeCapture(item, result); }
+      catch (error) {
+        // Outcome persistence may have completed while this deletion was in
+        // progress. Settle that decision locally: the network pump skips saved
+        // rejections and cannot finish their waiting receipt while offline.
+        if (captureOutcomes.has(capture_id) || item.msg.outcome?.status === "accepted") void settleCaptureOutcome(item);
+        else { sentThisConn.delete(capture_id); void pump(); }
+        throw error;
+      }
     },
     async setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference> {
       if (!/^b_[a-z2-7]{20}$/.test(id) || typeof opts?.keep !== "boolean") throw new TypeError("setBlobRetention needs a blob id and {keep:boolean}");
@@ -872,19 +1114,26 @@ export function createCore(cfg: TendrilConfig): Internal {
       if (!transcript.length && Array.isArray(idbSnap.transcript)) transcript = idbSnap.transcript;
     }
     for (const item of store.items) {
+      if (hasCommandAck(item) && item.msg.outcome) commandOutcomes.set(item.cid, clone(item.msg.outcome));
       if (item.msg.t !== "send" || item.msg.kind !== "instruction") continue;
       if (!transcript.some(entry => entry.cid === item.cid && entry.device === device.id)) {
         transcript.push({ ts: Math.floor(item.key / 1000), from: "user", text: item.msg.text,
           cid: item.cid, device: device.id, status: "queued" });
       }
     }
-    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], scope: i.msg.scope, expected_generations: i.msg.expected_generations }));
+    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], scope: i.msg.scope, expected_generations: i.msg.expected_generations, ...normalizeStateChecks(i.msg) }));
     const before = JSON.stringify(local);
     // The durable outbox is the only source of work that may be delivered.
     pendingState = store.persistent ? fromOutbox : [];
     rebuild();
     if (JSON.stringify(local) !== before) emitState([], "cache");
+    stateQueueChanged();
     captureQueueChanged();
+    timerQueueChanged();
+    // Restored acceptances only need local cleanup, even without a connection.
+    for (const item of store.items) {
+      if (item.msg.t === "upload_event" && item.msg.outcome?.status === "accepted") void settleCaptureOutcome(item);
+    }
   }).catch(() => {}).finally(() => {
     connection.start();
   });

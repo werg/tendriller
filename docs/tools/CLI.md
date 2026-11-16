@@ -100,7 +100,7 @@ still uses compare-and-swap. Conflicts exit with status 4 and preserve the origi
 uploaded blob and operation identity. `file get` downloads the exact blob named
 by the captured head, even if that shared path subsequently changes.
 
-Uploads, shared-file writes/deletions, pushes and rollbacks save private resume records under the
+Uploads, shared-file writes/deletions, pushes, rollbacks, and timer mutations save private resume records under the
 selected configuration directory. Their keys include the destination service,
 content bytes and command intent. Repeating the same command resumes that
 operation or returns its accepted receipt; changed bytes create a new operation.
@@ -115,6 +115,50 @@ revision or the supplied `--revision`. A lost reply replays the exact saved
 command even if another writer has since changed the head. Rollback requires an
 explicit publication version. No command rewrites an original
 failed operation with newer generations or revisions automatically.
+
+## Reviewed timer commands
+
+```sh
+tendril timers list
+tendril timers add '{"title":"Review measurements","repeat":{"at":"09:00","days":[1,2,3,4,5]},"timezone":"Europe/Berlin"}' --cid weekday-review
+tendril timers update TIMER_ID '{"title":"Review the latest measurements"}' --revision 1 --cid rename-review
+tendril timers cancel TIMER_ID --revision 2 --cid cancel-review
+tendril timers rm TIMER_ID --revision 3 --cid remove-review
+tendril timers history
+```
+
+Replace `TIMER_ID` and each example revision with the actual timer and revision
+you reviewed in `timers list`. Update, cancel, and removal require explicit
+`--revision N`; the CLI never fetches a newer revision to make a stale decision
+succeed. Alarms increment revisions when they advance or complete schedules, so
+a conflict can indicate that the reminder ran while its edit was being prepared.
+`timer_conflict` exits with status 4 and reports the revision observed when that
+command was rejected. Refresh `timers list` and review the changed timer before
+choosing a new command and revision.
+
+Put only timer settings in the JSON argument. Command metadata comes from
+`--cid`, `--scope`, and `--generations`, with `--revision` supplying the reviewed
+timer revision. If active scopes bind `timer.write`, capture their original
+tokens and pass them, for example
+`--scope schedule --generations '{"schedule":"captured-token"}'`.
+
+The CLI saves the complete request before sending it. Rerunning the same command
+after a lost reply uses the same command ID, settings, guards, and revision.
+Without `--cid`, it generates and stores an ID once. Without `--resume-file`, it
+selects a private record by destination and command intent. An accepted replay
+returns its saved receipt; no repeated creation or edit is performed. A retained
+timer-domain rejection also replays unchanged after quota, claim, or lifetime
+conditions improve. To request otherwise identical work as a new decision after
+review, choose a new `--cid`. See [receipt boundaries](../DURABILITY.md#timer-mutation-receipts)
+for the domain errors retained and failures that cannot store a decision.
+`--resume-file ./reminder-command.json` chooses a specific recovery record;
+changing its settings, guards, or reviewed revision is refused before a request.
+
+Create and update output the complete accepted timer. Removal outputs
+`{id,revision,deleted:true}`. These receipts remain recoverable after later timer
+changes, so use `timers list` to display the current schedule. A saved receipt
+does not establish current notification delivery; use `timers history` for that.
+The owner must claim the page, and timer deadlines must respect its lifetime.
 
 ## Delivery and checkpoints
 

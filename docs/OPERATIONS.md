@@ -6,22 +6,32 @@ Tendriller does not require Email Routing or Email Sending. Public reports use `
 
 ## Fresh storage baseline
 
-The canonical staging and production Workers use separate empty revision-4 D1
-databases and R2 buckets. The first D1 migration installs the account schema;
-the second records a one-time cutover marker. New `TendrilV4` and `AdmissionV4`
-Durable Object namespaces hold page and admission state. The page storage revision
-is **4**; `node scripts/storage-schema.mjs` reads it from the authoritative
-server definition. The schema guard rejects incompatible storage. Independent
-branch previews use the generic engine classes in their own new Workers.
+The current page storage revision is **5**; `node scripts/storage-schema.mjs`
+reads it from the authoritative server definition. Timer records now carry a
+monotonic revision used by durable conditional commands. Revision-4 page storage
+does not satisfy that contract. The schema guard rejects it before changing any
+data; this release requires a fresh Durable Object namespace.
 
-The canonical configs bind `tendriller-{staging,production}-v4-accounts` and
-`tendriller-{staging,production}-v4-files`. The prior databases and buckets are
-left untouched and unbound. There is no translator for their contents. Recreate
-disposable development accounts and pages normally. There is no preserved
-sessions package, account migration sequence, or old-runtime serving mode.
-New account storage starts with `service_state.mode='creation_paused'`. After the
-new Worker passes its live smoke check, the workflow consumes the cutover marker
-and opens creation once. A later intentional pause survives ordinary deploys.
+The canonical staging and production configurations bind fresh `TendrilV5` and
+`AdmissionV5` namespaces and new revision-5 R2 buckets. They reuse the
+revision-4 D1 account registries because the account schema did not change;
+the registry holds no active accounts at this cutover. The revision-4 page
+namespaces are deleted after an intermediate Worker unbinds them. Page state
+is not translated. For isolated development, provision a new named Worker with
+`--name` and `--fresh`; independent branch previews use generic engine classes
+in their own new Workers. An existing preview that already contains revision-4
+state also needs fresh resources.
+
+The first D1 migration installs the account schema. The second records the
+completed revision-4 cutover; the third pauses creation and records the
+one-time revision-5 cutover marker. None is a page-storage migration.
+
+The canonical configs retain `tendriller-{staging,production}-v4-accounts` and
+bind `tendriller-{staging,production}-v5-files`. Previous R2 buckets remain
+unbound. The D1 cutover migration sets `service_state.mode='creation_paused'`.
+After the new Worker passes its live smoke check, the workflow consumes the
+revision-5 marker and opens creation once. A later intentional pause survives
+ordinary deploys. There is no translator for old page state or files.
 
 ## Why `workers.dev` cannot host the public page service
 
@@ -38,11 +48,13 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 
 ## Provision and deploy
 
-The canonical revision-4 resources and their IDs are already selected in the
-checked-in staging and production configs. Keep OAuth secrets out of the
-repository. For a separate named deployment, sign in with `npx wrangler login`,
-set `CLOUDFLARE_ACCOUNT_ID` if needed, and use `provision.mjs --name ... --fresh`
-with separate service and page origins.
+The canonical revision-5 resources are selected in the checked-in staging and
+production configs. Keep OAuth secrets out of the repository. For a separate
+named deployment, sign in with
+`npx wrangler login`, set `CLOUDFLARE_ACCOUNT_ID` if needed, and use
+`provision.mjs --name ... --fresh` with separate service and page origins.
+
+For an isolated deployment, use the generated named configuration instead.
 
 ```sh
 npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
@@ -54,19 +66,19 @@ node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
 
 `provision.mjs` creates isolated named Workers with the generic engine entry;
 it refuses to overwrite the canonical configs. The canonical Worker retains its
-existing hostname and OAuth secrets. Its first revision-4 deployment has two
+existing hostname and OAuth secrets. Its first revision-5 deployment has two
 steps because Cloudflare cannot delete the currently bound old Durable Object
 namespace in the same deploy that removes the binding. A short-lived Worker
-rebinds to V4 while exposing inert, unbound old classes; the final Worker
-deletes the old namespaces. Subsequent deploys skip that first step. The old D1
-and R2 resources are retained but no longer bound. The default staging page host
+rebinds to V5 while exposing inert, unbound V4 classes; the final Worker
+deletes the old namespaces. Subsequent deploys skip that first step. The D1
+account registries remain bound; old R2 buckets are retained and unbound. The default staging page host
 is `<id>.tendriller.dev`, separate from `staging.tendriller.dev`.
 
 After creating the OAuth apps and Turnstile widgets, export their credentials locally and run `node scripts/set-secrets.mjs staging` and `node scripts/set-secrets.mjs production`. The script pipes values to Wrangler; it does not put them in files. Add the admin identity allowlist as `ADMIN_IDENTITIES=github:<numeric subject>,google:<subject>`. The budget webhook secret and policy IDs remain optional until a compatible alert is tested.
 
 For off-page device notifications, generate a separate stable VAPID key pair for each environment using `node scripts/vapid-keys.mjs`. Supply `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and the recommended `VAPID_SUBJECT` when running `scripts/set-secrets.mjs`; these variables are already supported by the script. Keep private keys out of git and do not rotate them during normal deployment: rotation requires devices to renew subscriptions. See the [Web Push operations and verification guide](PUSH_NOTIFICATIONS.md) and test delivery with all page tabs closed, including the installed iOS web app.
 
-GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run deploys staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. The selected empty revision-4 resources require both schema variables to be `4`. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
+GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. Set the declarations to `5` only after the revision-5 configuration, file buckets, and D1 cutover marker have been prepared. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 

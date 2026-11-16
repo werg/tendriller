@@ -11,7 +11,7 @@ import { BLOB_ID_RE, newPageKey, newSocketTicket, randomB32, safeEqual, sha256He
 import {
   CHECK_TIMEOUT, EVAL_DEFAULT_TIMEOUT, EVAL_MAX_TIMEOUT, HOUR, LONGPOLL_MAX_WAIT_S, MAX_EVAL_CODE, MAX_STATE,
 } from "./limits";
-import { validateOps } from "./state";
+import { stateCommand } from "./state-command";
 import { mutate, preconditions } from "./scopes";
 import { handleScopes, handleWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
@@ -59,7 +59,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
     if (/^workflows(?:\/|$)/.test(rest)) return handleWorkflows(t, req, rest, principal);
     if (STREAM_ROUTE.test(rest)) return handleStreams(t, req, url, rest, principal);
     if (CONSUMER_ROUTE.test(rest)) return handleConsumers(t, req, url, rest);
-    return handleExperience(t, req, url, principal.name, rest);
+    return handleExperience(t, req, url, principal, rest);
   }
   const matches = routes.filter((r) => r.pattern.test(rest));
   if (matches.length === 0) throw new HttpError(404, "not_found", `No API route ${rest || "/"}`);
@@ -366,10 +366,9 @@ route("GET", /^state$/, (t) => json(t.getState()));
 
 for (const method of ["PUT", "PATCH"]) route(method, /^state$/, async (t, req, url, by) => {
   const body = assertValid("stateUpdate", await readJson(req, MAX_STATE + 16384));
-  const ops = validateOps("state" in body ? [{ op: "set", path: [], value: body.state }] : body.ops);
-  const command = preconditions(body);
-  return json(mutate(t, `agent:${by}`, command, { paths: ops.map(op => op.path), operations: ["state"] }, ops,
-    () => ({ rev: t.applyState(ops, `agent:${by}`, undefined, command), scopes: t.getState().scopes })));
+  const result = stateCommand(t, `agent:${by}`, body, "state" in body ? [{ op: "set", path: [], value: body.state }] : body.ops);
+  if (result.error) throw new HttpError(409, result.error, result.message, { rev: result.rev, conflict: result.conflict });
+  return json(result);
 });
 route("POST", /^events$/, async (t, req, url, by) => {
   const body = await readJson(req, 65536 + 16384);

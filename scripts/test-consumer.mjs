@@ -33,7 +33,7 @@ import { createClient, requireService } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/contract';
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
-import {applyOps, validateOps, historyPage} from '@tendriller/runtime/preview-support';
+import {applyOps, validateOps, validateStateChecks, checkState, historyPage} from '@tendriller/runtime/preview-support';
 assert.equal(CONTRACT_VERSION, 3); assert.equal(schema.$defs.decision, undefined);
 assert.equal(schema.$defs.uploadStart.properties.cid.type, 'string');
 assert.equal(schema.$defs.publicationWrite.properties.expected_head_revision.type, 'integer');
@@ -41,6 +41,10 @@ assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
 assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
 assertValid('command', {cid:'event-1',expected_generations:{},data:{type:'job.status',session:'application data'}});
 assert.deepEqual(applyOps({}, validateOps([{op:'set',path:['experiment'],value:{session_id:'opaque'}}])), {experiment:{session_id:'opaque'}});
+const conditional = {cid:'claim',expected_generations:{},conditions:[{path:['claim'],exists:false}],ops:[{op:'set',path:['claim'],value:'a'}]};
+assertValid('stateUpdate', conditional);
+checkState({}, 0, validateStateChecks(conditional));
+assert.throws(() => checkState({claim:'b'}, 1, validateStateChecks(conditional)), {code:'state_conflict'});
 assert.equal(historyPage([{seq:1}], {after:0,limit:2,latest:1,earliest:1}).cursor, 1);
 assert.equal(STREAM_LIMITS.record_bytes, 65536);
 assert.throws(() => requireService({contract:2,workflows:[]}), /contract/);
@@ -52,16 +56,34 @@ assert.match(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accoun
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
 import {createClient, type CommandMetadata} from '@tendriller/core';
-import {type RuntimeApi, type SendResult, type WireContracts} from '@tendriller/core/contract';
+import {type RuntimeApi, type SendResult, type WireContracts, type SensorStatus} from '@tendriller/core/contract';
 import {type WorkflowModule} from '@tendriller/core/host';
 import {createFixtureTransport} from '@tendriller/runtime/preview';
 import type {} from '@tendriller/core/browser';
 const command: CommandMetadata = {cid:'durable-command',expected_generations:{}};
 const client = createClient({api:'https://example.test',token:'private'});
 void client.updateState({...command,ops:[{op:'set',path:['job'],value:{status:'ready'}}]});
+void client.updateState({...command,conditions:[{path:['job'],exists:false}],expected_revision:0,ops:[]});
 // @ts-expect-error all commands need explicit stable IDs and preconditions
 void client.updateState({ops:[]});
 declare const page: RuntimeApi<{count:number}>;
+const sensors: SensorStatus = page.sensors.status();
+page.sensors.on(status => { const pending: SensorStatus['pending'] = status.pending; void pending; });
+page.on('sensors', status => { const active: SensorStatus['active'] = status.active; void active; });
+void sensors;
+void page.state.apply([{op:'set',path:['count'],value:1}],{conditions:[{path:['count'],equals:0}]});
+const snapshot = await page.state.snapshot();
+const count:number = snapshot.state.count;
+void page.state.apply([{op:'set',path:['count'],value:count+1}],{expected_revision:snapshot.rev});
+// @ts-expect-error a state condition has one predicate, never both.
+void page.state.apply([],{conditions:[{path:['count'],equals:0,exists:true}]});
+const stateResult = await page.state.apply([]);
+if (stateResult.status === 'accepted' || stateResult.status === 'queued') { const cid:string = stateResult.cid; void cid; }
+// @ts-expect-error unchanged work has no durable command identity.
+if (stateResult.status === 'unchanged') stateResult.cid;
+for (const command of page.state.pending()) { const keys:string[] = command.ops[0].path; void keys; }
+page.on('state_queue', commands => { const pending:string|undefined = commands[0]?.cid; void pending; });
+page.on('state_result', receipt => { const keys:string[] = receipt.ops[0].path; void keys; });
 const result: SendResult = await page.send({session:'opaque'});
 if(result.status==='accepted'){const seq:number=result.seq; void seq;}
 // @ts-expect-error queued is not accepted

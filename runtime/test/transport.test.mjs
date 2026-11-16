@@ -71,7 +71,7 @@ test("offline policies preserve command queues, discard transient raw frames, an
   assert.deepEqual(h.persisted.map(m => m.t), ["send", "state", "log"]);
   assert.ok(h.persisted.every(m => m.cid));
   assert.deepEqual(h.sent, []);
-  for (const t of ["stream_subscribe", "stream_unsubscribe", "stream_publish"])
+  for (const t of ["stream_subscribe", "stream_unsubscribe", "stream_publish", "state_snapshot"])
     await assert.rejects(h.requests.request({ t }), e => e.code === "offline" && /connected page/.test(e.message));
   assert.equal(h.clock.jobs.size, 0, "offline stream requests register no timeout or queue work");
   h.online(true); h.requests.flush();
@@ -120,6 +120,17 @@ test("disconnect rejects stream RPCs but leaves durable commands and unrelated r
   assert.equal(await state, ack);
   assert.equal(h.persisted.length, 1, "the domain ACK handler, not correlation, removes durable commands");
   assert.equal(h.clock.jobs.size, 0);
+});
+
+test("state snapshots are bounded connected reads and never enter either delivery queue", async () => {
+  const h = requestsSetup(true);
+  const timeout = assert.rejects(h.requests.request({ t: "state_snapshot" }), { code: "timeout" });
+  h.clock.tick(15_000); await timeout;
+  const disconnected = assert.rejects(h.requests.request({ t: "state_snapshot" }), { code: "offline" });
+  h.online(false); h.requests.disconnected(); await disconnected;
+  h.requests.raw({ t: "state_snapshot" });
+  h.online(true); h.requests.flush();
+  assert.equal(h.sent.length, 2); assert.deepEqual(h.persisted, []); assert.equal(h.clock.jobs.size, 0);
 });
 
 test("stream send failures do not queue, and both response error envelopes preserve their error codes", async () => {

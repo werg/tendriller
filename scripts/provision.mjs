@@ -88,7 +88,7 @@ async function main() {
   const { experimental_readRawConfig } = createRequire(import.meta.url)('wrangler');
   const current = experimental_readRawConfig({ config: `server/wrangler.${stage}.jsonc` }).rawConfig;
   if (!values.name && current.main === '../dist/service/worker.mjs')
-    throw Error('The canonical schema-4 deployment is already provisioned. Use its checked-in config, or pass --name and --fresh for an isolated deployment.');
+    throw Error('Canonical deployment resources are already provisioned; verify their storage revision before deploying. Pass --name and --fresh for an isolated deployment.');
   const plan = deploymentPlan(stage, values, process.env, current);
   const wrangler = (...args) => execFileSync('npx', ['wrangler', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const identity = JSON.parse(wrangler('whoami', '--json'));

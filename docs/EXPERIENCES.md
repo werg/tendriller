@@ -50,6 +50,8 @@ with `lifetime_required`.
 
 ```json
 {
+  "cid": "review-measurements-1",
+  "expected_generations": {},
   "title": "Review the latest measurements",
   "due_at": 1794810000000,
   "timezone": "Europe/Berlin",
@@ -62,12 +64,72 @@ with `lifetime_required`.
 | Operation | Endpoint |
 |---|---|
 | List and lifetime information | `GET A/timers` |
-| Add | `POST A/timers` |
-| Change or cancel | `PATCH A/timers/<id>`; cancel with `{state:"cancelled"}` |
-| Remove | `DELETE A/timers/<id>` |
+| Add | `POST A/timers` with settings, `cid`, `expected_generations`, and optional `scope` |
+| Change or cancel | `PATCH A/timers/<id>` with changes, `expected_revision`, and command metadata; cancellation sets `state:"cancelled"` |
+| Remove | `DELETE A/timers/<id>` with `expected_revision` and command metadata in the JSON body |
 | Execution history | `GET A/timers/history` |
 
 The owner page has the same operations under `_tendril/timers`; it authors its own creation, cancellation and history controls. At most 32 timers can be stored.
+
+### Reviewed changes and safe retries
+
+Every timer includes a `revision`, starting at 1. An accepted edit increments it;
+an alarm also increments it when it advances a recurring schedule or completes a
+one-shot timer. Read the timer and retain that revision with the decision being
+reviewed. To cancel the revision the person saw, send:
+
+```json
+{
+  "cid": "cancel-reviewed-timer-1",
+  "expected_generations": {},
+  "expected_revision": 1,
+  "state": "cancelled"
+}
+```
+
+A different current revision returns `409 timer_conflict` with `error.current`.
+The timer and its pending notifications remain unchanged. Refresh the display,
+explain what changed, and compose a new command after reviewing the new state.
+The service never silently upgrades an old revision or interprets cancellation
+as permission to cancel a later schedule.
+
+Use the same `cid`, payload, reviewed revision, and captured generations when a
+response is lost. Creation retries return the same assigned timer ID; updates
+and deletion replay their accepted results without applying again. Creation and
+updates return the complete timer. Deletion returns
+`{id,revision,deleted:true}`, with the revision advanced once. A new deletion
+command for a missing timer returns `404`; the accepted deletion's exact retry
+still succeeds. Changing a recorded command's content, target, or operation
+under its ID returns `409 command_conflict`.
+
+The server also retains valid commands rejected with `quota`,
+`lifetime_required`, `unclaimed`, `timer_conflict`, `not_found`, `already_fired`,
+or a semantic `bad_request`. Exact retries return that original error, even if a
+timer slot opens, the page is claimed, or its lifetime changes. After addressing
+the reason and reviewing the schedule, a new intent needs a new `cid`. The
+error's `current` revision or `expires_at` detail describes the original decision;
+it is not a fresh read. Both accepted and rejected receipts use the durable
+receipt allowance. `resource_quota` means that a new receipt could not be stored,
+so it is distinct from a saved timer-slot `quota` rejection.
+
+A recovered accepted receipt is the original operation's result, even if the
+timer has since fired, changed, or disappeared. Refresh `GET A/timers` before
+presenting that receipt as current schedule status. Command identities are
+scoped by the authenticated agent or owner account; another device signed in as
+the same owner can recover the same command. Current request authorization
+still applies to every retry. Authorization, malformed-envelope, generation,
+transport, and receipt-storage failures do not save a timer decision. See
+[receipt boundaries](DURABILITY.md#timer-mutation-receipts).
+
+Scopes can bind the `timer.write` operation. Supply all required original tokens
+in `expected_generations`; include `scope` when the command belongs to a selected
+workflow scope. Missing guards return `428 generation_required`, and changed or
+retired scopes return `409 stale_generation`. A previously recorded decision
+still returns its receipt after rotation. Empty `{}` in these examples is
+appropriate only when no bound or selected scope requires a guard. See
+[scope rules](PROTOCOL.md#authoritative-scopes-and-generations).
+
+### Recurrence, execution, and notification
 
 Omit `repeat` for a one-shot timer. Use `{every_minutes:N}` for an interval or
 `{at:"09:00",days:[1,2,3,4,5]}` for a calendar recurrence in the supplied IANA time
@@ -83,7 +145,7 @@ do not run for held/suspended/deleting accounts. Restarting a completed occurren
 requires a new first-run time.
 
 Each fired occurrence atomically stores its event, unique run ID, next schedule,
-and notification intent when requested. Repeating an alarm does not enqueue that occurrence twice. The event is
+new timer revision, and notification intent when requested. Repeating an alarm does not enqueue that occurrence twice. The event is
 page data with `data.type:"timer"`, timer ID, run ID, scheduled/fired timestamps,
 and timezone. Normal wake budgets apply. The agent must deduplicate any external
 side effect by run ID; recording an event is not an exactly-once guarantee for a

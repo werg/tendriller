@@ -64,7 +64,7 @@ A page's health report determines whether the publication becomes healthy. **Hea
 
 ## Author the interaction
 
-The default runtime exposes `window.tendril` and adds a small management link with an active-sensor stop action. It does not provide conversation layout, navigation, capture flow, voice or domain rules. Use `tendril.conversation.entries()`, its events, and `conversation.send()` for a page-owned conversation. Preserve drafts entered while a send is pending and distinguish queued, accepted and rejected results.
+The default runtime exposes `window.tendril` and adds a small management link with a sensor stop action for active resources and pending acquisitions. `tendril.sensors.status()` distinguishes `{active, pending}`; its subscription delivers the same snapshot. It does not provide conversation layout, navigation, capture flow, voice or domain rules. Use `tendril.conversation.entries()`, its events, and `conversation.send()` for a page-owned conversation. Preserve drafts entered while a send is pending and distinguish queued, accepted and rejected results.
 
 Inspect capabilities without prompting. Request camera, microphone, motion, location or notifications from a deliberate user action. Optional voice is loaded with `import(tendril.assetUrl('voice.mjs'))` and started explicitly; see [voice](docs/HANDS_FREE.md). The service-owned `tendril.identity.managementUrl` remains available for recovery independently of page JavaScript.
 
@@ -96,7 +96,47 @@ Read `GET A/scopes` or the `scopes` field of a state snapshot. Capture the curre
 
 Send that envelope with `PATCH A/state`. Whole replacement uses the same metadata and a `state` object. Writing an ancestor path or the whole document does not bypass the guards. Changing bindings or resetting a session rotates the authoritative generation atomically. An old queued command fails explicitly.
 
+Use core state conditions for competing edits, claims and conditional undo:
+`conditions:[{path:["item","version"],equals:3}]` or
+`conditions:[{path:["claims","item"],exists:false}]`. An optional
+`expected_revision` compares the whole shared-state revision. Every condition
+reads the same authoritative pre-mutation snapshot; all operations commit
+together. Condition-read paths also require their scope generations. Conflicts
+return `state_conflict` and retain a durable terminal receipt, so retrying that
+command cannot unexpectedly succeed later. Review the new state before issuing
+new intent under a new command ID. Conditions are concurrency guards, not
+permissions or enforced ownership policy.
+
+Browser `state.apply(ops, options)` offers the same atomic batch. Conditional
+writes remain pending until accepted and are not applied optimistically.
+Admitted results carry `cid`. Use `state.pending()` and `state_queue` to recover
+the existing outbox's per-record operations after reload; `state_result` carries
+their original normalized `ops` and guards for terminal correlation. Do not
+build another command queue. Empty unconditional work returns `unchanged`,
+which makes no claim of server acceptance.
+`await state.snapshot()` returns a coherent `{state,rev,scopes}` from the
+authenticated connected service; use it when computing a revision-bound change.
+It fails explicitly offline and does not flush pending local writes.
+`state.get()` remains the local view for rendering. See the
+[shared-state protocol](docs/PROTOCOL.md#shared-state-writes) for exact path,
+null, conflict, retry and transaction semantics.
+
 See the full [browser API reference](https://tendriller.dev/docs/BROWSER_API.md) for `tendril.on`, stream reads, `latest`, subscriptions, publishing, state and captures. In browser code, `tendril.send(data,{scope})`, `tendril.uploadEvent(...)`, and asynchronous state operations capture and durably store the required preconditions before optimistic effects. Await the returned result and distinguish accepted, queued and rejected work. Reconnection retains the original command meaning.
+
+## Schedule durable work
+
+Use browser `tendril.timers.create/update/remove` for durable timer commands and
+`timers.pending()` plus queue/result events for restored intent. The runtime
+owns command IDs; never call create again merely to retry queued work. Read
+current schedules with `timers.list()` and occurrence history with `history()`.
+Agent SDK callers use `createTimer`, `updateTimer`, and `deleteTimer`, retaining
+their explicit `cid` and `expected_generations`. Updates/deletions require the
+reviewed `expected_revision`; the CLI requires `--revision`. Exact retries keep
+the original accepted receipt or classified domain rejection. Review changed
+conditions before creating a new command. An accepted historical receipt is
+separate from current timer state or successful notification delivery. See
+[timer semantics](docs/EXPERIENCES.md#timers-that-survive-a-closed-page) and the
+[browser timer API](docs/BROWSER_API.md#durable-timers).
 
 ## Stream read endpoints
 

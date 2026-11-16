@@ -35,7 +35,7 @@ The engine's `./testing` entry is a separate fixture bundle. It creates syntheti
 
 ## Browser and UI boundary
 
-Importing `@tendriller/runtime/kernel` mounts nothing and asks for no permissions. `startRuntime` supplies one connection, durable commands, state, streams, conversation records, capture lifecycle, publication identity and capability inspection. The hosted entry starts this kernel and adds only a recovery link plus active-sensor status/stop.
+Importing `@tendriller/runtime/kernel` mounts nothing and asks for no permissions. `startRuntime` supplies one connection, durable commands, state, streams, conversation records, capture lifecycle, publication identity and capability inspection. The hosted entry starts this kernel and adds only a recovery link plus sensor status/stop for active resources and pending acquisitions.
 
 Pages author their own conversation and status presentation. They receive stable message IDs and the distinction between queued, accepted and rejected commands. `conversation.presented(messageId)` acknowledges that the particular agent message was presented; receipt or an open socket does not imply presentation. Voice loads only when a page imports its optional module and explicitly starts the chosen behavior. Voice preferences belong to that adapter rather than a universal core presentation preference.
 
