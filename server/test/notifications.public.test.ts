@@ -17,7 +17,7 @@ describe("Web Push readiness", () => {
     expect(initially).toMatchObject({ t: "ack", subscribed: false });
 
     // A browser subscription is persisted in the DO, not in an active page connection.
-    const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+    const pair = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])) as CryptoKeyPair;
     const subscription = {
       endpoint: "https://push.example.com/send/example",
       expirationTime: null,
