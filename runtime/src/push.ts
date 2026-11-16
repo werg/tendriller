@@ -166,10 +166,19 @@ export function setupPush(core: Core): PushWithReason {
     // On every (re)connect, re-send an existing subscription so the server has it,
     // renewing it silently if the server's VAPID key changed (permission is already granted).
     core.bus.on("welcome", () => {
-      if (Notification.permission !== "granted") return;
       void (async () => {
+        if (core.device?.role !== "owner" || core.device?.pending) return;
+        // Reconcile opt-outs made while offline (or through browser settings).
+        // Losing the local push subscription must also revoke its server copy.
+        if (Notification.permission !== "granted") {
+          try { await core.transportRequest({ t: "push_unsubscribe" }); } catch { /* retry next welcome */ }
+          return;
+        }
         const r = await findReg();
-        if (!r || !(await r.pushManager.getSubscription())) return;
+        if (!r || !(await r.pushManager.getSubscription())) {
+          try { await core.transportRequest({ t: "push_unsubscribe" }); } catch { /* retry next welcome */ }
+          return;
+        }
         try {
           const ok = await register(await ensureSub(r));
           core.bus.emit("push", { subscribed: ok });
