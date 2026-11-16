@@ -27,10 +27,13 @@ npm --prefix tools test
 ```
 
 The emitted `tendriller-tools-<version>.tgz` contains bundled commands and public
-optional libraries, including `@tendriller/tools/preview`. Its manifest records
-the exact target runtime and source revision. The preview library and CLI are
+optional libraries, including `@tendriller/tools/preview`. A published release contains `manifest.json` and `SHA256SUMS`; the separate
+`dist/tools-manifest.json` describes the local build only. The published
+manifest records the target runtime and source revision. The preview library and CLI are
 separate so ordinary publishing does not bundle browser models or fixture code.
-Browser checks additionally require Playwright and an installed Chromium binary.
+Browser checks additionally require Playwright and the Chromium revision it
+expects. For an external Playwright installation, the packaged preview accepts
+`--playwright-path /path/to/node_modules/playwright`.
 
 ## Source and terms
 
