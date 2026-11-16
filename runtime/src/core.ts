@@ -3,6 +3,7 @@ import { encodePublicationPath } from "./paths";
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
+import { assertValid } from "../../contract/index.mjs";
 import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
@@ -790,7 +791,7 @@ export function createCore(cfg: TendrilConfig): Internal {
     },
     async uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult> {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.uploadEvent needs a Blob");
-      if (!opts?.data || typeof opts.data !== "object" || Array.isArray(opts.data)) throw new TypeError("uploadEvent needs a data object");
+      assertValid("captureOptions", opts);
       const capture_id = newCid();
       const context = captureContext(scopes, "capture", opts);
       const gesture = !!(navigator as any).userActivation?.isActive;

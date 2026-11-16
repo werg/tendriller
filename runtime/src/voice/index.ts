@@ -80,7 +80,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
   document.addEventListener("visibilitychange", visibility);
   window.addEventListener("pagehide", stop);
   return {
-    get outputStatus() { return output.status; },
+    get outputStatus() { const { enabled, ...status } = output.status; return { engine: enabled ? "neural" as const : "browser" as const, ...status }; },
     get muted() { return !preferences.get().audio; },
     get speaking() { return output.speaking; },
     get listening() { return wake.running || !!capture?.listening; },

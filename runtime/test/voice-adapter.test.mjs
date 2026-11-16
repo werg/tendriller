@@ -26,6 +26,8 @@ function environment(consent = () => true) {
 test('explicit construction is inert and output requires session consent', async () => {
   const env = environment(() => false);
   assert.equal(env.voice.muted, true);
+  assert.equal(env.voice.outputStatus.engine, 'browser');
+  assert.equal(env.voice.outputStatus.enabled, undefined);
   env.voice.speak('not enabled'); env.emit('reply', { text: 'not enabled either', speak: true }); await tick();
   assert.equal(env.reads, 0); assert.equal(env.starts, 0); assert.deepEqual(env.spoken, []);
   assert.equal(await env.voice.enableOutput(), false); env.voice.speak('declined'); await tick(); assert.deepEqual(env.spoken, []);

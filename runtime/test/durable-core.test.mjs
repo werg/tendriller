@@ -177,6 +177,29 @@ test("capture completion uses original scope and generation after upload and rel
   assert.equal((await retry).status, "rejected");
 });
 
+test("capture IDs belong to the runtime and reviewed inputs retain separate application correlation", async () => {
+  const env = await environment(), queued = [], results = [];
+  env.core.bus.on("capture_queue", values => queued.push(...values));
+  env.core.bus.on("upload_event", result => results.push(result));
+  for (const options of [
+    { cid: "page-chosen-command", data: { submission_id: "review-1" } },
+    { data: {}, unrecognized: true },
+    { data: [], name: "invalid.txt" },
+    { data: {}, keep: "yes" },
+  ]) await assert.rejects(env.core.uploadEvent(new Blob(["evidence"]), options), error => error.code === "bad_request");
+  assert.equal(env.database.pending.length, 0); assert.equal(env.core.captures().length, 0); assert.equal(queued.length, 0);
+
+  const saving = env.core.uploadEvent(new Blob(["evidence"]), { data: { submission_id: "review-1", text: "reviewed input" } });
+  await flush(); await env.commit(); await env.commit();
+  const capture = env.core.captures()[0]; assert.notEqual(capture.capture_id, "review-1");
+  assert.equal(capture.data.submission_id, "review-1"); assert.equal(queued[0].capture_id, capture.capture_id);
+  const completion = env.sent.find(frame => frame.t === "capture_complete");
+  assert.equal(completion.data.submission_id, "review-1"); assert.equal(completion.data.capture_id, capture.capture_id);
+  env.transport.receive({ t: "ack", cid: completion.cid, seq: 7 }); await flush(); await env.commit();
+  const result = await saving; assert.equal(result.status, "accepted"); assert.equal(result.capture_id, capture.capture_id);
+  assert.equal(results[0].capture_id, capture.capture_id); assert.equal(results[0].data, undefined);
+});
+
 test("identical conversation inputs keep distinct IDs and exact echo reconciliation", async () => {
   const env = await environment();
   const first = env.core.conversation.send("same text"), second = env.core.conversation.send("same text");
