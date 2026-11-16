@@ -81,10 +81,18 @@ test("experience write contracts preserve revision checks, roles and bounded sch
   assert.ok(validate("sessionWrite", { expected_revision: -1 }).length);
   assert.ok(validate("deviceUpdate", { role: "owner" }).length);
   assert.equal(validate("focusRequest", { device: null }).length, 0);
+  const command = { cid: "schedule-review", expected_generations: {} };
   for (const repeat of [{ at: "25:00" }, { at: "10:15", days: [] }, { every_minutes: 0 }])
-    assert.ok(validate("timerCreate", { title: "Repeat", repeat }).length);
-  assert.equal(validate("timerCreate", { title: "Repeat", repeat: { at: "10:15", days: [1, 3] }, timezone: "Europe/Berlin" }).length, 0);
-  assert.equal(validate("timerWrite", { repeat: null, device: null, state: "cancelled" }).length, 0);
+    assert.ok(validate("timerCreate", { ...command, title: "Repeat", repeat }).length);
+  assert.equal(validate("timerCreate", { ...command, title: "Repeat", repeat: { at: "10:15", days: [1, 3] }, timezone: "Europe/Berlin" }).length, 0);
+  assert.equal(validate("timerWrite", { ...command, expected_revision: 1, repeat: null, device: null, state: "cancelled" }).length, 0);
+  assert.ok(validate("timerCreate", { title: "Missing identity", due_at: 1 }).length);
+  for (const schema of ["timerWrite", "timerDelete"]) {
+    assert.ok(validate(schema, command).length);
+    assert.ok(validate(schema, { ...command, expected_revision: 0 }).length);
+    assert.equal(validate(schema, { ...command, expected_revision: 1 }).length, 0);
+  }
+  assert.equal(validate("scopeOperation", "timer.write").length, 0);
 });
 
 test("exported bundle media can have no name and multi-file templates keep the service bounds", () => {

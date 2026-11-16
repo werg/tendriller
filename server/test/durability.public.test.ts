@@ -12,6 +12,7 @@ beforeAll(async () => {
   await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations"));
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run();
 });
+const command = (extra: Record<string, unknown> = {}) => ({ cid: crypto.randomUUID(), expected_generations: {}, ...extra });
 let index = 0;
 async function setup() {
   const account = crypto.randomUUID(), email = `${account}@example.com`;
@@ -31,7 +32,7 @@ async function leased(h: Handle, token: string, method: string, path: string, bo
 }
 async function timer(h: Handle, overrides: Record<string, unknown> = {}) {
   const now = await inDO(h.id, t => t.now());
-  return apiJson(h, "POST", "timers", { title: "Durable reminder", due_at: now + 1000, notify: true, ...overrides }, 201);
+  return apiJson(h, "POST", "timers", { ...command(), title: "Durable reminder", due_at: now + 1000, notify: true, ...overrides }, 201);
 }
 async function dueRetry(h: Handle) {
   await inDO(h.id, t => { const next = nextNotificationDeadline(t); if (next !== null) t.skew += Math.max(0, next - t.now()) + 1; });
@@ -280,8 +281,8 @@ it.each(["cancel", "delete", "reschedule"])("fences an in-flight notification af
   await inDO(h.id, async t => {
     const sender = t.notify;
     t.notify = async () => {
-      if (change === "delete") deleteTimer(t, created.id, "owner");
-      else saveTimer(t, change === "cancel" ? { state: "cancelled" } : { state: "scheduled", due_at: t.now() + 60000 }, "owner", created.id);
+      if (change === "delete") deleteTimer(t, created.id, command({ expected_revision: created.revision + 1 }), "page:owner");
+      else saveTimer(t, command({ expected_revision: created.revision + 1, ...(change === "cancel" ? { state: "cancelled" } : { state: "scheduled", due_at: t.now() + 60000 }) }), "page:owner", created.id);
       return { sent: 1, failed: 0, deliveries: [{ device: "phone", ok: true, status: 201, gone: false }] };
     };
     try { await runTimerNotifications(t); } finally { t.notify = sender; }

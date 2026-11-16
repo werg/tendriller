@@ -41,12 +41,12 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
   const notifications = setupPush(core);
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null,
     base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
-  const observe = () => observeCapabilities(() => tracker.active(), report => core.bus.emit("capabilities", report));
+  const observe = () => observeCapabilities(() => tracker.status().active, report => core.bus.emit("capabilities", report));
   let capabilityObserver: ReturnType<typeof observe> | null = observe();
   const sensorChanged = () => {
-    const active = tracker.active();
-    core.bus.emit("sensors", active);
-    core.raw({ t: "sensor_usage", active });
+    const status = tracker.status();
+    core.bus.emit("sensors", status);
+    core.raw({ t: "sensor_usage", active: status.active });
     capabilityObserver?.refresh();
   };
   let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
@@ -66,7 +66,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
   const api: RuntimeApi = {
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
-    state: core.state, scopes: core.scopes,
+    state: core.state, scopes: core.scopes, timers: core.timers,
     get service() { return core.service; },
     conversation: core.conversation, streams: core.streams, records: core.records,
     on: (type, listener) => core.bus.on(type, listener),
@@ -77,7 +77,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
     retryCapture: id => core.retryCapture(id), discardCapture: id => core.discardCapture(id),
     setBlobRetention: (id, options) => core.setBlobRetention(id, options),
     ready: Object.assign(() => core.ready(), { manual: () => core.readyManual() }),
-    capabilities: () => describeCapabilities(tracker.active()),
+    capabilities: () => describeCapabilities(tracker.status().active),
     deviceHeaders: () => core.deviceHeaders(),
     get device() { return Object.freeze({ ...core.device }); },
     version: cfg.version,
@@ -91,7 +91,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
       return runtimeAsset(cfg, path);
     },
     sensors: {
-      active: () => tracker.active(),
+      status: () => tracker.status(),
       on: listener => core.bus.on("sensors", listener),
       stopAll() {
         const count = tracker.stopAll();

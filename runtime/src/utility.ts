@@ -2,7 +2,7 @@ import type { RuntimeApi } from "../../contract/index.mjs";
 
 const labels: Record<string, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion" };
 
-/** Operational access and active-use stop only. This is not an authority boundary. */
+/** Operational access and sensor cancellation. This is not an authority boundary. */
 export function mountUtility(api: RuntimeApi): () => void {
   const host = document.createElement("tendril-utility");
   host.style.cssText = "position:fixed!important;inset:auto 12px 12px auto!important;z-index:2147483647!important;display:block!important;contain:layout style!important;";
@@ -17,9 +17,13 @@ export function mountUtility(api: RuntimeApi): () => void {
   stop.addEventListener("click", () => api.sensors.stopAll());
   nav.append(link, active, stop); root.append(style, nav);
   const render = () => {
-    const sensors = api.sensors.active();
+    const status = api.sensors.status();
+    const sensors = [...new Set([...status.active, ...status.pending])];
     active.hidden = stop.hidden = sensors.length === 0;
-    active.textContent = sensors.map(sensor => labels[sensor]).join(", ") + " active";
+    active.textContent = [
+      status.active.length ? status.active.map(sensor => labels[sensor]).join(", ") + " active" : "",
+      status.pending.length ? status.pending.map(sensor => labels[sensor]).join(", ") + " request pending" : "",
+    ].filter(Boolean).join(". ");
     stop.setAttribute("aria-label", "Stop " + sensors.map(sensor => labels[sensor]).join(", "));
   };
   const attach = () => { const parent = document.body || document.documentElement; if (host.parentNode !== parent) parent.append(host); };

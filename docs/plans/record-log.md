@@ -25,14 +25,14 @@ or compatibility layers.
 ## Implementation checkpoints
 
 - [x] Record the plan and open a draft PR before implementation.
-- [ ] Add public types, encoding, limits, and integrity test vectors.
-- [ ] Implement atomic retained storage and durable exact-byte deduplication.
-- [ ] Add authenticated append/range/head routes and owner/agent access checks.
-- [ ] Add public native/browser clients and headless runtime hint integration.
-- [ ] Exercise retries, process restart, concurrent appends, rollback, quota,
+- [x] Add public types, encoding, limits, and integrity test vectors.
+- [x] Implement atomic retained storage and durable exact-byte deduplication.
+- [x] Add authenticated append/range/head routes and owner/agent access checks.
+- [x] Add public native/browser clients and headless runtime hint integration.
+- [x] Exercise retries, process restart, concurrent appends, rollback, quota,
       catch-up, history identity, and authorization through public boundaries.
-- [ ] Package and verify public artifacts used by the optional Chronolog adapter.
-- [ ] Update documentation, integration recipe, and final verification results.
+- [x] Package and verify public artifacts used by the optional Chronolog adapter.
+- [x] Update documentation, integration recipe, and final verification results.
 
 ## Collaboration and verification
 
@@ -54,5 +54,21 @@ administration is part of this change.
 
 ## Status
 
-Planning scaffold. Implementation and verification are tracked above; unchecked
-items are not claimed as complete.
+The retained-log implementation and public consumer checks are complete. The
+optional Chronolog adapter consumes the packed public SDK and engine; its tests
+cover authenticated authority composition, lost append responses, recovery,
+certificate separation, and replay of competing SQL proposals through the
+portable history verifier. No Chronolog module enters Tendriller's core graph.
+
+The final integration preserves the state, timer, sensor, and deployment work
+merged independently through PR #34. The combined release uses artifact version
+`0.3.0-rc.8` and fresh page storage revision `6`. Revision-5 namespaces are
+rejected before mutation; no page-state translation or service deployment is part
+of this change. The record format remains `record-log/v1` with the same public
+encoding and integrity vectors.
+
+Verification of the combined source: `npm run check` passes all 750 tests (57
+build/deployment checks, 55 contract, 162 runtime, 5 push, 337 Worker, and 134
+tools), plus TypeScript, dependency boundaries, and an isolated consumer of the
+packed SDK, runtime, and engine with strict declarations. This check does not
+claim a live deployment or replace the separate browser release gate.

@@ -2,19 +2,20 @@
 // one stop switch. Wrappers are installed during runtime bootstrap, synchronously
 // from tendril.js before any page script runs.
 
-import type { SensorKind } from "../../contract/index.mjs";
-export type { SensorKind } from "../../contract/index.mjs";
+import type { SensorKind, SensorStatus } from "../../contract/index.mjs";
+export type { SensorKind, SensorStatus } from "../../contract/index.mjs";
 
 export interface SensorTracker {
-  /** Sensors currently in use by page code. */
-  active(): SensorKind[];
+  /** Observed use and unanswered acquisitions are separate, coherent views. */
+  status(): SensorStatus;
   onChange(fn: () => void): () => void;
-  /** Stops every tracked track, watch, listener and recognizer. Returns how many things were stopped. */
+  /** Stops tracked resources and abandons pending acquisitions/callbacks. Returns the number stopped or cancelled. */
   stopAll(): number;
 }
 
 const MOTION_TYPES = new Set(["devicemotion", "deviceorientation", "deviceorientationabsolute"]);
 const RECENT_LOCATION_MS = 15000;
+const SENSOR_ORDER: SensorKind[] = ["camera", "microphone", "screen", "location", "motion"];
 
 let singleton: SensorTracker | null = null;
 
@@ -22,14 +23,22 @@ export function installSensorWrappers(): SensorTracker {
   if (singleton) return singleton;
   const w = window as any;
   const tracks = new Map<MediaStreamTrack, SensorKind>();
-  const watches = new Set<number>();
+  // Keep provenance weakly after live resources are cleared. A late stream event
+  // or a clone of an old stream must not revive a cancelled acquisition.
+  const trackSources = new WeakMap<MediaStreamTrack, { kind: SensorKind; epoch: number }>();
+  const streamSources = new WeakMap<MediaStream, { screen: boolean; epoch: number }>();
+  const pendingMedia = new Map<() => void, SensorKind[]>();
+  type LocationRequest = { epoch: number; active: boolean };
+  const watches = new Map<number, LocationRequest>();
+  const pendingLocations = new Set<LocationRequest>();
   const motion: { type: string; listener: any; options: any; wrapped: any; cleanup(): void }[] = [];
   const recognizers = new Set<any>();
   const subs = new Set<() => void>();
   let recentLocationUntil = 0;
-  let lastSig = "";
+  let lastSig = "|";
+  let epoch = 0;
 
-  const compute = (): SensorKind[] => {
+  const compute = (): SensorStatus => {
     const out = new Set<SensorKind>();
     for (const [t, k] of tracks) {
       if (t.readyState === "live") out.add(k);
@@ -38,11 +47,14 @@ export function installSensorWrappers(): SensorTracker {
     if (recognizers.size) out.add("microphone");
     if (watches.size || Date.now() < recentLocationUntil) out.add("location");
     if (motion.length || w.ondevicemotion || w.ondeviceorientation || w.ondeviceorientationabsolute) out.add("motion");
-    const order: SensorKind[] = ["camera", "microphone", "screen", "location", "motion"];
-    return order.filter((k) => out.has(k));
+    const pending = new Set<SensorKind>();
+    for (const kinds of pendingMedia.values()) for (const kind of kinds) pending.add(kind);
+    if (pendingLocations.size) pending.add("location");
+    return { active: SENSOR_ORDER.filter(k => out.has(k)), pending: SENSOR_ORDER.filter(k => pending.has(k)) };
   };
   const check = () => {
-    const sig = compute().join(",");
+    const status = compute();
+    const sig = status.active.join(",") + "|" + status.pending.join(",");
     if (sig !== lastSig) {
       lastSig = sig;
       for (const f of subs) { try { f(); } catch { /* ignore */ } }
@@ -51,18 +63,70 @@ export function installSensorWrappers(): SensorTracker {
   const notify = () => queueMicrotask(check);
 
   // --- Media (camera, microphone, screen) ---
-  const addTrack = (t: MediaStreamTrack, screen: boolean) => {
-    const kind: SensorKind = screen ? "screen" : t.kind === "video" ? "camera" : "microphone";
-    if (tracks.has(t)) return;
-    tracks.set(t, kind);
+  const addTrack = (t: MediaStreamTrack, screen: boolean, acquisitionEpoch: number) => {
+    const source = trackSources.get(t) ?? {
+      kind: (screen ? "screen" : t.kind === "video" ? "camera" : "microphone") as SensorKind,
+      epoch: acquisitionEpoch,
+    };
+    trackSources.set(t, source);
+    if (source.epoch !== epoch) {
+      try { t.stop(); } catch { /* observation is best-effort */ }
+      return;
+    }
+    // A new, independently acquired track may deliberately be reused in an old
+    // stream. Its own acquisition, rather than that stream's age, owns its life.
+    if (tracks.has(t) || t.readyState !== "live") return;
+    tracks.set(t, source.kind);
     try { t.addEventListener("ended", notify); } catch { /* ignore */ }
   };
-  const trackStream = (s: MediaStream, screen: boolean) => {
+  const trackStream = (s: MediaStream, screen: boolean, acquisitionEpoch: number, trackExisting = true) => {
+    if (streamSources.has(s)) return;
+    streamSources.set(s, { screen, epoch: acquisitionEpoch });
     try {
-      for (const t of s.getTracks()) addTrack(t, screen);
-      s.addEventListener?.("addtrack", (e: any) => { if (e.track) { addTrack(e.track, screen); notify(); } });
+      if (trackExisting) for (const t of s.getTracks()) addTrack(t, screen, acquisitionEpoch);
+      s.addEventListener?.("addtrack", (e: any) => {
+        if (e.track) { addTrack(e.track, screen, acquisitionEpoch); notify(); }
+      });
     } catch { /* ignore */ }
     notify();
+  };
+  const acquireMedia = (request: () => Promise<MediaStream>, screen: boolean, kinds: SensorKind[]): Promise<MediaStream> => {
+    const acquisitionEpoch = epoch;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cancel = () => {
+        if (settled) return;
+        settled = true;
+        pendingMedia.delete(cancel);
+        notify();
+        reject(new DOMException("Sensor acquisition was cancelled by Stop all.", "AbortError"));
+      };
+      pendingMedia.set(cancel, kinds);
+      notify();
+      // Call the native method synchronously so its user-activation semantics
+      // remain intact. Browser-owned permission UI itself is not cancellable.
+      let requested: Promise<MediaStream>;
+      try { requested = request(); }
+      catch (error) {
+        pendingMedia.delete(cancel);
+        notify();
+        if (!settled) { settled = true; reject(error); }
+        return;
+      }
+      Promise.resolve(requested).then((stream) => {
+        // Always observe the native result, even after rejecting our promise:
+        // late grants and later addtrack events still need resource cleanup.
+        trackStream(stream, screen, acquisitionEpoch);
+        if (acquisitionEpoch !== epoch) { cancel(); return; }
+        pendingMedia.delete(cancel);
+        notify();
+        if (!settled) { settled = true; resolve(stream); }
+      }, (error) => {
+        pendingMedia.delete(cancel);
+        notify();
+        if (!settled) { settled = true; reject(error); }
+      });
+    });
   };
   const md: any = navigator.mediaDevices;
   let origGUM: ((c: MediaStreamConstraints) => Promise<MediaStream>) | null = null;
@@ -70,7 +134,10 @@ export function installSensorWrappers(): SensorTracker {
     origGUM = md.getUserMedia.bind(md);
     try {
       md.getUserMedia = function getUserMedia(c: MediaStreamConstraints) {
-        return origGUM!(c).then((s) => { trackStream(s, false); return s; });
+        const kinds: SensorKind[] = [];
+        if (c?.video) kinds.push("camera");
+        if (c?.audio) kinds.push("microphone");
+        return acquireMedia(() => origGUM!(c), false, kinds);
       };
     } catch { /* ignore */ }
   }
@@ -78,21 +145,56 @@ export function installSensorWrappers(): SensorTracker {
     const orig = md.getDisplayMedia.bind(md);
     try {
       md.getDisplayMedia = function getDisplayMedia(c?: any) {
-        return orig(c).then((s: MediaStream) => { trackStream(s, true); return s; });
+        return acquireMedia(() => orig(c), true, ["screen"]);
       };
     } catch { /* ignore */ }
   }
   const MST: any = w.MediaStreamTrack;
+  const nativeCloneTrack = MST?.prototype?.clone;
   if (MST?.prototype) {
     const origStop = MST.prototype.stop;
-    const origClone = MST.prototype.clone;
     try {
       MST.prototype.stop = function (this: MediaStreamTrack) { const r = origStop.call(this); if (tracks.has(this)) notify(); return r; };
       MST.prototype.clone = function (this: MediaStreamTrack) {
-        const c = origClone.call(this);
-        const k = tracks.get(this);
-        if (k) { tracks.set(c, k); notify(); }
+        const c = nativeCloneTrack.call(this);
+        const source = trackSources.get(this);
+        if (source) { addTrack(c, source.kind === "screen", source.epoch); notify(); }
         return c;
+      };
+    } catch { /* ignore */ }
+  }
+  const MS: any = w.MediaStream;
+  if (MS?.prototype?.clone && MS.prototype.getTracks && nativeCloneTrack) {
+    const origClone = MS.prototype.clone;
+    const getTracks = MS.prototype.getTracks;
+    try {
+      MS.prototype.clone = function (this: MediaStream) {
+        const originals: MediaStreamTrack[] = getTracks.call(this);
+        const source = streamSources.get(this);
+        if (!source && !originals.some(track => trackSources.has(track))) return origClone.call(this);
+        // MediaStream.clone is defined as constructing a fresh stream with a
+        // native clone of each track. Do that explicitly for known sources:
+        // getTracks ordering is not stable, so source/copy arrays cannot be
+        // zipped to recover provenance after a native whole-stream clone.
+        const copies: MediaStreamTrack[] = [];
+        try {
+          for (const original of originals) {
+            const copy: MediaStreamTrack = nativeCloneTrack.call(original);
+            copies.push(copy);
+            const provenance = trackSources.get(original);
+            if (provenance) addTrack(copy, provenance.kind === "screen", provenance.epoch);
+          }
+          const copy: MediaStream = new MS(copies);
+          // Unknown tracks manually composed into a stream retain unknown
+          // provenance. Only future native addtrack events inherit its origin.
+          if (source) trackStream(copy, source.screen, source.epoch, false);
+          notify();
+          return copy;
+        } catch (error) {
+          for (const track of copies) { try { track.stop(); } catch { /* ignore */ } }
+          notify();
+          throw error;
+        }
       };
     } catch { /* ignore */ }
   }
@@ -105,17 +207,44 @@ export function installSensorWrappers(): SensorTracker {
     const origGet = geo.getCurrentPosition?.bind(geo);
     origClear = geo.clearWatch?.bind(geo) ?? null;
     try {
-      if (origWatch) geo.watchPosition = function watchPosition(...a: any[]) {
-        const id = origWatch(...a);
-        watches.add(id); notify();
+      const wrapCallback = (fn: any, request: LocationRequest, once: boolean, optional = false) => {
+        if (typeof fn !== "function" && !(optional && fn == null)) return fn;
+        return function (this: any, ...args: any[]) {
+          if (!request.active || request.epoch !== epoch) return;
+          if (once) {
+            request.active = false; pendingLocations.delete(request);
+            if (!optional) {
+              recentLocationUntil = Date.now() + RECENT_LOCATION_MS;
+              setTimeout(notify, RECENT_LOCATION_MS + 50);
+            }
+            notify();
+          }
+          return fn?.apply(this, args);
+        };
+      };
+      if (origWatch) geo.watchPosition = function watchPosition(success: any, error?: any, options?: any) {
+        const request = { epoch, active: true };
+        const id = origWatch(wrapCallback(success, request, false), wrapCallback(error, request, false, true), options);
+        if (request.epoch !== epoch) { request.active = false; origClear?.(id); }
+        else watches.set(id, request);
+        notify();
         return id;
       };
-      if (origGet) geo.getCurrentPosition = function getCurrentPosition(...a: any[]) {
-        recentLocationUntil = Date.now() + RECENT_LOCATION_MS; notify();
-        setTimeout(notify, RECENT_LOCATION_MS + 50);
-        return origGet(...a);
+      if (origGet) geo.getCurrentPosition = function getCurrentPosition(success: any, error?: any, options?: any) {
+        const request = { epoch, active: true };
+        pendingLocations.add(request);
+        notify();
+        try {
+          return origGet(wrapCallback(success, request, true), wrapCallback(error, request, true, true), options);
+        } catch (error) {
+          request.active = false; pendingLocations.delete(request);
+          notify();
+          throw error;
+        }
       };
       if (origClear) geo.clearWatch = function clearWatch(id: number) {
+        const request = watches.get(id);
+        if (request) request.active = false;
         watches.delete(id); notify();
         return origClear!(id);
       };
@@ -182,15 +311,23 @@ export function installSensorWrappers(): SensorTracker {
   setInterval(check, 2000);
 
   singleton = {
-    active: compute,
+    status: compute,
     onChange(fn) { subs.add(fn); return () => subs.delete(fn); },
     stopAll() {
+      // Invalidate first, before stopping resources can invoke page callbacks.
+      // Calls deliberately made after this boundary belong to the next epoch.
+      epoch++;
       let n = 0;
-      for (const t of [...tracks.keys()]) { if (t.readyState === "live") { try { t.stop(); n++; } catch { /* ignore */ } } }
+      for (const cancel of [...pendingMedia.keys()]) { cancel(); n++; }
+      for (const request of pendingLocations) { request.active = false; n++; }
+      pendingLocations.clear();
+      const stoppedTracks = [...tracks.keys()];
       tracks.clear();
-      for (const id of [...watches]) { try { origClear?.(id); n++; } catch { /* ignore */ } }
+      const stoppedWatches = [...watches];
       watches.clear();
       recentLocationUntil = 0;
+      for (const t of stoppedTracks) { if (t.readyState === "live") { try { t.stop(); n++; } catch { /* ignore */ } } }
+      for (const [id, request] of stoppedWatches) { request.active = false; try { origClear?.(id); n++; } catch { /* ignore */ } }
       for (const m of [...motion]) { try { origRemove.call(window, m.type, m.wrapped, m.options); n++; } catch { /* ignore */ } m.cleanup(); }
       for (const k of ["ondevicemotion", "ondeviceorientation", "ondeviceorientationabsolute"]) {
         if (w[k]) { try { w[k] = null; n++; } catch { /* ignore */ } }

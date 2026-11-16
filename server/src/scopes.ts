@@ -81,6 +81,29 @@ export function mutate<T>(t: Tendril, actor: string, input: unknown, targets: Mu
   });
 }
 
+type CommandDecision<T> = { status: 'accepted'; value: T } | {
+  status: 'rejected'; error: { status: number; code: string; message: string; extra?: Record<string, unknown> };
+};
+
+/** Save classified domain rejections as receipts after rolling back their writes and effects. */
+export function mutateDecision<T>(t: Tendril, actor: string, input: unknown, targets: MutationTargets, payload: unknown,
+  write: (context: ValidatedContext) => T, rejectedCodes: ReadonlySet<string>, fingerprintTargets: MutationTargets = targets): T {
+  const decision = mutate<CommandDecision<T>>(t, actor, input, targets, payload, context => {
+    try {
+      return { status: 'accepted', value: t.transaction(() => write(context)) };
+    } catch (error) {
+      if (!(error instanceof HttpError) || !rejectedCodes.has(error.code)) throw error;
+      return { status: 'rejected', error: { status: error.status, code: error.code, message: error.message,
+        ...(error.extra !== undefined ? { extra: error.extra } : {}) } };
+    }
+  }, fingerprintTargets);
+  // Throw only after mutate has committed the receipt. Authentication, guards,
+  // and receipt-capacity failures occur outside the classified write callback.
+  if (decision.status === 'rejected')
+    throw new HttpError(decision.error.status, decision.error.code, decision.error.message, decision.error.extra);
+  return decision.value;
+}
+
 function changed(t: Tendril): void { t.broadcast({ t: 'scopes', scopes: scopes(t) }); }
 export function registerScope(t: Tendril, id: string, bindings: unknown, owner: string | null = null, expected?: string): ScopeDescriptor {
   assertValid('scopeId', id);

@@ -3,10 +3,11 @@
 // copy of the snapshot so a reload without signal can render the page with its state before
 // IndexedDB has opened. Durable operations fail explicitly when storage is unavailable.
 import type { ScopeDescriptor } from "../../contract/index.mjs";
+import type { NormalizedStateChecks } from "../../contract/state.mjs";
 import type { OperationContext } from "./generations";
 
 export interface OutboxItem { key: number; cid: string; msg: any; blob?: Blob }
-export interface Snapshot { rev: number; state: any; scopes: ScopeDescriptor[]; pending: ({ cid: string; ops: any[] } & OperationContext)[]; transcript: any[] }
+export interface Snapshot { rev: number; state: any; scopes: ScopeDescriptor[]; pending: ({ cid: string; ops: any[] } & OperationContext & NormalizedStateChecks)[]; transcript: any[] }
 
 const MAX_LOG_ITEMS = 50;
 let keySeq = 0;

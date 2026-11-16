@@ -29,6 +29,69 @@ test("preview state uses the public runtime support primitives, including null, 
   } finally { await adapter.close(); }
 });
 
+test("preview conditional writes preserve read guards, atomic state and terminal conflict retries", { timeout: 5000 }, async t => {
+  const server = createServer();
+  const binding = { id: "source", generation: "v1", paths: [["source"]], operations: [] };
+  const adapter = await attachRuntime(server, { scopes: [binding], state: { source: { version: 1 }, array: [1] } });
+  t.after(async () => { await adapter.close(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}/_tendril/ws`);
+  await once(ws, "open");
+  const welcome = once(ws, "message");
+  ws.send(JSON.stringify({ t: "hello", device_id: "conditional-device", device_secret: "fixture" })); await welcome;
+  const frames = [];
+  ws.on("message", raw => frames.push(JSON.parse(String(raw))));
+  const call = message => new Promise(resolve => {
+    const received = raw => {
+      const frame = JSON.parse(String(raw));
+      if (["ack", "state_snapshot"].includes(frame.t) && frame.cid === message.cid) { ws.off("message", received); resolve(frame); }
+    };
+    ws.on("message", received); ws.send(JSON.stringify(message));
+  });
+  const initial = adapter.state;
+  for (const [index, extra] of [{ expected_revison: 99 }, { condition: [{ path: ["owner"], exists: false }] }].entries()) {
+    const cid = `unknown-guard-${index}`;
+    const rejected = await call({ t: "state", cid, expected_generations: {}, ...extra,
+      ops: [{ op: "set", path: ["owner"], value: "must not be admitted" }] });
+    assert.equal(rejected.error, "bad_request"); assert.match(rejected.message, /Unknown field/);
+    assert.deepEqual(adapter.state, initial); assert.equal(adapter.rev, 0);
+    // A corrected no-op with the same CID proves validation did not consume a
+    // receipt. Waiting for it also observes the preceding ordered state reset.
+    assert.equal((await call({ t: "state", cid, expected_generations: {}, ops: [] })).rev, 0);
+    assert.ok(frames.some(frame => frame.t === "state_reset" && frame.cid === cid && frame.rev === 0));
+  }
+  const replacement = { t: "state", cid: "replacement-requires-ops", expected_generations: {}, state: { overwritten: true } };
+  const rejectedReplacement = await call(replacement);
+  assert.equal(rejectedReplacement.error, "bad_request"); assert.match(rejectedReplacement.message, /require ops/);
+  assert.deepEqual(adapter.state, initial); assert.equal(adapter.rev, 0);
+  assert.equal((await call({ t: "state", cid: replacement.cid, expected_generations: {}, ops: [] })).rev, 0);
+  const body = { t: "state", cid: "claim-a", expected_generations: {},
+    conditions: [{ path: ["source", "version"], equals: 1 }, { path: ["owner"], exists: false }],
+    ops: [{ op: "set", path: ["owner"], value: "a" }, { op: "set", path: ["status"], value: "claimed" }] };
+  assert.equal((await call(body)).error, "stale_generation");
+  body.expected_generations.source = "v1";
+  assert.equal((await call(body)).rev, 1);
+  const competitor = { ...body, cid: "claim-b" };
+  const rejected = await call(competitor);
+  assert.equal(rejected.error, "state_conflict");
+  assert.equal(rejected.conflict.condition, 1);
+  assert.equal(adapter.state.owner, "a");
+  assert.equal(adapter.state.status, "claimed");
+  adapter.updateState([{ op: "delete", path: ["owner"] }]);
+  adapter.setScopes([{ ...binding, generation: "v2" }]);
+  assert.deepEqual(await call(competitor), rejected);
+  assert.equal(adapter.state.owner, undefined);
+  assert.equal((await call({ ...competitor, conditions: [] })).error, "command_conflict");
+  assert.ok(frames.some(frame => frame.t === "state_reset" && frame.rev === 2 && frame.state.owner === undefined));
+  assert.throws(() => adapter.updateState([{ op: "set", path: ["status"], value: "wrong" }, { op: "set", path: ["array", "0"], value: 2 }]), { code: "state_conflict" });
+  assert.equal(adapter.state.status, "claimed"); assert.equal(adapter.rev, 2);
+  const snapshot = await call({ t: "state_snapshot", cid: "claim-a" });
+  assert.deepEqual(snapshot.state, adapter.state);
+  assert.equal(snapshot.rev, 2); assert.equal(snapshot.scopes[0].generation, "v2");
+  adapter.updateState([{ op: "set", path: ["later"], value: true }]);
+  assert.equal((await call({ t: "state_snapshot", cid: "claim-a" })).rev, 3, "a read correlation ID is not a cached mutation receipt");
+});
+
 test("preview retries upload acknowledgements without duplicating media and speaks through real say messages", async () => {
   const adapter = await attachRuntime(new EventEmitter(), {});
   try {

@@ -28,7 +28,7 @@ import {
 import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
 import { pushAvailable, sendWebPush, vapidPublicKey, type NotifyDeliveryOptions, type NotifyDeliveryResult } from "./push";
-import { applyOps, validateOps, type StateOp } from "./state";
+import { applyCheckedOps, checkState, validateOps, validateStateChecks, statePaths, type StateOp } from "./state";
 import { checkGenerations, scopes, type Preconditions } from "./scopes";
 import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
@@ -36,7 +36,7 @@ import { handleWsClose, handleWsMessage } from "./ws";
 import { emitBuiltinRecord, emitBuiltinSignal, pruneStreams } from "./streams";
 import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession, socketPrincipal } from "./access";
 
-import type { Role, DeviceInfo } from "../../contract/index.mjs";
+import type { Role, DeviceInfo, StateChecks } from "../../contract/index.mjs";
 export type { Role } from "../../contract/index.mjs";
 
 /** Per-socket attachment (survives hibernation). */
@@ -872,11 +872,13 @@ export class Tendril extends DurableObject<Env> {
     return { rev: this.db.get<number>("rev", 0), state: this.db.get<Record<string, unknown>>("state", {}), scopes: scopes(this) };
   }
 
-  /** Applies ops (LWW per path, in server order), bumps rev, broadcasts. */
-  applyState(ops: StateOp[], by: string, except?: WebSocket, guards: Pick<Preconditions, "scope" | "expected_generations"> = { expected_generations: {} }): number {
-    const checked = validateOps(ops);
+  /** Checks the authoritative pre-mutation snapshot and applies the whole batch. */
+  applyState(ops: StateOp[], by: string, except?: WebSocket, guards: Pick<Preconditions, "scope" | "expected_generations"> & StateChecks = { expected_generations: {} }): number {
+    const checked = validateOps(ops), checks = validateStateChecks(guards);
     return this.transaction(() => {
-      checkGenerations(this, guards, { paths: checked.map(op => op.path), operations: ["state"] });
+      checkGenerations(this, guards, { paths: statePaths(checked, checks), operations: ["state"] });
+      const { state, rev } = this.getState();
+      checkState(state, rev, checks);
       return this.applyStateTransaction(checked, by, except);
     });
   }
@@ -884,7 +886,7 @@ export class Tendril extends DurableObject<Env> {
   private applyStateTransaction(ops: StateOp[], by: string, except?: WebSocket): number {
     const { rev, state } = this.getState();
     if (ops.length === 0) return rev;
-    const next = applyOps(structuredClone(state), ops);
+    const next = applyCheckedOps(state, rev, ops);
     const serialized = JSON.stringify(next);
     if (new TextEncoder().encode(serialized).byteLength > MAX_STATE) throw new HttpError(413, "too_large", "State would exceed 1 MB");
     const nrev = rev + 1;

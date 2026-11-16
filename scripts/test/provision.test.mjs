@@ -66,5 +66,5 @@ test('fresh provisioning creates only the selected named storage after preflight
 });
 
 test('deployment gate derives its revision from the server storage identity',async()=>{
-  assert.equal(await requiredStorageSchema(),5);
+  assert.equal(await requiredStorageSchema(),6);
 });

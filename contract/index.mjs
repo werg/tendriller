@@ -3,10 +3,11 @@
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
 import { blobSchemas, blobNameSchema, isWellFormedUnicode } from "./blobs.mjs";
+import { assertStateJson, normalizeStateChecks, normalizeStateOps, STATE_CONDITIONS_MAX } from "./state.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
-export const CORE_RELEASE = "0.3.0-rc.6";
+export const CORE_RELEASE = "0.3.0-rc.8";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -26,6 +27,11 @@ const stateOperation = { anyOf: [
   object({ op: { const: "set" }, path, value: {} }, ["op", "path", "value"]),
   object({ op: { const: "delete" }, path }, ["op", "path"]),
 ] };
+const stateCondition = { anyOf: [
+  object({ path, equals: {} }, ["path", "equals"]),
+  object({ path, exists: boolean }, ["path", "exists"]),
+] };
+const stateChecks = { conditions: { type: "array", maxItems: STATE_CONDITIONS_MAX, items: stateCondition }, expected_revision: integer };
 const deviceInfo = object({ id: string, name: nullableString, role: { enum: ROLES }, purpose: { enum: DEVICE_PURPOSES },
   pending: boolean, connected: boolean, primary: boolean, last_seen: nullableTime, ua: nullableString, link: nullableString,
 }, ["id", "name", "role", "purpose", "pending", "connected", "primary", "last_seen", "ua", "link"]);
@@ -39,7 +45,8 @@ const timerProperties = {
   repeat: timerRepeat, missed: { enum: ["fire_once", "skip"] }, device: string, notify: boolean, state: { enum: ["scheduled", "cancelled", "completed"] },
 };
 const timerWriteProperties = { ...timerProperties, repeat: { anyOf: [timerRepeat, { type: "null" }] }, device: nullableString };
-const timer = object({ ...timerProperties, id: string, created_at: integer, updated_at: integer }, ["id", "title", "due_at", "timezone", "missed", "notify", "state", "created_at", "updated_at"]);
+const timerRevision = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
+const timer = object({ ...timerProperties, id: string, revision: timerRevision, created_at: integer, updated_at: integer }, ["id", "revision", "title", "due_at", "timezone", "missed", "notify", "state", "created_at", "updated_at"]);
 const sessionProperties = {
   purpose: { type: "string", maxLength: 4000 }, current_task: { type: "string", maxLength: 4000 },
   ...Object.fromEntries(["completed", "decisions", "open_questions"].map(key => [key, { type: "array", maxItems: 50, items: { type: "string", maxLength: 2000 } }])),
@@ -51,7 +58,7 @@ const identifier = { type: "string", minLength: 1, maxLength: 200 };
 const scopeId = { type: "string", pattern: "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$" };
 const generationToken = { type: "string", minLength: 1, maxLength: 160 };
 const commandId = { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" };
-const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
+const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
 const generationMap = { type: "object", maxProperties: 128, propertyNames: scopeId, additionalProperties: generationToken };
 const guards = { cid: commandId, scope: scopeId, expected_generations: generationMap };
 const scopeDescriptor = object({ id: scopeId, generation: generationToken,
@@ -87,9 +94,12 @@ const coreSchemas = {
   sayMessage: object({ ...sayProperties, message_id: { type: "string", minLength: 1 }, ts: integer, present: boolean }, ["text", "message_id", "ts"], true),
   stateOperation,
   stateOperations: { type: "array", items: stateOperation },
+  stateCondition,
+  stateChecks: object(stateChecks),
+  stateWriteOptions: object({ scope: scopeId, expected_generations: generationMap, ...stateChecks }),
   stateUpdate: { anyOf: [
-    object({ ...guards, ops: { type: "array", items: stateOperation } }, ["cid", "expected_generations", "ops"]),
-    object({ ...guards, state: jsonObject }, ["cid", "expected_generations", "state"]),
+    object({ ...guards, ...stateChecks, ops: { type: "array", items: stateOperation } }, ["cid", "expected_generations", "ops"]),
+    object({ ...guards, ...stateChecks, state: jsonObject }, ["cid", "expected_generations", "state"]),
   ] },
   sendResult: { anyOf: [
     object({ status: { const: "accepted" }, seq: { type: "integer", minimum: 1 } }, ["status", "seq"]),
@@ -113,8 +123,10 @@ const coreSchemas = {
   focusRequest: object({ device: nullableString, ttl_seconds: { type: "integer", minimum: 30, maximum: 86400 } }, ["device"]),
   timerRepeat,
   timer,
-  timerWrite: object(timerWriteProperties),
-  timerCreate: object(timerWriteProperties, ["title"]),
+  timerWrite: object({ ...guards, ...timerWriteProperties, expected_revision: timerRevision }, ["cid", "expected_generations", "expected_revision"]),
+  timerCreate: object({ ...guards, ...timerWriteProperties }, ["cid", "expected_generations", "title"]),
+  timerDelete: object({ ...guards, expected_revision: timerRevision }, ["cid", "expected_generations", "expected_revision"]),
+  timerDeleted: object({ id: string, revision: timerRevision, deleted: { const: true } }, ["id", "revision", "deleted"]),
   timerRun: object({ id: string, timer_id: string, scheduled_at: integer, fired_at: integer, status: { enum: ["fired", "skipped"] }, event_seq: nullableTime,
     delivery: { anyOf: [durabilitySchemas.timerDelivery, { type: "null" }] },
   }, ["id", "timer_id", "scheduled_at", "fired_at", "status", "event_seq", "delivery"]),
@@ -221,7 +233,18 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
 
 export function validate(name, value) {
   if (!Object.hasOwn(schemas, name)) throw new TypeError(`Unknown contract schema: ${name}`);
-  return validateSchema(schemas[name], value);
+  const issues = validateSchema(schemas[name], value);
+  // Wire JSON cannot carry undefined, accessors, cycles or sparse arrays. Apply
+  // the same restrictions before in-process SDK/runtime serialization as well.
+  if (!issues.length) try {
+    if (name === "stateOperation") normalizeStateOps([value]);
+    if (name === "stateOperations") normalizeStateOps(value);
+    if (name === "stateCondition") normalizeStateChecks({ conditions: [value] });
+    if (name === "stateWriteOptions" || name === "stateUpdate") assertStateJson(value);
+    if (name === "stateChecks" || name === "stateWriteOptions" || name === "stateUpdate") normalizeStateChecks(value);
+    if (name === "stateUpdate") normalizeStateOps("state" in value ? [{ op: "set", path: [], value: value.state }] : value.ops);
+  } catch (error) { issues.push({ path: "$", message: error.message }); }
+  return issues;
 }
 
 export class ContractError extends TypeError {

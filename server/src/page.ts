@@ -64,7 +64,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const experiencePath = sub;
   if (EXPERIENCE_ROUTE.test(experiencePath) || sub === "devices") {
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can manage saved work, devices, and timers");
-    return handleExperience(t, req, url, "owner", experiencePath, true);
+    return handleExperience(t, req, url, principal, experiencePath);
   }
 
   if (sub === "trust-version" && m === "POST") {

@@ -2,8 +2,8 @@ import type { BlobTransferClient } from "./blobs-client.mjs";
 import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
 import type { RecordLogClient, RecordLogClientOptions } from "./records.mjs";
-import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
-  FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
+import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, StateChecks, StateSnapshot, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
+  FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerDelete, TimerDeleted, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
   expires_at?: number | null; next_step?: string }
@@ -24,15 +24,15 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   say(body: SayRequest): Promise<{ message_id: string; [key: string]: unknown }>;
   notificationStatus(): Promise<NotificationStatus>;
   notify(body: NotificationRequest): Promise<NotificationDelivery>;
-  state(): Promise<{ state: Record<string, unknown>; rev: number; scopes: ScopeDescriptor[] }>;
-  updateState(body: CommandMetadata & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
+  state(): Promise<StateSnapshot>;
+  updateState(body: CommandMetadata & StateChecks & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
   devices(): Promise<DeviceConfiguration>;
   updateDevice(device: string, body: DeviceUpdate): Promise<DeviceInfo>;
   focus(body: FocusRequest): Promise<DeviceConfiguration>;
   timers(): Promise<{ timers: DurableTimer[]; execution: "server"; lifetime: "ad_hoc" | "resident"; expires_at: number | null }>;
   createTimer(body: CreateTimer): Promise<DurableTimer>;
   updateTimer(timer: string, body: TimerWrite): Promise<DurableTimer>;
-  deleteTimer(timer: string): Promise<void>;
+  deleteTimer(timer: string, body: TimerDelete): Promise<TimerDeleted>;
   timerHistory(): Promise<{ runs: TimerRun[] }>;
   session(): Promise<SessionSummary>;
   updateSession(body: SessionWrite): Promise<SessionResult>;

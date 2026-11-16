@@ -121,8 +121,8 @@ retry a changed head internally. Notifications happen after durable commit.
 
 ## Recovery and deployment
 
-This unreleased baseline uses page schema revision **5**, with no compatibility or
-data migration. The checked-in canonical deployments still name revision-4 storage.
+This unreleased baseline uses page schema revision **6**, with no compatibility or
+data migration. The checked-in canonical deployments still name revision-5 storage.
 Deploy this code only to fresh resources selected deliberately; changing a schema
 environment variable does not translate an existing namespace.
 

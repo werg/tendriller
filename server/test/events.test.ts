@@ -70,7 +70,7 @@ describe("events and long-poll", () => {
     const pending = apiJson(h, "GET", `events?after=${cursor}&wait=10`);
     await sleep(300);
     // listening while held
-    const pres = await page.next((m) => m.t === "presence" && m.state === "listening");
+    const pres = await page.next((m) => m.t === "presence" && m.state === "listening" && m.wake === "long_poll");
     expect(pres.wake).toBe("long_poll");
     await page.request({ t: "send", expected_generations: {}, data: { nowake: true }, wake: false });
     await page.request({ t: "send", expected_generations: {}, data: { go: 1 } });

@@ -15,6 +15,7 @@ import { pack, guessType } from "../lib/pack.mjs";
 import { uploadBlob, downloadBlob, blobInfo } from "../lib/blobs.mjs";
 import { putSharedFile, getSharedFile, deleteSharedFile, listSharedFiles, fileHistory } from "../lib/shared-files.mjs";
 import { publishFiles, rollbackPublication } from "../lib/publications.mjs";
+import { changeTimer } from "../lib/timers.mjs";
 import { terminalQr } from "../lib/qr.mjs";
 
 const MAX_TRANSFER_BYTES = 5 * 1024 * 1024;
@@ -73,8 +74,9 @@ State, devices, sharing, wake
   wake [--webhook URL [--token T] | --off] [--schedule N|off] [--page-streak N] [--grace S]
 
 Durable work and trusted extensions
-  timers [list|history] | timers add <json|@file> | timers update <id> <json|@file>
-  timers cancel <id> | timers rm <id>
+  timers [list|history] | timers add <json|@file>
+  timers update <id> <json|@file> --revision N | timers cancel <id> --revision N | timers rm <id> --revision N
+       [--cid C --scope ID --generations JSON --resume-file PATH]
   session [get] | session set <json|@file>
   bundle export [new-file.json] [--include-data] | bundle stage <file.json>
   bundle publish --expected-head N | bundle discard
@@ -443,17 +445,27 @@ const commands = {
     out(await api.post("/focus", { device: args[0] === "off" ? null : args[0], ...(f.ttl !== undefined ? { ttl_seconds: intFlag(f.ttl, "ttl") } : {}) }));
   },
 
-  async timers(args, f, api) {
+  async timers(args, f, api, cfg) {
     const [sub = "list", id, settings] = args;
-    if (sub === "list") return out(await api.get("/timers"));
-    if (sub === "history") return out(await api.get("/timers/history"));
-    if (sub === "add") return out(await api.post("/timers", jsonArg(id, "timer settings")));
-    if (!id) fail("usage: tendril timers [list|history|add <json>|update <id> <json>|cancel <id>|rm <id>]", 64);
-    const path = `/timers/${encodeURIComponent(id)}`;
-    if (sub === "update") return out(await api.patch(path, jsonArg(settings, "timer changes")));
-    if (sub === "cancel") return out(await api.patch(path, { state: "cancelled" }));
-    if (sub === "rm") { await api.del(path); return out({ ok: true, removed: id }); }
-    fail("unknown timers command; see tendril --help", 64);
+    const reading = sub === "list" || sub === "history";
+    const allowed = ["pretty", "tendril", ...(reading ? [] : ["cid", "scope", "generations", "resume-file", "revision"])];
+    for (const key of Object.keys(f)) if (!allowed.includes(key)) fail(`timers ${sub} does not support --${key}`, 64);
+    if (reading) {
+      if (args.length > 1) fail(`timers ${sub} takes no additional arguments`, 64);
+      return out(await api.get(sub === "list" ? "/timers" : "/timers/history"));
+    }
+    if (!["add", "update", "cancel", "rm"].includes(sub)) fail("unknown timers command; see tendril --help", 64);
+    if (!id || args.length !== (sub === "update" ? 3 : 2)) fail("usage: timers add <json> | update <id> <json> --revision N | cancel <id> --revision N | rm <id> --revision N", 64);
+    if (sub === "add" && f.revision !== undefined) fail("timers add does not take --revision", 64);
+    if (sub !== "add" && f.revision === undefined) fail("Review timers list and supply --revision N for the timer you intend to change", 64);
+    const operation = sub === "add" ? "create" : sub === "rm" ? "delete" : "update";
+    const timer = sub === "add" ? undefined : id;
+    const body = sub === "add" ? jsonArg(id, "timer settings") : sub === "update" ? jsonArg(settings, "timer changes") : sub === "cancel" ? { state: "cancelled" } : {};
+    const options = { cid: f.cid, scope: f.scope, expectedGenerations: generationsOf(f),
+      expectedRevision: f.revision === undefined ? undefined : boundedInteger(f.revision, "revision", undefined, 1) };
+    const intent = JSON.stringify({ operation, timer: timer ?? null, settings: body, ...options });
+    return out(await changeTimer(api, operation, timer, body, { ...options, destination: cfg.api,
+      resumeFile: transferRecord(cfg, "timer", intent, f["resume-file"]) }));
   },
 
   async session(args, f, api) {

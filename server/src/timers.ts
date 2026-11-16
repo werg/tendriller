@@ -2,12 +2,14 @@ import type { Tendril } from "./tendril";
 import { addEvent } from "./events";
 import { addActivity } from "./activity";
 import { HttpError, isPlainObject } from "./http";
+import { mutateDecision } from "./scopes";
 import { cancelTimerNotifications, notificationDelivery, pruneTimerHistory, queueTimerNotification, runTimerNotifications, timerOperationsAllowed } from "./timer-notifications";
-import type { TimerRepeat, DurableTimer, TimerRun } from "../../contract/index.mjs";
+import { assertValid, type TimerRepeat, type DurableTimer, type TimerRun, type TimerWrite, type TimerDeleted } from "../../contract/index.mjs";
 export type { TimerRepeat, DurableTimer, TimerRun } from "../../contract/index.mjs";
 type TimerRow = { id: string; spec: string; next_at: number; state: string };
 const MAX_TIMERS = 32;
 const LATE_GRACE = 120_000;
+const REJECTED_TIMER_DECISIONS = new Set(["quota", "lifetime_required", "unclaimed", "timer_conflict", "not_found", "already_fired", "bad_request"]);
 
 function zoned(at: number, zone: string): Record<string, number> {
   const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
@@ -44,12 +46,28 @@ function requireClaim(t: Tendril) {
   if (!t.db.get("owner_account", null)) throw new HttpError(403, "unclaimed", "Open the page as its owner before scheduling a timer");
 }
 
-export function saveTimer(t: Tendril, body: unknown, by: string, id?: string): DurableTimer {
-  requireClaim(t);
-  if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "Expected timer settings");
-  const previous = id ? listTimers(t).find(timer => timer.id === id) : undefined;
-  if (id && !previous) throw new HttpError(404, "not_found", "No such timer");
-  if (!id && listTimers(t).length >= MAX_TIMERS) throw new HttpError(429, "quota", "Remove an old timer before adding another (32 maximum)");
+function reviewedTimer(t: Tendril, id: string, expectedRevision: number): DurableTimer {
+  const row = t.db.one<TimerRow>("SELECT * FROM timers WHERE id=?", id);
+  if (!row) throw new HttpError(404, "not_found", "No such timer");
+  const current: DurableTimer = JSON.parse(row.spec);
+  if (current.revision !== expectedRevision)
+    throw new HttpError(409, "timer_conflict", "Timer changed; review its current revision", { current: current.revision });
+  return current;
+}
+
+/** Timers share the platform command receipt and generation transaction. */
+export function saveTimer(t: Tendril, body: unknown, actor: string, id?: string, by = actor): DurableTimer {
+  const command = id ? assertValid("timerWrite", body) : assertValid("timerCreate", body);
+  return mutateDecision(t, actor, command, { operations: ["timer.write"] }, { operation: id ? "update" : "create", id: id ?? null, command }, () => {
+    requireClaim(t);
+    const previous = id ? reviewedTimer(t, id, (command as TimerWrite).expected_revision) : undefined;
+    if (!id && listTimers(t).length >= MAX_TIMERS)
+      throw new HttpError(429, "quota", "Remove an old timer before adding another (32 maximum)");
+    return writeTimer(t, command, by, previous);
+  }, REJECTED_TIMER_DECISIONS);
+}
+
+function writeTimer(t: Tendril, body: Record<string, unknown>, by: string, previous?: DurableTimer): DurableTimer {
   const input: Record<string, any> = { ...previous, ...body };
   if (typeof input.title !== "string" || !input.title.trim() || input.title.length > 200) throw new HttpError(400, "bad_request", "title must be 1–200 characters");
   const timezone = input.timezone ?? "UTC";
@@ -82,24 +100,28 @@ export function saveTimer(t: Tendril, body: unknown, by: string, id?: string): D
   if (previous && (input.state ?? "scheduled") === "scheduled" && t.db.one("SELECT id FROM timer_runs WHERE id=?", `${previous.id}:${due}`))
     throw new HttpError(409, "already_fired", "Choose a new first run time to restart this timer");
   const now = t.now();
-  const timer: DurableTimer = { id: previous?.id ?? crypto.randomUUID(), title: input.title.trim(), due_at: due, timezone,
+  const timer: DurableTimer = { id: previous?.id ?? crypto.randomUUID(), revision: (previous?.revision ?? 0) + 1, title: input.title.trim(), due_at: due, timezone,
     ...(repeat ? { repeat } : {}), missed: input.missed ?? "fire_once", ...(input.device ? { device: input.device } : {}), notify: input.notify === true,
     state: input.state ?? "scheduled", created_at: previous?.created_at ?? now, updated_at: now };
-  t.transaction(() => {
-    t.db.run("INSERT INTO timers (id, spec, next_at, state) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET spec=excluded.spec, next_at=excluded.next_at, state=excluded.state",
-      timer.id, JSON.stringify(timer), timer.due_at, timer.state);
-    if (previous) cancelTimerNotifications(t, timer.id);
-  });
+  t.db.run("INSERT INTO timers (id, spec, next_at, state) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET spec=excluded.spec, next_at=excluded.next_at, state=excluded.state",
+    timer.id, JSON.stringify(timer), timer.due_at, timer.state);
+  if (previous) cancelTimerNotifications(t, timer.id);
   addActivity(t, { kind: "timer", summary: `${previous ? "Updated" : "Scheduled"} timer: ${timer.title}`, by });
   t.scheduleAlarm();
   return timer;
 }
 
-export function deleteTimer(t: Tendril, id: string, by: string): void {
-  if (!t.db.one("SELECT id FROM timers WHERE id = ?", id)) throw new HttpError(404, "not_found", "No such timer");
-  t.transaction(() => { cancelTimerNotifications(t, id); t.db.run("DELETE FROM timers WHERE id = ?", id); });
-  addActivity(t, { kind: "timer", summary: "Timer removed", by });
-  t.scheduleAlarm();
+export function deleteTimer(t: Tendril, id: string, body: unknown, actor: string, by = actor): TimerDeleted {
+  const command = assertValid("timerDelete", body);
+  return mutateDecision(t, actor, command, { operations: ["timer.write"] }, { operation: "delete", id, command }, () => {
+    requireClaim(t);
+    const previous = reviewedTimer(t, id, command.expected_revision);
+    cancelTimerNotifications(t, id);
+    t.db.run("DELETE FROM timers WHERE id = ?", id);
+    addActivity(t, { kind: "timer", summary: "Timer removed", by });
+    t.scheduleAlarm();
+    return { id, revision: previous.revision + 1, deleted: true };
+  }, REJECTED_TIMER_DECISIONS);
 }
 export function nextTimerDeadline(t: Tendril): number | null {
   if (t.db.get("disabled", false) || !t.db.get("owner_account", null)) return null;
@@ -139,6 +161,7 @@ export async function runTimers(t: Tendril): Promise<void> {
           ? timer.due_at + (Math.floor((now - timer.due_at) / (timer.repeat.every_minutes * 60000)) + 1) * timer.repeat.every_minutes * 60000
           : nextDaily(now, timer.repeat, timer.timezone);
       } else timer.state = "completed";
+      timer.revision++;
       timer.updated_at = now;
       t.db.run("UPDATE timers SET spec=?, next_at=?, state=? WHERE id=?", JSON.stringify(timer), timer.due_at, timer.state, timer.id);
       if (created) addActivity(t, { kind: "timer", summary: `${skip ? "Skipped missed" : "Fired"} timer: ${timer.title}`, by: "timer", device: timer.device ?? null });

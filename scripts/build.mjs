@@ -63,7 +63,7 @@ export async function buildPublicArtifacts() {
   mkdirSync(join(out, "_tendril"), { recursive: true });
   copyFileSync(join(assets, "sw.js"), join(out, "_tendril/sw.js"));
   cpSync(join(assets, "brand"), join(out, "_tendril/brand"), { recursive: true });
-  await build({ stdin: { contents: 'export { applyOps, validateOps } from "./server/src/state.ts"; export { historyPage, historyGap, mergeHistoryGaps } from "./server/src/streams/history.ts"; export { captureContext, matchesContext, requiredScopes } from "./runtime/src/generations.ts";', resolveDir: root, loader: "js" }, outfile: join(runtime, "preview-support.mjs"), bundle: true, platform: "neutral", format: "esm", target: "es2022", logLevel: "warning" });
+  await build({ stdin: { contents: 'export { applyOps, validateOps, validateStateChecks, checkState, applyCheckedOps } from "./server/src/state.ts"; export { historyPage, historyGap, mergeHistoryGaps } from "./server/src/streams/history.ts"; export { captureContext, matchesContext, requiredScopes } from "./runtime/src/generations.ts";', resolveDir: root, loader: "js" }, outfile: join(runtime, "preview-support.mjs"), bundle: true, platform: "neutral", format: "esm", target: "es2022", logLevel: "warning" });
   copyFileSync(join(root, "preview-support/index.d.mts"), join(runtime, "preview-support.d.mts"));
   copyFileSync(join(root, "preview-support/kernel.d.mts"), join(runtime, "kernel.d.mts"));
   copyFileSync(join(root, "preview-support/voice.d.mts"), join(runtime, "voice.d.mts"));
