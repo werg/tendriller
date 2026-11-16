@@ -25,6 +25,7 @@ export class SpeechCapture {
   private session = 0;
   private maxTimer: number | null = null;
   private consented = false;
+  private disposed = false;
 
   constructor(private h: CaptureHandlers, private lang: () => string,
     private base: string, private speech: Features["speech"]) {
@@ -53,29 +54,38 @@ export class SpeechCapture {
     this.pending.clear();
   }
 
-  private async load(): Promise<void> {
+  private load(): Promise<void> {
+    if (this.disposed) return Promise.reject(new Error("Speech capture is disposed"));
     if (this.ready) return this.ready;
-    if (!this.speech) throw new Error("Speech transcription is unavailable in this environment.");
-    if (!this.consented) {
-      if (!await this.h.onConsent()) throw new Error("Speech setup cancelled. You can type instead.");
-      this.consented = true;
-    }
-    this.worker = new Worker(new URL("voice-worker.js", new URL(this.base, location.href)).href);
-    this.worker.onmessage = (event: MessageEvent) => {
-      const { id, error, progress, ...result } = event.data ?? {};
-      if (progress) { this.h.onInterim(progress); return; }
-      const pending = this.pending.get(id);
-      if (!pending) return;
-      this.pending.delete(id);
-      if (error) pending.reject(new Error(error));
-      else pending.resolve(result);
-    };
-    this.worker.onerror = () => this.failWorker(new Error("Speech worker failed"));
-    this.h.onInterim("Downloading private speech model…");
-    this.ready = this.call("init", { engine: this.speech.engine, modelUrl: new URL(this.speech.url, new URL(this.base, location.href)).href,
-      modelSha256: this.speech.sha256 }).then(() => {});
-    try { await this.ready; }
-    catch (error) { this.worker?.terminate(); this.worker = null; this.ready = null; throw error; }
+    const task = (async () => {
+      if (!this.speech) throw new Error("Speech transcription is unavailable in this environment.");
+      if (!this.consented) {
+        if (!await this.h.onConsent()) throw new Error("Speech setup cancelled. You can type instead.");
+        this.consented = true;
+      }
+      if (this.disposed) throw new Error("Speech capture is disposed");
+      const worker = this.worker = new Worker(new URL("voice-worker.js", new URL(this.base, location.href)).href);
+      worker.onmessage = (event: MessageEvent) => {
+        if (this.worker !== worker) return;
+        const { id, error, progress, ...result } = event.data ?? {};
+        if (progress) { this.h.onInterim(progress); return; }
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        if (error) pending.reject(new Error(error));
+        else pending.resolve(result);
+      };
+      worker.onerror = () => { if (this.worker === worker) this.failWorker(new Error("Speech worker failed")); };
+      this.h.onInterim("Downloading private speech model…");
+      await this.call("init", { engine: this.speech.engine, modelUrl: new URL(this.speech.url, new URL(this.base, location.href)).href,
+        modelSha256: this.speech.sha256 });
+    })();
+    const pending = task.catch(error => {
+      if (this.ready === pending) { this.worker?.terminate(); this.worker = null; this.ready = null; }
+      throw error;
+    });
+    this.ready = pending;
+    return pending;
   }
 
   /** Warm transcription without opening the microphone. */
@@ -85,7 +95,7 @@ export class SpeechCapture {
   }
 
   async start(): Promise<void> {
-    if (this.listening || this.starting || !this.mode) return;
+    if (this.disposed || this.recorder || this.starting || !this.mode) return;
     if (this.processing) { this.h.onError("Transcription is still in progress. Wait or cancel it before recording again."); return; }
     this.starting = true;
     const session = ++this.session;
@@ -102,7 +112,7 @@ export class SpeechCapture {
       const rec = new MediaRecorder(this.stream);
       this.recorder = rec;
       rec.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-      rec.onstop = () => { void this.finish(new Blob(chunks, { type: rec.mimeType }), session); };
+      rec.onstop = () => { void this.finish(new Blob(chunks, { type: rec.mimeType }), session, rec, stream); };
       rec.start();
       this.listening = true;
       this.h.onState(true);
@@ -111,14 +121,20 @@ export class SpeechCapture {
     } catch (error) {
       this.stream?.getTracks().forEach(track => track.stop());
       this.stream = null;
-      this.h.onError(error instanceof Error ? error.message : "Microphone unavailable. You can type instead.");
+      this.recorder = null;
+      if (!this.cancelled && session === this.session) this.h.onError(error instanceof Error ? error.message : "Microphone unavailable. You can type instead.");
     } finally { this.starting = false; }
   }
 
   stop(): void { if (this.recorder?.state === "recording") this.recorder.stop(); else this.cancelled = true; }
-  cancel(): void { ++this.session; this.cancelled = true; this.stop(); }
+  cancel(): void {
+    ++this.session; this.cancelled = true; this.stop();
+    this.stream?.getTracks().forEach(track => track.stop());
+    if (this.listening) { this.listening = false; this.h.onState(false); }
+  }
 
   dispose(): void {
+    this.disposed = true;
     this.cancel();
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
     if (this.maxTimer !== null) window.clearTimeout(this.maxTimer);
@@ -126,14 +142,16 @@ export class SpeechCapture {
     this.failWorker(new Error("Speech capture disposed"));
   }
 
-  private async finish(blob: Blob, session: number): Promise<void> {
-    if (this.maxTimer !== null) window.clearTimeout(this.maxTimer);
-    this.maxTimer = null;
-    this.stream?.getTracks().forEach(track => track.stop());
-    this.stream = null;
-    this.recorder = null;
-    this.listening = false;
-    this.h.onState(false);
+  private async finish(blob: Blob, session: number, recorder: MediaRecorder, stream: MediaStream): Promise<void> {
+    stream.getTracks().forEach(track => track.stop());
+    if (this.recorder === recorder) {
+      if (this.maxTimer !== null) window.clearTimeout(this.maxTimer);
+      this.maxTimer = null;
+      this.stream = null;
+      this.recorder = null;
+      this.listening = false;
+      this.h.onState(false);
+    }
     if (this.cancelled || session !== this.session || !blob.size) return;
     this.processing = true;
     this.h.onInterim("Transcribing on this device…");
@@ -156,6 +174,7 @@ export class SpeechCapture {
         const fraction = position - left;
         out[i] = mono[left] * (1 - fraction) + (mono[Math.min(left + 1, length - 1)] ?? 0) * fraction;
       }
+      if (this.cancelled || session !== this.session) return;
       const result = await this.call("transcribe", { samples: out.buffer, language: this.lang().slice(0, 2) }, [out.buffer]);
       if (this.cancelled || session !== this.session) return;
       if (result.text?.trim()) this.h.onFinal(result.text.trim());
