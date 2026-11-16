@@ -7,6 +7,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 
 const cli = fileURLToPath(new URL("../bin/tendril.mjs", import.meta.url));
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -27,7 +28,7 @@ test("CLI changed bytes at the same path get a new transfer; identical retries r
       res.writeHead(status,{"Content-Type":"application/json"});
       res.end(JSON.stringify(obj));
     };
-    if(path==="/api/service") return json({contract:3,core_release:"0.3.0-rc.1",workflows:[],limits:{}});
+    if(path==="/api/service") return json({contract:CONTRACT_VERSION,core_release:CORE_RELEASE,workflows:[],limits:{}});
     if(path==="/api/t/abcdefghijkl/uploads" && req.method==="POST"){
       const request=JSON.parse(bytes.toString());
       let session=sessions.get(request.cid);
@@ -95,7 +96,7 @@ test("CLI rollback and file deletion replay their original preconditions after a
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
     const json = (value, status = 200) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
-    if (path === "/api/service") return json({ contract: 3, core_release: "0.3.0-rc.1", workflows: [], limits: {} });
+    if (path === "/api/service") return json({ contract: CONTRACT_VERSION, core_release: CORE_RELEASE, workflows: [], limits: {} });
     if (path === "/publications" && req.method === "GET") {
       headReads++;
       return json({ current: 3, latest: 3, healthy: 3, served: 3, head_revision: publicationHead, versions: [] });
