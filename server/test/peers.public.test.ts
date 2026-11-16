@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { api, apiJson, create, inDO, req, type Handle } from './helpers';
 import { createPeerConnection, encodePeerFrame, PEER_LIMITS } from '../../contract/peers.mjs';
+import { closePeer } from '../src/peers';
 
 async function open(h: Handle, channel: string, peerId: string, page = false) {
   const path = `peers/socket?${new URLSearchParams({ channel, peerId })}`;
@@ -71,4 +72,75 @@ it('rechecks the recipient host credential before forwarding and never treats re
   expect((await agent.closed).code).toBe(4003);
   expect(agent.connection.stats.receivedBytes).toBe(0);
   page.connection.close();
+});
+
+
+it('preserves sender order when the first frame waits for account authorization', async () => {
+  const h = await create({ mode: 'dashboard', listener: false });
+  const first = await open(h, 'ordered', 'first'), second = await open(h, 'ordered', 'second');
+  await Promise.all([first.connection.ready, second.connection.ready]);
+  await inDO(h.id, async t => {
+    const sender = t.ctx.getWebSockets('peer').find(ws => ws.deserializeAttachment().peerId === 'first')!;
+    const original = t.env.ACCOUNTS;
+    let release!: () => void, entered!: () => void, reads = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    t.env.ACCOUNTS = { prepare(sql: string) {
+      const statement = original.prepare(sql);
+      return { bind(...args: unknown[]) {
+        const bound = statement.bind(...args);
+        return { async first() {
+          const result = await bound.first();
+          if (++reads === 1) { entered(); await gate; }
+          return result;
+        } };
+      } };
+    } } as D1Database;
+    try {
+      const one = t.webSocketMessage(sender, encodePeerFrame({ domain: 'records', payload: new Uint8Array([1]) }).slice().buffer);
+      await started;
+      const two = t.webSocketMessage(sender, encodePeerFrame({ domain: 'records', payload: new Uint8Array([2]) }).slice().buffer);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      release(); await Promise.all([one, two]);
+    } finally { release(); t.env.ACCOUNTS = original; }
+  });
+  const reader = second.connection.frames[Symbol.asyncIterator]();
+  expect((await reader.next()).value?.payload).toEqual(new Uint8Array([1]));
+  expect((await reader.next()).value?.payload).toEqual(new Uint8Array([2]));
+  first.connection.close(); second.connection.close(); await reader.return?.();
+});
+
+it('ignores delayed traffic and close events from a retired pair after channel reuse', async () => {
+  const h = await create({ mode: 'dashboard', listener: false });
+  const oldFirst = await open(h, 'reused', 'first'), oldSecond = await open(h, 'reused', 'second');
+  await Promise.all([oldFirst.connection.ready, oldSecond.connection.ready]);
+  let retired!: WebSocket;
+  await inDO(h.id, t => { retired = t.ctx.getWebSockets('peer').find(ws => ws.deserializeAttachment().peerId === 'first')!; });
+  oldFirst.connection.close();
+  await Promise.all([oldFirst.closed, oldSecond.closed]);
+  const first = await open(h, 'reused', 'first'), second = await open(h, 'reused', 'second');
+  await Promise.all([first.connection.ready, second.connection.ready]);
+  await inDO(h.id, async t => {
+    await t.webSocketMessage(retired, encodePeerFrame({ domain: 'records', payload: new Uint8Array([9]) }).slice().buffer);
+    closePeer(t, retired);
+  });
+  await first.connection.send({ domain: 'records', payload: new Uint8Array([1]) });
+  const reader = second.connection.frames[Symbol.asyncIterator]();
+  expect((await reader.next()).value?.payload).toEqual(new Uint8Array([1]));
+  expect(first.connection.stats.receivedBytes).toBe(0);
+  first.connection.close(); second.connection.close(); await reader.return?.();
+});
+
+it('bounds queued authorization work and forwards no queued frames after overflow closes the sender', async () => {
+  const h = await create({ mode: 'dashboard', listener: false });
+  const first = await open(h, 'pending-bound', 'first'), second = await open(h, 'pending-bound', 'second');
+  await Promise.all([first.connection.ready, second.connection.ready]);
+  await inDO(h.id, async t => {
+    const sender = t.ctx.getWebSockets('peer').find(ws => ws.deserializeAttachment().peerId === 'first')!;
+    const frame = encodePeerFrame({ domain: 'records', payload: new Uint8Array([1]) }).slice().buffer;
+    await Promise.all(Array.from({ length: 129 }, () => t.webSocketMessage(sender, frame)));
+  });
+  expect((await first.closed).code).toBe(1008);
+  expect(second.connection.stats.receivedBytes).toBe(0);
+  second.connection.close();
 });

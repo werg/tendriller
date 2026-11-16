@@ -52,6 +52,8 @@ and queue overflow fail closed.
 | Ephemeral signal payload | 16 KiB |
 | Local send queue or receive queue | 4 MiB maximum |
 | Relay receiver outstanding bytes | 4 MiB |
+| Pending authorization per sender | 128 messages / 4 MiB |
+| Text relay credit control | 128 bytes |
 | Relay forwarded bytes per endpoint per second | 4 MiB |
 | Concurrent relay sessions per page | 16 pairs |
 | Bootstrap endpoints | 8 |
@@ -88,7 +90,11 @@ The route is `peers/socket?channel=<id>&peerId=<id>`, under the agent API or pag
 for both endpoints before resolving `ready`. The relay checks current local
 credentials and current account access before forwarding; revoked recipients
 are not sent later frames. A disconnected peer closes its partner and frees the
-session. There is no disconnected recipient mailbox.
+session. A durable pair identity isolates later reuse of the same channel from
+old traffic and delayed close callbacks. The relay processes each sender's frames
+in order across asynchronous authorization. Pending authorization is bounded to
+128 messages and 4 MiB per socket; overflow closes the connection so peers can
+resume from durable progress. There is no disconnected recipient mailbox.
 
 Receiver credits bound bytes in flight. The initial window is 4 MiB. Consuming a
 frame returns only its encoded byte count as a small relay control message.
