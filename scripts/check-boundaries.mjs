@@ -14,6 +14,12 @@ for (const directory of ['server/src', 'runtime/src', 'contract']) for (const pa
 }
 const engine = JSON.parse(readFileSync(join(root, 'dist/engine/inputs.json')));
 for (const input of engine) assert.ok(!application.test(input) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
+const toolGraph = join(root, 'dist/tools-inputs.json');
+if (existsSync(toolGraph)) for (const input of JSON.parse(readFileSync(toolGraph))) {
+  const path = input.replaceAll('\\', '/');
+  assert.ok(!/^(?:server\/src|runtime\/src|contract|preview-support)\//.test(path) && !application.test(path),
+    `Tools must consume public artifacts, not private source: ${input}`);
+}
 const kernelPath = join(root, 'dist/runtime/inputs.json');
 if (existsSync(kernelPath)) for (const input of JSON.parse(readFileSync(kernelPath))) {
   assert.ok(!application.test(input) && !tooling.test(input), `Browser kernel includes application/tool dependency ${input}`);

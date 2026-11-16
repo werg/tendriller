@@ -1,46 +1,47 @@
 # Tendriller
 
-Tendriller is an application-neutral engine for pages connected to an agent. The core provides authenticated pages, browser transport, shared state, events, blobs, streams, durable delivery, timers and publication lifecycle.
+Tendriller connects an authenticated page to an agent. Core supplies reliable mechanisms: shared state, events, streams, captures, durable commands, publication identity and explicit trusted server extensions. The page owns its interface, application data and ordinary web dependencies.
 
-**Contract 2 is a pre-release redesign.** New clients use explicit commands and authoritative scope generations. Application JSON is opaque. Existing prototypes must be rebuilt for this contract.
+Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
 
 ## Start here
 
-Read [agent.md](agent.md) for the generic service flow, [the browser API](docs/BROWSER_API.md) for `window.tendril`, and [the protocol](docs/PROTOCOL.md) for guarantees. Optional CLI, collectors, host bridges, preview, browser components, workflows and examples live in [werg/tendriller-contrib](https://github.com/werg/tendriller-contrib).
+- [Agent guide](agent.md): create a page, establish delivery and publish complete files.
+- [Browser API](docs/BROWSER_API.md): transport, conversation, state, streams, captures and explicit device features.
+- [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
+- [Operational tools](docs/tools/CLI.md): optional core-owned publishing, preview, collectors and host bridges.
+- [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.
+- [Cookbooks](https://github.com/werg/tendriller-contrib): adaptable decision guides and reviewed reference implementations.
 
-- [Contrib release downloads](https://github.com/werg/tendriller-contrib/releases)
-- [Tested contrib catalog, 0.2.0-rc.3](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json)
-- [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
-- [Core SDK/runtime releases](https://github.com/werg/tendriller/releases)
-- [Architecture and ownership](docs/ARCHITECTURE.md)
-- [Hands-free wake phrase: setup, privacy and browser support](docs/HANDS_FREE.md)
-- [Web Push notifications: device opt-in, agent API and deployment](docs/PUSH_NOTIFICATIONS.md)
-
-Use discovery to choose a release, then lock exact URLs and SHA-256 digests. Optional components are vendored into a page publication, including lazy siblings, styles and workers.
+The hosted runtime adds a small operational link and a stop action while tracked sensors are active. Conversation, recording, voice, sharing and application navigation are page choices. A separate service-owned recovery page works even if the authored JavaScript is broken. The pure kernel export mounts no interface; voice is an explicit optional module.
 
 ## Build and verify
+
+Use Node 22.15 or newer:
 
 ```sh
 npm ci
 npm run check
-npm run build:service
+npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-`npm run build:engine` builds independently of contrib. `npm run build:artifacts` produces the public `@tendriller/core` and `@tendriller/runtime` archives. `npm run build:service` verifies and compiles the trusted module artifact selected in `composition.lock.json`. Core deployment does not install contrib tooling.
+`npm run build` emits the generic Worker and the public SDK, runtime and engine archives. `npm run build:tools` builds the optional operational archive against those public artifacts. `npm run build:artifacts` builds all four. `npm run check:release` runs the full core, tool and browser gates before release publication.
 
-`npm run dev` runs the generic engine locally. [Development](docs/DEVELOPMENT.md) explains tests and [operations](docs/OPERATIONS.md) covers Cloudflare deployment. First-party preview belongs to contrib and runs from its distributed archive without a core checkout.
+The generic engine has an empty trusted-extension registry. A deployment may deliberately select reviewed modules through `configureWorkflows`. Reading a cookbook or publishing page files never installs server code. Core builds independently of contrib; cookbook checks consume built public artifacts in one direction.
+
+`npm run dev` runs the generic engine locally. [Development](docs/DEVELOPMENT.md) explains validation, and [operations](docs/OPERATIONS.md) describes fresh deployment provisioning. The optional preview runs from its self-contained core archive and serves exactly the authored files.
 
 ## Repository layout
 
 | Directory | Responsibility |
 | --- | --- |
-| `contract/` | Generic executable schemas, SDK, browser declarations, trusted host types and resource policy |
-| `server/` | Engine, identity and permission checks, atomic storage, delivery, serving and lifecycle |
-| `runtime/` | Browser transport, durable outbox, state/streams, conversation and required controls |
-| `preview-support/` | Declarations for released pure production algorithms |
-| `composition/` | Trusted deployment selection and artifact lock |
-| `scripts/` | Core build, independent consumer checks, artifact publication and operations |
-| `docs/` | Generic protocol, architecture, resource guarantees and operations |
+| `contract/` | Executable schemas, SDK, browser declarations, trusted-host types and resource limits |
+| `server/` | Identity, authorization, transactions, private records, delivery, serving and lifecycle |
+| `runtime/` | Headless browser connection, durable outbox, state/streams, sensor tracking and optional voice |
+| `preview-support/` | Public runtime and preview boundaries |
+| `tools/` | Optional CLI, exact-file preview, host bridges and bounded collectors |
+| `scripts/` | Build, artifact checks, release publication and service operations |
+| `docs/` | Protocol, design, testing and operations |
 
-The detailed contract, artifact graph and transaction rules are documented in [the architecture decision](docs/ARCHITECTURE.md). Contrib preserves source provenance from the extraction; neither repository assumes a new project license.
+This is one unreleased target baseline. Development state is recreated from its fresh schemas. Source history and provenance remain evidence; they are not supported runtime dependencies. No new license is inferred for extracted project code; third-party notices accompany distributed artifacts.

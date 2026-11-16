@@ -42,6 +42,27 @@ it('retains an offline publication lease beyond the ordinary recent-version wind
   expect(await (await req(page.page_url+'_publications/1/lazy.js')).text()).toBe('A');
 });
 
+it('keeps logical nested paths separate from encoded document URLs', async () => {
+  const page = await create();
+  const directory = 'notes #1?/café 100%';
+  const path = directory + '/review.html';
+  const written = await apiJson(page, 'POST', 'files', { replace: true, files: {
+    'index.html': '<head></head>Home', [path]: '<head></head><script src="details.js"></script>',
+    [directory + '/details.js']: 'nested source',
+  }});
+  const encoded = directory.split('/').map(encodeURIComponent).join('/');
+  const url = page.page_url + `_publications/${written.version}/${encoded}/review.html`;
+  const response = await req(url);
+  expect(response.status).toBe(200);
+  const html = await response.text();
+  const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
+  expect(config.publication.entry).toBe(path);
+  expect(config.publication.base).toBe(new URL(page.page_url).pathname + `_publications/${written.version}/`);
+  const base = new URL(new RegExp('<base href="([^"]+)"').exec(html)![1], url);
+  expect(base.pathname).toBe(config.publication.base + encoded + '/');
+  expect(await (await req(new URL('details.js', base).href)).text()).toBe('nested source');
+});
+
 it('serves retained immutable runtime objects after the bundled runtime changes',async()=>{
   const id='f'.repeat(64),path=`runtime/${id}/module.js`;
   await env.FILES.put(path,'export const archived=true',{httpMetadata:{contentType:'text/javascript'}});

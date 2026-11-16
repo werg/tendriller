@@ -12,7 +12,7 @@ Agent tokens authorize `A`, the `api` URL in a page handle. Scoped producer toke
 
 `GET /api/service` exposes `contract`, `core_release`, installed workflow interface/schema and implementation revisions, and shared resource policy. `GET A/service` exposes the page's installed interfaces and limits. Browser/device capabilities remain separate. A tool checks its declared requirements before provisioning or writing application data.
 
-Core release, contrib release and page publication are distinct identities. A contrib component release can reuse an existing workflow interface. Trusted implementation changes require deployment composition. A catalog never activates server code.
+Core software releases, cookbook content revisions and page publications are distinct identities. Trusted implementations are deliberately selected by a deployment. Cookbook discovery cannot activate code. Core builds and releases do not depend on contrib executable artifacts.
 
 ## Lifecycle and delivery
 
@@ -72,11 +72,11 @@ HTTP, MCP, WebSocket, whole replacement, bundle restore and trusted-module state
 
 ## Trusted workflows
 
-The engine's workflow registry is empty. A reviewed deployment statically selects a hash-pinned Worker artifact. `POST A/workflows/<module>/<operation>` invokes one declared operation using the generic command envelope. Page payloads cannot register implementations.
+The engine's workflow registry is empty. A reviewed deployment entry explicitly selects exact implementations through `configureWorkflows`. `POST A/workflows/<module>/<operation>` invokes one declared operation using the generic command envelope. Page payloads cannot register implementations.
 
 Modules declare their operation permissions, schemas and explicit scope targets. The host passes authenticated identity, namespaced records, state/scopes, blob pinning, participant identities and post-commit effects. It never passes private SQL or the full Durable Object. The operation runs synchronously under the core transaction. A private response stays outside shared page state; archive/reset and generation rotation commit together. Module replacement or removal rotates/retires owned generations even if the interface revision is unchanged.
 
-Contrib owns workflow-specific APIs, defaults, presentation and documentation. Core exposes validated workflow context separately from event `data`.
+Each selected implementation owns its operation schema and application policy. Cookbook references explain defaults, alternatives and verification; they are not installed by discovery. Core exposes validated workflow context separately from event `data`. Private records have per-record, count and aggregate-byte quotas, enforced within the operation transaction; a quota failure rolls back state, records, generations and effects together.
 
 ## Durable browser operations and captures
 
@@ -84,18 +84,24 @@ Before delivery or optimistic application, the runtime durably stores the comman
 
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
 
+## Conversation and interaction
+
+A transcript entry has a persistent message ID; owner messages also retain their original command ID and device. Replies can reference the exact owner message. Repeated identical text is never used to match acknowledgements. Retries and reconnect history preserve those identities. `conversation.presented(messageId)` records presentation of an actual stored agent message; merely receiving the socket frame is not presentation.
+
+The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and active-sensor stop. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
+
 ## Publications and browser assets
 
-Publishing files snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies.
+Publishing files snapshots all files under an immutable publication ID and locks the current runtime artifact. HTML injects a first base URL at the requested HTML file’s encoded directory under `P_publications/<id>/` and loads `P_tendril/runtime/<runtime-id>/tendril.js`. The publication manifest lists paths, content types, byte counts and SHA-256 hashes. Runtime manifests do the same for runtime assets and their transitive dependencies. `publication.base` is the immutable root and `publication.entry` is the actual requested logical HTML path. Path segments are URL-encoded separately. Directory URLs select `index.html`; missing routes return 404. Hash routing and explicit multi-page publications need no application framework. An authored install manifest is preserved.
 
 The executing page pins its browser URL to its publication. Accepting an update navigates to the canonical latest page; a deferred update leaves the existing graph intact. The service worker caches complete, hash-verified graphs and keeps active client/publication associations. Injected HTML is validated by its `X-Tendril-Publication` response header. Non-HTML bytes match their manifest hashes.
 
-Offline readiness is acknowledged for one exact publication. Send `{ t: "publication", publication: <manifest> }` to the activated controlling service worker with a transferred `MessageChannel` port. It replies on that port with `{ t: "publication", id: <publication-id>, status: "ready" }` only after the complete asset graph, client binding and cleanup metadata have been committed. A failed request replies with `status: "error"` and `error: { code, message }`; the codes are `invalid_publication` and `publication_save_failed`. Asset visibility in the Cache API alone does not establish readiness. Optional lazy runtime resources are cached and verified when first used.
+Offline readiness is acknowledged for one exact publication. Page code calls `tendril.publication.saveOffline()` and awaits success. At the transport boundary, send `{ t: "publication", publication: <manifest> }` to the activated controlling service worker with a transferred `MessageChannel` port. It replies on that port with `{ t: "publication", id: <publication-id>, status: "ready" }` only after the complete asset graph, client binding and cleanup metadata have been committed. A failed request replies with `status: "error"` and `error: { code, message }`; the codes are `invalid_publication` and `publication_save_failed`. Asset visibility in the Cache API alone does not establish readiness. Optional lazy runtime resources are cached and verified when first used.
 
 Core retains runtime artifacts in the existing FILES bucket across deployments. Page-file pruning preserves current/recent publications, open sockets and thirty-day offline leases. Normal publication A/B and offline recovery operate within this contract; this is not a promise to run historical pre-release clients.
 
 ## Remaining platform APIs
 
-Core owns files and versions, health/rollback, authenticated conversation, device purpose/focus, timers, agent context/checkpoints, portability, blobs, streams, activity, delivery and lifecycle. Optional tools, host bridges, preview, components and examples are downloaded from [contrib releases](https://github.com/werg/tendriller-contrib/releases).
+Core owns files and versions, health/rollback, authenticated conversation, device purpose/focus, timers, agent context/checkpoints, portability, blobs, streams, activity, delivery and lifecycle. Optional CLI, host bridges, exact-file preview and collectors are distributed as the separate core tools archive. [Cookbooks](https://github.com/werg/tendriller-contrib) guide page-owned presentation and domain decisions.
 
 Limits are defined in `contract/limits.mjs`, imported by enforcement, and exposed in metadata. [Streams](STREAMS.md) documents stream retention, producer grants and replay. [Architecture](ARCHITECTURE.md) documents artifact composition and verification. [Operations](OPERATIONS.md) documents provisioning, immutable runtime publication and deployment.

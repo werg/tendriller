@@ -16,8 +16,7 @@
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Tendril"] },
-    { "tag": "v2", "new_sqlite_classes": ["Admission"] }
+    { "tag": "baseline", "new_sqlite_classes": ["Tendril", "Admission"] }
   ],
   "d1_databases": [{
     "binding": "ACCOUNTS",

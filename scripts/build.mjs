@@ -79,7 +79,10 @@ export async function buildPublicArtifacts() {
   for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
-    for (const name of readdirSync(join(root, directory))) if (/\.(md|html)$/.test(name)) copyFileSync(join(root, directory, name), join(target, name));
+    for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path))) {
+      const destination = join(target, relative(join(root, directory), source));
+      mkdirSync(dirname(destination), { recursive: true }); copyFileSync(source, destination);
+    }
   }
   mkdirSync(join(out, "contract"), { recursive: true });
   copyFileSync(join(root, "contract/v2.json"), join(out, "contract/v2.json"));

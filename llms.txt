@@ -1,24 +1,30 @@
 # Tendriller
 
-Application-neutral pages connected to agents. Core contract 2; application state and event payloads are opaque.
+Authenticated pages connected to agents through dependable mechanisms. The page owns its layout, interaction and application data. Cookbook content guides choices; it installs nothing.
 
-## Core interfaces
+## Platform interfaces
 
-- [Agent entry point](https://tendriller.dev/agent.md): creation, publication, delivery and commands.
-- [Service descriptor](https://tendriller.dev/api/service): deployed contract, effective limits and installed workflow interface/schema versions.
-- [Contract schema](https://tendriller.dev/contract/v2.json): executable public wire schema.
-- [Protocol](https://tendriller.dev/docs/PROTOCOL.md): authority, generation preconditions and transaction semantics.
-- [Streams](https://tendriller.dev/docs/STREAMS.md): transport-independent delivery and resource policy.
-- [Browser API](https://tendriller.dev/docs/BROWSER_API.md): `tendril.send`, `on`, state, streams, subscriptions, and captures.
-- [Captures](https://tendriller.dev/docs/CAPTURES.md): durable media and event completion.
-- [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md): ownership, artifacts, composition and publication coherence.
-- [Core releases](https://github.com/werg/tendriller/releases): SDK and runtime/support archives.
+- [Agent guide](https://tendriller.dev/agent.md): creation, explicit delivery, plain-file publication and page-owned interaction.
+- [Service descriptor](https://tendriller.dev/api/service): installed capabilities, contract, release and effective limits.
+- [Contract schema](https://tendriller.dev/contract/v2.json): executable wire schema.
+- [Protocol](https://tendriller.dev/docs/PROTOCOL.md): identity, authorization, command generations and atomicity.
+- [Browser API](https://tendriller.dev/docs/BROWSER_API.md): headless transport, state, conversation, streams, captures and device APIs.
+- [Streams](https://tendriller.dev/docs/STREAMS.md): ordered observations, replay, retention and resource policy.
+- [Captures](https://tendriller.dev/docs/CAPTURES.md): durable media, review and event acceptance.
+- [Voice](https://tendriller.dev/docs/HANDS_FREE.md): explicit optional input/output, local controls and browser limits.
+- [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md): ownership, public artifacts and publication coherence.
 
-## Optional tools, components and workflows
+## Optional operational software
 
-- [Contrib](https://github.com/werg/tendriller-contrib): CLI, collectors, bridges, complete preview, components, recipes and examples.
-- [Tested contrib catalog](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json): tools/components/examples with requirements, files and hashes for the recorded 0.2.0-rc.3 pairing.
-- [Release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases): machine-readable releases, including candidates, with immutable catalog and manifest download URLs.
-- [Contrib releases](https://github.com/werg/tendriller-contrib/releases): installable tools, standalone commands, static bundles and trusted workflow archives.
+- [Core releases](https://github.com/werg/tendriller/releases): SDK, runtime, engine and separate tools archives with immutable hashes.
+- [CLI](https://tendriller.dev/docs/tools/CLI.md): publish authored files without scaffolding or dependency injection.
+- [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): exact-file local preview and explicit fixture limits.
+- [Host delivery](https://tendriller.dev/docs/tools/AGENT_HOSTS.md): connect the intended agent conversation and acknowledge work after effects.
+- [Collectors](https://tendriller.dev/docs/tools/COLLECTOR.md): bounded telemetry sources, spooling and loss reporting.
 
-Resolve discovery to an immutable release and verify its hashes before use. Browser component files belong in the page's publication; do not load release attachments as browser scripts. A catalog cannot install or upgrade trusted server workflows.
+## Adaptable knowledge
+
+- [Cookbook collection](https://github.com/werg/tendriller-contrib): outcome guides, algorithms, alternatives and failure cases.
+- [Cookbook agent index](https://github.com/werg/tendriller-contrib/blob/main/agent.md): discover relevant guidance before implementing a task-specific page.
+
+Inspect the task and existing files. Choose an approach, explain consequential tradeoffs, author the interface, and exercise the relevant failure cases. Preserve platform guarantees while adapting example markup, state paths and parameters. Explicitly selected trusted server capabilities require operator review and deployment; reading a guide or publishing a page cannot enable them.

@@ -2,7 +2,7 @@
 
 Tendriller can hold a task across devices, browser closures, and agent sessions.
 This guide covers the generic platform capabilities and their limits. Optional
-application workflows, components, and recipes are documented in
+application policies and interaction choices are explained in cookbooks in
 [contrib](https://github.com/werg/tendriller-contrib). The engine has no workflow
 module installed by default.
 `A` means the private handle’s API base. Agent calls use its bearer token. Page
@@ -14,8 +14,7 @@ same-origin checks. A page never needs an agent token.
 Access roles remain `owner`, `guest`, and `display`. A device’s **purpose** is a
 separate presentation preference: `general`, `camera`, `controller`, `display`,
 or `speaker`. A camera-purpose guest is still a guest; changing a purpose never
-grants owner access. Purposes persist through reconnects. The owner can rename
-devices, choose their purpose, and select **Continue here** in the control.
+grants owner access. Purposes persist through reconnects. Page-authored owner controls can rename devices, choose their purpose, and move focus through the public APIs.
 
 | Operation | Agent API | Owner page API |
 |---|---|---|
@@ -37,8 +36,7 @@ owner device with speaker purpose, the originating device, then the primary
 device. Only one socket speaks, even if the device has several tabs. An explicit
 offline speaker does not silently redirect speech to another device.
 
-Browser speech is immediately available where supported. Neural speech is an
-optional preparation/download, enabled by the person. Muting and stopping speech
+The explicitly loaded voice adapter can use browser speech where supported. Neural speech is an optional preparation/download, enabled by the person. Muting and stopping speech
 remain local choices; an agent cannot override them.
 
 ## Timers that survive a closed page
@@ -69,8 +67,7 @@ with `lifetime_required`.
 | Remove | `DELETE A/timers/<id>` |
 | Execution history | `GET A/timers/history` |
 
-The owner page has the same operations under `_tendril/timers`. Settings exposes
-creation, cancellation, removal, and recent runs. At most 32 timers can be stored.
+The owner page has the same operations under `_tendril/timers`; it authors its own creation, cancellation and history controls. At most 32 timers can be stored.
 
 Omit `repeat` for a one-shot timer. Use `{every_minutes:N}` for an interval or
 `{at:"09:00",days:[1,2,3,4,5]}` for a calendar recurrence in the supplied IANA time
@@ -115,17 +112,15 @@ prove that a person saw a notification; failure never erases the event. See
 
 `GET A/session` returns the brief and its `revision` plus current version, pending input count,
 available-history gap information, devices, timers, recent activity, and whether
-a bundle is staged. The owner page uses `_tendril/session`. Settings can edit the brief and copy a continuation
-prompt without including credentials. Supply `expected_revision` on PUT to reject
-stale edits. The owner form preserves the latest agent checkpoint/decisions when
-editing other fields and asks for review if the same field changed concurrently.
+a bundle is staged. The owner page uses `_tendril/session` and may offer an editor or continuation prompt without including credentials. Supply `expected_revision` on PUT to reject
+stale edits. An authored editor should preserve agent checkpoints and decisions when editing other fields, and ask for review if the same field changed concurrently.
 
 The brief is a checkpoint, not a replacement for the event log. Write its cursor
 only after actually handling those events; updating it does not advance the
 agent’s event-read cursor. History retains its existing bounds. When a gap is
 reported, use the saved context and ask for any missing evidence instead of
 claiming that expired inputs were processed. A new agent still needs a private
-handle through **Connect an agent** and an active host receiver.
+handle through the service-owned recovery page and an active host receiver.
 
 An unattended worker can additionally use a named [event consumer](DURABILITY.md#named-event-consumers)
 for a server-stored handled checkpoint and leased failover. Reading does not
@@ -164,7 +159,7 @@ Restoring is explicitly staged:
 3. `DELETE A/bundle` discards prepared assets that are not used by a published
    version. Only one stage/publish/discard operation runs at a time.
 
-The same owner-only controls are in Settings. Publishing the first version still
+An owner page can offer the same operations through its authenticated page APIs. Publishing the first version still
 requires an active agent socket, held poll, or configured receiver. Preparing a
 copy does not bypass that gate. Earlier page versions remain available, but their
 history does not roll back shared state; export current data before replacing it
@@ -230,7 +225,5 @@ media, and [durability](DURABILITY.md) for timer delivery and processing leases.
 
 Core tests cover authenticated roles, device focus, timer recurrence and delivery,
 saved context revisions, scope admission across all writers, atomic bundle
-publication, immutable asset graphs, and independent remixes. Contrib tests own
-application workflow scenarios and their browser assets. A composition test
-consumes an exact released workflow artifact through the public host interface.
+publication, immutable asset graphs, and independent remixes. Cookbook checks own application-specific reference scenarios and page adaptations. They consume exact public core artifacts through the documented engine/host interface.
 See [E2E testing](E2E_TESTING.md) for the corresponding gates and fixture limits.
