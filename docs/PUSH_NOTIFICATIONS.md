@@ -56,6 +56,17 @@ curl -fsS -X POST "$TENDRIL_API/notify" \
   --data '{"title":"Decision needed","body":"Please review the result.","tag":"approval-42"}'
 ```
 
+The public `@tendriller/core` agent SDK also exposes typed helpers:
+
+```js
+import { createClient } from "@tendriller/core";
+const client = createClient({ api: process.env.TENDRIL_API, token: process.env.TENDRIL_TOKEN });
+const status = await client.notificationStatus();
+if (status.available && status.count > 0 && status.quota.remaining > 0) {
+  await client.notify({ title: "Job complete", body: "The report is ready.", tag: "job-42" });
+}
+```
+
 The existing `notify` MCP tool calls this same HTTP endpoint, and
 `notification_status` calls `GET A/notify`. Contrib's CLI offers
 `tendril notifications` and
