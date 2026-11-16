@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { api, apiJson, create, inDO, PageClient } from "./helpers";
+import { api, apiJson, create, inDO, PageClient, req } from "./helpers";
 
 function base64url(bytes: Uint8Array): string {
   let s = "";
@@ -8,6 +8,16 @@ function base64url(bytes: Uint8Array): string {
 }
 
 describe("Web Push readiness", () => {
+  it("serves per-page Home Screen install metadata", async () => {
+    const h = await create();
+    const response = await req(h.page_url + "_tendril/manifest.webmanifest");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/manifest+json");
+    expect(await response.json()).toMatchObject({
+      id: h.page_url, start_url: h.page_url, scope: h.page_url, display: "standalone",
+    });
+  });
+
   it("tracks only registered owner devices and keeps subscriptions after page closure", async () => {
     const h = await create();
     const owner = await PageClient.connect(h.page_url);
