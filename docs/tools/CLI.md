@@ -6,6 +6,8 @@ Use `tendril --help` for the complete command reference.
 
 ## A plain-files page
 
+From a **source checkout** with development dependencies installed:
+
 ```sh
 node tools/cli/bin/tendril.mjs new 'A useful page' --owner you@example.com --as example
 node tools/cli/bin/tendril.mjs --tendril example push ./page
@@ -13,9 +15,18 @@ node tools/cli/bin/tendril.mjs --tendril example publications
 node tools/preview/bin/tendril-preview.mjs ./page
 ```
 
+From an **extracted tools release**, use `node /path/to/private-tools/bin/tendril.mjs`
+and `node /path/to/private-tools/bin/tendril-preview.mjs` instead. The release
+archive has `bin/`, not `tools/cli/bin/` or `tools/preview/bin/`. See
+[artifact installation](ARTIFACTS.md) for `manifest.json` and `SHA256SUMS`.
+
 Creation uses an email verified by the service's identity provider. Opening the
 owner URL claims the page. An interactive page also needs a verified live agent
 receiver; choose dashboard mode only when no conversational receiver is needed.
+The create response includes `unclaimed_limits`: the unclaimed stream retention
+budget and per-request body limit are each **1 MiB (1048576 bytes)**. Claim
+with the owner before starting a collector or sending a large backlog. A producer
+heartbeat does not claim the page.
 A private handle contains credentials and is saved with mode 0600. `--tendril`
 selects a named handle, while `TENDRIL_API` and `TENDRIL_TOKEN` can supply one
 privately through the environment. `TENDRIL_SERVER` chooses the service origin.
@@ -35,9 +46,11 @@ The service verifies uploaded content and commits one complete manifest against
 the captured publication head revision. Unchanged SHA-256/size pairs reuse
 verified blobs from the current manifest. A changed head returns a conflict;
 the CLI does not overwrite a newer publication by recapturing its revision.
-`push` waits
-for the publication's health result unless `--no-wait` is given. Pending means no
-device has yet reported a terminal health result; it is not proof of failure.
+`push` returns `status:"pending"` immediately by default for dashboards,
+where nobody may be viewing the page. `--wait` opts dashboards into health
+polling. Interactive pages wait by default; `--no-wait` returns immediately.
+Pending means no device has reported a terminal health result; it is not proof
+of failure.
 A failed publication returns exit status 3. Reopen the authored page and inspect
 its runtime errors before retrying.
 
@@ -47,7 +60,12 @@ its runtime errors before retrying.
 `wait` use authenticated agent WebSockets for wake notifications and fetch the
 available queue after connection and each wake. The legacy `--wait` option and
 held HTTP event requests are no longer supported. `pending` and `ack` still
-keep handled checkpoints separate from reads.
+keep handled checkpoints separate from reads. `tendril events send --wake`
+submits one bounded, rate-limited delivery probe through the existing
+`POST /wake/probe` endpoint; it is a diagnostic, not an owner instruction.
+The listener should read the probe, rearm and verify a second one. For the
+standalone tools package, `tendril-events /private/page.json send --wake`
+performs the same check.
 
 | Commands | Responsibility |
 | --- | --- |
@@ -167,6 +185,20 @@ does not establish current notification delivery; use `timers history` for that.
 The owner must claim the page, and timer deadlines must respect its lifetime.
 
 ## Delivery and checkpoints
+
+`info` redacts the secret `page_url` in both JSON and `--pretty` output. Only
+`info --show-url` reveals it; run that option solely where output is private.
+New/adopt intentionally prints the URL once for owner handoff, so keep its
+output private as well.
+
+For `pending`/`ack`, the private handled checkpoint defaults to
+`<selected-config-file>.events.json` (or
+`$XDG_CONFIG_HOME/tendril/checkpoints/<page-id>-<api-hash>.json` when using
+environment credentials). Override it with `--checkpoint-file` or
+`TENDRIL_CHECKPOINT_FILE`. Each JSON checkpoint stores `handled_cursor` and
+`delivered_cursor`, bound to the page API; it is distinct from the read-only
+`events`/`wait` cursor in `~/.config/tendril/cursors/<page-id>.cursor`.
+Never edit it to skip unhandled work, and keep it private alongside credentials.
 
 Read with `pending`, finish the intended reply/state/file effects, then `ack` the
 last completely handled sequence. Delivered and handled cursors are separate.
