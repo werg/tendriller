@@ -147,8 +147,8 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .wake-card .actions { margin-bottom:0; }
 .wake-chip { color:var(--fg); border:1px solid var(--accent); max-width:min(24em, calc(100vw - 24px)); }
 .wake-chip span { overflow-wrap:anywhere; }
-.panel #tendril-wake-phrase, .panel #tendril-wake-mode { display:block; width:100%; box-sizing:border-box; min-height:44px; border:var(--bw) solid var(--line); border-radius:10px; padding:.55em; background:var(--solid); color:var(--fg); font:inherit; }
-.panel #tendril-wake-phrase { margin-bottom:.6em; }
+.panel #tendril-wake-phrase-input, .panel #tendril-wake-mode { display:block; width:100%; box-sizing:border-box; min-height:44px; border:var(--bw) solid var(--line); border-radius:10px; padding:.55em; background:var(--solid); color:var(--fg); font:inherit; }
+.panel #tendril-wake-phrase-input { margin-bottom:.6em; }
 .voice-actions { gap:5px; }
 .voice-actions .btn { flex:1; padding:0 .5em; font-size:.75em; }
 .device-controls { display:grid; gap:8px; width:100%; }
