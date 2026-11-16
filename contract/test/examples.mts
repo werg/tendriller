@@ -4,7 +4,7 @@ import { createClient, type PageHandle } from "../client.mjs";
 export async function continuePage(handle: PageHandle, lastHandledSequence: number) {
   const page = createClient(handle);
   const context = await page.session();
-  const batch = await page.readEvents({ after: lastHandledSequence, wait: 300 });
+  const batch = await page.readEvents({ after: lastHandledSequence });
   const latest = batch.events.at(-1);
   if (latest) await page.say({ text: "I received your measurement.", in_reply_to: latest.seq });
   // Reading or replying alone does not mean work is handled. Return the batch
