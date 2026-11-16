@@ -1,3 +1,4 @@
+import { requireCloudflareApplication, selectedApplication } from "./application";
 import { retainPublication } from "./files";
 // WebSocket protocol, page ↔ Durable Object (PROTOCOL section 7).
 import type { Att, DeviceRow, Tendril } from "./tendril";
@@ -98,6 +99,7 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
       t.send(ws, { t: "error", code: "forbidden", message: `${msg.t} needs an owner device`, cid: msg.cid });
       return;
     }
+    if (["send", "state", "state_snapshot", "stream_publish", "stream_subscribe", "capture_complete", "say_rendered"].includes(msg.t)) requireCloudflareApplication(t);
     await handler({ t, ws, att: current, dev, msg });
   } catch (err) {
     const code = err instanceof HttpError || err instanceof ContractError ? err.code : "internal";
@@ -191,11 +193,11 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
     primary: t.primaryDevice() === id,
     tendril: { id: t.tid, name: t.db.get("name", "Tendril") },
     version: { ...pointers(t), served: servedVersion(t) },
-    state,
-    rev,
-    scopes: scopes(t),
+    state: selectedApplication(t).kind === "cloudflare" ? state : {},
+    rev: selectedApplication(t).kind === "cloudflare" ? rev : 0,
+    scopes: selectedApplication(t).kind === "cloudflare" ? scopes(t) : [],
     presence: t.presence(),
-    transcript: t.transcript(),
+    transcript: selectedApplication(t).kind === "cloudflare" ? t.transcript() : [],
     features: t.features(),
     budget: t.wakeConfig().budget,
   };

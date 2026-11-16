@@ -1,3 +1,5 @@
+import { PEER_ROUTE, handlePeers } from "./peers";
+import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
 // Agent API (PROTOCOL section 2.2), executed inside the Tendril Durable Object.
 import { assertValid } from "../../contract/index.mjs";
 import type { Tendril } from "./tendril";
@@ -46,6 +48,9 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
+  if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, await authenticateAgent(t, req));
+  if (APPLICATION_ROUTE.test(rest)) return handleApplication(t, req, url, rest, await authenticateAgent(t, req));
+  if (isApplicationPath(rest)) requireCloudflareApplication(t);
   if (RECORD_LOG_ROUTE.test(rest)) return handleRecordLog(t, req, url, rest, await authenticateAgent(t, req));
   if (STORAGE_ROUTE.test(rest)) {
     const principal = await authenticateAgent(t, req);
@@ -88,6 +93,7 @@ async function tendrilInfo(t: Tendril) {
     page_url: t.mainPageUrl(),
     lifetime: t.db.get("lifetime", "ad_hoc"),
     mode: t.db.get("mode", "interactive"),
+    application: selectedApplication(t),
     expires_at: t.expiresAt(),
     owner,
     version: pointers(t),

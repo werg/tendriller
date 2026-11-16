@@ -29,14 +29,14 @@ function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof creat
   else window.addEventListener("load", register, { once: true });
 }
 
-export function startRuntime(cfg: TendrilConfig): RuntimeApi {
+export function startRuntime(cfg: TendrilConfig, options: { application?: import("../../contract/application.mjs").ApplicationBackend } = {}): RuntimeApi {
   validateDocumentContext(cfg);
   if (cfg.publication && cfg.version > 0) {
     const pinned = documentUrl(cfg, new URL(cfg.publication.base, location.href));
     pinned.search = location.search; pinned.hash = location.hash;
     if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
   }
-  const core = createCore(cfg);
+  const core = createCore(cfg, options.application);
   const tracker = installSensorWrappers();
   const notifications = setupPush(core);
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null,
@@ -64,6 +64,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
     sensorChanged();
   });
   const api: RuntimeApi = {
+    application: core.application, peers: core.peers,
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
     state: core.state, scopes: core.scopes, timers: core.timers,

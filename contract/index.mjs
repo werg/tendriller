@@ -7,7 +7,7 @@ import { assertStateJson, normalizeStateChecks, normalizeStateOps, STATE_CONDITI
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
-export const CORE_RELEASE = "0.3.0-rc.8";
+export const CORE_RELEASE = "0.3.0-rc.9";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -86,7 +86,7 @@ const coreSchemas = {
   }, ["contract", "core_release", "workflows", "limits"]),
   error,
   errorResponse: object({ error }, ["error"]),
-  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" }, mode: { enum: ["interactive", "dashboard"] } }, ["owner"]),
+  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" }, mode: { enum: ["interactive", "dashboard"] }, application: object({ kind: { enum: ["cloudflare", "peer"] }, id: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" } }, ["kind", "id"]) }, ["owner"]),
   say: object(sayProperties, ["text"]),
   probeNonce: { type: "string", pattern: "^[a-z2-7]{20}$" },
   deliveryProbe: object({ nonce: { type: "string", pattern: "^[a-z2-7]{20}$" }, seq: { type: "integer", minimum: 1 },

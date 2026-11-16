@@ -1,3 +1,5 @@
+import { PEER_ROUTE, handlePeers } from "./peers";
+import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
 // Page routes under P (PROTOCOL section 2.1), executed inside the Tendril Durable Object.
 import type { Tendril } from "./tendril";
 import { addActivity } from "./activity";
@@ -54,6 +56,9 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
+  if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
+  if (APPLICATION_ROUTE.test(sub)) return handleApplication(t, req, url, sub, principal);
+  if (isApplicationPath(sub)) requireCloudflareApplication(t);
   if (RECORD_LOG_ROUTE.test(sub)) return handleRecordLog(t, req, url, sub, principal);
   if (sub === 'manage') return handleManagement(t, req, base, principal);
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t));
@@ -144,7 +149,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
-    return json({ id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
+    return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
   if (STORAGE_ROUTE.test(sub)) {

@@ -1,3 +1,5 @@
+import { isPeerSocket, handlePeerMessage, closePeer } from "./peers";
+import { applicationSelection } from "../../contract/application.mjs";
 import runtimeRelease from "./runtime-release.json";
 // The Tendril Durable Object: owns all per-tendril state and logic.
 import { DurableObject } from "cloudflare:workers";
@@ -242,6 +244,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
     if (this.isAgentSocket(ws)) {
       // Normally answered by Durable Object's hibernation auto-response; also handle
       // a forwarded heartbeat without treating a keepalive as an application write.
@@ -257,6 +260,7 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
+    if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) {
       const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
       const elapsed = typeof att?.connectedAt === "number" && Number.isFinite(att.connectedAt)
@@ -268,6 +272,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
     else handleWsClose(this, ws);
   }
@@ -292,6 +297,7 @@ export class Tendril extends DurableObject<Env> {
     if (owner) this.db.set("intended_owner", owner);
     this.db.set("lifetime", lifetime);
     this.db.set("mode", mode);
+    this.db.set("application", applicationSelection(body.application, `cf:${id}`));
     this.db.set("created_at", now);
     this.db.set("rev", 0);
     this.db.set("state", {});

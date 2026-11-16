@@ -150,6 +150,42 @@ async function environment({ database = new Database(), localStorage = storage()
 async function commitAck(env) { await flush(); await env.commit(); await env.commit(); }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
+test("peer pages select one backend and never open or deliver a Cloudflare application outbox", async () => {
+  const env = await environment({ configuration: { application: { kind: "peer", id: "history-one" } } });
+  assert.deepEqual(env.database.opened, ["tendril:v3:page:host"]);
+  assert.throws(() => env.core.application.backend, { code: "backend_unavailable" });
+  await assert.rejects(env.core.send({ type: "task" }), { code: "application_backend" });
+  assert.throws(() => env.core.state.apply([{ op: "set", path: ["task"], value: 1 }]), { code: "application_backend" });
+  const authored = [], backend = { id: "history-one", capabilities: ["events"], async submit(program, options) { authored.push({ program, options }); },
+    readView() {}, events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };
+  env.core.application.install(backend);
+  assert.equal(await env.core.application.ready(), backend);
+  await backend.submit({ exact: "proposal" }, { operationId: "original" });
+  assert.equal(authored.length, 1);
+  assert.equal(env.database.stores.outbox.size, 0);
+  assert.equal(env.sent.filter(message => ["send", "state", "application"].includes(message.t)).length, 0);
+  assert.throws(() => env.core.application.install(backend), { code: "backend_already_selected" });
+});
+
+test("application submissions use the existing durable outbox and retain the original complete program", async () => {
+  const calls = [];
+  const env = await environment({ fetcher: async (url, options) => {
+    const body = JSON.parse(options.body); calls.push({ url, body });
+    return json({ operationId: body.operationId, proposalId: "exact-proposal", status: "final", outcome: "accepted", revision: "r1" });
+  } });
+  const input = { version: 1, expected_generations: { task: "captured" }, steps: [{ kind: "emit", topic: "tasks", payload: { value: 1 } }] };
+  const submitted = env.core.application.backend.submit(input, { operationId: "stable" });
+  input.steps[0].payload.value = 99; input.expected_generations.task = "new";
+  await flush(); assert.equal(calls.length, 0);
+  await env.commit();
+  assert.equal(calls.length, 1); assert.equal(calls[0].body.program.steps[0].payload.value, 1);
+  assert.equal(calls[0].body.program.expected_generations.task, "captured");
+  await env.commit(); await env.commit();
+  assert.equal((await submitted).proposalId, "exact-proposal");
+  assert.equal(env.database.stores.outbox.size, 0);
+  assert.equal(env.sent.filter(message => message.t === "application").length, 0);
+});
+
 test("sensor observers receive isolated snapshots without changing later observers or service usage", async () => {
   const env = await environment(), received = [];
   const status = { active: ["camera"], pending: ["microphone"] };

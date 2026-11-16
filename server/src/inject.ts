@@ -23,6 +23,7 @@ export type InjectConfig = {
   base: string;
   version: number;
   features: Features;
+  application?: import("../../contract/application.mjs").ApplicationSelection;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
 
 /** Escapes a JSON string for safe inclusion inside a <script> element. */
@@ -45,7 +46,7 @@ export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
   const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
   const runtimeBase = publication?.runtime.base ?? `${cfg.base}_tendril/runtime/${runtimeRelease.id}/`;
   const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath, ws: cfg.base + "_tendril/ws",
-    features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
+    application: cfg.application, features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
     // Every published page gets the per-origin install metadata. On iOS,

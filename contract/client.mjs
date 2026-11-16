@@ -1,3 +1,5 @@
+import { createCloudflareApplicationBackend, applicationSelection } from "./application.mjs";
+import { connectPeer, validatePeerBootstrap } from "./peers.mjs";
 import { assertValid, validate, CONTRACT_VERSION } from "./index.mjs";
 import { createDurabilityClient } from "./durability-client.mjs";
 import { createStreamsClient } from "./streams-client.mjs";
@@ -50,6 +52,21 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     return response;
   }
   return {
+    async application() {
+      const selection = applicationSelection((await request("/application")).selection);
+      if (selection.kind !== "cloudflare") throw new ApiError(409, { code: "application_backend", message: "Connect to this page's selected peer backend" });
+      return createCloudflareApplicationBackend({ id: selection.id, request: (path, options) => request("/" + path, options) });
+    },
+    peers: {
+      bootstrap: async () => validatePeerBootstrap(await request("/peers/bootstrap")),
+      setBootstrap: async hints => validatePeerBootstrap(await request("/peers/bootstrap", { method: "PUT", body: validatePeerBootstrap(hints) })),
+      connect(channel, peerId, options = {}) {
+        if (![channel, peerId].every(value => /^[A-Za-z0-9_.:-]{1,160}$/.test(value))) throw new TypeError("Invalid peer channel or identity");
+        const url = new URL(base + "/peers/socket"); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set("channel", channel); url.searchParams.set("peerId", peerId);
+        return connectPeer({ url: url.href, route: "relay" }, { ...options, protocols: ["tendriller.peer.v1", token], relayHandshake: true });
+      },
+    },
     records: createRecordLogClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher, subscribeHints: recordLogHints }),
     ...createBlobClient(request, raw),
     ...createDurabilityClient(request),

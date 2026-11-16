@@ -130,6 +130,7 @@ export type RuntimeConfiguration = {
   id: string; base: string; version: number; ws: string;
   features: RuntimeArtifactFeatures & { push: boolean; vapid: string | null; shared_by: string };
   preview?: boolean;
+  application?: import("./application.mjs").ApplicationSelection;
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }
@@ -191,8 +192,10 @@ export interface NotificationsApi {
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
 export interface RuntimeApi<T = Record<string, unknown>> {
+  readonly application: import("./application.mjs").ApplicationBinding;
+  readonly peers: { bootstrap(): Promise<import("./peers.mjs").PeerBootstrap>; connect(channel: string, peerId: string): import("./peers.mjs").PeerConnection };
   send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
-  request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<T>;
+  request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal }): Promise<T>;
   scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };
   timers: BrowserTimers;
   readonly service: ServiceDescriptor | null;
@@ -230,7 +233,7 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 3;
-export const CORE_RELEASE: "0.3.0-rc.8";
+export const CORE_RELEASE: "0.3.0-rc.9";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export const ROLES: readonly Role[];
