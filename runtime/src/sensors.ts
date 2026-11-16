@@ -2,12 +2,12 @@
 // one stop switch. Wrappers are installed during runtime bootstrap, synchronously
 // from tendril.js before any page script runs.
 
-import type { SensorKind } from "../../contract/index.mjs";
-export type { SensorKind } from "../../contract/index.mjs";
+import type { SensorKind, SensorStatus } from "../../contract/index.mjs";
+export type { SensorKind, SensorStatus } from "../../contract/index.mjs";
 
 export interface SensorTracker {
-  /** Sensors currently in use by page code. */
-  active(): SensorKind[];
+  /** Observed use and unanswered acquisitions are separate, coherent views. */
+  status(): SensorStatus;
   onChange(fn: () => void): () => void;
   /** Stops tracked resources and abandons pending acquisitions/callbacks. Returns the number stopped or cancelled. */
   stopAll(): number;
@@ -15,6 +15,7 @@ export interface SensorTracker {
 
 const MOTION_TYPES = new Set(["devicemotion", "deviceorientation", "deviceorientationabsolute"]);
 const RECENT_LOCATION_MS = 15000;
+const SENSOR_ORDER: SensorKind[] = ["camera", "microphone", "screen", "location", "motion"];
 
 let singleton: SensorTracker | null = null;
 
@@ -26,7 +27,7 @@ export function installSensorWrappers(): SensorTracker {
   // or a clone of an old stream must not revive a cancelled acquisition.
   const trackSources = new WeakMap<MediaStreamTrack, { kind: SensorKind; epoch: number }>();
   const streamSources = new WeakMap<MediaStream, { screen: boolean; epoch: number }>();
-  const pendingMedia = new Set<() => void>();
+  const pendingMedia = new Map<() => void, SensorKind[]>();
   type LocationRequest = { epoch: number; active: boolean };
   const watches = new Map<number, LocationRequest>();
   const pendingLocations = new Set<LocationRequest>();
@@ -34,10 +35,10 @@ export function installSensorWrappers(): SensorTracker {
   const recognizers = new Set<any>();
   const subs = new Set<() => void>();
   let recentLocationUntil = 0;
-  let lastSig = "";
+  let lastSig = "|";
   let epoch = 0;
 
-  const compute = (): SensorKind[] => {
+  const compute = (): SensorStatus => {
     const out = new Set<SensorKind>();
     for (const [t, k] of tracks) {
       if (t.readyState === "live") out.add(k);
@@ -46,11 +47,14 @@ export function installSensorWrappers(): SensorTracker {
     if (recognizers.size) out.add("microphone");
     if (watches.size || Date.now() < recentLocationUntil) out.add("location");
     if (motion.length || w.ondevicemotion || w.ondeviceorientation || w.ondeviceorientationabsolute) out.add("motion");
-    const order: SensorKind[] = ["camera", "microphone", "screen", "location", "motion"];
-    return order.filter((k) => out.has(k));
+    const pending = new Set<SensorKind>();
+    for (const kinds of pendingMedia.values()) for (const kind of kinds) pending.add(kind);
+    if (pendingLocations.size) pending.add("location");
+    return { active: SENSOR_ORDER.filter(k => out.has(k)), pending: SENSOR_ORDER.filter(k => pending.has(k)) };
   };
   const check = () => {
-    const sig = compute().join(",");
+    const status = compute();
+    const sig = status.active.join(",") + "|" + status.pending.join(",");
     if (sig !== lastSig) {
       lastSig = sig;
       for (const f of subs) { try { f(); } catch { /* ignore */ } }
@@ -86,7 +90,7 @@ export function installSensorWrappers(): SensorTracker {
     } catch { /* ignore */ }
     notify();
   };
-  const acquireMedia = (request: () => Promise<MediaStream>, screen: boolean): Promise<MediaStream> => {
+  const acquireMedia = (request: () => Promise<MediaStream>, screen: boolean, kinds: SensorKind[]): Promise<MediaStream> => {
     const acquisitionEpoch = epoch;
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -94,15 +98,18 @@ export function installSensorWrappers(): SensorTracker {
         if (settled) return;
         settled = true;
         pendingMedia.delete(cancel);
+        notify();
         reject(new DOMException("Sensor acquisition was cancelled by Stop all.", "AbortError"));
       };
-      pendingMedia.add(cancel);
+      pendingMedia.set(cancel, kinds);
+      notify();
       // Call the native method synchronously so its user-activation semantics
       // remain intact. Browser-owned permission UI itself is not cancellable.
       let requested: Promise<MediaStream>;
       try { requested = request(); }
       catch (error) {
         pendingMedia.delete(cancel);
+        notify();
         if (!settled) { settled = true; reject(error); }
         return;
       }
@@ -112,9 +119,11 @@ export function installSensorWrappers(): SensorTracker {
         trackStream(stream, screen, acquisitionEpoch);
         if (acquisitionEpoch !== epoch) { cancel(); return; }
         pendingMedia.delete(cancel);
+        notify();
         if (!settled) { settled = true; resolve(stream); }
       }, (error) => {
         pendingMedia.delete(cancel);
+        notify();
         if (!settled) { settled = true; reject(error); }
       });
     });
@@ -125,7 +134,10 @@ export function installSensorWrappers(): SensorTracker {
     origGUM = md.getUserMedia.bind(md);
     try {
       md.getUserMedia = function getUserMedia(c: MediaStreamConstraints) {
-        return acquireMedia(() => origGUM!(c), false);
+        const kinds: SensorKind[] = [];
+        if (c?.video) kinds.push("camera");
+        if (c?.audio) kinds.push("microphone");
+        return acquireMedia(() => origGUM!(c), false, kinds);
       };
     } catch { /* ignore */ }
   }
@@ -133,7 +145,7 @@ export function installSensorWrappers(): SensorTracker {
     const orig = md.getDisplayMedia.bind(md);
     try {
       md.getDisplayMedia = function getDisplayMedia(c?: any) {
-        return acquireMedia(() => orig(c), true);
+        return acquireMedia(() => orig(c), true, ["screen"]);
       };
     } catch { /* ignore */ }
   }
@@ -199,7 +211,14 @@ export function installSensorWrappers(): SensorTracker {
         if (typeof fn !== "function" && !(optional && fn == null)) return fn;
         return function (this: any, ...args: any[]) {
           if (!request.active || request.epoch !== epoch) return;
-          if (once) { request.active = false; pendingLocations.delete(request); }
+          if (once) {
+            request.active = false; pendingLocations.delete(request);
+            if (!optional) {
+              recentLocationUntil = Date.now() + RECENT_LOCATION_MS;
+              setTimeout(notify, RECENT_LOCATION_MS + 50);
+            }
+            notify();
+          }
           return fn?.apply(this, args);
         };
       };
@@ -214,15 +233,12 @@ export function installSensorWrappers(): SensorTracker {
       if (origGet) geo.getCurrentPosition = function getCurrentPosition(success: any, error?: any, options?: any) {
         const request = { epoch, active: true };
         pendingLocations.add(request);
+        notify();
         try {
-          const result = origGet(wrapCallback(success, request, true), wrapCallback(error, request, true, true), options);
-          if (request.epoch === epoch) {
-            recentLocationUntil = Date.now() + RECENT_LOCATION_MS; notify();
-            setTimeout(notify, RECENT_LOCATION_MS + 50);
-          }
-          return result;
+          return origGet(wrapCallback(success, request, true), wrapCallback(error, request, true, true), options);
         } catch (error) {
           request.active = false; pendingLocations.delete(request);
+          notify();
           throw error;
         }
       };
@@ -295,14 +311,14 @@ export function installSensorWrappers(): SensorTracker {
   setInterval(check, 2000);
 
   singleton = {
-    active: compute,
+    status: compute,
     onChange(fn) { subs.add(fn); return () => subs.delete(fn); },
     stopAll() {
       // Invalidate first, before stopping resources can invoke page callbacks.
       // Calls deliberately made after this boundary belong to the next epoch.
       epoch++;
       let n = 0;
-      for (const cancel of [...pendingMedia]) { cancel(); n++; }
+      for (const cancel of [...pendingMedia.keys()]) { cancel(); n++; }
       for (const request of pendingLocations) { request.active = false; n++; }
       pendingLocations.clear();
       const stoppedTracks = [...tracks.keys()];

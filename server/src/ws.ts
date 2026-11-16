@@ -13,7 +13,7 @@ import { mutate, scopes, preconditions, type ValidatedContext } from "./scopes";
 import { synchronizeWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
 import { emitBuiltinRecord, publishFromPage, subscribeStream, unsubscribeStream } from "./streams";
-import { ContractError } from "../../contract/index.mjs";
+import { assertValid, ContractError } from "../../contract/index.mjs";
 import { allows, authorizeSocket } from "./access";
 import { pushAvailable, validatePushSubscription, validPushPublicKey } from "./push";
 
@@ -291,9 +291,15 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     const result = (() => {
       if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot change state" };
       try {
-        return stateCommand(t, `device:${dev.id}`, msg, msg.ops, ws);
+        // Validate the entire write envelope just as the HTTP boundary does.
+        // Ignoring an unknown guard would turn a misspelled conditional write
+        // into an unconditional mutation.
+        const { t: _type, ...input } = msg;
+        const command = assertValid("stateUpdate", input);
+        if (!("ops" in command)) throw new HttpError(400, "bad_request", "WebSocket state writes require ops");
+        return stateCommand(t, `device:${dev.id}`, command, command.ops, ws);
       } catch (err) {
-        return { error: err instanceof HttpError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };
+        return { error: err instanceof HttpError || err instanceof ContractError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };
       }
     })();
     ack(c, { ...result, scopes: scopes(t) });

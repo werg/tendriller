@@ -149,6 +149,20 @@ async function environment({ database = new Database(), localStorage = storage()
 // receipt assertions advance both; failure tests advance each phase explicitly.
 async function commitAck(env) { await flush(); await env.commit(); await env.commit(); }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
+
+test("sensor observers receive isolated snapshots without changing later observers or service usage", async () => {
+  const env = await environment(), received = [];
+  const status = { active: ["camera"], pending: ["microphone"] };
+  env.core.bus.on("sensors", value => {
+    value.active.splice(0, value.active.length, "screen");
+    value.pending.push("location");
+  });
+  env.core.bus.on("sensors", value => received.push(plain(value)));
+  env.core.bus.emit("sensors", status);
+  assert.deepEqual(status, { active: ["camera"], pending: ["microphone"] }, "the kernel's subsequent sensor_usage still sees its original snapshot");
+  assert.deepEqual(received, [{ active: ["camera"], pending: ["microphone"] }]);
+});
+
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
 
 const timerScope = { id: "schedule", generation: "reviewed", paths: [], operations: ["timer.write"] };

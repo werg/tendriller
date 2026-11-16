@@ -40,7 +40,7 @@ export function createBus(): Bus {
       const s = map.get(type);
       if (!s) return;
       for (const fn of [...s]) {
-        try { fn(["state", "state_result", "state_queue", "timer_result", "timer_queue"].includes(type) ? clone(payload) : payload); } catch (e) { setTimeout(() => { throw e; }); }
+        try { fn(["state", "state_result", "state_queue", "timer_result", "timer_queue", "sensors"].includes(type) ? clone(payload) : payload); } catch (e) { setTimeout(() => { throw e; }); }
       }
     },
   };

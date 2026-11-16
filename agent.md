@@ -64,7 +64,7 @@ A page's health report determines whether the publication becomes healthy. **Hea
 
 ## Author the interaction
 
-The default runtime exposes `window.tendril` and adds a small management link with an active-sensor stop action. It does not provide conversation layout, navigation, capture flow, voice or domain rules. Use `tendril.conversation.entries()`, its events, and `conversation.send()` for a page-owned conversation. Preserve drafts entered while a send is pending and distinguish queued, accepted and rejected results.
+The default runtime exposes `window.tendril` and adds a small management link with a sensor stop action for active resources and pending acquisitions. `tendril.sensors.status()` distinguishes `{active, pending}`; its subscription delivers the same snapshot. It does not provide conversation layout, navigation, capture flow, voice or domain rules. Use `tendril.conversation.entries()`, its events, and `conversation.send()` for a page-owned conversation. Preserve drafts entered while a send is pending and distinguish queued, accepted and rejected results.
 
 Inspect capabilities without prompting. Request camera, microphone, motion, location or notifications from a deliberate user action. Optional voice is loaded with `import(tendril.assetUrl('voice.mjs'))` and started explicitly; see [voice](docs/HANDS_FREE.md). The service-owned `tendril.identity.managementUrl` remains available for recovery independently of page JavaScript.
 

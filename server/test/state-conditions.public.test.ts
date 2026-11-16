@@ -135,6 +135,24 @@ it("WebSocket conflict receipts survive retry and reset the page to current auth
   page.close();
 });
 
+it("WebSocket writes reject unknown guards before admitting a command or changing state", async () => {
+  const h = await create();
+  const page = await PageClient.connect(h.page_url);
+  for (const extra of [{ expected_revison: 99 }, { condition: [{ path: ["ready"], equals: true }] }]) {
+    const body = command({ t: "state", ...extra, ops: [{ op: "set", path: ["done"], value: true }] });
+    const rejected = await page.request(body);
+    expect(rejected).toMatchObject({ error: "bad_request" });
+    expect(rejected.message).toContain("Unknown field");
+    expect((await page.next("state_reset")).state).toEqual({});
+    await inDO(h.id, t => {
+      expect(t.getState()).toMatchObject({ rev: 0, state: {} });
+      expect(t.db.one("SELECT cid FROM commands WHERE cid=?", body.cid)).toBeNull();
+      expect(t.db.all("SELECT * FROM activity WHERE kind='state'")).toEqual([]);
+    });
+  }
+  page.close();
+});
+
 it("SDK and MCP carry conditions through the same authoritative state implementation", async () => {
   const h = await create();
   const client = createClient(h, { fetch: async (_url, init) => api(h, init?.method || "GET", "state", init?.body as string | undefined) });

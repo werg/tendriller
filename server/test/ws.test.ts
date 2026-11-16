@@ -154,11 +154,14 @@ describe("state", () => {
     b.close();
   });
 
-  it("invalid page ops get an error ack and a state_reset", async () => {
+  it("invalid page ops use the same input error as HTTP and receive a state_reset", async () => {
     const h = await create();
     const a = await PageClient.connect(h.page_url);
-    const ack = await a.request({ t: "state", expected_generations: {}, ops: [{ op: "set", path: ["__proto__"], value: 1 }] });
-    expect(ack.error).toBe("bad_ops");
+    const body = { cid: crypto.randomUUID(), expected_generations: {}, ops: [{ op: "set", path: ["__proto__"], value: 1 }] };
+    const http = await apiJson(h, "PATCH", "state", body, 400);
+    const ack = await a.request({ t: "state", ...body });
+    expect(ack.error).toBe("bad_request");
+    expect(ack.error).toBe(http.error.code);
     expect(await a.next("state_reset")).toEqual({ t: "state_reset", scopes: [], state: {}, rev: 0 });
     a.close();
   });

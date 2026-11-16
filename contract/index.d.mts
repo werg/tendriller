@@ -159,7 +159,7 @@ export interface RuntimeEventMap {
   send_result: SendResult & OperationOptions & { cid: string; data: unknown };
   capture_queue: PendingCapture[]; capabilities: CapabilityReport;
   conversation_result: ConversationResult & { text: string };
-  reply: SayMessage; sensors: SensorKind[]; sensors_stopped: { count: number };
+  reply: SayMessage; sensors: SensorStatus; sensors_stopped: { count: number };
   device_config: DeviceConfigMessage;
   scopes: ScopeDescriptor[];
   workflow: { module: string; topic: string; [key: string]: unknown };
@@ -172,6 +172,12 @@ export interface RuntimeEventMap {
   stream_error: { stream: string; error: Error & { code?: string } };
 }
 export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";
+export interface SensorStatus {
+  /** Observed live resources, registered watches/listeners, or a recent location fix. */
+  active: SensorKind[];
+  /** Wrapped media acquisitions and one-shot location reads awaiting a native result. */
+  pending: SensorKind[];
+}
 export interface NotificationStatus { permission: NotificationPermission | "unsupported"; subscribed: boolean; registered: boolean; reason?: string }
 export interface NotificationsApi {
   readonly available: boolean; readonly reason?: string;
@@ -212,7 +218,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   assetUrl(path: string): string;
   /** Resolves only after the exact required publication graph is saved by its service worker. */
   publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
-  sensors: { active(): SensorKind[]; on(listener: (active: SensorKind[]) => void): () => void; stopAll(): number };
+  sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
   notifications: NotificationsApi;
 }
 export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";

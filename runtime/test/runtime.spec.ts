@@ -107,7 +107,7 @@ test("a BFCache return restores live sensor reporting without remounting the aut
   await page.evaluate(() => {
     const w = window as any;
     w.sensorUpdates = []; w.capabilityUpdates = [];
-    w.tendril.sensors.on((active: string[]) => w.sensorUpdates.push([...active]));
+    w.tendril.sensors.on((status: any) => w.sensorUpdates.push(status));
     w.tendril.on("capabilities", (report: any) => w.capabilityUpdates.push(report.capabilities.motion.active));
   });
   for (let cycle = 0; cycle < 2; cycle++) {
@@ -123,18 +123,18 @@ test("a BFCache return restores live sensor reporting without remounting the aut
     expect(await page.evaluate(() => ({ sensors: (window as any).sensorUpdates, capabilities: (window as any).capabilityUpdates })))
       .toEqual({ sensors: [], capabilities: [] });
     await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
-    await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates)).toEqual([["motion"]]);
+    await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates)).toEqual([{ active: ["motion"], pending: [] }]);
     await expect.poll(() => page.evaluate(() => (window as any).capabilityUpdates)).toEqual([true]);
 
     // A capability-only signal must reach the newly attached observer exactly once.
     await page.evaluate(() => navigator.mediaDevices.dispatchEvent(new Event("devicechange")));
     await expect.poll(() => page.evaluate(() => (window as any).capabilityUpdates)).toEqual([true, true]);
     await page.getByRole("button", { name: "Stop Motion", exact: true }).click();
-    await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates)).toEqual([["motion"], []]);
+    await expect.poll(() => page.evaluate(() => (window as any).sensorUpdates)).toEqual([{ active: ["motion"], pending: [] }, { active: [], pending: [] }]);
     await expect(page.getByRole("button", { name: /Stop/ })).toBeHidden();
     await page.waitForTimeout(150);
     expect(await page.evaluate(() => (window as any).capabilityUpdates)).toEqual([true, true, false]);
-    expect(await page.evaluate(() => window.tendril.sensors.active())).toEqual([]);
+    expect(await page.evaluate(() => window.tendril.sensors.status().active)).toEqual([]);
   }
   expect(t.pageLoads).toBe(1);
 });
@@ -970,11 +970,71 @@ test("the small utility observes active sensors without opening one and stops tr
   const t = mock.create({ html: '<button id="camera" onclick="navigator.mediaDevices.getUserMedia({video:true})">Start camera fixture</button>' });
   await open(page, t);
   expect(await page.evaluate(() => (window as any).mediaCalls)).toBe(0);
-  expect(await page.evaluate(() => window.tendril.sensors.active())).toEqual([]);
+  expect(await page.evaluate(() => window.tendril.sensors.status().active)).toEqual([]);
   await expect(page.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
   await page.locator("#camera").click();
-  await expect.poll(() => page.evaluate(() => window.tendril.sensors.active())).toEqual(["camera"]);
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status().active)).toEqual(["camera"]);
   await page.getByRole("button", { name: "Stop Camera", exact: true }).click();
-  await expect.poll(() => page.evaluate(() => window.tendril.sensors.active())).toEqual([]);
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status().active)).toEqual([]);
   expect(await page.evaluate(() => (window as any).fixtureStream.getTracks().every((track: MediaStreamTrack) => track.readyState === "ended"))).toBe(true);
+});
+
+test("the utility exposes pending acquisitions and cancels them before native permission replies", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as any;
+    w.mediaRequests = []; w.mediaResults = [];
+    navigator.mediaDevices.getUserMedia = () => new Promise((resolve, reject) => w.mediaRequests.push({ resolve, reject }));
+  });
+  const t = mock.create({ html: `<button id="camera" onclick="navigator.mediaDevices.getUserMedia({video:true}).then(()=>mediaResults.push('accepted'), error=>mediaResults.push(error.name))">Request camera fixture</button>` });
+  await open(page, t);
+  await page.locator("#camera").click();
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: ["camera"] });
+  await expect(page.locator("tendril-utility").getByRole("status")).toHaveText("Camera request pending");
+  await page.getByRole("button", { name: "Stop Camera", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).mediaResults)).toEqual(["AbortError"]);
+  await expect(page.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.lateStream = document.createElement("canvas").captureStream();
+    w.mediaRequests[0].resolve(w.lateStream);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).lateStream.getTracks().every((track: MediaStreamTrack) => track.readyState === "ended"))).toBe(true);
+
+  await page.locator("#camera").click();
+  await expect(page.getByRole("button", { name: "Stop Camera", exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).mediaRequests[1].reject(new DOMException("Denied", "NotAllowedError")));
+  await expect.poll(() => page.evaluate(() => (window as any).mediaResults)).toEqual(["AbortError", "NotAllowedError"]);
+  await expect(page.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
+
+  await page.locator("#camera").click();
+  await page.evaluate(() => {
+    const w = window as any;
+    w.freshStream = document.createElement("canvas").captureStream();
+    w.mediaRequests[2].resolve(w.freshStream);
+  });
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: ["camera"], pending: [] });
+  await page.locator("#camera").click();
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: ["camera"], pending: ["camera"] });
+  await expect(page.locator("tendril-utility").getByRole("status")).toHaveText("Camera active. Camera request pending");
+  await page.getByRole("button", { name: "Stop Camera", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
+  expect(await page.evaluate(() => (window as any).freshStream.getTracks().every((track: MediaStreamTrack) => track.readyState === "ended"))).toBe(true);
+});
+
+test("the utility keeps pending one-shot location cancellable without claiming a location fix", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as any;
+    w.locationReads = []; w.locationResults = [];
+    navigator.geolocation.getCurrentPosition = (success, error) => w.locationReads.push({ success, error });
+  });
+  const t = mock.create({ html: `<button id="location" onclick="navigator.geolocation.getCurrentPosition(position=>locationResults.push(position))">Request location fixture</button>` });
+  await open(page, t);
+  await page.locator("#location").click();
+  await expect.poll(() => page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: ["location"] });
+  await expect(page.locator("tendril-utility").getByRole("status")).toHaveText("Location request pending");
+  await page.getByRole("button", { name: "Stop Location", exact: true }).click();
+  await page.evaluate(() => (window as any).locationReads[0].success({ coords: { latitude: 1, longitude: 2 } }));
+  expect(await page.evaluate(() => (window as any).locationResults)).toEqual([]);
+  await expect(page.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
+  expect(await page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
 });

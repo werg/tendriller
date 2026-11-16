@@ -1,7 +1,13 @@
-import type { RuntimeApi, SendResult, SessionBrief, DurableTimer, PortableBundle, DeviceConfigMessage, PublicationManifest, RuntimeConfiguration } from "../index.mjs";
+import type { RuntimeApi, SendResult, SessionBrief, DurableTimer, PortableBundle, DeviceConfigMessage, PublicationManifest, RuntimeConfiguration, SensorStatus } from "../index.mjs";
 import { createClient } from "../client.mjs";
 
 declare const page: RuntimeApi<{ count: number }>;
+const sensors: SensorStatus = page.sensors.status();
+page.sensors.on(status => { const pending: SensorStatus["pending"] = status.pending; void pending; });
+page.on("sensors", status => { const active: SensorStatus["active"] = status.active; void active; });
+// @ts-expect-error sensor observations use one status snapshot, not the removed active-only API.
+page.sensors.active();
+void sensors;
 const count: number = page.state.get().count;
 const snapshotCount: number = (await page.state.snapshot()).state.count;
 void snapshotCount;

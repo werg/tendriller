@@ -56,7 +56,7 @@ assert.match(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accoun
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
 import {createClient, type CommandMetadata} from '@tendriller/core';
-import {type RuntimeApi, type SendResult, type WireContracts} from '@tendriller/core/contract';
+import {type RuntimeApi, type SendResult, type WireContracts, type SensorStatus} from '@tendriller/core/contract';
 import {type WorkflowModule} from '@tendriller/core/host';
 import {createFixtureTransport} from '@tendriller/runtime/preview';
 import type {} from '@tendriller/core/browser';
@@ -67,6 +67,10 @@ void client.updateState({...command,conditions:[{path:['job'],exists:false}],exp
 // @ts-expect-error all commands need explicit stable IDs and preconditions
 void client.updateState({ops:[]});
 declare const page: RuntimeApi<{count:number}>;
+const sensors: SensorStatus = page.sensors.status();
+page.sensors.on(status => { const pending: SensorStatus['pending'] = status.pending; void pending; });
+page.on('sensors', status => { const active: SensorStatus['active'] = status.active; void active; });
+void sensors;
 void page.state.apply([{op:'set',path:['count'],value:1}],{conditions:[{path:['count'],equals:0}]});
 const snapshot = await page.state.snapshot();
 const count:number = snapshot.state.count;

@@ -126,6 +126,11 @@ normalized condition JSON are allowed; paths and JSON nesting are bounded to
 128 levels. Non-JSON values, sparse arrays, prototype keys and excessive sizes
 are rejected before admission.
 
+Malformed write envelopes, unknown guard names and invalid input operations
+return `bad_request` consistently over HTTP and WebSocket. A batch of individually
+valid operations whose combined state exceeds the nesting limit returns
+`bad_ops` without changing state. WebSocket rejections also send `state_reset`.
+
 `expected_revision` is an optional nonnegative safe integer matched to the global
 state revision. It detects change-and-change-back (ABA) as well as unrelated
 writes. Field conditions allow independent edits to different fields. Both may
@@ -190,7 +195,7 @@ admitted commands and still receive an authoritative outcome.
 
 A transcript entry has a persistent message ID; owner messages also retain their original command ID and device. Replies can reference the exact owner message. Repeated identical text is never used to match acknowledgements. Retries and reconnect history preserve those identities. `conversation.presented(messageId)` records presentation of an actual stored agent message; merely receiving the socket frame is not presentation.
 
-The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and active-sensor stop. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
+The kernel exposes conversation data and durable send results without mounting application UI. The hosted utility exposes management/recovery access and sensor stop for active resources and pending acquisitions. Permission requests, spoken output, microphone input and notification subscription require explicit page behavior and user consent. Device purpose, speech target and display targeting affect presentation, not authorization. Local mute/stop choices remain local.
 
 ## Immutable bytes and shared files
 

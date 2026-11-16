@@ -7,7 +7,7 @@ The page owns its markup, styling, navigation, drafts, and conversation presenta
 No conversation panel, voice engine, application schema, or browser rule language
 is started by the kernel.
 
-The hosted bootstrap adds only **Manage page** and an active-sensor stop surface.
+The hosted bootstrap adds only **Manage page** and a sensor status/stop surface.
 `@tendriller/runtime/kernel` exports `startRuntime(configuration)` for deliberate
 headless composition. Importing that module mounts nothing and requests no
 permissions. A custom composition must provide its own operational-access link and
@@ -361,8 +361,18 @@ application's authorization policy before display.
 It reports availability, permission, whether a user gesture is expected, and known
 active use. Presence is not proof that a device or provider will work.
 
-`sensors.active()` returns observed camera, microphone, screen, location, and motion
-use. `sensors.on(listener)` subscribes to changes; `sensors.stopAll()` stops tracked
+`sensors.status()` returns a coherent `{active, pending}` snapshot. Both fields are
+arrays of camera, microphone, screen, location, and motion kinds. `active` describes
+observed live resources, registered watches/listeners, or a recent successful
+one-shot location fix. `pending` describes wrapped media acquisitions and one-shot
+location reads still awaiting a native result, even if a permission prompt stays
+unanswered. A kind can appear in both arrays when a resource is active and another
+request for that kind is pending. `sensors.on(listener)` and the `sensors` event
+deliver the same snapshot whenever either set changes. Reading or subscribing
+requests no permissions.
+
+The hosted utility distinguishes active use from pending requests and keeps its
+Stop control available while either set is nonempty. `sensors.stopAll()` stops tracked
 media tracks/clones, geolocation watches, motion listeners, and recognition. It is
 also a cancellation boundary: wrapped `getUserMedia()` and `getDisplayMedia()`
 requests started before Stop reject immediately with `AbortError`. The native
@@ -377,10 +387,11 @@ Stop also abandons callbacks from pending one-shot location reads and stopped
 watches; it does not claim that the browser or operating system can cancel a
 one-shot acquisition. The returned count includes cancelled pending media and
 one-shot location requests, as well as stopped live resources. Camera, microphone,
-and screen indicators describe observed live tracks, not unanswered permission
-prompts. Location and motion indicators can reflect registered watches/listeners
-or recent API requests; they do not prove permission, a successful location fix,
-or a usable measurement.
+and screen active indicators describe observed live tracks, not unanswered
+permission prompts. Location and motion active indicators can reflect registered
+watches/listeners; they do not prove permission or a usable measurement. An
+unanswered one-shot location read remains pending until its result or Stop,
+independently of the short-lived indicator for a successful fix.
 
 The `sensors_stopped` event lets optional adapters cancel their pending/restarting
 work too. One-shot and aborted motion listeners stop counting as active. Observation

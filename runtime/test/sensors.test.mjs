@@ -11,7 +11,7 @@ function deferred() {
 }
 function environment(media = {}) {
   const window = new EventTarget(), watches = new Set(), watchRequests = new Map(), locationRequests = [];
-  let calls = 0, track, nextWatch = 0;
+  let calls = 0, track, nextWatch = 0, now = Date.now();
   class Track extends EventTarget {
     constructor(kind = 'video') { super(); this.kind = kind; this.readyState = 'live'; this.stopCalls = 0; this.source = Symbol(); }
     stop() { this.stopCalls++; this.readyState = 'ended'; }
@@ -55,28 +55,83 @@ function environment(media = {}) {
       clearWatch(id) { watches.delete(id); },
     },
   };
-  const context = { window, navigator, queueMicrotask, setInterval() {}, setTimeout() {}, Date, DOMException };
+  const context = { window, navigator, queueMicrotask, setInterval() {}, setTimeout() {}, Date: class extends Date { static now() { return now; } }, DOMException };
   runInNewContext(built.outputFiles[0].text, context);
   const tracker = context.Sensors.installSensorWrappers();
-  return { tracker, window, navigator, watches, watchRequests, locationRequests, Track, Stream, Recognition, get calls() { return calls; }, get track() { return track; } };
+  return { tracker, window, navigator, watches, watchRequests, locationRequests, Track, Stream, Recognition, advance(ms) { now += ms; }, get calls() { return calls; }, get track() { return track; } };
 }
 test('observation never requests permissions, and stop covers tracks, clones, location, motion and recognition', async () => {
   const env = environment(); assert.equal(env.calls, 0);
   await env.navigator.mediaDevices.getUserMedia({ video: true }); const copy = env.track.clone();
   env.navigator.geolocation.watchPosition(() => {}); const motion = () => {};
   env.window.addEventListener('devicemotion', motion); const recognition = new env.Recognition(); recognition.start();
-  await flush(); assert.deepEqual([...env.tracker.active()], ['camera', 'microphone', 'location', 'motion']);
+  await flush(); assert.deepEqual([...env.tracker.status().active], ['camera', 'microphone', 'location', 'motion']);
   assert.equal(env.tracker.stopAll(), 5); assert.equal(env.track.readyState, 'ended'); assert.equal(copy.readyState, 'ended');
-  assert.equal(env.watches.size, 0); assert.deepEqual([...env.tracker.active()], []);
+  assert.equal(env.watches.size, 0); assert.deepEqual([...env.tracker.status().active], []);
 });
 test('once, aborted, explicitly removed and duplicate motion subscriptions reflect actual active use', async () => {
   const env = environment(), fn = () => {};
-  env.window.addEventListener('devicemotion', fn, { once: true }); assert.deepEqual([...env.tracker.active()], ['motion']);
-  env.window.dispatchEvent(new Event('devicemotion')); await flush(); assert.deepEqual([...env.tracker.active()], []);
+  env.window.addEventListener('devicemotion', fn, { once: true }); assert.deepEqual([...env.tracker.status().active], ['motion']);
+  env.window.dispatchEvent(new Event('devicemotion')); await flush(); assert.deepEqual([...env.tracker.status().active], []);
   const signal = new AbortController(); env.window.addEventListener('deviceorientation', fn, { signal: signal.signal });
-  signal.abort(); await flush(); assert.deepEqual([...env.tracker.active()], []);
+  signal.abort(); await flush(); assert.deepEqual([...env.tracker.status().active], []);
   env.window.addEventListener('devicemotion', fn); env.window.addEventListener('devicemotion', fn);
-  env.window.removeEventListener('devicemotion', fn); await flush(); assert.deepEqual([...env.tracker.active()], []);
+  env.window.removeEventListener('devicemotion', fn); await flush(); assert.deepEqual([...env.tracker.status().active], []);
+});
+
+test('sensor status separates active media from concurrent pending requests and settles every outcome', async () => {
+  const first = deferred(), second = deferred(), denied = deferred();
+  const requests = [first, second, denied];
+  const env = environment({ getUserMedia: () => requests.shift().promise }), changes = [];
+  const status = () => ({ active: [...env.tracker.status().active], pending: [...env.tracker.status().pending] });
+  env.tracker.onChange(() => changes.push(status()));
+  const a = env.navigator.mediaDevices.getUserMedia({ video: true });
+  await flush();
+  assert.deepEqual(status(), { active: [], pending: ['camera'] });
+  first.resolve(new env.Stream([new env.Track('video')])); await a; await flush();
+  assert.deepEqual(status(), { active: ['camera'], pending: [] });
+  const b = env.navigator.mediaDevices.getUserMedia({ video: true });
+  const c = env.navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  const rejection = assert.rejects(c, { name: 'NotAllowedError' });
+  await flush();
+  assert.deepEqual(status(), { active: ['camera'], pending: ['camera', 'microphone'] });
+  denied.reject(new DOMException('Denied', 'NotAllowedError')); await rejection; await flush();
+  assert.deepEqual(status(), { active: ['camera'], pending: ['camera'] });
+  second.resolve(new env.Stream([new env.Track('video')])); await b; await flush();
+  assert.deepEqual(status(), { active: ['camera'], pending: [] });
+  assert.equal(env.tracker.stopAll(), 2);
+  assert.deepEqual(status(), { active: [], pending: [] });
+  assert.deepEqual(changes, [
+    { active: [], pending: ['camera'] },
+    { active: ['camera'], pending: [] },
+    { active: ['camera'], pending: ['camera', 'microphone'] },
+    { active: ['camera'], pending: ['camera'] },
+    { active: ['camera'], pending: [] },
+    { active: [], pending: [] },
+  ]);
+});
+
+test('pending location stays cancellable until its native result, without claiming an active fix', async () => {
+  const env = environment(), changes = [];
+  const status = () => ({ active: [...env.tracker.status().active], pending: [...env.tracker.status().pending] });
+  env.tracker.onChange(() => changes.push(status()));
+  env.navigator.geolocation.getCurrentPosition(() => {}); await flush();
+  assert.deepEqual(status(), { active: [], pending: ['location'] });
+  env.advance(60_000);
+  assert.deepEqual(status(), { active: [], pending: ['location'] }, 'an unanswered request does not expire with the recent-fix indicator');
+  assert.equal(env.tracker.stopAll(), 1);
+  assert.deepEqual(status(), { active: [], pending: [] });
+  env.locationRequests[0].success('late fix'); await flush();
+  assert.deepEqual(status(), { active: [], pending: [] });
+  env.navigator.geolocation.getCurrentPosition(() => {}); await flush();
+  env.locationRequests[1].error({ code: 1 }); await flush();
+  assert.deepEqual(status(), { active: [], pending: [] }, 'denial does not imply active location use');
+  env.navigator.geolocation.getCurrentPosition(() => {}); await flush();
+  env.locationRequests[2].success('new fix'); await flush();
+  assert.deepEqual(status(), { active: ['location'], pending: [] });
+  env.advance(15_001);
+  assert.deepEqual(status(), { active: [], pending: [] });
+  assert.ok(changes.some(change => change.pending.includes('location')));
 });
 
 test('Stop all rejects pending camera, microphone and screen requests immediately and stops every late track', async t => {
@@ -89,15 +144,18 @@ test('Stop all rejects pending camera, microphone and screen requests immediatel
     const native = deferred(), env = environment({ [method]: () => native.promise });
     const request = env.navigator.mediaDevices[method](constraints);
     const cancelled = assert.rejects(request, { name: 'AbortError' });
+    assert.deepEqual([...env.tracker.status().pending], method === 'getDisplayMedia' ? ['screen']
+      : [constraints.video ? 'camera' : null, constraints.audio ? 'microphone' : null].filter(Boolean));
     assert.equal(env.calls, 1, 'native acquisition still starts synchronously');
     assert.equal(env.tracker.stopAll(), 1);
     await cancelled; // The native chooser has not returned yet.
+    assert.deepEqual([...env.tracker.status().pending], []);
     assert.equal(env.tracker.stopAll(), 0, 'the cancelled request is counted only once');
     const tracks = kinds.map(kind => new env.Track(kind));
     native.resolve(new env.Stream(tracks));
     await flush();
     assert.ok(tracks.every(track => track.readyState === 'ended' && track.stopCalls === 1));
-    assert.deepEqual([...env.tracker.active()], []);
+    assert.deepEqual([...env.tracker.status().active], []);
   });
 });
 
@@ -110,7 +168,7 @@ test('Stop all also cancels a native grant whose promise continuation has not ru
   env.tracker.stopAll();
   await cancelled; await flush();
   assert.equal(track.readyState, 'ended');
-  assert.deepEqual([...env.tracker.active()], []);
+  assert.deepEqual([...env.tracker.status().active], []);
 });
 
 test('native acquisition errors are preserved, including a late rejection after cancellation', async () => {
@@ -134,7 +192,7 @@ test('whole-stream clones, track clones and dynamically added tracks remain cove
   const stream = await env.navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   const copy = stream.clone(), trackCopy = stream.getTracks()[0].clone();
   const added = new env.Track('audio'); copy.addRemoteTrack(added);
-  assert.deepEqual([...env.tracker.active()], ['camera', 'microphone']);
+  assert.deepEqual([...env.tracker.status().active], ['camera', 'microphone']);
   assert.equal(env.tracker.stopAll(), 6);
   for (const track of [...stream.getTracks(), ...copy.getTracks(), trackCopy]) assert.equal(track.readyState, 'ended');
   const late = new env.Track('video'); copy.addRemoteTrack(late);
@@ -142,7 +200,7 @@ test('whole-stream clones, track clones and dynamically added tracks remain cove
   const afterStop = copy.clone();
   const later = new env.Track('audio'); afterStop.addRemoteTrack(later);
   assert.equal(later.readyState, 'ended', 'a clone of a stopped stream retains the cancellation boundary');
-  assert.deepEqual([...env.tracker.active()], []);
+  assert.deepEqual([...env.tracker.status().active], []);
 });
 
 test('a cancelled late stream cannot add capture again, while fresh media requests and their clones work', async () => {
@@ -159,7 +217,7 @@ test('a cancelled late stream cannot add capture again, while fresh media reques
   const fresh = await env.navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   const copied = fresh.clone();
   assert.ok([...fresh.getTracks(), ...copied.getTracks()].every(track => track.readyState === 'live'));
-  assert.deepEqual([...env.tracker.active()], ['screen']);
+  assert.deepEqual([...env.tracker.status().active], ['screen']);
   old.addRemoteTrack(fresh.getTracks()[0]);
   assert.equal(fresh.getTracks()[0].readyState, 'live', 'reusing a fresh track in an old stream does not revoke its new acquisition');
   assert.equal(env.tracker.stopAll(), 4);
@@ -178,7 +236,7 @@ test('cloning a manually composed stream preserves each captured source without 
   const copiedTracks = [...copy.getTracks(), ...secondCopy.getTracks()];
   assert.equal(copiedTracks.length, 8);
   assert.ok(copiedTracks.every(track => track.readyState === 'live'));
-  assert.deepEqual([...env.tracker.active()], ['camera', 'screen'], 'unobserved external audio is not classified as a microphone');
+  assert.deepEqual([...env.tracker.status().active], ['camera', 'screen'], 'unobserved external audio is not classified as a microphone');
   assert.equal(env.tracker.stopAll(), 6);
   for (const track of [camera, screen, ...copiedTracks.filter(track => track.source === camera.source || track.source === screen.source)]) {
     assert.equal(track.readyState, 'ended');
@@ -186,7 +244,7 @@ test('cloning a manually composed stream preserves each captured source without 
   for (const track of [externalVideo, externalAudio, ...copiedTracks.filter(track => track.source === externalVideo.source || track.source === externalAudio.source)]) {
     assert.equal(track.readyState, 'live', 'unknown external tracks are not given a fabricated sensor acquisition');
   }
-  assert.deepEqual([...env.tracker.active()], []);
+  assert.deepEqual([...env.tracker.status().active], []);
 });
 
 test('a clone of an old stream preserves a freshly acquired track epoch and leaves unrelated additions unknown', async () => {
@@ -203,7 +261,7 @@ test('a clone of an old stream preserves a freshly acquired track epoch and leav
   assert.equal(bySource(original.source).readyState, 'ended');
   assert.equal(bySource(fresh.source).readyState, 'live');
   assert.equal(bySource(external.source).readyState, 'live');
-  assert.deepEqual([...env.tracker.active()], ['camera']);
+  assert.deepEqual([...env.tracker.status().active], ['camera']);
   assert.equal(env.tracker.stopAll(), 2);
   assert.equal(fresh.readyState, 'ended'); assert.equal(bySource(fresh.source).readyState, 'ended');
   assert.equal(external.readyState, 'live'); assert.equal(bySource(external.source).readyState, 'live');
@@ -220,7 +278,7 @@ test('Stop all abandons one-shot location callbacks and watch deliveries without
   oldPosition.success('old position'); oldPosition.error('old position failure');
   oldWatch.success('old watch'); oldWatch.error('old watch failure');
   assert.deepEqual(delivered, []);
-  assert.deepEqual([...env.tracker.active()], []);
+  assert.deepEqual([...env.tracker.status().active], []);
   env.navigator.geolocation.getCurrentPosition(value => delivered.push(value));
   const freshWatch = env.navigator.geolocation.watchPosition(value => delivered.push(value));
   env.locationRequests[1].success('new position'); env.watchRequests.get(freshWatch).success('new watch');
