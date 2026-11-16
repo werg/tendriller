@@ -44,6 +44,8 @@ export interface StateApi<T = Record<string, unknown>> {
 export interface RuntimePreferences {
   audio: boolean; language: string | null; voice: "browser" | "neural";
   textSize: "normal" | "large" | "x-large"; contrast: "normal" | "high"; mode: "interactive" | "display";
+  /** Stored configuration only: listening never starts automatically after a reload. */
+  wakePhrase: string; wakeMode: "local" | "browser";
 }
 export interface PreferencesApi {
   get(): RuntimePreferences;
