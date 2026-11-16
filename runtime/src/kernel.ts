@@ -12,15 +12,18 @@ import type { RuntimeApi } from "../../contract/index.mjs";
 
 function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): void {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;
-  const register = () => {
+  const register = async () => {
     if ((window as any).__TENDRIL_NO_SW__) return;
-    void navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base }).then(registration => {
+    try {
+      const registration = await navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base });
+      // Blocked or unavailable support must not leave callbacks holding no registration.
+      if (!registration) return;
       const announce = () => (registration.active || registration.waiting || registration.installing)?.postMessage({ t: "publication", page: cfg.id, publication: cfg.publication });
       core.bus.on("welcome", announce);
       navigator.serviceWorker.addEventListener("controllerchange", announce);
       navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") announce(); });
       announce();
-    }).catch(error => console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error));
+    } catch (error) { console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error); }
   };
   if (document.readyState === "complete") setTimeout(register, 0);
   else window.addEventListener("load", register, { once: true });
