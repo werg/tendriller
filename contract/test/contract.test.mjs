@@ -19,7 +19,7 @@ test("schemas distinguish accepted, queued and rejected results", () => {
     assert.equal(validate("sendResult", result).length, 0);
   assert.ok(validate("sendResult", { queued: false }).length);
   assert.ok(validate("sendResult", { status: "queued", seq: 1 }).length);
-  const blob = { id: "b_" + "a".repeat(20), url: "_tendril/blob/photo", retention: { keep: false, expires_at: 1000 } };
+  const blob = { id: "b_" + "a".repeat(20), url: "_tendril/blobs/photo", retention: { keep: false, expires_at: 1000 } };
   assert.equal(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1, blob }).length, 0);
   assert.ok(validate("captureResult", { capture_id: "capture-1", status: "accepted", seq: 1 }).length);
   assert.ok(validate("captureResult", { status: "queued" }).length);

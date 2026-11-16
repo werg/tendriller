@@ -14,7 +14,7 @@ export function blobInfo(t: Tendril, id: string) {
   if (!row) throw new HttpError(404, "not_found", "No such capture");
   const reason = row.pinned ? "pinned" : row.id === t.db.get<string | null>("icon", null) ? "icon"
     : row.source === "agent" ? "agent_asset" : "page_default";
-  return { ...row, pinned: !!row.pinned, url: `_tendril/blob/${row.id}`,
+  return { ...row, pinned: !!row.pinned, url: `_tendril/blobs/${row.id}`,
     retention: { keep: !!row.pinned, expires_at: reason === "page_default" ? row.ts + ACTIVITY_RETENTION : null, reason } };
 }
 

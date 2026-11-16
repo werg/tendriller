@@ -984,7 +984,7 @@ class Control {
       const list = h("ul", { class: "list" });
       for (const e of entries) {
         const li = h("li", null,
-          e.blob ? h("img", { class: "thumb", src: `${base}_tendril/blob/${encodeURIComponent(e.blob)}`, alt: e.summary ? `Thumbnail: ${e.summary}` : "Thumbnail", loading: "lazy", onerror: (ev: Event) => { (ev.target as HTMLElement).hidden = true; } }) : null,
+          e.blob ? h("img", { class: "thumb", src: `${base}_tendril/blobs/${encodeURIComponent(e.blob)}`, alt: e.summary ? `Thumbnail: ${e.summary}` : "Thumbnail", loading: "lazy", onerror: (ev: Event) => { (ev.target as HTMLElement).hidden = true; } }) : null,
           h("span", { class: "grow" },
             e.summary || e.kind,
             e.source === "agent" ? h("span", { class: "tag", text: "reported by the agent" }) : null,
