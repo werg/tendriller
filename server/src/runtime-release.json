@@ -1,6 +1,6 @@
 {
-  "id": "9f8f7ece098aba869b70f98b40a6a03a38785d35cc21e975bfd5ee3d14381df4",
-  "version": "0.3.0-rc.4",
+  "id": "232ee6be25a997b47a53d523748169c7028e284fb9686d0cc121fbae76feff22",
+  "version": "0.3.0-rc.5",
   "features": {
     "speech": {
       "model": "cactus-whistle-v4",
