@@ -7,7 +7,7 @@ import { test } from 'node:test';
 const root = resolve(import.meta.dirname, '../..');
 const migrationDir = join(root, 'server/migrations');
 const allMigrations = readdirSync(migrationDir).filter(name => /^\d+_.+\.sql$/.test(name)).sort();
-const cutover = '0010_contract2_discard_old_pages.sql';
+const cutover = '0011_contract3_discard_old_pages.sql';
 
 function migratedDatabase(t, includeCutover = true) {
   const db = new DatabaseSync(':memory:');
@@ -23,10 +23,10 @@ test('a direct cutover retains the canonical Worker and domains but uses a fresh
   const configs = ['staging', 'production'].map(stage =>
     JSON.parse(readFileSync(join(root, 'server', `wrangler.${stage}.jsonc`), 'utf8')));
   for (const config of configs) {
-    assert.equal(config.durable_objects.bindings.find(binding => binding.name === 'TENDRIL').class_name, 'TendrilV2');
+    assert.equal(config.durable_objects.bindings.find(binding => binding.name === 'TENDRIL').class_name, 'TendrilV3');
     assert.ok(config.migrations.some(migration =>
-      migration.tag === 'v3-contract2-new-pages' &&
-      JSON.stringify(migration.new_sqlite_classes) === JSON.stringify(['TendrilV2'])));
+      migration.tag === 'v4-contract3-new-pages' &&
+      JSON.stringify(migration.new_sqlite_classes) === JSON.stringify(['TendrilV3'])));
     assert.ok(config.migrations.some(migration => migration.tag === 'v1' && migration.new_sqlite_classes.includes('Tendril')));
     assert.equal(config.d1_databases.length, 1, 'existing account database is retained');
     assert.equal(config.r2_buckets.length, 1, 'existing file bucket is retained');
@@ -72,7 +72,7 @@ test('cutover clears stale page registrations and usage without deleting identit
     assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count, 1, table);
 });
 
-test('the full migration series initializes an empty paused contract 2 database', t => {
+test('the full migration series initializes an empty paused contract 3 database', t => {
   const db = migratedDatabase(t);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tendrils').get().count, 0);
   const service = db.prepare('SELECT mode, reserved FROM service_state WHERE id=1').get();

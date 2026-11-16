@@ -15,7 +15,7 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "TendrilV2"
+        "class_name": "TendrilV3"
       },
       {
         "name": "ADMISSION",
@@ -40,6 +40,12 @@
       "tag": "v3-contract2-new-pages",
       "new_sqlite_classes": [
         "TendrilV2"
+      ]
+    },
+    {
+      "tag": "v4-contract3-new-pages",
+      "new_sqlite_classes": [
+        "TendrilV3"
       ]
     }
   ],
