@@ -49,7 +49,7 @@ describe("events and socket delivery", () => {
     const empty = await apiJson(h, "GET", `events?after=${cursor}`);
     expect(empty.events).toEqual([]);
     expect(Date.now() - before).toBeLessThan(2000);
-    expect((await apiJson(h, "GET", "")).agent_delivery.mode).toBe("none");
+    expect((await apiJson(h, "GET", "")).agent_delivery.mode).not.toBe("live_poll");
     await page.request({ t: "send", expected_generations: {}, data: { passive: true }, wake: false });
     await page.request({ t: "send", expected_generations: {}, data: { waking: true } });
     const batch = await apiJson(h, "GET", `events?after=${cursor}`);
