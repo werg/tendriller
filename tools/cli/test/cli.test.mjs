@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, statSync, readFileSync, symlinkS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
-import { pack, listFiles, isText, guessType, shouldSkip } from "../lib/pack.mjs";
+import { pack, listFiles, guessType, shouldSkip } from "../lib/pack.mjs";
 import {
   resolveConfig, saveConfig, configDir, cursorPath, checkpointPath, readCursor, writeCursor, idFromApi, slug, serverBase,
 } from "../lib/config.mjs";
@@ -41,7 +41,7 @@ test("toPath and parseJsonArg", () => {
   assert.equal(parseJsonArg("hello world"), "hello world");
 });
 
-test("pack: directory skips dotfiles and node_modules, encodes binary as base64", () => {
+test("pack: directory skips dotfiles and node_modules, preserves exact binary bytes", () => {
   const d = tmp();
   writeFileSync(join(d, "index.html"), "<h1>héllo</h1>");
   writeFileSync(join(d, ".env"), "SECRET=1");
@@ -51,19 +51,19 @@ test("pack: directory skips dotfiles and node_modules, encodes binary as base64"
   writeFileSync(join(d, "app.js"), "tendril.send(1)");
   assert.deepEqual(listFiles(d), ["app.js", "img/dot.png", "index.html"]);
   const body = pack(d, { message: "m" });
-  assert.equal(body.replace, true);
+  assert.equal(body.merge, false);
   assert.equal(body.message, "m");
-  assert.equal(body.files["index.html"], "<h1>héllo</h1>");
-  assert.equal(body.files["app.js"], "tendril.send(1)");
-  assert.deepEqual(body.files["img/dot.png"], { base64: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255]).toString("base64"), type: "image/png" });
-  assert.equal(pack(d, { merge: true }).replace, false);
+  assert.equal(body.files.find(file => file.path === "index.html").bytes.toString(), "<h1>héllo</h1>");
+  assert.equal(body.files.find(file => file.path === "app.js").bytes.toString(), "tendril.send(1)");
+  assert.deepEqual(body.files.find(file => file.path === "img/dot.png").bytes, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255]));
+  assert.equal(pack(d, { merge: true }).merge, true);
 });
 
 test("pack: directory without index.html is refused unless merging", () => {
   const d = tmp();
   writeFileSync(join(d, "style.css"), "body{}");
   assert.throws(() => pack(d), /no index.html/);
-  assert.deepEqual(pack(d, { merge: true }).files, { "style.css": "body{}" });
+  assert.equal(pack(d, { merge: true }).files[0].bytes.toString(), "body{}");
 });
 
 test("pack preserves authored edits and never completes missing files", () => {
@@ -74,12 +74,11 @@ test("pack preserves authored edits and never completes missing files", () => {
   const before = listFiles(dir);
   const body = pack(dir);
   assert.deepEqual(listFiles(dir), before);
-  assert.deepEqual(Object.keys(body.files), ["__proto__", "app.js", "index.html"]);
-  assert.equal(Object.hasOwn(body.files, "__proto__"), true);
-  assert.equal(body.files.__proto__, "ordinary authored bytes");
-  assert.equal(body.files["app.js"], "// adapted for this page");
+  assert.deepEqual(body.files.map(file => file.path), ["__proto__", "app.js", "index.html"]);
+  assert.equal(body.files[0].bytes.toString(), "ordinary authored bytes");
+  assert.equal(body.files[1].bytes.toString(), "// adapted for this page");
   writeFileSync(join(dir, "app.js"), "// another deliberate edit");
-  assert.equal(pack(dir).files["app.js"], "// another deliberate edit");
+  assert.equal(pack(dir).files.find(file => file.path === "app.js").bytes.toString(), "// another deliberate edit");
 });
 
 test("pack refuses symlinks and unsafe publication names without reading outside files", () => {
@@ -95,14 +94,13 @@ test("pack: single html file becomes index.html; --as overrides", () => {
   const d = tmp();
   const f = join(d, "page.html");
   writeFileSync(f, "<p>x</p>");
-  assert.deepEqual(pack(f).files, { "index.html": "<p>x</p>" });
-  assert.equal(pack(f).replace, undefined);
-  assert.deepEqual(Object.keys(pack(f, { as: "other.html" }).files), ["other.html"]);
+  assert.equal(pack(f).files[0].bytes.toString(), "<p>x</p>");
+  assert.equal(pack(f).entry, "index.html");
+  assert.equal(pack(f, { as: "other.html" }).entry, "other.html");
+  assert.deepEqual(pack(f, { as: "other.html" }).files.map(file => file.path), ["other.html"]);
 });
 
 test("pack helpers", () => {
-  assert.equal(isText(Buffer.from("abc")), true);
-  assert.equal(isText(Buffer.from([0xff, 0xfe, 0x00])), false);
   assert.equal(guessType("a/b.SVG"), "image/svg+xml");
   assert.equal(guessType("x.unknown"), "application/octet-stream");
   assert.equal(shouldSkip("_tendril/x.js"), true);

@@ -1,6 +1,6 @@
-// Packs a directory (or one file) into the body of POST <api>/files.
-// Text files go as UTF-8 strings, everything else as {base64, type}.
-// Skips dotfiles/dot-directories, node_modules and the reserved _tendril/ and _publications/ prefixes.
+// Enumerate exact authored bytes for immutable upload and publication.
+// Source files are never generated, rewritten or resolved through a catalog.
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, lstatSync } from "node:fs";
 import { join, basename, extname, relative, sep } from "node:path";
 
@@ -17,11 +17,6 @@ const TYPES = {
 
 export function guessType(path) {
   return TYPES[extname(path).toLowerCase()] || "application/octet-stream";
-}
-
-export function isText(buf) {
-  if (buf.includes(0)) return false;
-  try { new TextDecoder("utf-8", { fatal: true }).decode(buf); return true; } catch { return false; }
 }
 
 export function shouldSkip(relPath) {
@@ -46,14 +41,6 @@ export function listFiles(dir) {
   return out.sort();
 }
 
-export function encodeFile(buf, path) {
-  const type = guessType(path);
-  if (isText(buf) && (type.startsWith("text/") || /json|xml|svg|javascript|markdown/.test(type) || type === "application/octet-stream")) {
-    return buf.toString("utf8");
-  }
-  return { base64: buf.toString("base64"), type };
-}
-
 function canonicalPath(path) {
   if (!path || path.normalize("NFC") !== path || path.length > 512 || path.startsWith("/") ||
       /[\\\x00-\x1f\x7f]/.test(path) || path.split("/").some(part => !part || part === "." || part === "..") ||
@@ -61,26 +48,37 @@ function canonicalPath(path) {
   return path;
 }
 
-// Returns {files, replace, skipped?}. A single .html file is uploaded as index.html
-// unless `as` is given. A directory push replaces the whole version unless merge.
-export function pack(target, { as, merge = false, message } = {}) {
+// A merged publication keeps its current entry unless an explicit entry is given.
+export function pack(target, { as, entry, merge = false, message, maxBytes = 5 * 1024 * 1024 } = {}) {
   const st = lstatSync(target);
   if (st.isSymbolicLink()) throw new Error("Refusing publication source symlink");
-  const body = { files: {} };
-  const add = (path, bytes) => Object.defineProperty(body.files, canonicalPath(path), {
-    value: encodeFile(bytes, path), enumerable: true, configurable: true, writable: true,
-  });
+  const files = [];
+  const add = (path, source) => {
+    path = canonicalPath(path);
+    const info = lstatSync(source);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error(`Refusing non-file publication entry: ${path}`);
+    if (info.size > maxBytes) throw new Error(`Publication file exceeds the effective upload limit: ${path}`);
+    const bytes = readFileSync(source);
+    if (bytes.length > maxBytes) throw new Error(`Publication file exceeds the effective upload limit: ${path}`);
+    files.push({ path, type: guessType(path), size: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), bytes });
+  };
   if (st.isDirectory()) {
     const paths = listFiles(target);
     if (paths.length === 0) throw new Error(`nothing to upload in ${target}`);
-    for (const p of paths) add(p, readFileSync(join(target, p)));
-    body.replace = !merge;
-    if (!merge && !paths.includes("index.html")) throw new Error(`${target} has no index.html (use --no-replace to add files to the existing version)`);
+    for (const path of paths) add(path, join(target, path));
+    entry ??= merge ? undefined : "index.html";
   } else if (st.isFile()) {
     let name = as || basename(target);
     if (!as && /\.html?$/i.test(name)) name = "index.html";
-    add(name, readFileSync(target));
+    add(name, target);
+    entry ??= merge ? undefined : name;
   } else throw new Error("Publication source must be a regular file or directory");
-  if (message) body.message = message;
-  return body;
+  if (entry !== undefined) {
+    entry = canonicalPath(entry);
+    if (guessType(entry) !== "text/html") throw new Error("Publication entry must be an HTML path");
+    if (!merge && !files.some(file => file.path === entry))
+      throw new Error(`${target} has no ${entry}; choose --entry or use --no-replace with an existing publication`);
+  }
+  return { files, merge, ...(entry === undefined ? {} : { entry }), ...(message === undefined ? {} : { message }) };
 }

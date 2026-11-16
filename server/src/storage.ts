@@ -1,13 +1,13 @@
 /** Contract 3's agent-facing immutable transfers and shared file references. */
 import { assertFilePath, assertPublicationEntries, assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
 import type { Tendril } from "./tendril";
-import { blobInfo } from "./blob-retention";
-import { createVersion, listVersions, pointers, rollback, storeContent, type VersionFile } from "./files";
+import { blobReference } from "./blob-retention";
+import { createVersion, listVersions, pointers, rollback, servedVersion, storeContent, type VersionFile } from "./files";
 import { HttpError, intParam, json, readBody, readJson } from "./http";
 import { newBlobId, randomB32, sha256Hex } from "./ids";
 import { mutate, replay } from "./scopes";
 
-export const STORAGE_V3_ROUTE = /^(?:uploads|blobs|file-refs|publications)(?:\/|$)/;
+export const STORAGE_ROUTE = /^(?:uploads|blobs|file-refs|publications)(?:\/|$)/;
 
 interface UploadRow {
   id: string; actor: string; cid: string; sha256: string; size: number; type: string;
@@ -22,12 +22,19 @@ const uploadId = () => `u_${randomB32(20)}`;
 const validUploadId = /^u_[a-z2-7]{20}$/;
 const validBlobId = /^b_[a-z2-7]{20}$/;
 
+/** The content row, not caller metadata, is authoritative when bytes are reused. */
+function readyContent(t: Tendril, hash: string, size: number): boolean {
+  const stored = t.db.one<{ size: number; status: string }>("SELECT size,status FROM stored_files WHERE hash=?", hash);
+  if (stored && stored.size !== size)
+    throw new HttpError(422, "digest_size_mismatch", "The reserved size does not match the stored SHA-256 content");
+  return stored?.status === "ready";
+}
+
 function session(t: Tendril, row: UploadRow) {
   const metadata = row.phase === "completed" ? blobMetadata(t, row.blob_id) : undefined;
-  const stored = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=? AND status='ready'", row.sha256);
   return { id: row.id, blob_id: row.blob_id, sha256: row.sha256, size: row.size,
     phase: row.phase, upload_required: row.phase !== "completed" && row.phase !== "received" &&
-      stored?.size !== row.size,
+      !readyContent(t, row.sha256, row.size),
     expires_at: row.expires_at, ...(metadata ? { blob: metadata } : {}) };
 }
 
@@ -39,13 +46,7 @@ function activeSession(t: Tendril, id: string, actor: string): UploadRow {
   return row;
 }
 
-function blobMetadata(t: Tendril, id: string) {
-  const info = blobInfo(t, id);
-  return { id: info.id, sha256: info.sha256, size: info.size,
-    type: info.type || "application/octet-stream", name: info.name || undefined,
-    url: `_tendril/blobs/${id}`, created_at: info.ts,
-    retention: { expires_at: info.retention.expires_at, reasons: [info.retention.reason] } };
-}
+const blobMetadata = blobReference;
 
 function fileValue(row: FileRow) {
   return { path: row.path, revision: row.revision, blob_id: row.blob_id,
@@ -56,22 +57,79 @@ function fileValue(row: FileRow) {
 function queryPath(url: URL): string {
   const raw = url.searchParams.get("path");
   if (raw === null) throw new HttpError(400, "bad_request", "A canonical path is required");
-  return assertFilePath(raw);
+  return assertValid("filePath", raw);
 }
 
 function fileHead(t: Tendril, path: string): FileRow | null {
   return t.db.one<FileRow>("SELECT * FROM file_refs WHERE path=?", path);
 }
 
+/** Pruned cursors force a fresh snapshot instead of silently omitting changes. */
+export function pruneFileHistory(t: Tendril, path?: string): void {
+  const paths = path === undefined ? t.db.all<{ path: string }>("SELECT path FROM file_refs").map(row => row.path) : [path];
+  for (const current of paths) {
+    const obsolete = t.db.all<{ cursor: number }>(`SELECT cursor FROM file_ref_changes
+      WHERE path=? AND cursor NOT IN (SELECT cursor FROM file_ref_changes WHERE path=? ORDER BY cursor DESC LIMIT ?)
+      UNION SELECT cursor FROM file_ref_changes WHERE path=? AND updated_at<?
+      AND revision<>(SELECT revision FROM file_refs WHERE path=?)`,
+      current, current, RESOURCE_LIMITS.file_history + 1, current, t.now() - RESOURCE_LIMITS.file_history_seconds * 1000, current);
+    if (!obsolete.length) continue;
+    t.db.set("file_change_floor", Math.max(t.db.get<number>("file_change_floor", 0), ...obsolete.map(row => row.cursor)));
+    for (const row of obsolete) t.db.run("DELETE FROM file_ref_changes WHERE cursor=?", row.cursor);
+  }
+}
+
 function requireBlob(t: Tendril, id: string) {
   if (!validBlobId.test(id)) throw new HttpError(400, "bad_blob", "Invalid blob ID");
   const blob = t.db.one<{ sha256: string; size: number }>("SELECT sha256,size FROM blobs WHERE id=?", id);
-  if (!blob || !t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND status='ready'", blob.sha256))
+  if (!blob || !readyContent(t, blob.sha256, blob.size))
     throw new HttpError(409, "blob_unavailable", "The referenced blob is unavailable");
   return blob;
 }
 
-export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor: string, rest: string,
+interface FileMutation {
+  cid: string; path: string; expected_revision: number; blob_id?: string;
+  name?: string; type?: string; scope?: string;
+}
+
+function commitFile(t: Tendril, input: FileMutation, actor: string) {
+  const put = input.blob_id === undefined ? null : input;
+  const current = fileHead(t, input.path);
+  if ((current?.revision ?? 0) !== input.expected_revision)
+    throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
+  if (put) requireBlob(t, put.blob_id);
+  if (!current && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs")?.n ?? 0) >= RESOURCE_LIMITS.shared_file_paths)
+    throw new HttpError(429, "file_path_quota", "The page's retained file-path budget is full");
+  if (put && !current?.blob_id && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs WHERE blob_id IS NOT NULL")?.n ?? 0) >= RESOURCE_LIMITS.shared_files)
+    throw new HttpError(429, "file_quota", "The page's active shared-file budget is full");
+  const next = input.expected_revision + 1, now = t.now();
+  const blobId = put?.blob_id ?? null;
+  const name = put?.name ?? null;
+  const type = put?.type ?? null;
+  t.db.run("INSERT INTO file_refs(path,revision,blob_id,name,type,scope,updated_at,by_actor) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision,blob_id=excluded.blob_id,name=excluded.name,type=excluded.type,scope=excluded.scope,updated_at=excluded.updated_at,by_actor=excluded.by_actor",
+    input.path, next, blobId, name, type, input.scope ?? null, now, actor);
+  t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,?,?,?,?,?,?,?)",
+    input.path, next, blobId, name, type, input.scope ?? null, now, actor, input.cid);
+  const cursor = t.db.one<{ cursor: number }>("SELECT last_insert_rowid() AS cursor")!.cursor;
+  const snapshot = t.db.all<FileRow>("SELECT * FROM file_refs WHERE blob_id IS NOT NULL ORDER BY path").map(fileValue);
+  if (new TextEncoder().encode(JSON.stringify({ files: snapshot, cursor })).byteLength > RESOURCE_LIMITS.file_snapshot_bytes)
+    throw new HttpError(429, "file_snapshot_quota", "Shared-file metadata exceeds the complete-snapshot budget");
+  pruneFileHistory(t, input.path);
+  return { file: fileValue(fileHead(t, input.path)!), cursor };
+}
+
+/** Called inside the bundle's guarded transaction, using revisions captured at staging. */
+export function commitImportedFiles(t: Tendril, files: Array<{ path: string; blob_id: string; name?: string; type?: string }>,
+  expectedRevisions: Record<string, number>, actor: string, cid: string): void {
+  for (const file of files) {
+    const expected_revision = expectedRevisions[file.path];
+    if (!Number.isSafeInteger(expected_revision) || expected_revision < 0)
+      throw new HttpError(400, "bad_bundle", "A shared-file import requires its captured revision");
+    commitFile(t, { ...file, cid, expected_revision }, actor);
+  }
+}
+
+export async function handleStorage(t: Tendril, req: Request, url: URL, actor: string, rest: string,
   source: "agent" | "page" = "agent", device: string | null = null): Promise<Response> {
   const method = req.method === "HEAD" ? "GET" : req.method;
   if (rest === "uploads" && method === "POST") {
@@ -82,16 +140,18 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
       if (prior) {
         if (prior.sha256 !== input.sha256 || prior.size !== input.size || prior.type !== input.type ||
             prior.name !== (input.name ?? null)) throw new HttpError(409, "command_conflict", "Upload ID belongs to different bytes or metadata");
+        activeSession(t, prior.id, actor);
+        if (prior.phase === "aborted") throw new HttpError(409, "upload_closed", "The original upload was aborted");
         return prior;
       }
       const active = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE phase!='completed' AND expires_at>?", t.now())?.n ?? 0;
       const own = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions WHERE actor=? AND phase!='completed' AND expires_at>?", actor, t.now())?.n ?? 0;
       if (active >= RESOURCE_LIMITS.upload_sessions_per_page || own >= RESOURCE_LIMITS.upload_sessions_per_actor)
         throw new HttpError(429, "upload_quota", "Too many unfinished uploads");
-      const stored = t.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=? AND status='ready'", input.sha256);
-      if (stored && stored.size !== input.size)
-        throw new HttpError(409, "blob_size_conflict", "The existing blob's stored size differs from the upload intent");
-      const ready = !!stored;
+      const retained = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM upload_sessions")?.n ?? 0;
+      if (retained >= RESOURCE_LIMITS.command_receipts)
+        throw new HttpError(429, "upload_receipt_quota", "The page's retained upload identity budget is full");
+      const ready = readyContent(t, input.sha256, input.size);
       const next: UploadRow = { id: uploadId(), actor, cid: input.cid, sha256: input.sha256,
         size: input.size, type: input.type, name: input.name ?? null, blob_id: newBlobId(), source, device,
         phase: ready ? "ready" : "reserved", expires_at: t.now() + RESOURCE_LIMITS.upload_expiry_seconds * 1000 };
@@ -133,8 +193,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
         const current = t.db.one<UploadRow>("SELECT * FROM upload_sessions WHERE id=?", row.id);
         if (!current || current.phase === "aborted" || (current.phase !== "completed" && current.expires_at <= t.now()))
           throw new HttpError(409, "upload_closed", "Upload is closed");
-        if (!t.db.one("SELECT 1 AS present FROM stored_files WHERE hash=? AND size=? AND status='ready'", row.sha256, row.size))
-          throw new HttpError(409, "upload_incomplete", "Upload content is not ready with the reserved size");
+        if (!readyContent(t, row.sha256, row.size))
+          throw new HttpError(409, "upload_incomplete", "Upload content is not ready");
         if (!t.db.one("SELECT 1 AS present FROM blobs WHERE id=?", row.blob_id))
           t.db.run("INSERT INTO blobs(id,sha256,type,size,name,ts,device,source,pinned) VALUES(?,?,?,?,?,?,?,?,0)",
             row.blob_id, row.sha256, row.type, row.size, row.name, t.now(), row.device, row.source);
@@ -145,8 +205,12 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     }
   }
   if (rest === "blobs" && method === "GET") {
-    const rows = t.db.all<{ id: string }>("SELECT id FROM blobs ORDER BY ts,id LIMIT 1000");
-    return json({ blobs: rows.map(row => blobMetadata(t, row.id)), cursor: null });
+    const after = url.searchParams.get("after") ?? "";
+    if (after && !validBlobId.test(after)) throw new HttpError(400, "bad_cursor", "Blob cursor must be an immutable blob ID");
+    const limit = intParam(url, "limit", 100, 1, 1000);
+    const rows = t.db.all<{ id: string }>("SELECT id FROM blobs WHERE id>? ORDER BY id LIMIT ?", after, limit + 1);
+    const page = rows.slice(0, limit);
+    return json({ blobs: page.map(row => blobMetadata(t, row.id)), cursor: rows.length > limit ? page.at(-1)!.id : null });
   }
   const blob = /^blobs\/(b_[a-z2-7]{20})(?:\/(info|pin))?$/.exec(rest);
   if (blob) {
@@ -175,45 +239,30 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "file-refs" && method === "GET") {
     const row = fileHead(t, queryPath(url));
-    if (!row || !row.blob_id) throw new HttpError(404, "not_found", "No such shared file");
+    if (!row) throw new HttpError(404, "not_found", "No such shared file");
     return json(fileValue(row));
   }
   if (rest === "file-refs" && (method === "PUT" || method === "DELETE")) {
     const input = assertValid(method === "PUT" ? "fileWrite" : "fileDelete", await readJson(req, 4096));
-    const put = method === "PUT" ? input as typeof input & { blob_id: string; name?: string; type?: string } : null;
+    assertFilePath(input.path);
     const result = mutate(t, actor, input, { paths: [["files", input.path]], operations: ["file.write"] }, input, () => {
-      const current = fileHead(t, input.path);
-      if ((current?.revision ?? 0) !== input.expected_revision)
-        throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
-      if (!current && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs")?.n ?? 0) >= RESOURCE_LIMITS.shared_file_paths)
-        throw new HttpError(429, "resource_quota", "Shared file path limit reached");
-      if (put && !current?.blob_id &&
-          (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs WHERE blob_id IS NOT NULL")?.n ?? 0) >= RESOURCE_LIMITS.shared_files)
-        throw new HttpError(429, "resource_quota", "Active shared file limit reached");
-      if (put) requireBlob(t, put.blob_id);
-      const next = input.expected_revision + 1, now = t.now();
-      const blobId = put?.blob_id ?? null;
-      const name = put?.name ?? null;
-      const type = put?.type ?? null;
-      t.db.run("INSERT INTO file_refs(path,revision,blob_id,name,type,scope,updated_at,by_actor) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision,blob_id=excluded.blob_id,name=excluded.name,type=excluded.type,scope=excluded.scope,updated_at=excluded.updated_at,by_actor=excluded.by_actor",
-        input.path, next, blobId, name, type, input.scope ?? null, now, actor);
-      t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,?,?,?,?,?,?,?)",
-        input.path, next, blobId, name, type, input.scope ?? null, now, actor, input.cid);
-      const cursor = t.db.one<{ cursor: number }>("SELECT last_insert_rowid() AS cursor")!.cursor;
-      return { file: fileValue(fileHead(t, input.path)!), cursor };
+      return commitFile(t, input, actor);
     });
     return json(result);
   }
   if (rest === "file-refs/changes" && method === "GET") {
     const after = intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER);
-    const rows = t.db.all<FileRow & { cursor: number; cid: string }>("SELECT * FROM file_ref_changes WHERE cursor>? ORDER BY cursor LIMIT 100", after);
+    const floor = t.db.get<number>("file_change_floor", 0);
+    if (after < floor) throw new HttpError(410, "file_cursor_expired", "Shared-file history has been pruned; read a fresh snapshot", { cursor: floor });
+    const limit = intParam(url, "limit", 100, 1, 100);
+    const rows = t.db.all<FileRow & { cursor: number; cid: string }>("SELECT * FROM file_ref_changes WHERE cursor>? ORDER BY cursor LIMIT ?", after, limit);
     return json({ changes: rows.map(row => ({ cursor: row.cursor, file: fileValue(row), cid: row.cid, actor: row.by_actor, at: row.updated_at })),
       cursor: rows.at(-1)?.cursor ?? after });
   }
   if (rest === "publications" && method === "GET") {
     const head = pointers(t);
     return json({ current: head.current ?? 0, latest: head.latest ?? 0, healthy: head.healthy ?? 0,
-      head_revision: t.db.get<number>("publication_head_revision", 0), needs_republication: false,
+      head_revision: t.db.get<number>("publication_head_revision", 0), served: servedVersion(t),
       versions: listVersions(t) });
   }
   const publication = /^publications\/([1-9][0-9]*)$/.exec(rest);
@@ -221,14 +270,15 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     const version = Number(publication[1]);
     const row = t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version);
     if (!row) throw new HttpError(404, "not_found", "No such publication");
-    const files = t.db.all<{ path: string; blob_id: string; type: string }>(
-      "SELECT f.path, b.blob_id, f.type FROM version_files f JOIN publication_blobs b ON b.version=f.version AND b.path=f.path WHERE f.version=? ORDER BY f.path", version);
+    const files = t.db.all<{ path: string; blob_id: string; type: string; sha256: string; size: number }>(
+      "SELECT f.path, b.blob_id, f.type, f.hash AS sha256, f.size FROM version_files f JOIN publication_blobs b ON b.version=f.version AND b.path=f.path WHERE f.version=? ORDER BY f.path", version);
     return json({ version, entry: row.entry, files });
   }
   if (rest === "publications" && method === "POST") {
     const input = assertValid("publicationWrite", await readJson(req, 2 * 1024 * 1024));
-    assertPublicationEntries(input.files, input.entry);
-    const targets = { operations: ["publication.publish"], paths: input.files.map(file => ["publications", file.path]) };
+    try { assertPublicationEntries(input.files, input.entry); }
+    catch (error) { throw new HttpError(400, "bad_publication", error instanceof Error ? error.message : "Invalid publication"); }
+    const targets = { operations: ["publication.publish"], paths: [["publications"]] };
     const prior = replay<{ version: number; head_revision: number }>(t, actor, input, targets, input);
     if (prior.found) return json(prior.result);
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
@@ -239,22 +289,19 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     const files = new Map<string, VersionFile>();
     for (const file of input.files) {
       const blob = requireBlob(t, file.blob_id);
-      files.set(file.path, { path: file.path, hash: blob.sha256, size: blob.size, type: file.type });
+      files.set(file.path, { path: file.path, hash: blob.sha256, size: blob.size, type: file.type, blob_id: file.blob_id });
     }
     let receipt: { version: number; head_revision: number } | null = null;
     try {
       await createVersion(t, files, input.message ?? null, actor, {
-        expectedHeadRevision: input.expected_head_revision,
+        entry: input.entry, expectedHeadRevision: input.expected_head_revision,
         commit(version) {
           receipt = mutate(t, actor, input, targets, input, () => {
             for (const file of input.files) {
               const blob = requireBlob(t, file.blob_id);
               if (blob.sha256 !== files.get(file.path)?.hash) throw new HttpError(409, "blob_changed", "A publication blob changed during preparation");
-              t.db.run("INSERT INTO publication_blobs(version,path,blob_id) VALUES(?,?,?)", version, file.path, file.blob_id);
             }
-            t.db.run("UPDATE versions SET entry=? WHERE version=?", input.entry, version);
-            const head_revision = input.expected_head_revision + 1;
-            t.db.set("publication_head_revision", head_revision);
+            const head_revision = t.db.get<number>("publication_head_revision", 0);
             return { version, head_revision };
           });
         },
@@ -269,13 +316,12 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "publications/rollback" && method === "POST") {
     const input = assertValid("publicationRollback", await readJson(req, 4096));
-    const result = mutate(t, actor, input, { operations: ["publication.publish"] }, input, () => {
+    const result = mutate(t, actor, input, { operations: ["publication.publish"], paths: [["publications"]] }, input, () => {
       const current = t.db.get<number>("publication_head_revision", 0);
       if (current !== input.expected_head_revision)
         throw new HttpError(409, "publication_conflict", "The publication head changed", { head_revision: current });
       const version = rollback(t, input.version, actor, null);
-      const head_revision = current + 1;
-      t.db.set("publication_head_revision", head_revision);
+      const head_revision = t.db.get<number>("publication_head_revision", 0);
       return { version, head_revision };
     });
     return json(result);

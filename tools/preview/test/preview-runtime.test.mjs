@@ -1,9 +1,17 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { createServer } from "node:http";
 import WebSocket from "ws";
 import { attachRuntime } from "../lib/preview-runtime.mjs";
+
+function storeCapture(adapter, data, device = "capture-device", cid = "upload-1") {
+  const session = adapter.storage.start({ cid, size: data.length, type: "image/png", name: "photo",
+    sha256: createHash("sha256").update(data).digest("hex") }, device);
+  if (session.upload_required) adapter.storage.put(session.id, device, data, "application/octet-stream");
+  return adapter.storage.complete(session.id, device).blob;
+}
 
 test("preview state uses the public runtime support primitives, including null, deletes and rejected reserved keys", async () => {
   const adapter = await attachRuntime(new EventEmitter(), { state: { reading: 2 } });
@@ -24,8 +32,8 @@ test("preview state uses the public runtime support primitives, including null, 
 test("preview retries upload acknowledgements without duplicating media and speaks through real say messages", async () => {
   const adapter = await attachRuntime(new EventEmitter(), {});
   try {
-    const first = adapter.storeBlob(Buffer.from("photo"), "image/png", "photo", "capture-1", false);
-    const again = adapter.storeBlob(Buffer.from("photo"), "image/png", "photo", "capture-1", false);
+    const first = storeCapture(adapter, Buffer.from("photo"), "capture-device", "capture-1");
+    const again = storeCapture(adapter, Buffer.from("photo"), "capture-device", "capture-1");
     assert.deepEqual(again, first);
     assert.equal(adapter.blobs.size, 1);
     assert.match(first.id, /^b_[a-z2-7]{20}$/);
@@ -58,7 +66,7 @@ test("preview capture completion checks upload references and original scope gua
     }) };
   };
   let client = await connect();
-  const upload = adapter.storeBlob(Buffer.from("photo"), "image/png", "photo", "upload-1");
+  const upload = storeCapture(adapter, Buffer.from("photo"));
   const command = { t: "capture_complete", cid: "completion-1", blob: upload.id,
     data: { type: "observation", blob: upload.id, note: "Keep this with the photo" }, expected_generations: { photos: "generation-1" } };
 
@@ -69,6 +77,7 @@ test("preview capture completion checks upload references and original scope gua
   const accepted = await client.call(command);
   assert.equal(accepted.error, undefined);
   assert.equal(adapter.events.length, 1);
+  assert.equal((await client.call({ ...command, data: { changed: true } })).error, "command_conflict");
   assert.deepEqual(adapter.events[0].data, command.data);
   assert.deepEqual(adapter.events[0].context, { generations: { photos: "generation-1" } });
 

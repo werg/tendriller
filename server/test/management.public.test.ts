@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { apiJson, create, inDO, ownerHeaders, req } from './helpers';
+import { apiJson, publishFilesJson, create, inDO, ownerHeaders, req } from './helpers';
 
 it('serves recovery independently of authored code and enforces owner and origin boundaries', async () => {
   const h = await create();
@@ -30,12 +30,12 @@ it('serves recovery independently of authored code and enforces owner and origin
 
 it('recovers page files without reverting application data and rejects stale selection forms', async () => {
   const h = await create();
-  for (const title of ['First', 'Second']) await apiJson(h, 'POST', 'files', { files: { 'index.html': `<!doctype html><title>${title}</title>` } });
+  for (const title of ['First', 'Second']) await publishFilesJson(h, { 'index.html': `<!doctype html><title>${title}</title>` });
   await apiJson(h, 'PATCH', 'state', { cid: 'fresh-work', expected_generations: {}, ops: [{ op: 'set', path: ['notes'], value: 'Retain current work' }] });
   const submit = (body: string) => req(h.page_url + '_tendril/manage', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  const stale = await submit('action=select-version&current=1&version=1');
+  const stale = await submit('action=select-version&head_revision=1&version=1');
   expect(stale.status).toBe(409);
-  const restored = await submit('action=select-version&current=2&version=1');
+  const restored = await submit('action=select-version&head_revision=2&version=1');
   expect(restored.status).toBe(200);
   expect(await inDO(h.id, t => t.db.get('current', 0))).toBe(1);
   expect((await apiJson(h, 'GET', 'state')).state).toEqual({ notes: 'Retain current work' });

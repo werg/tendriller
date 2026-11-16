@@ -69,7 +69,7 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
   const mockedHttp = [];
   const installHttp = routes => {
     for (const route of routes) {
-      const i = httpFixtures.findIndex(r => r.method === route.method && r.path === route.path);
+      const i = httpFixtures.findIndex(r => r.method === route.method && r.path === route.path && isDeepStrictEqual(r.query, route.query));
       if (i >= 0) httpFixtures[i] = structuredClone(route); else httpFixtures.push(structuredClone(route));
     }
   };
@@ -90,12 +90,13 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
         if(!bytes)return json(404,{error:{code:"not_found",message:"No such publication asset"}});
         const type=guessType(path);return send(200,type,type==="text/html"?injectRuntime(bytes.toString("utf8"),stored.manifest,path):bytes,{"cache-control":"public,max-age=31536000,immutable","X-Tendril-Publication":stored.manifest.id});
       }
-      const mock = httpFixtures.find(r => (r.method || "GET") === req.method && r.path === p);
+      const query = Object.fromEntries(url.searchParams);
+      const mock = httpFixtures.find(r => (r.method || "GET") === req.method && r.path === p && isDeepStrictEqual(r.query || {}, query));
       if (mock) {
         let body = ""; for await (const chunk of req) { body += chunk; if (body.length > 1024 * 1024) throw new Error("Fixture request is too large"); }
         const parsed = body ? JSON.parse(body) : undefined;
         const match = !mock.expect_body || Object.entries(mock.expect_body).every(([key, value]) => isDeepStrictEqual(parsed?.[key], value));
-        mockedHttp.push({ method: req.method, path: p, body: parsed, matched: match, status: match ? (mock.status || 200) : 400 });
+        mockedHttp.push({ method: req.method, path: p, ...(url.search ? { query } : {}), body: parsed, matched: match, status: match ? (mock.status || 200) : 400 });
         if (!match) return json(400, { error: { code: "fixture_mismatch", message: "Request body did not match the scenario" } });
         if (mock.once) httpFixtures.splice(httpFixtures.indexOf(mock), 1);
         if (mock.update) installHttp(mock.update);
@@ -111,7 +112,7 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
       }
       if (p === "/api/service" || p === "/_tendril/service") return json(200, service);
       if (p === "/_tendril/scopes" && req.method === "GET") return json(200, { scopes: adapter.scopes });
-      if (p === "/contract/v2.json") return json(200, schemaDocument);
+      if (p === `/contract/v${CONTRACT_VERSION}.json`) return json(200, schemaDocument);
       if (p === "/_tendril/info") return json(200, { id: "preview", version: currentPublication.version, files: listFiles(root), publication: currentPublication, features: {} });
       const streamRoute = /^\/_tendril\/streams(?:\/([^/]+)(?:\/(records|latest))?)?$/.exec(p);
       if (streamRoute) {
@@ -134,27 +135,10 @@ export async function startServer(dir, initialState, fixture = {}, options = {})
         return json(405, { error: { code: "method_not_allowed", message: "Unsupported device action" } });
       }
       if (p === "/_tendril/manifest.webmanifest") return json(200, { name: "Tendriller preview", start_url: "/", display: "standalone" });
-      if (p === "/_tendril/blob" && req.method === "POST") {
-        if (adapter.role === "display") return json(403, { error: { code: "forbidden", message: "Display devices cannot upload" } });
-        if (req.headers["x-tendril-keep"] === "true" && adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Only owners can pin captures" } });
-        const chunks = []; let size = 0;
-        for await (const chunk of req) { size += chunk.length; if (size > 5 * 1024 * 1024) return json(413, { error: { code: "too_large", message: "Blob exceeds 5 MB" } }); chunks.push(chunk); }
-        return json(201, adapter.storeBlob(Buffer.concat(chunks), req.headers["content-type"] || "application/octet-stream", req.headers["x-tendril-name"], req.headers["x-tendril-cid"], req.headers["x-tendril-keep"] === "true"));
-      }
-      if (p.startsWith("/_tendril/blob/")) {
-        const retention = p.endsWith("/retention");
-        const blob = adapter.blobs.get(p.split("/")[3]);
-        if (!blob) return json(404, { error: { code: "not_found", message: "No such blob" } });
-        if (retention && req.method === "GET") return json(200, { id: blob.id, url: blob.url, retention: blob.retention });
-        if (retention && req.method === "PATCH") {
-          if (adapter.role !== "owner") return json(403, { error: { code: "forbidden", message: "Only the owner can change retention" } });
-          let body = ""; for await (const chunk of req) body += chunk;
-          const keep = JSON.parse(body).keep === true;
-          blob.retention = { keep, expires_at: keep ? null : Date.now() + 30 * 86400000, reason: keep ? "pinned" : "page_default" };
-          return json(200, { id: blob.id, url: blob.url, retention: blob.retention });
-        }
-        return send(200, blob.type, blob.data);
-      }
+      const stored = await adapter.storage.handle(req, url);
+      if (stored) return stored.headers || stored.status === 204
+        ? send(stored.status, stored.headers?.["content-type"] || "application/octet-stream", stored.body, stored.headers)
+        : json(stored.status, stored.body);
       if (p.startsWith("/_tendril/")) {
         const asset = options.assets?.[p];
         if (asset) return send(200, guessType(p), Buffer.from(asset, "base64"), {

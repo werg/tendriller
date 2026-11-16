@@ -9,6 +9,7 @@ import { HttpError, isPlainObject, json, readJson } from "./http";
 import { LONGPOLL_MAX_WAIT_S } from "./limits";
 import { CONSUMER_TOOLS } from "./consumer-mcp";
 import { STREAM_TOOLS } from "./stream-mcp";
+import { STORAGE_TOOLS } from "./storage-mcp";
 import {
   callbackUrlProblem, canonicalJson, MCP_EVENT_DEFINITION, MCP_EVENT_NAME, MCP_SUB_DEFAULT_TTL, MCP_SUB_MAX_TTL,
   MCP_SUB_MIN_TTL, mcpSubs, newSubId, requireSubsRoom, saveMcpSubs, validSecret, verifyCallback, type McpSub,
@@ -31,16 +32,28 @@ const INSTRUCTIONS =
   "Reuse one name for failover workers; distinct names independently receive the same events. Stop processing after lease loss, and recover context before acknowledging a retained-history gap. " +
   "Call describe_devices before adding sensor controls. Use the decision guides at https://github.com/werg/tendriller-contrib to choose an approach for this task; reading a cookbook installs nothing. " +
   "Publish complete authored files and choose the page's layout, conversation presentation and interaction. Optional publishing, preview, collector and host-delivery tools are core artifacts. " +
-  "change the page with write_files, inspect or drive it with eval, diagnose with event_journey, and talk to the user with say. " +
+  "Upload authored UTF-8 files with upload_text, then commit their complete blob manifest with publish_publication using the original command ID, generations and observed head revision. " +
+  "Use the public CLI or SDK for binary transfers. Inspect or drive the page with eval, diagnose with event_journey, and talk to the user with say. " +
   "Use get_session to resume saved work, durable timers for closed-page schedules. Trusted workflow operations are explicit optional modules discovered through list_workflows. " +
   "Use named streams for machine telemetry and arbitrary application data. Durable streams have bounded replay; ephemeral streams are live-only. Custom stream data never represents owner instructions or wakes the agent. " +
   `Subscribe to the ${MCP_EVENT_NAME} event to be woken when events are waiting.`;
+
+export interface ToolRequest {
+  method: string;
+  rest: string;
+  query?: Record<string, string>;
+  body?: unknown;
+  rawBody?: BodyInit;
+  headers?: Record<string, string>;
+}
+
+export type InvokeToolRequest = (request: ToolRequest) => Promise<Response>;
 
 export interface Tool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  call(args: Record<string, any>): { method: string; rest: string; query?: Record<string, string>; body?: unknown; headers?: Record<string, string> };
+  call(args: Record<string, any>, invoke: InvokeToolRequest): ToolRequest | Response | Promise<ToolRequest | Response>;
 }
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({
@@ -53,6 +66,7 @@ const obj = (properties: Record<string, unknown>, required: string[] = []) => ({
 const TOOLS: Tool[] = [
   ...CONSUMER_TOOLS,
   ...STREAM_TOOLS,
+  ...STORAGE_TOOLS,
   {
     name: "tendril_info",
     description: "The tendril: page URL, current version, connected devices, presence and wake settings.",
@@ -87,33 +101,6 @@ const TOOLS: Tool[] = [
     }),
   },
   {
-    name: "write_files",
-    description:
-      "Write page files as one new version (index.html, app.js, …). Text values are UTF-8; {base64, type} for binary. A version that fails to start rolls back by itself.",
-    inputSchema: obj(
-      {
-        files: { type: "object", additionalProperties: { anyOf: [{ type: "string" }, obj({ base64: { type: "string" }, type: { type: "string" } }, ["base64"])] } },
-        delete: { type: "array", items: { type: "string" } },
-        replace: { type: "boolean", description: "The version holds only the given files" },
-        message: { type: "string" },
-      },
-      ["files"],
-    ),
-    call: (a) => ({ method: "POST", rest: "files", body: a }),
-  },
-  {
-    name: "list_versions",
-    description: "Versions newest first, with status pending, healthy or failed and any errors.",
-    inputSchema: obj({}),
-    call: () => ({ method: "GET", rest: "versions" }),
-  },
-  {
-    name: "rollback",
-    description: "Make an older version current (default: the newest healthy version older than current).",
-    inputSchema: obj({ version: { type: "integer", minimum: 1 } }),
-    call: (a) => ({ method: "POST", rest: "rollback", body: a }),
-  },
-  {
     name: "eval",
     description: "Run JavaScript in the page on a device (body of an async function; return a JSON value).",
     inputSchema: obj(
@@ -146,7 +133,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "set_status",
-    description: "Tell the page what the agent is doing (shown in its control).",
+    description: "Update the shared agent presence for the page's own presentation.",
     inputSchema: obj({ text: { type: "string" }, state: { type: "string", enum: ["working", "idle", "done"] } }),
     call: (a) => ({ method: "POST", rest: "status", body: a }),
   },
@@ -337,21 +324,27 @@ async function callTool(t: Tendril, token: string, params: Record<string, any>, 
   const args = isPlainObject(params.arguments) ? params.arguments : {};
   const issues = validateSchema(tool.inputSchema, args);
   if (issues.length) throw new RpcError(-32602, "Invalid tool arguments", { issues });
-  const spec = tool.call(args);
-  const query = { ...spec.query };
-  if (query.after === "__cursor__") query.after = String(t.db.get<number>("agent_cursor", 0));
-  const url = new URL(`https://tendril.internal/agent?${new URLSearchParams(query)}`);
-  const headers = new Headers({ Authorization: `Bearer ${token}`, "x-tendril-rest": encodeURIComponent(spec.rest) });
-  for (const [name, value] of Object.entries(spec.headers ?? {})) headers.set(name, value);
-  if (clientIp) headers.set("CF-Connecting-IP", clientIp);
-  const init: RequestInit = { method: spec.method, headers, signal };
-  if (spec.body !== undefined) {
-    headers.set("Content-Type", "application/json");
-    init.body = JSON.stringify(spec.body);
-  }
+  const invoke: InvokeToolRequest = spec => {
+    const query = { ...spec.query };
+    if (query.after === "__cursor__") query.after = String(t.db.get<number>("agent_cursor", 0));
+    const url = new URL(`https://tendril.internal/agent?${new URLSearchParams(query)}`);
+    const headers = new Headers(spec.headers);
+    // Internal adapters cannot replace the caller's credential, route or origin.
+    headers.set("Authorization", `Bearer ${token}`);
+    headers.set("x-tendril-rest", encodeURIComponent(spec.rest));
+    if (clientIp) headers.set("CF-Connecting-IP", clientIp);
+    const init: RequestInit = { method: spec.method, headers, signal };
+    if (spec.rawBody !== undefined) init.body = spec.rawBody;
+    else if (spec.body !== undefined) {
+      headers.set("Content-Type", "application/json");
+      init.body = JSON.stringify(spec.body);
+    }
+    return handleAgent(t, new Request(url, init), url);
+  };
   let res: Response;
   try {
-    res = await handleAgent(t, new Request(url, init), url);
+    const spec = await tool.call(args, invoke);
+    res = spec instanceof Response ? spec : await invoke(spec);
   } catch (err) {
     const message = err instanceof HttpError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
     return { content: [{ type: "text", text: message }], isError: true };

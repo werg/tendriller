@@ -44,9 +44,13 @@ test("preview shutdown closes preconnects, partial HTTP, active uploads and upgr
   const headers = await tcp();
   headers.write("GET / HTTP/1.1\r\nHost: preview\r\n");
 
+  const registered = socket(); await once(registered, "open");
+  const welcome = once(registered, "message");
+  registered.send(JSON.stringify({ t: "hello", device_id: "upload-device", device_secret: "upload-secret" }));
+  await welcome;
   const upload = await tcp();
   const request = once(server, "request");
-  upload.write("POST /_tendril/blob HTTP/1.1\r\nHost: preview\r\nContent-Type: image/png\r\nContent-Length: 1000\r\n\r\npartial");
+  upload.write("POST /_tendril/uploads HTTP/1.1\r\nHost: preview\r\nX-Tendril-Device: upload-device\r\nX-Tendril-Device-Secret: upload-secret\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{");
   await request; // The real upload handler is waiting for the rest of the body.
 
   // A raw upgraded peer never responds to a WebSocket close handshake.
@@ -58,7 +62,7 @@ test("preview shutdown closes preconnects, partial HTTP, active uploads and upgr
   await once(live, "open");
 
   await server.stopPreview();
-  await Promise.all([preconnect, headers, upload, upgraded, live].map(client => closed.get(client)));
+  await Promise.all([preconnect, headers, upload, upgraded, registered, live].map(client => closed.get(client)));
   assert.equal(server.listening, false);
   assert.equal(server.preview.online, false);
   assert.equal(await new Promise((resolve, reject) => server.getConnections((error, count) => error ? reject(error) : resolve(count))), 0);

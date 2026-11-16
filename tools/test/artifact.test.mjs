@@ -30,7 +30,7 @@ test('the core tools archive serves public libraries and commands without a chec
   const page = join(root, 'page'); mkdirSync(page);
   writeFileSync(join(page, 'index.html'), '<!doctype html><title>Independent authored page</title>');
   const { pack } = await import(pathToFileURL(join(installed, 'lib/pack.mjs')).href);
-  assert.deepEqual(Object.keys(pack(page).files), ['index.html']);
+  assert.deepEqual(pack(page).files.map(file => file.path), ['index.html']);
   const { startServer } = await import(pathToFileURL(join(installed, 'lib/preview.mjs')).href);
   const server = await startServer(page);
   try {

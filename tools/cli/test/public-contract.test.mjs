@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -13,7 +14,7 @@ let server, origin, configDir;
 before(async () => {
   configDir = mkdtempSync(join(tmpdir(), "tendril-public-cli-"));
   server = createServer(async (req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:CONTRACT_VERSION,core_release:CORE_RELEASE,workflows:[]})); return; }
     let body = "";
     for await (const part of req) body += part;
     requests.push({ method: req.method, path: req.url, authorization: req.headers.authorization, body: body ? JSON.parse(body) : null });
@@ -105,10 +106,10 @@ test("supported mutations match the current public service routes", async () => 
   assert.equal((await cli(["link", "rotate"])).code, 0);
   assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/links/l_main/rotate");
   const blob = "b_aaaaaaaaaaaaaaaaaaaa";
-  assert.equal((await cli(["blobs", "keep", blob])).code, 0);
-  assert.deepEqual(requests.at(-1).body, { keep: true });
-  assert.equal((await cli(["blobs", "expire", blob])).code, 0);
-  assert.deepEqual(requests.at(-1).body, { keep: false });
+  assert.equal((await cli(["blob", "pin", blob, "--keep", "true", "--cid", "pin-once"])).code, 0);
+  assert.deepEqual(requests.at(-1).body, { cid: "pin-once", expected_generations: {}, keep: true });
+  assert.equal((await cli(["blob", "pin", blob, "--keep", "false", "--cid", "unpin-once"])).code, 0);
+  assert.deepEqual(requests.at(-1).body, { cid: "unpin-once", expected_generations: {}, keep: false });
 });
 
 test("push notification commands expose readiness and preserve delivery targeting", async () => {

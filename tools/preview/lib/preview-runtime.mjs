@@ -1,10 +1,11 @@
 // Local protocol adapter for the production browser runtime. No browser API is
 // replaced here: the runtime owns its socket, state, IDB outbox and health.
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as previewSupport from "@tendriller/runtime/preview-support";
 import { assertValid, CONTRACT_VERSION } from "@tendriller/core/contract";
 import { createStreamFixtures } from "./preview-streams.mjs";
+import { createPreviewStorage } from "./preview-storage.mjs";
 
 /** Exact-value fixture references avoid hard-coding randomly assigned IDs. */
 export function resolveFixture(value, context) {
@@ -28,19 +29,24 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set();
   const devices = new Map();
+  const deviceSecrets = new Map();
   const dedupe = new Map();
-  const blobs = new Map();
-  const uploads = new Map();
   const events = [], messages = [], activity = [], transcript = [];
   let shared = structuredClone(state), rev = 0, seq = 0, online = true;
   let focus = null, closing = false, closePromise;
   let presence = { state: "listening", text: "Preview agent ready", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" };
   const send = (ws, message) => { if (ws.readyState === 1) ws.send(JSON.stringify(message)); };
   const streamFixtures = createStreamFixtures(streams, { historyPage, role: () => role, send });
+  const storage = createPreviewStorage({ role: () => role, scopes: () => scopes, matchesContext,
+    verifyDevice: headers => {
+      const id = headers["x-tendril-device"], secret = headers["x-tendril-device-secret"];
+      return typeof secret === "string" && devices.has(id) && deviceSecrets.get(id) === secret ? id : null;
+    } });
+  const blobs = storage.blobs;
   const broadcast = (message, except) => { for (const ws of sockets) if (ws !== except) send(ws, message); };
   const log = (kind, summary, device) => activity.push({ seq: activity.length + 1, ts: Date.now(), kind, summary, device });
   const api = {
-    events, messages, activity, blobs, streams: streamFixtures,
+    events, messages, activity, blobs, storage, streams: streamFixtures,
     get state() { return structuredClone(shared); },
     get rev() { return rev; },
     get online() { return online; },
@@ -96,19 +102,10 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
     },
     setPresence(value) { presence = { ...presence, ...value }; broadcast({ t: "presence", ...presence }); },
     broadcast,
-    storeBlob(data, type, name, cid, keep = false) {
-      if (cid && uploads.has(cid)) return uploads.get(cid);
-      const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-      const id = "b_" + [...randomBytes(20)].map(byte => alphabet[byte % 32]).join("");
-      const retention = { keep, expires_at: keep ? null : Date.now() + 30 * 86_400_000, reason: keep ? "pinned" : "page_default" };
-      const value = { id, url: `_tendril/blob/${id}`, retention };
-      blobs.set(id, { ...value, data, type, name });
-      if (cid) uploads.set(cid, value);
-      return value;
-    },
     close() {
       if (closePromise) return closePromise;
       closing = true;
+      storage.close();
       online = false;
       closePromise = new Promise((resolve, reject) => wss.close(error => error ? reject(error) : resolve()));
       for (const ws of wss.clients) ws.terminate();
@@ -129,6 +126,8 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
         try { m = JSON.parse(String(buffer)); } catch { return; }
         messages.push(m);
         if (m.t === "hello") {
+          if (deviceSecrets.has(m.device_id) && deviceSecrets.get(m.device_id) !== m.device_secret) { ws.close(); return; }
+          if (typeof m.device_secret === "string") deviceSecrets.set(m.device_id, m.device_secret);
           device = { id: m.device_id, name: m.name || "Preview browser", role, purpose: devices.get(m.device_id)?.purpose || "general", pending: false, connected: true };
           devices.set(device.id, device);
           send(ws, { t: "welcome", device_id: device.id, role, pending: false, primary: true,
@@ -142,7 +141,12 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
         const ack = value => reply({ t: "ack", ...value });
         const key = device.id + ":" + m.cid;
         const subscription = m.t === "stream_subscribe" || m.t === "stream_unsubscribe";
-        if (!subscription && m.cid && dedupe.has(key)) { ack(dedupe.get(key)); return; }
+        const fingerprint = JSON.stringify(m);
+        if (!subscription && m.cid && dedupe.has(key)) {
+          const prior = dedupe.get(key);
+          ack(prior.fingerprint === fingerprint ? prior.result : { error: "command_conflict", message: "CID belongs to a different command" });
+          return;
+        }
         let result;
         try {
           const operation = { send: "event", state: "state", capture_complete: "capture" }[m.t];
@@ -158,7 +162,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             case "send":
             case "capture_complete": {
               if (role === "display") { result = { error: "forbidden", message: "Display devices cannot send" }; break; }
-              if (operation === "capture" && ((m.kind ?? "event") !== "event" || !blobs.has(m.blob))) {
+              if (operation === "capture" && ((m.kind ?? "event") !== "event" || !blobs.has(m.blob) || blobs.get(m.blob).device !== device.id)) {
                 result = { error: "bad_capture", message: "Capture completion requires an application event and an uploaded blob reference" }; break;
               }
               if (JSON.stringify(m.data ?? null).length > 65536) { result = { error: "too_large", message: "Event data exceeds 64 KB" }; break; }
@@ -200,7 +204,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             default: result = { error: "preview_unsupported", message: `${m.t} requires a real service; use the local Worker E2E suite` };
           }
         } catch (error) { result = { error: error.code || "bad_request", message: error.message }; }
-        if (m.cid) { if (!subscription && !result?.error) dedupe.set(key, result || {}); ack(result); }
+        if (m.cid) { if (!subscription && !result?.error) dedupe.set(key, { fingerprint, result: result || {} }); ack(result); }
         if (m.t === "state" && result?.error) reply({ t: "state_reset", state: shared, scopes, rev });
       });
     });

@@ -232,6 +232,17 @@ export class PageClient {
     return this.next((x) => x.cid === cid && x.t !== 'instruction_echo', timeoutMs);
   }
 
+  /** Page HTTP operations carry the device proof established by this socket. */
+  http(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
+    const allHeaders = new Headers({ ...this.headers, "X-Tendril-Device": this.deviceId, "X-Tendril-Device-Secret": this.secret, ...headers });
+    let content: BodyInit | undefined;
+    if (body !== undefined) {
+      if (typeof body === "string" || body instanceof ArrayBuffer || body instanceof Uint8Array) content = body as BodyInit;
+      else { content = JSON.stringify(body); allHeaders.set("Content-Type", "application/json"); }
+    }
+    return req(this.pageUrl + "_tendril/" + path, { method, headers: allHeaders, ...(content === undefined ? {} : { body: content }), anonymous: true });
+  }
+
   drain(): any[] {
     const m = this.messages;
     this.messages = [];
@@ -245,4 +256,103 @@ export class PageClient {
       /* ignore */
     }
   }
+}
+
+export type FixtureBytes = string | Uint8Array | ArrayBuffer;
+export interface UploadFixtureOptions {
+  cid?: string;
+  type?: string;
+  name?: string;
+  token?: string;
+  page?: PageClient;
+}
+
+/** Exercise the staged byte API; return the actual failing phase or completion response. */
+export async function uploadBlob(h: Handle, input: FixtureBytes, options: UploadFixtureOptions = {}): Promise<Response> {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input instanceof Uint8Array ? input : new Uint8Array(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  const send = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => options.page
+    ? options.page.http(method, path, body, headers)
+    : api(h, method, path, body, headers, options.token ?? h.token);
+  const started = await send("POST", "uploads", {
+    cid: options.cid ?? crypto.randomUUID(), sha256, size: bytes.byteLength,
+    type: options.type ?? "application/octet-stream", ...(options.name === undefined ? {} : { name: options.name }),
+  });
+  if (!started.ok) return started;
+  const session = await started.json<any>();
+  if (session.upload_required && !["received", "completed"].includes(session.phase)) {
+    const content = await send("PUT", `uploads/${session.id}/content`, bytes, { "Content-Type": "application/octet-stream" });
+    if (!content.ok) return content;
+    await content.arrayBuffer();
+  }
+  return send("POST", `uploads/${session.id}/complete`, {});
+}
+
+export async function uploadBlobJson(h: Handle, input: FixtureBytes, options: UploadFixtureOptions = {}): Promise<any> {
+  const response = await uploadBlob(h, input, options), body = await response.json<any>();
+  if (!response.ok) throw Error(`Fixture upload failed (${response.status}): ${JSON.stringify(body)}`);
+  return body.blob;
+}
+
+export type FixtureFile = FixtureBytes | { bytes: FixtureBytes; type: string };
+export interface PublicationFixtureOptions {
+  cid?: string;
+  entry?: string;
+  replace?: boolean;
+  expected_head_revision?: number;
+  expected_generations?: Record<string, string>;
+  scope?: string;
+  token?: string;
+}
+
+const fixtureType = (path: string) => path.endsWith(".html") ? "text/html"
+  : path.endsWith(".js") || path.endsWith(".mjs") ? "text/javascript"
+  : path.endsWith(".css") ? "text/css" : path.endsWith(".json") ? "application/json"
+  : path.endsWith(".txt") ? "text/plain" : "application/octet-stream";
+
+/** Author explicit bytes, then commit one complete manifest against the captured head. */
+export async function publishFiles(h: Handle, files: Record<string, FixtureFile>, options: PublicationFixtureOptions = {}): Promise<Response> {
+  const cid = options.cid ?? crypto.randomUUID(), token = options.token ?? h.token;
+  const headResponse = await api(h, "GET", "publications", undefined, {}, token);
+  if (!headResponse.ok) return headResponse;
+  const head = await headResponse.json<any>();
+  let previous: any = null;
+  if (!options.replace && head.current) {
+    const response = await api(h, "GET", `publications/${head.current}`, undefined, {}, token);
+    if (!response.ok) return response;
+    previous = await response.json<any>();
+  }
+  const manifest = new Map<string, { path: string; blob_id: string; type: string }>();
+  for (const file of previous?.files ?? []) manifest.set(file.path, { path: file.path, blob_id: file.blob_id, type: file.type });
+  for (const [path, value] of Object.entries(files)) {
+    const explicit = typeof value === "object" && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && "bytes" in value;
+    const type = explicit ? value.type : fixtureType(path), bytes = explicit ? value.bytes : value as FixtureBytes;
+    const response = await uploadBlob(h, bytes, { name: path, type, token });
+    if (!response.ok) return response;
+    const { blob } = await response.json<any>();
+    manifest.set(path, { path, blob_id: blob.id, type });
+  }
+  return api(h, "POST", "publications", {
+    cid, expected_generations: options.expected_generations ?? {},
+    ...(options.scope ? { scope: options.scope } : {}),
+    expected_head_revision: options.expected_head_revision ?? head.head_revision,
+    entry: options.entry ?? previous?.entry ?? "index.html",
+    files: [...manifest.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  }, {}, token);
+}
+
+export async function publishFilesJson(h: Handle, files: Record<string, FixtureFile>, options: PublicationFixtureOptions = {}): Promise<any> {
+  const response = await publishFiles(h, files, options), body = await response.json<any>();
+  if (!response.ok) throw Error(`Fixture publication failed (${response.status}): ${JSON.stringify(body)}`);
+  return body;
+}
+
+/** Resolve the current complete manifest before requesting its immutable bytes. */
+export async function publishedFile(h: Handle, path: string): Promise<Response> {
+  const head = await apiJson(h, "GET", "publications");
+  const manifest = await apiJson(h, "GET", `publications/${head.current}`);
+  const file = manifest.files.find((entry: any) => entry.path === path);
+  if (!file) throw Error(`No authored file ${path} in publication ${head.current}`);
+  return api(h, "GET", `blobs/${file.blob_id}`);
 }

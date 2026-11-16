@@ -135,8 +135,11 @@ Each new call creates a runtime-owned capture ID; use an application ID in `data
 to correlate a reviewed draft before asynchronous work, and `retryCapture` to
 retry the original operation. Unknown options, including a supplied `cid`, fail
 before any local queue write.
-`upload`, `blobUrl`, and `setBlobRetention` provide lower-level media operations;
-see [Captures](CAPTURES.md). Private cached records still require the current
+`upload(blob,{name?,keep?,scope?,expected_generations?})` durably queues a standalone
+immutable upload and returns its verified blob metadata after completion. Optional
+pinning preserves its own original command ID and guards across retries.
+`blobUrl(id)` resolves the immutable byte URL; `setBlobRetention(id,{keep,...context})`
+performs an explicit guarded pin change. See [Captures](CAPTURES.md). Private cached records still require the current
 application's authorization policy before display.
 
 ## Capabilities, active use, and notifications
