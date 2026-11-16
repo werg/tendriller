@@ -185,10 +185,18 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   if (rest === "file-refs" && (method === "PUT" || method === "DELETE")) {
     const input = assertValid(method === "PUT" ? "fileWrite" : "fileDelete", await readJson(req, 4096));
     const put = method === "PUT" ? input as typeof input & { blob_id: string; name?: string; type?: string } : null;
-    const result = mutate(t, actor, input, { paths: [["files", input.path]], operations: ["file.write"] }, input, () => {
+    const baseTargets = { paths: [["files", input.path]], operations: ["file.write"] };
+    // The current server-owned binding, not the caller's optional scope, controls
+    // admission. Keep the fingerprint independent of the mutable head for replay.
+    const boundScope = fileHead(t, input.path)?.scope;
+    const targets = boundScope ? { ...baseTargets, scopes: [boundScope] } : baseTargets;
+    const result = mutate(t, actor, input, targets, input, () => {
       const current = fileHead(t, input.path);
       if ((current?.revision ?? 0) !== input.expected_revision)
         throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
+      if (current && input.scope !== undefined && input.scope !== current.scope)
+        throw new HttpError(409, "file_conflict", "An existing shared file cannot change its bound scope");
+      const effectiveScope = current ? current.scope : input.scope ?? null;
       if (!current && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs")?.n ?? 0) >= RESOURCE_LIMITS.shared_file_paths)
         throw new HttpError(429, "resource_quota", "Shared file path limit reached");
       if (put && !current?.blob_id && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs WHERE blob_id IS NOT NULL")?.n ?? 0) >= RESOURCE_LIMITS.shared_files)
@@ -199,12 +207,12 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
       const name = put?.name ?? null;
       const type = put?.type ?? null;
       t.db.run("INSERT INTO file_refs(path,revision,blob_id,name,type,scope,updated_at,by_actor) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision,blob_id=excluded.blob_id,name=excluded.name,type=excluded.type,scope=excluded.scope,updated_at=excluded.updated_at,by_actor=excluded.by_actor",
-        input.path, next, blobId, name, type, input.scope ?? null, now, actor);
+        input.path, next, blobId, name, type, effectiveScope, now, actor);
       t.db.run("INSERT INTO file_ref_changes(path,revision,blob_id,name,type,scope,updated_at,by_actor,cid) VALUES(?,?,?,?,?,?,?,?,?)",
-        input.path, next, blobId, name, type, input.scope ?? null, now, actor, input.cid);
+        input.path, next, blobId, name, type, effectiveScope, now, actor, input.cid);
       const cursor = t.db.one<{ cursor: number }>("SELECT last_insert_rowid() AS cursor")!.cursor;
       return { file: fileValue(fileHead(t, input.path)!), cursor };
-    });
+    }, baseTargets);
     return json(result);
   }
   if (rest === "file-refs/cleanup" && method === "POST") {
