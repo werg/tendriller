@@ -29,10 +29,10 @@ export function validatePushSubscription(value: unknown, now = Date.now()): Push
   if (typeof sub.endpoint !== "string" || sub.endpoint.length > 2048) return null;
   let url: URL;
   try { url = new URL(sub.endpoint); } catch { return null; }
-  const host = url.hostname.toLowerCase().replace(/\\.$/, "");
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (url.protocol !== "https:" || url.username || url.password || url.hash || url.port
     || host.length > 253 || !host.includes(".") || host.includes(":") || /^[0-9.]+$/.test(host)
-    || /(?:^|\\.)(?:localhost|local|internal|test|invalid)$/.test(host)) return null;
+    || /(?:^|\.)(?:localhost|local|internal|test|invalid)$/.test(host)) return null;
   if (!sub.keys || typeof sub.keys.p256dh !== "string" || typeof sub.keys.auth !== "string") return null;
   if (!/^[A-Za-z0-9_-]+$/.test(sub.keys.p256dh) || !/^[A-Za-z0-9_-]+$/.test(sub.keys.auth)) return null;
   try {
