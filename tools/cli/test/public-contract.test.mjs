@@ -24,6 +24,11 @@ before(async () => {
       res.end(JSON.stringify({ id: "abcdefghijkl", name: "Contract page", lifetime: "ad_hoc", token: "tk_private",
         mode: body ? JSON.parse(body).mode || "interactive" : "interactive",
         api: `${origin}/api/t/abcdefghijkl`, page_url: `${origin}/page/`, agent_setup: { event_delivery: "not_configured" } }));
+    } else if (req.url === "/api/t/abcdefghijkl" && req.method === "GET") {
+      res.end(JSON.stringify({ id: "abcdefghijkl", mode: "dashboard", page_url: `${origin}/page/private-secret/` }));
+    } else if (req.url === "/api/t/abcdefghijkl/wake/probe" && req.method === "POST") {
+      res.statusCode = 201;
+      res.end(JSON.stringify({ nonce: "probe-nonce", seq: 1, ack_at: null }));
     } else if (/\/timers(?:\/[^/]+)?$/.test(req.url)) {
       const input = JSON.parse(body), revision = (input.expected_revision ?? 0) + 1;
       res.end(JSON.stringify(req.method === "DELETE" ? { id: "timer-id", revision, deleted: true } : {
@@ -165,4 +170,26 @@ test("durable work commands preserve targets, revisions and explicit publication
   assert.equal(requests.length, count);
   assert.equal((await cli(["bundle", "export", "--include-data"])).code, 0);
   assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/bundle?include_data=true");
+});
+
+test("info redacts the secret page URL even with --pretty; explicit opt-in reveals it", async () => {
+  for (const flags of [[], ["--pretty"]]) {
+    const result = await cli(["info", ...flags]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).page_url, /REDACTED/);
+    assert.doesNotMatch(result.stdout, /private-secret/);
+  }
+  const exposed = await cli(["info", "--show-url"]);
+  assert.equal(exposed.code, 0, exposed.stderr);
+  assert.match(JSON.parse(exposed.stdout).page_url, /private-secret/);
+});
+
+test("events send --wake uses the existing rate-limited diagnostic endpoint", async () => {
+  const withoutWake = await cli(["events", "send"]);
+  assert.equal(withoutWake.code, 64);
+  const result = await cli(["events", "send", "--wake"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).diagnostic, "delivery_probe");
+  assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/wake/probe");
+  assert.equal(requests.at(-1).method, "POST");
 });
