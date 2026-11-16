@@ -26,6 +26,14 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   expect(reused).toMatchObject({ sha256, size: bytes.byteLength, upload_required: false });
   expect((await apiJson(page, "POST", `uploads/${reused.id}/complete`, {})).blob)
     .toMatchObject({ sha256, size: bytes.byteLength });
+  const firstPage = await apiJson(page, "GET", "blobs?limit=1");
+  expect(firstPage.blobs).toHaveLength(1);
+  expect(firstPage.cursor).toBe(firstPage.blobs[0].id);
+  const nextPage = await apiJson(page, "GET", `blobs?limit=1&after=${firstPage.cursor}`);
+  expect(nextPage.blobs).toHaveLength(1);
+  expect(nextPage.cursor).toBeNull();
+  expect(new Set([...firstPage.blobs, ...nextPage.blobs].map(blob => blob.id))).toEqual(new Set([started.blob_id, reused.blob_id]));
+  expect((await api(page, "GET", "blobs?after=not-a-blob")).status).toBe(400);
   expect(await (await api(page, "GET", `blobs/${started.blob_id}`)).text()).toBe("field note α");
   const partial = await api(page, "GET", `blobs/${started.blob_id}`, undefined, { Range: "bytes=0-4" });
   expect(partial.status).toBe(206);
@@ -43,7 +51,11 @@ it("accepts exact immutable bytes once and applies shared-file CAS with durable 
   const deleted = await apiJson(page, "DELETE", "file-refs", { cid: "file-note-2", expected_generations: {},
     path: "notes/note.txt", expected_revision: 1 });
   expect(deleted.file.blob_id).toBeNull();
-  expect((await api(page, "GET", "file-refs?path=notes%2Fnote.txt")).status).toBe(404);
+  expect(await apiJson(page, "GET", "file-refs?path=notes%2Fnote.txt"))
+    .toMatchObject({ path: "notes/note.txt", revision: 2, blob_id: null });
+  const bounded = await apiJson(page, "GET", "file-refs/changes?after=0&limit=1");
+  expect(bounded.changes).toHaveLength(1);
+  expect(bounded.cursor).toBe(1);
 });
 
 it("publishes complete blob manifests with head CAS and replays the same command", async () => {
@@ -61,7 +73,8 @@ it("publishes complete blob manifests with head CAS and replays the same command
   expect(first).toEqual({ version: 1, head_revision: 1 });
   expect(await apiJson(page, "POST", "publications", publish)).toEqual(first);
   expect((await apiJson(page, "GET", "publications")).versions).toHaveLength(1);
-  expect((await apiJson(page, "GET", "publications/1")).files).toEqual(publish.files);
+  expect((await apiJson(page, "GET", "publications/1")).files)
+    .toEqual([{ ...publish.files[0], sha256, size: bytes.byteLength }]);
   expect((await api(page, "POST", "publications", { ...publish, cid: "stale-publish" })).status).toBe(409);
   const second = await apiJson(page, "POST", "publications", { ...publish, cid: "publish-index-2", expected_head_revision: 1 });
   expect(second).toEqual({ version: 2, head_revision: 2 });
