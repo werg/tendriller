@@ -2,9 +2,11 @@
  * browsers, Workers and Node. Matching declarations are in index.d.mts. */
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
+import { blobSchemas } from "./blobs.mjs";
+export { assertFilePath } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
-export const CONTRACT_VERSION = 2;
-export const CORE_RELEASE = "0.2.0-rc.2";
+export const CONTRACT_VERSION = 3;
+export const CORE_RELEASE = "0.3.0-rc.1";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
@@ -63,6 +65,7 @@ const workflowDescriptor = object({ id: identifier, interface_version: identifie
 const coreSchemas = {
   ...durabilitySchemas,
   ...streamSchemas,
+  ...blobSchemas,
   scopeId,
   scopeOperation,
   scopeBindings: object({paths: {type:"array",maxItems:128,items:path},operations:{type:"array",maxItems:128,items:scopeOperation}}, ["paths","operations"]),
@@ -73,7 +76,7 @@ const coreSchemas = {
   scopeWrite: object({ ...guards, paths: { type: "array", items: path }, operations: { type: "array", items: scopeOperation } }, ["cid", "expected_generations", "paths", "operations"]),
   command: object({ ...guards, data: {} }, ["cid", "expected_generations", "data"]),
   workflowDescriptor,
-  serviceDescriptor: object({ contract: { const: 2 }, core_release: identifier,
+  serviceDescriptor: object({ contract: { const: 3 }, core_release: identifier,
     workflows: { type: "array", items: workflowDescriptor }, limits: jsonObject,
   }, ["contract", "core_release", "workflows", "limits"]),
   error,
@@ -154,8 +157,8 @@ export const schemas = Object.freeze({
 
 export const schemaDocument = Object.freeze({
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://tendriller.dev/contract/v2.json",
-  title: "Tendriller public contract v2",
+  $id: "https://tendriller.dev/contract/v3.json",
+  title: "Tendriller public contract v3",
   $defs: schemas,
 });
 
