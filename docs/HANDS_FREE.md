@@ -29,7 +29,9 @@ engine or install a listening behavior.
 
 `language(tag)` changes the local choice and stops existing activity.
 `listening`, `speaking`, `muted`, and `outputStatus` are observable; `options.status` reports
-output, capture, and wake progress/errors. `options.speakReplies:true` deliberately
+output, capture, and wake progress/errors. `outputStatus` names the selected engine
+and its preparation state; `muted` reports session playback consent separately.
+`options.speakReplies:true` deliberately
 routes suitable authenticated-owner replies to enabled local speech. The default
 is false. Role changes, hidden pages, navigation, and the public sensor-stop signal
 stop active voice use. Backgrounding never automatically rearms recognition.

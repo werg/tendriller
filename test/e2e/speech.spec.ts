@@ -63,6 +63,7 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
     await publish(h, voicePage);
     await signInFixture(context);
     await openClaimed(page, h);
+    await page.waitForFunction(() => !!(window as any).voice);
     const warnings: string[] = [];
     page.on("console", message => { if (message.type() === "warning") warnings.push(message.text()); });
     const mic = page.locator("#record");

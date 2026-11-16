@@ -4,6 +4,9 @@ import { agent, createPage, deletePage, openClaimed, publish, signInFixture } fr
 
 // The upstream runtime/test/tts suite covers the speech module's edge cases.
 // These tests cover the agent API -> Worker -> owner page -> speech module path.
+// The module below is a deterministic substitute. Publication-integrity behavior
+// is tested separately; a service worker must never cache these substitute bytes.
+test.use({ serviceWorkers: "block" });
 
 const phonon = `
 export class PhononTTS {

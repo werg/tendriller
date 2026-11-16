@@ -8,8 +8,11 @@ export interface VoiceOptions {
   status?(status: { kind: "output" | "capture" | "wake"; state: string; message?: string }): void;
   speakReplies?: boolean;
 }
+export interface VoiceOutputStatus {
+  engine: "browser" | "neural"; state: SpeechStatus["state"]; message: string;
+}
 export interface VoiceAdapter {
-  readonly outputStatus: SpeechStatus; readonly muted: boolean; readonly speaking: boolean; readonly listening: boolean;
+  readonly outputStatus: VoiceOutputStatus; readonly muted: boolean; readonly speaking: boolean; readonly listening: boolean;
   enableOutput(engine?: "browser" | "neural"): Promise<boolean>;
   mute(): void; speak(text: string): void; stop(): void; language(tag: string): void;
   prepareCapture(): Promise<void>; startCapture(): Promise<void>; finishCapture(): void; cancelCapture(): void;
