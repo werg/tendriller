@@ -76,7 +76,7 @@ const auth = crypto.getRandomValues(new Uint8Array(16));
 const vapidPair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
 const VAPID_PUBLIC_KEY = e(new Uint8Array(await subtle.exportKey("raw", vapidPair.publicKey)));
 const VAPID_PRIVATE_KEY = (await subtle.exportKey("jwk", vapidPair.privateKey)).d;
-const env = { VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY };
+const env = { VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT: "mailto:admin@example.com" };
 {
   const now = Math.floor(Date.now() / 1000);
   const h = await push.vapidAuthorization(env, "https://fcm.googleapis.com", now);
@@ -102,7 +102,26 @@ const env = { VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY };
   ok("VAPID JWT claims correct and ES256 signature verifies with the public key");
 }
 
-// ---- 4. sendWebPush against a mocked fetch ----
+// ---- 4. Reject malformed and internal-network subscription endpoints ----
+{
+  const valid = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: e(uaPublic), auth: e(auth) } };
+  assert.deepEqual(push.validatePushSubscription(valid), { ...valid, expirationTime: null });
+  for (const endpoint of [
+    "http://fcm.googleapis.com/fcm/send/abc",
+    "https://127.0.0.1/test", "https://[::1]/push", "https://localhost/push",
+    "https://node.internal/push", "https://foo.local/push", "https://push.example.com:444/push",
+    "https://username:password@push.example.com/push", "https://push.example.com/push#fragment",
+  ]) {
+    assert.equal(push.validatePushSubscription({ ...valid, endpoint }), null, endpoint);
+  }
+  assert.equal(push.validatePushSubscription({ ...valid, expirationTime: Date.now() - 1 }), null, "expired");
+  assert.equal(push.validatePushSubscription({ ...valid, keys: { ...valid.keys, auth: "!!!" } }), null, "invalid auth");
+  assert.equal(push.validatePushSubscription({ ...valid, keys: { ...valid.keys, p256dh: "AA" } }), null, "invalid public key");
+  assert.equal((await push.sendWebPush(env, { ...valid, endpoint: "https://127.0.0.1/push" }, { title: "bad" })).status, 400);
+  ok("validates browser subscriptions and rejects unsafe push endpoints");
+}
+
+// ---- 5. sendWebPush against a mocked fetch ----
 {
   const sub = { endpoint: "https://push.example.com/send/abc?x=1", keys: { p256dh: e(uaPublic), auth: e(auth) } };
   let seen;
