@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-// Push agent tests: device rules and push availability, run against a bundled test entry.
+// Push agent tests: notification availability, run against a bundled test entry.
 // Run: npx playwright test --config runtime/test/push/playwright.config.ts
 export default defineConfig({
   testDir: ".",

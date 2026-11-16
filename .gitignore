@@ -13,5 +13,4 @@ playwright-report/
 server/wrangler.branch-preview.json
 
 dist/
-.composition/
 .consumer-*/

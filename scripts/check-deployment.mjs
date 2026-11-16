@@ -36,10 +36,9 @@ if (!(automated.headers.get("content-type") || "").includes("application/json"))
 }
 const automatedGuide = await (await get("/agent.md", { "User-Agent": "Python-urllib/3.12" })).text();
 if (!automatedGuide.includes("Tendriller")) throw new Error("Automated clients cannot read the agent guide");
-const lock = JSON.parse(readFileSync(new URL("../composition.lock.json",import.meta.url)));
-requireService(descriptor,{contract:lock.contract,workflows:lock.workflow.interfaces});
-for(const module of descriptor.workflows) if(module.implementation_version!==lock.workflow.sha256) throw new Error(`Unexpected implementation: ${module.id}`);
+requireService(descriptor);
+if (descriptor.workflows.length) throw new Error('The default service must have an empty trusted workflow registry');
 const runtime = JSON.parse(readFileSync(new URL("../server/src/runtime-release.json",import.meta.url)));
 const manifest = await (await get(`/_tendril/runtime/${runtime.id}/manifest.json`)).json();
 if(manifest.id!==runtime.id)throw Error("Runtime artifact mismatch");
-console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} and workflow ${lock.workflow.sha256}`);
+console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} with no application workflow installed`);

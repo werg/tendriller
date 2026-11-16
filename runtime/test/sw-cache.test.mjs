@@ -21,7 +21,7 @@ function release(id, runtimeId = id, lazyResources = {}) {
   const resources = new Map(Object.entries(sources).map(([path, body]) => [new URL(path, base).href, () => new Response(path === "index.html" ? html : body, { headers: { "X-Tendril-Publication": id } })]));
   const onDemand = Object.entries(lazyResources).map(([name, body]) => ({ url: `_tendril/assets/${sha(body)}/${name}`, sha256: sha(body), type: "application/octet-stream" }));
   for (const [name, body] of Object.entries(lazyResources)) resources.set(absolute(`_tendril/assets/${sha(body)}/${name}`), () => new Response(body));
-  resources.set(runtimeBase + "manifest.json", () => json({ id: hash, version: "0.2.0-rc.1", assets: [{ path: "tendril.js", sha256: sha(`runtime-${runtimeId}`), type: "text/javascript" }], resources: onDemand }));
+  resources.set(runtimeBase + "manifest.json", () => json({ id: hash, version: "0.2.0-rc.1", assets: [{ path: "tendril.js", preload: true, sha256: sha(`runtime-${runtimeId}`), type: "text/javascript" }], resources: onDemand }));
   resources.set(runtimeBase + "tendril.js", () => new Response(`runtime-${runtimeId}`));
   return { publication, resources, html, onDemand };
 }

@@ -180,7 +180,7 @@ export class MockServer {
             t: "welcome", device_id: m.device_id, role: "owner", pending: false, primary: true,
             tendril: { id: t.id, name: "Test" }, version: { current: t.version, latest: t.version, healthy: t.version },
             state: t.state, rev: t.rev, scopes: t.scopes, presence: { state: "listening", text: "Listening", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" },
-            transcript: [], rules: [], features: {}, budget: { owner_per_hour: 60, page_per_hour: 12 }, ...t.welcomeExtra,
+            transcript: [], features: {}, budget: { owner_per_hour: 60, page_per_hour: 12 }, ...t.welcomeExtra,
           });
           break;
         case "capture_complete":

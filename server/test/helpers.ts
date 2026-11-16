@@ -227,9 +227,9 @@ export class PageClient {
 
   /** Sends a request with a cid and waits for the reply carrying that cid. */
   async request(m: Record<string, unknown>, timeoutMs = 3000): Promise<any> {
-    const cid = "c" + rb32(10);
+    const cid = typeof m.cid === 'string' ? m.cid : "c" + rb32(10);
     this.send({ ...m, cid });
-    return this.next((x) => x.cid === cid, timeoutMs);
+    return this.next((x) => x.cid === cid && x.t !== 'instruction_echo', timeoutMs);
   }
 
   drain(): any[] {

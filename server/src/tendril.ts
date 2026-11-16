@@ -987,37 +987,39 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- transcript, say, notify
 
-  addTranscript(src: "agent" | "user", text: string): number {
-    return this.transaction(() => this.appendTranscript(src, text));
+  addTranscript(src: "agent" | "user", text: string, context: { cid?: string; device?: string; in_reply_to?: number | null } = {}) {
+    return this.transaction(() => this.appendTranscript(src, text, context));
   }
 
-  private appendTranscript(src: "agent" | "user", text: string): number {
-    const ts = this.now();
-    const row = this.db.one<{ seq: number }>("INSERT INTO transcript (ts, src, text) VALUES (?, ?, ?) RETURNING seq", ts, src, text.slice(0, 4000));
+  private appendTranscript(src: "agent" | "user", text: string, context: { cid?: string; device?: string; in_reply_to?: number | null }) {
+    const ts = this.now(), message_id = crypto.randomUUID();
+    const row = this.db.one<{ seq: number }>("INSERT INTO transcript (message_id, ts, src, text, cid, device, in_reply_to) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq",
+      message_id, ts, src, text.slice(0, 4000), context.cid ?? null, context.device ?? null, context.in_reply_to ?? null);
     this.db.run("DELETE FROM transcript WHERE seq <= (SELECT seq FROM transcript ORDER BY seq DESC LIMIT 1 OFFSET ?)", MAX_TRANSCRIPT);
     emitBuiltinRecord(this, "system.transcript", row!.seq);
-    return ts;
+    return { message_id, ts, from: src, text: text.slice(0, 4000), ...context };
   }
 
   transcript() {
     return this.db
-      .all<{ ts: number; src: string; text: string }>("SELECT * FROM (SELECT * FROM transcript ORDER BY seq DESC LIMIT 50) ORDER BY seq ASC")
-      .map((r) => ({ ts: r.ts, from: r.src as "agent" | "user", text: r.text }));
+      .all<{ message_id: string; ts: number; src: string; text: string; cid: string | null; device: string | null; in_reply_to: number | null }>("SELECT * FROM (SELECT * FROM transcript ORDER BY seq DESC LIMIT 50) ORDER BY seq ASC")
+      .map((r) => ({ message_id: r.message_id, ts: r.ts, from: r.src as "agent" | "user", text: r.text,
+        ...(r.cid ? { cid: r.cid } : {}), ...(r.device ? { device: r.device } : {}), ...(r.in_reply_to !== null ? { in_reply_to: r.in_reply_to } : {}) }));
   }
 
   say(text: string, speak: boolean, by: string | null, replyTo: number | null = null, routing: { device?: string; speak_on?: string } = {}): string {
     if (routing.device && routing.device !== "all" && !this.device(routing.device)) throw new HttpError(404, "not_found", "No such destination device");
     const origin = replyTo ? this.db.one<{ device: string | null }>("SELECT device FROM events WHERE seq=?", replyTo)?.device : null;
     const speaker = speak ? speechTarget(this, routing.speak_on, routing.device && routing.device !== "all" ? routing.device : origin) : null;
-    const ts = this.addTranscript("agent", text);
-    const messageId = crypto.randomUUID();
+    const entry = this.addTranscript("agent", text, { in_reply_to: replyTo });
+    const messageId = entry.message_id;
     const sockets = this.deviceSockets();
     for (const { ws, att } of this.connectedSockets()) {
       const present = !routing.device || routing.device === "all" || att.deviceId === routing.device;
       const play = att.deviceId === speaker && sockets.get(att.deviceId) === ws;
       if (!present && !play) continue;
       this.send(ws, { t: "say", text, present, speak: play,
-        ts, message_id: messageId, in_reply_to: replyTo, speak_on: speaker });
+        ts: entry.ts, message_id: messageId, in_reply_to: replyTo, speak_on: speaker });
     }
     addActivity(this, { kind: "say", summary: `Message ${messageId}${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
     return messageId;

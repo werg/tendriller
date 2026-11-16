@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/package-engine.mjs",
     "dev": "node scripts/dev.mjs",
     "test": "npm run build && npm run test:server",
     "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
@@ -19,16 +19,13 @@
     "test:browser": "npm run build && node scripts/test-browser.mjs",
     "check": "npm run contract:check && npm run typecheck && npm run build && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:push && npm run test:server && npm run test:consumer",
     "test:ci": "node --test scripts/test/*.test.mjs",
-    "check:release": "npm run check && npm run test:pair && npm run test:browser",
+    "check:release": "npm run check && npm run test:browser",
     "test:runtime-unit": "node --test --test-concurrency=1 runtime/test/*.test.mjs",
     "test:server": "vitest run --config server/vitest.public.config.ts",
     "test:consumer": "node scripts/test-consumer.mjs",
-    "build:engine": "node scripts/build.mjs",
     "build:artifacts": "node scripts/build.mjs --artifacts-only",
-    "build:service": "node scripts/compose.mjs",
     "release:artifacts": "node scripts/release.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
-    "test:pair": "npm run build:service && vitest run --config server/vitest.pair.config.ts",
     "test:push": "node scripts/test-push.mjs"
   },
   "devDependencies": {
