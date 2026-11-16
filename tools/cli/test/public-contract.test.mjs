@@ -193,3 +193,17 @@ test("events send --wake uses the existing rate-limited diagnostic endpoint", as
   assert.equal(requests.at(-1).path, "/api/t/abcdefghijkl/wake/probe");
   assert.equal(requests.at(-1).method, "POST");
 });
+
+test("standalone receiver --help works without secrets and documents checkpoints", async () => {
+  const scripts = [
+    [fileURLToPath(new URL("../../bridges/bin/tendril-events.mjs", import.meta.url)), /handled_cursor/],
+    [fileURLToPath(new URL("../../bridges/bin/tendril-wait.mjs", import.meta.url)), /TENDRIL_AFTER/],
+  ];
+  for (const [path, expected] of scripts) {
+    const result = await new Promise(resolve => execFile(process.execPath, [path, "--help"],
+      { timeout: 5000, env: { ...process.env, TENDRIL_API: "", TENDRIL_TOKEN: "" } },
+      (error, stdout, stderr) => resolve({ code: error?.code || 0, stdout, stderr })));
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, expected);
+  }
+});
