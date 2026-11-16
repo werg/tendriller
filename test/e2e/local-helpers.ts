@@ -1,4 +1,6 @@
 import { expect, request, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
+import { createClient } from "../../dist/sdk/client.mjs";
+import { publishAssetGraph } from "./publication-helpers";
 
 export const SERVICE = "https://service.localhost:8790";
 export const OWNER = "owner@example.test";
@@ -39,11 +41,21 @@ export async function publish(h: Handle, body: string) {
     if ((await agent(h)).data.presence.state === "listening") break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  const res = await (await requester()).put(`${h.api}/files/index.html`, { headers: {
-    Authorization: `Bearer ${h.token}`, "Content-Type": "text/html",
-  }, data: `<!doctype html><html><head><meta charset="utf-8"><title>E2E</title></head><body>${body}</body></html>` });
-  expect(res.status(), await res.text()).toBe(200);
-  return res.json();
+  return publishFiles(h, { "index.html": { type: "text/html",
+    body: `<!doctype html><html><head><meta charset="utf-8"><title>E2E</title></head><body>${body}</body></html>` } });
+}
+
+export function publishFiles(h: Handle, files: Record<string, { type: string; body: string }>) {
+  const client = createClient(h, { fetch: async (url, init) => {
+    const response = await (await requester()).fetch(String(url), {
+      method: init?.method, headers: init?.headers as Record<string, string>,
+      data: init?.body instanceof Uint8Array ? Buffer.from(init.body) : init?.body as string | undefined,
+    });
+    return new Response(response.status() === 204 ? null : await response.body(), {
+      status: response.status(), headers: response.headers(),
+    });
+  } });
+  return publishAssetGraph(client, files);
 }
 
 export function localPageUrl(h: Handle): string {

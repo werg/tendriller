@@ -388,12 +388,12 @@ test("capture and its semantic input survive offline reload as one transaction",
   mock.goOnline(t);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => page.evaluate(() => (window as any).receipts.find((result: any) => result.status === "accepted"))).toMatchObject({
-    capture_id: queued.capture_id, status: "accepted", blob: { retention: { keep: true, expires_at: null } },
+    capture_id: queued.capture_id, status: "accepted", blob: { retention: { reasons: ["pinned"], expires_at: null } },
   });
   const sends = mock.messages(t, "capture_complete");
   expect(sends).toHaveLength(1);
   expect(sends[0].data).toEqual({ type: "ui", block: "sketch", capture_id: queued.capture_id, value: { width: 640, height: 320,
-    blob: expect.any(String), url: expect.stringContaining("_tendril/blob/") } });
+    blob: expect.any(String), url: expect.stringContaining("_tendril/blobs/") } });
   expect(t.blobs.size).toBe(1);
   expect([...t.blobs.values()][0].body.toString()).toBe("drawing-bytes");
   expect(await page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
@@ -416,7 +416,43 @@ test("a lost upload response followed by reload reuses the blob and accepts its 
   expect(new Set(sends.map(message => message.cid)).size).toBe(1);
   expect(t.sendReceipts.size).toBe(1);
   expect(t.seq).toBe(1);
+  const starts = t.transferRequests.filter(request => request.path === "_tendril/uploads");
+  expect(starts).toHaveLength(2);
+  expect(starts[1].body).toEqual(starts[0].body);
+  expect(t.transferRequests.filter(request => request.path.endsWith("/content"))).toHaveLength(1);
   await expect.poll(() => page.evaluate(() => (window as any).tendril.captures())).toEqual([]);
+});
+
+test("reload after a lost pin reply keeps original pin and capture guards while preserving rejected evidence", async ({ page }) => {
+  const t = mock.create({ dropPinResponses: 1, scopes: [
+    { id: "review", generation: "original", paths: [], operations: ["capture", "blob.pin"] },
+  ] });
+  t.onMessage = (message, socket) => {
+    if (message.t !== "capture_complete") return;
+    socket.send(JSON.stringify({ t: "ack", cid: message.cid, error: "stale_generation", message: "The review session changed" }));
+    return true;
+  };
+  await open(page, t);
+  await page.evaluate(() => {
+    void (window as any).tendril.uploadEvent(new Blob(["reviewed evidence"]), {
+      data: { submission_id: "review-1", note: "Original review" }, keep: true, scope: "review",
+    });
+  });
+  await mock.waitFor(() => t.pinReceipts.size === 1);
+  const originalPin = t.transferRequests.find(request => request.path.endsWith("/pin"))!.body;
+  const originalCapture = await page.evaluate(() => (window as any).tendril.captures()[0]);
+  t.scopes[0].generation = "new";
+  await page.reload();
+  await page.waitForFunction(() => (window as any).tendril.captures()[0]?.status === "rejected");
+  const replay = await page.evaluate(() => (window as any).tendril.captures()[0]);
+  expect(replay).toMatchObject({ capture_id: originalCapture.capture_id, data: originalCapture.data,
+    expected_generations: { review: "original" }, error: "stale_generation", blob: { retention: { expires_at: null, reasons: ["pinned"] } } });
+  const pins = t.transferRequests.filter(request => request.path.endsWith("/pin"));
+  expect(pins).toHaveLength(2);
+  expect(pins[1].body).toEqual(originalPin);
+  expect(originalPin.expected_generations).toEqual({ review: "original" });
+  expect(t.transferRequests.filter(request => request.path === "_tendril/uploads")).toHaveLength(1);
+  expect(mock.messages(t, "capture_complete")[0].expected_generations).toEqual({ review: "original" });
 });
 
 test("rejected captured input remains retryable after reload without duplicating media", async ({ page }) => {
@@ -801,12 +837,14 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
   expect(err).toBe("forbidden");
 });
 
-test("upload posts the blob", async ({ page }) => {
+test("upload verifies the blob through an immutable transfer session", async ({ page }) => {
   const t = mock.create();
   await open(page, t);
   const r = await page.evaluate(() => (window as any).tendril.upload(new Blob(["abc"], { type: "text/plain" }), { name: "a.txt" }));
   expect(r.id).toMatch(/^b_/);
-  expect(r.url).toBe(mock.url(t) + "_tendril/blob/" + r.id);
+  expect(r.url).toBe(mock.url(t) + "_tendril/blobs/" + r.id);
+  expect(r.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(r.size).toBe(3);
   const b = t.blobs.get(r.id)!;
   expect(b.body.toString()).toBe("abc");
   expect(b.type).toBe("text/plain");

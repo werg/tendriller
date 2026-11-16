@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { createClient } from "../../dist/sdk/client.mjs";
+import { publishAssetGraph } from "./publication-helpers";
 
 type Handle = { id: string; page_url: string; api: string; token: string };
 const base = process.env.E2E_SERVICE_BASE;
@@ -12,10 +14,8 @@ async function makePage(name: string): Promise<Handle> {
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner, mode: "dashboard" }) });
   expect(created.status, await created.clone().text()).toBe(201);
   const handle = await created.json() as Handle;
-  const upload = await fetch(`${handle.api}/files/index.html`, { method: "PUT",
-    headers: { Authorization: `Bearer ${handle.token}`, "Content-Type": "text/html" },
-    body: `<!doctype html><html><title>${name}</title><p>${name}</p></html>` });
-  expect(upload.ok, await upload.clone().text()).toBeTruthy();
+  await publishAssetGraph(createClient(handle), { "index.html": { type: "text/html",
+    body: `<!doctype html><html><title>${name}</title><p>${name}</p></html>` } });
   return handle;
 }
 

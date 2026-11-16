@@ -113,14 +113,14 @@ export function createBlobClient(json, raw) {
       delete: body => json("/file-refs", { method: "DELETE", body: assertValid("fileDelete", body) }, "fileResult"),
     },
     publications: {
-      list: () => json("/publications"),
-      get: version => json(`/publications/${id(version)}`),
+      list: () => json("/publications", {}, "publicationList"),
+      get: version => json(`/publications/${id(version)}`, {}, "publicationDetails"),
       publish: body => {
         const value = assertValid("publicationWrite", body);
         assertPublicationEntries(value.files, value.entry);
-        return json("/publications", { method: "POST", body: value }, "publicationResultV3");
+        return json("/publications", { method: "POST", body: value }, "publicationReceipt");
       },
-      rollback: body => json("/publications/rollback", { method: "POST", body: assertValid("publicationRollback", body) }, "publicationResultV3"),
+      rollback: body => json("/publications/rollback", { method: "POST", body: assertValid("publicationRollback", body) }, "publicationReceipt"),
     },
   };
 }
