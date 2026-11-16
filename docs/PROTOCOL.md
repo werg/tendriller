@@ -63,8 +63,14 @@ this same command transaction. Timers also carry a monotonic `revision`;
 revision too. A stale review returns `timer_conflict` before any timer or
 notification change. `DELETE` accepts a JSON command body and returns
 `{id,revision,deleted:true}`. Exact accepted retries recover the original result
-even after the timer is removed. See [timer operations](EXPERIENCES.md#timers-that-survive-a-closed-page)
-for payloads, recurrence, lifetime gates, and notification semantics.
+even after the timer is removed. Classified timer-domain rejections are also
+retained: resolving quota, lifetime, or claim conditions requires a new command
+identity after review, not reinterpretation of the rejected command. Current
+authorization, envelope validation, generation checks, and receipt-capacity
+failures remain outside these stored domain decisions. See
+[timer receipts](DURABILITY.md#timer-mutation-receipts) and
+[timer operations](EXPERIENCES.md#timers-that-survive-a-closed-page) for boundaries,
+payloads, recurrence, lifetime gates, and notification semantics.
 
 ## Shared-state writes
 

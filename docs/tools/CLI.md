@@ -132,8 +132,9 @@ you reviewed in `timers list`. Update, cancel, and removal require explicit
 `--revision N`; the CLI never fetches a newer revision to make a stale decision
 succeed. Alarms increment revisions when they advance or complete schedules, so
 a conflict can indicate that the reminder ran while its edit was being prepared.
-`timer_conflict` exits with status 4 and reports the current revision. Review
-the changed timer before choosing a new command and revision.
+`timer_conflict` exits with status 4 and reports the revision observed when that
+command was rejected. Refresh `timers list` and review the changed timer before
+choosing a new command and revision.
 
 Put only timer settings in the JSON argument. Command metadata comes from
 `--cid`, `--scope`, and `--generations`, with `--revision` supplying the reviewed
@@ -145,8 +146,11 @@ The CLI saves the complete request before sending it. Rerunning the same command
 after a lost reply uses the same command ID, settings, guards, and revision.
 Without `--cid`, it generates and stores an ID once. Without `--resume-file`, it
 selects a private record by destination and command intent. An accepted replay
-returns its saved receipt; no repeated creation or edit is performed. To request
-otherwise identical work as a new decision, choose a new `--cid`.
+returns its saved receipt; no repeated creation or edit is performed. A retained
+timer-domain rejection also replays unchanged after quota, claim, or lifetime
+conditions improve. To request otherwise identical work as a new decision after
+review, choose a new `--cid`. See [receipt boundaries](../DURABILITY.md#timer-mutation-receipts)
+for the domain errors retained and failures that cannot store a decision.
 `--resume-file ./reminder-command.json` chooses a specific recovery record;
 changing its settings, guards, or reviewed revision is refused before a request.
 

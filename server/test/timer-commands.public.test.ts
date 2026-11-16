@@ -27,7 +27,7 @@ it("recovers a lost creation reply without another timer, including after deleti
   expect(await apiJson(h, "DELETE", `timers/${accepted.id}`, remove)).toEqual(deleted);
   expect((await apiJson(h, "GET", "timers")).timers).toEqual([]);
   expect(await inDO(h.id, t => t.db.all("SELECT seq FROM activity WHERE kind='timer'"))).toHaveLength(2);
-  expect((await api(h, "DELETE", `timers/${accepted.id}`, command({ expected_revision: 1 }))).status).toBe(404);
+  expect((await apiJson(h, "DELETE", `timers/${accepted.id}`, command({ expected_revision: 1 }), 429)).error.code).toBe("resource_quota");
 });
 
 it("rejects reuse of a command identity for a changed payload, operation, or timer", async () => {

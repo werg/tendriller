@@ -99,21 +99,34 @@ and deletion replay their accepted results without applying again. Creation and
 updates return the complete timer. Deletion returns
 `{id,revision,deleted:true}`, with the revision advanced once. A new deletion
 command for a missing timer returns `404`; the accepted deletion's exact retry
-still succeeds. Changing an accepted command's content, target, or operation
+still succeeds. Changing a recorded command's content, target, or operation
 under its ID returns `409 command_conflict`.
 
-A recovered receipt is the original operation's result, even if the timer has
-since fired, changed, or disappeared. Refresh `GET A/timers` before presenting
-that receipt as current schedule status. Command identities are scoped by the
-authenticated agent or owner account; another device signed in as the same owner
-can recover the same command.
+The server also retains valid commands rejected with `quota`,
+`lifetime_required`, `unclaimed`, `timer_conflict`, `not_found`, `already_fired`,
+or a semantic `bad_request`. Exact retries return that original error, even if a
+timer slot opens, the page is claimed, or its lifetime changes. After addressing
+the reason and reviewing the schedule, a new intent needs a new `cid`. The
+error's `current` revision or `expires_at` detail describes the original decision;
+it is not a fresh read. Both accepted and rejected receipts use the durable
+receipt allowance. `resource_quota` means that a new receipt could not be stored,
+so it is distinct from a saved timer-slot `quota` rejection.
+
+A recovered accepted receipt is the original operation's result, even if the
+timer has since fired, changed, or disappeared. Refresh `GET A/timers` before
+presenting that receipt as current schedule status. Command identities are
+scoped by the authenticated agent or owner account; another device signed in as
+the same owner can recover the same command. Current request authorization
+still applies to every retry. Authorization, malformed-envelope, generation,
+transport, and receipt-storage failures do not save a timer decision. See
+[receipt boundaries](DURABILITY.md#timer-mutation-receipts).
 
 Scopes can bind the `timer.write` operation. Supply all required original tokens
 in `expected_generations`; include `scope` when the command belongs to a selected
 workflow scope. Missing guards return `428 generation_required`, and changed or
-retired scopes return `409 stale_generation`. An already accepted retry still
-returns its receipt after rotation. Empty `{}` in these examples is appropriate
-only when no bound or selected scope requires a guard. See
+retired scopes return `409 stale_generation`. A previously recorded decision
+still returns its receipt after rotation. Empty `{}` in these examples is
+appropriate only when no bound or selected scope requires a guard. See
 [scope rules](PROTOCOL.md#authoritative-scopes-and-generations).
 
 ### Recurrence, execution, and notification
