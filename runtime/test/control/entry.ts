@@ -35,7 +35,7 @@ const core: Core = {
     on(t, fn) { if (!handlers.has(t)) handlers.set(t, new Set()); handlers.get(t)!.add(fn); return () => handlers.get(t)!.delete(fn); },
     emit(t, p) { calls.emitted.push({ t, p }); for (const f of handlers.get(t) || []) f(p); },
   },
-  config: { id: "abc", base: "/t/abc/s/key/", version: 3, ws: "/t/abc/s/key/_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: {model:"fixture",url:"model",sha256:"0".repeat(64),engine:{script:"engine",wasm:"engine.wasm",wasm_sha256:"0".repeat(64)}}, ...(opts.features || {}) } },
+  config: { preview: !!opts.preview, id: "abc", base: "/t/abc/s/key/", version: 3, ws: "/t/abc/s/key/_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: {model:"fixture",url:"model",sha256:"0".repeat(64),engine:{script:"engine",wasm:"engine.wasm",wasm_sha256:"0".repeat(64)}}, ...(opts.features || {}) } },
   device: { id: "d_me", role: opts.role || "owner", name: "Test", pending: !!opts.pending, pairCode: opts.pairCode },
   connected: opts.connected !== false,
   presence,

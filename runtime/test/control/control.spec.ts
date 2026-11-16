@@ -88,6 +88,15 @@ test("re-attaches if page code removes it", async ({ page }) => {
   await expect(presenceBtn(page)).toBeVisible();
 });
 
+test("preview connection notices identify the local fixture rather than a live agent", async ({ page }) => {
+  await load(page, { preview: true, connected: false });
+  await expect(page.locator("tendril-control .presence .label")).toHaveText("Preview offline");
+  await openSheet(page);
+  await expect(page.locator("tendril-control")).toContainText("local fixture socket is disconnected");
+  await load(page, { preview: true, connected: false, presence: null });
+  await expect(page.locator("tendril-control .presence .label")).toHaveText("Preview connecting");
+});
+
 test("presence states and aria-live announcements", async ({ page }) => {
   await load(page);
   const label = page.locator("tendril-control .presence .label");
