@@ -58,6 +58,7 @@ describe("helpers", () => {
   it("injection escapes the config", () => {
     const html = injectRuntime("<HEAD data-x='1'>t</HEAD>", { id: "x", base: "/b/", version: 1, features: { push: false, vapid: "</script>", shared_by: "owner", speech: { model: "whistle", url: "x", sha256: "x", engine: {script:"engine.js",wasm:"engine.wasm",wasm_sha256:"x"} } } });
     expect(html).toContain(`<HEAD data-x='1'><base href="/b/">`);
+    expect(html).toContain('<link rel="manifest" href="/b/_tendril/manifest.webmanifest">');
     expect(html).not.toContain('"</script>"');
     expect(html).toContain("\\u003c/script\\u003e");
   });
