@@ -103,3 +103,40 @@ it("serves a publication's declared HTML entry at the page root", async () => {
     files: [{ path: "start.html", blob_id: upload.blob_id, type: "text/html" }] });
   expect(await (await req(page.page_url)).text()).toContain("Alternate entry");
 });
+
+
+it("binds shared-file generations to the server head across omitted scope, rotation, and replay", async () => {
+  const page = await create();
+  const bytes = new TextEncoder().encode("scoped report");
+  const sha256 = await sha256Hex(bytes);
+  const upload = await apiJson(page, "POST", "uploads", {
+    cid: "scoped-report-bytes", sha256, size: bytes.byteLength, type: "text/plain",
+  }, 201);
+  expect((await api(page, "PUT", `uploads/${upload.id}/content`, bytes,
+    { "Content-Type": "application/octet-stream" })).status).toBe(204);
+  await apiJson(page, "POST", `uploads/${upload.id}/complete`, {});
+  const scope = await apiJson(page, "PUT", "scopes/shared-session", {
+    cid: "scoped-report-binding", expected_generations: {}, paths: [], operations: [],
+  });
+  const firstCommand = { cid: "scoped-report-1", expected_generations: { "shared-session": scope.generation },
+    scope: "shared-session", path: "notes/scoped.txt", expected_revision: 0, blob_id: upload.blob_id };
+  const first = await apiJson(page, "PUT", "file-refs", firstCommand);
+  expect(first.file).toMatchObject({ scope: "shared-session", revision: 1 });
+  const omitted = { ...firstCommand, cid: "scoped-report-2", expected_revision: 1,
+    expected_generations: {} };
+  delete (omitted as { scope?: string }).scope;
+  expect((await api(page, "PUT", "file-refs", omitted)).status).toBe(428);
+  const second = await apiJson(page, "PUT", "file-refs",
+    { ...omitted, expected_generations: { "shared-session": scope.generation } });
+  expect(second.file).toMatchObject({ scope: "shared-session", revision: 2 });
+  expect(await apiJson(page, "PUT", "file-refs", firstCommand)).toEqual(first);
+  const rebind = { ...omitted, cid: "scoped-report-rebind", expected_revision: 2,
+    scope: "other", expected_generations: { "shared-session": scope.generation } };
+  expect((await api(page, "PUT", "file-refs", rebind)).status).not.toBe(200);
+  const rotated = await apiJson(page, "POST", "scopes/shared-session/rotate", {
+    cid: "scoped-report-rotate", expected_generations: { "shared-session": scope.generation },
+  });
+  expect(rotated.generation).not.toBe(scope.generation);
+  expect((await api(page, "DELETE", "file-refs", { cid: "scoped-report-stale",
+    expected_generations: { "shared-session": scope.generation }, path: "notes/scoped.txt", expected_revision: 2 })).status).toBe(409);
+});
