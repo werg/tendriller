@@ -14,6 +14,7 @@ interface Host {
 }
 
 const REQUEST_TIMEOUT = 15_000;
+export type TimerTerminalResult = Exclude<TimerMutationResult, { status: "queued" }>;
 
 export class TimerHttpError extends Error {
   constructor(public code: string, message: string, public retryable: boolean,
@@ -110,7 +111,7 @@ export function createBrowserTimers(host: Host) {
 
   return {
     api,
-    async deliver(intent: TimerIntent): Promise<TimerMutationResult> {
+    async deliver(intent: TimerIntent): Promise<TimerTerminalResult> {
       const { command } = intent;
       try {
         const value = intent.operation === "create" ? await request("timers", "timer", "POST", command)

@@ -14,21 +14,48 @@ export function requiredScopes(scopes: readonly ScopeDescriptor[], operation: st
   return selectScopes(scopes, {operations:[operation],paths,scopes:scope ? [scope] : []});
 }
 
+const invalidContext = (message: string) => Object.assign(new TypeError(message), { code: "bad_request" });
+const plainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === null || (Object.getPrototypeOf(prototype) === null
+    && Object.getOwnPropertyDescriptor(prototype, "constructor")?.value?.name === "Object");
+};
+const guardValue = (options: object, key: string): unknown => {
+  const descriptor = Object.getOwnPropertyDescriptor(options, key);
+  if (!descriptor) {
+    if (key in options) throw invalidContext(`Operation ${key} must be an own data property`);
+    return undefined;
+  }
+  if (!descriptor.enumerable || !("value" in descriptor)) throw invalidContext(`Operation ${key} must be an enumerable data property`);
+  return descriptor.value;
+};
+
 /** A context is captured once when work is created; delivery never refreshes it. */
 export function captureContext(scopes: readonly ScopeDescriptor[], operation: string, options: OperationOptions = {}, ops: readonly Op[] = []): OperationContext {
-  if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("Operation context must be an object");
+  if (!plainRecord(options)) throw invalidContext("Operation context must be a plain object");
   // Validate before copying: a string, array or null must not silently become
   // a different guard map. Omission still selects the operation's known scopes.
-  if (options.scope !== undefined) assertValid("scopeId", options.scope);
-  if (options.expected_generations !== undefined) assertValid("generationMap", options.expected_generations);
-  const required = requiredScopes(scopes, operation, ops.map(op => toPath(op.path)), options.scope);
-  if (options.scope && !scopes.some(binding => binding.id === options.scope)) {
-    throw Object.assign(new Error(`Scope ${options.scope} is not active on this page.`), { code: "unknown_scope" });
+  const scope = guardValue(options, "scope"), supplied = guardValue(options, "expected_generations");
+  if (scope !== undefined) assertValid("scopeId", scope);
+  if (supplied !== undefined) {
+    if (!plainRecord(supplied)) throw invalidContext("Expected generations must be a plain scope-to-token map");
+    for (const key of Reflect.ownKeys(supplied)) {
+      const descriptor = Object.getOwnPropertyDescriptor(supplied, key)!;
+      if (typeof key !== "string" || !descriptor.enumerable || !("value" in descriptor))
+        throw invalidContext("Expected generations must contain enumerable string-keyed data properties");
+    }
+    assertValid("generationMap", supplied);
   }
-  const expected = options.expected_generations !== undefined
-    ? { ...options.expected_generations }
+  const selected = scope as string | undefined;
+  const required = requiredScopes(scopes, operation, ops.map(op => toPath(op.path)), selected);
+  if (selected && !scopes.some(binding => binding.id === selected)) {
+    throw Object.assign(new Error(`Scope ${selected} is not active on this page.`), { code: "unknown_scope" });
+  }
+  const expected = supplied !== undefined
+    ? { ...supplied as Record<string, string> }
     : Object.fromEntries(required.map(binding => [binding.id, binding.generation]));
-  return { ...(options.scope ? { scope: options.scope } : {}), expected_generations: expected };
+  return { ...(selected ? { scope: selected } : {}), expected_generations: expected };
 }
 
 /** Unknown, retired, newly bound and rotated scopes suppress stale optimism. */

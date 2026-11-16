@@ -184,9 +184,13 @@ temporary rate limits, and service outages retry with delays of 5, 10, 20, then
 Malformed or mismatched success receipts remain queued and report an `error`
 event; they never become invented acceptance or rejection. Explicit authority,
 generation, revision, timer-capacity (`quota`), and command-allowance
-(`resource_quota`) rejections end the command. Terminal results are emitted only
-after durable local removal succeeds. A failed cleanup remains pending and
-retries cleanup; a reload can safely recover the original server receipt.
+(`resource_quota`) rejections end the command. The runtime first persists a
+terminal receipt alongside the immutable intent, then removes the outbox item;
+only successful durable removal exposes a terminal result. If removal fails,
+reload reads the saved outcome and completes local cleanup without another HTTP
+command. If saving the outcome itself fails, the operation remains unresolved
+and queued. A later reload retries its original command against current service
+authorization; an unsaved response is not a durable terminal guarantee.
 
 An edit or removal must use the revision from the reviewed timer:
 

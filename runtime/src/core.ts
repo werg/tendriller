@@ -16,7 +16,7 @@ import { deliveryPolicy } from "./delivery";
 import { createRequests, createCommandReceipts } from "./requests";
 import { captureData, type BlobReference, type CaptureOptions, type CaptureResult, type PendingCapture, type SendResult } from "./capture";
 import { createBrowserBlobs, BlobHttpError } from "./blob-transfer";
-import { createBrowserTimers, TimerHttpError } from "./timers";
+import { createBrowserTimers, TimerHttpError, type TimerTerminalResult } from "./timers";
 
 export type { Bus, Core } from "./types";
 
@@ -192,9 +192,9 @@ export function createCore(cfg: TendrilConfig): Internal {
   const captureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const timerRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const timerAttempts = new Map<string, number>();
-  // Hold a server receipt until its durable queue removal succeeds. Retrying
-  // local cleanup must not reinterpret a terminal rejection as new server work.
-  const timerOutcomes = new Map<string, TimerMutationResult>();
+  // A receipt first becomes a durable outbox phase, then the command is removed.
+  // Memory only bridges failed phase writes; it never implies saved completion.
+  const timerOutcomes = new Map<string, TimerTerminalResult>();
   let welcome: any = null;
   let presence: Presence | null = null;
 
@@ -333,8 +333,9 @@ export function createCore(cfg: TendrilConfig): Internal {
         sentThisConn.add(item.cid);
         if (item.msg.t === "timer_command") {
           try {
-            const result = timerOutcomes.get(item.cid) || await timers.deliver(item.msg.intent);
+            const result: TimerTerminalResult = item.msg.outcome || timerOutcomes.get(item.cid) || await timers.deliver(item.msg.intent);
             timerOutcomes.set(item.cid, result);
+            if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(result) });
             await store.removeDurable(item.cid);
             timerOutcomes.delete(item.cid);
             const retry = timerRetryTimers.get(item.cid);
