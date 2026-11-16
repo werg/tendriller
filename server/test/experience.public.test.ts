@@ -7,7 +7,7 @@ import { addEvent } from "../src/events";
 import { exportBundle } from "../src/portability";
 import { fileKey } from "../src/files";
 import { KEEP_VERSIONS } from "../src/limits";
-import { api, apiJson, advance, inDO, PageClient, req, type Handle } from "./helpers";
+import { api, apiJson, advance, inDO, PageClient, req, type Handle, uploadAgentBlob } from "./helpers";
 
 beforeAll(async () => {
   await applyD1Migrations(env.ACCOUNTS, inject("d1Migrations"));
@@ -117,9 +117,8 @@ it("daily recurrence respects IANA time zones, DST gaps and repeated times", () 
 
 it("preserves context, restores bundles with rewritten media, and refuses stale publication", async () => {
   const { handle: h, page } = await setup(); const socket = await listener(h);
-  const blobResponse = await api(h, "PUT", "blobs", "asset", { "Content-Type": "text/plain" });
-  const blob = await blobResponse.json<any>(); expect(blobResponse.status).toBe(200);
-  await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blob/${blob.id}">Asset</a>` } });
+  const blob = await uploadAgentBlob(h, "asset", { type: "text/plain" });
+  await apiJson(h, "POST", "files", { files: { "index.html": `<h1>Notebook</h1><a href="_tendril/blobs/${blob.id}">Asset</a>` } });
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { notebook: { asset: blob.id }, _device: { old: { secret: "do not copy" } } } });
   await apiJson(h, "PUT", "session", { purpose: "Observe the garden", current_task: "Compare leaves", open_questions: ["What changed?"], completed: [], decisions: [], last_handled_seq: 0 });
   expect((await api(h, "PUT", "session", { purpose: "Stale context", expected_revision: 0 })).status).toBe(409);
@@ -257,14 +256,14 @@ it.each(["file", "media"])("refuses publication if prepared %s bytes are missing
 it("exports one logical data snapshot while new captures arrive during media reads", async () => {
   const { handle: h } = await setup(); const socket = await listener(h);
   await apiJson(h, "POST", "files", { files: { "index.html": "<h1>Notebook</h1>" } });
-  const original = await (await api(h, "PUT", "blobs", "old media", { "Content-Type": "text/plain" })).json<any>();
+  const original = await uploadAgentBlob(h, "old media", { type: "text/plain" });
   await apiJson(h, "PUT", "state", { cid: crypto.randomUUID(), expected_generations: {}, state: { asset: original.id } });
   await apiJson(h, "PUT", "session", { purpose: "Original context" });
   const bundle = await inDO(h.id, async t => {
     let changed = false;
     const exporting = { db: t.db, tid: t.tid, blobKey: (id: string) => t.blobKey(id), getState: () => t.getState(), env: { ...t.env, FILES: {
       get: async (key: string) => {
-        if (!changed && key.includes("/blobs/")) {
+        if (!changed && key.includes("/files/")) {
           changed = true;
           const next = await t.storeBlob(new TextEncoder().encode("new media").buffer as ArrayBuffer, "text/plain", "new.txt", null, "agent");
           t.db.set("state", { asset: next.id });
