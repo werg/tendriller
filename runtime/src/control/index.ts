@@ -565,7 +565,7 @@ class Control {
 
   private renderWakeSettings(panel: HTMLElement): void {
     const p = this.prefs;
-    const phrase = h("input", { id: "tendril-wake-phrase", type: "text", maxlength: "64",
+    const phrase = h("input", { id: "tendril-wake-phrase-input", type: "text", maxlength: "64",
       value: p.wakePhrase, autocomplete: "off", spellcheck: false }) as HTMLInputElement;
     const mode = h("select", { id: "tendril-wake-mode" },
       h("option", { value: "local", text: "On-device only (recommended)" }),
@@ -608,7 +608,7 @@ class Control {
     if (!WakeWordCapture.supported()) test.setAttribute("disabled", "");
     clear(panel,
       h("p", { text: "Say your phrase, followed by a command, or pause for up to 8 seconds. Commands use the normal conversation input and delivery rules." }),
-      h("div", { class: "field" }, h("label", { for: "tendril-wake-phrase", text: "Wake phrase (2+ words)" }), phrase),
+      h("div", { class: "field" }, h("label", { for: "tendril-wake-phrase-input", text: "Wake phrase (2+ words)" }), phrase),
       h("div", { class: "field" }, h("label", { for: "tendril-wake-mode", text: "Recognition and privacy" }), mode),
       note,
       h("div", { class: "actions" }, save, setup, test),
