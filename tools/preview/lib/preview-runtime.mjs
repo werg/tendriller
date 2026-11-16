@@ -25,7 +25,7 @@ export function resolveFixture(value, context) {
 }
 
 export async function attachRuntime(server, { state = {}, role = "owner", name = "Local preview", onEvent, streams, version = () => 1, scopes = [], service = {contract:CONTRACT_VERSION,workflows:[]}, implementation } = {}) {
-  const { applyOps, validateOps, historyPage, matchesContext } = implementation || previewSupport;
+  const { validateOps, validateStateChecks, checkState, applyCheckedOps, historyPage, matchesContext } = implementation || previewSupport;
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set();
   const devices = new Map();
@@ -86,10 +86,14 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
       for (const d of devices.values()) d.role = role;
       broadcast({ t: "role", role, pending: false });
     },
-    updateState(ops) {
+    updateState(ops, checks = {}) {
       const clean = validateOps(ops);
-      shared = applyOps(shared, clean); rev++;
-      broadcast({ t: "state", ops: clean, rev, by: "agent:preview" });
+      checkState(shared, rev, validateStateChecks(checks));
+      if (clean.length) {
+        shared = applyCheckedOps(shared, rev, clean); rev++;
+        broadcast({ t: "state", ops: clean, rev, by: "agent:preview" });
+      }
+      return { rev };
     },
     say(value) {
       const body = assertValid("say", typeof value === "string" ? { text: value } : value);
@@ -144,7 +148,9 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
         const fingerprint = JSON.stringify(m);
         if (!subscription && m.cid && dedupe.has(key)) {
           const prior = dedupe.get(key);
-          ack(prior.fingerprint === fingerprint ? prior.result : { error: "command_conflict", message: "CID belongs to a different command" });
+          const replay = prior.fingerprint === fingerprint ? prior.result : { error: "command_conflict", message: "CID belongs to a different command" };
+          ack(replay);
+          if (m.t === "state" && replay.error) reply({ t: "state_reset", state: shared, scopes, rev });
           return;
         }
         let result;
@@ -182,8 +188,12 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             }
             case "state": {
               if (role === "display") { result = { error: "forbidden", message: "Display devices cannot change state" }; break; }
-              const ops = validateOps(m.ops); shared = applyOps(shared, ops); rev++;
-              broadcast({ t: "state", ops, rev, by: `device:${device.id}` }, ws);
+              const ops = validateOps(m.ops), checks = validateStateChecks(m);
+              checkState(shared, rev, checks);
+              if (ops.length) {
+                shared = applyCheckedOps(shared, rev, ops); rev++;
+                broadcast({ t: "state", ops, rev, by: `device:${device.id}` }, ws);
+              }
               result = { rev }; break;
             }
             case "versions": reply({ t: "versions", versions: [{ version: version(), status: "healthy", message: "Local preview", created_at: Date.now() }], current: version(), healthy: version() }); return;
@@ -203,8 +213,8 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
             case "eval_result": return;
             default: result = { error: "preview_unsupported", message: `${m.t} requires a real service; use the local Worker E2E suite` };
           }
-        } catch (error) { result = { error: error.code || "bad_request", message: error.message }; }
-        if (m.cid) { if (!subscription && !result?.error) dedupe.set(key, { fingerprint, result: result || {} }); ack(result); }
+        } catch (error) { result = { error: error.code || "bad_request", message: error.message, ...(error.code === "state_conflict" ? error.extra : {}) }; }
+        if (m.cid) { if (!subscription && (!result?.error || (m.t === "state" && result.error === "state_conflict"))) dedupe.set(key, { fingerprint, result: result || {} }); ack(result); }
         if (m.t === "state" && result?.error) reply({ t: "state_reset", state: shared, scopes, rev });
       });
     });

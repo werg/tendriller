@@ -49,9 +49,10 @@ export type ConversationResult = { cid: string } & ({ status: "queued" } | { sta
 export interface StateApi<T = Record<string, unknown>> {
   readonly revision: number;
   get(): T; get(path: Path): unknown;
-  set(path: Path, value: unknown, options?: OperationOptions): Promise<StateResult>;
-  delete(path: Path, options?: OperationOptions): Promise<StateResult>;
-  patch(mergePatch: object, options?: OperationOptions): Promise<StateResult>;
+  apply(ops: StateOperation[], options?: StateWriteOptions): Promise<StateResult>;
+  set(path: Path, value: unknown, options?: StateWriteOptions): Promise<StateResult>;
+  delete(path: Path, options?: StateWriteOptions): Promise<StateResult>;
+  patch(mergePatch: object, options?: StateWriteOptions): Promise<StateResult>;
   on(fn: (state: T, ops: StateOperation[], by: string) => void): () => void;
 }
 export type SessionBrief = WireContracts["session"];
@@ -74,7 +75,7 @@ export interface OperationOptions { scope?: string; expected_generations?: Recor
 export interface ScopeDescriptor { id: string; generation: string; paths: string[][]; operations: string[] }
 export type StateResult = { status: "accepted"; rev: number }
   | { status: "queued" }
-  | { status: "rejected"; error: string; message?: string };
+  | { status: "rejected"; error: string; message?: string; rev?: number; conflict?: StateConflict };
 export type ServiceDescriptor = WireContracts["serviceDescriptor"];
 export interface PublicationAsset { path: string; sha256: string; type: string }
 export interface RuntimeArtifactFeatures {
@@ -125,7 +126,7 @@ export interface RuntimeEventMap {
   device_config: DeviceConfigMessage;
   scopes: ScopeDescriptor[];
   workflow: { module: string; topic: string; [key: string]: unknown };
-  state_result: StateResult & OperationOptions & { cid: string };
+  state_result: StateResult & StateWriteOptions & { cid: string };
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
   stream_gap: { stream: string; history: StreamHistory };

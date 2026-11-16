@@ -1,4 +1,4 @@
-import type { OperationOptions, ScopeDescriptor } from "../../contract/index.mjs";
+import type { OperationOptions, ScopeDescriptor, StateChecks } from "../../contract/index.mjs";
 import { toPath, type Op } from "./state";
 
 export interface OperationContext {
@@ -14,8 +14,9 @@ export function requiredScopes(scopes: readonly ScopeDescriptor[], operation: st
 }
 
 /** A context is captured once when work is created; delivery never refreshes it. */
-export function captureContext(scopes: readonly ScopeDescriptor[], operation: string, options: OperationOptions = {}, ops: readonly Op[] = []): OperationContext {
-  const required = requiredScopes(scopes, operation, ops.map(op => toPath(op.path)), options.scope);
+export function captureContext(scopes: readonly ScopeDescriptor[], operation: string, options: OperationOptions & StateChecks = {}, ops: readonly Op[] = []): OperationContext {
+  const paths = [...ops.map(op => toPath(op.path)), ...(operation === "state" ? options.conditions || [] : []).map(condition => toPath(condition.path))];
+  const required = requiredScopes(scopes, operation, paths, options.scope);
   if (options.scope && !scopes.some(binding => binding.id === options.scope)) {
     throw Object.assign(new Error(`Scope ${options.scope} is not active on this page.`), { code: "unknown_scope" });
   }
@@ -26,12 +27,13 @@ export function captureContext(scopes: readonly ScopeDescriptor[], operation: st
 }
 
 /** Unknown, retired, newly bound and rotated scopes suppress stale optimism. */
-export function matchesContext(scopes: readonly ScopeDescriptor[], context: OperationContext, operation: string, ops: readonly Op[] = []): boolean {
+export function matchesContext(scopes: readonly ScopeDescriptor[], context: OperationContext & StateChecks, operation: string, ops: readonly Op[] = []): boolean {
   const actual = new Map(scopes.map(binding => [binding.id, binding.generation]));
   for (const [id, generation] of Object.entries(context.expected_generations)) {
     if (actual.get(id) !== generation) return false;
   }
-  for (const binding of requiredScopes(scopes, operation, ops.map(op => toPath(op.path)), context.scope)) {
+  const paths = [...ops.map(op => toPath(op.path)), ...(operation === "state" ? context.conditions || [] : []).map(condition => toPath(condition.path))];
+  for (const binding of requiredScopes(scopes, operation, paths, context.scope)) {
     if (context.expected_generations[binding.id] !== binding.generation) return false;
   }
   return !context.scope || actual.has(context.scope);

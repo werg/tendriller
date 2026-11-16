@@ -1,13 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { transformSync, buildSync } from "esbuild";
+import { buildSync } from "esbuild";
 
-// Compare independent browser/server implementations at their actual public
-// boundary. This prevents preview, optimistic state and replay semantics drifting.
-const source = readFileSync(new URL("../src/state.ts", import.meta.url), "utf8");
-const { code } = transformSync(source, { loader: "ts", format: "esm", target: "es2022" });
-const browser = await import("data:text/javascript;base64," + Buffer.from(code).toString("base64"));
+// Exercise both adapters to the shared semantics, including their error paths.
+const browserBuilt = buildSync({ entryPoints: [new URL("../src/state.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", write: false });
+const browser = await import("data:text/javascript;base64," + Buffer.from(browserBuilt.outputFiles[0].text).toString("base64"));
 const built = buildSync({ entryPoints: [new URL("../../server/src/state.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", write: false });
 const server = await import("data:text/javascript;base64," + Buffer.from(built.outputFiles[0].text).toString("base64"));
 
@@ -39,4 +36,22 @@ test("merge patches agree after offline edits to separate object paths", () => {
     assert.deepEqual(a, b);
   }
   assert.deepEqual(a.people, { a: { checked: true }, b: { checked: true } });
+});
+
+test("browser/server reject incompatible explicit paths and agree on literal and dotted keys", () => {
+  for (const path of [".a..b.", ["a.b", "x/y"], ["", 0]]) {
+    const serverOp = server.validateOps([{ op: "set", path, value: null }]);
+    const browserOp = [{ op: "set", path: browser.toPath(path), value: null }];
+    assert.deepEqual(browserOp, serverOp);
+    assert.deepEqual(browser.applyOps({}, browserOp), server.applyOps({}, serverOp));
+  }
+  for (const parent of [null, 5, "text", [1]]) {
+    const op = { op: "set", path: ["parent", "child"], value: 2 };
+    assert.throws(() => browser.applyOps({ parent }, [op]), /parent explicitly/);
+    assert.throws(() => server.applyOps({ parent }, server.validateOps([op])), /parent explicitly/);
+    const patch = { parent: { child: 2, removed: null } };
+    assert.deepEqual(browser.applyOps({ parent }, browser.mergePatchToOps({ parent }, patch)), server.applyOps({ parent }, server.mergePatchToOps({ parent }, patch)));
+  }
+  assert.equal(browser.getPath({}, ["toString"]), undefined);
+  assert.equal(browser.getPath({ items: [1] }, ["items", "0"]), undefined);
 });

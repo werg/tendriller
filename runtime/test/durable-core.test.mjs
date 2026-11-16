@@ -217,6 +217,82 @@ test("state and events persist original identity and guards before optimism or d
   assert.equal(messages.find(frame => frame.t === "send").data.session, "application-owned");
 });
 
+test("conditional apply freezes predicates and all ops before durable admission, with no optimistic success", async () => {
+  const env = await environment({ scopes: [descriptor], state: { notebook: { version: 1 }, claim: null } });
+  const ops = [{ op: "set", path: ["claim"], value: { owner: "a" } }, { op: "set", path: ["status"], value: "claimed" }];
+  const options = { conditions: [{ path: ["notebook", "version"], equals: 1 }], expected_revision: 1 };
+  const changes = [], results = [];
+  env.core.state.on(state => changes.push(state));
+  env.core.bus.on("state_result", result => results.push(result));
+  const pending = env.core.state.apply(ops, options);
+  ops[0].value.owner = "changed"; ops[1].path[0] = "wrong";
+  options.conditions[0].path[0] = "other"; options.conditions[0].equals = 99; options.expected_revision = 99;
+  await flush();
+  assert.equal(env.sent.some(frame => frame.t === "state"), false);
+  await env.commit();
+  const frame = env.sent.find(frame => frame.t === "state");
+  assert.deepEqual(frame.conditions, [{ path: ["notebook", "version"], equals: 1 }]);
+  assert.equal(frame.expected_revision, 1);
+  assert.deepEqual(frame.expected_generations, { "opaque-scope": "original" });
+  assert.deepEqual(frame.ops, [{ op: "set", path: ["claim"], value: { owner: "a" } }, { op: "set", path: ["status"], value: "claimed" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), { notebook: { version: 1 }, claim: null });
+  assert.equal(changes.length, 0);
+  env.transport.receive({ t: "ack", cid: frame.cid, rev: 2 });
+  assert.equal((await pending).status, "accepted");
+  assert.equal(env.core.state.get("claim").owner, "a");
+  assert.equal(env.core.state.get("status"), "claimed");
+  assert.deepEqual(JSON.parse(JSON.stringify(results[0].conditions)), frame.conditions);
+});
+
+test("conditional replay keeps the exact durable predicate and never covers a newer snapshot", async () => {
+  const first = await environment({ state: { owner: null } });
+  void first.core.state.set("owner", "a", { conditions: [{ path: ["owner"], equals: null }] });
+  await flush(); await first.commit();
+  const original = first.sent.find(frame => frame.t === "state");
+  first.transport.disconnect(); await flush();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, state: { owner: "b" } });
+  const replay = second.sent.find(frame => frame.t === "state");
+  assert.deepEqual(replay, original);
+  assert.equal(second.core.state.get("owner"), "b");
+  const results = [];
+  second.core.bus.on("state_result", value => results.push(value));
+  second.transport.receive({ t: "ack", cid: replay.cid, error: "state_conflict", message: "Changed", rev: 1,
+    conflict: { kind: "condition", condition: 0, path: ["owner"] } });
+  second.transport.receive({ t: "state_reset", state: { owner: "b" }, rev: 1, scopes: [] });
+  await flush();
+  assert.equal(second.core.state.get("owner"), "b");
+  assert.equal(second.core.pendingWork().state, 0);
+  assert.equal(results[0].status, "rejected");
+  assert.equal(results[0].conflict.condition, 0);
+});
+
+test("an empty conditional batch is sent for authoritative evaluation and reports the conflict details", async () => {
+  const env = await environment();
+  const pending = env.core.state.apply([], { expected_revision: 0 });
+  await flush(); await env.commit();
+  const frame = env.sent.find(frame => frame.t === "state");
+  assert.deepEqual(frame.ops, []);
+  env.transport.receive({ t: "ack", cid: frame.cid, error: "state_conflict", rev: 1, conflict: { kind: "revision" } });
+  const result = await pending;
+  assert.equal(result.status, "rejected"); assert.equal(result.rev, 1); assert.equal(result.conflict.kind, "revision");
+  assert.throws(() => env.core.state.apply([{ op: "set", path: ["bad"], value: NaN }]));
+  assert.throws(() => env.core.state.set("bad", 1, { conditions: [{ path: ["bad"], equals: undefined }] }));
+});
+
+test("a remote parent replacement suppresses incompatible pending optimism without losing the command", async () => {
+  const env = await environment({ state: { parent: { child: 1 } } });
+  const pending = env.core.state.set("parent.child", 2);
+  await flush(); await env.commit();
+  const frame = env.sent.find(frame => frame.t === "state");
+  assert.equal(env.core.state.get("parent.child"), 2);
+  env.transport.receive({ t: "state", rev: 2, ops: [{ op: "set", path: ["parent"], value: [3] }] });
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get("parent"))), [3]);
+  assert.equal(env.core.pendingWork().state, 1);
+  env.transport.receive({ t: "ack", cid: frame.cid, error: "state_conflict", rev: 2, conflict: { kind: "path", path: ["parent", "child"] } });
+  assert.equal((await pending).status, "rejected");
+});
+
 test("failed durable commit never changes optimistic state or sends the command", async () => {
   const env = await environment({ scopes: [descriptor] });
   env.database.failure = true;
