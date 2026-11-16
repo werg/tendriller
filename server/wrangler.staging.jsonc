@@ -23,32 +23,12 @@
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": [
-        "Tendril"
-      ]
-    },
-    {
-      "tag": "v2",
-      "new_sqlite_classes": [
-        "Admission"
-      ]
-    },
-    {
-      "tag": "v3-contract2-new-pages",
-      "new_sqlite_classes": [
-        "TendrilV2"
-      ]
-    },
-    {
-      "tag": "v4-contract3-new-pages",
-      "new_sqlite_classes": [
-        "TendrilV3"
-      ]
-    }
-  ],
+  "exports": {
+    "Tendril": { "type": "durable-object", "state": "deleted" },
+    "TendrilV2": { "type": "durable-object", "state": "deleted" },
+    "TendrilV3": { "type": "durable-object", "storage": "sqlite" },
+    "Admission": { "type": "durable-object", "storage": "sqlite" }
+  },
   "d1_databases": [
     {
       "binding": "ACCOUNTS",

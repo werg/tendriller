@@ -7,7 +7,7 @@ Tendriller connects an authenticated page to an agent through shared state, even
 Fetch `GET https://tendriller.dev/api/service` before creating a page. It returns `contract`, `core_release`, installed `workflows` (each with independent `interface_version` and `schema_version`), and effective `limits`. Check requirements from the chosen tool or page manifest. Device/browser capabilities are a separate endpoint and do not describe installed server modules.
 
 - [Core SDK and runtime archives](https://github.com/werg/tendriller/releases)
-- [Tested contrib catalog, 0.2.0-rc.3](https://github.com/werg/tendriller-contrib/releases/download/v0.2.0-rc.3/catalog.json)
+- [Tested contrib catalog, 0.3.0-rc.1](https://github.com/werg/tendriller-contrib/releases/download/v0.3.0-rc.1/catalog.json)
 - [Machine-readable release discovery](https://api.github.com/repos/werg/tendriller-contrib/releases)
 - [Contrib immutable release assets](https://github.com/werg/tendriller-contrib/releases)
 - [Host bridges and setup](https://github.com/werg/tendriller-contrib/blob/main/docs/AGENT_HOSTS.md)
@@ -96,7 +96,7 @@ Contrib owns module input schemas, client helpers, private response conventions,
 
 ## Read, respond, and checkpoint
 
-Read event batches with an explicit `after` cursor. After handling work, use `POST A/say` for a visible reply and state/files for page changes. Persist the handled cursor only after completing the corresponding work. Named consumers provide server-side leases and acknowledgements when more than one host process can handle a queue; see [durability](https://tendriller.dev/docs/DURABILITY.md).
+Read event batches with an explicit `after` cursor. After handling work, use `POST A/say` for a visible reply and state updates, shared-file refs or a new publication for page changes. Persist the handled cursor only after completing the corresponding work. Named consumers provide server-side leases and acknowledgements when more than one host process can handle a queue; see [durability](https://tendriller.dev/docs/DURABILITY.md).
 
 For troubleshooting use events, activity, logs, delivery probes and `GET A/capabilities`. Browser capabilities describe available APIs and permission state; API presence alone does not imply hardware or permission. `tendril.capabilities()` reports the current device without prompting.
 

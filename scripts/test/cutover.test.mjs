@@ -24,10 +24,11 @@ test('a direct cutover retains the canonical Worker and domains but uses a fresh
     JSON.parse(readFileSync(join(root, 'server', `wrangler.${stage}.jsonc`), 'utf8')));
   for (const config of configs) {
     assert.equal(config.durable_objects.bindings.find(binding => binding.name === 'TENDRIL').class_name, 'TendrilV3');
-    assert.ok(config.migrations.some(migration =>
-      migration.tag === 'v4-contract3-new-pages' &&
-      JSON.stringify(migration.new_sqlite_classes) === JSON.stringify(['TendrilV3'])));
-    assert.ok(config.migrations.some(migration => migration.tag === 'v1' && migration.new_sqlite_classes.includes('Tendril')));
+    assert.equal(config.migrations, undefined);
+    assert.deepEqual(config.exports.TendrilV3, { type: 'durable-object', storage: 'sqlite' });
+    assert.deepEqual(config.exports.Admission, { type: 'durable-object', storage: 'sqlite' });
+    for (const oldClass of ['Tendril', 'TendrilV2'])
+      assert.deepEqual(config.exports[oldClass], { type: 'durable-object', state: 'deleted' });
     assert.equal(config.d1_databases.length, 1, 'existing account database is retained');
     assert.equal(config.r2_buckets.length, 1, 'existing file bucket is retained');
   }

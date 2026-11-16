@@ -234,8 +234,9 @@ that stale deployment.
 
 This pre-release release uses the existing staging and production origins, OAuth
 configuration, D1 databases and R2 buckets. The Worker binds `TENDRIL` to the
-fresh `TendrilV3` Durable Object namespace (`v4-contract3-new-pages`, storage
-schema revision 3). The D1 migration `0011_contract3_discard_old_pages.sql`
+fresh `TendrilV3` Durable Object namespace (storage schema revision 3).
+The Wrangler `exports` map declares the old page classes deleted and keeps
+`TendrilV3` and `Admission` live. The D1 migration `0011_contract3_discard_old_pages.sql`
 deletes old page registrations, claims and invitations, resets page storage
 reservations, and pauses new page creation. Accounts, sign-in sessions and audit
 records remain. Old page links and their unpublished data cease to work. Old R2

@@ -16,9 +16,8 @@
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Tendril"] },
-    { "tag": "v2", "new_sqlite_classes": ["Admission"] },
-    { "tag": "v3", "new_sqlite_classes": ["TendrilV3"] }
+    { "tag": "v1", "new_sqlite_classes": ["TendrilV3"] },
+    { "tag": "v2", "new_sqlite_classes": ["Admission"] }
   ],
   "d1_databases": [{
     "binding": "ACCOUNTS",
