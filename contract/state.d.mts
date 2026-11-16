@@ -1,5 +1,5 @@
-import type { StateOperation, StateCondition, StateChecks, StateConflict } from "./index.mjs";
-export type NormalizedStateOp = StateOperation & { path: string[] };
+import type { NormalizedStateOperation, StateCondition, StateConflict } from "./index.mjs";
+export type NormalizedStateOp = NormalizedStateOperation;
 export type NormalizedStateCondition = StateCondition & { path: string[] };
 export interface NormalizedStateChecks { conditions?: NormalizedStateCondition[]; expected_revision?: number }
 export const STATE_CONDITIONS_MAX: 128;

@@ -73,6 +73,13 @@ const count:number = snapshot.state.count;
 void page.state.apply([{op:'set',path:['count'],value:count+1}],{expected_revision:snapshot.rev});
 // @ts-expect-error a state condition has one predicate, never both.
 void page.state.apply([],{conditions:[{path:['count'],equals:0,exists:true}]});
+const stateResult = await page.state.apply([]);
+if (stateResult.status === 'accepted' || stateResult.status === 'queued') { const cid:string = stateResult.cid; void cid; }
+// @ts-expect-error unchanged work has no durable command identity.
+if (stateResult.status === 'unchanged') stateResult.cid;
+for (const command of page.state.pending()) { const keys:string[] = command.ops[0].path; void keys; }
+page.on('state_queue', commands => { const pending:string|undefined = commands[0]?.cid; void pending; });
+page.on('state_result', receipt => { const keys:string[] = receipt.ops[0].path; void keys; });
 const result: SendResult = await page.send({session:'opaque'});
 if(result.status==='accepted'){const seq:number=result.seq; void seq;}
 // @ts-expect-error queued is not accepted

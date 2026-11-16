@@ -21,25 +21,47 @@ applies to the agent SDK, MCP, and owner page HTTP routes.
 The server checks bound `timer.write` generations, reads the current timer,
 validates its revision and schedule, changes the timer and notification intents,
 records activity, and saves the command receipt in one transaction. Alarm
-scheduling happens after commit. A failure to store the receipt rolls back the
-entire mutation; it cannot leave an unacknowledged timer behind or cancel a
+scheduling happens after commit. A classified domain rejection first rolls back
+the attempted mutation and its effects in a nested transaction, then saves the
+rejection as the command's receipt. A failure to store either outcome rolls back
+the entire mutation; it cannot leave an unacknowledged timer behind or cancel a
 notification while rejecting the associated edit.
 
-Exact accepted retries are resolved before current revision, generation, and
-resource checks. A creation with a lost response therefore recovers its original
-timer ID even after that timer ran or was removed. A deletion returns a durable
-`{id,revision,deleted:true}` receipt that can be recovered after the row is gone.
-An accepted receipt records historical acceptance, not current timer state;
-reread the list when restoring the schedule display.
+Exact retries of recorded decisions are resolved before current revision,
+generation, and resource checks. A creation with a lost response therefore
+recovers its original timer ID even after that timer ran or was removed. A
+deletion returns a durable `{id,revision,deleted:true}` receipt that can be
+recovered after the row is gone. An accepted receipt records historical
+acceptance, not current timer state; reread the list when restoring the schedule
+display. A recorded rejection returns its original HTTP status, error code,
+message, and details, including the revision or expiration observed then.
+
+The retained timer-domain rejections are `quota`, `lifetime_required`,
+`unclaimed`, `timer_conflict`, `not_found`, `already_fired`, and semantic
+`bad_request` failures inside a valid command. Freeing a timer slot, claiming the
+page, or extending its lifetime does not turn one of these rejected commands
+into accepted work. After resolving the problem and reviewing the current
+schedule, compose a new command with a new `cid`.
+
+Every retry must still pass current request authentication and access checks.
+Those failures, malformed command envelopes, missing or stale generation
+guards, transport failures, and failures to store a receipt do not create a
+timer decision receipt. In particular, an HTTP error is not by itself proof of a
+recorded domain decision. If neither a server receipt nor a locally saved outcome
+resolves the command, local callers must preserve that unresolved work. A
+timeout does not establish server acceptance.
 
 Each timer starts at revision 1. Accepted edits and alarm transitions increment
 it. `timer_conflict` asks the caller to review the new revision; it is not an
 instruction to rewrite the pending command automatically. A changed payload,
-target, or operation using an accepted command ID returns `command_conflict`.
-The generic receipt limits apply: `429 resource_quota` rejects new commands
-atomically while retaining accepted receipts for replay. `429 quota` when all
-32 timer slots are occupied requires removing unwanted timers before composing
-new work. Neither capacity error is a transient network retry signal.
+target, or operation using a recorded command ID returns `command_conflict`.
+Accepted and rejected decisions both use the generic receipt allowance.
+`429 resource_quota` prevents recording a new decision while retaining existing
+receipts for replay; it is distinct from the recorded `429 quota` decision when
+all 32 timer slots are occupied. Receipt exhaustion requires exporting work and
+continuing on a fresh page. Timer-slot exhaustion requires removing unwanted
+timers and composing new work with a new `cid`. Neither capacity error is a
+transient network retry signal.
 
 ## Timer notification outbox
 

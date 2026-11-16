@@ -63,8 +63,14 @@ this same command transaction. Timers also carry a monotonic `revision`;
 revision too. A stale review returns `timer_conflict` before any timer or
 notification change. `DELETE` accepts a JSON command body and returns
 `{id,revision,deleted:true}`. Exact accepted retries recover the original result
-even after the timer is removed. See [timer operations](EXPERIENCES.md#timers-that-survive-a-closed-page)
-for payloads, recurrence, lifetime gates, and notification semantics.
+even after the timer is removed. Classified timer-domain rejections are also
+retained: resolving quota, lifetime, or claim conditions requires a new command
+identity after review, not reinterpretation of the rejected command. Current
+authorization, envelope validation, generation checks, and receipt-capacity
+failures remain outside these stored domain decisions. See
+[timer receipts](DURABILITY.md#timer-mutation-receipts) and
+[timer operations](EXPERIENCES.md#timers-that-survive-a-closed-page) for boundaries,
+payloads, recurrence, lifetime gates, and notification semantics.
 
 ## Shared-state writes
 
@@ -159,6 +165,15 @@ Each selected implementation owns its operation schema and application policy. C
 Before delivery or optimistic application, the runtime durably stores the command ID, original scope and captured generation map. Reconnect/reload use those exact values. Reconstructed optimistic state excludes obsolete commands, and rejection is surfaced without overwriting the current session.
 
 `send`, state writes and captures return accepted, queued or rejected results. An accepted event has a server sequence; queued work has none. Media bytes are uploaded separately, and explicit `capture_complete` admits the associated event using the original preconditions. A payload field cannot impersonate capture completion. See [captures](CAPTURES.md).
+
+Admitted browser state results include their command `cid`. `state.pending()`
+and `state_queue` expose detached original commands from the existing durable
+outbox, and `state_result` carries the original normalized operations and guards
+for correlation after reload. Terminal outcomes remove those commands from the
+pending view; it is not a second queue or a retained history. Local admission
+failure has no durable result identity. Empty unconditional work is explicitly
+`unchanged`, with no command or server acceptance. Empty conditional checks are
+admitted commands and still receive an authoritative outcome.
 
 ## Conversation and interaction
 

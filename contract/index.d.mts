@@ -9,11 +9,15 @@ export type Role = DeviceInfo["role"];
 export type DevicePurpose = DeviceInfo["purpose"];
 export type Path = string | (string | number)[];
 export type StateOperation = WireContracts["stateOperation"];
+export type NormalizedStateOperation = StateOperation & { path: string[] };
 export type StateCondition = { path: Path; equals: unknown; exists?: never } | { path: Path; exists: boolean; equals?: never };
 export interface StateChecks { conditions?: StateCondition[]; expected_revision?: number }
 export interface StateWriteOptions extends OperationOptions, StateChecks {}
 export interface StateConflict { kind: "revision" | "condition" | "path"; condition?: number; path?: string[] }
 export interface StateSnapshot<T = Record<string, unknown>> { state: T; rev: number; scopes: ScopeDescriptor[] }
+export interface PendingStateCommand extends StateWriteOptions {
+  cid: string; ops: NormalizedStateOperation[]; expected_generations: Record<string, string>; status: "queued";
+}
 export type CreateRequest = WireContracts["create"];
 export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
@@ -52,6 +56,8 @@ export interface StateApi<T = Record<string, unknown>> {
   get(): T; get(path: Path): unknown;
   /** Read a coherent server snapshot while connected; does not flush pending writes or replace the local view. */
   snapshot(): Promise<StateSnapshot<T>>;
+  /** Detached commands already admitted to this device's durable outbox. */
+  pending(): PendingStateCommand[];
   apply(ops: StateOperation[], options?: StateWriteOptions): Promise<StateResult>;
   set(path: Path, value: unknown, options?: StateWriteOptions): Promise<StateResult>;
   delete(path: Path, options?: StateWriteOptions): Promise<StateResult>;
@@ -102,9 +108,11 @@ export type RemixPageRequest = WireContracts["remixPage"];
 /** Platform concurrency metadata never belongs inside application data. */
 export interface OperationOptions { scope?: string; expected_generations?: Record<string, string> }
 export interface ScopeDescriptor { id: string; generation: string; paths: string[][]; operations: string[] }
-export type StateResult = { status: "accepted"; rev: number }
-  | { status: "queued" }
-  | { status: "rejected"; error: string; message?: string; rev?: number; conflict?: StateConflict };
+export type StateResult = { status: "accepted"; cid: string; rev: number }
+  | { status: "queued"; cid: string }
+  | { status: "rejected"; cid?: string; error: string; message?: string; rev?: number; conflict?: StateConflict }
+  | { status: "unchanged"; rev: number };
+export type StateResultEvent = Exclude<StateResult, { status: "unchanged" }> & StateWriteOptions & { cid: string; ops: NormalizedStateOperation[] };
 export type ServiceDescriptor = WireContracts["serviceDescriptor"];
 export interface PublicationAsset { path: string; sha256: string; type: string }
 export interface RuntimeArtifactFeatures {
@@ -155,7 +163,8 @@ export interface RuntimeEventMap {
   device_config: DeviceConfigMessage;
   scopes: ScopeDescriptor[];
   workflow: { module: string; topic: string; [key: string]: unknown };
-  state_result: StateResult & StateWriteOptions & { cid: string };
+  state_result: StateResultEvent;
+  state_queue: PendingStateCommand[];
   timer_result: TimerResultEvent; timer_queue: PendingTimerCommand[];
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;

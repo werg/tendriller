@@ -198,6 +198,8 @@ function timerService() {
 test("timer commands capture immutable settings and guards before storage, then expose correlated durable receipts", async () => {
   const service = timerService(), results = [], queues = [];
   const env = await environment({ fetcher: service.fetch, scopes: [timerScope] });
+  env.core.bus.on("timer_result", result => { result.command.title = "Observer changed its copy"; if (result.value) result.value.title = "Observer changed its receipt"; });
+  env.core.bus.on("timer_queue", queue => { if (queue.length) queue[0].command.title = "Observer changed its queue"; });
   env.core.bus.on("timer_result", result => results.push(plain(result)));
   env.core.bus.on("timer_queue", queue => queues.push(plain(queue)));
   const settings = { title: "Reviewed", due_at: 4000, timezone: "UTC", repeat: { at: "09:00", days: [1, 3] } };
@@ -216,8 +218,12 @@ test("timer commands capture immutable settings and guards before storage, then 
   const copy = env.core.timers.pending(); copy[0].command.title = "changed copy";
   assert.equal(env.core.timers.pending()[0].command.title, "Reviewed");
   await env.commit();
+  assert.equal([...env.database.stores.outbox.values()][0].msg.outcome.status, "accepted");
+  assert.deepEqual(results.map(result => result.status), ["queued"], "persisting the outcome is not yet durable cleanup");
+  await env.commit();
   const result = await promise;
   assert.equal(result.status, "accepted"); assert.equal(result.cid, original.cid); assert.equal(result.value.revision, 1);
+  assert.equal(result.value.title, "Reviewed"); assert.equal(queues[0][0].command.title, "Reviewed");
   assert.deepEqual(results.map(result => result.status), ["queued", "accepted"]);
   assert.deepEqual(results[1].command, original); assert.equal(env.core.pendingWork().timers, 0);
   assert.deepEqual(queues.at(-1), []);
@@ -252,7 +258,7 @@ test("offline timer edits replay the original revision and guards after reload w
     } });
   assert.deepEqual(service.calls[0].body, original.command);
   assert.equal(service.calls[0].body.expected_revision, 7); assert.deepEqual(restored[0], [original]);
-  await second.commit();
+  await second.commit(); await second.commit();
   assert.equal(results[0].cid, original.cid); assert.equal(results[0].error, "stale_generation");
   assert.equal(results[0].operation, "update"); assert.deepEqual(results[0].command, original.command);
   assert.equal(second.core.pendingWork().timers, 0);
@@ -269,7 +275,7 @@ test("lost timer success or body interruption replays one intent and reports its
     service.current = { ...service.current, revision: 3, title: "Changed elsewhere" };
     const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher: service.fetch,
       onCore(core) { core.bus.on("timer_result", result => results.push(plain(result))); } });
-    await second.commit();
+    await second.commit(); await second.commit();
     assert.equal(service.receipts.size, 1); assert.deepEqual(service.calls[1], service.calls[0]);
     assert.equal(results[0].cid, queued.cid); assert.equal(results[0].status, "accepted");
     assert.equal(results[0].value.revision, 1); assert.equal(results[0].value.title, "Original");
@@ -283,7 +289,7 @@ test("timer revision, authority and explicit capacity rejections terminate witho
     service.reject = { status, error: { code, message: "Review this operation", ...(code === "timer_conflict" ? { current: 4 } : {}) } };
     const env = await environment({ fetcher: service.fetch });
     const promise = env.core.timers.update("timer-1", { title: "Review" }, { expected_revision: 2 });
-    await flush(); await env.commit(); await env.commit();
+    await flush(); await env.commit(); await env.commit(); await env.commit();
     const result = await promise;
     assert.equal(result.status, "rejected"); assert.equal(result.error, code);
     if (code === "timer_conflict") assert.equal(result.details.current, 4);
@@ -292,7 +298,7 @@ test("timer revision, authority and explicit capacity rejections terminate witho
   }
 });
 
-test("timer terminal cleanup retries storage without falsely settling or repeating the HTTP operation", async () => {
+test("timer outcome persistence retries storage without falsely settling or repeating the HTTP operation", async () => {
   for (const rejected of [false, true]) {
     const service = timerService(), results = [];
     if (rejected) service.reject = { status: 403, error: { code: "forbidden", message: "Owner access required" } };
@@ -305,11 +311,58 @@ test("timer terminal cleanup retries storage without falsely settling or repeati
     assert.equal((await promise).status, "queued"); assert.equal(env.core.pendingWork().timers, 1);
     assert.deepEqual(results.map(result => result.status), ["queued"]);
     service.reject = null; env.database.failure = false;
-    await env.expire(5000); await env.commit();
+    await env.expire(5000); await env.commit(); await env.commit();
     assert.equal(service.calls.length, 1, "a known terminal receipt only retries durable cleanup");
     assert.equal(results.at(-1).status, rejected ? "rejected" : "accepted");
     assert.equal(env.core.pendingWork().timers, 0);
   }
+});
+
+test("a persisted timer outcome survives failed removal and reload without another HTTP command", async () => {
+  for (const rejected of [false, true]) {
+    const service = timerService(), before = [], after = [];
+    if (rejected) service.reject = { status: 403, error: { code: "forbidden", message: "Owner access required" } };
+    const first = await environment({ fetcher: service.fetch });
+    first.core.bus.on("timer_result", result => before.push(plain(result)));
+    const promise = first.core.timers.create({ title: "Exact original intent", due_at: 4000 });
+    await flush(); await first.commit(); await first.commit();
+    const saved = [...first.database.stores.outbox.values()][0].msg;
+    assert.equal(saved.outcome.status, rejected ? "rejected" : "accepted");
+    assert.equal(saved.intent.command.title, "Exact original intent");
+    first.database.failure = true;
+    await first.commit(); await first.expire(8000);
+    assert.equal((await promise).status, "queued");
+    assert.deepEqual(before.map(result => result.status), ["queued"]);
+    service.reject = null; first.database.failure = false;
+    const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher: service.fetch,
+      onCore(core) { core.bus.on("timer_result", result => after.push(plain(result))); } });
+    assert.equal(service.calls.length, 1, "the saved terminal phase only needs local cleanup after reload");
+    await second.commit();
+    assert.equal(after[0].status, rejected ? "rejected" : "accepted");
+    assert.deepEqual(after[0].command, saved.intent.command);
+    assert.equal(after[0].cid, saved.cid); assert.equal(second.core.pendingWork().timers, 0);
+  }
+});
+
+test("an outcome that could not be saved remains unresolved and replays its immutable intent after reload", async () => {
+  const service = timerService(), results = [];
+  service.reject = { status: 403, error: { code: "forbidden", message: "Owner access required" } };
+  const first = await environment({ fetcher: service.fetch });
+  first.core.bus.on("timer_result", result => results.push(plain(result)));
+  const promise = first.core.timers.create({ title: "Still unresolved", due_at: 4000 });
+  await flush(); await first.commit();
+  first.database.failure = true;
+  await first.commit(); await first.expire(8000);
+  assert.equal((await promise).status, "queued");
+  const saved = [...first.database.stores.outbox.values()][0].msg;
+  assert.equal(saved.outcome, undefined); assert.deepEqual(results.map(result => result.status), ["queued"]);
+  // Current-authority rejection was not durable. The runtime must not pretend
+  // it saved that result; the same unresolved command can be retried by reload.
+  service.reject = null; first.database.failure = false;
+  const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher: service.fetch });
+  assert.deepEqual(service.calls[1], service.calls[0]);
+  await second.commit(); await second.commit();
+  assert.equal(second.core.pendingWork().timers, 0); assert.equal(service.receipts.size, 1);
 });
 
 test("transient timer errors retry unchanged with delay, and malformed success never claims rejection", async () => {
@@ -325,7 +378,7 @@ test("transient timer errors retry unchanged with delay, and malformed success n
     await flush(); assert.equal(service.calls.length, 1, "no hot-loop retry");
     await env.expire(5000); assert.equal(service.calls.length, 2);
     service.response = null;
-    await env.expire(10000); await env.commit();
+    await env.expire(10000); await env.commit(); await env.commit();
     assert.equal(service.calls.length, 3); assert.deepEqual(service.calls[1], service.calls[0]); assert.deepEqual(service.calls[2], service.calls[0]);
     assert.deepEqual(results.map(result => result.status), ["queued", "accepted"]);
   }
@@ -339,7 +392,7 @@ test("a hung timer attempt has a deadline and retains its original command for a
   assert.equal((await promise).status, "queued");
   await env.expire(15000);
   service.response = null;
-  await env.expire(5000); await env.commit();
+  await env.expire(5000); await env.commit(); await env.commit();
   assert.deepEqual(service.calls[1], service.calls[0]); assert.equal(env.core.pendingWork().timers, 0);
 });
 
@@ -352,7 +405,7 @@ test("timer delete requires a matching deletion receipt and reads expose fresh v
   await flush(); await env.commit(); await env.expire(8000);
   assert.equal((await promise).status, "queued"); assert.equal(env.core.pendingWork().timers, 1);
   service.response = null;
-  await env.expire(5000); await env.commit();
+  await env.expire(5000); await env.commit(); await env.commit();
   assert.equal(results.at(-1).operation, "remove");
   assert.deepEqual(results.at(-1).value, { id: "timer-1", revision: 2, deleted: true });
   assert.equal(service.calls[0].method, "DELETE"); assert.deepEqual(service.calls[1], service.calls[0]);
@@ -369,6 +422,8 @@ test("invalid timer metadata and missing review revisions fail before any local 
   const bad = [
     () => env.core.timers.create({ title: "Review", due_at: 4000, cid: "injected" }),
     () => env.core.timers.create({ title: "Review", due_at: 4000 }, { cid: "injected" }),
+    () => env.core.timers.create({ title: "Review", due_at: 4000 }, { scope: "" }),
+    ...[null, [], "abc"].map(expected_generations => () => env.core.timers.create({ title: "Review", due_at: 4000 }, { expected_generations })),
     () => env.core.timers.create({ title: "Review", repeat: { at: "29:00" } }),
     () => env.core.timers.update("timer-1", { title: "Review" }, {}),
     () => env.core.timers.update("timer-1", { expected_revision: 2 }, { expected_revision: 1 }),
@@ -479,6 +534,68 @@ test("conditional apply freezes predicates and all ops before durable admission,
   assert.deepEqual(JSON.parse(JSON.stringify(results[0].conditions)), frame.conditions);
 });
 
+test("pending state commands and queue observers expose detached durable identities without a second queue", async () => {
+  const env = await environment({ state: { item: { done: false } }, scopes: [descriptor] });
+  const observed = [];
+  env.core.bus.on("state_queue", queue => {
+    if (queue[0]) { queue[0].ops[0].value = "observer changed"; queue[0].conditions[0].equals = "observer changed"; queue[0].expected_generations[descriptor.id] = "observer changed"; }
+    queue.length = 0;
+  });
+  env.core.bus.on("state_queue", queue => observed.push(queue));
+  const write = env.core.state.set("item.done", true, { conditions: [{ path: ["item", "done"], equals: false }], scope: descriptor.id });
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.pending())), []);
+  await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  assert.equal(observed.at(-1)[0].cid, original.cid);
+  assert.equal(observed.at(-1)[0].ops[0].value, true);
+  assert.equal(observed.at(-1)[0].conditions[0].equals, false);
+  const inspected = env.core.state.pending();
+  inspected[0].ops[0].path[0] = "wrong"; inspected[0].ops[0].value = false;
+  inspected[0].conditions[0].equals = true; inspected[0].expected_generations[descriptor.id] = "changed";
+  const saved = env.core.state.pending()[0];
+  assert.equal(saved.status, "queued"); assert.equal(saved.cid, original.cid);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.ops)), original.ops);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.conditions)), original.conditions);
+  assert.equal(saved.expected_generations[descriptor.id], "original");
+  env.transport.disconnect();
+  const queued = await write;
+  assert.equal(queued.status, "queued"); assert.equal(queued.cid, original.cid);
+  const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: { item: { done: true } }, scopes: [descriptor] });
+  assert.equal(resumed.core.state.pending()[0].cid, original.cid);
+  const receipts = [];
+  resumed.core.bus.on("state_result", receipt => { receipt.ops[0].value = "mutated"; receipt.conditions[0].equals = "mutated"; });
+  resumed.core.bus.on("state_result", receipt => receipts.push(receipt));
+  resumed.transport.receive({ t: "ack", cid: original.cid, error: "state_conflict", rev: 1, conflict: { kind: "condition", condition: 0, path: ["item", "done"] } });
+  await flush();
+  assert.equal(receipts[0].cid, original.cid);
+  assert.deepEqual(JSON.parse(JSON.stringify(receipts[0].ops)), original.ops);
+  assert.deepEqual(JSON.parse(JSON.stringify(receipts[0].conditions)), original.conditions);
+  assert.deepEqual(JSON.parse(JSON.stringify(resumed.core.state.pending())), []);
+  assert.equal([...env.database.stores.outbox.values()][0].msg.ops[0].value, true, "observer mutation never changes the stored command before its deletion commits");
+});
+
+test("unchanged local operations have no command receipt while conditional empty checks have real identities", async () => {
+  const env = await environment();
+  assert.deepEqual(JSON.parse(JSON.stringify(await env.core.state.apply([]))), { status: "unchanged", rev: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(await env.core.state.patch({ absent: null }))), { status: "unchanged", rev: 1 });
+  assert.equal(env.sent.some(frame => frame.t === "state"), false);
+  const pending = env.core.state.apply([], { expected_revision: 1 });
+  await flush(); await env.commit();
+  const frame = env.sent.find(frame => frame.t === "state");
+  env.transport.receive({ t: "ack", cid: frame.cid, rev: 1 });
+  const result = await pending;
+  assert.equal(result.status, "accepted"); assert.equal(result.cid, frame.cid); assert.equal(result.rev, 1);
+  env.transport.receive({ t: "state", rev: 2, ops: [{ op: "set", path: ["remote"], value: true }] });
+  const check = env.core.state.apply([], { expected_revision: 2 });
+  await flush(); await env.commit();
+  const next = env.sent.filter(frame => frame.t === "state").at(-1);
+  env.transport.receive({ t: "ack", cid: next.cid, rev: 2 });
+  assert.equal((await check).status, "accepted");
+  assert.equal(env.core.connected, true, "an accepted check has no missing own delta to resynchronize");
+  assert.equal(env.core.state.revision, 2); assert.equal(env.core.state.get("remote"), true);
+});
+
 test("state.snapshot returns authoritative state and matching revision without flushing or discarding optimism", async () => {
   const env = await environment({ state: { count: 0 }, scopes: [descriptor] });
   const pending = env.core.state.set("count", 1);
@@ -520,6 +637,24 @@ test("late snapshots and conditional ACKs cannot overwrite a newer broadcast or 
   assert.deepEqual(resumed.sent.find(frame => frame.t === "state"), original);
   resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await flush();
   assert.deepEqual(JSON.parse(JSON.stringify(resumed.core.state.get())), authority);
+  assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
+});
+
+test("a nested remote delta depending on an unacknowledged parent replacement resyncs without losing either write", async () => {
+  const env = await environment({ state: { parent: null } });
+  const pending = env.core.state.set("parent", { child: 1 }, { expected_revision: 1 });
+  await flush(); await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  // Authority accepted our parent replacement at revision 2; its ACK is delayed.
+  // Another writer's revision 3 is valid there, but not against local parent:null.
+  env.transport.receive({ t: "state", rev: 3, ops: [{ op: "set", path: ["parent", "child"], value: 2 }] });
+  assert.equal((await pending).status, "queued");
+  assert.equal(env.core.connected, false); assert.equal(env.core.pendingWork().state, 1);
+  assert.equal(env.core.state.revision, 1); assert.equal(env.core.state.get("parent"), null);
+  const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: { parent: { child: 2 } }, rev: 3 });
+  assert.deepEqual(resumed.sent.find(frame => frame.t === "state"), original);
+  resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await flush();
+  assert.equal(resumed.core.state.get("parent.child"), 2);
   assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
 });
 
@@ -571,6 +706,18 @@ test("an empty conditional batch is sent for authoritative evaluation and report
   assert.throws(() => env.core.state.set("bad", 1, { conditions: [{ path: ["bad"], equals: undefined }] }));
 });
 
+test("invalid or misspelled state guards never become unconditional writes", async () => {
+  const env = await environment({ state: { count: 0 } });
+  for (const options of [{ expected_revison: 1 }, { conditions: [], unexpected: true }, { expected_generations: null }, { expected_generations: [] },
+    { expected_generations: "v1" }, { expected_generations: new Map() }])
+    assert.throws(() => env.core.state.apply([{ op: "set", path: ["count"], value: 1 }], options), { code: "bad_request" });
+  await flush(); await env.commit();
+  assert.equal(env.core.state.get("count"), 0);
+  assert.equal(env.core.pendingWork().state, 0);
+  assert.equal(env.sent.some(frame => frame.t === "state"), false);
+  assert.equal(env.database.stores.outbox.size, 0);
+});
+
 test("a remote parent replacement suppresses incompatible pending optimism without losing the command", async () => {
   const env = await environment({ state: { parent: { child: 1 } } });
   const pending = env.core.state.set("parent.child", 2);
@@ -591,7 +738,10 @@ test("failed durable commit never changes optimistic state or sends the command"
   const pending = env.core.state.set("notebook", { draft: "not saved" });
   const input = env.core.send({ type: "experiment.done", session: "opaque" });
   await flush(); await env.commit();
-  assert.equal((await pending).error, "storage_unavailable");
+  const stateResult = await pending;
+  assert.equal(stateResult.error, "storage_unavailable");
+  assert.equal(stateResult.cid, undefined, "a failed local admission has no durable result identity");
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.pending())), []);
   assert.equal((await input).error, "storage_unavailable");
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), {});
   assert.equal(env.sent.filter(frame => ["state", "send"].includes(frame.t)).length, 0);

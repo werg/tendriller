@@ -2,13 +2,14 @@ import type { Tendril } from "./tendril";
 import { addEvent } from "./events";
 import { addActivity } from "./activity";
 import { HttpError, isPlainObject } from "./http";
-import { mutate } from "./scopes";
+import { mutateDecision } from "./scopes";
 import { cancelTimerNotifications, notificationDelivery, pruneTimerHistory, queueTimerNotification, runTimerNotifications, timerOperationsAllowed } from "./timer-notifications";
 import { assertValid, type TimerRepeat, type DurableTimer, type TimerRun, type TimerWrite, type TimerDeleted } from "../../contract/index.mjs";
 export type { TimerRepeat, DurableTimer, TimerRun } from "../../contract/index.mjs";
 type TimerRow = { id: string; spec: string; next_at: number; state: string };
 const MAX_TIMERS = 32;
 const LATE_GRACE = 120_000;
+const REJECTED_TIMER_DECISIONS = new Set(["quota", "lifetime_required", "unclaimed", "timer_conflict", "not_found", "already_fired", "bad_request"]);
 
 function zoned(at: number, zone: string): Record<string, number> {
   const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
@@ -57,13 +58,13 @@ function reviewedTimer(t: Tendril, id: string, expectedRevision: number): Durabl
 /** Timers share the platform command receipt and generation transaction. */
 export function saveTimer(t: Tendril, body: unknown, actor: string, id?: string, by = actor): DurableTimer {
   const command = id ? assertValid("timerWrite", body) : assertValid("timerCreate", body);
-  return mutate(t, actor, command, { operations: ["timer.write"] }, { operation: id ? "update" : "create", id: id ?? null, command }, () => {
+  return mutateDecision(t, actor, command, { operations: ["timer.write"] }, { operation: id ? "update" : "create", id: id ?? null, command }, () => {
     requireClaim(t);
     const previous = id ? reviewedTimer(t, id, (command as TimerWrite).expected_revision) : undefined;
     if (!id && listTimers(t).length >= MAX_TIMERS)
       throw new HttpError(429, "quota", "Remove an old timer before adding another (32 maximum)");
     return writeTimer(t, command, by, previous);
-  });
+  }, REJECTED_TIMER_DECISIONS);
 }
 
 function writeTimer(t: Tendril, body: Record<string, unknown>, by: string, previous?: DurableTimer): DurableTimer {
@@ -112,7 +113,7 @@ function writeTimer(t: Tendril, body: Record<string, unknown>, by: string, previ
 
 export function deleteTimer(t: Tendril, id: string, body: unknown, actor: string, by = actor): TimerDeleted {
   const command = assertValid("timerDelete", body);
-  return mutate(t, actor, command, { operations: ["timer.write"] }, { operation: "delete", id, command }, () => {
+  return mutateDecision(t, actor, command, { operations: ["timer.write"] }, { operation: "delete", id, command }, () => {
     requireClaim(t);
     const previous = reviewedTimer(t, id, command.expected_revision);
     cancelTimerNotifications(t, id);
@@ -120,7 +121,7 @@ export function deleteTimer(t: Tendril, id: string, body: unknown, actor: string
     addActivity(t, { kind: "timer", summary: "Timer removed", by });
     t.scheduleAlarm();
     return { id, revision: previous.revision + 1, deleted: true };
-  });
+  }, REJECTED_TIMER_DECISIONS);
 }
 export function nextTimerDeadline(t: Tendril): number | null {
   if (t.db.get("disabled", false) || !t.db.get("owner_account", null)) return null;

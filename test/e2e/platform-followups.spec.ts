@@ -11,7 +11,7 @@ test("saved context, due timer, staged restore and independent remix use the act
     expect(save.status()).toBe(200); const saved = await save.json();
     expect((await agent(h, "/session")).data.session.current_task).toBe("Measure tomorrow");
     expect((await context.request.put(`${base}session`, { headers: { Origin: origin }, data: { current_task: "Stale overwrite", expected_revision: 0 } })).status()).toBe(409);
-    const timer = await agent(h, "/timers", "POST", { title: "Inspect the notebook", due_at: Date.now() + 1500 }); expect(timer.status).toBe(201);
+    const timer = await agent(h, "/timers", "POST", { cid: crypto.randomUUID(), expected_generations: {}, title: "Inspect the notebook", due_at: Date.now() + 1500 }); expect(timer.status).toBe(201);
     await page.close();
     await expect.poll(async () => (await agent(h, "/timers/history")).data.runs.filter((run: any) => run.timer_id === timer.data.id).length, { timeout: 20000 }).toBe(1);
     const returned = await context.newPage(); await returned.goto(localPageUrl(h)); await returned.waitForFunction(() => (window as any).tendril?.connected);

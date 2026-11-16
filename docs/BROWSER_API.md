@@ -103,6 +103,40 @@ values does not construct a coherent authoritative snapshot. `set`, `delete`,
 terminal results, including those arriving after the promise returned `queued`.
 The runtime persists commands before applying optimism or delivery.
 
+Every durably admitted write result includes its `cid`: use that identity for
+`queued`, `accepted`, and server-rejected outcomes. `state.pending()` returns
+detached copies of this device's currently unsettled durable commands, including
+`cid`, normalized `ops`, original predicates, revision guard and generation map,
+and `status:"queued"`. It is reconstructed from the existing outbox after reload.
+`state_queue` emits the current list after durable admission, startup recovery,
+and terminal removal. It does not include a save that has not committed locally.
+
+`state_result` includes the same original `ops` and context, so a page can identify
+the affected record even when its original promise no longer exists. Inspect the
+queue at startup and subscribe before submitting work:
+
+```js
+renderPendingState(tendril.state.pending());
+const stopQueue = tendril.on("state_queue", renderPendingState);
+const stopReceipts = tendril.on("state_result", receipt => {
+  showStateOutcome(receipt.cid, receipt.ops, receipt.status, receipt.message);
+});
+```
+
+These rendering functions belong to the page. Commands leave `pending()` after a
+terminal receipt; this is not a retained rejection history. Keep recoverable
+unsent or rejected text according to the page's draft policy. A failed local
+admission returns `rejected` without a durable `cid`; its `state_result` may carry
+an allocated attempt ID for correlation, but it never appears in the queue.
+Mutating a returned queue entry or one observer's payload cannot alter the
+command, its delivery, or another observer's payload.
+
+An empty unconditional `apply([])`, or a merge patch that produces no operations,
+returns `{status:"unchanged",rev}`. No command was admitted and no server
+acceptance or receipt is implied; there is no `cid`. An empty batch with
+conditions or `expected_revision` is a real authoritative check with its own
+command identity and normal receipt.
+
 `await state.snapshot()` reads `{state,rev,scopes}` together from the service on
 the authenticated connection. It includes accepted server state, without local
 optimistic overlays. It neither flushes nor discards pending writes, and it does
@@ -252,9 +286,13 @@ temporary rate limits, and service outages retry with delays of 5, 10, 20, then
 Malformed or mismatched success receipts remain queued and report an `error`
 event; they never become invented acceptance or rejection. Explicit authority,
 generation, revision, timer-capacity (`quota`), and command-allowance
-(`resource_quota`) rejections end the command. Terminal results are emitted only
-after durable local removal succeeds. A failed cleanup remains pending and
-retries cleanup; a reload can safely recover the original server receipt.
+(`resource_quota`) rejections end the command. The runtime first persists a
+terminal receipt alongside the immutable intent, then removes the outbox item;
+only successful durable removal exposes a terminal result. If removal fails,
+reload reads the saved outcome and completes local cleanup without another HTTP
+command. If saving the outcome itself fails, the operation remains unresolved
+and queued. A later reload retries its original command against current service
+authorization; an unsaved response is not a durable terminal guarantee.
 
 An edit or removal must use the revision from the reviewed timer:
 
@@ -324,8 +362,11 @@ resources merely because they share a stream.
 Stop also abandons callbacks from pending one-shot location reads and stopped
 watches; it does not claim that the browser or operating system can cancel a
 one-shot acquisition. The returned count includes cancelled pending media and
-one-shot location requests, as well as stopped live resources. `active()` continues
-to describe observed live/recent use, not an unanswered permission prompt.
+one-shot location requests, as well as stopped live resources. Camera, microphone,
+and screen indicators describe observed live tracks, not unanswered permission
+prompts. Location and motion indicators can reflect registered watches/listeners
+or recent API requests; they do not prove permission, a successful location fix,
+or a usable measurement.
 
 The `sensors_stopped` event lets optional adapters cancel their pending/restarting
 work too. One-shot and aborted motion listeners stop counting as active. Observation
