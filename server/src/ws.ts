@@ -7,7 +7,7 @@ import { listVersions, pointers, reportHealth, rollback, servedVersion } from ".
 import { HttpError, isPlainObject } from "./http";
 import { DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex, sixDigits } from "./ids";
 import { ADOPT_CODE_TTL, MAX_EVENT_DATA, MAX_LOGS } from "./limits";
-import { validateOps } from "./state";
+import { stateCommand } from "./state-command";
 import { getFocus } from "./device-roles";
 import { mutate, scopes, preconditions, type ValidatedContext } from "./scopes";
 import { synchronizeWorkflows } from "./workflows";
@@ -285,8 +285,7 @@ const HANDLERS: Record<string, (c: Ctx) => void | Promise<void>> = {
     const result = (() => {
       if (dev.role === "display") return { error: "forbidden", message: "Display devices cannot change state" };
       try {
-        const ops = validateOps(msg.ops);
-        return mutate(t, `device:${dev.id}`, msg, { paths: ops.map(op => op.path), operations: ["state"] }, ops, () => ({ rev: t.applyState(ops, `device:${dev.id}`, ws, preconditions(msg)), scopes: scopes(t) }));
+        return stateCommand(t, `device:${dev.id}`, msg, msg.ops, ws);
       } catch (err) {
         return { error: err instanceof HttpError ? err.code : "bad_ops", message: err instanceof Error ? err.message : String(err) };
       }

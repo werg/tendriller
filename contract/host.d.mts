@@ -1,4 +1,4 @@
-import type { StateOperation } from './index.mjs';
+import type { StateOperation, StateChecks } from './index.mjs';
 
 /** Authoritative concurrency metadata; never part of application JSON. */
 export interface ScopeDescriptor { id: string; generation: string; paths: string[][]; operations: string[] }
@@ -19,7 +19,7 @@ export interface WorkflowHost {
     delete(collection: string, key: string): void;
     clear(collection: string): void;
   };
-  readonly state: { get(): { state: Record<string, unknown>; rev: number }; apply(ops: StateOperation[]): number };
+  readonly state: { get(): { state: Record<string, unknown>; rev: number }; apply(ops: StateOperation[], checks?: StateChecks): number };
   readonly scopes: {
     get(id: string): ScopeDescriptor | null;
     register(id: string, bindings: { paths: string[][]; operations: string[] }, expectedGeneration?: string): ScopeDescriptor;

@@ -9,6 +9,10 @@ export type Role = DeviceInfo["role"];
 export type DevicePurpose = DeviceInfo["purpose"];
 export type Path = string | (string | number)[];
 export type StateOperation = WireContracts["stateOperation"];
+export type StateCondition = WireContracts["stateCondition"];
+export type StateChecks = WireContracts["stateChecks"];
+export interface StateWriteOptions extends OperationOptions, StateChecks {}
+export interface StateConflict { kind: "revision" | "condition" | "path"; condition?: number; path?: string[] }
 export type CreateRequest = WireContracts["create"];
 export type SayRequest = WireContracts["say"];
 /** Per-device delivery can speak without presenting a second visible message. */
