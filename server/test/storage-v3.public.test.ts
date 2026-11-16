@@ -1,6 +1,34 @@
 import { expect, it } from "vitest";
-import { api, apiJson, create, req } from "./helpers";
+import { api, apiJson, create, req, PageClient } from "./helpers";
 import { sha256Hex } from "../src/ids";
+
+it("accepts a signed-in device capture through the same immutable upload protocol", async () => {
+  const page = await create();
+  const device = await PageClient.connect(page.page_url);
+  const headers = { "X-Tendril-Device": device.deviceId, "X-Tendril-Device-Secret": device.secret };
+  const bytes = new TextEncoder().encode("camera frame");
+  const started = await req(page.page_url + "_tendril/uploads", { method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ cid: "camera-frame", sha256: await sha256Hex(bytes), size: bytes.length, type: "image/jpeg" }) });
+  expect(started.status).toBe(201);
+  const session = await started.json<any>();
+  expect((await req(page.page_url + `_tendril/uploads/${session.id}/content`, { method: "PUT", body: bytes,
+    headers: { ...headers, "Content-Type": "application/octet-stream" } })).status).toBe(204);
+  const completed = await req(page.page_url + `_tendril/uploads/${session.id}/complete`, { method: "POST", headers });
+  expect(completed.status).toBe(200);
+  const { blob } = await completed.json<any>();
+  expect(blob).toMatchObject({ id: session.blob_id, sha256: await sha256Hex(bytes),
+    retention: { reasons: ["page_default"] } });
+  const fetched = await req(page.page_url + `_tendril/blobs/${blob.id}`);
+  expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(bytes);
+  const pin = await req(page.page_url + `_tendril/blobs/${blob.id}/pin`, { method: "PUT",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ cid: "pin-camera-frame", expected_generations: {}, keep: true }) });
+  expect(pin.status).toBe(200);
+  expect((await pin.json<any>()).retention).toEqual({ expires_at: null, reasons: ["pinned"] });
+  expect((await apiJson(page, "GET", "blobs")).blobs[0].id).toBe(blob.id);
+  device.close();
+});
 
 it("accepts exact immutable bytes once and applies shared-file CAS with durable replay", async () => {
   const page = await create();
