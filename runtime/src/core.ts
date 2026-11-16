@@ -3,7 +3,7 @@ import { encodePublicationPath } from "./paths";
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
-import { assertValid } from "../../contract/index.mjs";
+import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
 import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
@@ -15,6 +15,7 @@ import { createConnection } from "./connection";
 import { deliveryPolicy } from "./delivery";
 import { createRequests, createCommandReceipts } from "./requests";
 import { captureData, type BlobReference, type CaptureOptions, type CaptureResult, type PendingCapture, type SendResult } from "./capture";
+import { createBrowserBlobs, BlobHttpError } from "./blob-transfer";
 
 export type { Bus, Core } from "./types";
 
@@ -44,7 +45,9 @@ export function createBus(): Bus {
 
 function newCid(): string { return "c_" + Date.now().toString(36) + rand32(8); }
 
-class HttpError extends Error { constructor(public status: number, msg: string, public code = "upload_failed") { super(msg); } }
+const permanentUploadFailure = (error: unknown): boolean => error instanceof BlobHttpError
+  ? error.status < 500 && error.status !== 408 && error.status !== 429
+  : ["invalid_response", "bad_request", "upload_closed"].includes((error as any)?.code);
 
 type Internal = Core & {
   readonly rev: number; health: ReturnType<typeof createHealth>;
@@ -52,7 +55,7 @@ type Internal = Core & {
   captures(): PendingCapture[];
   retryCapture(id: string): Promise<CaptureResult>;
   discardCapture(id: string): Promise<void>;
-  setBlobRetention(id: string, opts: { keep: boolean }): Promise<BlobReference>;
+  setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference>;
 };
 
 export function createCore(cfg: TendrilConfig): Internal {
@@ -278,6 +281,22 @@ export function createCore(cfg: TendrilConfig): Internal {
     return it;
   };
 
+  const ensureUploaded = async (item: OutboxItem): Promise<BlobReference | null> => {
+    if (!item.msg.uploaded) {
+      const uploaded = await blobs.upload(item.blob!, item.msg.name, item.cid);
+      if (!store.has(item.cid)) return null;
+      // Each completed phase becomes durable before starting its dependent phase.
+      await store.updateDurable(item, { ...item.msg, uploaded });
+    }
+    if (!store.has(item.cid)) return null;
+    if (item.msg.pin && !item.msg.pinned) {
+      const uploaded = await blobs.pin(item.msg.uploaded.id, item.msg.pin);
+      if (!store.has(item.cid)) return null;
+      await store.updateDurable(item, { ...item.msg, uploaded, pinned: true });
+    }
+    return store.has(item.cid) ? item.msg.uploaded : null;
+  };
+
   let pumping = false;
   const pump = async () => {
     if (pumping || !connection.connected) return;
@@ -290,14 +309,7 @@ export function createCore(cfg: TendrilConfig): Internal {
         sentThisConn.add(item.cid);
         if (item.msg.t === "upload_event") {
           try {
-            if (!item.msg.uploaded) {
-              const uploaded = await httpUpload(item.blob!, item.msg.name, item.cid, item.msg.keep);
-              if (!store.has(item.cid)) continue;
-              // Persist the upload receipt before sending the semantic event. A reload at any
-              // point resumes this transaction with the same media and event identifiers.
-              await store.updateDurable(item, { ...item.msg, uploaded });
-            }
-            if (!store.has(item.cid)) continue; // discarded while uploading
+            if (!await ensureUploaded(item)) continue;
             const msg = item.msg;
             if (!connection.connected || !rawSend({ t: "capture_complete", cid: msg.event_cid, scope: msg.scope, expected_generations: msg.expected_generations, blob: msg.uploaded.id,
               data: { ...captureData(msg.data, msg.dataPath, msg.uploaded), capture_id: item.cid }, wake: msg.wake, gesture: msg.gesture })) {
@@ -313,8 +325,9 @@ export function createCore(cfg: TendrilConfig): Internal {
               void pump();
             }, 8000));
           } catch (error) {
-            if (error instanceof HttpError && error.status < 500 && error.status !== 408 && error.status !== 429) {
-              await captureFailed(item, error.code, error.message);
+            if (!store.has(item.cid)) continue;
+            if (permanentUploadFailure(error)) {
+              await captureFailed(item, (error as any).code, (error as Error).message);
             } else if (error instanceof TypeError && /dataPath/.test(error.message)) {
               await captureFailed(item, "invalid_capture", error.message);
             } else {
@@ -327,15 +340,17 @@ export function createCore(cfg: TendrilConfig): Internal {
         }
         if (item.msg.t === "upload") {
           try {
-            const r = await httpUpload(item.blob!, item.msg.name, item.cid, item.msg.keep);
-            store.remove(item.cid);
+            const r = await ensureUploaded(item);
+            if (!r) continue;
+            await store.removeDurable(item.cid);
             // After a reload the original promise is gone; pages learn the result from the event.
             bus.emit("upload", { cid: item.cid, name: item.msg.name ?? null, ...r });
             uploadWaiters.get(item.cid)?.res(r);
             uploadWaiters.delete(item.cid);
           } catch (e) {
-            if (e instanceof HttpError) {
-              store.remove(item.cid);
+            if (permanentUploadFailure(e)) {
+              await store.removeDurable(item.cid);
+              bus.emit("error", { code: (e as any).code, message: (e as Error).message });
               uploadWaiters.get(item.cid)?.rej(e);
               uploadWaiters.delete(item.cid);
             } else {
@@ -371,21 +386,7 @@ export function createCore(cfg: TendrilConfig): Internal {
   /** Proves this device to page HTTP routes (PROTOCOL 2.1). */
   const deviceHeaders = (): Record<string, string> => ({ "X-Tendril-Device": stored.id, "X-Tendril-Device-Secret": stored.secret });
 
-  // ---------- http upload ----------
-  const httpUpload = async (blob: Blob, name?: string, cid?: string, keep?: boolean): Promise<BlobReference> => {
-    const headers: Record<string, string> = { "Content-Type": blob.type || "application/octet-stream", ...deviceHeaders() };
-    if (cid) headers["X-Tendril-Cid"] = cid; // a replay after a lost response is stored once
-    if (name) headers["X-Tendril-Name"] = name;
-    if (keep === true) headers["X-Tendril-Keep"] = "true";
-    const r = await fetch(cfg.base + "_tendril/blob", { method: "POST", body: blob, headers });
-    if (!r.ok) {
-      let msg = `upload failed (${r.status})`, code = "upload_failed";
-      try { const j = await r.json(); if (j?.error?.message) msg = j.error.message; if (j?.error?.code) code = j.error.code; } catch { /* ignore */ }
-      throw new HttpError(r.status, msg, code);
-    }
-    const reference = await r.json();
-    return { ...reference, url: new URL(reference.url, new URL(cfg.base, location.href)).href };
-  };
+  const blobs = createBrowserBlobs(cfg.base, deviceHeaders);
 
   // ---------- incoming ----------
   const addTranscript = (e: TranscriptEntry) => {
@@ -797,16 +798,19 @@ export function createCore(cfg: TendrilConfig): Internal {
     },
     async uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult> {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.uploadEvent needs a Blob");
+      if (blob.size > RESOURCE_LIMITS.blob_bytes) throw new RangeError("Capture exceeds the platform byte limit");
       assertValid("captureOptions", opts);
       const capture_id = newCid();
       const context = captureContext(scopes, "capture", opts);
+      const pin = opts.keep === true ? { cid: newCid(), ...captureContext(scopes, "blob.pin", opts), keep: true } : undefined;
       const gesture = !!(navigator as any).userActivation?.isActive;
       const data = serialize(opts.data) as Record<string, unknown>;
       captureData(data, opts.dataPath, { id: "pending", url: "pending" }); // validate before saving
+      const message = { t: "upload_event", cid: capture_id, event_cid: newCid(), ...context,
+        name: opts.name, data, dataPath: clone(opts.dataPath), pin, wake: opts.wake !== false, gesture };
       await storeReady;
       try {
-        const item = await store.addDurable({ t: "upload_event", cid: capture_id, event_cid: newCid(), ...context,
-          name: opts.name, data, dataPath: opts.dataPath, keep: opts.keep === true, wake: opts.wake !== false, gesture }, blob);
+        const item = await store.addDurable(message, blob);
         return waitForCapture(item);
       } catch (error) {
         const result: CaptureResult = { capture_id, status: "rejected", error: "storage_unavailable",
@@ -834,25 +838,21 @@ export function createCore(cfg: TendrilConfig): Internal {
       await store.removeDurable(capture_id);
       captureReceipt({ capture_id, status: "rejected", error: "discarded", message: "Capture removed from this device's queue." });
     },
-    async setBlobRetention(id: string, opts: { keep: boolean }): Promise<BlobReference> {
+    async setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference> {
       if (!/^b_[a-z2-7]{20}$/.test(id) || typeof opts?.keep !== "boolean") throw new TypeError("setBlobRetention needs a blob id and {keep:boolean}");
-      const response = await fetch(cfg.base + `_tendril/blob/${id}/retention`, {
-        method: "PATCH", headers: { "Content-Type": "application/json", ...deviceHeaders() }, body: JSON.stringify(opts),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new HttpError(response.status, result.error?.message || "Could not change capture retention", result.error?.code);
-      return { ...result, url: new URL(result.url, new URL(cfg.base, location.href)).href };
+      return blobs.pin(id, { cid: newCid(), ...captureContext(scopes, "blob.pin", opts), keep: opts.keep });
     },
-    async upload(blob: Blob, opts?: { name?: string; keep?: boolean }) {
+    async upload(blob: Blob, opts?: OperationOptions & { name?: string; keep?: boolean }) {
       if (!(blob instanceof Blob)) throw new TypeError("tendril.upload needs a Blob");
-      const name = opts?.name;
-      if (navigator.onLine !== false) {
-        try { return await httpUpload(blob, name, undefined, opts?.keep); } catch (e) { if (e instanceof HttpError) throw e; }
-      }
+      if (blob.size > RESOURCE_LIMITS.blob_bytes) throw new RangeError("Upload exceeds the platform byte limit");
       const cid = newCid();
+      const pin = opts?.keep === true ? { cid: newCid(), ...captureContext(scopes, "blob.pin", opts), keep: true } : undefined;
+      const message = { t: "upload", cid, name: opts?.name, pin };
+      await storeReady;
+      await store.addDurable(message, blob);
       return new Promise((res, rej) => {
         uploadWaiters.set(cid, { res, rej });
-        enqueue({ t: "upload", cid, name, keep: opts?.keep }, blob);
+        void pump();
       });
     },
     ready: () => health.ready(),

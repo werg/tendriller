@@ -87,7 +87,13 @@ export function createBlobClient(json, raw) {
     blobs: {
       ...createUploadClient(json, raw),
       info: blobId => json(`/blobs/${id(blobId)}/info`, {}, "blobMetadata"),
-      list: () => json("/blobs", {}, "blobList"),
+      list: ({ after, limit = 100, signal } = {}) => {
+        if (after !== undefined && !/^b_[a-z2-7]{20}$/.test(after)) throw new TypeError("Blob listing requires a blob ID cursor");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new TypeError("Blob listing limit must be 1..1000");
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (after !== undefined) params.set("after", after);
+        return json(`/blobs?${params}`, { signal }, "blobList");
+      },
       download: (blobId, { signal, range, disposition } = {}) => raw(
         `/blobs/${id(blobId)}${disposition === "inline" ? "?disposition=inline" : ""}`,
         { signal, headers: range ? { Range: range } : {} },

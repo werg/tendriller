@@ -12,7 +12,7 @@ export interface BlobUploadClient {
 export interface BlobTransferClient {
   blobs: BlobUploadClient & {
     info(blobId: string): Promise<BlobReference>;
-    list(): Promise<{blobs: BlobReference[]; cursor?: string | null}>;
+    list(options?: { after?: string; limit?: number; signal?: AbortSignal }): Promise<{blobs: BlobReference[]; cursor: string | null}>;
     download(blobId: string, options?: { signal?: AbortSignal; range?: string; disposition?: "inline" | "attachment" }): Promise<Response>;
     pin(blobId: string, command: { cid: string; expected_generations: Record<string,string>; scope?: string; keep: boolean }): Promise<BlobReference>;
   };
