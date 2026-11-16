@@ -128,3 +128,20 @@ test("strict local mode never falls back and role changes revoke hands-free acce
   await expect(page.locator(".wake-card")).toBeHidden();
   expect(await page.evaluate(() => (window as any).__wakeFake.instances.at(-1).aborted)).toBe(true);
 });
+
+test("test wake phrase replaces active listening without forwarding the command", async ({ page }) => {
+  await speechStub(page);
+  await load(page);
+  await open(page);
+  await page.getByRole("button", { name: "Start hands-free" }).click();
+  const before = await page.evaluate(() => (window as any).__wakeFake.instances.filter((rec: any) => rec.started).length);
+  await page.getByRole("button", { name: "Configure" }).click();
+  await page.getByRole("button", { name: "Test wake phrase" }).click();
+  const after = await page.evaluate(() => (window as any).__wakeFake.instances.filter((rec: any) => rec.started).length);
+  expect(after).toBe(before + 1);
+  await page.evaluate(() => (window as any).__wakeFake.heard("Hey Tendril, add milk"));
+  await expect(page.locator(".wake-status")).toContainText("Test passed; no command was sent.");
+  expect(await page.evaluate(() => (window as any).__fake.calls.instruction)).toEqual([]);
+  await expect(page.locator(".wake-chip")).toBeHidden();
+});
+
