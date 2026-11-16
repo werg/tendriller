@@ -77,10 +77,21 @@ export interface RuntimeArtifactFeatures {
   speech: { model: string; url: string; sha256: string; engine: { script: string; wasm: string; wasm_sha256: string } } | null;
 }
 export interface PublicationManifest {
-  id: string; base: string; entry?: string;
+  id: string; base: string;
+  /** Canonical authored root entry, identical for every document in this publication. */
+  entry: string;
   runtime: { version: string; id?: string; base: string; assets?: PublicationAsset[]; features?: RuntimeArtifactFeatures };
   assets: PublicationAsset[];
 }
+export type RuntimeConfiguration = {
+  id: string; base: string; version: number; ws: string;
+  features: RuntimeArtifactFeatures & { push: boolean; vapid: string | null; shared_by: string };
+  preview?: boolean;
+} & (
+  /** Decoded logical path of this document, independently of the publication's root entry. */
+  { publication: PublicationManifest; documentPath: string }
+  | { publication?: undefined; documentPath: null }
+);
 export interface RuntimeFrame { t: string; [key: string]: unknown }
 /** Deliberately small transport interface; fixtures use the production runtime. */
 export interface RuntimeSocket {

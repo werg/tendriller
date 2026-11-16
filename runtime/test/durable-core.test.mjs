@@ -134,7 +134,7 @@ async function environment({ database = new Database(), localStorage = storage()
     sent.push(structuredClone(frame));
     if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev: 1, role: "owner", pending: false, transcript: [] });
   });
-  const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null} });
+  const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, documentPath: null, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null} });
   await flush();
   return { core, database, localStorage, transport, sent, window, blobs,
     async commit() { database.commit(); await flush(); },

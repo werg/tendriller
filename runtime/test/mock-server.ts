@@ -93,7 +93,7 @@ export class MockServer {
       runtime: { version: runtimeManifest.version, id: runtimeManifest.id, base: this.runtimeUrl(t) },
       assets: [{ path: "index.html", sha256: hash(t.html), type: "text/html" }, ...Object.entries(files).map(([path, file]) => ({ path, sha256: hash(file.body), type: file.type }))],
     };
-    const cfg = { id: t.id, base, publication: manifest, preview: t.preview, version, ws: base + "_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: { model: "fixture", url: "model", sha256: "0".repeat(64), engine: { script: "engine.js", wasm: "engine.wasm", wasm_sha256: "0".repeat(64) } } } };
+    const cfg = { id: t.id, base, documentPath: "index.html", publication: manifest, preview: t.preview, version, ws: base + "_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: { model: "fixture", url: "model", sha256: "0".repeat(64), engine: { script: "engine.js", wasm: "engine.wasm", wasm_sha256: "0".repeat(64) } } } };
     const html = `<!doctype html><html><head><base href="${publicationBase}"><script>window.__TENDRIL__=${JSON.stringify(cfg)};</script>` +
       (t.noSw ? "<script>window.__TENDRIL_NO_SW__=true</script>" : "") +
       `<script src="${this.runtimeUrl(t)}tendril.js"></script><title>Test ${t.id} v${version}</title></head><body>${t.html}</body></html>`;

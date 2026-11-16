@@ -49,7 +49,7 @@ function validManifest(value: any): value is PublicationManifest {
     const base = new URL(value.base, SCOPE), runtime = new URL(value.runtime.base, SCOPE), origin = new URL(SCOPE).origin;
     if (base.origin !== origin || runtime.origin !== origin || base.search || runtime.search || base.hash || runtime.hash) return false;
     if (!base.pathname.endsWith(`/_publications/${value.id}/`) || !/\/_tendril\/runtime\/[a-f0-9]{64}\/$/.test(runtime.pathname)) return false;
-    if (!safePath(value.entry || "index.html")) return false;
+    if (!safePath(value.entry) || !value.assets.some((asset: any) => asset.path === value.entry && typeof asset.type === "string" && /^text\/html(?:;|$)/i.test(asset.type))) return false;
     return value.assets.every((asset: any) => safePath(asset.path) && /^[a-f0-9]{64}$/.test(asset.sha256) && typeof asset.type === "string");
   } catch { return false; }
 }
@@ -157,7 +157,7 @@ async function navigate(event: FetchEvent): Promise<Response> {
   const prior = pin || meta.clients[replaced || event.clientId] || meta.latest;
   const publication = prior && meta.complete.includes(prior) ? meta.publications[prior] : undefined;
   const path = pinned ? pinned[2] : relative;
-  const filename = path === "" ? (publication?.entry || "index.html") : path?.endsWith("/") ? path + "index.html" : path;
+  const filename = path === "" ? publication?.entry : path?.endsWith("/") ? path + "index.html" : path;
   const declared = safePath(filename) ? publication?.assets.find(asset => asset.path === filename && asset.type.split(";", 1)[0] === "text/html") : undefined;
   // Ordinary file routing: an offline nested URL must never show another entry page.
   const savedURL = publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;

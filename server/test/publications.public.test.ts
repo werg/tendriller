@@ -60,7 +60,8 @@ it('keeps logical nested paths separate from encoded document URLs', async () =>
   expect(response.status).toBe(200);
   const html = await response.text();
   const config = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
-  expect(config.publication.entry).toBe(path);
+  expect(config.publication.entry).toBe('index.html');
+  expect(config.documentPath).toBe(path);
   expect(config.publication.base).toBe(new URL(page.page_url).pathname + `_publications/${written.version}/`);
   const base = new URL(new RegExp('<base href="([^"]+)"').exec(html)![1], url);
   expect(base.pathname).toBe(config.publication.base + encoded + '/');

@@ -18,13 +18,12 @@ export interface PublicationManifest {
   runtime: { id: string; version: string; base: string; features: RuntimeArtifactFeatures };
 }
 
-export interface InjectConfig {
+export type InjectConfig = {
   id: string;
   base: string;
   version: number;
   features: Features;
-  publication?: PublicationManifest | null;
-}
+} & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
 
 /** Escapes a JSON string for safe inclusion inside a <script> element. */
 function scriptSafeJson(v: unknown): string {
@@ -42,10 +41,10 @@ function attr(s: string): string {
 
 export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
   const publication = cfg.publication;
-  const directory = publication?.entry.slice(0, publication.entry.lastIndexOf("/") + 1) ?? "";
+  const directory = cfg.documentPath === null ? "" : cfg.documentPath.slice(0, cfg.documentPath.lastIndexOf("/") + 1);
   const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
   const runtimeBase = publication?.runtime.base ?? `${cfg.base}_tendril/runtime/${runtimeRelease.id}/`;
-  const conf = { id: cfg.id, base: cfg.base, version: cfg.version, ws: cfg.base + "_tendril/ws",
+  const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath, ws: cfg.base + "_tendril/ws",
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
