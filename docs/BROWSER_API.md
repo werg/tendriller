@@ -96,12 +96,54 @@ is `accepted`, `queued`, or `rejected`. `send_result` reports delayed terminal
 receipts with `cid`, original data, and original scope/generation context.
 Use application IDs to reconcile your own records with those receipts.
 
-`state.get(path?)` returns the local view. `set`, `delete`, and `patch` are
-asynchronous durable writes; `state_result` reports terminal results. The runtime
-persists commands before applying optimism or delivery. It keeps their captured
-generations across reconnection and refuses to apply stale optimism over a newer
-scope. `scopes.list()` describes known scopes. Captured options belong to the
-original command: retry does not silently rebase them onto current work.
+`state.get(path?)` returns a copy of the local view, including pending ordinary
+writes. `state.revision` is the last confirmed revision; combining those two
+values does not construct a coherent authoritative snapshot. `set`, `delete`,
+`patch`, and `apply` are asynchronous durable writes; `state_result` reports
+terminal results, including those arriving after the promise returned `queued`.
+The runtime persists commands before applying optimism or delivery.
+
+`state.apply(ops, options?)` submits one atomic batch of explicit `set`/`delete`
+operations. `set(null)` stores null; `delete` removes the key. Arrays are complete
+values. Literal array paths support keys containing dots and slashes. Explicit
+paths cannot traverse existing scalar, array or null parents; use a parent `set`
+for a deliberate replacement. `patch` follows RFC 7396: null deletes and an
+object patch intentionally replaces a non-object parent.
+
+All four write methods accept `{scope?,expected_generations?,conditions?,
+expected_revision?}`. For example, one claim can update several fields together:
+
+```js
+const result = await tendril.state.apply([
+  {op: "set", path: ["claims", itemId], value: tendril.device.id},
+  {op: "set", path: ["items", itemId, "status"], value: "claimed"},
+], {conditions: [{path: ["claims", itemId], exists: false}]});
+
+if (result.status === "accepted") showClaimAccepted();
+if (result.status === "queued") showClaimPending();
+if (result.status === "rejected") showClaimNeedsReview(result.message);
+```
+
+Conditions use exactly `equals` or `exists`, with missing distinct from null.
+They all refer to the authoritative state before the batch. A revision guard
+compares the global revision and catches unrelated writes as well as changes
+that were subsequently undone. See [the protocol](PROTOCOL.md#shared-state-writes)
+for limits, array/object equality and error details.
+
+Conditional commands are never applied optimistically. Keep a pending action
+indicator separate from the accepted shared value. A `state_conflict` rejection
+contains the observed `rev` and `conflict` (`kind`, optional condition index and
+path); it carries no current field values. The runtime reconciles current state
+from the service. Preserve the draft and let the person review before creating
+new work. Automatic delivery retries retain the same terminal outcome.
+
+The runtime copies operations, predicates and generation guards when invoked and
+stores their original values before delivery. Reconnection/reload never refresh
+the predicate or silently rebase intent. Scope capture covers both condition-read
+and write paths. Obsolete generation contexts and incompatible pending paths do
+not cover newer shared state. `scopes.list()` describes known scopes. These
+concurrency checks do not grant permissions or enforce ownership against other
+authorized writers who omit them.
 
 `request(path,{method?,body?})` accesses a documented page-side `_tendril/` route
 with current device credentials. Use a relative path without traversal or query

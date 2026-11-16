@@ -9,6 +9,16 @@ const scopes = [
 ];
 const set = path => ({ op: "set", path, value: {} });
 
+test("conditional dependencies capture scopes even when the write is outside their paths", () => {
+  const ops = [set(["derived"])];
+  const conditions = [{ path: ["notebook", "entries"], equals: [] }];
+  const context = { ...captureContext(scopes, "state", { conditions }, ops), conditions };
+  assert.deepEqual(context.expected_generations, { "opaque-a": "gen-1" });
+  assert.equal(matchesContext(scopes, context, "state", ops), true);
+  assert.equal(matchesContext([{ ...scopes[0], generation: "next" }], context, "state", ops), false);
+  assert.equal(matchesContext(scopes, { expected_generations: {}, conditions }, "state", ops), false);
+});
+
 test("state guards cover descendants, ancestors and whole-document writes", () => {
   for (const path of [["notebook", "entries", "new"], ["notebook"], []]) {
     const context = captureContext(scopes, "state", {}, [set(path)]);

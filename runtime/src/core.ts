@@ -4,7 +4,9 @@ import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, Transc
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
-import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult } from "../../contract/index.mjs";
+import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult, StateWriteOptions } from "../../contract/index.mjs";
+import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError } from "../../contract/state.mjs";
+import type { NormalizedStateChecks } from "../../contract/state.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
 import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
@@ -44,6 +46,10 @@ export function createBus(): Bus {
 }
 
 function newCid(): string { return "c_" + Date.now().toString(36) + rand32(8); }
+function stateRejection(message: any): StateResult {
+  return { status: "rejected", error: String(message.error?.code || message.error), message: message.message || message.error?.message,
+    ...(typeof message.rev === "number" ? { rev: message.rev } : {}), ...(message.conflict ? { conflict: clone(message.conflict) } : {}) };
+}
 
 const permanentUploadFailure = (error: unknown): boolean => error instanceof BlobHttpError
   ? error.status < 500 && error.status !== 408 && error.status !== 429
@@ -70,7 +76,8 @@ export function createCore(cfg: TendrilConfig): Internal {
   let local: any = {};
   let rev = 0;
   let fullStateRev = 0;
-  type PendingState = { cid: string; ops: Op[] } & OperationContext;
+  type PendingState = { cid: string; ops: Op[] } & OperationContext & NormalizedStateChecks;
+  const conditional = (checks: NormalizedStateChecks) => checks.expected_revision !== undefined || checks.conditions !== undefined;
   let scopes: ScopeDescriptor[] = [];
   let service: ServiceDescriptor | null = null;
   let savingState = 0;
@@ -89,7 +96,14 @@ export function createCore(cfg: TendrilConfig): Internal {
     local = clone(confirmed);
     // Old work stays durable and keeps its original generation until a receipt
     // arrives, but it must not cover a newer session received from the server.
-    for (const p of pendingState) if (matchesContext(scopes, p, "state", p.ops)) local = applyOps(local, p.ops);
+    for (const p of pendingState) if (!conditional(p) && matchesContext(scopes, p, "state", p.ops)) {
+      try { local = applyOps(local, p.ops); }
+      catch (error) {
+        // A remote parent replacement can make an old path incompatible. Keep
+        // the original command for its receipt, without hiding newer authority.
+        if (!(error instanceof StatePathError)) throw error;
+      }
+    }
   };
   rebuild();
 
@@ -114,10 +128,11 @@ export function createCore(cfg: TendrilConfig): Internal {
   const stateListeners = new Set<(state: any, ops: any[], by: string) => void>();
 
   let saving = Promise.resolve();
-  const localOps = (operation: Op[] | ((state: any) => Op[]), options?: OperationOptions): Promise<StateResult> => {
-    if (Array.isArray(operation) && !operation.length) return Promise.resolve({ status: "accepted", rev });
+  const localOps = (operation: Op[] | ((state: any) => Op[]), options?: StateWriteOptions): Promise<StateResult> => {
+    const checks = normalizeStateChecks(options);
+    if (Array.isArray(operation) && !operation.length && !conditional(checks)) return Promise.resolve({ status: "accepted", rev });
     const cid = newCid();
-    const capturedScopes = clone(scopes), capturedOptions = clone(options);
+    const capturedScopes = clone(scopes), capturedOptions = { ...clone(options), ...checks };
     let context: OperationContext = { expected_generations: {} };
     let empty = false;
     savingState++;
@@ -125,15 +140,15 @@ export function createCore(cfg: TendrilConfig): Internal {
     // or network delivery is visible before the command's durable commit.
     const saved = saving.then(async () => {
       await storeReady;
-      const ops = typeof operation === "function" ? operation(local) : operation;
-      if (!ops.length) { empty = true; return; }
+      const ops = normalizeStateOps(typeof operation === "function" ? operation(local) : operation);
+      if (!ops.length && !conditional(checks)) { empty = true; return; }
       context = captureContext(capturedScopes, "state", capturedOptions, ops);
-      const pending = { cid, ops, ...context };
+      const pending = { cid, ops, ...context, ...checks };
       await store.addDurable({ t: "state", ...pending });
       pendingState.push(pending);
       rebuild();
       persistSoon();
-      emitState(ops, "device:" + device.id);
+      if (!conditional(checks)) emitState(ops, "device:" + device.id);
     });
     saving = saved.then(() => {}, () => {});
     return saved.then(async () => {
@@ -143,12 +158,12 @@ export function createCore(cfg: TendrilConfig): Internal {
       void pump();
       const ack = await receipt;
       return !ack ? { status: "queued" } as StateResult
-        : ack.error ? { status: "rejected", error: String(ack.error?.code || ack.error), message: ack.message || ack.error?.message } as StateResult
+        : ack.error ? stateRejection(ack)
         : { status: "accepted", rev: ack.rev } as StateResult;
     }, error => {
       savingState--;
       const result: StateResult = { status: "rejected", error: (error as any)?.code || "storage_unavailable", message: error instanceof Error ? error.message : "Could not save this change." };
-      bus.emit("state_result", { cid, ...context, ...result });
+      bus.emit("state_result", { cid, ...context, ...checks, ...result });
       return result;
     });
   };
@@ -156,18 +171,20 @@ export function createCore(cfg: TendrilConfig): Internal {
   const state: StateApi = {
     get revision() { return rev; },
     get(path?: Path) { return clone(getPath(local, toPath(path))); },
-    set(path: Path, value: any, options?: OperationOptions) {
+    apply(ops, options) { return localOps(normalizeStateOps(ops), options); },
+    set(path: Path, value: any, options?: StateWriteOptions) {
       const p = toPath(path);
       if (!p.length) throw new Error("tendril.state.set needs a path");
-      return localOps([value === undefined ? { op: "delete", path: p } : { op: "set", path: p, value: clone(value) }], options);
+      return localOps(normalizeStateOps([value === undefined ? { op: "delete", path: p } : { op: "set", path: p, value }]), options);
     },
-    delete(path: Path, options?: OperationOptions) {
+    delete(path: Path, options?: StateWriteOptions) {
       const p = toPath(path);
       if (!p.length) throw new Error("tendril.state.delete needs a path");
       return localOps([{ op: "delete", path: p }], options);
     },
-    patch(mergePatch: object, options?: OperationOptions) {
+    patch(mergePatch: object, options?: StateWriteOptions) {
       if (!mergePatch || typeof mergePatch !== "object" || Array.isArray(mergePatch)) throw new Error("tendril.state.patch needs an object");
+      assertStateJson(mergePatch);
       const patch = clone(mergePatch);
       return localOps(current => mergePatchToOps(current, patch), options);
     },
@@ -582,8 +599,8 @@ export function createCore(cfg: TendrilConfig): Internal {
             rev = m.rev;
           }
           rebuild();
-          bus.emit("state_result", { cid: p.cid, scope: p.scope, expected_generations: p.expected_generations, ...(m.error
-            ? { status: "rejected", error: String(m.error?.code || m.error), message: m.message || m.error?.message }
+          bus.emit("state_result", { cid: p.cid, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(m.error
+            ? stateRejection(m)
             : { status: "accepted", rev: m.rev }) });
           if (m.error) emitState([], "rejected");
           else if (JSON.stringify(local) !== before) emitState([], "server");
@@ -878,7 +895,7 @@ export function createCore(cfg: TendrilConfig): Internal {
           cid: item.cid, device: device.id, status: "queued" });
       }
     }
-    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], scope: i.msg.scope, expected_generations: i.msg.expected_generations }));
+    const fromOutbox = store.items.filter((i) => i.msg.t === "state").map((i) => ({ cid: i.cid, ops: i.msg.ops as Op[], scope: i.msg.scope, expected_generations: i.msg.expected_generations, ...normalizeStateChecks(i.msg) }));
     const before = JSON.stringify(local);
     // The durable outbox is the only source of work that may be delivered.
     pendingState = store.persistent ? fromOutbox : [];
