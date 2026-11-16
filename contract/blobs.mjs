@@ -72,6 +72,8 @@ export const blobSchemas = Object.freeze({
   fileDelete: obj({ ...guards, path: filePathSchema, expected_revision: n }, [...requiredGuards, "path", "expected_revision"]),
   fileResult: obj({ file, cursor: n }, ["file", "cursor"]),
   fileChange: obj({ cursor: n, file, cid, actor: s(), at: n }, ["cursor", "file", "cid", "actor", "at"]),
+  fileChanges: obj({ changes: arr(obj({ cursor: n, file, cid, actor: s(), at: n },
+    ["cursor", "file", "cid", "actor", "at"]), 100), cursor: n }, ["changes", "cursor"]),
   publicationFile,
   publicationWrite: obj({
     ...guards, expected_head_revision: n, entry: filePathSchema,
@@ -82,8 +84,24 @@ export const blobSchemas = Object.freeze({
     [...requiredGuards, "expected_head_revision", "version"]),
   publicationResultV3: obj({ version: { type: "integer", minimum: 1 }, head_revision: { type: "integer", minimum: 1 } },
     ["version", "head_revision"]),
+  publicationReceipt: obj({ version: { type: "integer", minimum: 1 }, head_revision: { type: "integer", minimum: 1 } },
+    ["version", "head_revision"]),
   publicationHead: obj({ current: n, latest: n, healthy: n, head_revision: n,
     needs_republication: bool }, ["current", "latest", "healthy", "head_revision"]),
+  publicationList: obj({
+    current: n, latest: n, healthy: n, head_revision: n, needs_republication: bool, served: n,
+    versions: arr(obj({
+      version: { type: "integer", minimum: 1 }, created_at: n, status: s(),
+      message: { type: ["string", "null"] }, files: n, by: s(),
+      errors: arr({}),
+    }, ["version", "created_at", "status", "message", "files"])),
+  }, ["current", "latest", "healthy", "head_revision", "versions"]),
+  publicationDetails: obj({
+    version: { type: "integer", minimum: 1 }, entry: filePathSchema,
+    files: arr(obj({ path: filePathSchema, blob_id: blobIdSchema, type: s(),
+      sha256: sha256Schema, size: metadata.size },
+      ["path", "blob_id", "type"]), RESOURCE_LIMITS.files_per_publication),
+  }, ["version", "entry", "files"]),
   transferDescriptor: obj({
     transfer_id: s(), phase: { enum: ["queued", "uploading", "ready", "committing", "accepted", "rejected"] },
     blob, file, error: transferError, progress: n,
