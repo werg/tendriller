@@ -48,6 +48,23 @@ test("preview conditional writes preserve read guards, atomic state and terminal
     };
     ws.on("message", received); ws.send(JSON.stringify(message));
   });
+  const initial = adapter.state;
+  for (const [index, extra] of [{ expected_revison: 99 }, { condition: [{ path: ["owner"], exists: false }] }].entries()) {
+    const cid = `unknown-guard-${index}`;
+    const rejected = await call({ t: "state", cid, expected_generations: {}, ...extra,
+      ops: [{ op: "set", path: ["owner"], value: "must not be admitted" }] });
+    assert.equal(rejected.error, "bad_request"); assert.match(rejected.message, /Unknown field/);
+    assert.deepEqual(adapter.state, initial); assert.equal(adapter.rev, 0);
+    // A corrected no-op with the same CID proves validation did not consume a
+    // receipt. Waiting for it also observes the preceding ordered state reset.
+    assert.equal((await call({ t: "state", cid, expected_generations: {}, ops: [] })).rev, 0);
+    assert.ok(frames.some(frame => frame.t === "state_reset" && frame.cid === cid && frame.rev === 0));
+  }
+  const replacement = { t: "state", cid: "replacement-requires-ops", expected_generations: {}, state: { overwritten: true } };
+  const rejectedReplacement = await call(replacement);
+  assert.equal(rejectedReplacement.error, "bad_request"); assert.match(rejectedReplacement.message, /require ops/);
+  assert.deepEqual(adapter.state, initial); assert.equal(adapter.rev, 0);
+  assert.equal((await call({ t: "state", cid: replacement.cid, expected_generations: {}, ops: [] })).rev, 0);
   const body = { t: "state", cid: "claim-a", expected_generations: {},
     conditions: [{ path: ["source", "version"], equals: 1 }, { path: ["owner"], exists: false }],
     ops: [{ op: "set", path: ["owner"], value: "a" }, { op: "set", path: ["status"], value: "claimed" }] };

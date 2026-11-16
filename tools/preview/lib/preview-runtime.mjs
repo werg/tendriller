@@ -147,15 +147,23 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
         const subscription = m.t === "stream_subscribe" || m.t === "stream_unsubscribe";
         const receipted = !subscription && m.t !== "state_snapshot";
         const fingerprint = JSON.stringify(m);
-        if (receipted && m.cid && dedupe.has(key)) {
-          const prior = dedupe.get(key);
-          const replay = prior.fingerprint === fingerprint ? prior.result : { error: "command_conflict", message: "CID belongs to a different command" };
-          ack(replay);
-          if (m.t === "state" && replay.error) reply({ t: "state_reset", state: shared, scopes, rev });
-          return;
-        }
         let result;
         try {
+          if (m.t === "state") {
+            if (role === "display") throw Object.assign(Error("Display devices cannot change state"), { code: "forbidden" });
+            // Match the service boundary before guard selection or receipt
+            // lookup: misspelled guards must never become unconditional work.
+            const { t: _type, ...input } = m;
+            const command = assertValid("stateUpdate", input);
+            if (!("ops" in command)) throw Object.assign(Error("WebSocket state writes require ops"), { code: "bad_request" });
+          }
+          if (receipted && m.cid && dedupe.has(key)) {
+            const prior = dedupe.get(key);
+            const replay = prior.fingerprint === fingerprint ? prior.result : { error: "command_conflict", message: "CID belongs to a different command" };
+            ack(replay);
+            if (m.t === "state" && replay.error) reply({ t: "state_reset", state: shared, scopes, rev });
+            return;
+          }
           const operation = { send: "event", state: "state", capture_complete: "capture" }[m.t];
           if (operation) {
             assertValid("preconditions", m);
@@ -189,7 +197,6 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
               break;
             }
             case "state": {
-              if (role === "display") { result = { error: "forbidden", message: "Display devices cannot change state" }; break; }
               const ops = validateOps(m.ops), checks = validateStateChecks(m);
               checkState(shared, rev, checks);
               if (ops.length) {
