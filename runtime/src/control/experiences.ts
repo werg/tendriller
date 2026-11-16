@@ -39,7 +39,8 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (response.status === 204) return null;
     const result = await response.json();
-    if (!response.ok) throw new Error(result?.error?.message || `Request failed (${response.status})`);
+    if (!response.ok) throw Object.assign(new Error(result?.error?.message || `Request failed (${response.status})`),
+      { code: result?.error?.code, status: response.status });
     return result;
   };
   const actionButtons = new Set<HTMLButtonElement>();
@@ -146,6 +147,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
       else { conflict = null; conflicts.hidden = true; for (const key of dirty) if (equal(next[key], before[key])) (baseline as any)[key] = next[key]; }
     }
     sessionLoaded = true;
+    if (!latest.staged_remix) publishCommand = null;
     resumeState.textContent = `${latest.pending_inputs.count} inputs after the saved checkpoint. ${latest.staged_remix ? "A prepared copy is waiting to be published." : ""}${latest.pending_inputs.history_gap ? " Some older event history has expired." : ""}`;
     if (latest.staged_remix && !result.contains(publish)) showPrepared("A prepared copy is ready. Connect an agent, then publish it here, or discard it to start again.");
     if (!latest.staged_remix && result.contains(publish)) clear(result);
@@ -176,20 +178,41 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
   const includeData = h("input", { type: "checkbox", checked: draft.includeData === true }); includeData.style.width = "auto";
   const copyName = h("input", { "data-copy-name": "", type: "text", maxlength: 100, placeholder: "Name for the copy", value: draft.copyName || "" });
   const result = h("div"), copyResult = h("div");
+  let publishCommand: { cid: string; expected_generations: Record<string, string>; expected_version: number } | null =
+    typeof draft.publishCommand?.cid === "string" && Number.isSafeInteger(draft.publishCommand?.expected_version)
+      && draft.publishCommand?.expected_generations && typeof draft.publishCommand.expected_generations === "object"
+      ? draft.publishCommand : null;
   const publish = button("Publish prepared copy", async () => {
-    const current = await request("session");
-    if (!summary || current.version !== summary.version) throw new Error("The page changed. Refresh saved context to review its current version before publishing. Your draft stays here.");
-    await request("bundle/publish", "POST", { expected_version: summary.version });
+    if (!summary) throw new Error("Wait for saved context to load before publishing.");
+    if (!publishCommand || publishCommand.expected_version !== summary.version) {
+      const current = await request("session");
+      if (current.version !== summary.version) throw new Error("The page changed. Refresh saved context to review its current version before publishing. Your draft stays here.");
+      const active = await request("scopes");
+      publishCommand = { cid: crypto.randomUUID(), expected_version: summary.version,
+        expected_generations: Object.fromEntries(active.scopes.map((entry: any) => [entry.id, entry.generation])) };
+      saveDrafts();
+    }
+    let published: any;
+    try { published = await request("bundle/publish", "POST", publishCommand); }
+    catch (error) {
+      if ((error as any).code === "stale_generation" || (error as any).code === "generation_required") {
+        publishCommand = null; saveDrafts();
+      }
+      throw error;
+    }
+    publishCommand = null; saveDrafts();
+    summary = { ...summary, version: published.version, staged_remix: false };
     core.bus.emit("session_saved", {});
     clear(result); status.textContent = pendingApply ? "Prepared copy published. Apply the page update when your drafts are ready." : "Prepared copy published.";
   }, "btn primary");
   publish.dataset.reviewCopy = "";
-  const discard = button("Discard prepared copy", async () => { await request("bundle", "DELETE"); clear(result); if (summary) summary.staged_remix = false; status.textContent = "Prepared copy discarded."; });
+  const discard = button("Discard prepared copy", async () => { await request("bundle", "DELETE"); publishCommand = null; saveDrafts(); clear(result); if (summary) summary.staged_remix = false; status.textContent = "Prepared copy discarded."; });
   const showPrepared = (text: string, details?: HTMLElement) => clear(result, h("p", { text }), details, publish, discard);
   const imported = h("input", { type: "file", accept: ".json,application/json" });
   imported.onchange = () => { const file = imported.files?.[0]; if (!file) return; imported.value = ""; void run(async () => {
     if (file.size > 36 * 1024 * 1024) throw new Error("This bundle is too large (36 MB maximum).");
     const bundle = JSON.parse(await file.text()), data = await request("bundle", "PUT", bundle);
+    publishCommand = null; saveDrafts();
     summary = { ...summary, version: data.expected_version, staged_remix: true };
     const inspection = h("details", null, h("summary", null, "Prepared contents"), h("p", { text: `Name: ${bundle.name}. ${bundle.state ? "Includes shared data." : "Page template without shared data."}` }),
       h("ul", null, ...(bundle.files || []).slice(0, 100).map((item: any) => h("li", { text: String(item.path) }))));
@@ -204,7 +227,7 @@ export function mountExperienceSettings(host: HTMLElement, core: Core): void {
       clear(copyResult, h("p", { text: data.next_step }), h("a", { class: "btn", href: data.page_url, target: "_blank", rel: "noopener" }, "Open your copy")); status.textContent = "Copy created. Connect its agent to publish it.";
     }), copyResult));
 
-  function draftSnapshot() { return { brief: { baseline, values: currentBrief(), rawQuestions: questions.value }, timer: timerSnapshot(), copyName: copyName.value, includeData: includeData.checked }; }
+  function draftSnapshot() { return { brief: { baseline, values: currentBrief(), rawQuestions: questions.value }, timer: timerSnapshot(), copyName: copyName.value, includeData: includeData.checked, publishCommand }; }
   function saveDrafts() {
     try { sessionStorage.setItem(key, JSON.stringify(draftSnapshot())); return true; }
     catch { status.textContent = "This browser could not save your settings draft. Keep the page open or download the draft before applying an update."; return false; }

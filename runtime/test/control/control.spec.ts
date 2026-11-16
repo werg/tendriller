@@ -464,3 +464,28 @@ test('prepared-copy recovery is visible and private saved context is cleared on 
   await page.evaluate(() => (window as any).__fake.setRole('display'));
   await expect(card).toBeHidden(); await expect(card).toHaveText('');
 });
+
+test('prepared-copy publishing sends stable command preconditions and retries the same command', async ({ page }) => {
+  const http = { ...resumeRoutes(true), '/t/abc/s/key/_tendril/scopes': {
+    scopes: [{ id: 'notes', generation: 'generation-one', paths: [['notes']], operations: [] }],
+  } };
+  await load(page, { http }); await openSheet(page);
+  const posts: any[] = [];
+  await page.route(`${ORIGIN}/t/abc/s/key/_tendril/bundle/publish`, route => {
+    posts.push(route.request().postDataJSON());
+    if (posts.length === 1) return route.fulfill({ status: 503, json: { error: { code: 'temporarily_unavailable', message: 'Try again' } } });
+    return route.fulfill({ json: { version: 4, restored: true } });
+  });
+  const card = page.getByRole('region', { name: 'Continue your work', includeHidden: true });
+  await card.getByRole('button', { name: 'Review prepared copy', exact: true }).click();
+  const publish = page.getByRole('button', { name: 'Publish prepared copy', exact: true });
+  await publish.click();
+  await expect.poll(() => posts.length).toBe(1);
+  await expect(publish).toBeEnabled();
+  await publish.click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1]).toEqual(posts[0]);
+  expect(posts[0]).toMatchObject({ expected_version: 3, expected_generations: { notes: 'generation-one' } });
+  expect(posts[0].cid).toMatch(/^[0-9a-f-]{36}$/);
+  await expect(page.getByText('Prepared copy published.')).toBeVisible();
+});

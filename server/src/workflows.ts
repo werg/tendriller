@@ -151,5 +151,5 @@ export async function handleScopes(t: Tendril, req: Request, rest: string, princ
     if (req.method === 'POST' && match[2]) return rotateScope(t, match[1]);
     if (req.method === 'DELETE' && !match[2]) { rotateScope(t, match[1], null, true); return { retired: true }; }
     throw new HttpError(405, 'method_not_allowed', 'Unknown scope mutation');
-  }));
+  }, { scopes: [match[1]] }));
 }

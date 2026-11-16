@@ -56,11 +56,12 @@ export function replay<T>(t: Tendril, actor: string, input: unknown, targets: Mu
   return { found: true, result: JSON.parse(previous.result) as T };
 }
 /** Validate, deduplicate and mutate synchronously under the local transaction. */
-export function mutate<T>(t: Tendril, actor: string, input: unknown, targets: MutationTargets, payload: unknown, write: (context: ValidatedContext) => T): T {
+export function mutate<T>(t: Tendril, actor: string, input: unknown, targets: MutationTargets, payload: unknown, write: (context: ValidatedContext) => T,
+  fingerprintTargets: MutationTargets = targets): T {
   const command = preconditions(input);
-  const fingerprint = stable({ command, targets, payload });
+  const fingerprint = stable({ command, targets: fingerprintTargets, payload });
   return t.transaction(() => {
-    const previous = replay<T>(t, actor, command, targets, payload);
+    const previous = replay<T>(t, actor, command, fingerprintTargets, payload);
     if (previous.found) return previous.result;
     const context = checkGenerations(t, command, targets);
     const result = write(context);

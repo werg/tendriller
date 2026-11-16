@@ -7,6 +7,26 @@ import { mutate, registerScope, rotateScope, scopes } from '../src/scopes';
 beforeAll(async () => { await applyD1Migrations(env.ACCOUNTS, inject('d1Migrations')); await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); });
 const command = (extra: Record<string, unknown> = {}) => ({ cid: crypto.randomUUID(), expected_generations: {}, ...extra });
 
+it('replays scope creation and retirement after their state changes', async () => {
+  const h = await create();
+  const createCommand = command({ paths: [['notes']], operations: [] });
+  const created = await apiJson(h, 'PUT', 'scopes/notebook', createCommand);
+  expect(await apiJson(h, 'PUT', 'scopes/notebook', createCommand)).toEqual(created);
+  const retireCommand = command({ expected_generations: { notebook: created.generation } });
+  const retired = await apiJson(h, 'DELETE', 'scopes/notebook', retireCommand);
+  expect(await apiJson(h, 'DELETE', 'scopes/notebook', retireCommand)).toEqual(retired);
+  expect(retired).toEqual({ retired: true });
+});
+
+it('accepts publication preconditions for the full active-scope allowance', async () => {
+  const h = await create();
+  const expected_generations = Object.fromEntries(Array.from({ length: RESOURCE_LIMITS.active_scopes }, (_, index) =>
+    [`scope-${String(index).padStart(3, '0')}-${'x'.repeat(120)}`, crypto.randomUUID()]));
+  const body = command({ expected_generations, expected_version: 0 });
+  expect(JSON.stringify(body).length).toBeGreaterThan(4096);
+  expect((await api(h, 'POST', 'bundle/publish', body)).status).toBe(404);
+});
+
 it('publishes the same deployment descriptor and actual page limits through HTTP and WebSocket', async () => {
   const page = await create();
   const agent = await apiJson(page, 'GET', 'service');
