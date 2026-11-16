@@ -118,7 +118,7 @@ function storage() {
 }
 async function environment({ database = new Database(), localStorage = storage(), scopes = [], state = {}, rev = 1, online = true, blobs = blobService(), configuration = {} } = {}) {
   const timers = new Map(); let next = 0;
-  const clock = { setTimeout(fn) { const id = ++next; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
+  const clock = { setTimeout(fn, ms) { const id = ++next; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return ++next; }, clearInterval() {} };
   const window = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: "hidden", readyState: "complete", currentScript: { src: "https://fixture.test/runtime/tendril.js" } });
   const navigations = [];
   const globals = { window, document, localStorage, sessionStorage: storage(), indexedDB: database.indexedDB,
@@ -139,9 +139,13 @@ async function environment({ database = new Database(), localStorage = storage()
   await flush();
   return { core, database, localStorage, transport, sent, window, blobs, navigations,
     async commit() { database.commit(); await flush(); },
-    async settle() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } await flush(); },
+    async settle() { for (const [id, timer] of [...timers]) { timers.delete(id); timer.fn(); } await flush(); },
+    async expire(ms) { for (const [id, timer] of [...timers]) if (timer.ms === ms) { timers.delete(id); timer.fn(); } await flush(); },
   };
 }
+// An ACK phase and its deletion are separate IndexedDB transactions. Ordinary
+// receipt assertions advance both; failure tests advance each phase explicitly.
+async function commitAck(env) { await flush(); await env.commit(); await env.commit(); }
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 const descriptor = { id: "opaque-scope", generation: "original", paths: [["notebook"]], operations: [] };
 
@@ -212,6 +216,7 @@ test("state and events persist original identity and guards before optimism or d
     assert.deepEqual(stored.msg, frame);
     env.transport.receive({ t: "ack", cid: frame.cid, rev: 2, seq: 1 });
   }
+  await commitAck(env);
   assert.equal((await pending).status, "accepted");
   assert.equal((await input).status, "accepted");
   assert.equal(messages.find(frame => frame.t === "send").data.session, "application-owned");
@@ -238,6 +243,7 @@ test("conditional apply freezes predicates and all ops before durable admission,
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), { notebook: { version: 1 }, claim: null });
   assert.equal(changes.length, 0);
   env.transport.receive({ t: "ack", cid: frame.cid, rev: 2 });
+  await commitAck(env);
   assert.equal((await pending).status, "accepted");
   assert.equal(env.core.state.get("claim").owner, "a");
   assert.equal(env.core.state.get("status"), "claimed");
@@ -277,12 +283,15 @@ test("pending state commands and queue observers expose detached durable identit
   resumed.core.bus.on("state_result", receipt => { receipt.ops[0].value = "mutated"; receipt.conditions[0].equals = "mutated"; });
   resumed.core.bus.on("state_result", receipt => receipts.push(receipt));
   resumed.transport.receive({ t: "ack", cid: original.cid, error: "state_conflict", rev: 1, conflict: { kind: "condition", condition: 0, path: ["item", "done"] } });
-  await flush();
+  await flush(); await resumed.commit();
+  assert.equal(receipts.length, 0, "saving the outcome does not yet claim completed cleanup");
+  assert.equal([...env.database.stores.outbox.values()][0].msg.ops[0].value, true);
+  await resumed.commit();
   assert.equal(receipts[0].cid, original.cid);
   assert.deepEqual(JSON.parse(JSON.stringify(receipts[0].ops)), original.ops);
   assert.deepEqual(JSON.parse(JSON.stringify(receipts[0].conditions)), original.conditions);
   assert.deepEqual(JSON.parse(JSON.stringify(resumed.core.state.pending())), []);
-  assert.equal([...env.database.stores.outbox.values()][0].msg.ops[0].value, true, "observer mutation never changes the stored command before its deletion commits");
+  assert.equal(env.database.stores.outbox.size, 0, "terminal observers run after durable deletion");
 });
 
 test("unchanged local operations have no command receipt while conditional empty checks have real identities", async () => {
@@ -294,6 +303,7 @@ test("unchanged local operations have no command receipt while conditional empty
   await flush(); await env.commit();
   const frame = env.sent.find(frame => frame.t === "state");
   env.transport.receive({ t: "ack", cid: frame.cid, rev: 1 });
+  await commitAck(env);
   const result = await pending;
   assert.equal(result.status, "accepted"); assert.equal(result.cid, frame.cid); assert.equal(result.rev, 1);
   env.transport.receive({ t: "state", rev: 2, ops: [{ op: "set", path: ["remote"], value: true }] });
@@ -301,6 +311,7 @@ test("unchanged local operations have no command receipt while conditional empty
   await flush(); await env.commit();
   const next = env.sent.filter(frame => frame.t === "state").at(-1);
   env.transport.receive({ t: "ack", cid: next.cid, rev: 2 });
+  await commitAck(env);
   assert.equal((await check).status, "accepted");
   assert.equal(env.core.connected, true, "an accepted check has no missing own delta to resynchronize");
   assert.equal(env.core.state.revision, 2); assert.equal(env.core.state.get("remote"), true);
@@ -322,6 +333,7 @@ test("state.snapshot returns authoritative state and matching revision without f
   assert.equal(env.core.state.get("count"), 1); assert.equal(env.core.scopes.list()[0].generation, "original");
   const write = env.sent.find(frame => frame.t === "state");
   env.transport.receive({ t: "ack", cid: write.cid, rev: 2 });
+  await commitAck(env);
   assert.equal((await pending).status, "accepted");
 });
 
@@ -340,12 +352,13 @@ test("late snapshots and conditional ACKs cannot overwrite a newer broadcast or 
   assert.equal(observed.rev, 2); assert.equal(observed.state.shared, "earlier");
   assert.equal(env.core.state.get("shared"), "later"); assert.equal(env.core.state.revision, 3);
   env.transport.receive({ t: "ack", cid: original.cid, rev: 2 });
+  await env.commit(); // Persist the accepted ACK before requesting a full snapshot.
   assert.equal((await pending).status, "queued");
   assert.equal(env.core.connected, false); assert.equal(env.core.pendingWork().state, 1);
   const authority = { mine: "accepted", shared: "later", remote: true };
   const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: authority, rev: 3 });
-  assert.deepEqual(resumed.sent.find(frame => frame.t === "state"), original);
-  resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await flush();
+  assert.equal(resumed.sent.some(frame => frame.t === "state"), false, "the saved ACK needs a snapshot, not another mutation");
+  await resumed.commit();
   assert.deepEqual(JSON.parse(JSON.stringify(resumed.core.state.get())), authority);
   assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
 });
@@ -363,7 +376,7 @@ test("a nested remote delta depending on an unacknowledged parent replacement re
   assert.equal(env.core.state.revision, 1); assert.equal(env.core.state.get("parent"), null);
   const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: { parent: { child: 2 } }, rev: 3 });
   assert.deepEqual(resumed.sent.find(frame => frame.t === "state"), original);
-  resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await flush();
+  resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await commitAck(resumed);
   assert.equal(resumed.core.state.get("parent.child"), 2);
   assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
 });
@@ -396,7 +409,7 @@ test("conditional replay keeps the exact durable predicate and never covers a ne
   second.transport.receive({ t: "ack", cid: replay.cid, error: "state_conflict", message: "Changed", rev: 1,
     conflict: { kind: "condition", condition: 0, path: ["owner"] } });
   second.transport.receive({ t: "state_reset", state: { owner: "b" }, rev: 1, scopes: [] });
-  await flush();
+  await commitAck(second);
   assert.equal(second.core.state.get("owner"), "b");
   assert.equal(second.core.pendingWork().state, 0);
   assert.equal(results[0].status, "rejected");
@@ -410,6 +423,7 @@ test("an empty conditional batch is sent for authoritative evaluation and report
   const frame = env.sent.find(frame => frame.t === "state");
   assert.deepEqual(frame.ops, []);
   env.transport.receive({ t: "ack", cid: frame.cid, error: "state_conflict", rev: 1, conflict: { kind: "revision" } });
+  await commitAck(env);
   const result = await pending;
   assert.equal(result.status, "rejected"); assert.equal(result.rev, 1); assert.equal(result.conflict.kind, "revision");
   assert.throws(() => env.core.state.apply([{ op: "set", path: ["bad"], value: NaN }]));
@@ -439,6 +453,7 @@ test("an optimistic result exceeding state nesting limits still receives its adm
   assert.ok(frame); assert.equal(env.core.state.pending()[0].cid, frame.cid);
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), {});
   env.transport.receive({ t: "ack", cid: frame.cid, error: "bad_ops", message: "State nesting exceeds 128 levels" });
+  await commitAck(env);
   const result = await pending;
   assert.equal(result.status, "rejected"); assert.equal(result.error, "bad_ops"); assert.equal(result.cid, frame.cid);
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.pending())), []);
@@ -455,7 +470,134 @@ test("a remote parent replacement suppresses incompatible pending optimism witho
   assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get("parent"))), [3]);
   assert.equal(env.core.pendingWork().state, 1);
   env.transport.receive({ t: "ack", cid: frame.cid, error: "state_conflict", rev: 2, conflict: { kind: "path", path: ["parent", "child"] } });
+  await commitAck(env);
   assert.equal((await pending).status, "rejected");
+});
+
+test("a saved acceptance reconciles once while durable cleanup waits behind later state broadcasts", async () => {
+  const env = await environment({ state: { count: 0 } }), results = [];
+  env.core.bus.on("state_result", result => results.push(result));
+  const pending = env.core.state.set("count", 1, { expected_revision: 1 });
+  await flush(); await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  env.transport.receive({ t: "ack", cid: original.cid, rev: 2 });
+  assert.equal(env.core.state.get("count"), 0);
+  assert.equal(results.length, 0);
+  await env.commit();
+  assert.equal(env.core.state.get("count"), 1, "a saved ACK is authoritative, although cleanup is still pending");
+  assert.equal(results.length, 0); assert.equal(env.core.state.pending().length, 1);
+  env.transport.receive({ t: "state", rev: 3, ops: [{ op: "set", path: ["count"], value: 2 }] });
+  env.database.failure = true;
+  await env.commit(); await env.expire(8000);
+  assert.equal((await pending).status, "queued");
+  assert.equal(env.core.state.get("count"), 2); assert.equal(results.length, 0);
+  assert.equal([...env.database.stores.outbox.values()][0].msg.outcome.rev, 2);
+  // A duplicate or contradictory ACK must not replace the first saved decision.
+  env.transport.receive({ t: "ack", cid: original.cid, error: "forbidden" });
+  env.database.failure = false;
+  await env.expire(5000); await env.commit();
+  assert.equal(results.length, 1); assert.equal(results[0].status, "accepted");
+  assert.equal(results[0].rev, 2); assert.equal(results[0].cid, original.cid);
+  assert.equal(env.core.state.get("count"), 2); assert.equal(env.core.state.revision, 3);
+  assert.equal(env.core.connected, true); assert.equal(env.core.state.pending().length, 0);
+  assert.equal(env.database.stores.outbox.size, 0);
+  assert.equal(env.sent.filter(frame => frame.t === "state").length, 1);
+});
+
+const acknowledgedOperations = [
+  { name: "state", event: "state_result", error: "forbidden", start: core => core.state.set("notebook.draft", "reviewed", {
+    scope: descriptor.id, conditions: [{ path: ["notebook", "draft"], equals: "original" }], expected_revision: 1,
+  }) },
+  { name: "send", event: "send_result", error: "rate_limited", start: core => core.send({ type: "reviewed.input", record: "item-1" }, { scope: descriptor.id }) },
+  { name: "instruction", event: "conversation_result", error: "resource_quota", start: core => core.conversation.send("Keep the exact reviewed instruction") },
+];
+
+test("failed ACK persistence keeps state, send and conversation unresolved and retries only local storage", async () => {
+  for (const operation of acknowledgedOperations) {
+    const env = await environment({ state: { notebook: { draft: "original" } }, scopes: [descriptor] }), results = [];
+    env.core.bus.on(operation.event, result => results.push(result));
+    const pending = operation.start(env.core);
+    await flush(); await env.commit();
+    const original = env.sent.find(frame => ["state", "send"].includes(frame.t));
+    env.transport.receive({ t: "ack", cid: original.cid, error: operation.error, message: "Current decision" });
+    env.database.failure = true;
+    await env.commit(); await env.expire(8000);
+    assert.equal((await pending).status, "queued", operation.name);
+    assert.equal(results.some(result => result.status !== "queued"), false, operation.name);
+    assert.equal([...env.database.stores.outbox.values()][0].msg.outcome, undefined);
+    env.transport.disconnect(); env.window.dispatchEvent(new Event("online")); await flush();
+    assert.equal(env.sent.filter(frame => ["state", "send"].includes(frame.t)).length, 1,
+      "a reconnect must not resend a known ACK whose outcome write failed");
+    env.database.failure = false;
+    await env.commit(); await env.commit();
+    const final = results.at(-1);
+    assert.equal(final.status, "rejected"); assert.equal(final.error, operation.error); assert.equal(final.cid, original.cid);
+    assert.equal(env.database.stores.outbox.size, 0);
+    assert.equal(env.core.pendingWork().state + env.core.pendingWork().events, 0);
+  }
+});
+
+test("persisted state, send and conversation rejections survive failed deletion and reload without another mutation", async () => {
+  for (const operation of acknowledgedOperations) {
+    const first = await environment({ state: { notebook: { draft: "original" } }, scopes: [descriptor] }), before = [];
+    first.core.bus.on(operation.event, result => before.push(result));
+    const pending = operation.start(first.core);
+    await flush(); await first.commit();
+    const original = first.sent.find(frame => ["state", "send"].includes(frame.t));
+    const ack = { t: "ack", cid: original.cid, error: operation.error, message: "Original authority rejected this command" };
+    first.transport.receive(ack); await first.commit();
+    const saved = [...first.database.stores.outbox.values()][0].msg;
+    const { outcome, ...savedCommand } = saved;
+    assert.deepEqual(outcome, ack); assert.deepEqual(savedCommand, original);
+    first.database.failure = true;
+    await first.commit(); await first.expire(8000);
+    assert.equal((await pending).status, "queued");
+    assert.equal(before.some(result => result.status !== "queued"), false);
+    first.transport.disconnect(); first.database.failure = false;
+    const second = await environment({ database: first.database, localStorage: first.localStorage,
+      state: { notebook: { draft: "new authority" } }, rev: 3, scopes: [{ ...descriptor, generation: "rotated" }] });
+    const after = [];
+    second.core.bus.on(operation.event, result => after.push(result));
+    assert.equal(second.sent.some(frame => ["state", "send"].includes(frame.t)), false,
+      "only local outcome cleanup may run after reload, even if current authority would now accept");
+    assert.equal(second.core.state.get("notebook.draft"), "new authority");
+    assert.equal(after.length, 0);
+    await second.commit();
+    assert.equal(after.length, 1); assert.equal(after[0].status, "rejected");
+    assert.equal(after[0].cid, original.cid); assert.equal(after[0].error, operation.error);
+    if (operation.name === "state") {
+      assert.deepEqual(JSON.parse(JSON.stringify(after[0].ops)), original.ops);
+      assert.deepEqual(JSON.parse(JSON.stringify(after[0].conditions)), original.conditions);
+      assert.deepEqual(JSON.parse(JSON.stringify(after[0].expected_generations)), original.expected_generations);
+    } else if (operation.name === "send") assert.deepEqual(JSON.parse(JSON.stringify(after[0].data)), original.data);
+    else {
+      assert.equal(after[0].text, original.text);
+      assert.equal(second.core.conversation.entries()[0].status, "rejected");
+      assert.equal(second.core.conversation.entries()[0].text, original.text);
+    }
+    assert.equal(second.database.stores.outbox.size, 0);
+  }
+});
+
+test("an ACK that was never saved stays unresolved across reload and retries the exact original conditional command", async () => {
+  const first = await environment({ state: { owner: null } }), before = [];
+  first.core.bus.on("state_result", result => before.push(result));
+  const pending = first.core.state.set("owner", "claimant", { conditions: [{ path: ["owner"], equals: null }], expected_revision: 1 });
+  await flush(); await first.commit();
+  const original = first.sent.find(frame => frame.t === "state");
+  first.transport.receive({ t: "ack", cid: original.cid, error: "forbidden" });
+  first.database.failure = true;
+  await first.commit(); await first.expire(8000);
+  assert.equal((await pending).status, "queued"); assert.equal(before.length, 0);
+  assert.equal([...first.database.stores.outbox.values()][0].msg.outcome, undefined);
+  first.transport.disconnect(); first.database.failure = false;
+  const second = await environment({ database: first.database, localStorage: first.localStorage, state: { owner: null } });
+  assert.deepEqual(second.sent.find(frame => frame.t === "state"), original);
+  const after = [];
+  second.core.bus.on("state_result", result => after.push(result));
+  second.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await commitAck(second);
+  assert.equal(after[0].status, "accepted"); assert.equal(after[0].cid, original.cid);
+  assert.equal(second.core.state.get("owner"), "claimant"); assert.equal(second.core.state.pending().length, 0);
 });
 
 test("failed durable commit never changes optimistic state or sends the command", async () => {
@@ -485,7 +627,7 @@ test("reload replays unchanged commands and rotated scopes cannot hide current s
   assert.equal(second.core.state.get("notebook.draft"), "current");
   assert.equal(second.core.pendingWork().state, 1);
   second.transport.receive({ t: "ack", cid: replay.cid, rev: 2, scopes: [descriptor] });
-  await flush();
+  await commitAck(second);
   assert.equal(second.core.pendingWork().state, 0);
   assert.equal(second.core.state.get("notebook.draft"), "current");
   assert.equal(second.core.scopes.list()[0].generation, "new", "cached ACK metadata cannot rewind authoritative scopes");
@@ -713,6 +855,7 @@ test("identical conversation inputs keep distinct IDs and exact echo reconciliat
     env.transport.receive({ t: "instruction_echo", cid: message.cid, device: env.core.device.id,
       message_id: `message-${index}`, text: message.text, ts: index + 1 });
   });
+  await commitAck(env);
   assert.equal((await first).status, "accepted"); assert.equal((await second).status, "accepted");
   const entries = env.core.conversation.entries();
   assert.equal(entries.length, 2); assert.equal(entries[0].message_id, "message-0");
@@ -729,7 +872,7 @@ test("transcript observers see acknowledgements and stable echo identity through
   });
   const pending = env.core.conversation.send("original input"); await flush(); await env.commit();
   const sent = env.sent.find(message => message.kind === "instruction");
-  env.transport.receive({ t: "ack", cid: sent.cid, seq: 1 }); await pending;
+  env.transport.receive({ t: "ack", cid: sent.cid, seq: 1 }); await commitAck(env); await pending;
   env.transport.receive({ t: "instruction_echo", cid: sent.cid, device: env.core.device.id, message_id: "persistent-message", text: sent.text, ts: 1 });
   assert.deepEqual(changes, [
     { status: "queued", message_id: undefined }, { status: "accepted", message_id: undefined },
@@ -769,7 +912,7 @@ test("delayed rejection retains recoverable text and its identity across reload"
   await flush(); await env.commit(); await env.settle();
   const queued = await promise; assert.equal(queued.status, "queued");
   env.transport.receive({ t: "ack", cid: queued.cid, error: "stale_generation", message: "Compose against current work" });
-  await env.commit(); await env.settle(); await env.commit();
+  await commitAck(env); await env.settle(); await env.commit();
   assert.deepEqual(results.map(result => result.status), ["queued", "rejected"]);
   const reloaded = await environment({ database: env.database, localStorage: env.localStorage });
   assert.equal(reloaded.sent.filter(message => message.kind === "instruction").length, 0);
