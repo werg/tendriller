@@ -11,6 +11,7 @@ import { loadDevice, saveDevice, guessName, probeCaps, rand32 } from "./device";
 import { installLogForwarding, createHealth, type LogEntry } from "./diagnostics";
 import { applyOp, applyOps, clone, getPath, mergePatchToOps, toPath, type Op } from "./state";
 import { createStreams } from "./streams";
+import { createRecordLogClient, validateRecordHead } from "../../contract/records.mjs";
 import { createConnection } from "./connection";
 import { deliveryPolicy } from "./delivery";
 import { createRequests, createCommandReceipts } from "./requests";
@@ -514,6 +515,10 @@ export function createCore(cfg: TendrilConfig): Internal {
       case "stream_record":
         bus.emit("stream_record", m.record);
         break;
+      case "record_log_head":
+        try { bus.emit("record_log_head", validateRecordHead(m.head)); }
+        catch { bus.emit("error", { code: "invalid_response", message: "Invalid record log hint" }); }
+        break;
       case "welcome": {
         welcome = m;
         installScopes(m.scopes);
@@ -734,6 +739,10 @@ export function createCore(cfg: TendrilConfig): Internal {
     get rev() { return rev; },
     state,
     streams: createStreams({ bus, base: cfg.base, connected: () => connection.connected, headers: deviceHeaders, request: message => core.transportRequest(message) }),
+    records: createRecordLogClient({ base: cfg.base + "_tendril", headers: deviceHeaders, subscribeHints: listener => {
+      const offHead = bus.on("record_log_head", listener), offConnect = bus.on("connect", listener);
+      return () => { offHead(); offConnect(); };
+    } }),
     health,
     scopes: {
       list: () => clone(scopes),

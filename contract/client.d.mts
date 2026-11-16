@@ -1,12 +1,13 @@
 import type { BlobTransferClient } from "./blobs-client.mjs";
 import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
+import type { RecordLogClient, RecordLogClientOptions } from "./records.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
   expires_at?: number | null; next_step?: string }
-export interface ClientOptions { fetch?: typeof globalThis.fetch }
+export interface ClientOptions { fetch?: typeof globalThis.fetch; recordLogHints?: RecordLogClientOptions["subscribeHints"] }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
 export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }
 export interface NotificationStatus { available: boolean; subscribed_devices: { id: string; name: string | null }[];
@@ -14,6 +15,7 @@ export interface NotificationStatus { available: boolean; subscribed_devices: { 
 export interface NotificationDelivery { sent: number; failed: number;
   deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
 export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransferClient {
+  records: RecordLogClient;
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
   probeDelivery(): Promise<DeliveryProbe>;

@@ -2,6 +2,7 @@ import { assertValid, validate, CONTRACT_VERSION } from "./index.mjs";
 import { createDurabilityClient } from "./durability-client.mjs";
 import { createStreamsClient } from "./streams-client.mjs";
 import { createBlobClient } from "./blobs-client.mjs";
+import { createRecordLogClient } from "./records.mjs";
 
 export class ApiError extends Error {
   constructor(status, error) {
@@ -22,7 +23,7 @@ function checked(schema, value, status) {
 }
 
 /** A small fetch client. No global state, framework or automatic event consumption. */
-export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch } = {}) {
+export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, recordLogHints } = {}) {
   const base = api.replace(/\/+$/, "");
   const id = value => encodeURIComponent(String(value));
   async function request(path, { method = "GET", body, signal, headers = {} } = {}, responseSchema) {
@@ -49,6 +50,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     return response;
   }
   return {
+    records: createRecordLogClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher, subscribeHints: recordLogHints }),
     ...createBlobClient(request, raw),
     ...createDurabilityClient(request),
     ...createStreamsClient(request),

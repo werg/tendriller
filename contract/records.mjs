@@ -1,5 +1,5 @@
 /** Exact-byte retained log protocol. Portable to browsers, Workers and native JS. */
-export const RECORD_LOG_FORMAT = "tendriller.record-log.v1";
+export const RECORD_LOG_FORMAT = "record-log/v1";
 export const RECORD_LOG_LIMITS = Object.freeze({
   recordBytes: 256 * 1024, readEntries: 128, readBytes: 1024 * 1024,
   totalBytes: 64 * 1024 * 1024, records: 100_000,
@@ -79,4 +79,115 @@ export async function verifyRecordEntry(value, previous) {
   if (await recordId(bytes) !== value.recordId || await recordEntryRoot(value.historyId, value.position, value.previousRoot, value.recordId) !== value.root)
     throw new RecordLogError("integrity_error", "Entry bytes or hash chain do not match", 409);
   return bytes;
+}
+
+/** A shared native/browser client. Callers own durable pending bytes and applied cursors. */
+export function createRecordLogClient({ base, headers = () => ({}), fetch: fetcher = globalThis.fetch, subscribeHints }) {
+  const prefix = base.replace(/\/+$/, "");
+  async function request(path, options = {}) {
+    const response = await fetcher(prefix + "/records" + path, {
+      method: options.body === undefined ? "GET" : "POST", cache: "no-store", signal: options.signal,
+      headers: { ...headers(), ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+    let value;
+    try { value = await response.json(); }
+    catch { throw new RecordLogError("invalid_response", "Record log returned invalid JSON", response.status); }
+    if (!response.ok) throw new RecordLogError(value?.error?.code || "http_error", value?.error?.message || `HTTP ${response.status}`, response.status);
+    return value;
+  }
+  async function checkedInfo(value, expected) {
+    validateRecordHead(value?.head, expected);
+    if (value?.descriptor?.historyId !== value.head.historyId || value.descriptor.format !== RECORD_LOG_FORMAT
+      || Object.keys(RECORD_LOG_LIMITS).some(key => value.descriptor.limits?.[key] !== RECORD_LOG_LIMITS[key]))
+      throw new RecordLogError("invalid_response", "Record log descriptor does not match this protocol", 502);
+    if (value.head.position === 0 && (value.head.bytes !== 0 || value.head.root !== await recordGenesisRoot(value.head.historyId)))
+      throw new RecordLogError("integrity_error", "Empty history has an invalid root", 502);
+    return value;
+  }
+  const client = {
+    async provision({ signal } = {}) { return checkedInfo(await request("", { body: {}, signal })); },
+    async info({ historyId, signal } = {}) {
+      if (historyId !== undefined) recordHistoryId(historyId);
+      return checkedInfo(await request(historyId === undefined ? "" : `?historyId=${historyId}`, { signal }), historyId);
+    },
+    async append(value, { historyId, signal }) {
+      recordHistoryId(historyId);
+      const bytes = recordBytes(value), record = encodeRecord(bytes);
+      const result = await request("/entries", { body: { historyId, record }, signal });
+      if (result?.historyId !== historyId || result.record !== record)
+        throw new RecordLogError("invalid_response", "Append response does not identify the submitted bytes and history", 502);
+      await verifyRecordEntry(result);
+      return result;
+    },
+    async read({ historyId, after, limit = RECORD_LOG_LIMITS.readEntries, previous, signal }) {
+      recordHistoryId(historyId); recordPosition(after, "after");
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > RECORD_LOG_LIMITS.readEntries) invalid("Invalid record read limit");
+      if (previous) {
+        validateRecordHead(previous, historyId);
+        if (previous.position !== after) invalid("Previous head must identify the requested after position");
+      }
+      const page = await request(`/entries?historyId=${historyId}&after=${after}&limit=${limit}`, { signal });
+      validateRecordHead(page?.head, historyId);
+      if (page.historyId !== historyId || page.after !== after || !Array.isArray(page.entries) || page.entries.length > limit
+        || page.head.position < after || page.cursor !== after + page.entries.length || page.cursor > page.head.position
+        || !page.entries.length && page.cursor < page.head.position)
+        throw new RecordLogError("invalid_response", "Read response is not the requested contiguous range", 502);
+      let prior = previous || (after === 0 ? { historyId, position: 0, bytes: 0, root: await recordGenesisRoot(historyId) } : undefined);
+      let wireBytes = 0;
+      for (const [index, item] of page.entries.entries()) {
+        if (item?.historyId !== historyId || item.position !== after + index + 1)
+          throw new RecordLogError("history_gap", "Read response has an invalid history or position", 502);
+        wireBytes += new TextEncoder().encode(JSON.stringify(item)).byteLength;
+        if (wireBytes > RECORD_LOG_LIMITS.readBytes) throw new RecordLogError("invalid_response", "Read response exceeds the byte bound", 502);
+        const bytes = await verifyRecordEntry(item, prior);
+        prior = { historyId, position: item.position, root: item.root, bytes: (prior?.bytes || 0) + bytes.length };
+      }
+      if (prior && page.cursor === page.head.position && (prior.root !== page.head.root || (previous || after === 0) && prior.bytes !== page.head.bytes))
+        throw new RecordLogError("integrity_error", "Read response does not reach its stated head", 502);
+      return page;
+    },
+    watch({ historyId, after, signal, pollIntervalMs = subscribeHints ? 30_000 : 1000, onError }, listener) {
+      recordHistoryId(historyId); recordPosition(after, "after");
+      if (typeof listener !== "function" || !Number.isFinite(pollIntervalMs) || pollIntervalMs < 100) invalid("Invalid record watch options");
+      let active = true, observed = after, observedRoot, timer, running = false, again = false;
+      const controller = new AbortController();
+      const report = error => { if (active) { try { onError?.(error); } catch { /* Observer isolation. */ } } };
+      const observe = value => {
+        validateRecordHead(value, historyId);
+        if (value.position < observed || value.position === observed && observedRoot !== undefined && observedRoot !== value.root)
+          throw new RecordLogError("history_conflict", "Observed history moved backwards or changed a committed position", 409);
+        if (value.position === observed) { observedRoot = value.root; return; }
+        observed = value.position; observedRoot = value.root;
+        try { listener(structuredClone(value)); } catch (error) { report(error); }
+      };
+      const check = async () => {
+        if (!active) return;
+        if (running) { again = true; return; }
+        running = true;
+        try {
+          // A hint arriving during this read schedules a fresh observation afterward.
+          const info = await client.info({ historyId, signal: controller.signal });
+          if (active) observe(info.head);
+        } catch (error) { report(error); }
+        finally {
+          running = false;
+          if (active) {
+            clearTimeout(timer);
+            if (again) { again = false; void check(); }
+            else timer = setTimeout(check, pollIntervalMs);
+          }
+        }
+      };
+      const stopHints = subscribeHints?.(() => { void check(); });
+      const stop = () => {
+        if (!active) return;
+        active = false; clearTimeout(timer); controller.abort(); stopHints?.(); signal?.removeEventListener("abort", stop);
+      };
+      if (signal?.aborted) stop();
+      else { signal?.addEventListener("abort", stop, { once: true }); void check(); }
+      return stop;
+    },
+  };
+  return client;
 }

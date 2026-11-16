@@ -1,5 +1,6 @@
 import type { WireContracts } from "./wire.mjs";
 import type { BrowserStreams, StreamRecord, StreamHistory } from "./streams.mjs";
+import type { RecordLogClient, RecordLogHead } from "./records.mjs";
 export type { WireContracts } from "./wire.mjs";
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface ValidationIssue { path: string; message: string }
@@ -124,6 +125,7 @@ export interface RuntimeEventMap {
   state_result: StateResult & OperationOptions & { cid: string };
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
+  record_log_head: RecordLogHead;
   stream_gap: { stream: string; history: StreamHistory };
   stream_error: { stream: string; error: Error & { code?: string } };
 }
@@ -158,6 +160,7 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   setBlobRetention(id: string, options: OperationOptions & { keep: boolean }): Promise<BlobReference>;
   state: StateApi<T>;
   streams: BrowserStreams;
+  records: RecordLogClient;
   on<K extends keyof RuntimeEventMap & string>(type: K, fn: (payload: RuntimeEventMap[K]) => void): () => void;
   ready: (() => void) & { manual(): void };
   capabilities(): Promise<CapabilityReport>; deviceHeaders(): Record<string, string>;

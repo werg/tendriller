@@ -31,6 +31,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import { createClient, requireService } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/contract';
+import { RECORD_LOG_FORMAT, recordGenesisRoot, recordEntryRoot, recordId, encodeRecord, verifyRecordEntry } from '@tendriller/core/records';
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 import {applyOps, validateOps, historyPage} from '@tendriller/runtime/preview-support';
@@ -47,6 +48,12 @@ assert.throws(() => requireService({contract:2,workflows:[]}), /contract/);
 const client = createClient({api:'https://example.test/api/t/test',token:'private'}, {fetch: async () => new Response(JSON.stringify({events:[],cursor:2,withheld:0}))});
 assert.equal((await client.readEvents({after:2})).cursor, 2);
 assert.equal(client.createDecision, undefined);
+assert.equal(typeof client.records.read, 'function');
+assert.equal(RECORD_LOG_FORMAT, 'record-log/v1');
+const historyId = 'h_' + '1'.repeat(32), recordBytes = new Uint8Array([0,255,17]);
+const previousRoot = await recordGenesisRoot(historyId), id = await recordId(recordBytes);
+const entry = {historyId,position:1,recordId:id,previousRoot,root:await recordEntryRoot(historyId,1,previousRoot,id),record:encodeRecord(recordBytes)};
+assert.deepEqual(await verifyRecordEntry(entry, {historyId,position:0,root:previousRoot,bytes:0}),recordBytes);
 assert.match(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'), /CREATE TABLE accounts/);
 `);
   run(process.execPath, ['consumer.mjs']);
@@ -54,6 +61,7 @@ assert.match(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accoun
 import {createClient, type CommandMetadata} from '@tendriller/core';
 import {type RuntimeApi, type SendResult, type WireContracts} from '@tendriller/core/contract';
 import {type WorkflowModule} from '@tendriller/core/host';
+import {type RecordLogClient, type RecordLogHead} from '@tendriller/core/records';
 import {createFixtureTransport} from '@tendriller/runtime/preview';
 import type {} from '@tendriller/core/browser';
 const command: CommandMetadata = {cid:'durable-command',expected_generations:{}};
@@ -62,6 +70,9 @@ void client.updateState({...command,ops:[{op:'set',path:['job'],value:{status:'r
 // @ts-expect-error all commands need explicit stable IDs and preconditions
 void client.updateState({ops:[]});
 declare const page: RuntimeApi<{count:number}>;
+const log: RecordLogClient = page.records;
+declare const recordHead: RecordLogHead;
+void log.read({historyId:recordHead.historyId,after:recordHead.position,previous:recordHead});
 const result: SendResult = await page.send({session:'opaque'});
 if(result.status==='accepted'){const seq:number=result.seq; void seq;}
 // @ts-expect-error queued is not accepted

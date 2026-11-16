@@ -68,7 +68,7 @@ export function startRuntime(cfg: TendrilConfig): RuntimeApi {
     request: (path, options) => core.request(path, options),
     state: core.state, scopes: core.scopes,
     get service() { return core.service; },
-    conversation: core.conversation, streams: core.streams,
+    conversation: core.conversation, streams: core.streams, records: core.records,
     on: (type, listener) => core.bus.on(type, listener),
     blobUrl: id => core.blobUrl(id),
     upload: (blob, options) => core.upload(blob, options),
