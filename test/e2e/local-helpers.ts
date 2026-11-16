@@ -1,6 +1,7 @@
 import { expect, request, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 import { createClient } from "../../dist/sdk/client.mjs";
 import { publishAssetGraph } from "./publication-helpers";
+import WebSocket from "ws";
 
 export const SERVICE = "https://service.localhost:8790";
 export const OWNER = "owner@example.test";
@@ -13,7 +14,40 @@ export function requester() {
   return localRequest ??= request.newContext({ ignoreHTTPSErrors: true });
 }
 
-export type Handle = { id: string; page_url: string; api: string; token: string; agent_reminder?: string };
+export type Handle = { id: string; page_url: string; api: string; token: string; agent_setup?: { next_step: string } };
+
+const agentSockets = new Map<string, WebSocket>();
+
+/** A live authenticated socket, not an HTTP-held request, establishes interactive delivery. */
+export async function connectAgentSocket(h: Handle): Promise<WebSocket> {
+  const previous = agentSockets.get(h.id);
+  if (previous?.readyState === WebSocket.OPEN) return previous;
+  const url = new URL(h.api + "/events/socket");
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url.toString(), ["tendriller.agent.v2", h.token], {
+    rejectUnauthorized: false, // local E2E server uses a self-signed certificate
+    lookup: (_host, _options, cb) => cb(null, "127.0.0.1", 4),
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    socket.once("error", onError);
+    socket.once("open", () => { socket.off("error", onError); resolve(); });
+  });
+  socket.on("error", () => {}); // connection errors are observed by presence assertions
+  agentSockets.set(h.id, socket);
+  socket.once("close", () => { if (agentSockets.get(h.id) === socket) agentSockets.delete(h.id); });
+  return socket;
+}
+
+export async function disconnectAgentSocket(h: Handle) {
+  const socket = agentSockets.get(h.id);
+  if (!socket) return;
+  agentSockets.delete(h.id);
+  if (socket.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise<void>(resolve => socket.once("close", () => resolve()));
+  socket.terminate();
+  await closed;
+}
 
 export async function createPage(owner = OWNER): Promise<Handle> {
   const res = await (await requester()).post(`${SERVICE}/api/tendrils`, { headers: {
@@ -34,13 +68,8 @@ export async function agent(h: Handle, path = "", method = "GET", body?: unknown
 }
 
 export async function publish(h: Handle, body: string) {
-  // First interactive publication requires an active listener. Keep a real poll held
-  // while uploading; it may finish when the version event arrives or after 25 seconds.
-  void agent(h, "/events?after=0&wait=25").catch(() => {});
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if ((await agent(h)).data.presence.state === "listening") break;
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
+  await connectAgentSocket(h);
+  await expect.poll(async () => (await agent(h)).data.presence.state).toBe("listening");
   return publishFiles(h, { "index.html": { type: "text/html",
     body: `<!doctype html><html><head><meta charset="utf-8"><title>E2E</title></head><body>${body}</body></html>` } });
 }
@@ -88,5 +117,6 @@ export async function openClaimed(page: Page, h: Handle) {
 }
 
 export async function deletePage(h: Handle) {
+  await disconnectAgentSocket(h);
   await (await requester()).delete(h.api, { headers: { Authorization: `Bearer ${h.token}` } });
 }
