@@ -23,7 +23,13 @@ const contentType = path => ({ ".js": "text/javascript", ".mjs": "text/javascrip
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 
 export async function buildPublicArtifacts() {
+  const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  if (packageVersion !== CORE_RELEASE) throw new Error("Package and public core release identities must agree");
   mkdirSync(dist, { recursive: true });
+  for (const name of readdirSync(dist)) {
+    const artifact = /^tendriller-(sdk|runtime|engine|tools)-(.+)\.tgz$/.exec(name);
+    if (artifact && artifact[2] !== CORE_RELEASE) rmSync(join(dist, name));
+  }
   const runtime = join(dist, "runtime"), assets = join(runtime, "assets"), sdk = join(dist, "sdk");
   rmSync(runtime, { recursive: true, force: true });
   rmSync(sdk, { recursive: true, force: true });

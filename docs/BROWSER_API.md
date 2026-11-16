@@ -64,6 +64,9 @@ remains recoverable across a reload; sending revised text creates new work.
 snapshot. `say` reports a reply selected for visible presentation. `reply` reports
 all reply routing, including `present:false` audio-only delivery, for explicitly
 selected adapters. The kernel never speaks automatically.
+Replies carry a service-issued `message_id` and timestamp. The runtime reports
+malformed replies through `error` and skips them instead of inventing identity or
+using text as a deduplication key.
 
 After actually inserting a reply into its presentation, a page may call
 `conversation.presented(message_id)`. This acknowledges application presentation;

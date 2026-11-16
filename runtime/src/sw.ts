@@ -148,16 +148,19 @@ function offlinePage(): Response {
 async function navigate(event: FetchEvent): Promise<Response> {
   const meta = await readRegistry();
   const requested = new URL(event.request.url);
-  const pin = /\/_publications\/([A-Za-z0-9_-]+)\//.exec(requested.pathname)?.[1];
+  let relative: string | undefined;
+  try { relative = decodeURIComponent(requested.pathname.slice(new URL(SCOPE).pathname.length)); }
+  catch { /* Malformed paths cannot select a saved file. */ }
+  const pinned = relative === undefined ? null : /^_publications\/([A-Za-z0-9_-]+)\/(.*)$/.exec(relative);
+  const pin = pinned?.[1];
   const replaced = (event as FetchEvent & { replacesClientId?: string }).replacesClientId;
   const prior = pin || meta.clients[replaced || event.clientId] || meta.latest;
   const publication = prior && meta.complete.includes(prior) ? meta.publications[prior] : undefined;
-  const relative = requested.pathname.slice(new URL(SCOPE).pathname.length) || "index.html";
-  const filename = relative.endsWith("/") ? relative + "index.html" : relative;
-  const declared = publication?.assets.find(asset => encodePublicationPath(asset.path) === filename && asset.type.split(";", 1)[0] === "text/html");
+  const path = pinned ? pinned[2] : relative;
+  const filename = path === "" ? "index.html" : path?.endsWith("/") ? path + "index.html" : path;
+  const declared = safePath(filename) ? publication?.assets.find(asset => asset.path === filename && asset.type.split(";", 1)[0] === "text/html") : undefined;
   // Ordinary file routing: an offline nested URL must never show another entry page.
-  const savedURL = pin ? requested.origin + requested.pathname
-    : publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;
+  const savedURL = publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;
   const saved = publication && savedURL ? await (await caches.open(cacheName(publication.id))).match(savedURL) : undefined;
   const network = fetch(event.request).then(async response => {
     if (response.ok && !noStore(response)) {

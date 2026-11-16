@@ -236,6 +236,30 @@ test("transcript observers see acknowledgements and stable echo identity through
   assert.equal(env.core.conversation.entries()[0].text, "original input");
 });
 
+test("replies require service-issued identity and timestamps before transcript or adapter delivery", async () => {
+  const env = await environment(), errors = [], displayed = [], replies = [];
+  env.core.bus.on("error", error => errors.push(error));
+  env.core.bus.on("say", message => { displayed.push(message.message_id); message.text = "presentation-local edit"; });
+  env.core.bus.on("reply", message => replies.push(message));
+  for (const message of [
+    { text: "missing identity", ts: 10 },
+    { text: "missing timestamp", message_id: "reply-1" },
+    { text: "empty identity", message_id: "", ts: 10 },
+    { text: "invalid timestamp", message_id: "reply-1", ts: -1 },
+    { text: 42, message_id: "reply-1", ts: 10 },
+  ]) env.transport.receive({ t: "say", ...message });
+  assert.equal(errors.length, 5); assert.ok(errors.every(error => error.code === "invalid_response"));
+  assert.equal(env.core.conversation.entries().length, 0); assert.equal(replies.length, 0); assert.equal(displayed.length, 0);
+  for (const message_id of ["reply-1", "reply-2"]) env.transport.receive({ t: "say", message_id, ts: 0, text: "same reply" });
+  env.transport.receive({ t: "say", message_id: "reply-1", ts: 0, text: "same reply" });
+  env.transport.receive({ t: "say", message_id: "audio-only", ts: 1, text: "explicit audio", present: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.conversation.entries())).map(entry => ({ id: entry.message_id, ts: entry.ts, text: entry.text })), [
+    { id: "reply-1", ts: 0, text: "same reply" }, { id: "reply-2", ts: 0, text: "same reply" },
+  ]);
+  assert.equal(replies.length, 4); assert.equal(replies[0].text, "same reply"); assert.equal(replies[3].present, false);
+  assert.deepEqual(displayed, ["reply-1", "reply-2", "reply-1"]);
+});
+
 test("delayed rejection retains recoverable text and its identity across reload", async () => {
   const env = await environment(), results = [];
   env.core.bus.on("conversation_result", result => results.push(result));

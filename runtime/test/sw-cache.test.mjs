@@ -279,3 +279,26 @@ test("nested logical filenames are encoded exactly and offline navigation never 
   assert.equal(await (await sw.request(encoded, "a", true)).text(), "nested authored page");
   assert.equal((await sw.request("missing.html", "a", true)).status, 503);
 });
+
+test("pinned and ordinary directory navigation resolves only declared index files with equivalent URL encoding", async () => {
+  const a = release("1"), b = release("2"), directory = "notes & charts/question ? # 100%/";
+  const encode = path => path.split("/").map(encodeURIComponent).join("/");
+  for (const item of [a, b]) for (const path of ["docs/index.html", directory + "index.html"]) {
+    const body = `${item.publication.id}: ${path}`;
+    item.publication.assets.push({ path, sha256: sha(body), type: "text/html" });
+    item.resources.set(item.publication.base + encode(path), () => new Response(body, { headers: { "X-Tendril-Publication": item.publication.id } }));
+  }
+  const net = network(a), sw = await worker(net); await sw.install(); await sw.announce("a", a.publication);
+  net.current = b; await sw.install(); await sw.announce("b", b.publication); net.online = false;
+  for (const [client, item] of [["a", a], ["b", b]]) {
+    for (const base of ["", item.publication.base]) {
+      assert.equal(await (await sw.request(base + "docs/", client, true)).text(), `${item.publication.id}: docs/index.html`);
+      for (const path of [encode(directory), encode(directory + "index.html").replace(/%[0-9A-F]{2}/g, part => part.toLowerCase())])
+        assert.equal(await (await sw.request(base + path, client, true)).text(), `${item.publication.id}: ${directory}index.html`);
+      for (const path of ["missing/", "docs", "docs/missing.html", "bad%escape/"])
+        assert.equal((await sw.request(base + path, client, true)).status, 503, `No implicit page fallback for ${path}`);
+    }
+  }
+  // An explicit publication pin takes precedence over the current client binding.
+  assert.equal(await (await sw.request(a.publication.base + "docs/", "b", true)).text(), "1: docs/index.html");
+});

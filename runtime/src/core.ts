@@ -641,15 +641,21 @@ export function createCore(cfg: TendrilConfig): Internal {
         break;
       }
       case "say": {
-        if (m.present !== false) {
-          const existing = m.message_id && transcript.some(entry => entry.message_id === m.message_id);
-          if (!existing) addTranscript({ ts: m.ts || Date.now(), from: "agent", text: String(m.text ?? ""),
-            message_id: m.message_id, in_reply_to: m.in_reply_to });
-          bus.emit("say", m);
+        let message;
+        try { message = assertValid("sayMessage", m); }
+        catch (error) {
+          bus.emit("error", { code: "invalid_response", message: "Invalid reply: " + (error instanceof Error ? error.message : "The service sent an invalid reply") });
+          break;
+        }
+        if (message.present !== false) {
+          const existing = transcript.some(entry => entry.message_id === message.message_id);
+          if (!existing) addTranscript({ ts: message.ts, from: "agent", text: message.text,
+            message_id: message.message_id, ...(message.in_reply_to === undefined ? {} : { in_reply_to: message.in_reply_to }) });
+          bus.emit("say", clone(message));
         }
         // All routing information is observable; optional presentation adapters
         // decide whether to speak. The kernel never constructs an audio engine.
-        bus.emit("reply", m);
+        bus.emit("reply", clone(message));
         break;
       }
       case "instruction_echo": {

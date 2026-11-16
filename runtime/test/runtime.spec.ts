@@ -81,8 +81,8 @@ test("headless replies expose routing without speaking or imposing application U
     w.tendril.on("reply", (message: any) => w.replies.push(message));
     w.tendril.on("say", (message: any) => w.displayed.push(message));
   });
-  mock.broadcast(t, { t: "say", message_id: "visible-id", text: "Read this", speak: true });
-  mock.broadcast(t, { t: "say", message_id: "audio-id", text: "Optional audio", present: false, speak: true });
+  mock.broadcast(t, { t: "say", message_id: "visible-id", ts: 1, text: "Read this", speak: true });
+  mock.broadcast(t, { t: "say", message_id: "audio-id", ts: 2, text: "Optional audio", present: false, speak: true });
   await expect.poll(() => page.evaluate(() => (window as any).replies.length)).toBe(2);
   expect(await page.evaluate(() => (window as any).spoken)).toEqual([]);
   expect(await page.evaluate(() => (window as any).displayed.map((m: any) => m.message_id))).toEqual(["visible-id"]);
@@ -782,7 +782,7 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
     tl.on("say", (m: any) => (window as any).__said.push(m.text));
     tl.on("presence", (p: any) => ((window as any).__presence = p));
   });
-  mock.broadcast(t, { t: "say", text: "On it", speak: true, ts: 1 });
+  mock.broadcast(t, { t: "say", message_id: "agent-on-it", text: "On it", speak: true, ts: 1 });
   await page.waitForFunction(() => (window as any).__said.length === 1);
   mock.broadcast(t, { t: "presence", state: "working", text: "Working", last_seen: 1, schedule_minutes: null, withheld: 0, wake: "long_poll" });
   await page.waitForFunction(() => (window as any).__presence?.state === "working");
