@@ -73,7 +73,7 @@ export async function buildPublicArtifacts() {
     for (const name of readdirSync(join(root, directory))) if (/\.(md|html)$/.test(name)) copyFileSync(join(root, directory, name), join(target, name));
   }
   mkdirSync(join(out, "contract"), { recursive: true });
-  copyFileSync(join(root, "contract/v2.json"), join(out, "contract/v2.json"));
+  copyFileSync(join(root, "contract/v3.json"), join(out, "contract/v3.json"));
   return manifest;
 }
 
