@@ -3,7 +3,7 @@
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
 import { blobSchemas, blobNameSchema, isWellFormedUnicode } from "./blobs.mjs";
-import { normalizeStateChecks, normalizeStateOps, STATE_CONDITIONS_MAX } from "./state.mjs";
+import { assertStateJson, normalizeStateChecks, normalizeStateOps, STATE_CONDITIONS_MAX } from "./state.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
@@ -95,6 +95,7 @@ const coreSchemas = {
   stateOperations: { type: "array", items: stateOperation },
   stateCondition,
   stateChecks: object(stateChecks),
+  stateWriteOptions: object({ scope: scopeId, expected_generations: generationMap, ...stateChecks }),
   stateUpdate: { anyOf: [
     object({ ...guards, ...stateChecks, ops: { type: "array", items: stateOperation } }, ["cid", "expected_generations", "ops"]),
     object({ ...guards, ...stateChecks, state: jsonObject }, ["cid", "expected_generations", "state"]),
@@ -236,7 +237,8 @@ export function validate(name, value) {
     if (name === "stateOperation") normalizeStateOps([value]);
     if (name === "stateOperations") normalizeStateOps(value);
     if (name === "stateCondition") normalizeStateChecks({ conditions: [value] });
-    if (name === "stateChecks" || name === "stateUpdate") normalizeStateChecks(value);
+    if (name === "stateWriteOptions") assertStateJson(value);
+    if (name === "stateChecks" || name === "stateWriteOptions" || name === "stateUpdate") normalizeStateChecks(value);
     if (name === "stateUpdate") normalizeStateOps("state" in value ? [{ op: "set", path: [], value: value.state }] : value.ops);
   } catch (error) { issues.push({ path: "$", message: error.message }); }
   return issues;

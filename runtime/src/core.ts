@@ -129,6 +129,9 @@ export function createCore(cfg: TendrilConfig): Internal {
 
   let saving = Promise.resolve();
   const localOps = (operation: Op[] | ((state: any) => Op[]), options?: StateWriteOptions): Promise<StateResult> => {
+    // A misspelled guard must not silently turn a conditional write into an
+    // unconditional one. Validate the complete option envelope before capture.
+    assertValid("stateWriteOptions", options ?? {});
     const checks = normalizeStateChecks(options);
     if (Array.isArray(operation) && !operation.length && !conditional(checks)) return Promise.resolve({ status: "accepted", rev });
     const cid = newCid();

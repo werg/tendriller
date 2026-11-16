@@ -77,6 +77,7 @@ type Wire_stateOperation = ({ "op": "set"; "path": (string) | (Array<(string) | 
 type Wire_stateOperations = Array<({ "op": "set"; "path": (string) | (Array<(string) | (number)>); "value": unknown; }) | ({ "op": "delete"; "path": (string) | (Array<(string) | (number)>); })>;
 type Wire_stateCondition = ({ "path": (string) | (Array<(string) | (number)>); "equals": unknown; }) | ({ "path": (string) | (Array<(string) | (number)>); "exists": boolean; });
 type Wire_stateChecks = { "conditions"?: Array<({ "path": (string) | (Array<(string) | (number)>); "equals": unknown; }) | ({ "path": (string) | (Array<(string) | (number)>); "exists": boolean; })>; "expected_revision"?: number; };
+type Wire_stateWriteOptions = { "scope"?: string; "expected_generations"?: { [key: string]: string; }; "conditions"?: Array<({ "path": (string) | (Array<(string) | (number)>); "equals": unknown; }) | ({ "path": (string) | (Array<(string) | (number)>); "exists": boolean; })>; "expected_revision"?: number; };
 type Wire_stateUpdate = ({ "cid": string; "scope"?: string; "expected_generations": { [key: string]: string; }; "conditions"?: Array<({ "path": (string) | (Array<(string) | (number)>); "equals": unknown; }) | ({ "path": (string) | (Array<(string) | (number)>); "exists": boolean; })>; "expected_revision"?: number; "ops": Array<({ "op": "set"; "path": (string) | (Array<(string) | (number)>); "value": unknown; }) | ({ "op": "delete"; "path": (string) | (Array<(string) | (number)>); })>; }) | ({ "cid": string; "scope"?: string; "expected_generations": { [key: string]: string; }; "conditions"?: Array<({ "path": (string) | (Array<(string) | (number)>); "equals": unknown; }) | ({ "path": (string) | (Array<(string) | (number)>); "exists": boolean; })>; "expected_revision"?: number; "state": { [key: string]: unknown; }; });
 type Wire_sendResult = ({ "status": "accepted"; "seq": number; }) | ({ "status": "queued"; }) | ({ "status": "rejected"; "error": string; "message"?: string; });
 type Wire_blobReference = { "id": string; "sha256": string; "size": number; "type": string; "name"?: string; "url": string; "created_at": number; "retention": { "expires_at": number | null; "reasons": Array<string>; }; };
@@ -193,6 +194,7 @@ export interface WireContracts {
   "stateOperations": Wire_stateOperations;
   "stateCondition": Wire_stateCondition;
   "stateChecks": Wire_stateChecks;
+  "stateWriteOptions": Wire_stateWriteOptions;
   "stateUpdate": Wire_stateUpdate;
   "sendResult": Wire_sendResult;
   "blobReference": Wire_blobReference;

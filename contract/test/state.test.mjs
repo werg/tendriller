@@ -17,6 +17,14 @@ test("conditional state envelopes accept exactly one predicate and finite JSON",
   assert.ok(validate("stateOperations", [{ op: "set", path: ["a"], value: undefined }]).length);
 });
 
+test("browser state options reject misspelled guards and malformed metadata before serialization", () => {
+  for (const options of [{ expected_revison: 1 }, { condition: [] }, { expected_generations: null },
+    { expected_generations: [] }, { expected_generations: "wrong" }, { expected_generations: new Map() },
+    { scope: 1 }, { get expected_revision() { return 1; } }])
+    assert.ok(validate("stateWriteOptions", options).length);
+  assertValid("stateWriteOptions", { expected_revision: 1, expected_generations: { source: "v1" }, conditions: [{ path: [], equals: {} }] });
+});
+
 test("conditions distinguish missing, null, own keys and incompatible ancestors", () => {
   const state = { nullable: null, nested: { value: 3 }, series: [1, null], "a.b": { "x/y": true } };
   const check = condition => stateConflict(state, 7, normalizeStateChecks({ conditions: [condition] }));

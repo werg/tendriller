@@ -336,6 +336,18 @@ test("an empty conditional batch is sent for authoritative evaluation and report
   assert.throws(() => env.core.state.set("bad", 1, { conditions: [{ path: ["bad"], equals: undefined }] }));
 });
 
+test("invalid or misspelled state guards never become unconditional writes", async () => {
+  const env = await environment({ state: { count: 0 } });
+  for (const options of [{ expected_revison: 1 }, { conditions: [], unexpected: true }, { expected_generations: null }, { expected_generations: [] },
+    { expected_generations: "v1" }, { expected_generations: new Map() }])
+    assert.throws(() => env.core.state.apply([{ op: "set", path: ["count"], value: 1 }], options), { code: "bad_request" });
+  await flush(); await env.commit();
+  assert.equal(env.core.state.get("count"), 0);
+  assert.equal(env.core.pendingWork().state, 0);
+  assert.equal(env.sent.some(frame => frame.t === "state"), false);
+  assert.equal(env.database.stores.outbox.size, 0);
+});
+
 test("a remote parent replacement suppresses incompatible pending optimism without losing the command", async () => {
   const env = await environment({ state: { parent: { child: 1 } } });
   const pending = env.core.state.set("parent.child", 2);
