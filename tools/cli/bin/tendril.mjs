@@ -101,6 +101,12 @@ function boundedInteger(value, name, fallback, min, max = Number.MAX_SAFE_INTEGE
   return number;
 }
 const retryable = e => !(e instanceof ApiError) || [408, 425, 429].includes(e.status) || e.status >= 500;
+const sleepUntilAbort = (ms, signal) => new Promise(resolve => {
+  if (signal.aborted) return resolve();
+  const timer = setTimeout(done, ms);
+  function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
+  signal.addEventListener("abort", done, { once: true });
+});
 
 function transferRecord(cfg, what, key, flag) {
   if (flag) return resolve(flag);
@@ -340,10 +346,16 @@ const commands = {
     let after = explicit ? boundedInteger(f.after, "after", 0, 0) : readCursor(cpath);
     const limit = boundedInteger(f.limit, "limit", 100, 1, 500);
     const save = c => { if (!explicit && !f.peek) writeCursor(cpath, c); };
-    const readAvailable = async () => {
+    let failures = 0, backoff = 1000;
+    const readAvailable = async (signal) => {
       for (;;) {
+        if (signal.aborted) return;
         const old = after;
-        const r = await api.get(`/events?after=${after}&limit=${limit}`);
+        const r = await api.get(`/events?after=${after}&limit=${limit}`, { signal });
+        if (signal.aborted) return;
+        failures = 0;
+        backoff = 1000;
+        if (old !== after) return;
         for (const event of r.events || []) if (!f.wakes || event.wake) out(event);
         if (!Number.isSafeInteger(r.cursor) || r.cursor < old) throw Error("Event cursor regressed");
         after = r.cursor;
@@ -356,12 +368,9 @@ const commands = {
       save(r.cursor);
       return out(r);
     }
-    let failures = 0;
-    for (let backoff = 1000; ;) {
+    for (;;) {
       try {
         await waitForAgentWake(cfg, readAvailable);
-        failures = 0;
-        backoff = 1000;
       } catch (error) {
         if (!retryable(error) || /protocol was not accepted|sockets need Node/i.test(error.message) || ++failures >= 5) throw error;
         note(`events: ${error.message}; socket reconnect in ${backoff / 1000}s`);
@@ -378,15 +387,18 @@ const commands = {
     const controller = new AbortController();
     const timer = timeoutS === null ? null : setTimeout(() => controller.abort(), timeoutS * 1000);
     let finished = false;
-    const readAvailable = async () => {
+    let failures = 0, backoff = 1000;
+    const readAvailable = async (signal) => {
       if (finished || controller.signal.aborted) return;
       const start = readCursor(cpath);
       let cursor = start;
       const events = [];
       for (;;) {
-        if (finished || controller.signal.aborted) return;
-        const r = await api.get(`/events?after=${cursor}&limit=500`, { signal: controller.signal });
-        if (finished || controller.signal.aborted) return;
+        if (finished || controller.signal.aborted || signal.aborted) return;
+        const r = await api.get(`/events?after=${cursor}&limit=500`, { signal });
+        if (finished || controller.signal.aborted || signal.aborted) return;
+        failures = 0;
+        backoff = 1000;
         if (!Number.isSafeInteger(r.cursor) || r.cursor < cursor) throw Error("Event cursor regressed");
         events.push(...(r.events || []));
         const previous = cursor;
@@ -405,17 +417,15 @@ const commands = {
       }
     };
     try {
-      let failures = 0;
-      for (let backoff = 1000; !finished && !controller.signal.aborted;) {
+      for (; !finished && !controller.signal.aborted;) {
         try {
           await waitForAgentWake(cfg, readAvailable, undefined, controller.signal);
-          failures = 0;
-          backoff = 1000;
         } catch (error) {
           if (controller.signal.aborted) break;
           if (!retryable(error) || /protocol was not accepted|sockets need Node/i.test(error.message) || ++failures >= 5) throw error;
           note(`wait: ${error.message}; socket reconnect in ${backoff / 1000}s`);
-          await sleep(backoff);
+          await sleepUntilAbort(backoff, controller.signal);
+          if (controller.signal.aborted) break;
           backoff = Math.min(backoff * 2, 30000);
         }
       }

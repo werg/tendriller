@@ -26,7 +26,7 @@ function launch(args, env) {
   const done = new Promise(resolve => child.on("exit", code => resolve(code)));
   return { child, done, get stdout() { return stdout; }, get stderr() { return stderr; } };
 }
-async function fixture({ initiallyWaking = false, responseDelayMs = 0 } = {}) {
+async function fixture({ initiallyWaking = false, responseDelayMs = 0, closeOnConnect = false } = {}) {
   const seen = [];
   let connected, waking = initiallyWaking;
   const server = createServer((req, res) => {
@@ -43,11 +43,12 @@ async function fixture({ initiallyWaking = false, responseDelayMs = 0 } = {}) {
       ...(waking ? [{ seq: 2, ts: 2, type: "instruction", data: { text: "go" }, wake: true, role: "owner" }] : []),
     ].filter(event => event.seq > Number(url.searchParams.get("after") || 0));
     const payload = JSON.stringify({ events, cursor: events.at(-1)?.seq ?? Number(url.searchParams.get("after") || 0), withheld: 0 });
-    if (responseDelayMs) setTimeout(() => { if (!res.destroyed) res.end(payload); }, responseDelayMs);
+    const delay = typeof responseDelayMs === "function" ? responseDelayMs(seen.length) : responseDelayMs;
+    if (delay) setTimeout(() => { if (!res.destroyed) res.end(payload); }, delay);
     else res.end(payload);
   });
   const wss = new WebSocketServer({ server });
-  wss.on("connection", socket => { connected = socket; });
+  wss.on("connection", socket => { connected = socket; if (closeOnConnect) socket.close(1011); });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   return {
     seen,
@@ -101,6 +102,32 @@ test("CLI wait aborts a pending read without consuming a late waking batch", asy
     await pause(900); // delayed response must not append a second result or advance the cursor
     assert.equal(run.stdout.trim().split("\n").length, 1);
     assert.equal(existsSync(join(fx.env.TENDRIL_CONFIG_DIR, "cursors", "aaaaaaaaaaaa.cursor")), false);
+  } finally { run.child.kill("SIGKILL"); await fx.close(); }
+});
+
+test("CLI follow discards a late read from a disconnected socket", async () => {
+  const fx = await fixture({ initiallyWaking: true, responseDelayMs: request => request === 1 ? 1700 : 0 });
+  const run = launch(["events", "--follow", "--wakes"], fx.env);
+  try {
+    await until(() => fx.socket && fx.seen.length === 1);
+    const first = fx.socket;
+    first.terminate();
+    await until(() => fx.socket && fx.socket !== first && fx.seen.length >= 2);
+    await until(() => run.stdout.includes('"seq":2'));
+    await pause(800);
+    assert.deepEqual(run.stdout.trim().split("\n").map(line => JSON.parse(line).seq), [2]);
+    assert.equal(readFileSync(join(fx.env.TENDRIL_CONFIG_DIR, "cursors", "aaaaaaaaaaaa.cursor"), "utf8").trim(), "2");
+  } finally { run.child.kill("SIGKILL"); await fx.close(); }
+});
+
+test("CLI wait deadline interrupts reconnect backoff", async () => {
+  const fx = await fixture({ closeOnConnect: true });
+  const start = Date.now();
+  const run = launch(["wait", "--timeout", "2"], fx.env);
+  try {
+    assert.equal(await run.done, 2, run.stderr);
+    assert.ok(Date.now() - start < 2800, `deadline delayed by retry backoff: ${Date.now() - start}ms`);
+    assert.equal(JSON.parse(run.stdout).timeout, true);
   } finally { run.child.kill("SIGKILL"); await fx.close(); }
 });
 

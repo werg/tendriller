@@ -43,7 +43,7 @@ describe("events and socket delivery", () => {
   });
 
   it("returns retained events immediately without a listener", async () => {
-    const { h, page } = await setup();
+    const { h, page } = await setup({ listener: false });
     const { cursor } = await apiJson(h, "GET", "events");
     const before = Date.now();
     const empty = await apiJson(h, "GET", `events?after=${cursor}`);

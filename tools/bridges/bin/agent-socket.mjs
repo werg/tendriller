@@ -6,11 +6,13 @@ export function waitForAgentWake(cfg, onWake, onTick, signal) {
   if (typeof WebSocket !== 'function') throw Error('Agent sockets need Node.js 22.15 or newer');
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, ['tendriller.agent.v2', cfg.token]);
+    const connection = new AbortController();
     let opened = false, done = false, lastPong = Date.now(), timer = null, tickTimer = null;
     let work = Promise.resolve();
     const finish = (error) => {
       if (done) return;
       done = true;
+      connection.abort();
       clearInterval(timer);
       clearInterval(tickTimer);
       signal?.removeEventListener('abort', onAbort);
@@ -20,7 +22,7 @@ export function waitForAgentWake(cfg, onWake, onTick, signal) {
     const onAbort = () => finish();
     if (signal?.aborted) { finish(); return; }
     signal?.addEventListener('abort', onAbort, { once: true });
-    const enqueue = (fn) => { work = work.then(fn).catch(finish); };
+    const enqueue = (fn) => { work = work.then(() => { if (!done) return fn(connection.signal); }).catch(finish); };
     ws.addEventListener('open', () => {
       opened = true;
       if (ws.protocol !== 'tendriller.agent.v2') { finish(Error('Agent socket protocol was not accepted')); return; }
@@ -28,7 +30,7 @@ export function waitForAgentWake(cfg, onWake, onTick, signal) {
       timer = setInterval(() => {
         if (Date.now() - lastPong > 150000) { finish(Error('Agent socket heartbeat timed out')); return; }
         try { ws.send('{"t":"ping"}'); } catch (e) { finish(e); return; }
-      }, 60000);
+      }, 25000);
       if (onTick) tickTimer = setInterval(() => enqueue(onTick), 1000);
     });
     ws.addEventListener('message', (event) => {
