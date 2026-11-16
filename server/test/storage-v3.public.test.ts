@@ -139,4 +139,17 @@ it("binds shared-file generations to the server head across omitted scope, rotat
   expect(rotated.generation).not.toBe(scope.generation);
   expect((await api(page, "DELETE", "file-refs", { cid: "scoped-report-stale",
     expected_generations: { "shared-session": scope.generation }, path: "notes/scoped.txt", expected_revision: 2 })).status).toBe(409);
+  const retired = await apiJson(page, "DELETE", "scopes/shared-session", {
+    cid: "scoped-report-retire", expected_generations: { "shared-session": rotated.generation },
+  });
+  expect(retired.retired).toBe(true);
+  const cleanupCommand = { cid: "scoped-report-cleanup", expected_generations: {},
+    path: "notes/scoped.txt", expected_revision: 2 };
+  const cleaned = await apiJson(page, "POST", "file-refs/cleanup", cleanupCommand);
+  expect(cleaned.file).toMatchObject({ revision: 3, blob_id: null, scope: "shared-session" });
+  expect(await apiJson(page, "POST", "file-refs/cleanup", cleanupCommand)).toEqual(cleaned);
+  expect((await api(page, "PUT", "file-refs", {
+    cid: "scoped-report-aba", expected_generations: {}, path: "notes/scoped.txt",
+    expected_revision: 0, blob_id: upload.blob_id,
+  })).status).toBe(409);
 });
