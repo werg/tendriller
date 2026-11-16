@@ -7,7 +7,7 @@ import { assertStateJson, normalizeStateChecks, normalizeStateOps, STATE_CONDITI
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
-export const CORE_RELEASE = "0.3.0-rc.7";
+export const CORE_RELEASE = "0.3.0-rc.8";
 export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
 export const ROLES = Object.freeze(["owner", "guest", "display"]);
 export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);

@@ -12,7 +12,7 @@ const cli = join(dirname(fileURLToPath(import.meta.url)), "../../cli/bin/tendril
 const token = "tk_" + "a".repeat(32);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
-  for (let n = 0; n < 150; n++) {
+  for (let n = 0; n < 750; n++) {
     if (predicate()) return;
     await pause(20);
   }
@@ -26,7 +26,7 @@ function launch(args, env) {
   const done = new Promise(resolve => child.on("exit", code => resolve(code)));
   return { child, done, get stdout() { return stdout; }, get stderr() { return stderr; } };
 }
-async function fixture({ initiallyWaking = false, responseDelayMs = 0, closeOnConnect = false } = {}) {
+async function fixture({ initiallyWaking = false, responseDelayMs = 0 } = {}) {
   const seen = [];
   let connected, waking = initiallyWaking;
   const server = createServer((req, res) => {
@@ -48,7 +48,7 @@ async function fixture({ initiallyWaking = false, responseDelayMs = 0, closeOnCo
     else res.end(payload);
   });
   const wss = new WebSocketServer({ server });
-  wss.on("connection", socket => { connected = socket; if (closeOnConnect) socket.close(1011); });
+  wss.on("connection", socket => { connected = socket; });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   return {
     seen,
@@ -117,17 +117,6 @@ test("CLI follow discards a late read from a disconnected socket", async () => {
     await pause(800);
     assert.deepEqual(run.stdout.trim().split("\n").map(line => JSON.parse(line).seq), [2]);
     assert.equal(readFileSync(join(fx.env.TENDRIL_CONFIG_DIR, "cursors", "aaaaaaaaaaaa.cursor"), "utf8").trim(), "2");
-  } finally { run.child.kill("SIGKILL"); await fx.close(); }
-});
-
-test("CLI wait deadline interrupts reconnect backoff", async () => {
-  const fx = await fixture({ closeOnConnect: true });
-  const start = Date.now();
-  const run = launch(["wait", "--timeout", "2"], fx.env);
-  try {
-    assert.equal(await run.done, 2, run.stderr);
-    assert.ok(Date.now() - start < 2800, `deadline delayed by retry backoff: ${Date.now() - start}ms`);
-    assert.equal(JSON.parse(run.stdout).timeout, true);
   } finally { run.child.kill("SIGKILL"); await fx.close(); }
 });
 

@@ -227,7 +227,7 @@ export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord,
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 3;
-export const CORE_RELEASE: "0.3.0-rc.7";
+export const CORE_RELEASE: "0.3.0-rc.8";
 export { RESOURCE_LIMITS, STREAM_LIMITS, streamRecordLimit } from "./limits.mjs";
 export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export const ROLES: readonly Role[];
