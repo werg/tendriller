@@ -32,13 +32,13 @@ const HELP = `tendril <command> [args] [--tendril <name>] [--pretty]
 Create / attach
   new [name] --owner <verified-email> [--mode interactive|dashboard] [--as <config-name>]
   adopt <code> [--as <config-name>]
-  info                         tendril handle, versions, devices, presence, wake
+  info [--show-url]            tendril handle, versions, devices, presence, wake (URL redacted)
   meta [--name N] [--short-name S] [--icon <blob id|https url>] [--theme-color C]
        [--background-color C] [--lifetime ad_hoc|resident]
   rm --yes                     delete the tendril and everything in it
 
 Content
-  push <dir|file> [--message M] [--no-replace] [--as <path>] [--entry <html-path>] [--no-wait] [--timeout S]
+  push <dir|file> [--message M] [--no-replace] [--as <path>] [--entry <html-path>] [--no-wait|--wait] [--timeout S]
   publications | publication <version> | rollback <version> [--expected-head N] [--resume-file PATH]
   blob upload <file> [--name N] [--type T] [--resume-file PATH]
   blob download <id> <destination> [--overwrite] | blob info <id>
@@ -59,7 +59,7 @@ Talk to the page
 Hear from the page
   pending [--limit N]          read pending input; auto-handle delivery probes only
   ack <sequence>              save handled progress after replies/updates succeed
-  events [--after C] [--limit N] [--peek] [--follow [--wakes]]
+  events [--after C] [--limit N] [--peek] [--follow [--wakes]] | events send --wake
   wait [--timeout S]           wait over a WebSocket for one wake, print events JSON
   logs [--after C] [--follow]
   activity [--after C] [--note TEXT]
@@ -87,7 +87,8 @@ Durable work and trusted extensions
 
 Config: TENDRIL_API + TENDRIL_TOKEN, or --tendril <name> (~/.config/tendril/<name>.json,
 written by new/adopt), TENDRIL_SERVER (default https://tendriller.dev; use --server for local development), TENDRIL_OWNER.
-Creation is ad_hoc. After the owner opens the page, use meta --lifetime resident to keep it.
+Creation is ad_hoc. Before claim, stream retention and request bodies are limited to 1 MiB each.
+Dashboard pushes return pending by default; --wait opts in. info --show-url reveals the private link.
 Guest invites need owner approval. Display links are created in the service utility.
 JSON arguments may be @file. Output is JSON; --pretty indents it.`;
 
@@ -136,6 +137,7 @@ function printHandle(h, saved) {
   note(h.mode === "dashboard" ? `\nDashboard URL: ${h.page_url}` : `\nPage URL (share after verifying the live listener): ${h.page_url}`);
   if (qr) note(qr);
   if (saved) note(`Saved to ${saved.path}. Use: tendril --tendril ${saved.name} <command>`);
+  if (h.unclaimed_limits) note(`Before claim: stream retention ${h.unclaimed_limits.stream_retained_bytes} bytes, request body ${h.unclaimed_limits.request_body_bytes} bytes. Claim the page before starting a large collector.`);
 }
 
 async function waitForHealth(api, version, timeoutS) {
@@ -175,7 +177,11 @@ const commands = {
     printHandle(h, saved);
   },
 
-  async info(args, f, api) { out(await api.get("")); },
+  async info(args, f, api) {
+    if (args.length || Object.keys(f).some(key => !["tendril", "pretty", "show-url"].includes(key))) fail("usage: tendril info [--show-url] [--pretty]", 64);
+    const details = await api.get("");
+    out({ ...details, ...(details.page_url !== undefined && !f["show-url"] ? { page_url: "[REDACTED; use --show-url privately]" } : {}) });
+  },
 
   async meta(args, f, api) {
     for (const key of Object.keys(f)) if (!["name","short-name","icon","theme-color","background-color","lifetime","pretty","tendril"].includes(key)) fail(`meta does not support --${key}`,64);
@@ -207,6 +213,9 @@ const commands = {
       concurrency: boundedInteger(f.concurrency, "concurrency", 3, 1, 8) });
     const result = { version: r.version, head_revision:r.head_revision, files: r.files, reused:r.reused };
     if (f["no-wait"]) return out({ ...result, status: "pending" });
+    // No browser is required to be viewing a dashboard when publishing it.
+    if (!f.wait && (cfg.mode === "dashboard" || (!cfg.mode && (await api.get("")).mode === "dashboard")))
+      return out({ ...result, status: "pending", note: "Dashboard not yet viewed; use --wait to wait for browser health." });
     const { entry, list, timedOut } = await waitForHealth(api, r.version, intFlag(f.timeout, "timeout", 20));
     result.status = entry ? entry.status : "unknown";
     result.healthy = result.status === "healthy" ? true : result.status === "failed" ? false : null;
@@ -339,7 +348,11 @@ const commands = {
   },
 
   async events(args, f, api, cfg) {
-    if (args.length) fail("usage: tendril events [--after C] [--limit N] [--peek] [--follow [--wakes]]", 64);
+    if (args[0] === "send") {
+      if (args.length !== 1 || !f.wake || Object.keys(f).some(key => !["wake", "tendril", "pretty"].includes(key))) fail("usage: tendril events send --wake", 64);
+      return out({ ...await api.post("/wake/probe", {}), diagnostic: "delivery_probe" });
+    }
+    if (args.length || f.wake) fail("usage: tendril events [--after C] [--limit N] [--peek] [--follow [--wakes]] | events send --wake", 64);
     if (f.wait !== undefined) fail("--wait (long polling) was removed; use --follow for WebSocket delivery", 64);
     const cpath = cursorPath(cfg, f);
     const explicit = f.after !== undefined;
