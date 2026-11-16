@@ -604,14 +604,20 @@ export function createCore(cfg: TendrilConfig): Internal {
             break;
           }
           const before = JSON.stringify(local);
-          const [p] = pendingState.splice(idx, 1);
+          const p = pendingState[idx];
           // A reconnect may install a newer full snapshot before replay returns
           // a cached success for this cid. Its old ops are already accounted for
           // by that snapshot; applying them again can resurrect archived data.
           if (!m.error && typeof m.rev === "number" && m.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
-            confirmed = applyOps(confirmed, p.ops);
+            try { confirmed = applyOps(confirmed, p.ops); }
+            catch (error) {
+              if (!(error instanceof StatePathError)) throw error;
+              connection.close(4000, "state resync");
+              break;
+            }
             rev = m.rev;
           }
+          pendingState.splice(idx, 1);
           rebuild();
           bus.emit("state_result", { cid: p.cid, scope: p.scope, expected_generations: p.expected_generations, ...normalizeStateChecks(p), ...(m.error
             ? stateRejection(m)
@@ -645,7 +651,15 @@ export function createCore(cfg: TendrilConfig): Internal {
       case "state": {
         installScopes(m.scopes);
         const ops: Op[] = Array.isArray(m.ops) ? m.ops : [];
-        confirmed = applyOps(confirmed, ops);
+        try { confirmed = applyOps(confirmed, ops); }
+        catch (error) {
+          if (!(error instanceof StatePathError)) throw error;
+          // A later writer can validly traverse a parent created by our own
+          // unacknowledged command. This delta cannot be applied to our older
+          // confirmed snapshot: retain the outbox and obtain the complete state.
+          connection.close(4000, "state resync");
+          break;
+        }
         if (typeof m.rev === "number") rev = m.rev;
         if (pendingState.length) rebuild();
         else for (const op of ops) local = applyOp(local, op);

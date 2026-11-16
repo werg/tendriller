@@ -288,6 +288,24 @@ test("late snapshots and conditional ACKs cannot overwrite a newer broadcast or 
   assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
 });
 
+test("a nested remote delta depending on an unacknowledged parent replacement resyncs without losing either write", async () => {
+  const env = await environment({ state: { parent: null } });
+  const pending = env.core.state.set("parent", { child: 1 }, { expected_revision: 1 });
+  await flush(); await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  // Authority accepted our parent replacement at revision 2; its ACK is delayed.
+  // Another writer's revision 3 is valid there, but not against local parent:null.
+  env.transport.receive({ t: "state", rev: 3, ops: [{ op: "set", path: ["parent", "child"], value: 2 }] });
+  assert.equal((await pending).status, "queued");
+  assert.equal(env.core.connected, false); assert.equal(env.core.pendingWork().state, 1);
+  assert.equal(env.core.state.revision, 1); assert.equal(env.core.state.get("parent"), null);
+  const resumed = await environment({ database: env.database, localStorage: env.localStorage, state: { parent: { child: 2 } }, rev: 3 });
+  assert.deepEqual(resumed.sent.find(frame => frame.t === "state"), original);
+  resumed.transport.receive({ t: "ack", cid: original.cid, rev: 2 }); await flush();
+  assert.equal(resumed.core.state.get("parent.child"), 2);
+  assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
+});
+
 test("snapshot reads fail explicitly offline, on disconnect and on malformed replies without queuing", async () => {
   const offline = await environment({ online: false });
   await assert.rejects(offline.core.state.snapshot(), { code: "offline" });
