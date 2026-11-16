@@ -369,6 +369,8 @@ test("invalid timer metadata and missing review revisions fail before any local 
   const bad = [
     () => env.core.timers.create({ title: "Review", due_at: 4000, cid: "injected" }),
     () => env.core.timers.create({ title: "Review", due_at: 4000 }, { cid: "injected" }),
+    () => env.core.timers.create({ title: "Review", due_at: 4000 }, { scope: "" }),
+    ...[null, [], "abc"].map(expected_generations => () => env.core.timers.create({ title: "Review", due_at: 4000 }, { expected_generations })),
     () => env.core.timers.create({ title: "Review", repeat: { at: "29:00" } }),
     () => env.core.timers.update("timer-1", { title: "Review" }, {}),
     () => env.core.timers.update("timer-1", { expected_revision: 2 }, { expected_revision: 1 }),

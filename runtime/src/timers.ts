@@ -25,6 +25,11 @@ function contextOptions(value: OperationOptions | TimerRevisionOptions | undefin
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Timer context must be an object");
   const allowed = new Set(["scope", "expected_generations", ...(revision ? ["expected_revision"] : [])]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`Unknown timer context option: ${key}`);
+  // Validate supplied guards before captureContext copies them. Spreading an
+  // array, string or null must not silently turn it into a different guard map.
+  assertValid("preconditions", { cid: "timer-context",
+    ...(value.scope === undefined ? {} : { scope: value.scope }),
+    expected_generations: value.expected_generations === undefined ? {} : value.expected_generations });
   return value;
 }
 
