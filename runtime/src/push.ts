@@ -175,7 +175,10 @@ export function setupPush(core: Core): PushWithReason {
           return;
         }
         const r = await findReg();
-        if (!r || !(await r.pushManager.getSubscription())) {
+        // Missing registration can be a transient first-page install; don't
+        // discard a server subscription until the browser can confirm none.
+        if (!r) return;
+        if (!(await r.pushManager.getSubscription())) {
           try { await core.transportRequest({ t: "push_unsubscribe" }); } catch { /* retry next welcome */ }
           return;
         }
