@@ -17,3 +17,8 @@ DELETE FROM creation_ip;
 
 UPDATE service_state SET reserved = 0, mode = 'creation_paused' WHERE id = 1;
 UPDATE accounts SET reserved = 0;
+
+-- The deploy workflow consumes this marker after the new Worker passes its
+-- smoke check. Later intentional pauses must not be reopened by a deploy.
+CREATE TABLE contract3_cutover_pending (id INTEGER PRIMARY KEY CHECK (id = 1));
+INSERT INTO contract3_cutover_pending (id) VALUES (1);

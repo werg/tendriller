@@ -20,7 +20,7 @@
   "workflow": {
     "file": "composition/artifacts/tendriller-workflows-0.3.0-rc.1.tgz",
     "url": "https://github.com/werg/tendriller-contrib/releases/download/v0.3.0-rc.1/tendriller-workflows-0.3.0-rc.1.tgz",
-    "sha256": "0e8f7a826b9d5e5716cf0d33cd5b2a898c649e926e2f07e97a893b2b6bae9ad2",
+    "sha256": "636991d95460133338fe920f89db6f13842c47799f72ac274331e56589c4c694",
     "version": "0.3.0-rc.1",
     "interfaces": {
       "sessions": {

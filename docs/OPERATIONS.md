@@ -254,10 +254,10 @@ objects are left unreferenced; there is no data translator or compatibility path
    Confirm the ready gates remain enabled. A push to `master` applies D1
    migrations, uploads the immutable runtime, deploys staging, verifies it,
    then deploys and verifies production.
-4. Check `/health`, `/api/service`, a fresh page, OAuth access and an agent
-   session in each environment. After those checks, set `service_state.mode`
-   from `creation_paused` to `open` in each D1 database. The deployment gate
-   will not open creation automatically.
+4. After each deployed Worker passes its public smoke check, the workflow
+   consumes the one-time cutover marker and opens page creation automatically.
+   Check a fresh page, OAuth access and an agent session in each environment.
+   Later intentional pauses remain in place across deploys.
 
 The storage schema identity check must remain in place. A future incompatible
 schema needs a new namespace and an explicit D1 cutover.

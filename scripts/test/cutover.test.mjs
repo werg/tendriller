@@ -80,3 +80,14 @@ test('the full migration series initializes an empty paused contract 3 database'
   assert.equal(service.mode, 'creation_paused');
   assert.equal(service.reserved, 0);
 });
+
+test('deployment reopens creation once after cutover without undoing later pauses', t => {
+  const db = migratedDatabase(t);
+  const open = readFileSync(join(root, 'scripts/open-contract3-cutover.sql'), 'utf8');
+  db.exec(open);
+  assert.equal(db.prepare('SELECT mode FROM service_state WHERE id=1').get().mode, 'open');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM contract3_cutover_pending').get().count, 0);
+  db.exec("UPDATE service_state SET mode='creation_paused' WHERE id=1");
+  db.exec(open);
+  assert.equal(db.prepare('SELECT mode FROM service_state WHERE id=1').get().mode, 'creation_paused');
+});
