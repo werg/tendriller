@@ -58,3 +58,10 @@ test("page manifests are complete, ordered and contain only exact blobs", () => 
   assert.throws(() => assertPublicationEntries(files, "missing.html"), /missing/);
   assert.notEqual(validate("publicationWrite", { ...guards, entry: "index.html", files }).length, 0);
 });
+
+test("scope operation contract accepts publication and shared-file generation guards", () => {
+  for (const operation of ["file.write", "publication.publish", "bundle.publish", "blob.pin", "event", "capture"])
+    assert.deepEqual(validate("scopeOperation", operation), [], operation);
+  for (const operation of ["file.read", "publication.write", "file.write.extra", "_tendril"])
+    assert.ok(validate("scopeOperation", operation).length > 0, operation);
+});
