@@ -5,7 +5,7 @@ import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
 import type { ConversationResult, OperationOptions, ScopeDescriptor, ServiceDescriptor, StateResult, StateWriteOptions, PendingStateCommand } from "../../contract/index.mjs";
-import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError } from "../../contract/state.mjs";
+import { assertStateJson, normalizeStateOps, normalizeStateChecks, StatePathError, StateInputError } from "../../contract/state.mjs";
 import type { NormalizedStateChecks } from "../../contract/state.mjs";
 import { captureContext, matchesContext, type OperationContext } from "./generations";
 import { serialize, errorString } from "./serialize";
@@ -101,7 +101,7 @@ export function createCore(cfg: TendrilConfig): Internal {
       catch (error) {
         // A remote parent replacement can make an old path incompatible. Keep
         // the original command for its receipt, without hiding newer authority.
-        if (!(error instanceof StatePathError)) throw error;
+        if (!(error instanceof StatePathError) && !(error instanceof StateInputError)) throw error;
       }
     }
   };

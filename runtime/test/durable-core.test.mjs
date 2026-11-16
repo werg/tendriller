@@ -428,6 +428,22 @@ test("invalid or misspelled state guards never become unconditional writes", asy
   assert.equal(env.database.stores.outbox.size, 0);
 });
 
+test("an optimistic result exceeding state nesting limits still receives its admitted command outcome", async () => {
+  const env = await environment();
+  const path = Array.from({ length: 128 }, (_, index) => `level-${index}`);
+  // Path and value are individually valid; their combined result exceeds the
+  // state depth limit. Suppress that optimism without calling admission failed.
+  const pending = env.core.state.set(path, { child: 1 });
+  await flush(); await env.commit();
+  const frame = env.sent.find(frame => frame.t === "state");
+  assert.ok(frame); assert.equal(env.core.state.pending()[0].cid, frame.cid);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.get())), {});
+  env.transport.receive({ t: "ack", cid: frame.cid, error: "bad_ops", message: "State nesting exceeds 128 levels" });
+  const result = await pending;
+  assert.equal(result.status, "rejected"); assert.equal(result.error, "bad_ops"); assert.equal(result.cid, frame.cid);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.core.state.pending())), []);
+});
+
 test("a remote parent replacement suppresses incompatible pending optimism without losing the command", async () => {
   const env = await environment({ state: { parent: { child: 1 } } });
   const pending = env.core.state.set("parent.child", 2);
