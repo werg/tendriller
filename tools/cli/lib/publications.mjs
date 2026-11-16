@@ -19,7 +19,7 @@ export async function publishFiles(api, enumeration, {
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new RangeError("Upload concurrency must be 1..8");
   const filesToUpload = sorted(enumeration.files);
   const fingerprint = digest(JSON.stringify({merge,files:filesToUpload.map(f=>({path:f.path,size:f.size,sha256:f.sha256,type:f.type})),
-    entry:enumeration.entry,message:enumeration.message??null,generations,scope:scope??null}));
+    entry:enumeration.entry??null,message:enumeration.message??null,generations,scope:scope??null}));
   let record = readRecord(resumeFile);
   if (record && (record.fingerprint !== fingerprint || (cid && record.cid !== cid)))
     throw new Error("A saved publication belongs to different bytes/guards. Choose a new resume record for a new publication");
@@ -30,8 +30,13 @@ export async function publishFiles(api, enumeration, {
     const previous = head.current ? await api.get(`/publications/${head.current}`) : null;
     if (merge && !previous) throw new Error("--no-replace requires an existing publication");
     const oldFiles = previous ? previous.files : [];
+    if (!Array.isArray(oldFiles) || oldFiles.some(file => typeof file.path !== "string" ||
+      !/^b_[a-z2-7]{20}$/.test(file.blob_id) || !/^[0-9a-f]{64}$/.test(file.sha256) ||
+      !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.type !== "string"))
+      throw new Error("Service did not return a complete verified publication manifest");
     record = {
       fingerprint, cid:cid ?? randomUUID(), expected_head_revision:head.head_revision,
+      entry:enumeration.entry ?? previous?.entry,
       oldFiles: merge ? oldFiles : [], knownFiles: oldFiles,
       uploads: Object.fromEntries(filesToUpload.map(f=>[f.path,{cid:randomUUID()}])),
       status:"prepared",
@@ -39,7 +44,8 @@ export async function publishFiles(api, enumeration, {
     saveRecord(resumeFile, record);
   }
   if (record.status === "accepted") return record.result;
-  const matching = new Map(record.knownFiles.filter(f=>f.sha256 && f.blob_id).map(f=>[f.sha256,f.blob_id]));
+  const contentKey = file => `${file.sha256}:${file.size}`;
+  const matching = new Map(record.knownFiles.map(file => [contentKey(file), file.blob_id]));
   const results = new Array(filesToUpload.length);
   const inflight = new Map();
   let next = 0;
@@ -48,14 +54,15 @@ export async function publishFiles(api, enumeration, {
       const i = next++;
       if (i >= filesToUpload.length) break;
       const f = filesToUpload[i];
-      let blobId = matching.get(f.sha256);
+      const key = contentKey(f);
+      let blobId = matching.get(key);
       if (!blobId) {
-        let work = inflight.get(f.sha256);
+        let work = inflight.get(key);
         if (!work) {
           const own = record.uploads[f.path];
-          work = uploadBlob(api,f.bytes,{type:f.type,name:f.path,cid:own.cid,maxBytes,
+          work = uploadBlob(api,f.bytes,{type:f.type,cid:own.cid,maxBytes,
             resumeFile:resumeFile && `${resumeFile}.${i}.upload.json`}).then(r => r.blob.id);
-          inflight.set(f.sha256,work);
+          inflight.set(key,work);
         }
         blobId = await work;
       }
@@ -66,17 +73,17 @@ export async function publishFiles(api, enumeration, {
   const map = new Map(record.oldFiles.map(f=>[f.path,{path:f.path,blob_id:f.blob_id,type:f.type}]));
   for (const value of results) map.set(value.path,value);
   const files = sorted(map.values());
-  if (!files.some(f=>f.path === enumeration.entry)) throw new Error(`Publication entry not found: ${enumeration.entry}`);
+  if (!files.some(f=>f.path === record.entry)) throw new Error(`Publication entry not found: ${record.entry}`);
   // Save the complete immutable publish request before sending; lost replies repeat this exact CID+manifest.
   const request = record.publishRequest ?? {
     cid:record.cid, expected_generations:generations,
     ...(scope?{scope}:{}),expected_head_revision:record.expected_head_revision,
-    entry:enumeration.entry,files,...(enumeration.message?{message:enumeration.message}:{})
+    entry:record.entry,files,...(enumeration.message === undefined ? {} : {message:enumeration.message})
   };
   record = {...record, publishRequest:request,status:"publishing"};
   saveRecord(resumeFile, record);
   const published = await api.post("/publications", request);
-  const result = {...published,files:files.length,reused:results.filter((_,i)=>matching.has(filesToUpload[i].sha256)).length};
+  const result = {...published,files:files.length,reused:results.filter((_,i)=>matching.has(contentKey(filesToUpload[i]))).length};
   saveRecord(resumeFile,{...record,result,status:"accepted"});
   return result;
 }

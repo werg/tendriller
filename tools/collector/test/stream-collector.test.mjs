@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 import { createServer } from "node:http";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -211,7 +212,7 @@ test('successful but malformed acknowledgements cannot remove queued durable rec
 });
 
 test('CLI SIGTERM stops collection and releases the spool without losing pending work', async t => {
-  const fixtureServer = createServer((req,res) => { res.setHeader('content-type','application/json'); if(req.url==='/api/service')res.end(JSON.stringify({contract:2,workflows:[]})); else {res.statusCode=503;res.end('{}');} });
+  const fixtureServer = createServer((req,res) => { res.setHeader('content-type','application/json'); if(req.url==='/api/service')res.end(JSON.stringify({contract:CONTRACT_VERSION,workflows:[]})); else {res.statusCode=503;res.end('{}');} });
   await new Promise(resolve=>fixtureServer.listen(0,'127.0.0.1',resolve));
   t.after(()=>{fixtureServer.closeAllConnections();return new Promise(resolve=>fixtureServer.close(resolve));});
   const api = `http://127.0.0.1:${fixtureServer.address().port}/api/t/aaaaaaaaaaaa`;

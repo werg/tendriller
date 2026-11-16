@@ -38,6 +38,9 @@ export async function uploadBlob(api, bytes, { type = "application/octet-stream"
   save(saved || { phase: "starting" });
   if (saved?.phase === "completed") return saved.completion;
   const session = await api.post("/uploads", { cid: identity, sha256, size: payload.length, type, ...(name === undefined ? {} : { name }) }, { signal });
+  if (!/^u_[a-z2-7]{20}$/.test(session?.id) || !validBlobId(session.blob_id) ||
+      session.sha256 !== sha256 || session.size !== payload.length || typeof session.upload_required !== "boolean")
+    throw new Error("Upload reservation did not match the submitted exact bytes");
   const uploadId = saved?.upload_id || session.id;
   if (saved?.upload_id && saved.upload_id !== session.id) throw new Error("Server changed a previously acknowledged upload ID");
   save({ phase: "started", upload_id: uploadId });
@@ -49,7 +52,8 @@ export async function uploadBlob(api, bytes, { type = "application/octet-stream"
     save({ phase: "received", upload_id: uploadId });
   }
   const completion = await api.post(`/uploads/${encodeURIComponent(uploadId)}/complete`, {}, { signal });
-  if (completion?.status !== "completed" || completion.blob?.sha256 !== sha256 || completion.blob.size !== payload.length)
+  if (completion?.status !== "completed" || completion.blob?.id !== session.blob_id ||
+      completion.blob?.sha256 !== sha256 || completion.blob.size !== payload.length)
     throw new Error("Upload completion did not attest the submitted exact bytes");
   save({ phase: "completed", upload_id: uploadId, completion });
   return completion;

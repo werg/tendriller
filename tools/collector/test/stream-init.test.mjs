@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, stat, symlink, cp } from 'node:fs/promises';
@@ -31,7 +32,7 @@ async function fixture(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   const state = { streams: new Map(), producers: new Map(), requests: [], intercept: undefined };
   const server = createServer(async (req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; }
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:CONTRACT_VERSION,core_release:CORE_RELEASE,workflows:[]})); return; }
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined;

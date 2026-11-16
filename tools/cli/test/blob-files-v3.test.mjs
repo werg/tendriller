@@ -1,7 +1,7 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { uploadBlob, downloadBlob } from "../lib/blobs.mjs";
@@ -10,7 +10,9 @@ import { pack } from "../lib/pack.mjs";
 import { publishFiles } from "../lib/publications.mjs";
 
 const sha = value => createHash("sha256").update(value).digest("hex");
-const dir = () => mkdtempSync(join(tmpdir(),"tendriller-v3-test-"));
+const roots = [];
+const dir = () => { const root = mkdtempSync(join(tmpdir(),"tendriller-v3-test-")); roots.push(root); return root; };
+after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 const b = id => `b_${id.repeat(20)}`;
 const u = id => `u_${id.repeat(20)}`;
 const payload = Buffer.from([0, 250, 50, 0, 255, 12, 13, 127]);
@@ -45,7 +47,9 @@ function fakeStore({ failCompleteOnce = false, corrupt = false } = {}) {
           throw Object.assign(new Error("publication_conflict"), {status:409});
         const result={version:(api.publication?.version??0)+1,head_revision:(api.publication?.head_revision??0)+1};
         byCid.set(`pub:${body.cid}`,{body,result});
-        api.publication={...result,files:body.files};
+        api.publication={...result,entry:body.entry,files:body.files.map(file => {
+          const bytes=objects.get(file.blob_id); return {...file,sha256:sha(bytes),size:bytes.length};
+        })};
         return result;
       }
       throw Error(`unhandled POST ${path}`);
@@ -164,4 +168,54 @@ test("publication retries preserve full manifest, captured head CAS and original
   assert.equal(api.byCid.get("pub:pub-once").body.expected_head_revision,0);
   assert.equal(api.byCid.get("pub:pub-once").body.files.length,2);
   await assert.rejects(publishFiles(api,{...plan,message:"altered"},options),/different bytes/);
+});
+
+test("publication merges preserve the declared nested entry and reuse verified immutable blobs", async () => {
+  const api = fakeStore(), root = dir();
+  mkdirSync(join(root, "nested"));
+  writeFileSync(join(root, "nested", "report.html"), "<h1>Declared entry</h1>");
+  const first = await publishFiles(api, pack(root, { entry: "nested/report.html" }));
+  assert.equal(first.version, 1);
+  const uploads = api.calls.filter(call => call.path === "/uploads").length;
+  const reused = await publishFiles(api, pack(root, { entry: "nested/report.html" }));
+  assert.equal(reused.reused, 1);
+  assert.equal(api.calls.filter(call => call.path === "/uploads").length, uploads);
+  const extra = join(root, "data.bin"); writeFileSync(extra, payload);
+  await publishFiles(api, pack(extra, { merge: true }), { merge: true });
+  assert.equal(api.publication.entry, "nested/report.html");
+  assert.deepEqual(api.publication.files.map(file => file.path), ["data.bin", "nested/report.html"]);
+});
+
+test("a lost publication acknowledgement retries the captured request even after the live head changes", async () => {
+  const api = fakeStore(), root = dir(), record = join(root, "resume.json");
+  const input = join(root, "page.html"); writeFileSync(input, "<h1>Page</h1>");
+  const post = api.post; let lost = true;
+  api.post = async (path, body) => {
+    const result = await post(path, body);
+    if (path === "/publications" && lost) { lost = false; throw new Error("lost publication receipt"); }
+    return result;
+  };
+  const plan = pack(input), options = { cid: "original-publication", resumeFile: record };
+  await assert.rejects(publishFiles(api, plan, options), /lost publication receipt/);
+  api.publication.head_revision = 10;
+  const accepted = await publishFiles(api, plan, options);
+  assert.equal(accepted.head_revision, 1);
+  const requests = api.calls.filter(call => call.path === "/publications" && call.method === "POST");
+  assert.deepEqual(requests[1].body, requests[0].body);
+  assert.equal(api.publication.head_revision, 10);
+});
+
+test("shared-file recreation captures its tombstone revision", async () => {
+  const api = fakeStore();
+  api.heads.set("shared/result.bin", { path: "shared/result.bin", revision: 4, blob_id: null });
+  const result = await putSharedFile(api, "shared/result.bin", payload, { type: "application/octet-stream" });
+  assert.equal(result.file.revision, 5);
+  assert.equal(api.calls.find(call => call.method === "PUT" && call.path === "/file-refs").body.expected_revision, 4);
+});
+
+test("invalid upload reservations fail before transmitting bytes", async () => {
+  const api = fakeStore(), post = api.post;
+  api.post = async (path, body) => ({ ...await post(path, body), size: body.size + 1 });
+  await assert.rejects(uploadBlob(api, payload), /reservation did not match/);
+  assert.equal(api.calls.some(call => call.method === "PUT"), false);
 });

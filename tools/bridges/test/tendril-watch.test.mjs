@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -17,7 +18,7 @@ const until = async (check, ms = 5000) => {
 
 async function setup({ refuse = false } = {}) {
   const server = createServer((req, res) => {
-    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:2,core_release:"0.2.0-rc.6",workflows:[]})); return; } res.statusCode = 404; res.end(); });
+    if (req.url === "/api/service") { res.setHeader("content-type","application/json"); res.end(JSON.stringify({contract:CONTRACT_VERSION,core_release:CORE_RELEASE,workflows:[]})); return; } res.statusCode = 404; res.end(); });
   const sockets = [], urls = [];
   const wss = new WebSocketServer({ noServer: true, handleProtocols: (protocols) => protocols.has('tendriller.agent.v2') ? 'tendriller.agent.v2' : false });
   server.on('upgrade', (req, socket, head) => {
