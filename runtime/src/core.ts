@@ -1,4 +1,4 @@
-import { applicationSelection, createApplicationBinding, createCloudflareApplicationBackend, validateCloudflareProgram, assertApplicationOperationId } from "../../contract/application.mjs";
+import { applicationSelection, createApplicationBinding, createCloudflareApplicationBackend, validateCloudflareProgram, validateApplicationOperation, assertApplicationOperationId } from "../../contract/application.mjs";
 import type { ApplicationBackend, ApplicationOperation, CloudflareApplicationSubmission } from "../../contract/application.mjs";
 import { connectPeer, validatePeerBootstrap } from "../../contract/peers.mjs";
 import { documentUrl } from "./document";
@@ -429,6 +429,19 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
   };
 
   const applicationOutcomes = new Map<string, ApplicationOperation>();
+  const deliverApplication = async (item: OutboxItem): Promise<ApplicationOperation> => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        core.request<ApplicationOperation>("application/changes", { method: "POST", signal: controller.signal,
+          body: { program: item.msg.program, operationId: item.msg.operationId } }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => {
+          controller.abort(); reject(new Error("Application receipt timed out; retry the original operation"));
+        }, 15_000); }),
+      ]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  };
   const hasCommandAck = (item: OutboxItem) => item.msg.t === "state" || item.msg.t === "send";
   const settleCommandAck = async (item: OutboxItem): Promise<void> => {
     if (settlingCommands.has(item.cid) || !store.has(item.cid)) return;
@@ -530,7 +543,19 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
         sentThisConn.add(item.cid);
         if (item.msg.t === "application") {
           try {
-            const outcome = item.msg.outcome || applicationOutcomes.get(item.cid) || await core.request<ApplicationOperation>("application/changes", { method: "POST", body: { program: item.msg.program, operationId: item.msg.operationId } });
+            let received = item.msg.outcome || applicationOutcomes.get(item.cid);
+            if (!received) {
+              try { received = await deliverApplication(item); }
+              catch (error) {
+                const failure = error as { status?: number; code?: string; message?: string };
+                // Explicit admission failures retain the draft. A lost/malformed
+                // response does not establish rejection and must retry exact bytes.
+                if (!(failure.status && failure.status >= 400 && failure.status < 500 && ![408, 425].includes(failure.status) &&
+                    (failure.status !== 429 || failure.code === "history_quota"))) throw error;
+                received = { operationId: item.msg.operationId, proposalId: "", status: "rejected", error: failure.code || "admission_failed", message: failure.message };
+              }
+            }
+            const outcome = validateApplicationOperation(received, item.msg.operationId, { terminal: true });
             applicationOutcomes.set(item.cid, outcome);
             if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(outcome), ...(outcome.status === "rejected" ? { failed: true } : {}) });
             if (outcome.status !== "rejected") await store.removeDurable(item.cid);
@@ -1055,8 +1080,8 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     transportRequest: requests.request,
     async request<T = unknown>(path: string, options: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
       let decoded: string;
-      try { decoded = decodeURIComponent(path); } catch { throw new TypeError("Invalid service path"); }
-      if (!path || /[?#\\]/.test(decoded) || decoded.startsWith("/") || decoded.split("/").some(part => !part || part === "." || part === "..") || /^[a-z]+:/i.test(decoded)) throw new TypeError("Service requests require a relative path");
+      try { decoded = decodeURIComponent(path.split("?", 1)[0]); } catch { throw new TypeError("Invalid service path"); }
+      if (!decoded || path.includes("#") || /[?#\\]/.test(decoded) || decoded.startsWith("/") || decoded.split("/").some(part => !part || part === "." || part === "..") || /^[a-z]+:/i.test(decoded)) throw new TypeError("Service requests require a relative path");
       const response = await fetch(cfg.base + "_tendril/" + path, {
         method: options.method || "GET", credentials: "same-origin", cache: "no-store", signal: options.signal,
         headers: { ...deviceHeaders(), ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },

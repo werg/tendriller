@@ -42,3 +42,28 @@ test('bootstrap hints do not accept credentials or arbitrary insecure endpoints'
   for (const url of ['https://peer.example/socket', 'ws://peer.example/socket', 'wss://secret@peer.example/socket', 'wss://peer.example/socket#capability'])
     assert.throws(() => validatePeerBootstrap({ version: 1, endpoints: [{ route: 'relay', url }] }), { code: 'invalid_bootstrap' });
 });
+
+test('abort before relay readiness removes bounded pending sends without blocking later traffic', async () => {
+  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
+  const first = new AbortController(), second = new AbortController();
+  const one = peer.send({ domain: 'records', payload: new Uint8Array(1000) }, { signal: first.signal });
+  const two = peer.send({ domain: 'records', payload: new Uint8Array(1000) }, { signal: second.signal });
+  const rejected = Promise.all([assert.rejects(one, { name: 'AbortError' }), assert.rejects(two, { name: 'AbortError' })]);
+  second.abort(); first.abort(); await rejected;
+  assert.equal(peer.stats.queuedBytes, 0); assert.equal(socket.sent.length, 0);
+  socket.receive('{"t":"peer_ready","version":1}');
+  await peer.send({ domain: 'control', payload: new Uint8Array([7]) });
+  assert.equal(socket.sent.length, 1); peer.close();
+});
+
+test('relay credits bound sends until the remote reader consumes frames', async () => {
+  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
+  socket.receive('{"t":"peer_ready","version":1}');
+  const frame = { domain: 'records', payload: new Uint8Array(PEER_LIMITS.frameBytes) };
+  for (let index = 0; index < 15; index++) await peer.send(frame);
+  let finished = false;
+  const blocked = peer.send(frame).then(() => { finished = true; });
+  await Promise.resolve(); assert.equal(finished, false);
+  socket.receive(JSON.stringify({ t: 'peer_credit', bytes: PEER_LIMITS.frameBytes + 3 }));
+  await blocked; assert.equal(finished, true); peer.close();
+});

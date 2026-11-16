@@ -73,13 +73,22 @@ export async function handlePeerMessage(t: Tendril, ws: WebSocket, message: stri
   value = attachment(ws)!;
   const other = peers(t, value.channel).find(peer => peer !== ws);
   if (!other || !value.ready) { ws.close(1013, 'Peer disconnected; resume from durable progress'); return; }
+  const candidate = attachment(other)!;
+  if (candidate.principal.kind === 'page' && candidate.principal.accountId && !await accountActive(t, candidate.principal.accountId)) {
+    other.close(4003, 'Peer host access revoked'); ws.close(1013, 'Peer disconnected'); return;
+  }
+  // Account lookup can yield to another frame; refresh the flow-control state.
+  value = attachment(ws)!;
   const recipient = attachment(other)!;
+  if (!authorized(t, value.principal) || !authorized(t, recipient.principal) || other.readyState !== WebSocket.READY_STATE_OPEN) {
+    ws.close(4003, 'Peer host access revoked'); return;
+  }
   if (typeof message === 'string') {
     // Credit is replenished only as the receiver consumes frames. The relay
     // retains no queue and cannot accumulate unbounded bytes for a slow peer.
     let credit: { t?: string; bytes?: number };
     try { credit = JSON.parse(message); } catch { ws.close(1008, 'Invalid relay control'); return; }
-    if (Object.keys(credit).length !== 2 || credit.t !== 'peer_credit' || !Number.isSafeInteger(credit.bytes) || credit.bytes! < 4 ||
+    if (!credit || typeof credit !== 'object' || Array.isArray(credit) || Object.keys(credit).length !== 2 || credit.t !== 'peer_credit' || !Number.isSafeInteger(credit.bytes) || credit.bytes! < 4 ||
         value.credit + credit.bytes! > PEER_LIMITS.queueBytes) { ws.close(1008, 'Invalid receive credit'); return; }
     ws.serializeAttachment({ ...value, credit: value.credit + credit.bytes! });
     other.send(JSON.stringify({ t: 'peer_credit', bytes: credit.bytes }));

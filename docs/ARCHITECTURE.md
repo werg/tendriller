@@ -2,6 +2,22 @@
 
 Tendriller separates dependable platform behavior from application design. Core is independently buildable. Contrib is a collection of adaptable decision guides, with optional page-owned snippets and deliberately selected trusted references.
 
+## One selected application authority
+
+Each page selects an immutable backend identity at creation. The preferred
+resident-agent deployment uses the Chronolog public adapter for durable state,
+events, conversation, operation status, and captured revision views. The native
+agent owns final ordering and deterministic workers; Tendriller remains the host.
+A Cloudflare JSON backend implements the same small contract as an alternative.
+Peer pages disable its application routes and never open a second application
+outbox. There is no automatic authority fallback. See
+[application backends](APPLICATION_BACKENDS.md).
+
+The public [peer connection](PEER_CONNECTIONS.md) boundary forwards bounded opaque
+record, signal, and control domains with receiver backpressure. Host sessions and
+relay quotas remain separate from database grants. Retained record storage is an
+optional adapter, not a mandatory checkpoint on the native commit path.
+
 ## Ownership and dependency direction
 
 | Surface | Owner | Dependency boundary |

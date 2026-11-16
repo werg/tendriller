@@ -186,6 +186,61 @@ test("application submissions use the existing durable outbox and retain the ori
   assert.equal(env.sent.filter(message => message.t === "application").length, 0);
 });
 
+test("application cursor reads use validated relative query URLs and keep revision-scoped snapshots coherent", async () => {
+  const calls = [];
+  const env = await environment({ fetcher: async url => {
+    calls.push(url);
+    if (url.endsWith("application/view")) return json({ revision: "view-1", state: { task: 1 }, scopes: [] });
+    return json({ transactions: [], scannedThrough: "cursor-2", hasMore: false, revision: new URL(url, "https://fixture.test").searchParams.get("revision") || "view-2" });
+  } });
+  const backend = env.core.application.backend, view = await backend.readView();
+  const batch = await view.readEvents({ cursor: "opaque/a+b=", topics: ["tasks"] });
+  assert.equal(batch.revision, view.revision); assert.equal(view.query("state").task, 1);
+  assert.equal(new URL(calls.at(-1), "https://fixture.test").searchParams.get("cursor"), "opaque/a+b=");
+  assert.equal(new URL(calls.at(-1), "https://fixture.test").searchParams.get("topics"), '["tasks"]');
+  for (const path of ["../outside?ok=1", "/outside?ok=1", "https://elsewhere.test?ok=1", "%2e%2e/outside?ok=1", "application/view#fragment"])
+    await assert.rejects(env.core.request(path), /relative path/);
+  view.release(); assert.throws(() => view.query("state"), { code: "view_released" });
+});
+
+test("malformed or lost application receipts retain exact authored work across reload", async () => {
+  const calls = [];
+  let malformed = true;
+  const fetcher = async (url, options) => {
+    const body = JSON.parse(options.body); calls.push(body);
+    return json({ operationId: body.operationId, proposalId: "stable-proposal", status: "final", ...(malformed ? {} : { outcome: "accepted" }) });
+  };
+  const first = await environment({ fetcher });
+  const program = { version: 1, steps: [{ kind: "emit", topic: "tasks", payload: { reviewed: true } }], expected_generations: { tasks: "original" } };
+  void first.core.application.backend.submit(program, { operationId: "reviewed" });
+  await flush(); await first.commit(); await flush();
+  assert.equal(first.database.stores.outbox.size, 1);
+  assert.equal((await first.core.application.backend.operations.get("reviewed")).status, "queued");
+  first.transport.disconnect(); malformed = false;
+  const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher });
+  await until(() => calls.length === 2);
+  assert.deepEqual(calls[0], calls[1]);
+  await second.commit(); await second.commit();
+  assert.equal(second.database.stores.outbox.size, 0);
+});
+
+test("application admission refusals preserve the reviewed draft and terminal status after offline reload", async () => {
+  let calls = 0;
+  const fetcher = async () => { calls++; return json({ error: { code: "history_quota", message: "Full retained history" } }, 429); };
+  const first = await environment({ fetcher });
+  const program = { version: 1, steps: [{ kind: "emit", topic: "tasks", payload: { reviewed: true } }], expected_generations: {} };
+  const submitted = first.core.application.backend.submit(program, { operationId: "retained" });
+  await flush(); await first.commit(); await first.commit();
+  assert.equal((await submitted).error, "history_quota");
+  assert.equal(first.database.stores.outbox.size, 1);
+  first.transport.disconnect();
+  const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher, online: false });
+  assert.equal((await second.core.application.backend.operations.get("retained")).status, "rejected");
+  assert.equal((await second.core.application.backend.submit(program, { operationId: "retained" })).error, "history_quota");
+  await assert.rejects(second.core.application.backend.submit({ ...program, steps: [{ kind: "emit", topic: "tasks", payload: "different" }] }, { operationId: "retained" }), { code: "operation_conflict" });
+  assert.equal(calls, 1);
+});
+
 test("sensor observers receive isolated snapshots without changing later observers or service usage", async () => {
   const env = await environment(), received = [];
   const status = { active: ["camera"], pending: ["microphone"] };

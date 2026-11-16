@@ -2,6 +2,21 @@
 
 Tendriller connects an authenticated page to an agent through shared state, events, files, blobs and streams. This is the entry point for **core contract 3**. Core owns the platform and optional operational tools. [Cookbooks](https://github.com/werg/tendriller-contrib) preserve reasoning that helps you author a page for the task.
 
+## Select the application history first
+
+For an always-running native agent, create the page with
+`application:{kind:'peer',id:'your-stable-history-id'}` and use the public Chronolog
+adapter. State, events, conversation, timers, and effects belong to that replica;
+the host does not queue a second copy or become a fallback authority. Install the
+backend once, await `tendril.application.ready()`, and use its `submit`, `events`,
+`readView`, and keyed `operations` APIs. [Application backends](docs/APPLICATION_BACKENDS.md)
+and [peer connections](docs/PEER_CONNECTIONS.md) document composition and bounds.
+
+The Cloudflare state/input/timer procedures below apply only when that backend is
+selected. Publication, blobs, recovery, accounts, diagnostics, and peer bootstrap
+remain host facilities for either deployment. The retained Cloudflare record log
+is optional; the resident authority can commit directly to its native record store.
+
 ## Discover and check requirements
 
 Fetch `GET https://tendriller.dev/api/service` before creating a page. It returns `contract`, `core_release`, installed `workflows` (each with independent `interface_version` and `schema_version`), and effective `limits`. Check requirements from the chosen tool or page manifest. Device/browser capabilities are a separate endpoint and do not describe installed server modules.

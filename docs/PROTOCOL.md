@@ -17,6 +17,20 @@ Core software releases, cookbook content revisions and page publications are dis
 The [MCP interface](MCP.md) invokes the same authenticated routes and command
 semantics as HTTP. It does not define a separate storage or publication model.
 
+## Selected backend and peer connections
+
+Creation accepts immutable `application:{kind:'peer'|'cloudflare',id}`. Read the
+selection with `GET A/application`; omitting it selects the Cloudflare backend.
+Peer application writes never pass through Cloudflare state, stream, conversation,
+timer, workflow, producer, or data-bundle routes. The public
+[application boundary](APPLICATION_BACKENDS.md) defines atomic programs, final
+event replay, opaque cursors, operation receipts, and revision-scoped reads.
+
+`peers/bootstrap` and `peers/socket` form a separate bounded host connectivity
+facility. `tendriller.peer.v1` binary domains and receiver credit do not change
+application membership or finality. See [peer connections](PEER_CONNECTIONS.md).
+The count-only wake route below belongs to the Cloudflare application deployment.
+
 ## Lifecycle and delivery
 
 `POST /api/tendrils` requires an owner email and accepts optional name and mode. Interactive pages require a live receiver or configured wake path before first publication; dashboards can publish without conversational delivery. Owner sign-in claims the page. Claim deadlines, residency, quotas, invited guest approval and suspension are enforced on the server.

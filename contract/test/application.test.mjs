@@ -46,3 +46,26 @@ test('Cloudflare captured read views retain their event prefix and release expli
   assert.match(calls.at(-1), /revision=opaque-1/);
   view.release(); assert.throws(() => view.query('state'), { code: 'view_released' });
 });
+
+test('durable subscriptions pull one whole batch at a time and carry empty scan progress', async () => {
+  const calls = [], stop = new AbortController();
+  const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async path => {
+    calls.push(path);
+    return { revision: 'view-1', transactions: [], scannedThrough: `cursor-${calls.length}`, hasMore: true };
+  } });
+  const iterator = backend.events.subscribe({ topics: [], signal: stop.signal })[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).value.scannedThrough, 'cursor-1');
+  await Promise.resolve(); assert.equal(calls.length, 1, 'receiving progress must not start another read');
+  assert.equal((await iterator.next()).value.scannedThrough, 'cursor-2');
+  assert.equal(new URL(calls[1], 'https://service.test/').searchParams.get('cursor'), 'cursor-1');
+  stop.abort(); assert.equal((await iterator.next()).done, true);
+});
+
+test('operation receipt validation prevents unverified responses from retiring authored work', async () => {
+  const program = { version: 1, expected_generations: {}, steps: [{ kind: 'emit', topic: 'tasks', payload: null }] };
+  for (const receipt of [{ operationId: 'other', proposalId: 'p', status: 'final', outcome: 'accepted' },
+    { operationId: 'original', proposalId: 'p', status: 'final' }, { operationId: 'original', proposalId: 'p', status: 'queued' }]) {
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => receipt });
+    await assert.rejects(backend.submit(program, { operationId: 'original' }), { code: 'invalid_response' });
+  }
+});

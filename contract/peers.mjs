@@ -40,18 +40,20 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
   let ended = false, failure, readyDone = false, reader = false, waiting, resolveReady, rejectReady;
   let sendCredit = PEER_LIMITS.queueBytes;
   let queuedBytes = 0, pendingSendBytes = 0, sentBytes = 0, receivedBytes = 0, openedAt = null;
-  const queue = [];
+  const queue = [], outgoing = [];
+  let sending = false, wakeSend;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // A caller may inspect frames before awaiting ready; keep the rejection observed.
   void ready.catch(() => {});
   const finish = error => {
     if (ended) return; ended = true; failure = error;
     if (!readyDone) rejectReady(error || new PeerConnectionError('connection_closed', 'Peer connection closed'));
-    waiting?.(); waiting = undefined;
+    waiting?.(); waiting = undefined; wakeSend?.();
+    for (const entry of outgoing.splice(0)) entry.finish(error || new PeerConnectionError('connection_closed', 'Peer connection closed'));
     for (const [type, listener] of listeners) socket.removeEventListener(type, listener);
   };
   const abort = error => { finish(error); socket.close(1008, String(error.code || 'invalid peer frame').slice(0, 100)); };
-  const markReady = () => { if (ended || readyDone) return; readyDone = true; openedAt = Date.now(); resolveReady(); };
+  const markReady = () => { if (ended || readyDone) return; readyDone = true; openedAt = Date.now(); resolveReady(); wakeSend?.(); };
   const open = () => { if (!relayHandshake) markReady(); };
   const message = event => {
     if (ended) return;
@@ -59,7 +61,7 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
       if (relayHandshake && typeof event.data === 'string') {
         if (event.data === '{"t":"peer_ready","version":1}') { markReady(); return; }
         const credit = JSON.parse(event.data);
-        if (readyDone && Object.keys(credit).length === 2 && credit.t === 'peer_credit' && Number.isSafeInteger(credit.bytes) && credit.bytes >= 4 && sendCredit + credit.bytes <= PEER_LIMITS.queueBytes) { sendCredit += credit.bytes; return; }
+        if (readyDone && credit && typeof credit === 'object' && !Array.isArray(credit) && Object.keys(credit).length === 2 && credit.t === 'peer_credit' && Number.isSafeInteger(credit.bytes) && credit.bytes >= 4 && sendCredit + credit.bytes <= PEER_LIMITS.queueBytes) { sendCredit += credit.bytes; wakeSend?.(); return; }
         fail('invalid_frame', 'Invalid relay control message');
       }
       if (!readyDone) fail('invalid_frame', 'Received application bytes before peer connection readiness');
@@ -77,7 +79,28 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
   for (const [type, listener] of listeners) socket.addEventListener(type, listener);
   if (socket.readyState === 1) open();
   else if (socket.readyState > 1) finish(new PeerConnectionError('connection_closed', 'Peer socket is already closed'));
-  let sends = Promise.resolve();
+  const drive = async () => {
+    if (sending) return;
+    sending = true;
+    try {
+      while (outgoing.length) {
+        const entry = outgoing.shift();
+        try {
+          while (!entry.done && !ended && (!readyDone || (socket.bufferedAmount || 0) + entry.bytes.length > queueBytes || relayHandshake && sendCredit < entry.bytes.length)) {
+            await new Promise(resolve => {
+              const timer = setTimeout(() => { wakeSend = undefined; resolve(); }, 10);
+              wakeSend = () => { clearTimeout(timer); wakeSend = undefined; resolve(); };
+            });
+          }
+          if (entry.done) continue;
+          if (ended || socket.readyState !== 1) throw failure || new PeerConnectionError('connection_closed', 'Peer connection closed');
+          socket.send(entry.bytes);
+          if (relayHandshake) sendCredit -= entry.bytes.length;
+          sentBytes += entry.bytes.length; entry.finish();
+        } catch (error) { entry.finish(error); }
+      }
+    } finally { sending = false; }
+  };
   return Object.freeze({ route, ready, get stats() { return Object.freeze({ sentBytes, receivedBytes, queuedBytes: queuedBytes + pendingSendBytes, openedAt }); },
     frames: { async *[Symbol.asyncIterator]() {
       if (reader) fail('reader_exists', 'A connection has one frame reader');
@@ -96,16 +119,23 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
       const bytes = encodePeerFrame(frame);
       if (ended) return Promise.reject(failure || new PeerConnectionError('connection_closed', 'Peer connection closed'));
       if (pendingSendBytes + bytes.length > queueBytes) return Promise.reject(new PeerConnectionError('backpressure', 'Peer send queue exceeded its bound'));
+      if (signal?.aborted) return Promise.reject(signal.reason || new DOMException('Aborted', 'AbortError'));
       pendingSendBytes += bytes.length;
-      const send = sends.then(async () => {
-        await ready;
-        while (!ended && !signal?.aborted && ((socket.bufferedAmount || 0) + bytes.length > queueBytes || relayHandshake && sendCredit < bytes.length))
-          await new Promise(resolve => setTimeout(resolve, 10));
-        if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-        if (ended || socket.readyState !== 1) throw failure || new PeerConnectionError('connection_closed', 'Peer connection closed');
-        socket.send(bytes); if (relayHandshake) sendCredit -= bytes.length; sentBytes += bytes.length;
-      }).finally(() => { pendingSendBytes -= bytes.length; });
-      sends = send.catch(() => {}); return send;
+      return new Promise((resolve, reject) => {
+        const entry = { bytes, done: false, finish(error) {
+          if (entry.done) return;
+          entry.done = true; pendingSendBytes -= bytes.length;
+          signal?.removeEventListener('abort', cancel);
+          if (error) reject(error); else resolve();
+        } };
+        const cancel = () => {
+          const index = outgoing.indexOf(entry);
+          if (index >= 0) outgoing.splice(index, 1);
+          entry.finish(signal.reason || new DOMException('Aborted', 'AbortError')); wakeSend?.();
+        };
+        signal?.addEventListener('abort', cancel, { once: true });
+        outgoing.push(entry); void drive();
+      });
     },
     close() { finish(); socket.close(1000, 'Peer session closed'); },
   });

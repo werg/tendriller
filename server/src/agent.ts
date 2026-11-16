@@ -47,7 +47,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   const method = req.method === "HEAD" ? "GET" : req.method;
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
-  if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
+  if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) { requireCloudflareApplication(t); return handleProducer(t, req, rest); }
   if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, await authenticateAgent(t, req));
   if (APPLICATION_ROUTE.test(rest)) return handleApplication(t, req, url, rest, await authenticateAgent(t, req));
   if (isApplicationPath(rest)) requireCloudflareApplication(t);

@@ -17,7 +17,7 @@ export function requireCloudflareApplication(t: Tendril): void {
   if (selectedApplication(t).kind !== 'cloudflare') throw new HttpError(409, 'application_backend', 'This page stores application data in its selected peer backend');
 }
 export function isApplicationPath(path: string): boolean {
-  return /^(?:state|events|say|streams|producers|consumers|timers|session|scopes|workflows|files)(?:\/|$)/.test(path)
+  return /^(?:state|events|say|streams|producers|consumers|timers|session|scopes|workflows|files|bundle|remix)(?:\/|$)/.test(path)
     && !/^events\/socket(?:\/|$)/.test(path);
 }
 const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(',')}]`
@@ -63,7 +63,7 @@ export async function submitApplication(t: Tendril, principal: Principal, input:
   const operationId = assertApplicationOperationId(rawId), program = validateCloudflareProgram(rawProgram);
   preconditions({ ...program, cid: operationId });
   const canonical = stable(program), actor = actorKey(principal);
-  const proposalId = await sha256Hex(stable(['tendriller.application.change', selectedApplication(t).id, actor, operationId, program]));
+  const proposalId = await sha256Hex(stable(['tendriller.application.change', t.tid, selectedApplication(t).id, actor, operationId, program]));
   return t.transaction(() => {
     authorize(t, principal, true);
     const previous = t.db.one<ChangeRow>('SELECT * FROM application_changes WHERE actor=? AND operation_id=?', actor, operationId);
@@ -110,7 +110,8 @@ export function readApplicationEvents(t: Tendril, input: { cursor?: string; topi
   const target = readRevision(t, input.revision), topics = applicationFilter(input.topics);
   const limit = input.limit ?? 32;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > APPLICATION_LIMITS.batchTransactions) throw new HttpError(400, 'bad_request', 'Invalid transaction batch limit');
-  let position = readCursor(t, input.cursor, topics, target.position), bytes = 0;
+  const start = readCursor(t, input.cursor, topics, target.position);
+  let position = start, bytes = 0;
   const transactions: { proposalId: string; events: ApplicationEvent[] }[] = [];
   // Scan bounds include rejected and nonmatching records, so idle topics progress.
   for (let scanned = 0; scanned < limit && position < target.position; scanned++) {
@@ -118,7 +119,7 @@ export function readApplicationEvents(t: Tendril, input: { cursor?: string; topi
     if (!row) throw new HttpError(409, 'history_gap', 'The application history is incomplete');
     const events = (JSON.parse(row.events) as ApplicationEvent[]).filter(event => topics === null || topics.includes(event.topic));
     const size = new TextEncoder().encode(JSON.stringify(events)).length;
-    if (bytes + size > 1024 * 1024 && position !== readCursor(t, input.cursor, topics, target.position)) break;
+    if (bytes + size > 1024 * 1024 && position !== start) break;
     bytes += size; position = row.seq;
     if (events.length) transactions.push({ proposalId: row.proposal_id, events });
   }

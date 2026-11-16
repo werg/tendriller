@@ -18,6 +18,21 @@ Types are published in `@tendriller/core/contract` (`RuntimeApi`,
 `RuntimeEventMap`); `@tendriller/core/browser` declares `window.tendril`.
 Optional voice types and code are separate exports.
 
+## Selected application history
+
+For peer-backed pages, use `await tendril.application.ready()` and its selected
+backend's `submit`, `events`, `readView`, and `operations` methods. Install the
+matching adapter once with `tendril.application.install(backend)`; host connection
+readiness is separate. `tendril.peers.bootstrap()` and `.connect(channel,peerId)`
+provide transport setup without granting database membership. See
+[application backends](APPLICATION_BACKENDS.md) and
+[peer connections](PEER_CONNECTIONS.md) for the public contracts.
+
+The state, conversation, input, timer, and stream operations below belong to the
+Cloudflare application deployment. A peer-selected page rejects these operations
+and stores application work only in its selected replica. Host publication,
+account, blob, sensor, diagnostic, and recovery APIs remain available.
+
 ## Conversation and durable outcomes
 
 `conversation.send(text, {via?: "text" | "voice"})` returns a result with a stable

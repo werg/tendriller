@@ -58,6 +58,9 @@ it('peer pages disable Cloudflare application paths and retain host publication 
   expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: { kind: 'peer', id: 'history-one' } });
   for (const [method, path, body] of [['PATCH', 'state', { cid: 'x', expected_generations: {}, ops: [] }], ['POST', 'events', { cid: 'x', expected_generations: {}, data: {} }], ['POST', 'application/changes', { operationId: 'x', program: program(emit('x', 1)) }]] as const)
     expect((await api(h, method, path, body)).status).toBe(409);
+  for (const path of ['bundle', 'bundle/publish', 'remix', 'session', 'timers', 'streams', 'workflows'])
+    expect((await api(h, 'GET', path)).status).toBe(409);
+  expect((await api(h, 'POST', 'streams/telemetry/records', {}, {}, 'tp_' + 'a'.repeat(40))).status).toBe(409);
   await publishFiles(h, { 'index.html': '<!doctype html><title>Peer application</title>' });
   expect(await (await req(h.page_url)).text()).toContain('"application":{"kind":"peer","id":"history-one"}');
   const page = await PageClient.connect(h.page_url);

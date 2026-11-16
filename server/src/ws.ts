@@ -72,7 +72,7 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
     return;
   }
   try {
-    synchronizeWorkflows(t);
+    if (selectedApplication(t).kind === "cloudflare") synchronizeWorkflows(t);
     if (msg.t === "hello") {
       await hello(t, ws, msg);
       return;
@@ -202,7 +202,7 @@ async function hello(t: Tendril, ws: WebSocket, msg: Msg): Promise<void> {
     budget: t.wakeConfig().budget,
   };
   t.send(ws, welcome);
-  if (typeof msg.rev === "number" && msg.rev > rev) {
+  if (selectedApplication(t).kind === "cloudflare" && typeof msg.rev === "number" && msg.rev > rev) {
     // The page claims a revision the server never issued (e.g. after a reset): resync it.
     t.send(ws, { t: "state_reset", state, rev, scopes: scopes(t) });
   }

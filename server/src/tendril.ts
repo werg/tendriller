@@ -175,7 +175,7 @@ export class Tendril extends DurableObject<Env> {
       if (this.db.get<boolean>("disabled", false) && (kind === "agent" || kind === "page")) {
         throw new HttpError(403, "disabled", "This tendril is unavailable");
       }
-      synchronizeWorkflows(this);
+      if (applicationSelection(this.db.get("application", undefined)).kind === "cloudflare") synchronizeWorkflows(this);
       if (kind === "claim") return await this.handleClaim(req, url);
       if (kind === "abuse" && url.pathname === "/abuse/report" && req.method === "POST") {
         const body = await readJson(req, 4096);

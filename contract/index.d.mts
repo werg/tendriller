@@ -171,6 +171,8 @@ export interface RuntimeEventMap {
   reload: { version: number }; [key: string]: unknown;
   stream_record: StreamRecord;
   record_log_head: RecordLogHead;
+  application_operation: import("./application.mjs").ApplicationOperation;
+  application_revision: { revision: string };
   stream_gap: { stream: string; history: StreamHistory };
   stream_error: { stream: string; error: Error & { code?: string } };
 }

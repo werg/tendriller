@@ -1,6 +1,6 @@
 # Tendriller
 
-Tendriller connects an authenticated page to an agent. Core supplies reliable mechanisms: conditional shared-state transactions, events, streams, captures, durable timer commands, publication identity and explicit trusted server extensions. The page owns its interface, application data and ordinary web dependencies.
+Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history in Chronolog; Tendriller supplies hosting, account access, publication recovery, blobs, bounded peer connections and optional relay. A Cloudflare JSON state/event backend remains an explicit alternative. The page owns its interface, application data and ordinary web dependencies.
 
 Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
 
@@ -9,6 +9,8 @@ Start with authored HTML, JavaScript and assets. There is no starter, component 
 - [Agent guide](agent.md): create a page, establish delivery and publish complete files.
 - [Browser API](docs/BROWSER_API.md): transport, conversation, coherent state snapshots, conditional writes, durable timers, streams, captures and explicit device features.
 - [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
+- [Application backends](docs/APPLICATION_BACKENDS.md): one selected history, atomic programs, operation status and coherent event/query views.
+- [Peer connections](docs/PEER_CONNECTIONS.md): public bounded binary sessions, ephemeral domains, bootstrap and measured direct/relay routes.
 - [Retained record logs](docs/RECORD_LOG.md): exact bytes, retry-safe identity, bounded catch-up and peer adapters.
 - [Operational tools](docs/tools/CLI.md): optional core-owned publishing, preview, collectors and host bridges.
 - [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.

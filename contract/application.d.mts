@@ -80,6 +80,7 @@ export interface CloudflareApplicationSubmission {
   readonly operationId: string;
   readonly proposalId: string;
   readonly status: 'queued' | 'final' | 'rejected';
+  readonly outcome?: 'accepted' | 'rejected';
   readonly revision?: string;
   readonly error?: string;
   readonly message?: string;
@@ -90,6 +91,7 @@ export declare function applicationSelection(value?: unknown, defaultId?: string
 export declare function createApplicationBinding(selection: ApplicationSelection, backend?: ApplicationBackend): ApplicationBinding;
 export declare function assertApplicationTopic(topic: unknown): string;
 export declare function assertApplicationOperationId(id: unknown): string;
+export declare function validateApplicationOperation(value: unknown, operationId: string, options?: { readonly terminal?: boolean }): ApplicationOperation;
 export declare function validateCloudflareProgram(program: unknown): CloudflareApplicationProgram;
 export declare function applicationFilter(topics?: readonly string[]): readonly string[] | null;
 /** Conversation messages are ordinary durable events with stable caller-owned IDs. */

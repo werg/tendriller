@@ -1,5 +1,9 @@
 # Retained record logs
 
+The resident-agent deployment uses native Chronolog authority by preference; this
+Cloudflare log is an optional retained-storage/authority adapter. It is not
+required for peer connections or application backends.
+
 A resident Tendril can retain one opaque record history. Each append stores exact
 bytes at a contiguous position, with content identity and a rolling integrity root.
 Identical bytes always return the original entry. No record expires or is trimmed.
@@ -121,7 +125,7 @@ retry a changed head internally. Notifications happen after durable commit.
 
 ## Recovery and deployment
 
-This unreleased baseline uses page schema revision **6**, with no compatibility or
+This unreleased baseline uses page schema revision **7**, with no compatibility or
 data migration. The checked-in canonical deployments still name revision-5 storage.
 Deploy this code only to fresh resources selected deliberately; changing a schema
 environment variable does not translate an existing namespace.

@@ -1,3 +1,4 @@
+import { assertValid } from './index.mjs';
 import { assertStateJson, normalizeStateChecks, normalizeStateOps } from './state.mjs';
 
 export const APPLICATION_LIMITS = Object.freeze({ programBytes: 256 * 1024, steps: 256, events: 128,
@@ -6,6 +7,10 @@ export class ApplicationError extends Error {
   constructor(code, message) { super(message); this.name = 'ApplicationError'; this.code = code; }
 }
 const fail = (code, message) => { throw new ApplicationError(code, message); };
+const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
+  : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+    : JSON.stringify(value);
+
 export function applicationSelection(value, defaultId = 'cloudflare') {
   if (value === undefined) return Object.freeze({ kind: 'cloudflare', id: defaultId });
   if (!value || typeof value !== 'object' || !['cloudflare', 'peer'].includes(value.kind) ||
@@ -53,7 +58,7 @@ export function validateCloudflareProgram(input) {
   assertStateJson(input);
   if (!input.expected_generations || Array.isArray(input.expected_generations) || typeof input.expected_generations !== 'object')
     fail('invalid_program', 'Capture expected_generations before persisting the operation');
-  if (input.scope !== undefined && (typeof input.scope !== 'string' || !input.scope)) fail('invalid_program', 'Invalid scope');
+  assertValid('preconditions', { cid: 'application-program', ...(input.scope === undefined ? {} : { scope: input.scope }), expected_generations: input.expected_generations });
   let events = 0;
   const steps = input.steps.map(step => {
     if (!step || typeof step !== 'object') fail('invalid_program', 'Invalid program step');
@@ -71,7 +76,7 @@ export function validateCloudflareProgram(input) {
   });
   const program = { version: 1, steps, ...(input.scope === undefined ? {} : { scope: input.scope }), expected_generations: structuredClone(input.expected_generations) };
   if (new TextEncoder().encode(JSON.stringify(program)).length > APPLICATION_LIMITS.programBytes) fail('program_too_large', 'Application program exceeds the byte limit');
-  return program;
+  return JSON.parse(canonical(program));
 }
 export function publishConversation(events, message, options) {
   assertApplicationOperationId(message?.messageId);
@@ -89,12 +94,42 @@ function delay(signal) {
     signal?.addEventListener('abort', abort, { once: true });
   });
 }
+/** Validate a saved or remote receipt before using it to retire durable work. */
+export function validateApplicationOperation(value, operationId, { terminal = false } = {}) {
+  if (!value || typeof value !== 'object' || value.operationId !== operationId || typeof value.proposalId !== 'string' ||
+      !['queued', 'provisional', 'final', 'rejected'].includes(value.status) ||
+      (terminal && !['final', 'rejected'].includes(value.status)) ||
+      (value.status === 'final' && (!value.proposalId || value.outcome !== 'accepted')) ||
+      (value.outcome !== undefined && !['accepted', 'rejected'].includes(value.outcome)) ||
+      (value.status === 'rejected' && value.outcome !== undefined && value.outcome !== 'rejected') ||
+      (value.error !== undefined && typeof value.error !== 'string') || (value.message !== undefined && typeof value.message !== 'string') ||
+      (value.revision !== undefined && typeof value.revision !== 'string'))
+    fail('invalid_response', 'Invalid application operation receipt; preserve the original queued operation');
+  return structuredClone(value);
+}
+function validateEventBatch(value) {
+  if (!value || !Array.isArray(value.transactions) || value.transactions.length > APPLICATION_LIMITS.batchTransactions ||
+      typeof value.scannedThrough !== 'string' || !value.scannedThrough || typeof value.revision !== 'string' || !value.revision || typeof value.hasMore !== 'boolean')
+    fail('invalid_response', 'Invalid durable event batch');
+  for (const transaction of value.transactions) {
+    if (!transaction || typeof transaction.proposalId !== 'string' || !transaction.proposalId || !Array.isArray(transaction.events) ||
+        transaction.events.length > APPLICATION_LIMITS.events || !transaction.events.length) fail('invalid_response', 'Invalid event transaction');
+    let ordinal = -1;
+    for (const event of transaction.events) {
+      if (!event || event.proposalId !== transaction.proposalId || !Number.isSafeInteger(event.eventOrdinal) || event.eventOrdinal <= ordinal ||
+          event.id !== `${transaction.proposalId}:${event.eventOrdinal}` || !Object.hasOwn(event, 'payload')) fail('invalid_response', 'Invalid event identity');
+      ordinal = event.eventOrdinal; assertApplicationTopic(event.topic); assertStateJson(event.payload);
+    }
+  }
+  if (new TextEncoder().encode(JSON.stringify(value)).length > 2 * 1024 * 1024) fail('invalid_response', 'Event batch exceeds its byte bound');
+  return value;
+}
 export function createCloudflareApplicationBackend({ id, request, submit: enqueue }) {
   applicationSelection({ kind: 'cloudflare', id });
   const submit = async (program, options) => {
     const exact = validateCloudflareProgram(program);
     assertApplicationOperationId(options?.operationId);
-    return enqueue ? enqueue(exact, options) : request('application/changes', { method: 'POST', body: { program: exact, operationId: options.operationId } });
+    return validateApplicationOperation(await (enqueue ? enqueue(exact, options) : request('application/changes', { method: 'POST', body: { program: exact, operationId: options.operationId } })), options.operationId, { terminal: !enqueue });
   };
   const readEvents = async (options = {}, revision) => {
     const topics = applicationFilter(options.topics);
@@ -103,7 +138,7 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
     if (topics !== null) query.set('topics', JSON.stringify(topics));
     if (options.limit !== undefined) query.set('limit', String(options.limit));
     if (revision !== undefined) query.set('revision', revision);
-    return request(`application/events?${query}`, { signal: options.signal });
+    return validateEventBatch(await request(`application/events?${query}`, { signal: options.signal }));
   };
   const events = Object.freeze({
     publish(topic, payload, options) { return submit({ version: 1, steps: [{ kind: 'emit', topic, payload }], expected_generations: {} }, options); },
@@ -120,13 +155,16 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
       }
     },
   });
-  const getOperation = operationId => request(`application/operations/${encodeURIComponent(assertApplicationOperationId(operationId))}`);
+  const getOperation = async (operationId, signal) => {
+    const result = await request(`application/operations/${encodeURIComponent(assertApplicationOperationId(operationId))}`, { signal });
+    return result === null ? null : validateApplicationOperation(result, operationId);
+  };
   return Object.freeze({ id, capabilities: Object.freeze(['json-state', 'events', 'conversation', 'revision-views']), submit, events,
-    operations: Object.freeze({ get: getOperation, async *subscribe({ operationId, signal }) {
+    operations: Object.freeze({ get: operationId => getOperation(operationId), async *subscribe({ operationId, signal }) {
       assertApplicationOperationId(operationId);
       let last;
       while (!signal?.aborted) {
-        const value = await getOperation(operationId), encoded = JSON.stringify(value);
+        const value = await getOperation(operationId, signal), encoded = JSON.stringify(value);
         if (value && last !== encoded) { yield value; last = encoded; }
         if (value?.status === 'final' || value?.status === 'rejected') return;
         try { await delay(signal); } catch (error) { if (signal?.aborted) return; throw error; }
@@ -134,6 +172,9 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
     } }),
     async readView() {
       const snapshot = await request('application/view');
+      if (!snapshot || typeof snapshot.revision !== 'string' || !snapshot.revision || !Object.hasOwn(snapshot, 'state') || !Array.isArray(snapshot.scopes))
+        fail('invalid_response', 'Invalid application read snapshot');
+      assertStateJson(snapshot.state);
       let released = false;
       const check = () => { if (released) fail('view_released', 'The application read view was released'); };
       return Object.freeze({ revision: snapshot.revision,

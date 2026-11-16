@@ -52,7 +52,7 @@ database grants, SQL state, or certificate interpretations. No per-append signin
 queue, snapshot service, compaction, automatic failover, or cross-account host
 administration is part of this change.
 
-## Status
+## Original retained-log checkpoint
 
 The retained-log implementation and public consumer checks are complete. The
 optional Chronolog adapter consumes the packed public SDK and engine; its tests
@@ -72,3 +72,13 @@ build/deployment checks, 55 contract, 162 runtime, 5 push, 337 Worker, and 134
 tools), plus TypeScript, dependency boundaries, and an isolated consumer of the
 packed SDK, runtime, and engine with strict declarations. This check does not
 claim a live deployment or replace the separate browser release gate.
+
+## P2P events follow-up
+
+The 16 November follow-up makes native Chronolog the preferred application
+history and authority for a resident agent. The Cloudflare retained log remains
+optional. The new public application and peer boundaries are documented in
+[application backends](../APPLICATION_BACKENDS.md) and
+[peer connections](../PEER_CONNECTIONS.md). Current verification and remaining
+work are recorded in [the implementation checkpoint](../P2P_EVENTS_STATUS.md).
+This increment uses rc.9 and fresh page schema 7, with no legacy migration.

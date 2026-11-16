@@ -6,16 +6,17 @@ Tendriller does not require Email Routing or Email Sending. Public reports use `
 
 ## Fresh storage baseline
 
-The current page storage revision is **6**; `node scripts/storage-schema.mjs`
+The current page storage revision is **7**; `node scripts/storage-schema.mjs`
 reads it from the authoritative server definition. This baseline includes the
-revision-5 durable conditional timers and the retained record-log tables. The
-schema guard rejects revision-5 and earlier storage before changing any data;
+durable conditional timers, optional retained record-log tables, and the
+Cloudflare application program/outcome/event history. The
+schema guard rejects revision-6 and earlier storage before changing any data;
 this release requires a fresh Durable Object namespace. No page-storage
 migration is supplied. See [retained record logs](RECORD_LOG.md).
 
 The checked-in canonical deployment configurations still identify revision-5
 resources. They must not be deployed with this code merely by changing a schema
-environment variable. Provision fresh revision-6 resources and select them
+environment variable. Provision fresh revision-7 resources and select them
 deliberately before advancing either deployment guard. An isolated named
 deployment can use `provision.mjs --name ... --fresh` with distinct service and
 page origins; the command refuses to overwrite the canonical configurations.
@@ -59,7 +60,7 @@ Cloudflare assigns a distinct `<worker>.<account>.workers.dev` hostname to **eac
 ## Provision and deploy
 
 The following commands describe the existing canonical revision-5 deployment.
-They do not prepare its resources for this revision-6 release; leave its deployment
+They do not prepare its resources for this revision-7 release; leave its deployment
 guards unchanged until fresh resources have been selected. Keep OAuth secrets out
 of the repository. For a separate
 named deployment, sign in with
@@ -90,7 +91,7 @@ After creating the OAuth apps and Turnstile widgets, export their credentials lo
 
 For off-page device notifications, generate a separate stable VAPID key pair for each environment using `node scripts/vapid-keys.mjs`. Supply `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and the recommended `VAPID_SUBJECT` when running `scripts/set-secrets.mjs`; these variables are already supported by the script. Keep private keys out of git and do not rotate them during normal deployment: rotation requires devices to renew subscriptions. See the [Web Push operations and verification guide](PUSH_NOTIFICATIONS.md) and test delivery with all page tabs closed, including the installed iOS web app.
 
-GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. The checked-in canonical configurations currently describe revision-5 resources, so their `5` declarations intentionally block this revision-6 release. Advance a declaration to `6` only after its configuration has been changed to newly provisioned resources; the declaration alone does not prepare storage. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
+GitHub Actions runs typecheck, Worker tests, public artifact/consumer checks, tool checks, and browser tests on pull requests and branch pushes. A passing `master` run can deploy staging followed by production. Each deployment requires its `STAGING_READY` or `PRODUCTION_READY` repository variable to be `true`, and its `STAGING_STORAGE_SCHEMA` or `PRODUCTION_STORAGE_SCHEMA` variable to match `node scripts/storage-schema.mjs`. Missing or mismatched schema declarations disable the deployment jobs. The checked-in canonical configurations currently describe revision-5 resources, so their `5` declarations intentionally block this revision-7 release. Advance a declaration to `7` only after its configuration has been changed to newly provisioned resources; the declaration alone does not prepare storage. The deployment uses immediate Durable Object code updates; superseded commits skip deployment. Both environments need a scoped `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable. CI cannot use an interactive Wrangler login. Keep GitHub Actions as the sole automatic deployment controller so Cloudflare Builds does not bypass these checks.
 
 Each deployed Worker has a 15-minute cron that retries suspended-account page shutdowns and restoration from the D1 `suspension_queue`. Verify that the queue drains after a forced Durable Object failure in staging. A suspended owner can sign in to a restricted dashboard and submit page or account appeals; verify that exports and page access remain denied.
 
