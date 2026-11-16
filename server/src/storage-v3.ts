@@ -145,8 +145,12 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     }
   }
   if (rest === "blobs" && method === "GET") {
-    const rows = t.db.all<{ id: string }>("SELECT id FROM blobs ORDER BY ts,id LIMIT 1000");
-    return json({ blobs: rows.map(row => blobMetadata(t, row.id)), cursor: null });
+    const after = url.searchParams.get("after");
+    if (after !== null && !validBlobId.test(after)) throw new HttpError(400, "bad_cursor", "Invalid blob cursor");
+    const limit = intParam(url, "limit", 100, 1, 1000);
+    const rows = t.db.all<{ id: string }>("SELECT id FROM blobs WHERE id>? ORDER BY id LIMIT ?", after ?? "", limit + 1);
+    const page = rows.slice(0, limit);
+    return json({ blobs: page.map(row => blobMetadata(t, row.id)), cursor: rows.length > limit ? page.at(-1)!.id : null });
   }
   const blob = /^blobs\/(b_[a-z2-7]{20})(?:\/(info|pin))?$/.exec(rest);
   if (blob) {
@@ -175,7 +179,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "file-refs" && method === "GET") {
     const row = fileHead(t, queryPath(url));
-    if (!row || !row.blob_id) throw new HttpError(404, "not_found", "No such shared file");
+    if (!row) throw new HttpError(404, "not_found", "No such shared file");
+    // Retain the tombstone revision so a new writer cannot mistake deletion for revision zero.
     return json(fileValue(row));
   }
   if (rest === "file-refs" && (method === "PUT" || method === "DELETE")) {
@@ -206,7 +211,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "file-refs/changes" && method === "GET") {
     const after = intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER);
-    const rows = t.db.all<FileRow & { cursor: number; cid: string }>("SELECT * FROM file_ref_changes WHERE cursor>? ORDER BY cursor LIMIT 100", after);
+    const limit = intParam(url, "limit", 100, 1, 100);
+    const rows = t.db.all<FileRow & { cursor: number; cid: string }>("SELECT * FROM file_ref_changes WHERE cursor>? ORDER BY cursor LIMIT ?", after, limit);
     return json({ changes: rows.map(row => ({ cursor: row.cursor, file: fileValue(row), cid: row.cid, actor: row.by_actor, at: row.updated_at })),
       cursor: rows.at(-1)?.cursor ?? after });
   }
@@ -221,8 +227,8 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
     const version = Number(publication[1]);
     const row = t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version);
     if (!row) throw new HttpError(404, "not_found", "No such publication");
-    const files = t.db.all<{ path: string; blob_id: string; type: string }>(
-      "SELECT f.path, b.blob_id, f.type FROM version_files f JOIN publication_blobs b ON b.version=f.version AND b.path=f.path WHERE f.version=? ORDER BY f.path", version);
+    const files = t.db.all<{ path: string; blob_id: string; type: string; sha256: string; size: number }>(
+      "SELECT f.path, b.blob_id, f.type, f.hash AS sha256, f.size FROM version_files f JOIN publication_blobs b ON b.version=f.version AND b.path=f.path WHERE f.version=? ORDER BY f.path", version);
     return json({ version, entry: row.entry, files });
   }
   if (rest === "publications" && method === "POST") {
