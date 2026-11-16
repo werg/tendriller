@@ -4,7 +4,6 @@ import { addActivity } from "./activity";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles, publicationManifest } from "./files";
 import { HttpError, json, readBody, readJson } from "./http";
-import { blobReference, setBlobRetention } from "./blob-retention";
 import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex } from "./ids";
 import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
@@ -14,6 +13,7 @@ import { serviceDescriptor } from "./descriptor";
 import { STREAM_ROUTE, handleStreams } from "./streams";
 import { allows, authenticatePage } from "./access";
 import { handleManagement } from "./management";
+import { handleStorageV3, STORAGE_V3_ROUTE } from "./storage-v3";
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -145,35 +145,23 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
-  if (sub === "blob" && m === "POST") {
-    if (!allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
-    const body = await readBody(req, t.blobLimit());
-    const type = req.headers.get("Content-Type") || "application/octet-stream";
-    const name = req.headers.get("X-Tendril-Name");
-    const keepHeader = req.headers.get("X-Tendril-Keep");
-    if (keepHeader !== null && keepHeader !== "true" && keepHeader !== "false") throw new HttpError(400, "bad_request", "X-Tendril-Keep must be true or false");
-    const keep = keepHeader === "true";
-    if (keep && !allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can keep captures beyond their default retention");
-    const device = (await verifiedDevice(t, req))?.id ?? null;
-    const store = async () => {
-      const r = await t.storeBlob(body, type, name ? name.slice(0, 200) : null, device, "page", keep);
-      addActivity(t, { kind: "blob", summary: `${blobLabel(type)} sent${name ? ` (${name.slice(0, 80)})` : ""}, ${formatSize(body.byteLength)}`, blob: r.id, device });
-      return { ...r, url: base + r.url };
-    };
-    // A verified device's upload carrying a client id is stored once (offline replay).
-    const cid = req.headers.get("X-Tendril-Cid");
-    return json(device && cid ? await t.dedupe(device, `upload:${cid}`, store) : await store());
+  if (STORAGE_V3_ROUTE.test(sub)) {
+    if (sub.startsWith("publications") || sub.startsWith("file-refs")) throw new HttpError(403, "forbidden");
+    if (m !== "GET" && m !== "HEAD" && !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
+    if (/^blobs\/[^/]+\/pin$/.test(sub) && !allows(principal, "page.owner"))
+      throw new HttpError(403, "forbidden", "Only the owner can keep captures");
+    const device = await verifiedDevice(t, req);
+    if (/^uploads(?:\/|$)/.test(sub) && !device) throw new HttpError(401, "device_required", "Register this device before uploading");
+    const completion = /^uploads\/(u_[a-z2-7]{20})\/complete$/.exec(sub);
+    const wasCompleted = completion && t.db.one<{ phase: string }>("SELECT phase FROM upload_sessions WHERE id=?", completion[1])?.phase === "completed";
+    const response = await handleStorageV3(t, req, url, `page:${device?.id ?? principal.name}`, sub, "page", device?.id ?? null);
+    if (completion && !wasCompleted && response.ok && device) {
+      const receipt = await response.clone().json() as { blob?: { id: string; size: number; type: string; name?: string } };
+      if (receipt.blob) addActivity(t, { kind: "blob", summary: `${blobLabel(receipt.blob.type)} sent${receipt.blob.name ? ` (${receipt.blob.name.slice(0, 80)})` : ""}, ${formatSize(receipt.blob.size)}`, blob: receipt.blob.id, device: device.id });
+    }
+    return response;
   }
 
-  const bm = /^blob\/(b_[a-z2-7]{20})$/.exec(sub);
-  if (bm && (m === "GET" || m === "HEAD")) return t.getBlob(bm[1]);
-  const retention = /^blob\/(b_[a-z2-7]{20})\/retention$/.exec(sub);
-  if (retention && (m === "GET" || m === "PATCH")) {
-    if (m === "GET") { const reference = blobReference(t, retention[1]); return json({ ...reference, url: base + reference.url }); }
-    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can change capture retention");
-    const reference = setBlobRetention(t, retention[1], await readJson(req, 4096), null, (await verifiedDevice(t, req))?.id ?? null);
-    return json({ ...reference, url: base + reference.url });
-  }
 
   if (sub === "manifest.webmanifest" && m === "GET") {
     const meta = tendrilMeta(t);

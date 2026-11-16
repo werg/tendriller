@@ -1,3 +1,4 @@
+import type { BlobTransferClient } from "./blobs-client.mjs";
 import type { DurabilityClient } from "./durability-client.mjs";
 import type { StreamsClient } from "./streams-client.mjs";
 import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperation, ValidationIssue, PublicError, DeviceConfiguration, DeviceInfo, DeviceUpdate,
@@ -12,7 +13,7 @@ export interface NotificationStatus { available: boolean; subscribed_devices: { 
   count: number; quota: { limit: number; used: number; remaining: number } }
 export interface NotificationDelivery { sent: number; failed: number;
   deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
-export interface AgentClient extends DurabilityClient, StreamsClient {
+export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransferClient {
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
   probeDelivery(): Promise<DeliveryProbe>;
@@ -23,7 +24,6 @@ export interface AgentClient extends DurabilityClient, StreamsClient {
   notify(body: NotificationRequest): Promise<NotificationDelivery>;
   state(): Promise<{ state: Record<string, unknown>; rev: number; scopes: ScopeDescriptor[] }>;
   updateState(body: CommandMetadata & ({ ops: StateOperation[] } | { state: Record<string, unknown> })): Promise<{ rev: number }>;
-  writeFiles(body: { files: Record<string, string | { base64: string; type?: string }>; replace?: boolean; delete?: string[]; message?: string }): Promise<{ version: number; [key: string]: unknown }>;
   devices(): Promise<DeviceConfiguration>;
   updateDevice(device: string, body: DeviceUpdate): Promise<DeviceInfo>;
   focus(body: FocusRequest): Promise<DeviceConfiguration>;

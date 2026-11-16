@@ -22,8 +22,8 @@ it("discovers core tools and cookbook reasoning through the generic public contr
   }
   const descriptor = await (await req("/api/service")).json();
   assertValid("serviceDescriptor", descriptor);
-  expect(descriptor).toMatchObject({contract:2,limits:{streams:{record_bytes:65536}}});
-  const schema = await (await req("/contract/v2.json")).json<any>();
+  expect(descriptor).toMatchObject({contract:3,limits:{streams:{record_bytes:65536}}});
+  const schema = await (await req("/contract/v3.json")).json<any>();
   expect(schema.$defs.command).toBeDefined();
   expect(schema.$defs.archive).toBeUndefined();
   for (const path of ["/contract/v1.json","/recipes/catalog.json","/snippets/README.md","/cli/README.md","/examples/training-dashboard/index.html"])

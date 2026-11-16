@@ -27,6 +27,7 @@ import { CONSUMER_ROUTE, handleConsumers } from "./consumers";
 import { STREAM_ROUTE, handleProducer, handleStreams } from "./streams";
 import { authenticateAgent, authenticateAgentToken, requireAccess } from "./access";
 import { pushAvailable, validatePushSubscription } from "./push";
+import { STORAGE_V3_ROUTE, handleStorageV3 } from "./storage-v3";
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -49,6 +50,12 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Publishing machine data does not authenticate/check in a conversation.
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) return handleProducer(t, req, rest);
+  if (STORAGE_V3_ROUTE.test(rest)) {
+    const principal = await authenticateAgent(t, req);
+    requireAccess(principal, "agent.manage");
+    t.checkin(principal.name);
+    return handleStorageV3(t, req, url, principal.name, rest);
+  }
   if (STREAM_ROUTE.test(rest) || CONSUMER_ROUTE.test(rest) || EXPERIENCE_ROUTE.test(rest) || /^(?:scopes|workflows)(?:\/|$)/.test(rest)) {
     const principal = await authenticateAgent(t, req);
     requireAccess(principal, "agent.manage");
