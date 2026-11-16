@@ -395,7 +395,11 @@ export function createCore(cfg: TendrilConfig): Internal {
       method: "PUT", headers: { "Content-Type": "application/octet-stream", ...headers }, body: bytes,
     }));
     const done = await checked(await fetch(cfg.base + `_tendril/uploads/${session.id}/complete`, { method: "POST", headers }));
-    let reference = (await done.json()).blob;
+    const completion = await done.json();
+    let reference = completion?.blob;
+    if (completion?.status !== "completed" || !reference || reference.sha256 !== sha256 ||
+      reference.size !== blob.size || !/^b_[a-z2-7]{20}$/.test(reference.id) || typeof reference.url !== "string")
+      throw new HttpError(502, "Upload completion did not attest the original bytes", "checksum_mismatch");
     if (keep) reference = await pinBlob(reference.id, true);
     return { ...reference, url: new URL(reference.url, new URL(cfg.base, location.href)).href };
   };
