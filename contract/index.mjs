@@ -3,7 +3,7 @@
 import { durabilitySchemas } from "./durability.mjs";
 import { streamSchemas } from "./streams.mjs";
 import { blobSchemas } from "./blobs.mjs";
-export { assertFilePath } from "./blobs.mjs";
+export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
 export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
 export const CONTRACT_VERSION = 3;
 export const CORE_RELEASE = "0.3.0-rc.1";
