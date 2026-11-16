@@ -13,6 +13,11 @@ Invalid arguments produce JSON-RPC error `-32602`. A service operation failure
 produces an MCP tool result with `isError: true` and a descriptive text result.
 Successful JSON objects are also returned as `structuredContent`.
 
+`read_events` reads available events immediately and accepts an optional `after`
+cursor. Its former `wait` argument is removed. Subscribe to `tendril.events_waiting`
+through MCP Events for asynchronous count-only wake notifications; a receiver
+must still resume the intended host session before reading and handling events.
+
 ## Publish authored text
 
 An MCP-only author can upload UTF-8 source files and then publish their immutable

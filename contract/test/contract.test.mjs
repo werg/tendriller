@@ -46,8 +46,9 @@ test("client keeps explicit cursor, validates writes and returns actionable erro
   const client = createClient({ api: "https://example.test/api/t/id/", token: "tk_test" }, {
     fetch: async (url, options) => { seen.push({ url, options }); return new Response(JSON.stringify({ events: [], cursor: 7, withheld: 0 }), { status: 200 }); },
   });
-  assert.equal((await client.readEvents({ after: 7, wait: 3 })).cursor, 7);
-  assert.match(seen[0].url, /events\?after=7&wait=3$/);
+  assert.equal((await client.readEvents({ after: 7 })).cursor, 7);
+  assert.match(seen[0].url, /events\?after=7$/);
+  assert.throws(() => client.readEvents({ after: 7, wait: 0 }), /no longer supported/i);
   assert.equal(seen[0].options.headers.Authorization, "Bearer tk_test");
   assert.throws(() => client.readEvents({}), /explicit/);
   assert.throws(() => client.say({ text: "Hi", unexpected: true }), ContractError);

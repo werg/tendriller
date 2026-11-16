@@ -42,7 +42,9 @@ describe("MCP connector", () => {
     const h = await create();
     const init = await rpc(h, "initialize", { protocolVersion: "2025-06-18" });
     expect(init.result).toMatchObject({ protocolVersion: "2025-06-18", capabilities: { tools: {}, events: {} } });
-    expect((await rpc(h, "tools/list", {}, `mcp/${h.token}`)).result.tools.map((t: any) => t.name)).toContain("read_events");
+    const tools = (await rpc(h, "tools/list", {}, `mcp/${h.token}`)).result.tools;
+    expect(tools.map((t: any) => t.name)).toContain("read_events");
+    expect(tools.find((t: any) => t.name === "read_events").inputSchema.properties).not.toHaveProperty("wait");
     expect((await rpc(h, "events/list")).result.events[0].name).toBe("tendril.events_waiting");
     const denied = await req(`${h.api}/mcp`, { method: "POST", body: "{}" });
     expect(denied.status).toBe(401);

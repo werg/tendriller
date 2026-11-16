@@ -34,7 +34,7 @@ export async function attachRuntime(server, { state = {}, role = "owner", name =
   const events = [], messages = [], activity = [], transcript = [];
   let shared = structuredClone(state), rev = 0, seq = 0, online = true;
   let focus = null, closing = false, closePromise;
-  let presence = { state: "listening", text: "Preview agent ready", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "long_poll" };
+  let presence = { state: "listening", text: "Preview agent ready", last_seen: Date.now(), schedule_minutes: null, withheld: 0, wake: "none" };
   const send = (ws, message) => { if (ws.readyState === 1) ws.send(JSON.stringify(message)); };
   const streamFixtures = createStreamFixtures(streams, { historyPage, role: () => role, send });
   const storage = createPreviewStorage({ role: () => role, scopes: () => scopes, matchesContext,

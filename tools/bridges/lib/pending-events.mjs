@@ -90,7 +90,7 @@ export async function pendingEvents(cfg, file, { limit = 100, initialCursor = 0 
   return withCheckpoint(file, cfg, initialCursor, async saved => {
     const api = client(cfg);
     const after = saved.handled_cursor;
-    const batch = checkedBatch(await api.get(`/events?after=${after}&wait=0&limit=${limit}`, {
+    const batch = checkedBatch(await api.get(`/events?after=${after}&limit=${limit}`, {
       signal: AbortSignal.timeout(40000),
     }), after, limit);
     const events = [], probes = [];
@@ -114,7 +114,7 @@ export async function pendingEvents(cfg, file, { limit = 100, initialCursor = 0 
     }
     return {
       state: { ...saved, handled_cursor: handled, delivered_cursor: Math.max(saved.delivered_cursor, batch.cursor) },
-      result: { ...(() => { const { agent_reminder, ...rest } = batch; return rest; })(), events, after, handled_cursor: handled, probes, has_more: batch.events.length === limit },
+      result: { ...batch, events, after, handled_cursor: handled, probes, has_more: batch.events.length === limit },
     };
   });
 }

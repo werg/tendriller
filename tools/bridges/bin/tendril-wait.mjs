@@ -14,7 +14,7 @@ const controller = new AbortController();
 let finished = false;
 async function readPending() {
   if (finished) return;
-  const response = await fetch(`${api}/events?after=${after}&wait=0`, {
+  const response = await fetch(`${api}/events?after=${after}`, {
     headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(40000),
   });
   if (!response.ok) throw Error(`Event read failed: HTTP ${response.status}`);

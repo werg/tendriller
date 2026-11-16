@@ -60,7 +60,7 @@ async function poll(h, state) {
     try {
       const processPending = async () => {
         const ack = read(ackPath(h.id), { cursor: 0 }).cursor || 0;
-        const pending = await api(h, `/events?after=${ack}&wait=0`);
+        const pending = await api(h, `/events?after=${ack}`);
         state.cursor = Math.max(state.cursor, Number(pending.cursor) || 0);
         const n = counts(pending.events || []);
         if (!n.events) { state.pending = 0; state.pendingAt = 0; }
@@ -110,7 +110,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     } else if (name === 'tendriller_events') {
       const item = attached.get(args.page_id); if (!item) throw Error('Page is not attached to this session');
       const after = read(ackPath(args.page_id), { cursor: 0 }).cursor || 0;
-      result = await api(item.h, `/events?after=${after}&wait=0`);
+      result = await api(item.h, `/events?after=${after}`);
     } else if (name === 'tendriller_ack') {
       const item = attached.get(args.page_id); if (!item) throw Error('Page is not attached to this session');
       const seq = Number(args.sequence);
