@@ -13,8 +13,9 @@ describe("Web Push readiness", () => {
     const response = await req(h.page_url + "_tendril/manifest.webmanifest");
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("application/manifest+json");
+    const pagePath = new URL(h.page_url).pathname;
     expect(await response.json()).toMatchObject({
-      id: h.page_url, start_url: h.page_url, scope: h.page_url, display: "standalone",
+      id: pagePath, start_url: pagePath, scope: pagePath, display: "standalone",
     });
   });
 
