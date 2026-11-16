@@ -9,10 +9,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const tmp = mkdtempSync(join(tmpdir(), "tendril-sw-push-"));
 const bundle = join(tmp, "handler.mjs");
-await build({ entryPoints: [join(root, "runtime/src/sw-push.ts")], outfile: bundle,
-  bundle: true, platform: "neutral", format: "esm", logLevel: "silent" });
-const { registerPushHandlers } = await import(pathToFileURL(bundle).href);
-rmSync(tmp, { recursive: true, force: true });
+let registerPushHandlers;
+try {
+  await build({ entryPoints: [join(root, "runtime/src/sw-push.ts")], outfile: bundle,
+    bundle: true, platform: "neutral", format: "esm", logLevel: "silent" });
+  ({ registerPushHandlers } = await import(pathToFileURL(bundle).href));
+}
+finally { rmSync(tmp, { recursive: true, force: true }); }
 
 function fakeWorker() {
   const handlers = new Map(), notifications = [], opened = [];

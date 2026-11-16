@@ -47,6 +47,16 @@ export function validatePushSubscription(value: unknown, now = Date.now()): Push
   };
 }
 
+/** Structural checks above are synchronous; WebCrypto rejects points that are
+ * the right length but do not lie on P-256 before they are persisted. */
+export async function validPushPublicKey(subscription: PushSubscriptionJSON): Promise<boolean> {
+  try {
+    await crypto.subtle.importKey("raw", b64urlDecode(subscription.keys!.p256dh),
+      { name: "ECDH", namedCurve: "P-256" }, false, []);
+    return true;
+  } catch { return false; }
+}
+
 const RECORD_SIZE = 4096;
 // header (16 salt + 4 rs + 1 idlen + 65 keyid) + 1 delimiter + 16 tag must fit the 4096-byte limit push services accept.
 const MAX_PLAINTEXT = RECORD_SIZE - 86 - 1 - 16;

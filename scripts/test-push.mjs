@@ -117,6 +117,10 @@ const env = { VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT: "mailto:admin@
   assert.equal(push.validatePushSubscription({ ...valid, expirationTime: Date.now() - 1 }), null, "expired");
   assert.equal(push.validatePushSubscription({ ...valid, keys: { ...valid.keys, auth: "!!!" } }), null, "invalid auth");
   assert.equal(push.validatePushSubscription({ ...valid, keys: { ...valid.keys, p256dh: "AA" } }), null, "invalid public key");
+  assert.equal(await push.validPushPublicKey(valid), true, "valid P-256 point");
+  const offCurve = { ...valid, keys: { ...valid.keys, p256dh: e(new Uint8Array([4, ...new Uint8Array(64)])) } };
+  assert.ok(push.validatePushSubscription(offCurve), "same-length point passes structural checks");
+  assert.equal(await push.validPushPublicKey(offCurve), false, "off-curve P-256 point");
   assert.equal((await push.sendWebPush(env, { ...valid, endpoint: "https://127.0.0.1/push" }, { title: "bad" })).status, 400);
   ok("validates browser subscriptions and rejects unsafe push endpoints");
 }

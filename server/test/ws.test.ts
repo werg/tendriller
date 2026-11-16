@@ -273,7 +273,7 @@ describe("say, notify, rules, logs, voice and rule events", () => {
     const h = await create();
     const page = await PageClient.connect(h.page_url);
     const sub = await page.request({ t: "push_subscribe", subscription: { endpoint: "https://push.example/abc", keys: { p256dh: "x", auth: "y" } } });
-    expect(["bad_subscription", "push_unavailable"]).toContain(sub.error);
+    expect(sub.error).toBe("push_unavailable");
     const r = await apiJson(h, "POST", "notify", { title: "Decision needed", body: "Approve?" });
     expect(r).toEqual({ sent: 0, failed: 0, deliveries: [] });
     expect(await page.next("notify_local")).toMatchObject({ title: "Decision needed", body: "Approve?" });

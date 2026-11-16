@@ -1092,12 +1092,13 @@ class Control {
       msg.textContent = "Sending a test notification…";
       try {
         const result = await push.test();
+        if (!active()) return;
         msg.textContent = result.sent > 0
           ? "Push service accepted the test. Check this device's notifications."
           : result.reason === "not_subscribed" ? "Subscribe on this device before testing."
             : `The test was not accepted (status ${result.status ?? "unknown"}). Check browser and server settings.`;
-      } catch (error: any) { msg.textContent = error?.message || "Test notification failed."; }
-      finally { (test as HTMLButtonElement).disabled = !(box as HTMLInputElement).checked; }
+      } catch (error: any) { if (active()) msg.textContent = error?.message || "Test notification failed."; }
+      finally { if (active()) test.disabled = !box.checked; }
     } }, "Send test notification") as HTMLButtonElement;
     const box = h("input", { type: "checkbox", disabled: true, onchange: async () => {
       const wanted = (box as HTMLInputElement).checked;
@@ -1108,31 +1109,42 @@ class Control {
         if (wanted) {
           // Must run from this change gesture so browsers allow the permission prompt.
           const ok = await push.subscribe();
+          if (!active()) return;
+          box.checked = ok;
           msg.textContent = ok ? "Notifications enabled on this device." :
             push.reason || "Could not register. Check permission and connection, then try again.";
         } else {
           await push.unsubscribe();
+          if (!active()) return;
+          box.checked = false;
           msg.textContent = "Notifications disabled on this device.";
         }
-      } catch (error: any) { msg.textContent = error?.message || "Could not change notification settings."; }
+      } catch (error: any) {
+        if (!active()) return;
+        box.checked = !wanted;
+        msg.textContent = error?.message || "Could not change notification settings.";
+      }
       const state = await push.status().catch(() => null);
-      (box as HTMLInputElement).checked = !!state?.subscribed;
-      (box as HTMLInputElement).disabled = false;
-      test.disabled = !state?.registered;
+      if (!active()) return;
+      if (state) box.checked = state.subscribed;
+      box.disabled = false;
+      test.disabled = state ? !state.registered : !box.checked;
       if (state?.reason) msg.textContent = state.reason;
     } }) as HTMLInputElement;
     clear(panel,
       h("label", { class: "switch" }, box, "Allow agent alerts on this device"),
       h("p", { class: "muted", text: "Agents and timers can alert this device while the page is closed. You choose on each device; the browser and operating system control delivery." }),
       test, msg);
+    const active = () => panel.isConnected && panel.contains(box);
     try {
       const state = await push.status();
+      if (!active()) return;
       box.checked = state.subscribed;
       test.disabled = !state.registered;
       msg.textContent = state.reason || (state.registered ? "Ready for agent notifications, even with the page closed." :
         state.subscribed ? "Enabled locally; waiting for server registration." : "Notifications are off on this device.");
-    } catch { msg.textContent = "Cannot check notification status at the moment."; }
-    finally { box.disabled = false; }
+    } catch { if (active()) msg.textContent = "Cannot check notification status at the moment."; }
+    finally { if (active()) box.disabled = false; }
   }
 }
 

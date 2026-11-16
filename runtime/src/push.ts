@@ -126,7 +126,7 @@ export function setupPush(core: Core): PushWithReason {
         reason: "This device has enabled notifications. It will register with the server when the page reconnects." };
       try {
         const response = await core.transportRequest({ t: "push_status", endpoint: sub.endpoint });
-        const registered = response?.subscribed === true || (!response?.subscribed && await register(sub));
+        const registered = response?.subscribed === true;
         return { permission, subscribed: true, registered, reason: registered ? undefined :
           "This device is subscribed, but the server has not confirmed registration. Try again after reconnecting." };
       } catch {

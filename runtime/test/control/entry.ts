@@ -69,7 +69,10 @@ if (opts.push) {
   registry.push = {
     available: true,
     subscribed: async () => sub,
-    status: async () => ({ permission: "granted", subscribed: sub, registered: sub }),
+    status: async () => {
+      if (opts.pushStatusFailsAfterSubscribe && sub) throw new Error("temporary status failure");
+      return { permission: "granted", subscribed: sub, registered: sub };
+    },
     subscribe: async () => (sub = true),
     unsubscribe: async () => { sub = false; },
     test: async () => { calls.request.push({ t: "push_test" }); return { sent: 1, failed: 0, status: 201 }; },

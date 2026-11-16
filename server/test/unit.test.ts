@@ -63,4 +63,12 @@ describe("helpers", () => {
     expect(html).toContain("\\u003c/script\\u003e");
   });
 
+  it("keeps a published page's own web-app manifest", () => {
+    const cfg = { id: "x", base: "/b/", version: 1, features: { push: false, vapid: null, shared_by: "owner" } } as any;
+    const html = injectRuntime('<head><link rel="icon manifest" href="/b/my-app.webmanifest"></head><body></body>', cfg);
+    expect(html).toContain('href="/b/my-app.webmanifest"');
+    expect(html).not.toContain('_tendril/manifest.webmanifest');
+    expect((html.match(/rel="icon manifest"/g) || []).length).toBe(1);
+  });
+
 });

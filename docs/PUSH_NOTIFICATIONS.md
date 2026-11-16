@@ -33,6 +33,10 @@ not a device-display guarantee.
 On iPhone and iPad, install that page to the Home Screen and launch the
 installed web app before opting in. Browsers require a user gesture to request
 permission. Guest and display devices cannot subscribe on behalf of an owner.
+Pages may provide their own web-app manifest; Tendriller injects its per-page
+manifest only when no manifest link exists. A custom manifest must keep its
+start URL and scope inside that page's origin and service-worker scope for
+installed-app notifications to work.
 Removing an owner device also removes its stored subscription. Revoking
 notification permission in browser/OS settings prevents display; reopening the
 page reconciles the subscription.

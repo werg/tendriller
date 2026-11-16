@@ -54,6 +54,32 @@ describe("Web Push readiness", () => {
     rejoined.close();
   });
 
+  it("reconciles a browser identity switching between display and owner links", async () => {
+    const h = await create();
+    const firstOwner = await PageClient.connect(h.page_url);
+    const displayUrl = (await firstOwner.request({ t: "links", create: { role: "display" } })).created.url;
+    firstOwner.close();
+    const display = await PageClient.connect(displayUrl, { deviceId: firstOwner.deviceId, secret: firstOwner.secret });
+    expect(display.welcome.role).toBe("display");
+    display.close();
+    const owner = await PageClient.connect(h.page_url, { deviceId: firstOwner.deviceId, secret: firstOwner.secret });
+    expect(owner.welcome.role).toBe("owner");
+    expect(await inDO(h.id, t => t.device(owner.deviceId)?.role)).toBe("owner");
+    const pair = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])) as CryptoKeyPair;
+    const subscription = { endpoint: "https://push.example.com/send/reused-device",
+      keys: { p256dh: base64url(new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer)),
+        auth: base64url(crypto.getRandomValues(new Uint8Array(16))) } };
+    await inDO(h.id, t => t.db.run("INSERT INTO push_subs(device,sub,created_at) VALUES(?,?,?)",
+      owner.deviceId, JSON.stringify(subscription), t.now()));
+    expect((await apiJson(h, "GET", "notify")).count).toBe(1);
+    owner.close();
+    const downgraded = await PageClient.connect(displayUrl, { deviceId: owner.deviceId, secret: owner.secret });
+    expect(downgraded.welcome.role).toBe("display");
+    expect((await apiJson(h, "GET", "notify")).count).toBe(0);
+    expect(await inDO(h.id, t => t.db.one("SELECT device FROM push_subs WHERE device = ?", owner.deviceId))).toBeNull();
+    downgraded.close();
+  });
+
   it("removes stored push endpoints when the owner releases the page", async () => {
     const h = await create();
     const owner = await PageClient.connect(h.page_url);
