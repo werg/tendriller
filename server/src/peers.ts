@@ -1,17 +1,17 @@
-import { decodePeerFrame, PEER_LIMITS, validatePeerBootstrap } from '../../contract/peers.mjs';
+import { PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL, validatePeerBootstrap, validatePeerDescription } from '../../contract/peers.mjs';
 import { currentPrincipal, pageAccessAllowed, accountActive } from './access';
 import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|socket)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous)$/;
 interface PeerAttachment {
-  kind: 'peer'; channel: string; session: string; peerId: string; principal: Principal;
-  credit: number; second: number; bytes: number; ready: boolean;
+  kind: 'rendezvous'; channel: string; session: string; peerId: string; principal: Principal;
+  role: 'offerer' | 'answerer'; expiresAt: number; ready: boolean; sent: boolean; complete: boolean;
 }
 function attachment(ws: WebSocket): PeerAttachment | null {
   const value = ws.deserializeAttachment() as PeerAttachment | null;
-  return value?.kind === 'peer' ? value : null;
+  return value?.kind === 'rendezvous' ? value : null;
 }
 export const isPeerSocket = (ws: WebSocket): boolean => attachment(ws) !== null;
 function authorized(t: Tendril, principal: Principal): boolean {
@@ -23,15 +23,25 @@ const identifier = (value: string | null): string => {
   return value;
 };
 function peers(t: Tendril, channel?: string): WebSocket[] {
-  return t.ctx.getWebSockets('peer').filter(ws => {
+  return t.ctx.getWebSockets('rendezvous').filter(ws => {
     const value = attachment(ws);
-    if (ws.readyState !== WebSocket.READY_STATE_OPEN || !value) return false;
+    if (ws.readyState !== WebSocket.READY_STATE_OPEN || !value || value.complete) return false;
+    if (value.expiresAt <= t.now()) { ws.close(1008, 'Rendezvous expired'); return false; }
     if (!authorized(t, value.principal)) { ws.close(4003, 'Peer host access revoked'); return false; }
     return channel === undefined || value.channel === channel;
   });
 }
+export function nextPeerDeadline(t: Tendril): number | null {
+  const times = t.ctx.getWebSockets('rendezvous').flatMap(ws => {
+    const value = attachment(ws);
+    return value && !value.complete && ws.readyState === WebSocket.READY_STATE_OPEN ? [value.expiresAt] : [];
+  });
+  return times.length ? Math.min(...times) : null;
+}
+export function expirePeers(t: Tendril): void { peers(t); }
+
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
-  if (!authorized(t, principal)) throw new HttpError(403, 'forbidden', 'Peer hosting requires an authorized page or agent identity');
+  if (!authorized(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
   if (path === 'peers/bootstrap') {
     if (req.method === 'GET') return json(t.db.get('peer_bootstrap', { version: 1, endpoints: [] }));
     if (req.method === 'PUT') {
@@ -46,87 +56,99 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
     throw new HttpError(405, 'method_not_allowed');
   }
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'upgrade_required');
-  if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(value => value.trim()).includes('tendriller.peer.v1'))
-    throw new HttpError(400, 'bad_request', 'The peer socket requires tendriller.peer.v1');
+  if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(value => value.trim()).includes(PEER_RENDEZVOUS_PROTOCOL))
+    throw new HttpError(400, 'bad_request', `Rendezvous requires ${PEER_RENDEZVOUS_PROTOCOL}`);
   const channel = identifier(url.searchParams.get('channel')), peerId = identifier(url.searchParams.get('peerId'));
   const existing = peers(t, channel);
-  if (existing.length >= 2 || existing.some(ws => attachment(ws)?.ready || attachment(ws)?.peerId === peerId)) throw new HttpError(409, 'peer_channel_full', 'A peer channel has exactly two distinct endpoints');
-  if (peers(t).length >= PEER_LIMITS.relaySessions * 2) throw new HttpError(429, 'peer_quota', 'Too many relay connections');
-  const pair = new WebSocketPair(), [client, server] = [pair[0], pair[1]];
-  t.ctx.acceptWebSocket(server, ['peer']);
-  server.serializeAttachment({ kind: 'peer', channel, session: existing.length ? attachment(existing[0])!.session : crypto.randomUUID(), peerId, principal, credit: PEER_LIMITS.queueBytes,
-    second: Math.floor(t.now() / 1000), bytes: 0, ready: existing.length === 1 } satisfies PeerAttachment);
-  if (existing.length === 1) {
-    const other = existing[0], value = attachment(other)!;
-    other.serializeAttachment({ ...value, ready: true });
-    other.send('{"t":"peer_ready","version":1}'); server.send('{"t":"peer_ready","version":1}');
+  if (existing.length >= 2 || existing.some(ws => attachment(ws)?.ready || attachment(ws)?.peerId === peerId))
+    throw new HttpError(409, 'peer_channel_full', 'A rendezvous has exactly two distinct endpoints');
+  if (peers(t).length >= LIMITS.sessions * 2) throw new HttpError(429, 'peer_quota', 'Too many pending rendezvous');
+  const [client, server] = Object.values(new WebSocketPair());
+  const first = existing.length ? attachment(existing[0])! : null;
+  const value: PeerAttachment = { kind: 'rendezvous', channel, session: first?.session ?? crypto.randomUUID(), peerId, principal,
+    role: first ? 'answerer' : 'offerer', expiresAt: first?.expiresAt ?? t.now() + LIMITS.lifetimeMs,
+    ready: !!first, sent: false, complete: false };
+  t.ctx.acceptWebSocket(server, ['rendezvous']);
+  server.serializeAttachment(value);
+  if (first) {
+    existing[0].serializeAttachment({ ...first, ready: true });
+    existing[0].send(JSON.stringify({ t: 'ready', version: 1, session: value.session, role: first.role }));
+    server.send(JSON.stringify({ t: 'ready', version: 1, session: value.session, role: value.role }));
   }
-  return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' } });
+  t.scheduleAlarm();
+  return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } });
 }
-interface MessageQueue { pending: Promise<void>; bytes: number; count: number }
-const messageQueues = new WeakMap<WebSocket, MessageQueue>();
-/** Authentication can yield. Preserve each sender's frame order across those waits. */
-export function handlePeerMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-  if (ws.readyState !== WebSocket.READY_STATE_OPEN) return Promise.resolve();
-  const bytes = typeof message === 'string' ? new TextEncoder().encode(message).length : message.byteLength;
-  if (bytes > (typeof message === 'string' ? 128 : PEER_LIMITS.frameBytes + 3)) {
-    ws.close(1009, 'Oversized peer frame'); return Promise.resolve();
+
+// Only one message may be waiting for authorization. There is no data-plane
+// queue or application-frame parsing, and a second send retires this session.
+const pending = new WeakSet<WebSocket>();
+export async function handlePeerMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+  if (ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+  if (typeof message !== 'string' || new TextEncoder().encode(message).byteLength > LIMITS.messageBytes) {
+    ws.close(1009, 'Rendezvous accepts bounded SDP only'); return;
   }
-  let queue = messageQueues.get(ws);
-  if (!queue) { queue = { pending: Promise.resolve(), bytes: 0, count: 0 }; messageQueues.set(ws, queue); }
-  if (queue.bytes + bytes > PEER_LIMITS.queueBytes || queue.count >= 128) {
-    ws.close(1008, 'Peer authorization queue exceeded'); return Promise.resolve();
+  if (pending.has(ws)) { ws.close(1008, 'Only one description is allowed'); return; }
+  pending.add(ws);
+  try { await forwardDescription(t, ws, message); }
+  catch {
+    // An authorization/storage/send failure must not leave a half-used session
+    // resident. Both peers retry with a new session and original application IDs.
+    closePeer(t, ws);
+    if (ws.readyState === WebSocket.READY_STATE_OPEN) ws.close(1011, 'Rendezvous failed');
   }
-  const state = queue;
-  state.bytes += bytes; state.count++;
-  const result = state.pending.then(() => forwardPeerMessage(t, ws, message)).finally(() => { state.bytes -= bytes; state.count--; });
-  state.pending = result.catch(() => {});
-  return result;
+  finally { pending.delete(ws); }
 }
-async function forwardPeerMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+async function forwardDescription(t: Tendril, ws: WebSocket, message: string): Promise<void> {
   let value = attachment(ws);
-  if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+  if (!value || value.complete || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+  if (!value.ready || value.sent || value.expiresAt <= t.now()) { ws.close(1008, 'Invalid rendezvous state'); return; }
+  let description;
+  try {
+    const input = JSON.parse(message);
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 3 ||
+        input.t !== 'description' || input.session !== value.session) throw new Error('session');
+    description = validatePeerDescription(input.description);
+    if (description.type !== (value.role === 'offerer' ? 'offer' : 'answer')) throw new Error('role');
+  } catch { ws.close(1008, 'Invalid or repeated WebRTC description'); return; }
   if (!authorized(t, value.principal) || !await pageAccessAllowed(t) ||
       value.principal.kind === 'page' && value.principal.accountId && !await accountActive(t, value.principal.accountId)) {
     ws.close(4003, 'Peer host access revoked'); return;
   }
-  value = attachment(ws)!;
   const other = peers(t, value.channel).find(peer => peer !== ws && attachment(peer)?.session === value!.session);
-  if (!other || !value.ready) { ws.close(1013, 'Peer disconnected; resume from durable progress'); return; }
+  if (!other) { ws.close(1013, 'Rendezvous peer disconnected'); return; }
   const candidate = attachment(other)!;
   if (candidate.principal.kind === 'page' && candidate.principal.accountId && !await accountActive(t, candidate.principal.accountId)) {
-    other.close(4003, 'Peer host access revoked'); ws.close(1013, 'Peer disconnected'); return;
+    other.close(4003, 'Peer host access revoked'); ws.close(1013, 'Rendezvous peer disconnected'); return;
   }
-  // Account lookup can yield to another frame; refresh the flow-control state.
+  // Account lookups can yield to a revocation, expiry or replacement session.
   value = attachment(ws)!;
   const recipient = attachment(other)!;
-  if (ws.readyState !== WebSocket.READY_STATE_OPEN || recipient.session !== value.session || !authorized(t, value.principal) || !authorized(t, recipient.principal) || other.readyState !== WebSocket.READY_STATE_OPEN) {
-    ws.close(4003, 'Peer host access revoked'); return;
+  if (ws.readyState !== WebSocket.READY_STATE_OPEN || other.readyState !== WebSocket.READY_STATE_OPEN ||
+      value.complete || value.sent || recipient.complete || recipient.session !== value.session || value.expiresAt <= t.now() ||
+      !authorized(t, value.principal) || !authorized(t, recipient.principal)) {
+    ws.close(4003, 'Rendezvous is no longer authorized'); return;
   }
-  if (typeof message === 'string') {
-    // Credit is replenished only as the receiver consumes frames. The relay
-    // retains no delivery backlog after authorization for a slow peer.
-    let credit: { t?: string; bytes?: number };
-    try { credit = JSON.parse(message); } catch { ws.close(1008, 'Invalid relay control'); return; }
-    if (!credit || typeof credit !== 'object' || Array.isArray(credit) || Object.keys(credit).length !== 2 || credit.t !== 'peer_credit' || !Number.isSafeInteger(credit.bytes) || credit.bytes! < 4 ||
-        value.credit + credit.bytes! > PEER_LIMITS.queueBytes) { ws.close(1008, 'Invalid receive credit'); return; }
-    ws.serializeAttachment({ ...value, credit: value.credit + credit.bytes! });
-    other.send(JSON.stringify({ t: 'peer_credit', bytes: credit.bytes }));
-    return;
+  if (value.role === 'answerer' && !recipient.sent) { ws.close(1008, 'An answer requires a delivered offer'); return; }
+  ws.serializeAttachment({ ...value, sent: true });
+  other.send(JSON.stringify({ t: 'description', session: value.session, description }));
+  if (recipient.sent) {
+    // Mark both attachments before close events can run. A completed session
+    // never closes a new pair that happens to use the same channel name.
+    ws.serializeAttachment({ ...value, sent: true, complete: true });
+    other.serializeAttachment({ ...recipient, complete: true });
+    const done = JSON.stringify({ t: 'complete', session: value.session });
+    try { ws.send(done); other.send(done); }
+    finally {
+      if (ws.readyState === WebSocket.READY_STATE_OPEN) ws.close(1000, 'Rendezvous complete');
+      if (other.readyState === WebSocket.READY_STATE_OPEN) other.close(1000, 'Rendezvous complete');
+      t.scheduleAlarm();
+    }
   }
-  try { decodePeerFrame(new Uint8Array(message)); }
-  catch { ws.close(1009, 'Invalid or oversized peer frame'); return; }
-  const second = Math.floor(t.now() / 1000), bytes = (value.second === second ? value.bytes : 0) + message.byteLength;
-  if (bytes > PEER_LIMITS.relayBytesPerSecond) { ws.close(1008, 'Peer byte rate exceeded'); return; }
-  if (recipient.credit < message.byteLength) { ws.close(1008, 'Peer receive credit exceeded'); return; }
-  // Fresh authorization checks after any asynchronous account lookup.
-  if (!authorized(t, value.principal) || !authorized(t, recipient.principal)) { ws.close(4003, 'Peer host access revoked'); return; }
-  ws.serializeAttachment({ ...value, second, bytes });
-  other.serializeAttachment({ ...recipient, credit: recipient.credit - message.byteLength });
-  other.send(message);
 }
 export function closePeer(t: Tendril, ws: WebSocket): void {
   const value = attachment(ws);
-  if (!value) return;
-  for (const other of peers(t, value.channel)) if (other !== ws && attachment(other)?.session === value.session) other.close(1013, 'Peer disconnected; resume from durable progress');
+  if (!value || value.complete) return;
+  for (const other of peers(t, value.channel)) if (other !== ws && attachment(other)?.session === value.session)
+    other.close(1013, 'Rendezvous peer disconnected');
+  t.scheduleAlarm();
 }

@@ -31,8 +31,9 @@ test('bounded transport counts actual bytes and closes overflowing receive queue
   peer.close(); peer.close();
   assert.deepEqual(socket.closes, [{ code: 1008, reason: 'backpressure' }]);
 });
-test('closing a pending relay session is idempotent and rejects all queued sends', async () => {
-  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
+test('closing a pending socket session is idempotent and rejects all queued sends', async () => {
+  const socket = new Socket(); socket.readyState = 0;
+  const peer = createPeerConnection(socket, { route: 'direct' });
   const one = peer.send({ domain: 'records', payload: new Uint8Array([1]) });
   const two = peer.send({ domain: 'signals', payload: new Uint8Array([2]) });
   const rejected = Promise.all([peer.ready, one, two].map(promise => assert.rejects(promise, { code: 'connection_closed' })));
@@ -53,28 +54,17 @@ test('remote closure completes a waiting reader and makes later close harmless',
   await assert.rejects(peer.send({ domain: 'records', payload: new Uint8Array([1]) }), { code: 'connection_closed' });
 });
 test('transport error rejects pending work without preventing physical close', async () => {
-  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
+  const socket = new Socket(); socket.readyState = 0;
+  const peer = createPeerConnection(socket, { route: 'direct' });
   const sent = peer.send({ domain: 'records', payload: new Uint8Array([1]) });
   const next = peer.frames[Symbol.asyncIterator]().next();
   const rejected = Promise.all([peer.ready, sent, next].map(promise => assert.rejects(promise, { code: 'connection_error' })));
   socket.dispatchEvent(new Event('error'));
   await rejected;
-  assert.equal(socket.readyState, 1);
+  assert.equal(socket.readyState, 0);
   peer.close(); peer.close();
   assert.deepEqual(socket.closes, [{ code: 1000, reason: 'Peer session closed' }]);
   assert.equal(peer.stats.queuedBytes, 0);
-});
-test('relay readiness and consumption credits are separate from durable application progress', async () => {
-  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
-  let ready = false; peer.ready.then(() => { ready = true; });
-  await Promise.resolve(); assert.equal(ready, false);
-  socket.receive('{"t":"peer_ready","version":1}'); await peer.ready;
-  const bytes = encodePeerFrame({ domain: 'records', payload: new Uint8Array([3]) });
-  socket.receive(bytes.buffer); assert.equal(socket.sent.length, 0);
-  const reader = peer.frames[Symbol.asyncIterator]();
-  assert.equal((await reader.next()).value.payload[0], 3);
-  assert.equal(socket.sent[0], '{"t":"peer_credit","bytes":4}');
-  peer.close(); await reader.return();
 });
 test('bootstrap hints do not accept credentials or arbitrary insecure endpoints', () => {
   assert.deepEqual(validatePeerBootstrap({ version: 1, endpoints: [{ route: 'direct', url: 'wss://peer.example/socket' }] }).endpoints[0], { route: 'direct', url: 'wss://peer.example/socket' });
@@ -82,27 +72,27 @@ test('bootstrap hints do not accept credentials or arbitrary insecure endpoints'
     assert.throws(() => validatePeerBootstrap({ version: 1, endpoints: [{ route: 'relay', url }] }), { code: 'invalid_bootstrap' });
 });
 
-test('abort before relay readiness removes bounded pending sends without blocking later traffic', async () => {
-  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
+test('abort before socket readiness removes bounded pending sends without blocking later traffic', async () => {
+  const socket = new Socket(); socket.readyState = 0;
+  const peer = createPeerConnection(socket, { route: 'direct' });
   const first = new AbortController(), second = new AbortController();
   const one = peer.send({ domain: 'records', payload: new Uint8Array(1000) }, { signal: first.signal });
   const two = peer.send({ domain: 'records', payload: new Uint8Array(1000) }, { signal: second.signal });
   const rejected = Promise.all([assert.rejects(one, { name: 'AbortError' }), assert.rejects(two, { name: 'AbortError' })]);
   second.abort(); first.abort(); await rejected;
   assert.equal(peer.stats.queuedBytes, 0); assert.equal(socket.sent.length, 0);
-  socket.receive('{"t":"peer_ready","version":1}');
+  socket.readyState = 1; socket.dispatchEvent(new Event('open'));
   await peer.send({ domain: 'control', payload: new Uint8Array([7]) });
   assert.equal(socket.sent.length, 1); peer.close();
 });
 
-test('relay credits bound sends until the remote reader consumes frames', async () => {
-  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
-  socket.receive('{"t":"peer_ready","version":1}');
-  const frame = { domain: 'records', payload: new Uint8Array(PEER_LIMITS.frameBytes) };
-  for (let index = 0; index < 15; index++) await peer.send(frame);
+test('socket buffered bytes bound sends until transport buffers drain', async () => {
+  const socket = new Socket(), peer = createPeerConnection(socket, { route: 'direct' });
+  await peer.ready;
+  socket.bufferedAmount = PEER_LIMITS.queueBytes;
   let finished = false;
-  const blocked = peer.send(frame).then(() => { finished = true; });
+  const blocked = peer.send({ domain: 'records', payload: new Uint8Array([3]) }).then(() => { finished = true; });
   await Promise.resolve(); assert.equal(finished, false);
-  socket.receive(JSON.stringify({ t: 'peer_credit', bytes: PEER_LIMITS.frameBytes + 3 }));
+  socket.bufferedAmount = 0;
   await blocked; assert.equal(finished, true); peer.close();
 });

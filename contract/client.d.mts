@@ -18,8 +18,7 @@ export interface NotificationDelivery { sent: number; failed: number;
 export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransferClient {
   members: import("./members.mjs").MembersClient;
   application(): Promise<import("./application.mjs").ApplicationBackend<import("./application.mjs").CloudflareApplicationProgram, import("./application.mjs").CloudflareApplicationSubmission>>;
-  peers: { bootstrap(): Promise<import("./peers.mjs").PeerBootstrap>; setBootstrap(hints: import("./peers.mjs").PeerBootstrap): Promise<import("./peers.mjs").PeerBootstrap>;
-    connect(channel: string, peerId: string, options?: { socket?: (url: string, protocols: readonly string[]) => import("./peers.mjs").PeerSocket }): import("./peers.mjs").PeerConnection };
+  peers: import("./peers.mjs").PeersClient;
   records: RecordLogClient;
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;

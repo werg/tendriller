@@ -196,7 +196,7 @@ export interface CapabilityReport { captured_at: number; secure: boolean; device
 export interface RuntimeApi<T = Record<string, unknown>> {
   readonly members: import("./members.mjs").MembersClient;
   readonly application: import("./application.mjs").ApplicationBinding;
-  readonly peers: { bootstrap(): Promise<import("./peers.mjs").PeerBootstrap>; connect(channel: string, peerId: string): import("./peers.mjs").PeerConnection };
+  readonly peers: import("./peers.mjs").PeersClient;
   send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
   request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal }): Promise<T>;
   scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };

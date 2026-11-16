@@ -67,7 +67,7 @@ assert.throws(() => selection.backend, {code:'backend_unavailable'});
 assert.equal(validateCloudflareProgram({version:1,expected_generations:{},steps:[{kind:'emit',topic:'conversation',payload:{text:'hello'}}]}).steps[0].kind, 'emit');
 assert.equal(decodePeerFrame(encodePeerFrame({domain:'signals',payload:new Uint8Array([7])})).domain, 'signals');
 assert.equal(typeof client.application, 'function');
-assert.equal(typeof client.peers.connect, 'function');
+assert.equal(typeof client.peers.rendezvous, 'function');
 assert.equal(typeof client.members.approve, 'function');
 assert.equal(typeof createMembersClient({base:'https://example.test'}).history, 'function');
 assert.equal(membershipProvenance.dirty, false);
@@ -89,7 +89,7 @@ import {type RuntimeApi, type SendResult, type WireContracts, type SensorStatus}
 import {type WorkflowModule} from '@tendriller/core/host';
 import {type RecordLogClient, type RecordLogHead, type RecordLogAppendCondition} from '@tendriller/core/records';
 import {type ApplicationBackend, type ApplicationOperation, type CloudflareApplicationProgram, createApplicationBinding, publishConversation} from '@tendriller/core/application';
-import {type PeerConnection, createPeerConnection, type PeerSocket} from '@tendriller/core/peers';
+import {type PeerRendezvous, createPeerConnection, type PeerSocket} from '@tendriller/core/peers';
 import {type MembershipConfiguration, type MembersClient} from '@tendriller/core/members';
 import {createFixtureTransport} from '@tendriller/runtime/preview';
 import type {} from '@tendriller/core/browser';
@@ -119,7 +119,7 @@ const noGuards: CloudflareApplicationProgram = {version:1,steps:[{kind:'emit',to
 // @ts-expect-error an operation subscription must select a bounded operation identity.
 backend.operations.subscribe({});
 const binding = createApplicationBinding({kind:'peer',id:'history'}, backend);
-const peer: PeerConnection = page.peers.connect('session', 'browser');
+const peer: PeerRendezvous = page.peers.rendezvous('session', 'browser');
 declare const socket: PeerSocket;
 const adapted = createPeerConnection(socket,{route:'direct'});
 void [operation,continuation,cfProgram,noGuards,binding,peer,adapted];

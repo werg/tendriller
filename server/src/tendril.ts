@@ -1,5 +1,5 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
-import { isPeerSocket, handlePeerMessage, closePeer } from "./peers";
+import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
 import { applicationSelection } from "../../contract/application.mjs";
 import runtimeRelease from "./runtime-release.json";
 import { RESOURCE_LIMITS, STREAM_LIMITS } from "../../contract/limits.mjs";
@@ -1167,6 +1167,8 @@ export class Tendril extends DurableObject<Env> {
     if (!this.exists()) return;
     const now = this.now();
     const times: number[] = [];
+    const peerDue = nextPeerDeadline(this);
+    if (peerDue !== null) times.push(peerDue);
     if (lifetimeChangePending(this)) times.push(now + 5000);
     const job = this.db.get<WebhookJob | null>("webhook_job", null);
     if (job) times.push(job.due);
@@ -1197,6 +1199,7 @@ export class Tendril extends DurableObject<Env> {
     await recoverLifetimeChange(this);
     const now = this.now();
     await runTimers(this);
+    expirePeers(this);
     await runTimerNotifications(this);
     await runWebhook(this);
     await runMcpEvents(this);

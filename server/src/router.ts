@@ -254,11 +254,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const agentRest = safeDecode(m[2] ?? "");
       // Node's dependency-free WebSocket client cannot set Authorization. Keep the
       // private token in a TLS-protected subprotocol header, never in the URL.
-      const peerSocket = agentRest === "peers/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const socket = agentRest === "events/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
       const agentProtocol = socket && protocols.includes("tendriller.agent.v2");
-      const socketToken = agentProtocol || peerSocket && protocols.includes("tendriller.peer.v1") ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
+      const socketToken = agentProtocol || peerSocket && protocols.includes("tendriller.rendezvous.v1") ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
       // A listen-only ticket (POST A/events/socket/ticket) can stand in for the token on the socket only.
       const socketTicket = agentProtocol && !socketToken ? protocols.find((s) => SOCKET_TICKET_RE.test(s)) : undefined;
       if (socket && !socketToken && !socketTicket) return errorResponse(401, "unauthorized", "Agent socket needs its private token or a socket ticket");

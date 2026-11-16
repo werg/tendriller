@@ -1,21 +1,23 @@
 import { expect, it } from 'vitest';
-import { api, apiJson, create, inDO, req, type Handle } from './helpers';
-import { createPeerConnection, encodePeerFrame, PEER_LIMITS } from '../../contract/peers.mjs';
+import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
+import { createPeerRendezvous, PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
 import { closePeer } from '../src/peers';
 
+const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL };
+const offer = { type: 'offer' as const, sdp: 'v=0\r\no=offer\r\n' };
+const answer = { type: 'answer' as const, sdp: 'v=0\r\no=answer\r\n' };
 async function open(h: Handle, channel: string, peerId: string, page = false) {
-  const path = `peers/socket?${new URLSearchParams({ channel, peerId })}`;
-  const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' };
+  const path = `peers/rendezvous?${new URLSearchParams({ channel, peerId })}`;
   const response = page ? await req(`${h.page_url}_tendril/${path}`, { headers }) : await api(h, 'GET', path, undefined, headers);
   expect(response.status).toBe(101);
   const socket = response.webSocket!;
-  const connection = createPeerConnection(socket, { route: 'relay', relayHandshake: true });
+  const connection = createPeerRendezvous(socket);
   const closed = new Promise<{ code: number; reason: string }>(resolve => socket.addEventListener('close', event => resolve({ code: event.code, reason: event.reason })));
   socket.accept();
   return { socket, connection, closed };
 }
 
-it('exposes authorized bootstrap and forwards bounded opaque domains independently of retained authority', async () => {
+it('introduces authorized peers, exchanges exactly two descriptions, and retires the host sockets', async () => {
   const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'peer-history' } });
   const hints = { version: 1, endpoints: [{ route: 'direct', url: 'wss://resident.example/peer' }] };
   expect(await apiJson(h, 'PUT', 'peers/bootstrap', hints)).toEqual(hints);
@@ -23,124 +25,119 @@ it('exposes authorized bootstrap and forwards bounded opaque domains independent
   expect((await req(`${h.api}/peers/bootstrap`, { anonymous: true })).status).toBe(401);
   expect((await api(h, 'PUT', 'peers/bootstrap', { version: 1, endpoints: [{ route: 'direct', url: 'ws://insecure.example/' }] })).status).toBe(400);
   const agent = await open(h, 'one', 'agent'), page = await open(h, 'one', 'browser', true);
-  await Promise.all([agent.connection.ready, page.connection.ready]);
-  const reader = page.connection.frames[Symbol.asyncIterator](), responseReader = agent.connection.frames[Symbol.asyncIterator]();
-  const payload = new Uint8Array([0, 255, 73]);
-  await agent.connection.send({ domain: 'records', payload });
-  expect((await reader.next()).value).toEqual({ domain: 'records', payload });
-  await page.connection.send({ domain: 'signals', payload });
-  expect((await responseReader.next()).value).toEqual({ domain: 'signals', payload });
-  expect(agent.connection.stats.sentBytes).toBe(6);
-  expect(page.connection.stats.receivedBytes).toBe(6);
+  const [a, b] = await Promise.all([agent.connection.ready, page.connection.ready]);
+  expect(a.role).toBe('offerer'); expect(b).toEqual({ session: a.session, role: 'answerer' });
+  const pageReader = page.connection.messages[Symbol.asyncIterator](), agentReader = agent.connection.messages[Symbol.asyncIterator]();
+  await agent.connection.send(offer); expect((await pageReader.next()).value).toEqual(offer);
+  await page.connection.send(answer); expect((await agentReader.next()).value).toEqual(answer);
+  expect((await pageReader.next()).done).toBe(true); expect((await agentReader.next()).done).toBe(true);
+  expect((await agent.closed).code).toBe(1000); expect((await page.closed).code).toBe(1000);
+  expect(agent.connection.stats.sentDescriptions + page.connection.stats.sentDescriptions).toBe(2);
   expect(await inDO(h.id, t => ({ log: t.db.one('SELECT COUNT(*) AS n FROM record_log_entries'),
-    application: t.db.one('SELECT COUNT(*) AS n FROM application_changes'), oldEvents: t.db.one('SELECT COUNT(*) AS n FROM events') })))
-    .toEqual({ log: { n: 0 }, application: { n: 0 }, oldEvents: { n: 0 } });
-  agent.connection.close(); page.connection.close(); await reader.return?.(); await responseReader.return?.();
+    application: t.db.one('SELECT COUNT(*) AS n FROM application_changes'), oldEvents: t.db.one('SELECT COUNT(*) AS n FROM events'),
+    devices: t.db.one('SELECT COUNT(*) AS n FROM devices') })))
+    .toEqual({ log: { n: 0 }, application: { n: 0 }, oldEvents: { n: 0 }, devices: { n: 0 } });
 });
 
-it('isolates two-endpoint sessions and closes the remaining peer on disconnect', async () => {
+it('has no hosted binary peer relay endpoint or protocol', async () => {
+  const h = await create({ mode: 'dashboard', listener: false });
+  expect((await api(h, 'GET', 'peers/socket?channel=x&peerId=y', undefined,
+    { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' })).status).toBe(404);
+  expect((await api(h, 'GET', 'peers/rendezvous?channel=x&peerId=y', undefined,
+    { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' })).status).toBe(400);
+});
+
+it('isolates pairs and closes an incomplete rendezvous when either participant leaves', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
   const first = await open(h, 'channel', 'first');
-  const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' };
-  expect((await api(h, 'GET', 'peers/socket?channel=channel&peerId=first', undefined, headers)).status).toBe(409);
+  expect((await api(h, 'GET', 'peers/rendezvous?channel=channel&peerId=first', undefined, headers)).status).toBe(409);
   const second = await open(h, 'channel', 'second');
   await Promise.all([first.connection.ready, second.connection.ready]);
-  expect((await api(h, 'GET', 'peers/socket?channel=channel&peerId=third', undefined, headers)).status).toBe(409);
-  first.connection.close();
-  expect((await second.closed).code).toBe(1013);
+  expect((await api(h, 'GET', 'peers/rendezvous?channel=channel&peerId=third', undefined, headers)).status).toBe(409);
+  first.connection.close(); expect((await second.closed).code).toBe(1013);
 });
 
-it('rejects oversized or malformed relay messages without retaining application records', async () => {
-  for (const invalid of [new Uint8Array(PEER_LIMITS.signalBytes + 4), 'null']) {
+it('rejects binary frames, oversized SDP and foreign sessions without retaining payloads', async () => {
+  const bad = [new Uint8Array([0x54, 1, 0, 1]), 'null', 'x'.repeat(LIMITS.messageBytes + 1),
+    JSON.stringify({ t: 'description', session: 'retired', description: offer })];
+  for (const invalid of bad) {
     const h = await create({ mode: 'dashboard', listener: false });
     const first = await open(h, 'bounded', 'first'), second = await open(h, 'bounded', 'second');
     await Promise.all([first.connection.ready, second.connection.ready]);
-    if (invalid instanceof Uint8Array) invalid.set([0x54, 1, 1]);
     first.socket.send(invalid);
-    expect((await first.closed).code).toBe(invalid instanceof Uint8Array ? 1009 : 1008);
+    expect((await first.closed).code).toBe(invalid instanceof Uint8Array || invalid.length > LIMITS.messageBytes ? 1009 : 1008);
+    expect(second.connection.stats.receivedDescriptions).toBe(0);
     second.connection.close();
     expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM record_log_entries'))).toEqual({ n: 0 });
   }
 });
 
-it('rechecks the recipient host credential before forwarding and never treats relay access as a database grant', async () => {
+it('refuses role confusion, premature answers and repeated descriptions', async () => {
+  for (const attempt of ['role', 'premature', 'repeat']) {
+    const h = await create({ mode: 'dashboard', listener: false });
+    const first = await open(h, 'roles', 'first'), second = await open(h, 'roles', 'second');
+    const [a] = await Promise.all([first.connection.ready, second.connection.ready]);
+    if (attempt === 'repeat') {
+      await first.connection.send(offer);
+      expect((await second.connection.messages[Symbol.asyncIterator]().next()).value).toEqual(offer);
+    }
+    const sender = attempt === 'premature' ? second : first;
+    sender.socket.send(JSON.stringify({ t: 'description', session: a.session, description: attempt === 'repeat' ? offer : answer }));
+    expect((await sender.closed).code).toBe(1008);
+    first.connection.close(); second.connection.close();
+  }
+});
+
+it('rechecks the recipient host credential before forwarding an introduction', async () => {
   const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'private-group' } });
-  const agent = await open(h, 'access', 'agent'), page = await open(h, 'access', 'page', true);
+  const page = await open(h, 'access', 'page', true), agent = await open(h, 'access', 'agent');
   await Promise.all([agent.connection.ready, page.connection.ready]);
   await inDO(h.id, t => { t.db.run('DELETE FROM tokens'); });
-  page.socket.send(encodePeerFrame({ domain: 'records', payload: new Uint8Array([1]) }));
+  await page.connection.send(offer);
   expect((await agent.closed).code).toBe(4003);
-  expect(agent.connection.stats.receivedBytes).toBe(0);
+  expect(agent.connection.stats.receivedDescriptions).toBe(0);
   page.connection.close();
 });
 
-
-it('preserves sender order when the first frame waits for account authorization', async () => {
+it('expires stalled sessions through the Durable Object alarm without client heartbeats', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
-  const first = await open(h, 'ordered', 'first'), second = await open(h, 'ordered', 'second');
-  await Promise.all([first.connection.ready, second.connection.ready]);
-  await inDO(h.id, async t => {
-    const sender = t.ctx.getWebSockets('peer').find(ws => ws.deserializeAttachment().peerId === 'first')!;
-    const original = t.env.ACCOUNTS;
-    let release!: () => void, entered!: () => void, reads = 0;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    t.env.ACCOUNTS = { prepare(sql: string) {
-      const statement = original.prepare(sql);
-      return { bind(...args: unknown[]) {
-        const bound = statement.bind(...args);
-        return { async first() {
-          const result = await bound.first();
-          if (++reads === 1) { entered(); await gate; }
-          return result;
-        } };
-      } };
-    } } as D1Database;
-    try {
-      const one = t.webSocketMessage(sender, encodePeerFrame({ domain: 'records', payload: new Uint8Array([1]) }).slice().buffer);
-      await started;
-      const two = t.webSocketMessage(sender, encodePeerFrame({ domain: 'records', payload: new Uint8Array([2]) }).slice().buffer);
-      await new Promise(resolve => setTimeout(resolve, 20));
-      release(); await Promise.all([one, two]);
-    } finally { release(); t.env.ACCOUNTS = original; }
-  });
-  const reader = second.connection.frames[Symbol.asyncIterator]();
-  expect((await reader.next()).value?.payload).toEqual(new Uint8Array([1]));
-  expect((await reader.next()).value?.payload).toEqual(new Uint8Array([2]));
-  first.connection.close(); second.connection.close(); await reader.return?.();
+  const first = await open(h, 'expires', 'first');
+  await advance(h.id, LIMITS.lifetimeMs + 1); await runAlarm(h.id);
+  expect((await first.closed).code).toBe(1008);
+  await expect(first.connection.ready).rejects.toMatchObject({ code: 'rendezvous_closed' });
+  const replacement = await open(h, 'expires', 'first'); replacement.connection.close();
 });
 
-it('ignores delayed traffic and close events from a retired pair after channel reuse', async () => {
+it('ignores delayed messages and close events from a retired pair after channel reuse', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
   const oldFirst = await open(h, 'reused', 'first'), oldSecond = await open(h, 'reused', 'second');
-  await Promise.all([oldFirst.connection.ready, oldSecond.connection.ready]);
+  const [old] = await Promise.all([oldFirst.connection.ready, oldSecond.connection.ready]);
   let retired!: WebSocket;
-  await inDO(h.id, t => { retired = t.ctx.getWebSockets('peer').find(ws => ws.deserializeAttachment().peerId === 'first')!; });
-  oldFirst.connection.close();
-  await Promise.all([oldFirst.closed, oldSecond.closed]);
+  await inDO(h.id, t => { retired = t.ctx.getWebSockets('rendezvous').find(ws => ws.deserializeAttachment().peerId === 'first')!; });
+  oldFirst.connection.close(); await Promise.all([oldFirst.closed, oldSecond.closed]);
   const first = await open(h, 'reused', 'first'), second = await open(h, 'reused', 'second');
-  await Promise.all([first.connection.ready, second.connection.ready]);
+  const [current] = await Promise.all([first.connection.ready, second.connection.ready]);
+  expect(current.session).not.toBe(old.session);
   await inDO(h.id, async t => {
-    await t.webSocketMessage(retired, encodePeerFrame({ domain: 'records', payload: new Uint8Array([9]) }).slice().buffer);
+    await t.webSocketMessage(retired, JSON.stringify({ t: 'description', session: old.session, description: offer }));
     closePeer(t, retired);
   });
-  await first.connection.send({ domain: 'records', payload: new Uint8Array([1]) });
-  const reader = second.connection.frames[Symbol.asyncIterator]();
-  expect((await reader.next()).value?.payload).toEqual(new Uint8Array([1]));
-  expect(first.connection.stats.receivedBytes).toBe(0);
-  first.connection.close(); second.connection.close(); await reader.return?.();
+  await first.connection.send(offer);
+  expect((await second.connection.messages[Symbol.asyncIterator]().next()).value).toEqual(offer);
+  expect(first.connection.stats.receivedDescriptions).toBe(0);
+  first.connection.close(); second.connection.close();
 });
 
-it('bounds queued authorization work and forwards no queued frames after overflow closes the sender', async () => {
+it('bounds authorization work and forwards no pending description after a repeated send', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
-  const first = await open(h, 'pending-bound', 'first'), second = await open(h, 'pending-bound', 'second');
-  await Promise.all([first.connection.ready, second.connection.ready]);
+  const first = await open(h, 'pending', 'first'), second = await open(h, 'pending', 'second');
+  const [a] = await Promise.all([first.connection.ready, second.connection.ready]);
   await inDO(h.id, async t => {
-    const sender = t.ctx.getWebSockets('peer').find(ws => ws.deserializeAttachment().peerId === 'first')!;
-    const frame = encodePeerFrame({ domain: 'records', payload: new Uint8Array([1]) }).slice().buffer;
-    await Promise.all(Array.from({ length: 129 }, () => t.webSocketMessage(sender, frame)));
+    const sender = t.ctx.getWebSockets('rendezvous').find(ws => ws.deserializeAttachment().peerId === 'first')!;
+    const frame = JSON.stringify({ t: 'description', session: a.session, description: offer });
+    await Promise.all([t.webSocketMessage(sender, frame), t.webSocketMessage(sender, frame)]);
   });
   expect((await first.closed).code).toBe(1008);
-  expect(second.connection.stats.receivedBytes).toBe(0);
+  expect(second.connection.stats.receivedDescriptions).toBe(0);
   second.connection.close();
 });
