@@ -116,6 +116,38 @@ export async function apiJson<T = any>(h: Handle, method: string, path: string, 
   return (text ? JSON.parse(text) : null) as T;
 }
 
+/** Contract 3 transfer used by integration tests that need real immutable bytes. */
+export async function uploadAgent(h: Handle, value: string | Uint8Array, type = "application/octet-stream", name?: string): Promise<any> {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  const started = await apiJson(h, "POST", "uploads", { cid: crypto.randomUUID(), sha256: await sha256Hex(bytes),
+    size: bytes.byteLength, type, ...(name ? { name } : {}) }, 201);
+  if (started.upload_required) {
+    const sent = await api(h, "PUT", `uploads/${started.id}/content`, bytes, { "Content-Type": "application/octet-stream" });
+    if (sent.status !== 204) throw new Error(`upload content failed: ${sent.status} ${await sent.text()}`);
+  }
+  return (await apiJson(h, "POST", `uploads/${started.id}/complete`, {})).blob;
+}
+
+/** Build a complete publication from test files, optionally retaining the current manifest. */
+export async function publishTestFiles(h: Handle, input: { files: Record<string, string>; replace?: boolean; message?: string }): Promise<any> {
+  const head = await apiJson(h, "GET", "publications");
+  const previous = !input.replace && head.current ? await apiJson(h, "GET", `publications/${head.current}`) : null;
+  const files = new Map<string, { path: string; blob_id: string; type: string }>((previous?.files ?? []).map((file: any) => [file.path, file]));
+  if (!files.has("index.html") && !Object.hasOwn(input.files, "index.html")) {
+    const entry = await uploadAgent(h, "<!doctype html><title>Test page</title>", "text/html", "index.html");
+    files.set("index.html", { path: "index.html", blob_id: entry.id, type: "text/html" });
+  }
+  for (const [path, content] of Object.entries(input.files)) {
+    const type = path.endsWith(".html") ? "text/html" : path.endsWith(".js") ? "text/javascript" : "text/plain";
+    const blob = await uploadAgent(h, content, type, path);
+    files.set(path, { path, blob_id: blob.id, type });
+  }
+  const result = await apiJson(h, "POST", "publications", { cid: crypto.randomUUID(), expected_generations: {},
+    expected_head_revision: head.head_revision, entry: "index.html", files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    ...(input.message ? { message: input.message } : {}) });
+  return { ...result, files: [...files.keys()] };
+}
+
 export function stub(id: string): DurableObjectStub {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
 }
