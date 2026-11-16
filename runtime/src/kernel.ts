@@ -64,7 +64,7 @@ export function startRuntime(cfg: TendrilConfig, options: { application?: import
     sensorChanged();
   });
   const api: RuntimeApi = {
-    application: core.application, peers: core.peers,
+    application: core.application, peers: core.peers, members: core.members,
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
     state: core.state, scopes: core.scopes, timers: core.timers,

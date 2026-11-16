@@ -5,6 +5,7 @@ import { createDurabilityClient } from "./durability-client.mjs";
 import { createStreamsClient } from "./streams-client.mjs";
 import { createBlobClient } from "./blobs-client.mjs";
 import { createRecordLogClient } from "./records.mjs";
+import { createMembersClient } from "./members.mjs";
 
 export class ApiError extends Error {
   constructor(status, error) {
@@ -68,6 +69,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
       },
     },
     records: createRecordLogClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher, subscribeHints: recordLogHints }),
+    members: createMembersClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher }),
     ...createBlobClient(request, raw),
     ...createDurabilityClient(request),
     ...createStreamsClient(request),

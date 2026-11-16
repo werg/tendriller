@@ -9,7 +9,7 @@ export type { Path } from "../../contract/index.mjs";
 import type { Path } from "../../contract/index.mjs";
 export type StateApi = PublicStateApi<any>;
 export type Bus = { on(type: string, fn: (payload: any) => void): () => void; emit(type: string, payload?: any): void };
-export interface Core extends Pick<RuntimeApi, "application" | "peers" | "send" | "request" | "scopes" | "service" | "conversation" | "blobUrl" | "upload" | "uploadEvent" | "pendingWork" | "captures" | "retryCapture" | "discardCapture" | "setBlobRetention" | "deviceHeaders" | "streams" | "records" | "timers"> {
+export interface Core extends Pick<RuntimeApi, "members" | "application" | "peers" | "send" | "request" | "scopes" | "service" | "conversation" | "blobUrl" | "upload" | "uploadEvent" | "pendingWork" | "captures" | "retryCapture" | "discardCapture" | "setBlobRetention" | "deviceHeaders" | "streams" | "records" | "timers"> {
   bus: Bus;
   config: TendrilConfig;
   device: Device;

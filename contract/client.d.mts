@@ -15,6 +15,7 @@ export interface NotificationStatus { available: boolean; subscribed_devices: { 
 export interface NotificationDelivery { sent: number; failed: number;
   deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
 export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransferClient {
+  members: import("./members.mjs").MembersClient;
   application(): Promise<import("./application.mjs").ApplicationBackend<import("./application.mjs").CloudflareApplicationProgram, import("./application.mjs").CloudflareApplicationSubmission>>;
   peers: { bootstrap(): Promise<import("./peers.mjs").PeerBootstrap>; setBootstrap(hints: import("./peers.mjs").PeerBootstrap): Promise<import("./peers.mjs").PeerBootstrap>;
     connect(channel: string, peerId: string, options?: { socket?: (url: string, protocols: readonly string[]) => import("./peers.mjs").PeerSocket }): import("./peers.mjs").PeerConnection };

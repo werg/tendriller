@@ -194,6 +194,7 @@ export interface NotificationsApi {
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
 export interface RuntimeApi<T = Record<string, unknown>> {
+  readonly members: import("./members.mjs").MembersClient;
   readonly application: import("./application.mjs").ApplicationBinding;
   readonly peers: { bootstrap(): Promise<import("./peers.mjs").PeerBootstrap>; connect(channel: string, peerId: string): import("./peers.mjs").PeerConnection };
   send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;

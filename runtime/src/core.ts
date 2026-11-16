@@ -1,6 +1,7 @@
 import { applicationSelection, createApplicationBinding, createCloudflareApplicationBackend, validateCloudflareProgram, validateApplicationOperation, assertApplicationOperationId } from "../../contract/application.mjs";
 import type { ApplicationBackend, ApplicationOperation, CloudflareApplicationSubmission } from "../../contract/application.mjs";
 import { connectPeer, validatePeerBootstrap } from "../../contract/peers.mjs";
+import { createMembersClient } from "../../contract/members.mjs";
 import { documentUrl } from "./document";
 // Runtime core (PROTOCOL 7, 11.1): socket, bus, state, offline queue, eval, logs, health.
 import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
@@ -1015,6 +1016,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     get transcript() { return transcript; },
     get welcome() { return welcome; },
     application,
+    members: createMembersClient({ base: cfg.base + "_tendril", headers: deviceHeaders }),
     peers: {
       async bootstrap() { return validatePeerBootstrap(await core.request("peers/bootstrap")); },
       connect(channel, peerId) {
