@@ -81,6 +81,20 @@ not fetch contrib, and a cookbook edit does not require a synchronized platform
 release. Content review should check the stated assumptions, alternatives,
 provenance, and relevant behavior rather than require upstream snippet equality.
 
+## Improve core from application feedback
+
+Repeated application workarounds are API design feedback. When cookbook adaptations
+need the same correctness machinery for retries, competing edits, cancellation,
+or resource cleanup, improve the core abstraction and its public contract. Put
+the guarantee at the boundary that can enforce it, exercise the failure with a
+regression test, and simplify the cookbook to use the resulting operation.
+
+This system is unreleased. Prefer a coherent target model and update its callers,
+schemas, types, documentation, and fixtures together. Existing implementation
+boundaries are design choices to reconsider when they impede good developer
+experience; preserving them is not a reason to add another application workaround
+or an unnecessary compatibility layer.
+
 ## Release artifacts
 
 Run `npm run check:release`, then `npm run release:artifacts`. The release manifest
