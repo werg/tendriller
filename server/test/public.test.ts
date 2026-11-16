@@ -613,6 +613,7 @@ it("creates for an email without account credentials, then allows resident after
   const account = crypto.randomUUID();
   await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, Date.now(), email).run();
   const h = await createPublic(email, "192.0.2.48");
+  expect(h).toMatchObject({ unclaimed_limits: { request_body_bytes: 1048576, stream_retained_bytes: 1048576 } });
   expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(403);
   const cookie = await claimAs(h, account, email);
   expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(200);

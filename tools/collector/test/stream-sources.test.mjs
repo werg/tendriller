@@ -74,7 +74,7 @@ test('GPU sampling distinguishes real zeroes from absent, unsupported and malfor
   const calls = [];
   const { sample } = await sampleHost(undefined, { gpu: true }, { executeGpu: async (...args) => {
     calls.push(args);
-    return { stdout: 'Generic GPU, 0, 0, 0, 1024, 0\nNVIDIA GB10, 1, 50.5, N/A, [Not Supported], \nOther GPU, 2, , invalid, 1e400, [N/A]\nOther GPU, 3, 10, 0.5, 2048, -2\n' };
+    return { stdout: 'Generic GPU, 0, 0, 0, 1024, 0\nNVIDIA GB10, 1, 50.5, N/A, [Not Supported], \nOther GPU, 2, , invalid, 1e400, [N/A]\nOther GPU, 3, 10, 0.5, 2048, -2\n"GPU, variant", 4, 10, 0, 1024, 0\n' };
   } });
   assert.equal(calls[0][0], 'nvidia-smi');
   assert.deepEqual(calls[0][1], ['--query-gpu=name,index,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits']);
@@ -88,6 +88,7 @@ test('GPU sampling distinguishes real zeroes from absent, unsupported and malfor
   assert.equal(sample.gpus[3].memory_used_bytes, 0.5 * 1024 ** 2);
   assert.equal(sample.gpus[3].temperature_c, -2);
   assert.equal(sample.gpus[3].unified_memory, null);
+  assert.equal(sample.gpus[4].model, 'GPU, variant');
   assert.equal(Number.isFinite(sample.metrics.memory_total_bytes), true);
 });
 

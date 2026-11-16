@@ -184,6 +184,15 @@ test("info redacts the secret page URL even with --pretty; explicit opt-in revea
   assert.match(JSON.parse(exposed.stdout).page_url, /private-secret/);
 });
 
+test("push rejects contradictory health flags and invalid timeout before publishing", async () => {
+  const before = requests.length;
+  for (const flags of [["--wait", "--no-wait"], ["--timeout", "bad"], ["--timeout", "-1"]]) {
+    const result = await cli(["push", "missing-page-directory", ...flags]);
+    assert.equal(result.code, 64, result.stderr);
+  }
+  assert.equal(requests.length, before);
+});
+
 test("events send --wake uses the existing rate-limited diagnostic endpoint", async () => {
   const withoutWake = await cli(["events", "send"]);
   assert.equal(withoutWake.code, 64);

@@ -201,6 +201,9 @@ const commands = {
   },
 
   async push(args, f, api, cfg) {
+    if (f.wait && f["no-wait"]) fail("Choose either --wait or --no-wait", 64);
+    const healthTimeout = intFlag(f.timeout, "timeout", 20);
+    if (healthTimeout < 0) fail("--timeout must be nonnegative", 64);
     const target = args[0];
     if (!target || !existsSync(target)) fail("usage: tendril push <dir|file>");
     const body = pack(target, { as: f.as, entry: f.entry, merge: !!f["no-replace"], message: f.message });
@@ -216,7 +219,7 @@ const commands = {
     // No browser is required to be viewing a dashboard when publishing it.
     if (!f.wait && (cfg.mode === "dashboard" || (!cfg.mode && (await api.get("")).mode === "dashboard")))
       return out({ ...result, status: "pending", note: "Dashboard not yet viewed; use --wait to wait for browser health." });
-    const { entry, list, timedOut } = await waitForHealth(api, r.version, intFlag(f.timeout, "timeout", 20));
+    const { entry, list, timedOut } = await waitForHealth(api, r.version, healthTimeout);
     result.status = entry ? entry.status : "unknown";
     result.healthy = result.status === "healthy" ? true : result.status === "failed" ? false : null;
     if (entry?.errors?.length) result.errors = entry.errors;
