@@ -3063,7 +3063,7 @@
     },
     "scopeOperation": {
       "type": "string",
-      "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+      "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
     },
     "scopeBindings": {
       "type": "object",
@@ -3097,7 +3097,7 @@
           "maxItems": 128,
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -3176,7 +3176,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -3218,7 +3218,7 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
                 }
               }
             },
@@ -3288,7 +3288,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+            "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
           }
         }
       },
@@ -4750,6 +4750,11 @@
         "id": {
           "type": "string"
         },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
         "created_at": {
           "type": "integer",
           "minimum": 0
@@ -4761,6 +4766,7 @@
       },
       "required": [
         "id",
+        "revision",
         "title",
         "due_at",
         "timezone",
@@ -4775,6 +4781,27 @@
     "timerWrite": {
       "type": "object",
       "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
         "title": {
           "type": "string",
           "minLength": 1,
@@ -4859,14 +4886,44 @@
             "cancelled",
             "completed"
           ]
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       },
-      "required": [],
+      "required": [
+        "cid",
+        "expected_generations",
+        "expected_revision"
+      ],
       "additionalProperties": false
     },
     "timerCreate": {
       "type": "object",
       "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
         "title": {
           "type": "string",
           "minLength": 1,
@@ -4954,7 +5011,68 @@
         }
       },
       "required": [
+        "cid",
+        "expected_generations",
         "title"
+      ],
+      "additionalProperties": false
+    },
+    "timerDelete": {
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,200}$"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+        },
+        "expected_generations": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "cid",
+        "expected_generations",
+        "expected_revision"
+      ],
+      "additionalProperties": false
+    },
+    "timerDeleted": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "deleted": {
+          "const": true
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "deleted"
       ],
       "additionalProperties": false
     },
@@ -5371,6 +5489,11 @@
               "id": {
                 "type": "string"
               },
+              "revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
               "created_at": {
                 "type": "integer",
                 "minimum": 0
@@ -5382,6 +5505,7 @@
             },
             "required": [
               "id",
+              "revision",
               "title",
               "due_at",
               "timezone",
@@ -5884,7 +6008,7 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
+                  "pattern": "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$"
                 }
               }
             },
@@ -6117,6 +6241,11 @@
               "id": {
                 "type": "string"
               },
+              "revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
               "created_at": {
                 "type": "integer",
                 "minimum": 0
@@ -6128,6 +6257,7 @@
             },
             "required": [
               "id",
+              "revision",
               "title",
               "due_at",
               "timezone",

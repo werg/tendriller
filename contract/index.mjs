@@ -39,7 +39,8 @@ const timerProperties = {
   repeat: timerRepeat, missed: { enum: ["fire_once", "skip"] }, device: string, notify: boolean, state: { enum: ["scheduled", "cancelled", "completed"] },
 };
 const timerWriteProperties = { ...timerProperties, repeat: { anyOf: [timerRepeat, { type: "null" }] }, device: nullableString };
-const timer = object({ ...timerProperties, id: string, created_at: integer, updated_at: integer }, ["id", "title", "due_at", "timezone", "missed", "notify", "state", "created_at", "updated_at"]);
+const timerRevision = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
+const timer = object({ ...timerProperties, id: string, revision: timerRevision, created_at: integer, updated_at: integer }, ["id", "revision", "title", "due_at", "timezone", "missed", "notify", "state", "created_at", "updated_at"]);
 const sessionProperties = {
   purpose: { type: "string", maxLength: 4000 }, current_task: { type: "string", maxLength: 4000 },
   ...Object.fromEntries(["completed", "decisions", "open_questions"].map(key => [key, { type: "array", maxItems: 50, items: { type: "string", maxLength: 2000 } }])),
@@ -51,7 +52,7 @@ const identifier = { type: "string", minLength: 1, maxLength: 200 };
 const scopeId = { type: "string", pattern: "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$" };
 const generationToken = { type: "string", minLength: 1, maxLength: 160 };
 const commandId = { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" };
-const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
+const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
 const generationMap = { type: "object", maxProperties: 128, propertyNames: scopeId, additionalProperties: generationToken };
 const guards = { cid: commandId, scope: scopeId, expected_generations: generationMap };
 const scopeDescriptor = object({ id: scopeId, generation: generationToken,
@@ -113,8 +114,10 @@ const coreSchemas = {
   focusRequest: object({ device: nullableString, ttl_seconds: { type: "integer", minimum: 30, maximum: 86400 } }, ["device"]),
   timerRepeat,
   timer,
-  timerWrite: object(timerWriteProperties),
-  timerCreate: object(timerWriteProperties, ["title"]),
+  timerWrite: object({ ...guards, ...timerWriteProperties, expected_revision: timerRevision }, ["cid", "expected_generations", "expected_revision"]),
+  timerCreate: object({ ...guards, ...timerWriteProperties }, ["cid", "expected_generations", "title"]),
+  timerDelete: object({ ...guards, expected_revision: timerRevision }, ["cid", "expected_generations", "expected_revision"]),
+  timerDeleted: object({ id: string, revision: timerRevision, deleted: { const: true } }, ["id", "revision", "deleted"]),
   timerRun: object({ id: string, timer_id: string, scheduled_at: integer, fired_at: integer, status: { enum: ["fired", "skipped"] }, event_seq: nullableTime,
     delivery: { anyOf: [durabilitySchemas.timerDelivery, { type: "null" }] },
   }, ["id", "timer_id", "scheduled_at", "fired_at", "status", "event_seq", "delivery"]),
