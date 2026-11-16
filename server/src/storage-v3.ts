@@ -40,10 +40,15 @@ function activeSession(t: Tendril, id: string, actor: string): UploadRow {
 
 function blobMetadata(t: Tendril, id: string) {
   const info = blobInfo(t, id);
+  const reasons = [info.retention.reason];
+  if (t.db.one("SELECT 1 FROM file_refs WHERE blob_id=? AND blob_id IS NOT NULL LIMIT 1", id)) reasons.push("shared_file");
+  else if (t.db.one("SELECT 1 FROM file_ref_changes WHERE blob_id=? AND updated_at>=? LIMIT 1", id,
+    t.now() - RESOURCE_LIMITS.file_history_seconds * 1000)) reasons.push("shared_file_history");
+  if (t.db.one("SELECT 1 FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) reasons.push("publication");
   return { id: info.id, sha256: info.sha256, size: info.size,
     type: info.type || "application/octet-stream", name: info.name || undefined,
     url: `_tendril/blobs/${id}`, created_at: info.ts,
-    retention: { expires_at: info.retention.expires_at, reasons: [info.retention.reason] } };
+    retention: { expires_at: reasons.length > 1 ? null : info.retention.expires_at, reasons } };
 }
 
 function fileValue(row: FileRow) {
@@ -161,7 +166,10 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   if (rest === "file-refs/snapshot" && method === "GET") {
     const rows = t.db.all<FileRow>("SELECT * FROM file_refs WHERE blob_id IS NOT NULL ORDER BY path LIMIT ?", RESOURCE_LIMITS.shared_files);
     const cursor = t.db.one<{ cursor: number }>("SELECT COALESCE(MAX(cursor),0) AS cursor FROM file_ref_changes")?.cursor ?? 0;
-    return json({ files: rows.map(fileValue), cursor });
+    const snapshot = { files: rows.map(fileValue), cursor };
+    if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > RESOURCE_LIMITS.file_snapshot_bytes)
+      throw new HttpError(413, "snapshot_too_large", "Shared file snapshot exceeds its byte limit");
+    return json(snapshot);
   }
   if (rest === "file-refs/history" && method === "GET") {
     const path = queryPath(url);
@@ -181,6 +189,10 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
       const current = fileHead(t, input.path);
       if ((current?.revision ?? 0) !== input.expected_revision)
         throw new HttpError(409, "file_conflict", "Shared file changed; capture its current revision", { current: current?.revision ?? 0 });
+      if (!current && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs")?.n ?? 0) >= RESOURCE_LIMITS.shared_file_paths)
+        throw new HttpError(429, "resource_quota", "Shared file path limit reached");
+      if (put && !current?.blob_id && (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM file_refs WHERE blob_id IS NOT NULL")?.n ?? 0) >= RESOURCE_LIMITS.shared_files)
+        throw new HttpError(429, "resource_quota", "Active shared file limit reached");
       if (put) requireBlob(t, put.blob_id);
       const next = input.expected_revision + 1, now = t.now();
       const blobId = put?.blob_id ?? null;
@@ -192,6 +204,18 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
         input.path, next, blobId, name, type, input.scope ?? null, now, actor, input.cid);
       const cursor = t.db.one<{ cursor: number }>("SELECT last_insert_rowid() AS cursor")!.cursor;
       return { file: fileValue(fileHead(t, input.path)!), cursor };
+    });
+    return json(result);
+  }
+  if (rest === "file-refs/cleanup" && method === "POST") {
+    const input = assertValid("fileCleanup", await readJson(req, 4096));
+    const result = mutate(t, actor, input, { paths: [["files", input.path]], operations: ["file.write"] }, input, () => {
+      const current = fileHead(t, input.path);
+      if (!current || current.revision !== input.expected_revision || current.blob_id !== null)
+        throw new HttpError(409, "file_conflict", "Only the current deleted file can be cleaned up");
+      t.db.run("DELETE FROM file_refs WHERE path=?", input.path);
+      const cursor = t.db.one<{ cursor: number }>("SELECT COALESCE(MAX(cursor),0) AS cursor FROM file_ref_changes")?.cursor ?? 0;
+      return { file: fileValue(current), cursor };
     });
     return json(result);
   }
@@ -219,7 +243,7 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   if (rest === "publications" && method === "POST") {
     const input = assertValid("publicationWrite", await readJson(req, 2 * 1024 * 1024));
     assertPublicationEntries(input.files, input.entry);
-    const targets = { operations: ["publication.write"], paths: input.files.map(file => ["publications", file.path]) };
+    const targets = { operations: ["publication.publish"], paths: input.files.map(file => ["publications", file.path]) };
     const prior = replay<{ version: number; head_revision: number }>(t, actor, input, targets, input);
     if (prior.found) return json(prior.result);
     if (t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
@@ -260,7 +284,7 @@ export async function handleStorageV3(t: Tendril, req: Request, url: URL, actor:
   }
   if (rest === "publications/rollback" && method === "POST") {
     const input = assertValid("publicationRollback", await readJson(req, 4096));
-    const result = mutate(t, actor, input, { operations: ["publication.write"] }, input, () => {
+    const result = mutate(t, actor, input, { operations: ["publication.publish"] }, input, () => {
       const current = t.db.get<number>("publication_head_revision", 0);
       if (current !== input.expected_head_revision)
         throw new HttpError(409, "publication_conflict", "The publication head changed", { head_revision: current });

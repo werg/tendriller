@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS file_ref_changes (cursor INTEGER PRIMARY KEY AUTOINCR
   revision INTEGER NOT NULL, blob_id TEXT, name TEXT, type TEXT, scope TEXT, updated_at INTEGER NOT NULL,
   by_actor TEXT NOT NULL, cid TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS file_ref_history ON file_ref_changes(path,cursor DESC);
+CREATE INDEX IF NOT EXISTS file_ref_blobs ON file_ref_changes(blob_id,updated_at);
 CREATE TABLE IF NOT EXISTS publication_blobs (version INTEGER NOT NULL, path TEXT NOT NULL, blob_id TEXT NOT NULL,
   PRIMARY KEY(version,path));
 CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL, risk_score INTEGER NOT NULL DEFAULT 0,

@@ -16,6 +16,7 @@ import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type Waiter, type WebhookJob } from "./events";
 import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
+import { RESOURCE_LIMITS } from "../../contract/index.mjs";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
 import type { Features } from "./inject";
@@ -987,6 +988,8 @@ export class Tendril extends DurableObject<Env> {
   async deleteBlob(id: string): Promise<void> {
     const hash = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id)?.sha256;
     if (this.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id) ||
+        this.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? AND updated_at>=? LIMIT 1", id,
+          this.now() - RESOURCE_LIMITS.file_history_seconds * 1000) ||
         this.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) return;
     this.db.run("DELETE FROM blobs WHERE id = ?", id);
     if (hash) await deleteUnreferencedContent(this, hash);
@@ -1208,6 +1211,16 @@ export class Tendril extends DurableObject<Env> {
     pruneActivity(this);
     pruneMcpSubs(this);
     pruneTimerHistory(this);
+    const expiredUploads = this.db.all<{ id: string; blob_id: string; phase: string }>(
+      "SELECT id,blob_id,phase FROM upload_sessions WHERE expires_at < ?", now);
+    for (const upload of expiredUploads) {
+      this.db.run("DELETE FROM upload_sessions WHERE id=?", upload.id);
+      if (upload.phase !== "completed") await this.deleteBlob(upload.blob_id);
+    }
+    this.db.run(`DELETE FROM file_ref_changes WHERE cursor IN (
+      SELECT cursor FROM (SELECT cursor,updated_at,
+        ROW_NUMBER() OVER (PARTITION BY path ORDER BY cursor DESC) AS rank FROM file_ref_changes)
+      WHERE rank > ? OR updated_at < ?)`, RESOURCE_LIMITS.file_history, now - RESOURCE_LIMITS.file_history_seconds * 1000);
     await this.pruneBlobs(now);
     await this.pruneVersions();
     await this.pruneOrphanFiles(now);
@@ -1249,6 +1262,7 @@ export class Tendril extends DurableObject<Env> {
     if (drop.length === 0) return;
     const before = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
     for (const v of drop) {
+      this.db.run("DELETE FROM publication_blobs WHERE version = ?", v);
       this.db.run("DELETE FROM version_files WHERE version = ?", v);
       this.db.run("DELETE FROM versions WHERE version = ?", v);
       this.db.run("DELETE FROM publication_leases WHERE version = ?", v);
