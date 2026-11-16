@@ -14,6 +14,11 @@ test("conditional state envelopes accept exactly one predicate and finite JSON",
     assert.ok(validate("stateUpdate", command({ conditions })).length);
   for (const expected_revision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, undefined])
     assert.ok(validate("stateUpdate", command({ expected_revision })).length);
+  for (const field of ["expected_revision", "conditions"]) {
+    const guarded = command();
+    Object.defineProperty(guarded, field, { enumerable: true, get: () => field === "expected_revision" ? 1 : [] });
+    assert.ok(validate("stateUpdate", guarded).length, `${field} accessor must not lose its guard during JSON serialization`);
+  }
   assert.ok(validate("stateOperations", [{ op: "set", path: ["a"], value: undefined }]).length);
 });
 

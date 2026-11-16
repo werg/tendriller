@@ -464,7 +464,7 @@ const commands = {
     const options = { cid: f.cid, scope: f.scope, expectedGenerations: generationsOf(f),
       expectedRevision: f.revision === undefined ? undefined : boundedInteger(f.revision, "revision", undefined, 1) };
     const intent = JSON.stringify({ operation, timer: timer ?? null, settings: body, ...options });
-    return out(await changeTimer(api, operation, timer, body, { ...options,
+    return out(await changeTimer(api, operation, timer, body, { ...options, destination: cfg.api,
       resumeFile: transferRecord(cfg, "timer", intent, f["resume-file"]) }));
   },
 

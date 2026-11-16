@@ -240,7 +240,7 @@ export function validate(name, value) {
     if (name === "stateOperation") normalizeStateOps([value]);
     if (name === "stateOperations") normalizeStateOps(value);
     if (name === "stateCondition") normalizeStateChecks({ conditions: [value] });
-    if (name === "stateWriteOptions") assertStateJson(value);
+    if (name === "stateWriteOptions" || name === "stateUpdate") assertStateJson(value);
     if (name === "stateChecks" || name === "stateWriteOptions" || name === "stateUpdate") normalizeStateChecks(value);
     if (name === "stateUpdate") normalizeStateOps("state" in value ? [{ op: "set", path: [], value: value.state }] : value.ops);
   } catch (error) { issues.push({ path: "$", message: error.message }); }

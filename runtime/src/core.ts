@@ -434,6 +434,14 @@ export function createCore(cfg: TendrilConfig): Internal {
           connection.close(4000, "state resync");
           return;
         }
+        if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > rev &&
+          !matchesContext(scopes, p, "state", p.ops)) {
+          // The accepted write belongs to an older scope generation. Its
+          // revision is authoritative, but applying its old intent locally
+          // after a reset could cover a newer state. Keep it until resync.
+          connection.close(4000, "state resync");
+          return;
+        }
         const before = JSON.stringify(local);
         if (!ack.error && p.ops.length && typeof ack.rev === "number" && ack.rev > rev && matchesContext(scopes, p, "state", p.ops)) {
           try { confirmed = applyOps(confirmed, p.ops); }

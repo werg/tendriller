@@ -666,6 +666,26 @@ test("late snapshots and conditional ACKs cannot overwrite a newer broadcast or 
   assert.equal(resumed.core.state.revision, 3); assert.equal(resumed.core.pendingWork().state, 0);
 });
 
+test("an accepted ACK from a rotated scope waits for the authoritative snapshot", async () => {
+  const env = await environment({ scopes: [descriptor], state: { notebook: { count: 0 } } });
+  const pending = env.core.state.set("notebook.count", 1, { scope: descriptor.id });
+  await flush(); await env.commit();
+  const original = env.sent.find(frame => frame.t === "state");
+  const rotated = [{ ...descriptor, generation: "rotated" }];
+  env.transport.receive({ t: "scopes", scopes: rotated });
+  env.transport.receive({ t: "ack", cid: original.cid, rev: 2 });
+  await env.commit();
+  assert.equal((await pending).status, "queued");
+  assert.equal(env.core.connected, false);
+  assert.equal(env.core.pendingWork().state, 1);
+  const resumed = await environment({ database: env.database, localStorage: env.localStorage,
+    state: { notebook: { count: 1 } }, rev: 2, scopes: rotated });
+  assert.equal(resumed.sent.some(frame => frame.t === "state"), false);
+  await resumed.commit();
+  assert.equal(resumed.core.state.get("notebook.count"), 1);
+  assert.equal(resumed.core.pendingWork().state, 0);
+});
+
 test("a nested remote delta depending on an unacknowledged parent replacement resyncs without losing either write", async () => {
   const env = await environment({ state: { parent: null } });
   const pending = env.core.state.set("parent", { child: 1 }, { expected_revision: 1 });
@@ -924,7 +944,7 @@ test("reload replays unchanged commands and rotated scopes cannot hide current s
   await flush(); await first.commit();
   const original = first.sent.find(frame => frame.t === "state");
   const second = await environment({ database: first.database, localStorage: first.localStorage,
-    scopes: [{ ...descriptor, generation: "new" }], state: { notebook: { draft: "current" } } });
+    scopes: [{ ...descriptor, generation: "new" }], state: { notebook: { draft: "current" } }, rev: 2 });
   const replay = second.sent.find(frame => frame.t === "state");
   assert.deepEqual(replay, original);
   assert.equal(second.core.state.get("notebook.draft"), "current");

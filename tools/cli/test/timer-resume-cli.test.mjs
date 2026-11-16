@@ -55,6 +55,11 @@ test("timer CLI recovers original commands after lost replies without refreshing
       const lost = await run(command, env); assert.notEqual(lost.code, 0);
       const pending = JSON.parse(readFileSync(record, "utf8"));
       assert.equal(pending.phase, "pending"); assert.match(pending.request.cid, /^[a-f0-9-]+$/);
+      assert.equal(pending.intent.destination, env.TENDRIL_API);
+      const beforeWrong = requests.length;
+      const wrongPage = await run(command, { ...env, TENDRIL_API: env.TENDRIL_API.replace("abcdefghijkl", "other-page") });
+      assert.notEqual(wrongPage.code, 0); assert.match(wrongPage.stderr, /does not match this intent/);
+      assert.equal(requests.length, beforeWrong, "a resume file from another page must not send the saved command");
       const retry = await run(command, env); assert.equal(retry.code, 0, retry.stderr);
       assert.deepEqual(JSON.parse(retry.stdout), receipts.get(pending.request.cid).result);
       const count = requests.length;
