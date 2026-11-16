@@ -74,10 +74,18 @@ export async function describeCapabilities(active: string[] = []): Promise<Capab
 /** Watch the browser signals that can change the report without reloading. */
 export function observeCapabilities(active: () => string[], changed: (report: Awaited<ReturnType<typeof describeCapabilities>>) => void): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let stopped = false;
+  let stopped = false, generation = 0;
   const refresh = () => {
+    if (stopped) return;
+    const current = ++generation;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { if (!stopped) void describeCapabilities(active()).then(changed).catch(() => {}); }, 100);
+    timer = setTimeout(() => {
+      if (stopped) return;
+      void describeCapabilities(active()).then(report => {
+        // Permission queries may resolve after a newer report or after pagehide.
+        if (!stopped && current === generation) changed(report);
+      }).catch(() => {});
+    }, 100);
   };
   const statuses: PermissionStatus[] = [];
   if (navigator.permissions?.query) {
@@ -94,6 +102,7 @@ export function observeCapabilities(active: () => string[], changed: (report: Aw
   window.addEventListener("offline", refresh);
   return () => {
     stopped = true;
+    generation++;
     if (timer) clearTimeout(timer);
     for (const status of statuses) status.removeEventListener("change", refresh);
     navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
