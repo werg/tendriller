@@ -211,10 +211,10 @@ describe("device proof on page HTTP routes", () => {
       method: "POST", headers: { "Content-Type": "application/json", "X-Tendril-Device": owner.deviceId },
       body: JSON.stringify(start),
     });
-    expect(unproved.status).toBe(403);
+    expect(unproved.status).toBe(401);
     await unproved.text();
     const wrongProof = await owner.http("POST", "uploads", start, { "X-Tendril-Device-Secret": "wrong" });
-    expect(wrongProof.status).toBe(403);
+    expect(wrongProof.status).toBe(401);
     await wrongProof.text();
     const blob = await uploadBlobJson(h, "x", { page: owner, type: "text/plain" });
     expect(await inDO(h.id, t => t.db.one("SELECT device, source FROM blobs WHERE id=?", blob.id)))

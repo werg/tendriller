@@ -6,7 +6,7 @@ import { timestampHmacHeaders } from "../src/events";
 import { signedHeaders } from "../src/mcpEvents";
 import { routeAuth } from "../src/accounts/auth";
 import { reconcileSuspensions } from "../src/abuse/reconcile";
-import { api, BASE, inDO, PageClient, req, type Handle } from "./helpers";
+import { api, BASE, inDO, PageClient, publishedFile, publishFiles, publishFilesJson, req, uploadBlob, uploadBlobJson, type Handle } from "./helpers";
 
 const db = env.ACCOUNTS!;
 const creatorHeaders = { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.10" };
@@ -58,44 +58,45 @@ async function captureFixture() {
 it("reports media expiry separately from residency and retains explicitly kept captures", async () => {
   const { h, headers } = await captureFixture();
   expect((await api(h, "PATCH", "", { lifetime: "resident" })).status).toBe(200);
-  const upload = (name: string, keep = false) => req(h.page_url + "_tendril/blob", {
-    method: "POST", headers: { ...headers, "Content-Type": "image/jpeg", "X-Tendril-Name": name, "X-Tendril-Keep": String(keep) }, body: "picture",
-  }).then((response) => response.json<any>());
-  const ordinary = await upload("temporary.jpg"), kept = await upload("keep.jpg", true);
-  expect(ordinary.retention).toMatchObject({ keep: false, reason: "page_default", expires_at: expect.any(Number) });
-  expect(kept.retention).toEqual({ keep: true, reason: "pinned", expires_at: null });
+  const page = await PageClient.connect(h.page_url, { headers });
+  const ordinary = await uploadBlobJson(h, "picture", { page, name: "temporary.jpg", type: "image/jpeg" });
+  const kept = await uploadBlobJson(h, "picture", { page, name: "keep.jpg", type: "image/jpeg" });
+  expect(ordinary.retention).toEqual({ reasons: ["unreferenced_upload"], expires_at: expect.any(Number) });
+  const pin = await page.http("PUT", `blobs/${kept.id}/pin`, { cid: crypto.randomUUID(), expected_generations: {}, keep: true });
+  expect(pin.status).toBe(200);
+  expect((await pin.json<any>()).retention).toEqual({ reasons: ["pinned"], expires_at: null });
   const info = await (await api(h, "GET", `blobs/${kept.id}/info`)).json<any>();
-  expect(info).toMatchObject({ name: "keep.jpg", size: 7, pinned: true, retention: { expires_at: null } });
+  expect(info).toMatchObject({ name: "keep.jpg", size: 7, retention: { expires_at: null, reasons: ["pinned"] } });
+  expect(ordinary.sha256).toBe(kept.sha256); // Shared bytes do not merge the two retention decisions.
   await inDO(h.id, async (t) => { t.skew += 31 * 86_400_000; await t.cleanup(); });
   expect((await api(h, "GET", `blobs/${ordinary.id}`)).status).toBe(404);
   expect((await api(h, "GET", `blobs/${kept.id}`)).status).toBe(200);
-  const unpin = await (await api(h, "PATCH", `blobs/${kept.id}`, { keep: false })).json<any>();
-  expect(unpin.retention).toMatchObject({ keep: false, expires_at: expect.any(Number) });
+  const unpin = await (await api(h, "PUT", `blobs/${kept.id}/pin`, { cid: crypto.randomUUID(), expected_generations: {}, keep: false })).json<any>();
+  expect(unpin.retention).toEqual({ reasons: ["unreferenced_upload"], expires_at: expect.any(Number) });
   await inDO(h.id, (t) => t.cleanup());
   expect((await api(h, "GET", `blobs/${kept.id}`)).status).toBe(404);
+  page.close();
 });
 
 it("lets the owner pin captures, rejects display mutations, and validates retention bodies", async () => {
   const { h, headers } = await captureFixture();
-  const uploaded = await (await req(h.page_url + "_tendril/blob", { method: "POST", headers, body: "capture" })).json<any>();
-  const url = h.page_url + `_tendril/blob/${uploaded.id}/retention`;
-  const keep = await req(url, { method: "PATCH", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ keep: true }) });
-  expect(keep.status).toBe(200);
-  expect(await keep.json()).toMatchObject({ id: uploaded.id, retention: { keep: true, expires_at: null } });
-  expect((await api(h, "PATCH", `blobs/${uploaded.id}`, { keep: "yes" })).status).toBe(400);
   const owner = await PageClient.connect(h.page_url, { headers });
+  const uploaded = await uploadBlobJson(h, "capture", { page: owner });
+  const keep = await owner.http("PUT", `blobs/${uploaded.id}/pin`, { cid: crypto.randomUUID(), expected_generations: {}, keep: true });
+  expect(keep.status).toBe(200);
+  expect(await keep.json()).toMatchObject({ id: uploaded.id, retention: { reasons: ["pinned"], expires_at: null } });
+  expect((await api(h, "PUT", `blobs/${uploaded.id}/pin`, { cid: crypto.randomUUID(), expected_generations: {}, keep: "yes" })).status).toBe(400);
   const result = await owner.request({ t: "links", create: { role: "display", label: "Screen" } });
   const display = result.created;
   expect(display.url).toBeTruthy();
-  const denied = await req(display.url + `_tendril/blob/${uploaded.id}/retention`, {
-    method: "PATCH", headers: { Origin: new URL(display.url).origin, "Content-Type": "application/json" }, body: JSON.stringify({ keep: false }),
-  });
+  const screen = await PageClient.connect(display.url, { headers: { Cookie: "", Origin: new URL(display.url).origin } });
+  const denied = await screen.http("PUT", `blobs/${uploaded.id}/pin`, { cid: crypto.randomUUID(), expected_generations: {}, keep: false });
   expect(denied.status).toBe(403);
-  expect((await (await api(h, "GET", `blobs/${uploaded.id}/info`)).json<any>()).retention.keep).toBe(true);
-  owner.close();
+  expect((await (await api(h, "GET", `blobs/${uploaded.id}/info`)).json<any>()).retention.reasons).toEqual(["pinned"]);
+  screen.close(); owner.close();
 });
 
-it("reminds agents at setup, upload, and every event poll to keep a receiver running", async () => {
+it("reminds agents to keep a receiver running and gates the first interactive publication", async () => {
   const h = await createPublic("listener@example.com", "192.0.2.51");
   const setup = h as Handle & { agent_setup: { event_delivery: string; next_step: string } };
   expect(setup.agent_setup.event_delivery).toBe("not_configured");
@@ -108,12 +109,13 @@ it("reminds agents at setup, upload, and every event poll to keep a receiver run
   expect(timeout.timeout).toBe(true);
   expect(timeout.next_poll).toBe(first.next_poll);
   expect(timeout.agent_reminder).toContain("after every response, even when empty");
-  const blocked = await api(h, "PUT", "files/index.html", "<h1>Hello</h1>");
+  const blocked = await publishFiles(h, { "index.html": "<h1>Hello</h1>" });
   expect(blocked.status).toBe(428);
   expect(await blocked.json()).toMatchObject({ error: { code: "listener_required" } });
   await enableWake(h);
-  const upload = await (await api(h, "PUT", "files/index.html", "<h1>Hello</h1>")).json<{ agent_delivery: { mode: string } }>();
-  expect(upload.agent_delivery).toMatchObject({ mode: "wake_configured" });
+  await publishFilesJson(h, { "index.html": "<h1>Hello</h1>" });
+  const status = await (await api(h, "GET", "")).json<{ agent_delivery: { mode: string } }>();
+  expect(status.agent_delivery).toMatchObject({ mode: "wake_configured" });
 });
 
 
@@ -595,15 +597,15 @@ it("auto-claims only for a matching verified email and issues a page session", a
   expect((await req(displayReply.created.url)).status).toBe(200);
 });
 
-it("caps an unclaimed tendril at 2 MiB across file versions", async () => {
+it("caps an unclaimed tendril at 2 MiB across distinct verified content", async () => {
   const h = await createPublic();
   const display = await api(h, "POST", "links", { role: "display" });
   expect(display.status).toBe(403);
-  const first = await api(h, "PUT", "files/a.bin", new Uint8Array(1024 * 1024).fill(1));
+  const first = await uploadBlob(h, new Uint8Array(1024 * 1024).fill(1), { name: "a.bin" });
   expect(first.status).toBe(200);
-  const second = await api(h, "PUT", "files/b.bin", new Uint8Array(1024 * 1024).fill(2));
+  const second = await uploadBlob(h, new Uint8Array(1024 * 1024).fill(2), { name: "b.bin" });
   expect(second.status).toBe(200);
-  const over = await api(h, "PUT", "files/c.bin", new Uint8Array([3]));
+  const over = await uploadBlob(h, new Uint8Array([3]), { name: "c.bin" });
   expect(over.status).toBe(413);
   expect(await over.json()).toMatchObject({ error: { code: "quota", limit: 2 * 1024 * 1024 } });
 });
@@ -659,16 +661,17 @@ it("exports files and deletes an account with its tendrils", async () => {
   await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, 'export@example.com')").bind(account, now).run();
   const h = await createPublic("export@example.com", "192.0.2.49");
   await claimAs(h, account, "export@example.com", session);
-  expect((await api(h, "PUT", "files/data.txt", "hello world")).status).toBe(200);
+  await enableWake(h);
+  await publishFilesJson(h, { "index.html": "<title>Export</title>", "data.txt": "hello world" });
   const cookie = `__Host-tendriller=${session}`;
   await inDO(h.id, t => t.db.run("INSERT INTO activity (ts, kind, summary, device, source) VALUES (?, 'sensor', 'Page used camera', 'd_test', 'server')", t.now()));
   const sensors = await req(`/dashboard/t/${h.id}`, { headers: { Cookie: cookie } });
   expect(await sensors.text()).toContain("Page used camera");
   const exported = await req("/dashboard/export", { headers: { Cookie: cookie } });
   expect(exported.status).toBe(200);
-  const archive = await exported.json<{ tendrils: { id: string; files: { base64: string }[] }[] }>();
+  const archive = await exported.json<{ tendrils: { id: string; files: { path: string; base64: string }[] }[] }>();
   expect(archive.tendrils[0].id).toBe(h.id);
-  expect(atob(archive.tendrils[0].files[0].base64)).toBe("hello world");
+  expect(atob(archive.tendrils[0].files.find(file => file.path === "data.txt")!.base64)).toBe("hello world");
   const deleted = await req("/dashboard/delete", { method: "POST", redirect: "manual", headers: { Cookie: cookie,
     Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ confirm: "DELETE" }) });
   expect(deleted.status).toBe(303);
@@ -682,7 +685,7 @@ it("holds a high-risk version on a young account before serving it", async () =>
   const h = await createPublic("screen@example.com", "192.0.2.46");
   await claimAs(h, account, "screen@example.com");
   await enableWake(h);
-  const upload = await api(h, "PUT", "files/index.html", "<html><input type=password></html>");
+  const upload = await publishFiles(h, { "index.html": "<html><input type=password></html>" });
   expect(upload.status).toBe(200);
   expect((await db.prepare("SELECT state FROM tendrils WHERE id = ?").bind(h.id).first<{ state: string }>())?.state).toBe("held");
   expect((await req(h.page_url)).status).toBe(403);
@@ -694,9 +697,9 @@ it("accepts pages with many outbound URLs without a reputation service", async (
   const h = await createPublic("person@example.com", "192.0.2.223");
   await enableWake(h);
   const links = Array.from({ length: 60 }, (_, i) => `<a href="https://example.org/${i}">link</a>`).join("");
-  const upload = await api(h, "PUT", "files/index.html", `<html>${links}</html>`);
+  const upload = await publishFiles(h, { "index.html": `<html>${links}</html>` });
   expect(upload.status).toBe(200);
-  expect(await (await api(h, "GET", "files/index.html")).text()).toContain("https://example.org/59");
+  expect(await (await publishedFile(h, "index.html")).text()).toContain("https://example.org/59");
   const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(
     "SELECT risk_score, risk_flags FROM versions WHERE version = 1"));
   expect(version).toEqual({ risk_score: 0, risk_flags: "[]" });
@@ -705,7 +708,7 @@ it("accepts pages with many outbound URLs without a reputation service", async (
 it("retains local static screening for external form actions", async () => {
   const h = await createPublic("person@example.com", "192.0.2.224");
   await enableWake(h);
-  const upload = await api(h, "PUT", "files/index.html", '<form action="https://example.org/collect"><p>Google sign in</p></form>');
+  const upload = await publishFiles(h, { "index.html": '<form action="https://example.org/collect"><p>Google sign in</p></form>' });
   expect(upload.status).toBe(200);
   const version = await inDO(h.id, t => t.db.one<{ risk_score: number; risk_flags: string }>(
     "SELECT risk_score, risk_flags FROM versions WHERE version = 1"));
