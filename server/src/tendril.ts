@@ -500,6 +500,9 @@ export class Tendril extends DurableObject<Env> {
           throw err;
         }
         if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
+        // Defense in depth for pages released by older deployments, before
+        // release cleared old push credentials. A new claim never inherits them.
+        this.db.run("DELETE FROM push_subs");
         this.db.set("owner_account", b.account_id);
         this.db.set("claimed_at", this.now());
         const label = (b.identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
