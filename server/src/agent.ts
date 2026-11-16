@@ -1,3 +1,4 @@
+import { changeLifetime } from './lifetime';
 import { PEER_ROUTE, handlePeers } from "./peers";
 import { MEMBERSHIP_ROUTE, handleMembership } from "./membership";
 import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
@@ -218,18 +219,7 @@ route("PATCH", /^$/, async (t, req) => {
   if (b.name !== undefined) t.db.set("name", validName(b.name));
   if (b.lifetime !== undefined) {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-    if (b.lifetime !== "resident" && t.db.one("SELECT id FROM record_log WHERE id=1"))
-      throw new HttpError(409, "record_log_requires_resident", "A Tendril with retained history must remain resident until explicitly deleted");
-    if (b.lifetime !== "resident" && t.db.get('membership_configuration', null))
-      throw new HttpError(409, "membership_requires_resident", "A membership administrator must remain resident until explicitly deleted");
-    if (b.lifetime === "resident" && !t.db.get<string | null>("owner_account", null)) throw new HttpError(403, "account_required", "Open the page as its owner before making it resident");
-    try {
-      await t.env.ACCOUNTS.prepare("UPDATE tendrils SET lifetime = ? WHERE id = ?").bind(b.lifetime, t.tid).run();
-    } catch (err) {
-      if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
-      throw err;
-    }
-    t.db.set("lifetime", b.lifetime);
+    await changeLifetime(t, b.lifetime);
   }
   if (b.pairing !== undefined) {
     throw new HttpError(400, "bad_request", "Device pairing is unavailable");

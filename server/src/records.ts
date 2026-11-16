@@ -1,3 +1,4 @@
+import { hasResidentStorage } from './lifetime';
 // Opaque retained bytes. Application signatures, membership and finality live upstream.
 import { RECORD_LOG_FORMAT, RECORD_LOG_LIMITS, RecordLogError, decodeRecord, encodeRecord,
   recordBytes, recordEntryRoot, recordGenesisRoot, recordHistoryId, recordId, recordPosition } from "../../contract/records.mjs";
@@ -14,7 +15,7 @@ const head = (row: HeadRow): RecordLogHead => ({ historyId: row.history_id, posi
 const entry = (historyId: string, row: EntryRow): RecordLogEntry => ({ historyId, position: row.position,
   recordId: row.record_id, previousRoot: row.previous_root, root: row.root, record: row.record });
 function requireResident(t: Store): void {
-  if (!t.db.get("owner_account", null) || t.db.get<string>("lifetime", "ad_hoc") !== "resident")
+  if (!hasResidentStorage(t))
     throw new HttpError(409, "resident_required", "A retained record log requires an owned resident Tendril");
 }
 function row(t: Store, historyId?: string): HeadRow {

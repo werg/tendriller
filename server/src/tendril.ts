@@ -1,3 +1,4 @@
+import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer } from "./peers";
 import { applicationSelection } from "../../contract/application.mjs";
 import runtimeRelease from "./runtime-release.json";
@@ -159,6 +160,7 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) throw new HttpError(404, "not_found", "No such tendril");
       if (kind === "agent" || kind === "page" || kind === "claim") {
+        await recoverLifetimeChange(this);
         const owner = this.db.get<string | null>("owner_account", null);
         if (owner) {
           if (!await pageAccessAllowed(this)) {
@@ -1162,6 +1164,7 @@ export class Tendril extends DurableObject<Env> {
     if (!this.exists()) return;
     const now = this.now();
     const times: number[] = [];
+    if (lifetimeChangePending(this)) times.push(now + 5000);
     const job = this.db.get<WebhookJob | null>("webhook_job", null);
     if (job) times.push(job.due);
     const mcpDue = mcpJobDue(this);
@@ -1188,6 +1191,7 @@ export class Tendril extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (!this.exists()) return;
+    await recoverLifetimeChange(this);
     const now = this.now();
     await runTimers(this);
     await runTimerNotifications(this);

@@ -22,6 +22,10 @@ read. Guests, display links, stream producer tokens, and anonymous visitors cann
 Record access never creates database membership or distributes application keys.
 
 A Tendril containing a log cannot be switched to ordinary idle-expiring lifetime.
+Provisioning and lifetime changes share a commit guard: a pending downgrade
+prevents a new retained log from being committed while its account update is in
+flight. An interrupted lifetime change retains its target and resumes on the next
+request or alarm, including after restart.
 Explicit Tendril/account deletion and other administrative lifecycle actions still
 apply. Retention is for the Tendril lifetime, not an independent archive guarantee.
 

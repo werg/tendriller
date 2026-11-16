@@ -6,6 +6,7 @@ import { createTestPage } from './public-fixture';
 import { apiJson, create, inDO } from './helpers';
 import { authenticateAgentToken } from '../src/access';
 import { handleMembership } from '../src/membership';
+import { changeLifetime } from '../src/lifetime';
 
 const bytes = (value: Uint8Array) => btoa(String.fromCharCode(...value)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 const decode = (value: string) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
@@ -107,6 +108,32 @@ it('rechecks roster authorization after asynchronous descriptor preparation', as
       const url = new URL('https://page.example/_tendril/members');
       await expect(handleMembership(t, new Request(url), url, 'members', principal)).rejects.toMatchObject({ status: 403, code: 'forbidden' });
       expect(revoked).toBe(true);
+    } finally { t.db.one = read; }
+  });
+});
+
+
+it('rechecks a downgrade begun during administrator key preparation before persisting those keys', async () => {
+  const page = await create({ listener: false, application: { kind: 'peer', id: 'membership' } });
+  await apiJson(page, 'PATCH', '', { lifetime: 'resident' });
+  await inDO(page.id, async t => {
+    const principal = await authenticateAgentToken(t, page.token), read = t.db.one.bind(t.db);
+    let changed = false, downgrade: Promise<void> | undefined;
+    t.db.one = <T>(query: string, ...args: unknown[]): T | null => {
+      const value = read<T>(query, ...args);
+      if (!changed && query === 'SELECT value FROM membership_records WHERE key=?' && args[0] === 'membership/identity') {
+        changed = true;
+        downgrade = changeLifetime(t, 'ad_hoc');
+      }
+      return value;
+    };
+    try {
+      const url = new URL('https://page.example/_tendril/members');
+      const req = new Request(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config()) });
+      await expect(handleMembership(t, req, url, 'members', principal)).rejects.toMatchObject({ status: 409, code: 'resident_required' });
+      expect(changed).toBe(true); await downgrade;
+      expect(t.db.get('membership_configuration', null)).toBeNull();
+      expect(t.db.all('SELECT * FROM membership_records')).toEqual([]);
     } finally { t.db.one = read; }
   });
 });

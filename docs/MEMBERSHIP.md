@@ -44,8 +44,11 @@ and reader keys; only their public keys and signed requests cross the host API.
 
 Select the peer application when creating the page. Claim it through the normal
 owner flow, then make it resident. A configured administrator cannot return to
-idle-expiring lifetime. Explicit page/account deletion still applies; resident
-storage is not an independent backup guarantee.
+idle-expiring lifetime. A pending lifetime downgrade also blocks new provisioning,
+including one already preparing its keys. Lifetime changes reserve that decision
+before account-storage I/O; an interrupted update resumes on the next request or
+alarm, including after restart. Explicit page/account deletion still applies;
+resident storage is not an independent backup guarantee.
 
 The public SDK exposes `agent.members`, and the authenticated browser runtime
 exposes `tendril.members`. `@tendriller/core/members` also exports the small fetch

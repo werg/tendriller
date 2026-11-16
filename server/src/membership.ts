@@ -1,3 +1,4 @@
+import { hasResidentStorage } from './lifetime';
 // The default membership administrator is a portable public artifact. This host
 // supplies account authorization and durable bytes; it never loads application SQL.
 import {
@@ -58,6 +59,12 @@ function identity(t: Tendril, principal: Principal, administrator = false) {
   const mayAdminister = current.kind === 'agent' || current.role === 'owner' && accountId === owner;
   if (administrator && !mayAdminister) throw new HttpError(403, 'forbidden', 'Only the owner or an authorized owner agent can administer membership');
   return { accountId, administrator: mayAdminister, requestPrefix: `account:${accountId}:` };
+}
+
+function residentAdministrator(t: Tendril, principal: Principal): void {
+  identity(t, principal, true);
+  if (!hasResidentStorage(t))
+    throw new HttpError(409, 'resident_required', 'A durable membership administrator requires an owned resident page');
 }
 
 function configuration(t: Tendril): MembershipConfiguration {
@@ -220,15 +227,14 @@ export async function handleMembership(t: Tendril, req: Request, url: URL, path:
     try {
       if (path === 'members' && req.method === 'GET') return json(await info(t, principal));
       if (path === 'members' && req.method === 'PUT') {
-        identity(t, principal, true);
-        if (t.db.get<string>('lifetime', 'ad_hoc') !== 'resident') throw new HttpError(409, 'resident_required', 'A durable membership administrator requires an owned resident page');
+        residentAdministrator(t, principal);
         const input = parseConfiguration(await readJson(req, 256 * 1024)), state = host(t);
         const previous = t.db.get<MembershipConfiguration | null>('membership_configuration', null);
         if (previous && JSON.stringify(previous) !== JSON.stringify(input)) throw new HttpError(409, 'membership_configuration_conflict', 'The membership group and native authority are immutable for this page');
         await provisioned(t, input, { get: key => state.store.get(key), put: async (key, bytes) => {
-          identity(t, principal, true); await state.store.put(key, bytes);
+          residentAdministrator(t, principal); await state.store.put(key, bytes);
         } });
-        t.transaction(() => { identity(t, principal, true); t.db.set('membership_configuration', input); });
+        t.transaction(() => { residentAdministrator(t, principal); t.db.set('membership_configuration', input); });
         return json(await info(t, principal));
       }
       if (path === 'members/requests' && req.method === 'POST') {
