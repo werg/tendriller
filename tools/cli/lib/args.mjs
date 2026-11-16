@@ -5,6 +5,7 @@
 export const BOOLEAN = new Set([
   "resident", "follow", "wakes", "pretty", "help", "no-replace", "no-speak", "no-wait",
   "overwrite", "yes", "peek", "off", "headed", "headless", "desktop", "all", "include-data",
+  "wait", "show-url", "wake",
 ]);
 
 const SHORT = { f: "file", h: "help", p: "pretty" };
