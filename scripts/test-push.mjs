@@ -133,6 +133,7 @@ const env = { VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT: "mailto:admin@
     assert.deepEqual(r, { ok: true, status: 201, gone: false });
     assert.equal(seen.url, sub.endpoint);
     assert.equal(seen.init.method, "POST");
+    assert.equal(seen.init.redirect, "manual");
     const hd = seen.init.headers;
     assert.equal(hd["TTL"], "60");
     assert.equal(hd["Urgency"], "high");

@@ -82,7 +82,10 @@ export async function sendWebPush(
   if (topic) headers["Topic"] = topic;
 
   let res: Response;
-  try { res = await fetch(url.toString(), { method: "POST", headers, body, signal: opts.signal ?? AbortSignal.timeout(30_000) }); }
+  // A subscription endpoint is supplied by a page device. Never forward the
+  // encrypted payload or VAPID authorization to a redirect target.
+  try { res = await fetch(url.toString(), { method: "POST", headers, body, redirect: "manual",
+    signal: opts.signal ?? AbortSignal.timeout(30_000) }); }
   catch { return { ok: false, status: 0, gone: false }; }
   // Drain the body so the connection can be reused.
   try { await res.arrayBuffer(); } catch { /* ignore */ }
