@@ -6,6 +6,11 @@ import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperat
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch }
 export interface EventBatch { events: PublicEvent[]; cursor: number; next_poll?: string; [key: string]: unknown }
+export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }
+export interface NotificationStatus { available: boolean; subscribed_devices: { id: string; name: string | null }[];
+  count: number; quota: { limit: number; used: number; remaining: number } }
+export interface NotificationDelivery { sent: number; failed: number;
+  deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
 export interface AgentClient extends DurabilityClient, StreamsClient {
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;
   info(): Promise<Record<string, unknown>>;
