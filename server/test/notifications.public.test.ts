@@ -4,7 +4,7 @@ import { api, apiJson, create, inDO, PageClient } from "./helpers";
 function base64url(bytes: Uint8Array): string {
   let s = "";
   for (const byte of bytes) s += String.fromCharCode(byte);
-  return btoa(s).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 describe("Web Push readiness", () => {
