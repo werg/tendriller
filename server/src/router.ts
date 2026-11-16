@@ -143,7 +143,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
     return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
   }
-  if (path === "/agent.md" || path === "/llms.txt" || /^\/docs\/[A-Z0-9_]+\.md$/.test(path)) {
+  if (path === "/agent.md" || path === "/llms.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
     const guide = await asset(env, url, path);
     if (!guide.ok) return guide;
     return new Response((await guide.text()).replaceAll("https://tendriller.dev", publicBase(env)), {
