@@ -1,3 +1,4 @@
+import { sha256Hex } from "../src/ids";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { advance, api, apiJson, create, PageClient, req, runAlarm } from "./helpers";
@@ -195,15 +196,34 @@ describe("device proof on page HTTP routes", () => {
     req(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ tools: [] }) });
 
 
-  it("blob uploads are attributed only with a valid device proof", async () => {
+  it("Contract 3 browser uploads require a verified device and retain its attribution", async () => {
     const h = await create();
     const owner = await PageClient.connect(h.page_url);
-    const up = async (headers: Record<string, string>) =>
-      (await req(h.page_url + "_tendril/blob", { method: "POST", headers: { "Content-Type": "text/plain", ...headers }, body: "x" })).json() as Promise<any>;
-    await up({ "X-Tendril-Device": owner.deviceId });
-    await up({ "X-Tendril-Device": owner.deviceId, "X-Tendril-Device-Secret": owner.secret });
-    const blobs = (await apiJson(h, "GET", "blobs")).blobs;
-    expect(blobs.map((b: any) => b.device).sort()).toEqual([null, owner.deviceId].sort());
+    const data = new TextEncoder().encode("x");
+    const sha256 = await sha256Hex(data);
+    const start = async (headers: Record<string, string>, cid: string) =>
+      req(h.page_url + "_tendril/uploads", {
+        method: "POST", headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ cid, sha256, size: 1, type: "text/plain" }),
+      });
+    const unverified = await start({ ...owner.headers, "X-Tendril-Device": owner.deviceId }, "unverified");
+    expect(unverified.status).toBe(401);
+    await unverified.text();
+    const deviceHeaders = { ...owner.headers,
+      "X-Tendril-Device": owner.deviceId, "X-Tendril-Device-Secret": owner.secret };
+    const session = await (await start(deviceHeaders, "verified")).json<any>();
+    expect(session.id).toMatch(/^u_[a-z2-7]{20}$/);
+    const upload = await req(h.page_url + `_tendril/uploads/${session.id}/content`, {
+      method: "PUT", headers: { ...deviceHeaders, "Content-Type": "application/octet-stream" }, body: data,
+    });
+    expect(upload.status).toBe(204);
+    const completed = await req(h.page_url + `_tendril/uploads/${session.id}/complete`, {
+      method: "POST", headers: { ...deviceHeaders, "Content-Type": "application/json" }, body: "{}",
+    });
+    expect(completed.status).toBe(200);
+    const blob = (await completed.json<any>()).blob;
+    expect(await inDO(h.id, t => t.db.one<{ device: string | null }>(
+      "SELECT device FROM blobs WHERE id=?", blob.id)?.device)).toBe(owner.deviceId);
+    expect((await apiJson(h, "GET", "blobs")).blobs.map((b: any) => b.id)).toContain(blob.id);
     owner.close();
-  });
-});
+  });});
