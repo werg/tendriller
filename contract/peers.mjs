@@ -37,7 +37,7 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
   if (!['direct', 'relay'].includes(route) || !Number.isSafeInteger(queueBytes) || queueBytes < PEER_LIMITS.frameBytes + 3 || queueBytes > PEER_LIMITS.queueBytes)
     fail('invalid_connection', 'Invalid route or queue bound');
   socket.binaryType = 'arraybuffer';
-  let ended = false, failure, readyDone = false, reader = false, waiting, resolveReady, rejectReady;
+  let ended = false, socketClosed = false, failure, readyDone = false, reader = false, waiting, resolveReady, rejectReady;
   let sendCredit = PEER_LIMITS.queueBytes;
   let queuedBytes = 0, pendingSendBytes = 0, sentBytes = 0, receivedBytes = 0, openedAt = null;
   const queue = [], outgoing = [];
@@ -52,7 +52,15 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
     for (const entry of outgoing.splice(0)) entry.finish(error || new PeerConnectionError('connection_closed', 'Peer connection closed'));
     for (const [type, listener] of listeners) socket.removeEventListener(type, listener);
   };
-  const abort = error => { finish(error); socket.close(1008, String(error.code || 'invalid peer frame').slice(0, 100)); };
+  // An error may finish the stream while the transport is still open. Close it
+  // once, separately from stream completion, including on WebSocket-like hosts
+  // that throw if close() is repeated or called after the remote end closed.
+  const closeSocket = (code, reason) => {
+    if (socketClosed) return;
+    socketClosed = true;
+    if (socket.readyState < 2) socket.close(code, reason);
+  };
+  const abort = error => { finish(error); closeSocket(1008, String(error.code || 'invalid peer frame').slice(0, 100)); };
   const markReady = () => { if (ended || readyDone) return; readyDone = true; openedAt = Date.now(); resolveReady(); wakeSend?.(); };
   const open = () => { if (!relayHandshake) markReady(); };
   const message = event => {
@@ -73,7 +81,7 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
       waiting?.(); waiting = undefined;
     } catch (error) { abort(error); }
   };
-  const closed = () => finish();
+  const closed = () => { socketClosed = true; finish(); };
   const errored = () => finish(new PeerConnectionError('connection_error', 'Peer transport failed'));
   const listeners = [['open', open], ['message', message], ['close', closed], ['error', errored]];
   for (const [type, listener] of listeners) socket.addEventListener(type, listener);
@@ -137,7 +145,7 @@ export function createPeerConnection(socket, { route, relayHandshake = false, qu
         outgoing.push(entry); void drive();
       });
     },
-    close() { finish(); socket.close(1000, 'Peer session closed'); },
+    close() { finish(); closeSocket(1000, 'Peer session closed'); },
   });
 }
 export function connectPeer(endpoint, { protocols = [], socket = (url, protocols) => new WebSocket(url, protocols), relayHandshake = endpoint.route === 'relay' } = {}) {

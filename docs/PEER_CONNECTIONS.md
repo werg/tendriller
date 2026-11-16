@@ -29,7 +29,9 @@ for await (const frame of peer.frames) {
 WebSocket-like event target. `PeerConnection` has `route`, `ready`, `frames`,
 `send(frame,{signal?})`, `close()`, and a read-only `stats` snapshot. There is one
 active frame reader. Sends preserve their call order, are bounded before waiting,
-and abort even before relay readiness. A closed or overflowing session is an
+and abort even before relay readiness. `close()` is idempotent, including after
+the remote transport closes; pending sends are rejected when the session ends.
+A closed or overflowing session is an
 explicit error; durable sync restarts from the replica's verified stored progress.
 
 `stats.sentBytes` and `receivedBytes` count encoded application frames, including

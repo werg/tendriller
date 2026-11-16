@@ -40,9 +40,18 @@ public snapshot/hash contracts, and resumable resident-lifetime changes that
 cannot race membership or retained-log provisioning into expiring storage.
 
 The current embedded administrator comes from clean Chronolog source
-`cc18d15ed5b5580b386fb2fc3e986afab935c7de`, with 56 audited portable inputs.
-It includes the follow-up ledger, governance and peer-recovery corrections,
-and the current upstream main merge.
+`fca9698a0fbb1e9d1781c46a901f33b7901eac45`, with 56 audited portable inputs.
+It includes the follow-up ledger, governance, peer-recovery and explicit
+device-identity reopening corrections, plus atomic membership-page ingestion.
+An unchanged verified prefix performs no durable ledger write. A changed bounded
+page validates and commits together; late invalid input or failed storage cannot
+publish partial progress.
+
+The [native cost review](https://github.com/werg/tendriller-contrib/blob/d6e27d660feac31175cf0dc34c9fce18494378d2/cookbooks/run-a-peer-application/notes/membership-cost-review-2026-11-16.md)
+records the actual measured change: 104 to 65 administrator puts and 502,606 to
+131,441 logical value bytes written, with the same 35,812 retained value bytes.
+These are native workload measurements, not provider billing. The full retained
+history and recipient key-wrap costs remain explicit.
 The earlier full CI numbers below describe their explicitly identified source
 pins; current review validation is recorded in the PR description.
 
