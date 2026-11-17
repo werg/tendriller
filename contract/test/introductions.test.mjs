@@ -13,7 +13,10 @@ function fixture(overrides = {}, opener) {
     async withdraw(value, options) { calls.push(['withdraw', value, options]); },
     listenInvitations(identity, options) {
       calls.push(['listen', identity, options]);
-      return { ready: Promise.resolve(), invitations: { async *[Symbol.asyncIterator]() {} }, close() { calls.push(['closeListener']); } };
+      const stopped = Promise.withResolvers(); let closed = false;
+      const close = () => { if (!closed) { closed = true; stopped.resolve(); calls.push(['closeListener']); } };
+      options.signal.addEventListener('abort', close, { once: true });
+      return { ready: Promise.resolve(), invitations: { async *[Symbol.asyncIterator]() { await stopped.promise; } }, close };
     },
     async invite(identity, value, options) { calls.push(['invite', identity, value, options]); },
     rendezvous(channel, identity, options) {
@@ -45,7 +48,9 @@ test('construction is inert and discovery pins only valid remote identities with
 });
 
 test('availability carries identity and routes only, forwards cancellation, and owns no renewal timer', async () => {
-  const f = fixture(), selected = options();
+  const f = fixture(), controller = new AbortController(), selected = { signal: controller.signal };
+  const reading = f.discovery.invitations(selected)[Symbol.asyncIterator]().next();
+  await Promise.resolve(); f.calls.length = 0;
   await f.discovery.advertise({ identity: local, storageId: 'owned-disk', generation: 'never-published', point: { sequence: 9 } }, { ...selected, ttlMs: 120000 });
   assert.deepEqual(f.calls, [['advertise', { peerId: local, storageId: 'owned-disk', routes: [route(local)] }, { ...selected, ttlMs: 120000 }]]);
   await f.discovery.withdraw(selected);
@@ -57,6 +62,7 @@ test('availability carries identity and routes only, forwards cancellation, and 
     () => f.discovery.advertise({ identity: local, storageId: 'disk' }, { signal: stopped.signal, ttlMs: 120000 })])
     await assert.rejects(action(), /session closed/);
   assert.equal(f.calls.length, 2);
+  controller.abort(); await reading;
 });
 
 test('outbound introduction uses a fresh channel, the paired role and closes host signaling after raw connection', async () => {
@@ -123,4 +129,27 @@ test('the actual host SDK suppresses cancelled discovery and invitation exchange
     () => peers.invite(remote, { channel: 'join:cancelled', requesterPeerId: local }, options)])
     await assert.rejects(action(), /cancelled/);
   assert.equal(requests, 0);
+});
+
+
+test('advertising waits for the owned invitation listener acknowledgement and respects cancellation', async () => {
+  const ready = Promise.withResolvers(), stopped = Promise.withResolvers();
+  const controller = new AbortController(), selected = { signal: controller.signal };
+  const f = fixture({ listenInvitations() {
+    controller.signal.addEventListener('abort', () => stopped.resolve(), { once: true });
+    return { ready: ready.promise, invitations: { async *[Symbol.asyncIterator]() { await stopped.promise; } }, close() {} };
+  } });
+  const first = f.discovery.advertise({ identity: local, storageId: 'disk' }, { ...selected, ttlMs: 120000 });
+  await Promise.resolve(); assert.deepEqual(f.calls, [], 'No listener has started yet');
+  const reading = f.discovery.invitations(selected)[Symbol.asyncIterator]().next();
+  await Promise.resolve(); assert.deepEqual(f.calls, [], 'Opening a socket is not an acknowledgement');
+  ready.resolve(); await first;
+  assert.equal(f.calls[0][0], 'advertise');
+  controller.abort(); await reading;
+
+  const cancelled = new AbortController();
+  const waiting = f.discovery.advertise({ identity: local, storageId: 'disk' }, { signal: cancelled.signal, ttlMs: 120000 });
+  cancelled.abort(Error('session ended before listening'));
+  await assert.rejects(waiting, /session ended before listening/);
+  assert.equal(f.calls.length, 1);
 });
