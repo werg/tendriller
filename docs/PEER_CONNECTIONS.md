@@ -131,3 +131,28 @@ Keep local fixture reports scoped to their exact sources and transport. Internet
 NAT reachability, TURN usage, billed provider cost and reconnect performance need
 measurements on the deployed networks. The former binary-relay reports remain
 historical evidence for their original revisions.
+
+## Ordinary-peer discovery
+
+Peer applications can use `tendril.peers` (or the SDK's `peers`) without a permanently reachable resident introduction service. The host offers a bounded authenticated directory:
+
+```js
+const availability = await tendril.peers.advertise({
+  peerId: device.peerId,
+  storageId: device.storageId,
+  profiles: ['peer-generation-v1'],
+  routes: [{ kind: 'rendezvous', channel: device.introductionChannel }],
+  coordinatorEligible: true,
+});
+const directory = await tendril.peers.discover();
+// Pass hints to the Chronolog session. It authenticates peers and verifies authority.
+await tendril.peers.withdraw(device.peerId);
+```
+
+An advertisement expires after two minutes by default (30 seconds to ten minutes is supported). `refreshAfter` identifies the coalescing boundary: identical early advertisements return the same lease without a storage write. Discovery is explicit on join or reconnect. Constructing the client starts no timer, polling, heartbeat, or host connection. Healthy peer sessions continue when the directory is unavailable.
+
+Each application retains at most 64 active advertisements and each host principal at most eight. Withdrawal, credential revocation, or expiration removes the route from results. Two tabs advertising the same `storageId` are one storage owner for retention purposes. HTTPS introduction routes must not include credentials, query parameters, or fragments; rendezvous routes name bounded channels.
+
+Profile compatibility, `coordinatorEligible`, and optional retained-prefix coverage are **untrusted routing hints**. A page login, largest advertised sequence, or directory entry grants no authoring, recovery, or sequencing power. Chronolog verifies the signed application descriptor, selected generation, original author, and retained bytes independently. The directory contains no command, application body, SQL state, or per-object inventory. Applications should coalesce coverage updates with availability changes instead of advertising each edit.
+
+The directory is available through `GET`, `PUT`, and `DELETE peers/directory` on both authenticated page and agent routes. Only the participant that owns an active advertisement may update or withdraw it. The host performs no fetch to an advertised route.

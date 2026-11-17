@@ -1,3 +1,5 @@
+import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeerDirectory, validatePeerId, validatePeerTtl } from './discovery.mjs';
+export * from './discovery.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
 const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
@@ -126,6 +128,16 @@ export function createPeersClient({ base, request, initialBootstrap, protocols =
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
+    async discover() { return validatePeerDirectory(await request('peers/directory')); },
+    async advertise(value, options = {}) {
+      return validatePeerAdvertisementLease(await request('peers/directory', { method: 'PUT',
+        body: { advertisement: validatePeerAdvertisement(value), ttlMs: validatePeerTtl(options.ttlMs) } }));
+    },
+    async withdraw(peerId) {
+      peerId = validatePeerId(peerId);
+      const result = await request('peers/directory', { method: 'DELETE', body: { peerId } });
+      if (!result || result.withdrawn !== peerId) fail('invalid_response', 'Invalid withdrawal response');
+    },
     rendezvous(channel, peerId, options = {}) {
       if (![channel, peerId].every(value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value)))
         fail('invalid_rendezvous', 'Expected bounded channel and endpoint identities');

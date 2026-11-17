@@ -5,7 +5,7 @@ export interface PeerSocket {
   send(data: string): void;
   close(code?: number, reason?: string): void;
 }
-/** Resident HTTPS introductions, never application relay routes or credentials. */
+/** Optional HTTPS introductions, never application relay routes or credentials. */
 export interface PeerIntroductionEndpoint { readonly url: string }
 export interface PeerBootstrap { readonly version: 2; readonly endpoints: readonly PeerIntroductionEndpoint[] }
 export declare class PeerConnectionError extends Error { readonly code: string; constructor(code: string, message: string) }
@@ -31,6 +31,11 @@ export interface PeersClient {
   /** Explicitly fetch current host configuration. Ordinary peer connection/recovery uses initialBootstrap. */
   bootstrap(): Promise<PeerBootstrap>;
   setBootstrap(hints: PeerBootstrap): Promise<PeerBootstrap>;
+  /** Explicit lookup on join/reconnect. No background polling is installed. */
+  discover(): Promise<PeerDirectory>;
+  /** Coalesced availability hints. Peer authentication and authority are verified independently. */
+  advertise(advertisement: PeerAdvertisement, options?: { readonly ttlMs?: number }): Promise<PeerAdvertisementLease>;
+  withdraw(peerId: string): Promise<void>;
   rendezvous(channel: string, peerId: string, options?: PeerRendezvousOptions): PeerRendezvous;
 }
 export declare const PEER_RENDEZVOUS_PROTOCOL: 'tendriller.rendezvous.v1';
@@ -40,7 +45,9 @@ export declare function createPeerRendezvous(socket: PeerSocket, options?: PeerR
 export declare function createPeersClient(options: {
   readonly base: string;
   readonly initialBootstrap?: PeerBootstrap;
-  readonly request: (path: string, options?: { method?: 'PUT'; body?: unknown }) => Promise<unknown>;
+  readonly request: (path: string, options?: { method?: 'PUT' | 'DELETE'; body?: unknown }) => Promise<unknown>;
   readonly protocols?: readonly string[];
   readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
 }): PeersClient;
+import type { PeerAdvertisement, PeerAdvertisementLease, PeerDirectory } from './discovery.mjs';
+export * from './discovery.mjs';
