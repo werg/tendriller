@@ -5,11 +5,13 @@ import { resolve, join } from 'node:path';
 import { CONTRACT_VERSION, CORE_RELEASE } from '../contract/index.mjs';
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
+import { requiredStorageSchema } from './storage-schema.mjs';
 
 const root = resolve(import.meta.dirname, '..'), dist = join(root, 'dist'), engine = join(dist, 'engine');
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 const identity = { repository: 'werg/tendriller', source: git('rev-parse', 'HEAD'), sourceTree: git('rev-parse', 'HEAD^{tree}'),
   dirty: git('status', '--porcelain', '--untracked-files=normal').length !== 0 };
+const storageSchemaRevision = await requiredStorageSchema();
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const workersTypes = JSON.parse(readFileSync(join(root, 'node_modules/@cloudflare/workers-types/package.json'), 'utf8')).version;
 const source = readFileSync(join(engine, 'worker.mjs'), 'utf8');
@@ -48,7 +50,7 @@ writeFileSync(join(engine, 'package.json'), JSON.stringify({
 }, null, 2) + '\n');
 const files = ['worker.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'migrations/0001_accounts.sql',
   'package.json', 'peer-generation-provenance.json'];
-writeFileSync(join(engine, 'provenance.json'), JSON.stringify({ ...identity,
+writeFileSync(join(engine, 'provenance.json'), JSON.stringify({ ...identity, storageSchemaRevision,
   files: Object.fromEntries(files.map(name => [name, sha256(join(engine, name))])) }, null, 2) + '\n');
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', dist], { cwd: engine, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))[0];
 const target = join(dist, `tendriller-engine-${CORE_RELEASE}.tgz`), original = join(dist, packed.filename);
