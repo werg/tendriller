@@ -24,6 +24,8 @@ export declare function createTestPage(options?: { application?: { kind: 'cloudf
   agent: TestWorkflowCall;
   api(method: string, path: string, body?: unknown): Promise<Response>;
   ownerApi(method: string, path: string, body?: unknown): Promise<Response>;
+  /** Authenticated owner-page GET, counted in hostTraffic. Empty path reads the page; _publications/<version>/ paths read retained immutable assets. */
+  asset(path: string): Promise<Response>;
   /** Real Worker HTTP and SDP frame traffic through this fixture; excludes synthetic setup. */
   readonly hostTraffic: TestHostTraffic;
   rendezvousSocket(channel: string, peerId: string): TestPeerSocket;

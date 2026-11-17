@@ -4,6 +4,7 @@ import { applyD1Migrations } from 'cloudflare:test';
 import { api, create, inDO, ownerHeaders, req, peerClient } from './helpers';
 import { sha256Hex } from '../src/ids';
 import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
+import { assertFilePath } from '../../contract/index.mjs';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 
 export async function initializeTestService(migrations: Parameters<typeof applyD1Migrations>[1]): Promise<void> {
@@ -68,6 +69,13 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
     ownerPeer: peerClient(handle.application.id, pageApi(handle.page_url, ownerHeaders(handle.page_url))),
     peer: peerClient(handle.application.id, agentApi),
     api: agentApi,
+    async asset(path: string): Promise<Response> {
+      const pinned = /^_publications\/[1-9][0-9]*\/(.*)$/.exec(path);
+      if (path !== '') assertFilePath(pinned?.[1] ?? path);
+      return request(handle.page_url + path.split('/').map(encodeURIComponent).join('/'), {
+        method: 'GET', headers: ownerHeaders(handle.page_url),
+      });
+    },
     async participant() {
       const account = crypto.randomUUID(), secret = crypto.randomUUID();
       await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, Date.now(), `${account}@example.test`).run();

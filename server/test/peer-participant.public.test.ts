@@ -109,6 +109,27 @@ it('publishes exact signed bytes atomically, survives lost replies and restart, 
   expect(await selected(page)).toEqual(second);
 });
 
+it('exposes counted owner-page reads of current and prior signed assets after restart', async () => {
+  const { page, signer, authority } = await setup();
+  const first = await release(authority, signer, 0, null, 'public-asset');
+  const accepted = await page.peer('publication', 'publish', { publication: first.publication, assets: first.assets });
+  expect(accepted.status).toBe(200);
+  const original = await accepted.json() as Receipt;
+  const next = await release(authority, signer, 1, first.publication.id, 'public-asset');
+  expect((await page.peer('publication', 'publish', { publication: next.publication, assets: next.assets })).status).toBe(200);
+  await page.restart();
+  const before = page.hostTraffic;
+  const current = await page.asset('page.mjs'); expect(current.status).toBe(200);
+  expect(await bytesDigest(new Uint8Array(await current.arrayBuffer()))).toBe(next.publication.payload.files[1].hash);
+  const html = await page.asset(''); expect(html.status).toBe(200);
+  expect(await html.text()).toContain(next.marker);
+  const prior = await page.asset(`_publications/${original.version}/page.mjs`); expect(prior.status).toBe(200);
+  expect(await bytesDigest(new Uint8Array(await prior.arrayBuffer()))).toBe(first.publication.payload.files[1].hash);
+  expect(page.hostTraffic).toEqual({ ...before, httpRequests: before.httpRequests + 3 });
+  await expect(page.asset('../page.mjs')).rejects.toThrow('Invalid canonical shared file path');
+  expect(page.hostTraffic).toEqual({ ...before, httpRequests: before.httpRequests + 3 });
+});
+
 async function handleSetup() {
   const signer = await createPeerIdentity(), id = crypto.randomUUID().replaceAll('-', '').repeat(2);
   const h = await create({ application: { kind: 'peer', id }, mode: 'dashboard', listener: false });
