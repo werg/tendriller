@@ -9,6 +9,7 @@ import { api, apiJson, create, inDO, req, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 import { authenticateAgentToken } from '../src/access';
 import { handlePeerGenerations } from '../src/peer-generations';
+import { ensurePeerControlIdentity, loadPeerControlIdentity } from '../src/peer-control-identity';
 import type { Tendril } from '../src/tendril';
 
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ ...participantGrant(peer.publicKey, { administrator: true }), ...extra });
@@ -18,6 +19,19 @@ const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', e
   definition, schemaAdministrator: peers[0].publicKey, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) } satisfies PeerApplicationConfiguration);
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
+
+it('shares one durable control root when release bootstrap precedes application configuration', async () => {
+  const device = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+  const keys = await inDO(h.id, async t => (await Promise.all([
+    ensurePeerControlIdentity(t), ensurePeerControlIdentity(t), ensurePeerControlIdentity(t),
+  ])).map(identity => identity.publicKey));
+  expect(new Set(keys).size).toBe(1);
+  const authority = await apiJson<AuthorityBundle>(h, 'PUT', 'peers/application', configuration([device]));
+  expect(authority.descriptor.payload.controlPublicKey).toBe(keys[0]);
+  expect(await inDO(h.id, async t => (await loadPeerControlIdentity(t))?.publicKey)).toBe(keys[0]);
+});
+
 async function admitGuest(h: Handle): Promise<string> {
   return inDO(h.id, async t => {
     const account = crypto.randomUUID(), link = await t.createLink('guest', 'control target', null);
