@@ -101,8 +101,10 @@ export type ApplicationChange = ApplicationRevisionState & {
 export interface ApplicationChangeOptions { readonly view?: ApplicationView; readonly signal?: AbortSignal }
 /**
  * One selected backend owns persistence, operation identity, retries and interpretation.
- * The authenticated profile determines supported views and guarantees. In peer-generation-v1,
- * current applied results can become abandoned at explicit recovery; finality is unsupported.
+ * The installed adapter determines supported views and guarantees. The current
+ * peer-generation-v1 binding exposes applied views without finalRevision; its results
+ * can become abandoned at explicit recovery. Completion names alone do not promise
+ * an immutable prefix or add view aliases to this interface.
  */
 export interface ApplicationBackend<Program = unknown, Submission extends ApplicationOperation = ApplicationOperation, QueryResult = unknown, Parameter = unknown> {
   readonly id: string;
