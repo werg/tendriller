@@ -67,7 +67,6 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),
     capabilities: () => describeCapabilities(tracker.status().active),
-    get device() { return Object.freeze({ ...core.device }); },
     version: cfg.version,
     identity,
     publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); } },

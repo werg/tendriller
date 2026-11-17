@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS visitor_signals (kind TEXT NOT NULL, value_hash TEXT 
 CREATE INDEX IF NOT EXISTS visitor_signals_time ON visitor_signals (kind, first_seen);
 CREATE TABLE IF NOT EXISTS release_events (at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS activity (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
-  summary TEXT NOT NULL, device TEXT, by TEXT, source TEXT NOT NULL);
+  summary TEXT NOT NULL, by TEXT, source TEXT NOT NULL);
 `;
 
 type Bindable = string | number | null | ArrayBuffer;

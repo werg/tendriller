@@ -43,8 +43,6 @@ export interface CapabilityReport { captured_at: number; secure: boolean; device
 export interface HostServices {
   readonly peers: import("./peers.mjs").PeersClient;
   request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal }): Promise<T>;
-  /** Authentication for the page host; these headers do not grant application authority. */
-  deviceHeaders(): Record<string, string>;
 }
 export interface RuntimeServices {
   readonly host: HostServices;
@@ -54,7 +52,6 @@ export interface RuntimeServices {
   /** Page UI readiness, independent of application synchronization. */
   ready(): void;
   capabilities(): Promise<CapabilityReport>;
-  readonly device: Readonly<{ id: string; name: string }>;
   readonly version: number;
   readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */

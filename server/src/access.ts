@@ -7,7 +7,7 @@ import { safeEqual, sha256Hex } from "./ids";
 export interface AgentPrincipal { kind: "agent"; name: string; credentialHash: string }
 export interface PagePrincipal {
   kind: "page"; name: string; role: Role; accountId: string | null; linkId: string;
-  sessionHash: string | null; deviceId: string | null;
+  sessionHash: string | null;
 }
 export type Principal = AgentPrincipal | PagePrincipal;
 export interface PageSession { account_id: string; role: Role; hash: string }
@@ -88,7 +88,7 @@ export function currentPrincipal(t: Tendril, principal: Principal): Principal | 
 export async function authenticatePage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
   const session = await readPageSession(t, req);
   const principal = localPagePrincipal(t, { role: link.role, accountId: session?.account_id ?? null,
-    linkId: link.id, sessionHash: session?.hash ?? null, deviceId: null });
+    linkId: link.id, sessionHash: session?.hash ?? null });
   if (!principal) throw new HttpError(401, "unauthorized", "Page sign-in required");
   return { principal, session };
 }

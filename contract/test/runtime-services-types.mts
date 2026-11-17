@@ -4,7 +4,6 @@ const services: RuntimeServices = runtime;
 runtime.on('sensors', status => { const active: string[] = status.active; void active; });
 runtime.on('application_ready', () => {});
 void runtime.application.ready(); void runtime.signals.ready();
-const name: string = runtime.device.name;
 // @ts-expect-error Connection and replication state belong to the installed application session.
 runtime.connected;
 // @ts-expect-error There is no hosted outbox.
@@ -13,10 +12,10 @@ runtime.pendingWork();
 runtime.state;
 // @ts-expect-error There is no profile discriminator.
 runtime.kind;
-// @ts-expect-error Device labels do not grant authority.
-runtime.device.role;
+// @ts-expect-error Signing device identity belongs to the installed session.
+runtime.device;
 // @ts-expect-error Application events belong to the installed session.
 runtime.on('state_result', () => {});
 // @ts-expect-error Host services are explicit.
 runtime.peers;
-void services; void name;
+void services;

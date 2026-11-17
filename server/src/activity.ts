@@ -5,7 +5,6 @@ import { ACTIVITY_RETENTION } from "./limits";
 export interface ActivityInput {
   kind: string;
   summary: string;
-  device?: string | null;
   by?: string | null;
   source?: "server" | "agent";
 }
@@ -15,15 +14,14 @@ export interface ActivityEntry {
   ts: number;
   kind: string;
   summary: string;
-  device: string | null;
   by?: string;
   source: "server" | "agent";
 }
 
 export function addActivity(t: Tendril, a: ActivityInput): number {
   const row = t.db.one<{ seq: number }>(
-    "INSERT INTO activity (ts, kind, summary, device, by, source) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq",
-    t.now(), a.kind, clip(a.summary, 500), a.device ?? null, a.by ?? null, a.source ?? "server",
+    "INSERT INTO activity (ts, kind, summary, by, source) VALUES (?, ?, ?, ?, ?) RETURNING seq",
+    t.now(), a.kind, clip(a.summary, 500), a.by ?? null, a.source ?? "server",
   );
   return row!.seq;
 }
@@ -38,7 +36,7 @@ export function listActivity(t: Tendril, after: number | null, limit: number): {
 }
 
 export function renderActivity(r: Record<string, any>): ActivityEntry {
-  const e: ActivityEntry = { seq: r.seq, ts: r.ts, kind: r.kind, summary: r.summary, device: r.device ?? null, source: r.source };
+  const e: ActivityEntry = { seq: r.seq, ts: r.ts, kind: r.kind, summary: r.summary, source: r.source };
   if (r.by) e.by = r.by;
   return e;
 }

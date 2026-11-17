@@ -127,8 +127,8 @@ export class Tendril extends DurableObject<Env> {
           guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
           last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
         });
-        if (url.pathname === "/account/sensors" && req.method === "GET") return json({
-          events: this.db.all("SELECT ts, device, summary FROM activity WHERE kind = 'sensor' ORDER BY seq DESC LIMIT 200"),
+        if (url.pathname === "/account/activity" && req.method === "GET") return json({
+          events: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 200"),
         });
         if (url.pathname === "/account/export" && req.method === "GET") return json({
           id: this.tid, name: this.db.get("name", "Tendril"), lifetime: this.db.get("lifetime", "ad_hoc"),

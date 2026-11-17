@@ -205,9 +205,10 @@ test('application runtime exposes only supported services and leaves authority t
   for (const name of ['send', 'state', 'scopes', 'conversation', 'timers', 'streams', 'records', 'upload', 'uploadEvent',
     'setBlobRetention', 'retryCapture', 'discardCapture', 'captures', 'pendingWork', 'connected', 'presence', 'service', 'notifications',
     'peers', 'members', 'request', 'blobUrl', 'deviceHeaders']) assert.equal(name in env.api, false, name);
-  assert.deepEqual(Object.keys(env.api.device).sort(), ['id', 'name']);
+  assert.equal('device' in env.api, false);
+  assert.equal('deviceHeaders' in env.api.host, false);
   assert.equal('manual' in env.api.ready, false);
-  for (const name of ['peers', 'request', 'deviceHeaders']) assert.ok(env.api.host[name], name);
+  for (const name of ['peers', 'request']) assert.ok(env.api.host[name], name);
   assert.equal(Object.isFrozen(env.api), true); assert.equal(Object.isFrozen(env.api.host), true);
   await env.advance();
   assert.equal(env.calls.fetch.length, 0); assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);
