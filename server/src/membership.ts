@@ -238,13 +238,18 @@ export async function handleMembership(t: Tendril, req: Request, url: URL, path:
       if (path === 'members' && req.method === 'GET') return json(await info(t, principal));
       if (path === 'members' && req.method === 'PUT') {
         residentAdministrator(t, principal);
+        if (t.db.get('peer_generation_configuration', null)) throw new HttpError(409, 'peer_profile_conflict', 'This application uses peer-generation-v1 controls');
         const input = parseConfiguration(inputBody), state = host(t);
         const previous = t.db.get<MembershipConfiguration | null>('membership_configuration', null);
         if (previous && JSON.stringify(previous) !== JSON.stringify(input)) throw new HttpError(409, 'membership_configuration_conflict', 'The membership group and native authority are immutable for this page');
         await provisioned(t, input, { get: key => state.store.get(key), put: async (key, bytes) => {
-          residentAdministrator(t, principal); await state.store.put(key, bytes);
+          residentAdministrator(t, principal);
+          if (t.db.get('peer_generation_configuration', null)) throw new HttpError(409, 'peer_profile_conflict');
+          await state.store.put(key, bytes);
         } });
-        t.transaction(() => { residentAdministrator(t, principal); t.db.set('membership_configuration', input); });
+        t.transaction(() => { residentAdministrator(t, principal);
+          if (t.db.get('peer_generation_configuration', null)) throw new HttpError(409, 'peer_profile_conflict');
+          t.db.set('membership_configuration', input); });
         return json(await info(t, principal));
       }
       if (path === 'members/requests' && req.method === 'POST') {

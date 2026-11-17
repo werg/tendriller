@@ -9,7 +9,8 @@ recovery and settlement guarantees.
 The shipped Chronolog live adapter and Cloudflare JSON backend provide finality.
 The common types also describe a generation profile with applied and abandoned
 results and no finality. Chronolog implements a separate generation runtime and
-application-session package; Tendriller does not yet ship a binding for it.
+application-session package; Tendriller provides optional hosted generation
+controls but does not yet ship an application binding for that session.
 Declaring its interface does not install it or change an existing history.
 
 For a resident native agent deployment, select the Chronolog live peer backend. Run a
@@ -39,8 +40,10 @@ execution order.
 
 ## Installation and readiness
 
-`@tendriller/core/application` exports the dependency-free public contracts.
-Tendriller does not import Chronolog, SQL, or application UI code.
+`@tendriller/core/application` exports dependency-free application contracts; that
+boundary imports no Chronolog, SQL or application UI code. The host's separate
+generation-control service embeds Chronolog's portable verifier, not its replica
+or SQL runtime. That control service does not implement a peer-generation session.
 
 ```js
 // The page's composition module imports its selected public adapter.
@@ -152,7 +155,7 @@ conditions, or message identity to make it pass after a reset.
 
 The shipped live backends replay accepted events from their final applied prefix.
 The following consumer and checkpoint contract relies on that stable history;
-a generation runtime would need its separate recovery and reset behavior.
+a generation runtime uses its separate recovery and reset behavior.
 
 Each batch has `transactions`, `scannedThrough`, `hasMore`, and `revision`.
 Transactions contain `proposalId` and complete matching event groups. Each event
@@ -376,6 +379,11 @@ adds defined commands and queries, durable device ownership, captured views,
 operation inspection and recovery notices. This is a separate application runtime;
 Tendriller's host binding and `createChronologApplicationBackend` remain live
 backends and do not install it.
+
+Tendriller's [hosted generation controls](PEER_GENERATIONS.md) can retain the
+descriptor, grants and selected ancestry for that optional profile. They do not
+execute the commands or install the application session. Choosing those controls
+is explicit; live collaboration remains the default peer integration.
 
 Command and query definitions share input schemas and an explicit semantic
 version across callers. Their digest does not hash the JavaScript `prepare` or

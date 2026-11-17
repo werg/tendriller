@@ -19,6 +19,8 @@ function validate(t: Tendril, target: Lifetime): void {
   if (target === 'ad_hoc') {
     if (t.db.one('SELECT id FROM record_log WHERE id=1'))
       throw new HttpError(409, 'record_log_requires_resident', 'A Tendril with retained history must remain resident until explicitly deleted');
+    if (t.db.get('peer_generation_configuration', null))
+      throw new HttpError(409, 'peer_controls_require_resident', 'Signed peer control state must remain retained until explicitly deleted');
     if (t.db.get('membership_configuration', null))
       throw new HttpError(409, 'membership_requires_resident', 'A membership administrator must remain resident until explicitly deleted');
   } else if (!t.db.get('owner_account', null)) {

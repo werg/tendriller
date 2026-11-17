@@ -1,5 +1,7 @@
 import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeerDirectory, validatePeerId, validatePeerTtl } from './discovery.mjs';
 export * from './discovery.mjs';
+import { createPeerControlsClient } from './peer-controls.mjs';
+export { createPeerControlsClient } from './peer-controls.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
 const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
@@ -125,6 +127,7 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
 export function createPeersClient({ base, request, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
   const prefix = base.replace(/\/+$/, '');
   return Object.freeze({
+    ...createPeerControlsClient(request),
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },

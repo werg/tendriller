@@ -27,6 +27,8 @@ it has no finality concept, closed author-time frontier, final operation states,
 or final-intent worker contract. Its generation and receipt sequence describe
 inclusion and recovery, not application execution order. It is a separate peer
 runtime, not a mode installed by the Tendriller live adapter or hosted binding.
+Tendriller separately provides explicit [hosted generation controls](PEER_GENERATIONS.md);
+configuring them retains authority metadata without installing that peer runtime.
 Future async branch/merge semantics can use the same ordering foundations
 without acquiring a finality API.
 
@@ -73,6 +75,7 @@ execution order. Normal application writes do not wait for this host.
 | Spoken input/output | Explicit optional runtime adapter | Public conversation, captures and asset URLs |
 | Private records and synchronous atomic operations | Core trusted host | `@tendriller/core/host` |
 | Account-to-device membership and key administration | Core host with portable implementation | Bundled public `@chronolog/membership` artifact |
+| Optional generation authority and selected ancestry | Core host with portable implementation | Bundled public Chronolog generation-control artifact |
 | Publication, preview, delivery and collector plumbing | Optional core tools | Built SDK/runtime artifacts |
 | Layout, navigation, domain data and presentation | Authored page | Public browser APIs and ordinary web dependencies |
 | Decisions, alternatives, algorithms and illustrative policies | Contrib cookbooks | Markdown and optional verification against public core artifacts |
@@ -80,7 +83,7 @@ execution order. Normal application writes do not wait for this host.
 
 Core does not download a contrib release, compile a sessions package, or infer a workflow from application JSON. `npm run build` produces an engine with an empty registry. A trusted deployment entry calls `configureWorkflows` with exact reviewed implementations before serving requests. Page code cannot register modules.
 
-Build checks reject cookbook, tool and application implementation imports in the Worker or runtime. The one explicit membership dependency is a self-contained public artifact; private Chronolog source, SQL materializers and native transports are excluded. The kernel graph excludes the rich control, speech engine and domain rule implementation. Operational tools are separately bundled; their dependencies never enter the Worker.
+Build checks reject cookbook, tool and application implementation imports in the Worker or runtime. Two explicit control dependencies are self-contained public artifacts: live membership administration and optional generation-control verification. Private Chronolog source, peer replicas, SQL materializers and native transports are excluded. The kernel graph excludes the rich control, speech engine and domain rule implementation. Operational tools are separately bundled; their dependencies never enter the Worker.
 
 ## Public artifacts
 

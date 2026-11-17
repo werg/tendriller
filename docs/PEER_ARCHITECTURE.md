@@ -103,6 +103,22 @@ needed for final results; removing Cloudflare from application traffic does not
 make that policy unnecessary. Exact retries and deterministic author ordering
 are unchanged by the choice of transport.
 
+## Optional generation controls
+
+For an explicitly selected `peer-generation-v1` application, Tendriller also
+provides `peers.configureApplication`, `peers.application` and
+`peers.selectGeneration`. The host retains a signed descriptor, monotonic controls
+and selected generation ancestry through a portable verifier; it receives no
+application commands or SQL bodies. Account bindings and signed device rights
+remain separate. See [generation controls](PEER_GENERATIONS.md).
+
+Chronolog's standalone generation replica/session uses the same author-time
+application comparator but has applied/recovery results and no finality. A
+generation receipt selects included history; later replay can change a retained
+operation's outcome. Configuring these controls neither changes the default live
+profile nor installs a Tendriller generation backend. The in-process session
+connector and native tests need separate browser/native network qualification.
+
 ## Qualification
 
 Qualification of this live integration must exercise real browser/native WebRTC, authenticated Chronolog

@@ -371,7 +371,7 @@ export class Tendril extends DurableObject<Env> {
       agent_setup: application.kind === "peer" ? {
         event_delivery: "peer",
         backend: application.id,
-        next_step: "Use the public Chronolog client on the resident or owning browser Worker for the selected backend. Observe durable operations and final events there, and use client.signals for live application messages. Use this host for participant administration and page publication.",
+        next_step: "Use the public Chronolog client in your own application session or owning browser Worker. Observe applied operations, coherent views and recovery there, and use client.signals for live messages. Use this host for publication, enrollment, peer discovery and rare generation transitions; no permanent native resident is required.",
       } : {
         event_delivery: "not_configured",
         next_step: this.db.get<string>("mode", "interactive") === "dashboard"
