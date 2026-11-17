@@ -23,8 +23,9 @@ export interface MembershipInfo {
 }
 export interface MemberApproval {
   operationId: string; requestId: string; roles: ('reader' | 'writer')[];
-  /** writerProgram is required exactly when roles includes writer; no implicit SQL or signal grant. */
-  grantFullHistory: boolean; writerProgram?: MemberProgram;
+  grantFullHistory: boolean;
+  /** Required exactly when roles includes writer; rights are never inferred. */
+  writerProgram?: MemberProgram;
 }
 export interface MembersClient {
   info(options?: { signal?: AbortSignal }): Promise<MembershipInfo>;

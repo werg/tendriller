@@ -2,9 +2,9 @@ import { expect, it } from 'vitest';
 import { decodeSignedGenesis, encodeSignedEnrollmentRequest, loadOrCreateEnrollmentIdentity,
   membershipDescriptor, prepareEnrollmentRequest, provisionMembership, createMembershipLedgerClient,
   type DurableOperationStore } from '@chronolog/membership';
-import type { MembershipConfiguration, MembershipInfo, MemberRequest } from '../../contract/members.mjs';
+import type { MembershipConfiguration, MembershipInfo, MemberProgram, MemberRequest } from '../../contract/members.mjs';
 import { createTestPage } from './public-fixture';
-import { apiJson, create, inDO } from './helpers';
+import { api, apiJson, create, inDO } from './helpers';
 import { authenticateAgentToken } from '../src/access';
 import { handleMembership } from '../src/membership';
 import { changeLifetime } from '../src/lifetime';
@@ -25,13 +25,14 @@ function privateStore(): DurableOperationStore {
   const entries = new Map<string, Uint8Array>();
   return { get: async key => entries.get(key)?.slice() ?? null, put: async (key, value) => { entries.set(key, value.slice()); } };
 }
-async function request(info: MembershipInfo) {
+async function request(info: MembershipInfo, writerProgram?: MemberProgram) {
   const store = privateStore(), identity = await loadOrCreateEnrollmentIdentity(store, 'device');
   const descriptor = await membershipDescriptor(decodeSignedGenesis(decode(info.descriptor!.genesis)), decode(info.descriptor!.groupRoute));
   const transportAuthor = '@' + btoa(String.fromCharCode(...identity.signing.publicKeyBytes)) + '.ed25519';
   const signed = await prepareEnrollmentRequest({ descriptor, store, requestId: info.identity.requestPrefix + crypto.randomUUID(),
     identity: identity.signing, readerPublicKey: identity.reader.publicKeyBytes, transportAuthor,
-    requestedRoles: ['reader'] });
+    requestedRoles: writerProgram === undefined ? ['reader'] : ['reader', 'writer'],
+    ...(writerProgram === undefined ? {} : { writerProgram }) });
   return bytes(encodeSignedEnrollmentRequest(signed));
 }
 
@@ -66,7 +67,7 @@ it('provisions a durable membership root with explicitly separate schema and nat
   const genesis = decodeSignedGenesis(decode(first.descriptor!.genesis));
   expect(bytes(genesis.manifest.rootAdminPublicKey)).not.toBe(input.schemaAdministratorPublicKey);
   expect(bytes(genesis.manifest.schemaAdminPublicKey)).toBe(input.schemaAdministratorPublicKey);
-  expect(genesis.manifest.initialCapabilities.map(capability => capability.role)).toEqual([]);
+  expect(genesis.manifest.initialCapabilities).toEqual([]);
   expect(genesis.manifest.historyPolicy).toMatchObject({ kind: 'coordinated', historyId: input.nativeAuthority.historyId,
     authorityPublicKey: decode(input.nativeAuthority.publicKey) });
   expect(await body(await page.api('PUT', 'members', input))).toEqual(first);
@@ -99,6 +100,30 @@ it('binds signed device enrollment to its authenticated account and preserves th
   expect(await body(await one.api('GET', `members/requests/${accepted.id}`))).toEqual(accepted);
 });
 
+it.each([
+  { name: 'writer without explicit rights', roles: ['reader', 'writer'], program: false },
+  { name: 'program rights without writer', roles: ['reader'], program: true },
+  { name: 'writer without reader access', roles: ['writer'], program: true },
+  { name: 'duplicate reader roles', roles: ['reader', 'reader'], program: false },
+])('rejects $name before retaining an administrative action', async ({ roles, program }) => {
+  const page = await create({ listener: false, application: { kind: 'peer', id: 'membership' } });
+  await apiJson(page, 'PATCH', '', { lifetime: 'resident' });
+  const info = await apiJson<MembershipInfo>(page, 'PUT', 'members', config());
+  const writerProgram: MemberProgram = { sql: false, topics: ['conversation'], signals: ['typing'] };
+  const signedRequest = await request(info, writerProgram);
+  const enrollment = await apiJson<MemberRequest>(page, 'POST', 'members/requests', { signedRequest });
+  const rejected = await api(page, 'POST', 'members/approve', {
+    operationId: 'explicit-rights', requestId: enrollment.id, roles, grantFullHistory: true,
+    ...(program ? { writerProgram } : {}),
+  });
+  expect(rejected.status).toBe(400);
+  expect(await rejected.json()).toMatchObject({ error: { code: 'bad_request' } });
+  const after = await apiJson<MembershipInfo>(page, 'GET', 'members');
+  expect(after.pendingActions).toBe(0);
+  expect(after.requests).toEqual([enrollment]);
+  await inDO(page.id, t => { expect(t.db.all('SELECT * FROM membership_actions')).toEqual([]); });
+});
+
 it('requires an owned resident peer page and a complete explicit public configuration', async () => {
   const ordinary = await createTestPage();
   expect((await ordinary.api('PUT', 'members', config())).status).toBe(409);
@@ -109,16 +134,6 @@ it('requires an owned resident peer page and a complete explicit public configur
   expect((await page.api('PUT', 'members', missing)).status).toBe(400);
   expect((await page.api('PUT', 'members', { ...config(), nativeAuthority: { ...config().nativeAuthority, url: 'http://example.test/' } })).status).toBe(400);
   expect((await body<MembershipInfo>(await page.api('GET', 'members'))).descriptor).toBeNull();
-});
-
-it('requires explicit writer rights before queueing an approval', async () => {
-  const page = await createTestPage({ application: { kind: 'peer', id: 'membership' }, lifetime: 'resident' });
-  await page.api('PUT', 'members', config());
-  const input = { operationId: 'explicit-rights', requestId: 'r_' + 'a'.repeat(64), grantFullHistory: true };
-  expect((await page.api('POST', 'members/approve', { ...input, roles: ['writer'] })).status).toBe(400);
-  expect((await page.api('POST', 'members/approve', { ...input, roles: ['reader'],
-    writerProgram: { sql: true, topics: [], signals: [] } })).status).toBe(400);
-  expect((await body<MembershipInfo>(await page.api('GET', 'members'))).pendingActions).toBe(0);
 });
 
 it('keeps a stalled enrollment body outside the administration queue and rechecks access when it arrives', async () => {

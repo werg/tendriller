@@ -22,7 +22,8 @@ opening a guest link, or completing an introduction does not grant database acce
 
 Provisioning pins the native finality public key and the schema administrator's
 public key explicitly. The membership root is generated and retained by the
-host. It receives no implicit reader, writer, or schema grant. A native agent can
+host. Signed genesis names that root directly; it adds no administrator capability.
+The root receives no implicit reader, writer, or schema grant. A native agent can
 be both a full replica and the schema administrator; these are explicit grants
 and keys, not consequences of running the finality endpoint.
 
@@ -89,11 +90,6 @@ Use exact topic names or `'*'` for all topics. A chat application can instead gr
 `topics: ['chat/message']`.
 `initialMembers` is optional and contains public keys only. Each initial member
 receives a reader capability; `writerProgram` explicitly adds writer rights.
-There is no grantable membership-administrator capability: the signed genesis
-root key and its administration feed control membership. The root receives no
-implicit reader, writer, validator or SQL rights. An approval that includes
-`writer` must specify its SQL, event-topic and signal-topic rights; omitting the
-program never grants SQL. A reader-only approval cannot carry writer rights.
 
 Configuration is immutable for the page. A retry with the same configuration
 returns the original signed genesis. Provisioning stores the root and descriptor
@@ -142,6 +138,12 @@ await agent.members.approve({
   writerProgram: { sql: true, topics: ['tasks/changed', 'chat/message'], signals: ['typing'] },
 });
 ```
+
+Every approval includes the reader role. Include `writerProgram` exactly when
+granting the writer role, with explicit SQL, event-topic and signal-topic rights.
+The decision may narrow the signed request's rights, but cannot expand them.
+Missing rights, rights without a writer role and invalid role sets are rejected
+before the host retains an administrative action.
 
 The operation identity is retained with the original decision. Lost responses and
 host eviction are recovered by retrying that identity and contents; changing the
