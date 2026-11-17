@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { decodeSignedGenesis, encodeSignedEnrollmentRequest, loadOrCreateEnrollmentIdentity,
-  membershipDescriptor, prepareEnrollmentRequest, type DurableOperationStore } from '@chronolog/membership';
+  membershipDescriptor, prepareEnrollmentRequest, provisionMembership, createMembershipLedgerClient,
+  type DurableOperationStore } from '@chronolog/membership';
 import type { MembershipConfiguration, MembershipInfo, MemberRequest } from '../../contract/members.mjs';
 import { createTestPage } from './public-fixture';
 import { apiJson, create, inDO } from './helpers';
@@ -33,6 +34,27 @@ async function request(info: MembershipInfo) {
     requestedRoles: ['reader'] });
   return bytes(encodeSignedEnrollmentRequest(signed));
 }
+
+it('constructs signed membership requests in the actual workerd runtime without following redirects', async () => {
+  const native = await loadOrCreateEnrollmentIdentity(privateStore(), 'native');
+  const provisioned = await provisionMembership({ store: privateStore(), executionManifestDigest: new Uint8Array(32).fill(1),
+    schemaAdministratorPublicKey: native.signing.publicKeyBytes,
+    nativeAuthority: { historyId: 'h_' + 'b'.repeat(32), publicKey: native.signing.publicKeyBytes } });
+  let requests = 0;
+  const client = createMembershipLedgerClient({ ...provisioned, url: 'https://resident.example/_chronolog/membership',
+    fetch: async (input, init) => {
+      // workerd rejects redirect:error before networking. Construct the real
+      // platform request so a packaged client regression cannot hide in a stub.
+      const outbound = new Request(input, init);
+      expect(outbound.redirect).toBe('manual');
+      expect(outbound.method).toBe('POST');
+      expect((await outbound.arrayBuffer()).byteLength).toBeGreaterThan(0);
+      requests++;
+      return new Response(null, { status: 307, headers: { Location: 'https://different.example/receive' } });
+    } });
+  await expect(client.read({ after: 0, limit: 128 })).rejects.toThrow('MEMBERSHIP_LEDGER_REDIRECT');
+  expect(requests).toBe(1);
+});
 
 it('provisions a durable membership root with explicitly separate schema and native authority keys', async () => {
   const page = await createTestPage({ application: { kind: 'peer', id: 'membership' }, lifetime: 'resident' });
