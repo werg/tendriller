@@ -237,6 +237,13 @@ reducers and SQL callbacks never send messages or perform tools during replay.
 
 ## Finality and authority
 
+The Chronolog adapter implements live collaboration by default. Signed proposals,
+timestamp ordering and deterministic replay are reusable foundations; finality
+belongs to this live interpretation. A future async branch/merge interpretation
+would have no finality concept, frontier, operation states or final-intent worker
+contract. It would define separate inclusion, merge and effect rules, and is not
+implemented by this live backend API.
+
 Keep three decisions separate: who may connect or author, how valid programs are
 ordered and executed, and when an applied result becomes final. The signed
 Chronolog configuration selects its finality policy and timing rules. Peers verify

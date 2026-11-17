@@ -78,7 +78,7 @@ test('durable subscriptions pull one whole batch at a time and carry empty scan 
   stop.abort(); assert.equal((await iterator.next()).done, true);
 });
 
-test('operation receipt validation prevents unverified responses from retiring authored work', async () => {
+test('operation receipt validation enforces lifecycle before exposing or retiring authored work', async () => {
   const program = { version: 1, expected_generations: {}, steps: [{ kind: 'emit', topic: 'tasks', payload: null }] };
   for (const receipt of [{ operationId: 'other', proposalId: 'p', status: 'final', outcome: 'accepted' },
     { operationId: 'original', proposalId: 'p', status: 'final' }, { operationId: 'original', proposalId: 'p', status: 'queued' },
@@ -86,6 +86,16 @@ test('operation receipt validation prevents unverified responses from retiring a
     { operationId: 'original', proposalId: '', status: 'final', outcome: 'rejected' }]) {
     const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => receipt });
     await assert.rejects(backend.submit(program, { operationId: 'original' }), { code: 'invalid_response' });
+  }
+  const queued = { operationId: 'original', proposalId: '', status: 'queued' };
+  for (const detail of [{ outcome: 'accepted' }, { error: 'denied' }, { message: 'Not an executed result' }]) {
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => ({ ...queued, ...detail }) });
+    await assert.rejects(backend.operations.get('original'), { code: 'invalid_response' });
+  }
+  for (const receipt of [queued, ...['provisional', 'final'].flatMap(status =>
+    ['accepted', 'rejected'].map(outcome => ({ operationId: 'original', proposalId: 'p', status, outcome })))]) {
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => receipt });
+    assert.deepEqual(await backend.operations.get('original'), receipt);
   }
 });
 

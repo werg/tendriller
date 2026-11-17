@@ -3,8 +3,7 @@
 This is the architecture review plan spanning Tendriller
 PR #35, Chronolog PR #1 and contrib PR #13. It describes the target contract;
 the checked items below distinguish implemented work from decisions. Global
-signed-author timestamp ordering remains the baseline. Replacing it with sealed
-arrival batches was explored and is not an adopted design.
+signed-author timestamp ordering is the shared ordering rule.
 
 ## Requirements
 

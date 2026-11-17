@@ -16,6 +16,14 @@ Peer pages disable its application routes and never open a second application
 outbox. There is no automatic authority fallback. See
 [application backends](APPLICATION_BACKENDS.md).
 
+The Chronolog integration uses live collaboration by default. Its shared order
+is `(signed author timestamp, signing public key, stable proposal ID)`; finality
+closes an immutable prefix while local execution can replay the suffix. Signing,
+timestamp ordering and deterministic replay can also support a separate async
+branch/merge interpretation. That interpretation would have no finality concept,
+frontier, operation states or final-intent worker contract. It is not implemented
+by the current live backend API.
+
 Live application messages use an independently installed `signals` service. Its
 `send` and `subscribe` operations require no durable backend, SQL transaction,
 operation identity, replay cursor, or finality service. Presence, previews,

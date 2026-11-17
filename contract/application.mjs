@@ -99,7 +99,8 @@ export function validateApplicationOperation(value, operationId, { terminal = fa
   if (!value || typeof value !== 'object' || value.operationId !== operationId || typeof value.proposalId !== 'string' ||
       !['queued', 'provisional', 'final'].includes(value.status) ||
       (terminal && value.status !== 'final') ||
-      (value.status === 'queued' ? value.outcome !== undefined : !['accepted', 'rejected'].includes(value.outcome)) ||
+      (value.status === 'queued' ? value.outcome !== undefined || value.error !== undefined || value.message !== undefined
+        : !['accepted', 'rejected'].includes(value.outcome)) ||
       (value.status !== 'queued' && !value.proposalId && !(value.status === 'final' && value.outcome === 'rejected' &&
         ['operation_conflict', 'history_quota'].includes(value.error))) ||
       (value.error !== undefined && typeof value.error !== 'string') || (value.message !== undefined && typeof value.message !== 'string') ||

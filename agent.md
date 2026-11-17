@@ -12,6 +12,13 @@ backend once, await `tendril.application.ready()`, and use its `submit`, `events
 `changes`, `readView`, and keyed `operations` APIs. [Application backends](docs/APPLICATION_BACKENDS.md)
 and [peer connections](docs/PEER_CONNECTIONS.md) document composition and bounds.
 
+The Chronolog integration uses live collaboration by default: signed author
+timestamps order proposals, local results can change through replay, and a
+verified closed-time prefix gives final accepted or rejected results. Signing,
+timestamp ordering and replay could also support a future async branch/merge
+interpretation with no finality at all. That would have its own inclusion and
+effect policy; the live operation and worker APIs below do not implement it.
+
 Choose the least durable mechanism that satisfies the task:
 
 | Need | Primitive |
