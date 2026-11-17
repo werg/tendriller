@@ -2,6 +2,8 @@ import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeer
 export * from './discovery.mjs';
 import { createPeerControlsClient } from './peer-controls.mjs';
 export { createPeerControlsClient } from './peer-controls.mjs';
+import { createPeerInvitationListener, validatePeerInvitation, PEER_INVITATION_PROTOCOL } from './invitations.mjs';
+export * from './invitations.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
 const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
@@ -126,6 +128,14 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
 /** Shared browser/agent host client. Construction performs no network work. */
 export function createPeersClient({ base, request, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
   const prefix = base.replace(/\/+$/, '');
+  const socketUrl = (path, code) => {
+    const url = new URL(prefix + '/' + path);
+    if (!['https:', 'http:'].includes(url.protocol) || url.search) fail(code, 'Expected an HTTP service base without query parameters');
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (url.username || url.password || url.hash || url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+      fail(code, 'Peer introductions require a secure URL without credentials');
+    return url;
+  };
   return Object.freeze({
     ...createPeerControlsClient(request),
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
@@ -141,18 +151,27 @@ export function createPeersClient({ base, request, initialBootstrap, protocols =
       const result = await request('peers/directory', { method: 'DELETE', body: { peerId } });
       if (!result || result.withdrawn !== peerId) fail('invalid_response', 'Invalid withdrawal response');
     },
+    listenInvitations(peerId, options = {}) {
+      peerId = validatePeerId(peerId);
+      if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 60_000))
+        fail('invalid_invitation', 'Invalid invitation listener open timeout');
+      if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+      const url = socketUrl('peers/invitations', 'invalid_invitation'); url.searchParams.set('peerId', peerId);
+      const invitationProtocols = [PEER_INVITATION_PROTOCOL, ...protocols.filter(value => value !== PEER_RENDEZVOUS_PROTOCOL && value !== PEER_INVITATION_PROTOCOL)];
+      return createPeerInvitationListener((options.socket || socket)(url.href, invitationProtocols), peerId, options);
+    },
+    async invite(peerId, input) {
+      peerId = validatePeerId(peerId); const invitation = validatePeerInvitation(input);
+      const result = await request('peers/invitations', { method: 'POST', body: { peerId, ...invitation } });
+      if (!result || result.invited !== peerId || result.channel !== invitation.channel) fail('invalid_response', 'Invalid invitation response');
+    },
     rendezvous(channel, peerId, options = {}) {
       if (![channel, peerId].every(value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value)))
         fail('invalid_rendezvous', 'Expected bounded channel and endpoint identities');
       const timeoutMs = options.timeoutMs ?? PEER_RENDEZVOUS_LIMITS.lifetimeMs;
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > PEER_RENDEZVOUS_LIMITS.lifetimeMs)
         fail('invalid_rendezvous', 'Invalid rendezvous timeout');
-      const url = new URL(prefix + '/peers/rendezvous');
-      if (!['https:', 'http:'].includes(url.protocol) || url.search)
-        fail('invalid_rendezvous', 'Expected an HTTP service base without query parameters');
-      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      if (url.username || url.password || url.hash || url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
-        fail('invalid_rendezvous', 'Rendezvous requires a secure URL without credentials');
+      const url = socketUrl('peers/rendezvous', 'invalid_rendezvous');
       url.searchParams.set('channel', channel); url.searchParams.set('peerId', peerId);
       if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
       return createPeerRendezvous((options.socket || socket)(url.href, protocols), options);

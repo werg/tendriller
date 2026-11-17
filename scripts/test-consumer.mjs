@@ -92,6 +92,8 @@ assert.equal(typeof client.peers.rendezvous, 'function');
 assert.equal(typeof client.peers.discover, 'function');
 assert.equal(typeof client.peers.application, 'function');
 assert.equal(typeof client.peers.selectGeneration, 'function');
+assert.equal(typeof client.peers.listenInvitations, 'function');
+assert.equal(typeof client.peers.invite, 'function');
 assert.equal(typeof client.members.approve, 'function');
 assert.equal(typeof createMembersClient({base:'https://example.test'}).history, 'function');
 assert.equal(membershipProvenance.dirty, false);

@@ -1,5 +1,6 @@
 /** Directory values are routing hints, never signed authority or proof of retained data. */
-export type PeerRoute = { readonly kind: 'https'; readonly url: string } | { readonly kind: 'rendezvous'; readonly channel: string };
+export type PeerRoute = { readonly kind: 'https'; readonly url: string } | { readonly kind: 'rendezvous'; readonly channel: string }
+  | { readonly kind: 'invitation'; readonly peerId: string };
 export interface PeerRecoveryHint {
   readonly generation: string; readonly sequence: number; readonly root: string; readonly controlRevision: number; readonly retainedAt: number;
 }

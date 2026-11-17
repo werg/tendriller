@@ -1,7 +1,7 @@
 # Peer rendezvous and explicit transports
 
 Tendriller introduces authorized endpoints. Chronolog owns the authenticated
-application connection, signed history, detached bodies, finality and ephemeral
+application connection, signed history, detached bodies, recovery and ephemeral
 signals. The default peer composition uses WebRTC through
 `@chronolog/transport-webrtc`; it does not send application frames to Cloudflare.
 See [the ownership design](PEER_ARCHITECTURE.md).
@@ -12,6 +12,8 @@ and the resulting WebRTC connection; Tendriller need not participate. The
 short-lived host rendezvous below requires both endpoints to join together. It
 does not discover or wake an offline resident, and applications must not use
 repeated empty sessions as a background polling mechanism.
+Use the hibernatable invitation listener below for available peers that must
+accept later joins; its lifecycle is separate from an established RTC data path.
 
 ## Short-lived rendezvous
 
@@ -141,7 +143,7 @@ const availability = await tendril.peers.advertise({
   peerId: device.peerId,
   storageId: device.storageId,
   profiles: ['peer-generation-v1'],
-  routes: [{ kind: 'rendezvous', channel: device.introductionChannel }],
+  routes: [{ kind: 'invitation', peerId: device.id }],
   coordinatorEligible: true,
 });
 const directory = await tendril.peers.discover();
@@ -152,6 +154,33 @@ await tendril.peers.withdraw(device.peerId);
 An advertisement expires after two minutes by default (30 seconds to ten minutes is supported). `refreshAfter` identifies the coalescing boundary: identical early advertisements return the same lease without a storage write. Discovery is explicit on join or reconnect. Constructing the client starts no timer, polling, heartbeat, or host connection. Healthy peer sessions continue when the directory is unavailable.
 
 Each application retains at most 64 active advertisements and each host principal at most eight. Withdrawal, credential revocation, or expiration removes the route from results. Two tabs advertising the same `storageId` are one storage owner for retention purposes. HTTPS introduction routes must not include credentials, query parameters, or fragments; rendezvous routes name bounded channels.
+
+## Invitations for late joins
+
+An available peer explicitly opens `peers.listenInvitations(peerId, { signal? })`
+and advertises `{ kind: 'invitation', peerId }`. The returned listener has `ready`,
+`closed`, `invitations`, `stats` and `close()`. It can hibernate with no heartbeat,
+expiration alarm or idle HTTP requests. A new peer calls
+`peers.invite(targetPeerId, { channel, requesterPeerId })` with a fresh random
+channel. Both endpoints then join the existing bounded `rendezvous` protocol.
+They authenticate the application peer independently; an invitation identity is
+only a connection hint.
+
+The host keeps at most 64 listeners per application and eight per host principal.
+Each listener has at most eight unconsumed invitations and accepts at most 32 new
+invitations per minute. Consuming a hint acknowledges its queue slot. Exact
+invitation retries within the rate window are coalesced. Extra application fields,
+binary frames and arbitrary messages are rejected. A replaced, revoked or closed
+listener cannot receive later invitations prepared against its former identity.
+The routes are GET/POST `peers/invitations`; the WebSocket subprotocol is
+`tendriller.invitations.v1`.
+
+Chronolog's maintained session owns listener reopening, bounded parallel
+negotiations and coarse advertisement renewal at `refreshAfter`. A ten-minute
+lease permits five-minute refreshes, independent of commands. Directory lookups
+occur on join or reconnect. Account separately for this availability traffic,
+new connection signaling and any relay bytes; ordinary commands, queries,
+signals and replication do not call these endpoints.
 
 Profile compatibility, `coordinatorEligible`, and optional retained-prefix coverage are **untrusted routing hints**. A page login, largest advertised sequence, or directory entry grants no authoring, recovery, or sequencing power. Chronolog verifies the signed application descriptor, selected generation, original author, and retained bytes independently. The directory contains no command, application body, SQL state, or per-object inventory. Applications should coalesce coverage updates with availability changes instead of advertising each edit.
 

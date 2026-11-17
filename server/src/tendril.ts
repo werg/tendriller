@@ -1,6 +1,7 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isSignalSocket, handleSignalMessage } from './signals';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
+import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from "../../contract/application.mjs";
 import { selectedApplication } from "./application";
 import runtimeRelease from "./runtime-release.json";
@@ -248,6 +249,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
     if (isSignalSocket(ws)) { await handleSignalMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
     if (this.isAgentSocket(ws)) {
@@ -265,7 +267,7 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
-    if (isSignalSocket(ws)) return;
+    if (isSignalSocket(ws) || isInvitationSocket(ws)) return;
     if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) {
       const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
@@ -278,6 +280,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (isInvitationSocket(ws)) { try { ws.close(1011, 'Invitation transport failed'); } catch {} return; }
     if (isSignalSocket(ws)) return;
     if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }

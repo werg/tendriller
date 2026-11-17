@@ -3,8 +3,8 @@ import { env } from 'cloudflare:workers';
 import { applyD1Migrations } from 'cloudflare:test';
 import { api, create, inDO, ownerHeaders, req } from './helpers';
 import { sha256Hex } from '../src/ids';
-import { PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
-import { testRendezvousSocket, type TestHostTraffic } from './fixture-rendezvous';
+import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
+import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 
 export async function initializeTestService(migrations: Parameters<typeof applyD1Migrations>[1]): Promise<void> {
   await applyD1Migrations(env.ACCOUNTS, migrations);
@@ -19,7 +19,8 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
     const response = await api(handle, 'PATCH', '', { lifetime });
     if (!response.ok) throw new Error(`Resident test page setup failed: ${response.status} ${await response.text()}`);
   }
-  const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0 };
+  const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0,
+    invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0 };
   const request = (url: string, init: RequestInit) => {
     traffic.httpRequests++;
     if (init.body !== undefined && init.body !== null) {
@@ -27,7 +28,8 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
       else if (init.body instanceof ArrayBuffer || ArrayBuffer.isView(init.body)) traffic.requestBodyBytes += init.body.byteLength;
       else throw new TypeError('The public test fixture accepts JSON, text or binary request bodies');
     }
-    if (new Headers(init.headers).get('Upgrade')?.toLowerCase() === 'websocket') traffic.rendezvousUpgrades++;
+    if (new Headers(init.headers).get('Upgrade')?.toLowerCase() === 'websocket')
+      traffic[new URL(url).pathname.endsWith('/peers/invitations') ? 'invitationUpgrades' : 'rendezvousUpgrades']++;
     return req(url, init);
   };
   const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown) => request(
@@ -50,14 +52,18 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
   };
   const agent = (module: string, operation: string, data: unknown = {}, guards: Record<string, string> = {}, cid = crypto.randomUUID()) =>
     agentApi('POST', `workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, { cid, expected_generations: guards, data });
-  const rendezvous = (base: string, headers: Record<string, string>) => (channel: string, peerId: string) => testRendezvousSocket(() => request(
-    `${base}peers/rendezvous?${new URLSearchParams({ channel, peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } }), traffic);
+  const rendezvous = (base: string, headers: Record<string, string>) => (channel: string, peerId: string) => testPeerSocket(() => request(
+    `${base}peers/rendezvous?${new URLSearchParams({ channel, peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } }), traffic, 'rendezvous');
+  const invitations = (base: string, headers: Record<string, string>) => (peerId: string) => testPeerSocket(() => request(
+    `${base}peers/invitations?${new URLSearchParams({ peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL } }), traffic, 'invitation');
   return {
     owner, agent,
     /** Exact observed requests/frame bytes, excluding synthetic identity/page setup. */
     get hostTraffic() { return Object.freeze({ ...traffic }); },
     rendezvousSocket: rendezvous(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
     ownerRendezvousSocket: rendezvous(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
+    invitationSocket: invitations(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
+    ownerInvitationSocket: invitations(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
     ownerApi: pageApi(handle.page_url, ownerHeaders(handle.page_url)),
     api: agentApi,
     async participant() {
@@ -71,7 +77,7 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
       });
       const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
       return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers),
-        rendezvousSocket: rendezvous(link.url + '_tendril/', headers) };
+        rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers) };
     },
     async display() {
       const link = await inDO(handle.id, async t => t.renderLink(await t.createLink('display', 'test display', null)));

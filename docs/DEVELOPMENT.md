@@ -131,8 +131,10 @@ factory implement the SDK's `PeerSocket` port through real WebSocket upgrades.
 Pass those sockets to `createPeerRendezvous` from `@tendriller/core/peers`; no server
 source imports or private handles are needed.
 
-`hostTraffic` is a frozen snapshot of HTTP requests, request body bytes,
-rendezvous upgrades and sent/received rendezvous frame bytes. It excludes the
+The fixture also exposes `invitationSocket(peerId)`, its owner equivalent and the
+participant equivalent for the persistent invitation port. `hostTraffic` is a
+frozen snapshot of HTTP requests, request body bytes, and separate invitation and
+rendezvous upgrade/frame counts. It excludes the
 fixture's synthetic identity/page setup. It counts measured transport activity;
 it does not classify encrypted application bytes or infer a direct RTC route.
 Qualification can snapshot it around ordinary commands, queries, signals and

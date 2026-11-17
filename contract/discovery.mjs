@@ -21,10 +21,12 @@ export function validatePeerAdvertisement(value) {
       !Array.isArray(value.routes) || !value.routes.length || value.routes.length > PEER_DIRECTORY_LIMITS.routes)
     invalid('Expected a bounded peer advertisement');
   const routes = value.routes.map(route => {
+    if (route?.kind === 'invitation' && exact(route, ['kind', 'peerId']) && identifier(route.peerId))
+      return Object.freeze({ kind: 'invitation', peerId: route.peerId });
     if (route?.kind === 'rendezvous' && exact(route, ['kind', 'channel']) && identifier(route.channel) && route.channel.length <= 160)
       return Object.freeze({ kind: 'rendezvous', channel: route.channel });
     if (route?.kind !== 'https' || !exact(route, ['kind', 'url']) || typeof route.url !== 'string' || route.url.length > 2048)
-      invalid('Expected an HTTPS introduction or rendezvous channel');
+      invalid('Expected an HTTPS introduction, invitation listener or rendezvous channel');
     let url; try { url = new URL(route.url); } catch { invalid('Invalid peer route'); }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     if (url.username || url.password || url.search || url.hash || url.href.length > 2048 ||

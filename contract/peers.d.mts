@@ -36,6 +36,10 @@ export interface PeersClient extends PeerControlsClient {
   /** Coalesced availability hints. Peer authentication and authority are verified independently. */
   advertise(advertisement: PeerAdvertisement, options?: { readonly ttlMs?: number }): Promise<PeerAdvertisementLease>;
   withdraw(peerId: string): Promise<void>;
+  /** Hibernatable connection invitations; no heartbeat or application traffic. */
+  listenInvitations(peerId: string, options?: PeerInvitationOptions): PeerInvitationListener;
+  /** On-demand late-join/reconnect hint. Peer authentication remains independent. */
+  invite(peerId: string, invitation: PeerInvitation): Promise<void>;
   rendezvous(channel: string, peerId: string, options?: PeerRendezvousOptions): PeerRendezvous;
 }
 export declare const PEER_RENDEZVOUS_PROTOCOL: 'tendriller.rendezvous.v1';
@@ -53,3 +57,5 @@ import type { PeerAdvertisement, PeerAdvertisementLease, PeerDirectory } from '.
 export * from './discovery.mjs';
 import type { PeerControlsClient } from './peer-controls.mjs';
 export * from './peer-controls.mjs';
+import type { PeerInvitation, PeerInvitationOptions, PeerInvitationListener } from './invitations.mjs';
+export * from './invitations.mjs';

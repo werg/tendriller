@@ -11,7 +11,8 @@ const answer = { type: 'answer' as const, sdp: 'v=0\r\no=answer\r\n' };
 it('exposes real authenticated rendezvous and observed host traffic to independent public consumers', async () => {
   const page = await createTestPage({ application: { kind: 'peer', id: 'public-fixture' } });
   const guest = await page.participant();
-  expect(page.hostTraffic).toEqual({ httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0 });
+  expect(page.hostTraffic).toEqual({ httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0,
+    invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0 });
   const bootstrap = { version: 2, endpoints: [] };
   expect((await page.ownerApi('PUT', 'peers/bootstrap', bootstrap)).status).toBe(200);
   const a = createPeerRendezvous(page.rendezvousSocket('public-pair', 'agent'));

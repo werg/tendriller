@@ -99,6 +99,12 @@ and directory expiry creates no host wakeup. Account authentication protects
 advertisement ownership, while Chronolog independently verifies actual peer
 identity, authority and retained bytes.
 
+An explicit hibernatable invitation listener makes a peer reachable for later
+joins without repeatedly opening empty rendezvous sessions. Chronolog owns its
+availability lifecycle and coarse lease refreshes, independent of application
+commands. Availability requests and handshake traffic have separate counters;
+the host never subscribes to ordinary edits through this control role.
+
 `@chronolog/transport-webrtc` owns reliable history framing and independent live
 signals. Existing bounded pairwise rendezvous exchanges one complete offer and
 answer, then closes the host sockets. Optional HTTPS introduction endpoints are
@@ -117,6 +123,10 @@ Peer pages start no hosted application socket, application outbox, heartbeat,
 console forwarding, automatic health report or background host polling. Explicit
 host operations remain available. `application.available` and `ready()` mean an
 adapter is installed; actual session readiness and recovery remain separate.
+The generation backend exposes `status` and `onStatus()` for actual ready,
+waiting, recovering and closed phases, with coordinator/follower role, selected
+generation and authenticated synchronized peer count. Observing status starts no
+timer or host request.
 `tendril.connected` describes the hosted application connection and stays false
 in peer mode.
 

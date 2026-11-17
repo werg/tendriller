@@ -5,11 +5,14 @@ export interface TestHostTraffic {
   rendezvousUpgrades: number;
   rendezvousSentBytes: number;
   rendezvousReceivedBytes: number;
+  invitationUpgrades: number;
+  invitationSentBytes: number;
+  invitationReceivedBytes: number;
 }
 const bytes = (value: string | ArrayBuffer) => typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value.byteLength;
 
 /** Matches the public PeerSocket port, including cancellation before the upgrade resolves. */
-export function testRendezvousSocket(upgrade: () => Promise<Response>, traffic: TestHostTraffic) {
+export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHostTraffic, kind: 'rendezvous' | 'invitation') {
   class Socket extends EventTarget {
     readyState = 0;
     private socket?: WebSocket;
@@ -29,7 +32,7 @@ export function testRendezvousSocket(upgrade: () => Promise<Response>, traffic: 
         if (this.readyState === 3) { socket.accept(); socket.close(1000, 'Test client cancelled'); return; }
         this.socket = socket;
         socket.addEventListener('message', event => {
-          traffic.rendezvousReceivedBytes += bytes(event.data);
+          traffic[kind === 'rendezvous' ? 'rendezvousReceivedBytes' : 'invitationReceivedBytes'] += bytes(event.data);
           this.dispatchEvent(new MessageEvent('message', { data: event.data }));
         });
         socket.addEventListener('close', event => this.finish(event.code, event.reason));
@@ -43,7 +46,7 @@ export function testRendezvousSocket(upgrade: () => Promise<Response>, traffic: 
     }
     send(data: string) {
       if (this.readyState !== 1 || !this.socket) throw new Error('Rendezvous socket is not open');
-      this.socket.send(data); traffic.rendezvousSentBytes += bytes(data);
+      this.socket.send(data); traffic[kind === 'rendezvous' ? 'rendezvousSentBytes' : 'invitationSentBytes'] += bytes(data);
     }
     close(code = 1000, reason = 'Test client closed') {
       if (this.readyState >= 2) return;

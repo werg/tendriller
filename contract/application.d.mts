@@ -120,10 +120,20 @@ export interface ApplicationBackend<Program = unknown, Submission extends Applic
 export interface PeerGenerationApplicationBackend<Program = unknown, QueryResult = unknown, Parameter = unknown>
   extends ApplicationBackend<Program, PeerGenerationApplicationOperation, QueryResult, Parameter> {
   readonly profile: 'peer-generation-v1';
+  readonly status: PeerApplicationStatus;
+  /** Reports current state once, then actual session changes; installs no polling. */
+  onStatus(listener: (status: PeerApplicationStatus) => void): () => void;
   readonly operations: ApplicationOperations<PeerGenerationApplicationOperation>;
   readView(options?: { readonly view?: ApplicationView }): AppliedApplicationReadView<QueryResult, Parameter> | Promise<AppliedApplicationReadView<QueryResult, Parameter>>;
   onRecovery(listener: (notice: ApplicationRecoveryNotice) => void): () => void;
   inspectRecovery(): readonly ApplicationRecoveryNotice[];
+}
+export interface PeerApplicationStatus {
+  readonly phase: 'ready' | 'waiting' | 'recovering' | 'closed';
+  readonly role: 'coordinator' | 'follower';
+  readonly generation: string;
+  readonly coordinator: string;
+  readonly connectedPeers: number;
 }
 export interface ApplicationBinding {
   readonly selection: ApplicationSelection;
