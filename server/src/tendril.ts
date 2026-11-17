@@ -164,9 +164,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isRelaySocket(ws)) { handleRelayMessage(this, ws, message); return; }
+    // Relay packets have separate per-socket packet/byte/credit bounds and do
+    // not access SQLite. Charge control messages that can trigger host work.
     try { await this.admitTraffic("agent"); }
     catch { ws.close(1013, "Page traffic limit reached; reconnect shortly"); return; }
-    if (isRelaySocket(ws)) { handleRelayMessage(this, ws, message); return; }
     if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
     ws.close(1008, "Unsupported participant transport");

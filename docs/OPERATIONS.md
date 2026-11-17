@@ -18,6 +18,14 @@ Store secrets in the platform's secret store. Agent bearer tokens and OAuth/page
 
 The service starts with creation paused. Configure and exercise owner sign-in, page claim, account status, page-origin isolation and signed publication before opening creation. Publish the exact runtime assets required by the engine. Changing configuration or building code does not deploy it.
 
+## Durable Object traffic budgets
+
+The Worker charges each page HTTP/API request and host control WebSocket message to `PAGE_RATE` (600/minute per page). Claimed pages also charge `ACCOUNT_RATE` (1,800/minute across that owner's pages). Unclaimed pages have no account key. Relay data packets have their own packet, byte and credit bounds and do not run SQLite queries, so they are excluded from these request budgets. The existing agent-token limit remains 300 requests/minute. Limit failures return HTTP 429 (`page_rate_limited` or `account_rate_limited`); control sockets close with 1013. The checked-in configurations and `scripts/provision.mjs` install the same limits, in separate namespaces 107 and 108.
+
+Cloudflare's rate limiting counters are approximate and local to a Cloudflare location. They bound ordinary request volume without adding a database write to each request; they are not exact daily SQL-row quotas or a guarantee against a single expensive query. Monitor actual Durable Object rows read and written at the account and namespace level. A query plan that scans a growing table still needs an index or a bounded query. The Free plan's shared daily Durable Object storage allowance can stop all namespaces, including staging, when one production page exhausts it.
+
+Successful OAuth callbacks include `Server-Timing` for state lookup, provider token exchange, provider profile, and account writes. Authenticated dashboard responses include session lookup, account database work, and page-summary time. Use browser Network timing on the callback and dashboard to identify the slow phase. Page summaries have a three-second deadline and a missing summary does not prevent dashboard navigation.
+
 ## Validation and deployment
 
 Run `npm run check:release` against an exact checkpoint. Verify source provenance and archive hashes. Use the existing release/deployment workflow only for an explicitly authorized target. Service smoke checks compare contract and immutable runtime identity and require the participant limits advertised by the host.
