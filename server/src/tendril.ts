@@ -1,5 +1,6 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
+import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expireRelays } from './peer-relay';
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
@@ -155,6 +156,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isRelaySocket(ws)) { handleRelayMessage(this, ws, message); return; }
     if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
     ws.close(1008, "Unsupported participant transport");
@@ -162,8 +164,10 @@ export class Tendril extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch {}
     if (isPeerSocket(ws)) closePeer(this, ws);
+    if (isRelaySocket(ws)) closeRelay(this, ws);
   }
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (isRelaySocket(ws)) { closeRelay(this, ws); return; }
     if (isPeerSocket(ws)) closePeer(this, ws);
     else try { ws.close(1011, "Participant transport failed"); } catch {}
   }
@@ -577,6 +581,8 @@ export class Tendril extends DurableObject<Env> {
     const now = this.now(), times = [this.db.get<number>('next_cleanup', now + DAY)];
     const peerDue = nextPeerDeadline(this), expires = this.expiresAt();
     if (peerDue !== null) times.push(peerDue);
+    const relayDue = nextRelayDeadline(this);
+    if (relayDue !== null) times.push(relayDue);
     if (expires !== null) times.push(expires);
     if (lifetimeChangePending(this)) times.push(now + 5000);
     void this.ctx.storage.setAlarm(Math.max(Math.min(...times) - this.skew, Date.now() + 1)).catch(() => {});
@@ -587,6 +593,7 @@ export class Tendril extends DurableObject<Env> {
     try { await recoverLifetimeChange(this); }
     catch (error) { console.error('Lifetime recovery remains pending', error); }
     expirePeers(this);
+    await expireRelays(this);
     if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
     const expires = this.expiresAt();
     if (expires !== null && expires <= this.now()) { await this.destroy(); return; }

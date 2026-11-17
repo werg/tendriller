@@ -8,13 +8,18 @@ export interface TestHostTraffic {
   invitationUpgrades: number;
   invitationSentBytes: number;
   invitationReceivedBytes: number;
+  relayUpgrades: number;
+  relaySentBytes: number;
+  relayReceivedBytes: number;
 }
-const bytes = (value: string | ArrayBuffer) => typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value.byteLength;
+const bytes = (value: string | ArrayBuffer | ArrayBufferView) => typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value.byteLength;
 
 /** Matches the public PeerSocket port, including cancellation before the upgrade resolves. */
-export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHostTraffic, kind: 'rendezvous' | 'invitation') {
+export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHostTraffic, kind: 'rendezvous' | 'invitation' | 'relay') {
   class Socket extends EventTarget {
     readyState = 0;
+    binaryType = 'arraybuffer';
+    readonly bufferedAmount = 0;
     private socket?: WebSocket;
     constructor() {
       super();
@@ -31,8 +36,9 @@ export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHo
         if (response.status !== 101 || !socket) throw new Error(`Rendezvous upgrade failed: ${response.status} ${await response.text()}`);
         if (this.readyState === 3) { socket.accept(); socket.close(1000, 'Test client cancelled'); return; }
         this.socket = socket;
+        socket.binaryType = 'arraybuffer';
         socket.addEventListener('message', event => {
-          traffic[kind === 'rendezvous' ? 'rendezvousReceivedBytes' : 'invitationReceivedBytes'] += bytes(event.data);
+          traffic[`${kind}ReceivedBytes`] += bytes(event.data);
           this.dispatchEvent(new MessageEvent('message', { data: event.data }));
         });
         socket.addEventListener('close', event => this.finish(event.code, event.reason));
@@ -44,9 +50,9 @@ export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHo
         this.finish(1011, error instanceof Error ? error.message : 'Rendezvous upgrade failed');
       }
     }
-    send(data: string) {
+    send(data: string | ArrayBuffer | ArrayBufferView) {
       if (this.readyState !== 1 || !this.socket) throw new Error('Rendezvous socket is not open');
-      this.socket.send(data); traffic[kind === 'rendezvous' ? 'rendezvousSentBytes' : 'invitationSentBytes'] += bytes(data);
+      this.socket.send(data); traffic[`${kind}SentBytes`] += bytes(data);
     }
     close(code = 1000, reason = 'Test client closed') {
       if (this.readyState >= 2) return;

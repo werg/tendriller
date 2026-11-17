@@ -255,9 +255,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       // private token in a TLS-protected subprotocol header, never in the URL.
       const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const invitationSocket = agentRest === "peers/invitations" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const relaySocket = agentRest === "peers/relay" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
       const socketToken = peerSocket && protocols.includes("tendriller.rendezvous.v1") ||
-        invitationSocket && protocols.includes("tendriller.invitations.v1")
+        invitationSocket && protocols.includes("tendriller.invitations.v1") || relaySocket && protocols.includes("tendriller.relay.v1")
         ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
       const token = socketToken || /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
       if (token && env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: await sha256Hex(token) })).success) {

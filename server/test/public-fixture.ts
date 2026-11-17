@@ -3,7 +3,7 @@ import { env } from 'cloudflare:workers';
 import { applyD1Migrations } from 'cloudflare:test';
 import { api, create, inDO, ownerHeaders, req } from './helpers';
 import { sha256Hex } from '../src/ids';
-import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
+import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
 import { participantMessage, participantPayload } from './peer-exchange';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 
@@ -22,7 +22,7 @@ export async function createTestPage(options: { application?: { id: string }; li
   }
   const applicationId = (await inDO(handle.id, t => t.db.get<{ id: string }>('application', { id: '' }))).id;
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0,
-    invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0 };
+    invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0, relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
   const request = (url: string, init: RequestInit) => {
     traffic.httpRequests++;
     if (init.body !== undefined && init.body !== null) {
@@ -31,7 +31,7 @@ export async function createTestPage(options: { application?: { id: string }; li
       else throw new TypeError('The public test fixture accepts JSON, text or binary request bodies');
     }
     if (new Headers(init.headers).get('Upgrade')?.toLowerCase() === 'websocket')
-      traffic[new URL(url).pathname.endsWith('/peers/invitations') ? 'invitationUpgrades' : 'rendezvousUpgrades']++;
+      traffic[new URL(url).pathname.endsWith('/peers/invitations') ? 'invitationUpgrades' : new URL(url).pathname.endsWith('/peers/relay') ? 'relayUpgrades' : 'rendezvousUpgrades']++;
     return req(url, init);
   };
   const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown) => request(
@@ -50,6 +50,8 @@ export async function createTestPage(options: { application?: { id: string }; li
     `${base}peers/rendezvous?${new URLSearchParams({ channel, peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } }), traffic, 'rendezvous');
   const invitations = (base: string, headers: Record<string, string>) => (peerId: string) => testPeerSocket(() => request(
     `${base}peers/invitations?${new URLSearchParams({ peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL } }), traffic, 'invitation');
+  const relay = (base: string, headers: Record<string, string>) => (channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live') => testPeerSocket(() => request(
+    `${base}peers/relay?${new URLSearchParams({ channel, peerId, remotePeerId, lane })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL } }), traffic, 'relay');
   return {
     /** Exact observed requests/frame bytes, excluding synthetic identity/page setup. */
     get hostTraffic() { return Object.freeze({ ...traffic }); },
@@ -57,6 +59,8 @@ export async function createTestPage(options: { application?: { id: string }; li
     ownerRendezvousSocket: rendezvous(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
     invitationSocket: invitations(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
     ownerInvitationSocket: invitations(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
+    relaySocket: relay(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
+    ownerRelaySocket: relay(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
     ownerApi: pageApi(handle.page_url, ownerHeaders(handle.page_url)),
     api: agentApi,
     exchange: exchange(agentApi),
@@ -76,7 +80,8 @@ export async function createTestPage(options: { application?: { id: string }; li
       });
       const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
       return { account, api: pageApi(link.url, headers), exchange: exchange(pageApi(link.url, headers)),
-        rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers) };
+        rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers),
+        relaySocket: relay(link.url + '_tendril/', headers) };
     },
     async advance(milliseconds: number) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError('Advance by a finite nonnegative duration');
