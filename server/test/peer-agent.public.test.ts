@@ -45,8 +45,11 @@ it("guides peer agents to their selected backend and exposes only host tools", a
   const initial = (await rpc("initialize")).result;
   expect(initial.capabilities).toEqual({ tools: {} });
   expect(initial.instructions).toContain("client.signals");
-  expect(initial.instructions).toContain("applied outcome can become abandoned");
-  expect(initial.instructions).toContain("local session");
+  expect(initial.instructions).toMatch(/Chronolog.*local and final views/);
+  expect(initial.instructions).toMatch(/local\(\).*final\(\).*accepted or rejected outcomes/);
+  expect(initial.instructions).toContain("select local previews explicitly");
+  expect(initial.instructions).toMatch(/application\.changes.*coherent readView.*release/);
+  expect(initial.instructions).toContain("this host has no application event queue or wake subscription");
   expect(initial.instructions).not.toContain("Read stored events immediately with read_events");
   const names = (await rpc("tools/list")).result.tools.map((tool: { name: string }) => tool.name);
   expect(names).toContain("publish_publication"); expect(names).toContain("tendril_info");

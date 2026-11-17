@@ -47,6 +47,8 @@ export interface PeerGrant {
 	readonly coordinator: boolean;
 	readonly recovery: boolean;
 	readonly administrator: boolean;
+	/** Membership of the durable application data collective, independent of coordination. */
+	readonly dataRole: "member" | "admin" | null;
 }
 export interface HistoryPoint {
 	readonly generation: string;
@@ -147,6 +149,13 @@ export declare function importPeerIdentity(value: {
 }): Promise<PeerIdentity>;
 export declare function validateHistoryPoint(point: HistoryPoint): void;
 export declare function signApplicationDescriptor(payload: ApplicationDescriptor, signer: PeerIdentity): Promise<SignedApplicationDescriptor>;
+/** The supported shared-application policy; every granted power remains explicit on the wire. */
+export declare function participantGrant(publicKey: string, options?: {
+	readonly administrator?: boolean;
+	readonly dataRole?: "member" | "admin" | null;
+}): PeerGrant;
+/** Explicit control-only host role, enabling account ownership recovery without a creator device. */
+export declare function controlParticipantGrant(publicKey: string): PeerGrant;
 export declare function signControlRevision(payload: ControlRevision, signer: PeerIdentity): Promise<SignedControlRevision>;
 export declare function signTransitionRequest(payload: TransitionRequest, signer: PeerIdentity): Promise<SignedTransitionRequest>;
 export declare function generationStartRoot(generation: SignedGeneration): Promise<string>;
@@ -175,7 +184,7 @@ export declare class PeerAuthority {
 	authorizeTransition(request: SignedTransitionRequest, nextControl?: SignedControlRevision): Promise<void>;
 	static verify(input: AuthorityBundle, pinned?: SignedApplicationDescriptor): Promise<PeerAuthority>;
 }
-export declare const verifyAuthorityBundle: typeof PeerAuthority.verify;
+export declare function verifyAuthorityBundle(bundle: AuthorityBundle, pinned?: SignedApplicationDescriptor): Promise<PeerAuthority>;
 export interface GenerationRegistry {
 	read(): Promise<AuthorityBundle>;
 	select(request: SignedTransitionRequest, options?: {

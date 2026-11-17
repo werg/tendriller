@@ -4,23 +4,28 @@ Tendriller connects an authenticated page to an agent through shared state, even
 
 ## Select the application history first
 
-For implemented peer applications, explicitly select a chronological Chronolog
-backend and install its public Tendriller adapter. Native operation handles use
+Choose the authenticated history profile explicitly. The peer-generation preview
+uses `applied()` and separate retained coverage; recovery may abandon a suffix.
+Supply a matching public session archive and qualify its deployment. To require
+an immutable final prefix, select the chronological Chronolog backend and install
+its public Tendriller adapter. Native operation handles use
 `local()` and `final()`; both return accepted or rejected outcomes. Inspect the
 final outcome before dependent work. Queries and views default to the current
 applied final prefix without waiting for pending writes; request local previews
 explicitly. Omitting the application selection uses the hosted Cloudflare
 backend. See [current application backends](docs/APPLICATION_BACKENDS.md).
 
-### Proposed generation session
+### Peer-generation session preview
 
 The host generation-control registry, verifier and lifecycle calls are
-implemented. The `peer-generation-v1` replica, command data path and browser/native
-session are not yet shipped. The following session composition is the target
-design; configuring host controls does not make that runtime available.
+implemented. Chronolog supplies the encrypted replica and public
+`@chronolog/peer-session` preview with native/browser entries. Its preserved packed
+native/events run uses an in-process link and dirty-source artifacts; it does not
+qualify a clean release, actual HTTP control routes, browser/RTC or deployed
+networks. Configuring host controls does not open or connect the session.
 
-The proposed composition creates a page with
-`application:{kind:'peer',id:'<64 lowercase hex characters>'}` and would use a public
+The preview composition creates a page with
+`application:{kind:'peer',id:'<64 lowercase hex characters>'}` and uses a public
 Chronolog `peer-generation-v1` session. A replaceable coordinating peer orders
 commands; the host selects a generation only at creation or a handover. No native
 resident process is required. The session owns signed attempts, history,
@@ -33,15 +38,19 @@ Control configuration retains the owned host publication automatically; this is
 persistent control metadata, not a continuously running application process.
 See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
 
-When available, install the session's public Tendriller backend once. `tendril.application.ready()`
-and `available` describe installation; the session reports actual readiness.
+Use the session's public query, command, operation-inspection and view APIs.
+Binding that session to `tendril.application` requires a matching generation
+adapter; the existing chronological adapter does not convert it.
+`tendril.application.ready()` and `available` describe adapter installation,
+not synchronized history or qualified connectivity.
 Use applied coherent views and generation-scoped outcomes. A valid recovery may
 abandon a recent suffix, and deliberate reapplication creates a new signed attempt
 with current guards. Several minutes of recovery freshness is a measured target,
 not a guarantee when peers or their data disappear.
 
-The intended session keeps current-generation commands, queries, live signals
-and replication working with the host unavailable. If the coordinator also disappears, keep local signed work
+The session contract keeps current-generation commands, queries, live signals
+and replication working without control calls; the preserved preview verifies
+this at the portable in-process control boundary. If the coordinator also disappears, keep local signed work
 while a new selected generation waits for host control availability. There is no
 fallback to another backend and no automatic old-branch merge.
 
@@ -71,7 +80,7 @@ iterator or abort its signal when finished. Expire presence/typing and clear
 previews on disconnect. A successful
 send is not a remote acknowledgement. See [live signals](docs/APPLICATION_SIGNALS.md).
 
-In the proposed generation session, an applied result identifies its generation,
+In the generation session, an applied result identifies its generation,
 sequence and accepted/rejected outcome.
 Exact retries preserve the original signed attempt and admission generation.
 Cancellation or timeout stops a waiter; it does not reject or cancel the command.
@@ -79,10 +88,9 @@ An adopted operation retains its identity and result. An excluded operation beco
 `abandoned` or `needsReapply`; inspect it, reread the current state, and deliberately
 create a new guarded attempt when reapplication is appropriate.
 
-That session will expose `application.changes({view:'applied',signal})` and a captured
-applied `readView()` for related SQL/events/outcomes. Release each captured view.
-Recovery is required to publish a
-coherent reset with known abandoned work and an explicit unknown-loss flag.
+Use `session.changes({signal})` and capture `session.readView()` for related
+SQL/events/outcomes. Release each captured view. Recovery publishes a coherent
+reset with known abandoned work and an explicit unknown-loss flag.
 The generation profile has no final revision and cannot feed automatic irreversible
 effect workers. Reducers and projections remain free of external effects.
 
@@ -136,7 +144,8 @@ before starting a collector that could fill the unclaimed stream budget.
 On hosted Cloudflare pages, Web Push can notify the owner even when the page is closed. Configure it on the service and have each owner device explicitly opt in through page-authored controls using `tendril.notifications`. Use authenticated `GET A/notify` to inspect readiness and quota, then `POST A/notify` with `title`, optional `body`, `device`, `url`, and `tag`. The MCP tools are `notification_status` and `notify`. See [Web Push setup and usage](docs/PUSH_NOTIFICATIONS.md). Push notifications are distinct from the agent wake listener: delivering a notification does not resume an agent conversation.
 
 Peer publication has no host-listener prerequisite. The agent session or owning
-Worker consumes the selected replica's final events and operation status. Its
+Worker consumes the selected profile's events and operation status; only an
+explicitly finalized profile can feed a final-intent effect worker. Its
 live signals and peer connections use the independently installed services.
 
 ### Cloudflare conversational delivery

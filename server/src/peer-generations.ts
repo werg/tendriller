@@ -210,7 +210,7 @@ export async function handlePeerGenerations(t: Tendril, req: Request, path: stri
           if (!control.payload.grants.every(grant => bindings!.some(binding => binding.publicKey === grant.publicKey)))
             throw new HttpError(400, 'peer_account_binding_required', 'Every granted device needs its authenticated account binding');
           const granted = new Set(control.payload.grants.filter(grant =>
-            grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator).map(grant => grant.publicKey));
+            grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator || grant.dataRole !== null).map(grant => grant.publicKey));
           // Historical bindings preserve enrollment identity and exact retries.
           // An inactive former participant must not prevent its own revocation;
           // new enrollments and devices retaining any rights still need access.

@@ -6,7 +6,7 @@ import { api, apiJson, create, inDO, req, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ publicKey: peer.publicKey, reader: true,
-  writer: true, coordinator: true, recovery: true, administrator: true, ...extra });
+  writer: true, coordinator: true, recovery: true, administrator: true, dataRole: 'member', ...extra });
 const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', executionManifestDigest: '12'.repeat(32),
   definitionDigest: '34'.repeat(32), schemaAdministrator: peers[0].publicKey, schemaDigest: null, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) });
@@ -88,7 +88,7 @@ it('activates restrictive controls atomically, enforces key rotation, and keeps 
   const g0 = await initial.response.json() as SignedGeneration;
   const request = await signTransitionRequest({ ...initial.request.payload, transitionId: 'revoke-a', expectedGeneration: g0.id, coordinator: b.publicKey,
     reason: 'control-change', controlRevision: 1, base: { point: { generation: g0.id, sequence: 0, root: await generationStartRoot(g0) }, receipt: null, bridge: [] } }, a);
-  const grants = [grant(a, { reader: false, writer: false, coordinator: false, recovery: false, administrator: false }), grant(b)];
+  const grants = [grant(a, { reader: false, writer: false, coordinator: false, recovery: false, administrator: false, dataRole: null }), grant(b)];
   const invalid = { epoch: 0, keyDigest: '56'.repeat(32), grants, recoveryFloor: null };
   expect((await api(h, 'POST', 'peers/generations', { request, control: invalid })).status).toBe(400);
   expect((await apiJson<AuthorityBundle>(h, 'GET', 'peers/application')).controls).toHaveLength(1);
@@ -119,8 +119,11 @@ it('revokes an inactive enrolled account without granting it new rights or forge
     reason: 'control-change', controlRevision: 1,
     base: { point: { generation: g0.id, sequence: 0, root: await generationStartRoot(g0) }, receipt: null, bridge: [] } }, owner);
   const control = { epoch: 1, keyDigest: '89'.repeat(32), recoveryFloor: null,
-    grants: [grant(owner), grant(guest, { reader: false, writer: false, coordinator: false, recovery: false, administrator: false })] };
+    grants: [grant(owner), grant(guest, { reader: false, writer: false, coordinator: false, recovery: false, administrator: false, dataRole: null })] };
   expect((await page.api('POST', 'peers/generations', { request, control: { ...control, grants: [grant(owner), grant(guest)] } })).status).toBe(403);
+  for (const dataRole of ['member', 'admin'] as const)
+    expect((await page.api('POST', 'peers/generations', { request, control: { ...control,
+      grants: [grant(owner), { ...control.grants[1], dataRole }] } })).status).toBe(403);
   expect((await page.api('POST', 'peers/generations', { request, control: { ...control,
     accounts: [{ publicKey: newDevice.publicKey, accountId: participant.account }] } })).status).toBe(403);
   expect((await (await page.api('GET', 'peers/application')).json() as AuthorityBundle).controls).toHaveLength(1);

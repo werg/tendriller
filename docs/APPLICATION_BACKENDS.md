@@ -337,10 +337,14 @@ refusal; earlier exact retries remain available.
 
 ## Peer-generation applied results
 
-The public types below describe the intended generation-scoped backend. Hosted
-control APIs are implemented, but Chronolog's peer-generation replica/session
-and the adapter supplying these application results are not yet shipped. Use
-the chronological backend above for the current `local` / `final` implementation.
+The public types below define Tendriller's generation-scoped backend contract.
+Chronolog's encrypted replica and public session/native/browser entries are
+implemented as a source-pinned preview. Its independent native/events package
+run uses an in-process link; browser/RTC and deployed integration require separate
+qualification. The session exposes its own query/command/view APIs. Installing
+it through this Tendriller contract requires a matching adapter; the existing
+`createChronologApplicationBackend` remains the chronological `local` / `final`
+adapter and does not convert a generation session.
 
 `peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that view. Requests for a final view fail explicitly because this profile does not provide irrevocable settlement.
 

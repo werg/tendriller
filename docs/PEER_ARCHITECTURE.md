@@ -1,17 +1,18 @@
 # Peer applications: replaceable peers and a quiet host
 
 **Implementation status:** the hosted generation-control registry, lifecycle API
-and portable authority verifier are implemented. The generation-scoped replica,
-command data path and browser/native session described below remain target
-architecture. Their recovery and host-outage guarantees are not yet qualified by
-a shipped session. The [current application backends](APPLICATION_BACKENDS.md)
-retain their chronological `local` / `final` contract; adding host controls does
-not change those histories or install a peer-generation runtime.
+and portable authority verifier are implemented. Chronolog now supplies an
+encrypted replica and public session preview with native/browser entries. The
+preserved independent package run covers native/events sessions over an in-process
+link with dirty-source artifacts. It does not qualify a clean release, actual HTTP
+control routes, physical RTC, browser storage or deployed networks. The
+[chronological backend](APPLICATION_BACKENDS.md) retains its separate `local` /
+`final` contract; adopting a generation session does not reinterpret that history.
 
 ## Ownership and trust
 
 A peer application selects one authenticated Chronolog history profile. The
-proposed default `peer-generation-v1` delegates ordering to a replaceable coordinating
+adopted target `peer-generation-v1` delegates ordering to a replaceable coordinating
 peer. Browser, agent and optional native processes are ordinary participants.
 The creator is not a permanent authority, and a long-running process gains no
 administrative or finality rights merely by remaining online.
@@ -109,11 +110,14 @@ adapter is installed; actual session readiness and recovery remain separate.
 `tendril.connected` describes the hosted application connection and stays false
 in peer mode.
 
-The proposed generation session's default view is `applied` and contains a selected generation and one
+The generation backend contract uses `applied` and contains a selected generation and one
 coherent revision for SQL, events and outcomes. It has no `finalRevision`.
 Operations distinguish saved, applied and abandoned work. Recovery emits an
 explicit coherent reset; stale event cursors cannot pretend an excluded history
-is append-only. See [application backends](APPLICATION_BACKENDS.md).
+is append-only. The public session supplies `query`, `readView` and `changes`;
+Tendriller composition still needs a matching adapter for that contract. The
+existing chronological adapter does not convert generations. See
+[application backends](APPLICATION_BACKENDS.md).
 
 Agents use their own Chronolog session for application description, coherent
 query, command, operation wait, changes and recovery inspection. The host MCP

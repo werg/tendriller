@@ -1,6 +1,6 @@
 {
   "repository": "werg/chronolog-db",
-  "source": "4efa3546f930734328879bdca3984282bd19156b",
+  "source": "b2e18239b21c115f98ab677ae9d170443a9c671a",
   "profile": "peer-generation-v1",
   "dirty": false,
   "inputs": [
@@ -37,7 +37,7 @@
     "packages/protocol/src/views.ts"
   ],
   "sha256": {
-    "control.mjs": "7efb50aa799613dba968ff51afb01c2871125b1596a859b5f54ac79d1c2b7cc5",
-    "control.d.ts": "1cb53d8951d569ab76f648f60eeeee6a8212bb1a78fa881c29c6b4beeb183b17"
+    "control.mjs": "a516669837fc799bdf4b94321ed7809887cd3c9dd6f57197bbc37852205ceedb",
+    "control.d.ts": "70d86bc7944c2dadf333f2074ab71b6d55e959ff3bcdd4f45e72ad076d508d23"
   }
 }
