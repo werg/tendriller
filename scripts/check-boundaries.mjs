@@ -11,6 +11,7 @@ const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelco
 // artifacts may enter the Worker; application execution and peer sessions cannot.
 const controlImports = new Map([
   ['server/src/peer-generations.ts', '@chronolog/peer-generation/control'],
+  ['server/src/peer-control-identity.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-participant.ts', '@chronolog/peer-generation/participant'],
 ]);
