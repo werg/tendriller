@@ -11,6 +11,7 @@ import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi } from "../../contract/index.mjs";
 import { createSignalBinding } from "../../contract/signals.mjs";
+import { createHostedSignals } from './signals';
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<void> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;
@@ -69,7 +70,7 @@ export function startRuntime(cfg: TendrilConfig, options: {
   });
   const api: RuntimeApi = {
     application: core.application, peers: core.peers, members: core.members,
-    signals: createSignalBinding(options.signals),
+    signals: createSignalBinding(options.signals ?? (peerApplication ? undefined : createHostedSignals(core))),
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
     state: core.state, scopes: core.scopes, timers: core.timers,

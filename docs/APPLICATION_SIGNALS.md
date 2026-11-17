@@ -13,12 +13,14 @@ assert that a state change succeeded. See [application backends](APPLICATION_BAC
 
 `@tendriller/core/signals` exports the dependency-free `Signals` contract and
 `createSignalBinding`. The browser exposes that binding as `tendril.signals`.
-It is independent of `tendril.application` and starts no network connection.
+It is independent of `tendril.application`. Hosted pages receive an implementation
+over their existing authenticated page socket. Peer pages install their chosen
+implementation explicitly; the binding itself starts no network connection.
 
 ```js
-// Composition owns connections and authentication. The public Chronolog client
+// Peer composition owns connections and authentication. The public Chronolog client
 // talks to the replica's owning Worker; page code does not hold its private keys.
-tendril.signals.install(client.signals);
+tendril.signals.install(client.signals); // Omit on hosted pages: already installed.
 
 // No operation ID, transaction, or durable retry follows this call.
 await tendril.signals.send('typing', { active: true }, { ttlMs: 1500 });
@@ -63,12 +65,15 @@ every sample or chunk must be recoverable. Even a reliable transport cannot
 deliver through a disconnected session indefinitely.
 
 The binding's `available` flag means an implementation is installed, not that a
-remote peer is reachable. `ready()` explicitly waits for installation. Calling
+remote peer is reachable. It is already true on hosted pages. `ready()` explicitly
+waits for installation on a peer page. Calling
 `send` or `subscribe` before installation fails with `signal_unavailable`, so
 stale messages cannot accumulate while bootstrap runs. Install once; the signal
-implementation owns reconnects. Custom browser bootstraps can instead pass
+implementation owns its connection lifetime. Custom browser bootstraps can instead pass
 `{signals: client.signals}` to `startRuntime`. No database backend installation is
-required by either form.
+required by either form. Start live subscriptions independently of application
+catch-up or finality. A standard SQL-peer bootstrap still opens its replica before
+exposing its governed port; use a standalone channel when no SQL engine is needed.
 
 ## Standalone or governed peers
 
@@ -96,10 +101,50 @@ comes from the selected encrypted transport and its admission policy. Applicatio
 policy decides whether that sender may issue instructions; receiving a message
 on a topic named `instruction` is insufficient.
 
-## Hosted streams
+## Hosted application signals
+
+The default hosted runtime supplies `tendril.signals` with no stream creation or
+schema setup. Native agents explicitly open a live connection with the public SDK:
+
+```js
+const signals = await host.connectSignals({ signal: lifetime.signal });
+try {
+  await signals.send('run.progress', { runId, completed: 3 }, { ttlMs: 2000 });
+  for await (const message of signals.subscribe({
+    topics: ['attention'], mode: 'latest', signal: lifetime.signal,
+  })) {
+    // Check authenticated sender + application policy before acting on suggestions.
+    observeAttention(message);
+  }
+} finally {
+  signals.close();
+}
+```
+
+The SDK socket uses the agent token in a WebSocket subprotocol header. It has no
+automatic reconnect or retry. A fresh connection is a fresh live session. Browser
+subscriptions follow the page's existing reconnect lifecycle, discard pending
+messages at disconnect, and resume with new traffic only.
+
+Owners, approved guests and agents may send. Display links may receive. Every
+participant sees only its selected page's live scope, but topics do not restrict
+the audience within that scope. Use a different authorized channel for private
+messages. The host supplies the sender identity, session and sequence; payload
+fields cannot impersonate an owner or authorize an agent instruction. Current
+credentials and account access are checked during delivery.
+
+Hosted limits are a 16 KiB frame, a 30 second maximum TTL (5 seconds by default),
+32 pending sends, 64 subscriptions and 64 queued messages per subscription.
+Senders may dispatch 50 messages per second. Dedicated SDK connections are bounded
+to 32 per page. Overload is explicit and stale work is discarded. The host stores
+session/rate metadata but no live payload, application receipt, event or replay
+history. Live dispatch does not synchronize workflows or wake the agent.
+
+## Producer streams
 
 For the Cloudflare application backend, [named ephemeral streams](STREAMS.md)
-remain a hosted live distribution facility:
+serve scoped collector ingestion with explicit stream readers and producer
+permissions. Choose them when that stream administration is part of the task:
 
 ```js
 // Create once with the agent SDK.

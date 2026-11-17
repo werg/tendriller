@@ -15,6 +15,7 @@ interface PendingRequest {
   resolve(value: any): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
+  cleanup?(): void;
 }
 const REQUEST_TIMEOUT_MS = 15_000;
 const failure = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -27,6 +28,7 @@ export function createRequests(host: RequestHost, clock: Clock = globalThis) {
   const remove = (request: PendingRequest) => {
     if (pending.get(request.message.cid) === request) pending.delete(request.message.cid);
     clock.clearTimeout(request.timer);
+    request.cleanup?.();
   };
 
   return {
@@ -39,7 +41,8 @@ export function createRequests(host: RequestHost, clock: Clock = globalThis) {
         host.enqueue(msg);
       } else if (!(host.connected() && host.send(msg)) && policy.raw === "memory") memory.push(msg);
     },
-    request(message: RequestMessage): Promise<any> {
+    request(message: RequestMessage, options: { signal?: AbortSignal } = {}): Promise<any> {
+      if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? failure("cancelled", "Request cancelled"));
       const msg = { ...message, cid: message.cid || host.newCid() };
       const policy = deliveryPolicy(msg.t);
       if (policy.request === "connected" && !host.connected())
@@ -52,6 +55,14 @@ export function createRequests(host: RequestHost, clock: Clock = globalThis) {
           reject(failure(host.connected() ? "timeout" : "offline", host.connected() ? "request timed out" : "offline"));
         }, REQUEST_TIMEOUT_MS) };
         pending.set(msg.cid, request);
+        const cancel = () => {
+          remove(request);
+          const index = memory.indexOf(msg);
+          if (index >= 0) memory.splice(index, 1);
+          reject(options.signal?.reason ?? failure("cancelled", "Request cancelled"));
+        };
+        request.cleanup = () => options.signal?.removeEventListener("abort", cancel);
+        options.signal?.addEventListener("abort", cancel, { once: true });
         if (policy.request === "outbox") host.enqueue(msg);
         else if (!(host.connected() && host.send(msg))) {
           if (policy.request === "connected") {

@@ -18,7 +18,7 @@ export interface Core extends Pick<RuntimeApi, "members" | "application" | "peer
   transcript: TranscriptEntry[];
   state: StateApi;
   instruction(text: string, via: "voice" | "text"): Promise<ConversationResult>;
-  transportRequest(msg: { t: string; [k: string]: any }): Promise<any>;
+  transportRequest(msg: { t: string; [k: string]: any }, options?: { signal?: AbortSignal }): Promise<any>;
   raw(msg: object): void;
   // Additions (runtime-core). Bus also emits: "transcript" (entry), "notify_local" ({title,body}) when no
   // Notification permission, "reload" ({version}), "welcome" (the raw welcome message).

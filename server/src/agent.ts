@@ -1,4 +1,5 @@
 import { changeLifetime } from './lifetime';
+import { openSignalSocket } from './signals';
 import { PEER_ROUTE, handlePeers } from "./peers";
 import { MEMBERSHIP_ROUTE, handleMembership } from "./membership";
 import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
@@ -51,6 +52,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   // Scope producers before routing any ordinary agent API.
   if (/^Bearer\s+tp_/i.test(req.headers.get("Authorization") ?? "")) { requireCloudflareApplication(t); return handleProducer(t, req, rest); }
   if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, await authenticateAgent(t, req));
+  if (rest === 'signals/socket') return openSignalSocket(t, req, await authenticateAgent(t, req));
   if (MEMBERSHIP_ROUTE.test(rest)) return handleMembership(t, req, url, rest, await authenticateAgent(t, req));
   if (APPLICATION_ROUTE.test(rest)) return handleApplication(t, req, url, rest, await authenticateAgent(t, req));
   if (isApplicationPath(rest)) requireCloudflareApplication(t);

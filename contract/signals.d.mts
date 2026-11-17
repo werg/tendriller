@@ -33,3 +33,4 @@ export interface SignalBinding extends Signals {
 export declare class SignalError extends Error { readonly code: string; constructor(code: string, message: string) }
 /** No sockets, timers, persistence, host fallback, Chronolog imports or protocol assumptions. */
 export declare function createSignalBinding(initial?: Signals): SignalBinding;
+export { connectHostedSignals, createHostedSignalPort, HOSTED_SIGNAL_PROTOCOL, SIGNAL_LIMITS, type HostedSignals, type HostedSignalTransport, type HostedSignalConnectionOptions } from './hosted-signals.mjs';

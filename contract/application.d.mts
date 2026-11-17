@@ -70,6 +70,8 @@ export interface ApplicationChangeOptions {
   readonly signal?: AbortSignal;
 }
 /**
+ * Tendriller's live collaboration contract, with local and settled views. A future
+ * asynchronous branch/merge API has no finality and is not modeled by this interface.
  * One selected backend owns persistence, proposal identity, retries and application
  * interpretation. The host neither queues a second copy nor interprets programs.
  * Query/program grammar is explicit in capabilities; a JSON backend does not claim SQL.

@@ -1,4 +1,5 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
+import { isSignalSocket, handleSignalMessage } from './signals';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
 import { applicationSelection } from "../../contract/application.mjs";
 import { selectedApplication } from "./application";
@@ -56,6 +57,7 @@ export interface Att {
   sessionHash?: string | null;
   /** Per-stream live cursor; retained in the hibernating socket attachment. */
   streams?: Record<string, number>;
+  live?: import('./signals').SignalSession;
 }
 
 export interface DeviceRow {
@@ -246,6 +248,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isSignalSocket(ws)) { await handleSignalMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
     if (this.isAgentSocket(ws)) {
       // Normally answered by Durable Object's hibernation auto-response; also handle
@@ -262,6 +265,7 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
+    if (isSignalSocket(ws)) return;
     if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) {
       const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
@@ -274,6 +278,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (isSignalSocket(ws)) return;
     if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
     else handleWsClose(this, ws);

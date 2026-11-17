@@ -22,7 +22,9 @@ Choose the least durable mechanism that satisfies the task:
 | State and an event that must succeed together | Selected backend `submit` |
 | An irreversible external action | Final accepted intent plus durable effect checkpoint and provider idempotency/reconciliation |
 
-Install signals independently with `tendril.signals.install(client.signals)`.
+Hosted pages already have `tendril.signals`; native hosted agents explicitly use
+`await host.connectSignals({signal})` and close that connection when finished.
+Peer pages install signals independently with `tendril.signals.install(client.signals)`.
 Signals have no operation ID, replay, durable retry, SQL or finality prerequisite.
 Default `mode:'all'` uses bounded FIFO; use `mode:'latest'` only for replaceable
 values. Expire presence/typing and clear previews on disconnect. A successful
@@ -34,6 +36,11 @@ User Undo/Redo is a new conditional program with a new operation ID. Retrying an
 old operation preserves its exact bytes and signed time, even if a closed
 frontier now rejects it. A deliberate new intent follows review, not an automatic
 retimestamp.
+
+Timestamp-ordered live collaboration is Tendriller's Chronolog mode: show the
+provisional local view promptly, and consume final accepted intent for durable
+effects. A future asynchronous branch/merge mode would share timestamp ordering
+and replay but have no finality, final view, or final-intent consumer contract.
 
 For the UI, observe `application.changes({view:'local',signal})`, capture a
 `readView({view:'local'})` on each invalidation, read related projections from that

@@ -15,7 +15,7 @@ arrival batches was explored and is not an adopted design.
   guards. Queued does not mean accepted. A first inclusion behind closed author
   time is a visible rejection; a new attempt requires deliberate review and a
   new identity. An exact retry of included work recovers its original result.
-- Every replica has one immutable final prefix and one replaceable local suffix.
+- Every live collaboration replica has one immutable final prefix and one replaceable local suffix.
   Rollback and redo rebuild local state; they never repeat network effects.
 - The host, membership administrator, finality signers, schema administrator,
   row owners, and effect workers have explicit independent powers.
@@ -25,6 +25,12 @@ arrival batches was explored and is not an adopted design.
   aliases nor migration machinery.
 
 ## Durable history
+
+Live collaboration is the default Tendriller interpretation. A future async
+branch/merge interpretation has no finality at all: no final frontier, final view,
+final/provisional outcomes or final-intent consumer. Signed operations, timestamp
+ordering and deterministic replay are shared primitives; finality belongs only
+to the live policy. This refactor does not implement a speculative branch API.
 
 Chronolog orders accepted proposals by signed author time, signing key and stable
 proposal identity. Arrival order and relay choice do not change that order.
@@ -78,8 +84,8 @@ Live previews may accompany those operations but cannot establish their outcome.
 - [x] Review actual offline, agent, live-message and authority requirements.
 - [x] Preserve timestamp ordering as the architectural review baseline.
 - [ ] Unify timestamp finality inputs and execution/replay boundaries.
-- [ ] Give peer live messages an independent bounded transport lane.
-- [ ] Supply the common hosted live-message adapter and author guidance.
+- [x] Give peer live messages an independent bounded transport lane.
+- [x] Supply the common hosted live-message adapter and author guidance.
 - [ ] Exercise offline inclusion, revocation, replay, restart, final effects,
   and live messages during bulk synchronization through public interfaces.
 - [ ] Refresh portable artifacts and cross-repository qualification.

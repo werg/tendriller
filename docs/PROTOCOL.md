@@ -32,6 +32,23 @@ then closes. It never relays application frames. Chronolog authenticates and
 owns the subsequent WebRTC data plane, membership and finality. See [peer connections](PEER_CONNECTIONS.md).
 The count-only wake route below belongs to the Cloudflare application deployment.
 
+## Live application messages
+
+Hosted pages use `signal_send`, `signal_subscribe` and `signal_unsubscribe` on
+their authenticated page socket. A native client opens `GET A/signals/socket`
+with `tendriller.signals.v1` and its agent token in the subprotocol header (or
+ordinary bearer authorization). Page clients may explicitly use the corresponding
+`_tendril/signals/socket` route with their page session and Origin. The host sends
+`signal_ready`; requests carry a correlation `cid` and receive `ack`. A send
+contains `message:{topic,payload,issuedAtMs,expiresAtMs}`; delivery uses
+`{t:'signal',signal:{scope,authorId,sessionId,sequence,...message}}`.
+
+There is no durable ID, retry, replay cursor, receipt history, workflow execution
+or wake notification on this path. `ack` confirms live dispatch, not receipt or
+processing by another participant. The scope is the selected hosted application;
+peer pages use their installed peer signal channel. See
+[live signals](APPLICATION_SIGNALS.md) for permissions, expiration and bounds.
+
 ## Lifecycle and delivery
 
 `POST /api/tendrils` requires an owner email and accepts optional name and mode. Interactive pages require a live receiver or configured wake path before first publication; dashboards can publish without conversational delivery. Owner sign-in claims the page. Claim deadlines, residency, quotas, invited guest approval and suspension are enforced on the server.

@@ -16,6 +16,8 @@ export interface NotificationStatus { available: boolean; subscribed_devices: { 
 export interface NotificationDelivery { sent: number; failed: number;
   deliveries: { device: string; ok: boolean; status: number; gone: boolean }[] }
 export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransferClient {
+  /** Explicit live connection. No durable outbox, replay or automatic reconnect. */
+  connectSignals(options?: Pick<import('./hosted-signals.mjs').HostedSignalConnectionOptions, 'signal' | 'open'>): Promise<import('./hosted-signals.mjs').HostedSignals>;
   members: import("./members.mjs").MembersClient;
   application(): Promise<import("./application.mjs").ApplicationBackend<import("./application.mjs").CloudflareApplicationProgram, import("./application.mjs").CloudflareApplicationSubmission>>;
   peers: import("./peers.mjs").PeersClient;

@@ -3,7 +3,8 @@
 A page selects one application history at creation. Tendriller hosts the page,
 account sessions, publication recovery, explicit blob facilities, connection hints
 and short-lived WebRTC rendezvous. The selected backend owns application persistence, authored operations,
-retry identity, execution, event replay, and finality.
+retry identity, execution and event replay. The current Tendriller application
+contract is for live collaboration and includes finality.
 
 For a resident native agent deployment, select a Chronolog peer backend. Run a
 replica, timers and effect workers in the resident agent service. A finality
@@ -29,6 +30,19 @@ to Cloudflare or to a different finality policy. Chronolog replicas always use
 the same signed author-time execution order. A finality provider supplies
 inclusion evidence and closes the author-time frontier; it does not choose that
 execution order.
+
+Timestamp-ordered live collaboration is the default Chronolog interpretation for
+Tendriller. A local provisional suffix provides responsive editing while a
+steadily advancing closed author-time frontier settles results. Closing time
+requires authenticated evidence and complete admitted history, not merely a
+wall-clock delay. Missing proof, bodies or keys keep progress pending.
+
+A future asynchronous branch/merge interpretation can reuse signed operations,
+timestamp ordering and deterministic replay while choosing histories through
+different inclusion and merge rules. It has **no finality concept**. Branch tips
+are not final frontiers, and it would not implement this live contract by
+inventing dummy final states or final-intent readers. That mode is not implemented
+by the current Tendriller adapter.
 
 ## Installation and readiness
 
@@ -203,8 +217,9 @@ permission to impersonate an owner or system role. Use the event's authenticated
 `origin` and application policy when presenting a message.
 
 Presence, typing, token chunks, and replaceable progress use
-[`tendril.signals`](APPLICATION_SIGNALS.md), installed independently with
-`tendril.signals.install(client.signals)`. Use `send` and `subscribe`; choose
+[`tendril.signals`](APPLICATION_SIGNALS.md). Hosted pages receive it automatically;
+peer pages install it independently with `tendril.signals.install(client.signals)`.
+Use `send` and `subscribe`; choose
 `mode:'latest'` only for replaceable values. Default FIFO preserves pending
 discrete events within explicit bounds. Signals require no program, SQL engine,
 outbox or finality service. End a generated response with a durable

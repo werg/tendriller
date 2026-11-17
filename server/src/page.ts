@@ -1,4 +1,5 @@
 import { PEER_ROUTE, handlePeers } from "./peers";
+import { openSignalSocket } from './signals';
 import { MEMBERSHIP_ROUTE, handleMembership } from "./membership";
 import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
 // Page routes under P (PROTOCOL section 2.1), executed inside the Tendril Durable Object.
@@ -58,6 +59,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
   if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
+  if (sub === 'signals/socket') return openSignalSocket(t, req, principal);
   if (MEMBERSHIP_ROUTE.test(sub)) return handleMembership(t, req, url, sub, principal);
   if (APPLICATION_ROUTE.test(sub)) return handleApplication(t, req, url, sub, principal);
   if (isApplicationPath(sub)) requireCloudflareApplication(t);

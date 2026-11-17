@@ -133,6 +133,34 @@ test("state snapshots are bounded connected reads and never enter either deliver
   assert.equal(h.sent.length, 2); assert.deepEqual(h.persisted, []); assert.equal(h.clock.jobs.size, 0);
 });
 
+test('live requests are cancellable and never survive a disconnect or enter either queue', async () => {
+  const h = requestsSetup(true), stop = new AbortController();
+  const cancelled = assert.rejects(h.requests.request({ t: 'signal_send', cid: 'cancelled' }, { signal: stop.signal }), /disposed/);
+  stop.abort(new Error('disposed')); await cancelled;
+  assert.equal(h.clock.jobs.size, 0);
+  assert.equal(h.requests.receive({ t: 'ack', cid: 'cancelled' }), false);
+  const pending = ['signal_send', 'signal_subscribe', 'signal_unsubscribe'].map((t, i) =>
+    assert.rejects(h.requests.request({ t, cid: `live-${i}` }), { code: 'offline' }));
+  h.online(false); h.requests.disconnected(); await Promise.all(pending);
+  assert.equal(h.clock.jobs.size, 0);
+  for (const t of ['signal_send', 'signal_subscribe', 'signal_unsubscribe']) {
+    h.requests.raw({ t });
+    await assert.rejects(h.requests.request({ t }), { code: 'offline' });
+  }
+  const before = h.sent.length;
+  h.online(true); h.requests.flush();
+  assert.equal(h.sent.length, before); assert.deepEqual(h.persisted, []);
+});
+
+test('cancelling an unsent request removes its volatile work before reconnect', async () => {
+  const h = requestsSetup(false), stop = new AbortController();
+  const pending = assert.rejects(h.requests.request({ t: 'versions', cid: 'discarded' }, { signal: stop.signal }), /disposed/);
+  stop.abort(new Error('disposed')); await pending;
+  h.online(true); h.requests.flush();
+  assert.deepEqual(h.sent, []); assert.equal(h.clock.jobs.size, 0);
+  assert.equal(h.requests.receive({ t: 'versions', cid: 'discarded' }), false);
+});
+
 test("stream send failures do not queue, and both response error envelopes preserve their error codes", async () => {
   const h = requestsSetup(true);
   h.sendable(false);

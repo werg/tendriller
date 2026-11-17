@@ -51,7 +51,8 @@ progress for application/network readiness.
 
 ## Live application signals
 
-`tendril.signals` is an independent, initially uninstalled messaging port. Install
+`tendril.signals` is an independent messaging port. Hosted pages receive it over
+their existing authenticated socket. On a peer page, install
 the public peer client's implementation with
 `tendril.signals.install(client.signals)`, or pass `{signals}` to `startRuntime`.
 Its `available` flag reports installation; `ready()` explicitly waits for it.
@@ -61,7 +62,7 @@ Sending or subscribing before installation fails immediately with
 Use `send(topic, json, {ttlMs?,signal?})` and
 `subscribe({topics?,mode?:'all'|'latest',signal?})`. Default `all` preserves pending
 messages within a bounded FIFO; `latest` coalesces replaceable values. This port
-works without a durable application backend. It creates no host connection,
+works without a durable application backend. The binding creates no extra connection,
 outbox, SQL transaction or finality request. See [live signals](APPLICATION_SIGNALS.md)
 for envelopes, error handling, authorization and expiring views.
 
