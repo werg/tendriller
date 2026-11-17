@@ -207,9 +207,10 @@ second operation journal or application command proxy.
 
 External actions need an explicit dispatch policy, recovery-aware journal and
 reconciliation. Protect the complete prerequisite program when its business
-conditions must survive recovery. The preview's applied result does not promise
-irreversibility; neither does the unified target's selected-history final result
-when its documented recovery exception applies.
+conditions must survive recovery. An applied result does not promise
+irreversibility. Generation sessions expose `applied()` and retained coverage
+through `shared()`; `final()` is reserved for a separately selected profile that
+can provide that stronger guarantee.
 
 The host is a Chronolog participant with a deliberately small control role. Its
 HTTP and hibernatable invitation transports do not determine its authority or

@@ -10,11 +10,10 @@ selected-prefix recovery, fresh peers and returning branches. See the
 [paired qualification record](https://github.com/werg/tendriller-contrib/blob/feat/chronolog-application-log/cookbooks/run-a-peer-application/notes/peer-generation-qualification.md) for exact archive/source identities
 and the separate actual-host gate. Browser storage, deployed login, Internet
 routes, relay cost and recovery freshness require their own measured evidence.
-The unified target uses `local()` for applied-here results and `final()` for
-committed/applied selected-history results, with explicit recovery able to abandon
-a recent suffix. The preview still exports `applied()`; historical chronological
-immutability belongs to the [older implementation](APPLICATION_BACKENDS.md), not
-to the proposed method name.
+Generation sessions expose `applied()` for execution in the selected history and
+`shared()` for retained-prefix coverage. Recovery can abandon a recent applied
+suffix. `final()` belongs only to profiles that provide irreversible outcomes;
+it is neither a synonym nor a planned rename for generation-scoped application.
 
 ## Ownership and trust
 
@@ -154,8 +153,7 @@ or second retry journal.
 ## Historical implementation and evidence
 
 Existing chronological packages retain their authenticated guarantees and original
-evidence. They are not a second architecture mandate for new applications. The
-selected-history target makes recovery and possible suffix loss explicit.
+evidence. The selected-history profile makes recovery and possible suffix loss explicit.
 Effects need recovery-aware journaling and reconciliation; protect their complete
 prerequisites only when the application requires survival of that recovery.
 
