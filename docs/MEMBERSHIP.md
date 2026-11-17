@@ -4,18 +4,19 @@ An owned resident page with a peer application hosts its membership administrato
 in the existing Tendril Durable Object. The engine bundles the public
 `@chronolog/membership` artifact by default. The same portable administrator can
 run on another host that supplies durable private bytes and a signed native
-ledger connection. It does not load a SQL engine or fetch application payloads.
+control-proof connection. It does not load a SQL engine or fetch application
+descriptors or payloads.
 
 The host account decides who may request or approve a device. Chronolog's signed
 capabilities decide what that device may do in the group. Logging into Tendriller,
-opening a guest link, or connecting to its relay does not grant database access.
+opening a guest link, or completing an introduction does not grant database access.
 
 ## Responsibilities and trust
 
 | Participant | Stores and verifies | Authority |
 | --- | --- | --- |
-| Tendril membership administrator | Root signing key, epoch keys, account-to-device requests, durable decisions, small receipt descriptors and closure evidence | Approves reader/writer capabilities and rotates keys at proved author-time boundaries |
-| Native finality authority | Receipt descriptors, signed closure markers, prefix roots and signing key | Certifies inclusion and the closed author-time frontier |
+| Tendril membership administrator | Root signing key, epoch keys, account-to-device requests, durable decisions, complete control projection and its signed checkpoint | Approves reader/writer capabilities and rotates keys at proved author-time boundaries |
+| Native finality authority | Receipt descriptors, cumulative control commitment, signed closure markers, prefix roots and signing key | Certifies inclusion, the complete control projection and the closed author-time frontier |
 | Full browser/native replica | Signed encrypted application bodies, verified capabilities, epoch keys for its reader, local database | Derives author-time order and executes the selected deterministic application program |
 | Schema administrator | Its own application signing key | Changes the application's SQL schema under the signed genesis policy |
 
@@ -25,16 +26,26 @@ host. It receives no implicit reader, writer, or schema grant. A native agent ca
 be both a full replica and the schema administrator; these are explicit grants
 and keys, not consequences of running the finality endpoint.
 
-The administrator verifies the full certified receipt prefix and its signed
-author-time closure markers. Receipt positions never determine application
-execution order. Application
-descriptors contain a group route, kind, epoch, payload hash and byte length;
-their encrypted bodies travel through the replicas' body-by-hash transport.
-Signed capability and epoch envelopes are inline, so a thin administrator can
-apply membership without downloading application history. It retains the small
-descriptors needed to verify the native certificate and bootstrap approved
-devices. It does not append application history to the optional Cloudflare
-record log.
+Signed genesis selects `signed-inclusion-v2`. Each signed author-time closure
+commits to a cumulative count and rolling root of every finalized control
+descriptor. A projected entry binds its control index, original receipt bytes,
+receipt position and first covering closure cutoff. Full replicas recompute
+that projection while verifying the complete application ledger. Receipt
+positions never determine application execution order.
+
+The administrator verifies the signed closure, its immediately covering prefix
+certificate and the complete control chain. It receives inline governance and
+key-wrap descriptors plus the checkpoint, with no intervening application
+descriptors or bodies. Filtering unproved ledger positions is not sufficient:
+the signed count/root authenticates completeness, and changed bytes, order,
+activation cutoff, group, regression or conflicting checkpoints fail closed.
+Partial pages do not activate grants or become durable checkpoints.
+
+The administrator's retained history and replay work therefore scale with
+control changes. Explicit synchronization also receives a bounded signed
+checkpoint when application history advances. A full replica still verifies the
+entire original ledger and fetches encrypted bodies through its peer transport.
+The host does not append a second application history to the Cloudflare log.
 
 This is a bandwidth and execution boundary, not a claim that the root is unable
 to access content. The administrator retains epoch keys for key delivery and can
@@ -95,8 +106,8 @@ The native endpoint is `POST /_chronolog/membership` using the portable bounded
 CBOR protocol. Each request is root-signed and binds the exact group, history,
 genesis/profile/authority configuration, expiry, nonce and operation contents.
 The native endpoint accepts only inline governance descriptors for append and
-returns its own receipt entries, retained closure markers and certificates. It does not certify a
-caller-supplied head. Production URLs use HTTPS; HTTP is accepted only for local
+returns compact control pages, a signed closure checkpoint and its certificate.
+It does not certify a caller-supplied head. Production URLs use HTTPS; HTTP is accepted only for local
 loopback qualification.
 
 ## Enroll a device
@@ -137,14 +148,18 @@ An approval response includes the root-signed approval, capability identities,
 required key epochs and a certified canonical target. It is not a substitute for
 verifying and applying those records. A new device first downloads bounded pages
 from `members.history({ after, limit })`. Decode the returned bytes with
-`decodeMembershipLedgerResponse(bytes, 'read')`, verify the native certificate and
-the exact descriptor chain, then apply the signed inline grant/key-wrap records.
+`decodeMembershipLedgerResponse(bytes, 'read')`, then pass each page to the
+governed replica's `ingestMembership(page)`. It verifies completeness and the
+native checkpoint before applying the signed inline grant/key-wrap records.
+Advance `after` using the last returned control's `index`, not its original
+application receipt `entry.position`.
 The endpoint requires an active approved reader for the account (or the owner).
-It returns no raw epoch keys or application bodies.
+It returns no raw epoch keys, application descriptors or application bodies.
 
 This bootstrap resolves the reader-handshake dependency: the device learns and
 verifies its reader grant before opening the ordinary reader-authenticated peer
-connection. It then fetches retained application bodies, unwraps its own keys and
+connection. Control bootstrap does not claim any applied application history.
+The replica then fetches retained application descriptors and bodies, unwraps its own keys and
 materializes the captured target. The application may report full readiness only
 after Chronolog's enrollment readiness checks confirm all of those conditions.
 
@@ -173,7 +188,7 @@ are separate explicit decisions. The host cannot turn a local roster status into
 an unverified membership boundary.
 
 `members.sync()` resumes up to 16 retained pending host decisions and catches up
-to a captured certified prefix. Native unavailability, cancellation, and uncertain
+to a captured certified control checkpoint. Native unavailability, cancellation, and uncertain
 append replies leave decisions pending. They are not reported as final domain
 rejection. Retry the original operation after recovery. A stopped Cloudflare
 membership host prevents new administrative decisions and first enrollment;
@@ -195,13 +210,22 @@ Page mutation routes use the existing same-origin session checks.
 | `POST members/approve` | Owner or owner agent | Original root-signed approval and capability identities |
 | `POST members/revoke` | Owner or owner agent | Revoke/rotate result and canonical target |
 | `POST members/sync` | Authenticated page account or owner agent | Resumed decisions and verified progress |
-| `GET members/history?after=&limit=` | Approved reader account or owner | Exact bounded CBOR descriptors and certificate |
+| `GET members/history?after=&limit=` | Approved reader account or owner | Bounded CBOR control proof, signed checkpoint and certificate |
 
-History pages contain at most 128 entries and approximately 1 MiB of descriptor
+`progress.verifiedThrough` and `progress.root` refer to the verified control
+count/root. `receiptThrough` separately identifies the application receipt range
+covered by the closure, `checkpointThrough` its committed marker position, and
+`closedThroughMs` the author-time cutoff as a decimal string.
+
+History pages contain at most 128 controls and approximately 1 MiB of descriptor
 payload; the entire encoded response is bounded to 2 MiB. The private byte store
 allows 16 MiB per value and 64 MiB total. The host retains at most 2,048 device
 requests and 4,096 administrative decisions. Quota exhaustion fails explicitly;
 it does not erase a retained decision or silently prune verified history.
+JSON request bodies have a 30-second total read deadline and are read before
+entering the shared administrator queue. Access is rechecked after the read.
+A stalled client cannot block another participant's roster or administrative
+operation.
 
 The SDK contains the HTTP client and types. The engine embeds the pinned public
 portable administrator artifact; it needs no Chronolog checkout, database engine,

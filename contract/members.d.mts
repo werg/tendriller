@@ -17,7 +17,8 @@ export interface MembershipInfo {
   descriptor: MembershipDescriptor | null;
   identity: { accountId: string; requestPrefix: string; administrator: boolean };
   requests: MemberRequest[];
-  progress: { verifiedThrough: number; root: string } | null;
+  /** verifiedThrough/root describe compact controls, independently of application receipt coverage. */
+  progress: { verifiedThrough: number; root: string; receiptThrough: number; checkpointThrough: number; closedThroughMs: string } | null;
   pendingActions: number;
 }
 export interface MemberApproval {

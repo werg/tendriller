@@ -131,6 +131,8 @@ export type RuntimeConfiguration = {
   features: RuntimeArtifactFeatures & { push: boolean; vapid: string | null; shared_by: string };
   preview?: boolean;
   application?: import("./application.mjs").ApplicationSelection;
+  /** Public resident introduction addresses supplied with the initial page. */
+  peerBootstrap?: import("./peers.mjs").PeerBootstrap;
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }

@@ -17,7 +17,9 @@ connected to a Durable Object.
 A newly opened page can contact an explicitly configured HTTPS introduction
 endpoint on a reachable resident Chronolog peer. That endpoint exchanges one
 offer and answer, then the authenticated application connection uses WebRTC.
-The page configuration supplies the address; the resident does not poll
+The page configuration supplies the address through the immutable
+`tendril.peers.initialBootstrap` snapshot; no separate host discovery request is
+needed. The resident does not poll
 Cloudflare or keep reconnecting to an empty rendezvous to discover callers.
 
 Tendriller's bounded rendezvous is an optional introduction path when the
@@ -41,6 +43,13 @@ An unreachable native peer needs an explicit wake/rendezvous provider or an
 existing reachable peer. A transient pairing endpoint alone is not a resident
 discovery service. An offline proposal retains
 its original identity and is synchronized by Chronolog when a route returns.
+
+Chronolog owns connection supervision as well as individual negotiation. A
+supervisor permits one attempt and one active session, fences late completions,
+uses explicit bounded retry/backoff, and performs no polling while connected.
+The browser composition ties each transferred channel to its owning Worker and
+waits for authenticated attachment separately from transport establishment.
+An established session remains independent of the introduction listener.
 
 ## Transport boundary
 
@@ -66,11 +75,14 @@ their separate hosted runtime and its existing behavior.
 ## Membership and finality
 
 The host administrator is activated by participant operations, not by each
-application proposal or peer frame. Its existing certified-history verifier
-still checks the descriptors needed to establish governance when it is invoked;
-this is not yet a sparse control-proof protocol. It never downloads detached
-application bodies. Removing that scan would require a separately authenticated
-control proof, not skipping validation of the shared ledger.
+application proposal or peer frame. It verifies a complete compact control
+projection authenticated by a signed finality closure. The commitment binds
+control count/order, original receipt bytes and activation cutoffs. Full replicas
+recompute the projection while checking the entire ledger. The administrator
+downloads no application descriptors or bodies and retains control history plus
+its checkpoint. Participant synchronization therefore scales with governance
+changes rather than all intervening application writes. See
+[membership proofs and trust](MEMBERSHIP.md).
 
 Inclusion/finality is a Chronolog policy. A resident finality peer may still be
 needed for final results; removing Cloudflare from application traffic does not

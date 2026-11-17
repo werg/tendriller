@@ -1196,7 +1196,12 @@ export class Tendril extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (!this.exists()) return;
-    await recoverLifetimeChange(this);
+    try { await recoverLifetimeChange(this); }
+    catch (error) {
+      // Account storage recovery must not prevent bounded introductions from
+      // expiring or suppress the explicit five-second recovery retry below.
+      console.error('Lifetime recovery remains pending', error);
+    }
     const now = this.now();
     await runTimers(this);
     expirePeers(this);

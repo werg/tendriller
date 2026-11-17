@@ -21,17 +21,22 @@ export function decodePeerFrame(bytes) {
   encodePeerFrame(frame); return frame;
 }
 export function validatePeerBootstrap(value) {
-  if (!value || value.version !== 1 || !Array.isArray(value.endpoints) || value.endpoints.length > PEER_LIMITS.endpoints ||
-      Object.keys(value).some(key => !['version', 'endpoints'].includes(key))) fail('invalid_bootstrap', 'Expected a bounded version 1 endpoint list');
-  return { version: 1, endpoints: value.endpoints.map(endpoint => {
-    if (!endpoint || typeof endpoint.url !== 'string' || endpoint.url.length > 2048 || !['direct', 'relay'].includes(endpoint.route) ||
-        Object.keys(endpoint).some(key => !['url', 'route'].includes(key))) fail('invalid_bootstrap', 'Invalid peer endpoint');
+  if (!value || value.version !== 2 || !Array.isArray(value.endpoints) || value.endpoints.length > PEER_LIMITS.endpoints ||
+      Object.keys(value).some(key => !['version', 'endpoints'].includes(key))) fail('invalid_bootstrap', 'Expected a bounded version 2 introduction endpoint list');
+  const urls = new Set();
+  const endpoints = value.endpoints.map(endpoint => {
+    if (!endpoint || typeof endpoint.url !== 'string' || endpoint.url.length > 2048 ||
+        Object.keys(endpoint).some(key => key !== 'url')) fail('invalid_bootstrap', 'Invalid introduction endpoint');
     let url; try { url = new URL(endpoint.url); } catch { fail('invalid_bootstrap', 'Invalid peer endpoint URL'); }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.username || url.password || url.hash || !(url.protocol === 'wss:' || url.protocol === 'ws:' && local))
-      fail('invalid_bootstrap', 'Peer endpoints require WSS without embedded credentials (WS is limited to loopback tests)');
-    return { url: url.href, route: endpoint.route };
-  }) };
+    if (url.username || url.password || url.hash || url.search || url.href.length > 2048 ||
+        !(url.protocol === 'https:' || url.protocol === 'http:' && local))
+      fail('invalid_bootstrap', 'Introduction endpoints require HTTPS without credentials, query or fragment (HTTP is limited to loopback tests)');
+    if (urls.has(url.href)) fail('invalid_bootstrap', 'Introduction endpoints must be distinct');
+    urls.add(url.href);
+    return Object.freeze({ url: url.href });
+  });
+  return Object.freeze({ version: 2, endpoints: Object.freeze(endpoints) });
 }
 export function createPeerConnection(socket, { route, queueBytes = PEER_LIMITS.queueBytes }) {
   if (!['direct', 'relay'].includes(route) || !Number.isSafeInteger(queueBytes) || queueBytes < PEER_LIMITS.frameBytes + 3 || queueBytes > PEER_LIMITS.queueBytes)
@@ -140,8 +145,13 @@ export function createPeerConnection(socket, { route, queueBytes = PEER_LIMITS.q
   });
 }
 export function connectPeer(endpoint, { protocols = [], socket = (url, protocols) => new WebSocket(url, protocols) } = {}) {
-  const checked = validatePeerBootstrap({ version: 1, endpoints: [endpoint] }).endpoints[0];
-  return createPeerConnection(socket(checked.url, protocols), { route: checked.route });
+  if (!endpoint || typeof endpoint.url !== 'string' || endpoint.url.length > 2048 || !['direct', 'relay'].includes(endpoint.route) ||
+      Object.keys(endpoint).some(key => !['url', 'route'].includes(key))) fail('invalid_connection', 'Invalid WebSocket endpoint');
+  let url; try { url = new URL(endpoint.url); } catch { fail('invalid_connection', 'Invalid WebSocket endpoint URL'); }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.username || url.password || url.hash || !(url.protocol === 'wss:' || url.protocol === 'ws:' && local))
+    fail('invalid_connection', 'WebSocket endpoints require WSS without credentials (WS is limited to loopback tests)');
+  return createPeerConnection(socket(url.href, protocols), { route: endpoint.route });
 }
 
 // Rendezvous is a bounded introduction, never an application transport.
@@ -242,9 +252,10 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
 }
 
 /** Shared browser/agent host client. Construction performs no network work. */
-export function createPeersClient({ base, request, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
+export function createPeersClient({ base, request, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
   const prefix = base.replace(/\/+$/, '');
   return Object.freeze({
+    initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
     rendezvous(channel, peerId, options = {}) {

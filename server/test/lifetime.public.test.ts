@@ -119,3 +119,26 @@ it('releases a definitively rejected resident quota reservation so a later revie
     expect(lifetimeChangePending(t)).toBe(false);
   });
 });
+
+it('continues alarm work and schedules bounded retries while account recovery stays unavailable', async () => {
+  const page = await resident();
+  await inDO(page.id, async t => {
+    const restore = interceptAccountWrite(t, async () => { throw new Error('Account storage unavailable'); });
+    const originalCleanup = t.cleanup.bind(t);
+    let cleanups = 0;
+    t.cleanup = async () => { cleanups++; t.db.set('next_cleanup', t.now() + 86_400_000); };
+    try {
+      await expect(changeLifetime(t, 'ad_hoc')).rejects.toMatchObject({ code: 'lifetime_pending' });
+      t.db.set('next_cleanup', 0);
+      await t.alarm();
+      expect(cleanups).toBe(1);
+      expect(lifetimeChangePending(t)).toBe(true);
+      const alarm = await t.ctx.storage.getAlarm();
+      expect(alarm).not.toBeNull();
+      expect(alarm!).toBeGreaterThan(Date.now());
+      expect(alarm!).toBeLessThanOrEqual(Date.now() + 5000);
+    } finally { t.cleanup = originalCleanup; restore(); }
+  });
+  await runAlarm(page.id);
+  expect(await inDO(page.id, t => lifetimeChangePending(t))).toBe(false);
+});

@@ -74,13 +74,14 @@ test('binary or excessive incoming data cannot become a peer application relay',
 test('client construction is quiet and agent credentials stay in the protocol header', async () => {
   const calls = [], sockets = [], headers = ['tendriller.rendezvous.v1', 'agent-token'];
   const client = createPeersClient({ base: 'https://example.test/api/t/id', protocols: headers,
-    request: async (...args) => { calls.push(args); return { version: 1, endpoints: [] }; },
+    request: async (...args) => { calls.push(args); return { version: 2, endpoints: [] }; },
     socket: (url, protocols) => { sockets.push({ url, protocols }); return new Socket(); } });
   assert.equal(calls.length, 0); assert.equal(sockets.length, 0);
+  assert.equal(client.initialBootstrap, null);
   const pending = client.rendezvous('room', 'endpoint');
   assert.deepEqual(sockets, [{ url: 'wss://example.test/api/t/id/peers/rendezvous?channel=room&peerId=endpoint', protocols: headers }]);
   pending.close();
-  assert.deepEqual(await client.bootstrap(), { version: 1, endpoints: [] });
+  assert.deepEqual(await client.bootstrap(), { version: 2, endpoints: [] });
   assert.deepEqual(calls, [['peers/bootstrap']]);
   assert.throws(() => client.rendezvous('bad/path', 'endpoint'), { code: 'invalid_rendezvous' });
   assert.throws(() => client.rendezvous('room', 'endpoint', { timeoutMs: 0 }), { code: 'invalid_rendezvous' });

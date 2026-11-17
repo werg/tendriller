@@ -76,11 +76,24 @@ hosted `peers/socket` relay or protocol compatibility alias.
 
 ## Bootstrap hints and explicit WebSocket transport
 
-`peers.setBootstrap({version:1,endpoints:[{url,route}]})` stores bounded optional
-endpoint hints. `peers.bootstrap()` reads them. Only the owner or an agent may
-replace hints; authorized nondisplay page identities may read them. WSS is
-required, except loopback WS for development. Credentials and URL fragments are
-rejected. Do not place application grants or keys in a hint URL or query.
+`peers.setBootstrap({version:2,endpoints:[{url}]})` stores up to eight distinct
+resident HTTPS introduction addresses. HTTPS is required except for loopback
+HTTP development. Credentials, query strings, fragments, route claims and the
+former WebSocket hint shape are rejected. Introduction addresses do not carry
+application grants or keys and do not predict which ICE route will be selected.
+
+The initial peer HTML embeds the current configuration. Read
+`tendril.peers.initialBootstrap` to select a resident without another host
+request; the snapshot and its endpoints are immutable. A running connection or
+its recovery uses that snapshot and contacts the resident directly. Only the
+owner or an agent may replace hints. Authorized nondisplay page identities may
+explicitly call `peers.bootstrap()` to fetch a fresh snapshot. Display pages
+receive no introduction configuration. Native clients without an injected
+snapshot expose `initialBootstrap: null`.
+
+Authored assets retain immutable publication caching. Peer HTML is revalidated
+on reload because its injected addresses may change independently of the
+publication. There is no background configuration refresh or discovery poll.
 
 An explicitly selected external native WebSocket can use the public generic
 `connectPeer({route:'direct',url})` and `createPeerConnection(socket,{route,
@@ -88,6 +101,8 @@ queueBytes?})` helpers. These utilities are independent of the host's rendezvous
 They expose `ready`, `frames`, ordered bounded `send`, idempotent `close`, and
 `stats` for encoded bytes, local queued bytes and opening time. Their optional
 route label is supplied by the deployment; it is not a measured ICE result.
+These explicit WebSocket endpoints are separate from the resident introduction
+configuration and are never selected as an automatic fallback.
 
 The native WebSocket envelope is magic `0x54`, version `1`, domain index
 `0` records / `1` signals / `2` control, then a nonempty opaque payload. Record and

@@ -138,8 +138,8 @@ async function info(t: Tendril, principal: Principal): Promise<MembershipInfo> {
 }
 
 function rememberProgress(t: Tendril, value: MembershipAdministrator) {
-  const { verifiedThrough, root } = value.progress;
-  t.db.set('membership_progress', { verifiedThrough, root });
+  const { verifiedThrough, root, receiptThrough, checkpointThrough, closedThroughMs } = value.progress;
+  t.db.set('membership_progress', { verifiedThrough, root, receiptThrough, checkpointThrough, closedThroughMs: String(closedThroughMs) });
 }
 
 function approvedReader(t: Tendril, accountId: string, value?: MembershipAdministrator): boolean {
@@ -221,6 +221,16 @@ async function resume(t: Tendril, value: MembershipAdministrator) {
 }
 
 export async function handleMembership(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
+  identity(t, principal);
+  if (selectedApplication(t).kind !== 'peer') throw new HttpError(409, 'application_backend', 'Membership belongs to this page\'s selected peer application');
+  // Read untrusted client bytes before joining the shared administrator queue.
+  // A paused upload cannot block roster reads, approvals or revocation. Every
+  // authority check is repeated after the body arrives and the queue advances.
+  const bodyLimit = path === 'members' && req.method === 'PUT' ? 256 * 1024
+    : path === 'members/requests' && req.method === 'POST' ? 512 * 1024
+      : (path === 'members/approve' || path === 'members/revoke') && req.method === 'POST' ? 32 * 1024 : null;
+  if (bodyLimit !== null && path !== 'members/requests') identity(t, principal, true);
+  const inputBody = bodyLimit === null ? undefined : await readJson(req, bodyLimit);
   return serial(t, async () => {
     identity(t, principal);
     if (selectedApplication(t).kind !== 'peer') throw new HttpError(409, 'application_backend', 'Membership belongs to this page\'s selected peer application');
@@ -228,7 +238,7 @@ export async function handleMembership(t: Tendril, req: Request, url: URL, path:
       if (path === 'members' && req.method === 'GET') return json(await info(t, principal));
       if (path === 'members' && req.method === 'PUT') {
         residentAdministrator(t, principal);
-        const input = parseConfiguration(await readJson(req, 256 * 1024)), state = host(t);
+        const input = parseConfiguration(inputBody), state = host(t);
         const previous = t.db.get<MembershipConfiguration | null>('membership_configuration', null);
         if (previous && JSON.stringify(previous) !== JSON.stringify(input)) throw new HttpError(409, 'membership_configuration_conflict', 'The membership group and native authority are immutable for this page');
         await provisioned(t, input, { get: key => state.store.get(key), put: async (key, bytes) => {
@@ -238,7 +248,7 @@ export async function handleMembership(t: Tendril, req: Request, url: URL, path:
         return json(await info(t, principal));
       }
       if (path === 'members/requests' && req.method === 'POST') {
-        const body = await readJson(req, 512 * 1024);
+        const body = inputBody;
         if (!isPlainObject(body) || Object.keys(body).join(',') !== 'signedRequest') throw new HttpError(400, 'bad_request', 'Expected one signed enrollment request');
         const bytes = decodeBytes(body.signedRequest);
         let signed: SignedEnrollmentRequest;
@@ -274,13 +284,13 @@ export async function handleMembership(t: Tendril, req: Request, url: URL, path:
       }
       if (path === 'members/approve' && req.method === 'POST') {
         identity(t, principal, true);
-        const input = parseApproval(await readJson(req, 32 * 1024)); requestRow(t, input.requestId);
+        const input = parseApproval(inputBody); requestRow(t, input.requestId);
         const action = stage(t, principal, 'approve', { ...input });
         return json(await perform(t, await administrator(t), action));
       }
       if (path === 'members/revoke' && req.method === 'POST') {
         identity(t, principal, true);
-        const body = await readJson(req, 32 * 1024);
+        const body = inputBody;
         if (!isPlainObject(body) || Object.keys(body).sort().join(',') !== 'capabilityIds,operationId' || !Array.isArray(body.capabilityIds) ||
             !body.capabilityIds.length || body.capabilityIds.length > 128) throw new HttpError(400, 'bad_request', 'Expected stable operationId and bounded capabilityIds');
         const capabilityIds = [...new Set(body.capabilityIds.map((id: unknown) => encodeBytes(decodeBytes(id, 32))))].sort();

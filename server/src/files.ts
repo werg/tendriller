@@ -1,4 +1,5 @@
 import { selectedApplication } from "./application";
+import { peerBootstrap } from "./peers";
 // Files, versions, health and serving (PROTOCOL sections 4 and 5).
 import type { Tendril } from "./tendril";
 import { addActivity } from "./activity";
@@ -289,6 +290,10 @@ export function retainPublication(t: Tendril, device: string, version: number): 
 /** Serves `P<rest>` for a page request. */
 export async function servePageFile(t: Tendril, req: Request, base: string, rest: string,
   role: "owner" | "guest" | "display", accountId: string | null): Promise<Response> {
+  const application = selectedApplication(t);
+  // A display link has no peer-introduction permission. Application capabilities
+  // remain independently authenticated by Chronolog after connection setup.
+  const introductions = application.kind === "peer" && role !== "display" ? peerBootstrap(t) : undefined;
   const pinned = /^_publications\/([1-9][0-9]*)\/(.*)$/.exec(rest);
   let version = pinned ? Number(pinned[1]) : servedVersion(t);
   if (pinned) {
@@ -324,7 +329,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application: selectedApplication(t), documentPath: null, features: t.features(), publication: null });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -339,7 +344,11 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application: selectedApplication(t), documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
+    // The authored publication is immutable; its injected resident addresses are
+    // current host configuration. Reloading may refresh them without changing
+    // the publication or adding a discovery poll to a running application.
+    if (application.kind === "peer") headers.set("Cache-Control", "private, no-cache");
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
     return new Response(req.method === "HEAD" ? null : html, { headers });
   }
   headers.set("Content-Length", String(file.size));

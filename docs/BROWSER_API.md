@@ -23,9 +23,12 @@ Optional voice types and code are separate exports.
 For peer-backed pages, use `await tendril.application.ready()` and its selected
 backend's `submit`, `events`, `readView`, and `operations` methods. Install the
 matching adapter once with `tendril.application.install(backend)`; host connection
-readiness belongs to that backend. `tendril.peers.bootstrap()` and
-`.rendezvous(channel,peerId)` provide bounded connection setup without granting
-database membership. The Chronolog composition owns the actual WebRTC channel. See
+readiness belongs to that backend. `tendril.peers.initialBootstrap` contains the
+immutable resident HTTPS addresses supplied in the initial page, requiring no
+discovery request. `tendril.peers.bootstrap()` is an explicit configuration
+refresh, and `.rendezvous(channel,peerId)` provides optional coordinated
+introductions without granting database membership. The Chronolog composition
+owns the actual WebRTC channel, authenticated readiness and recovery. See
 [application backends](APPLICATION_BACKENDS.md) and
 [peer connections](PEER_CONNECTIONS.md) for the public contracts.
 

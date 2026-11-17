@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPeerConnection, decodePeerFrame, encodePeerFrame, PEER_LIMITS, validatePeerBootstrap } from '../peers.mjs';
+import { connectPeer, createPeerConnection, decodePeerFrame, encodePeerFrame, PEER_LIMITS, validatePeerBootstrap } from '../peers.mjs';
 class Socket extends EventTarget {
   readyState = 1; bufferedAmount = 0; sent = []; closes = [];
   send(value) { this.sent.push(value); }
@@ -66,10 +66,36 @@ test('transport error rejects pending work without preventing physical close', a
   assert.deepEqual(socket.closes, [{ code: 1000, reason: 'Peer session closed' }]);
   assert.equal(peer.stats.queuedBytes, 0);
 });
-test('bootstrap hints do not accept credentials or arbitrary insecure endpoints', () => {
-  assert.deepEqual(validatePeerBootstrap({ version: 1, endpoints: [{ route: 'direct', url: 'wss://peer.example/socket' }] }).endpoints[0], { route: 'direct', url: 'wss://peer.example/socket' });
-  for (const url of ['https://peer.example/socket', 'ws://peer.example/socket', 'wss://secret@peer.example/socket', 'wss://peer.example/socket#capability'])
-    assert.throws(() => validatePeerBootstrap({ version: 1, endpoints: [{ route: 'relay', url }] }), { code: 'invalid_bootstrap' });
+test('bootstrap supplies immutable bounded HTTPS introductions without credentials or route claims', () => {
+  const input = { version: 2, endpoints: [{ url: 'https://PEER.example:443/introduce' }] };
+  const hints = validatePeerBootstrap(input);
+  assert.deepEqual(hints.endpoints, [{ url: 'https://peer.example/introduce' }]);
+  input.endpoints[0].url = 'https://elsewhere.example/';
+  assert.equal(hints.endpoints[0].url, 'https://peer.example/introduce');
+  assert.throws(() => hints.endpoints.push({ url: 'https://elsewhere.example/' }), TypeError);
+  assert.throws(() => { hints.endpoints[0].url = 'https://elsewhere.example/'; }, TypeError);
+  for (const url of ['wss://peer.example/socket', 'http://peer.example/introduce', 'https://secret@peer.example/',
+    'https://peer.example/#capability', 'https://peer.example/?token=secret'])
+    assert.throws(() => validatePeerBootstrap({ version: 2, endpoints: [{ url }] }), { code: 'invalid_bootstrap' });
+  for (const endpoints of [[{ url: 'https://peer.example/', route: 'direct' }],
+    [{ url: 'https://peer.example/' }, { url: 'https://PEER.example:443/' }],
+    Array.from({ length: PEER_LIMITS.endpoints + 1 }, (_, i) => ({ url: `https://peer${i}.example/` }))])
+    assert.throws(() => validatePeerBootstrap({ version: 2, endpoints }), { code: 'invalid_bootstrap' });
+  assert.throws(() => validatePeerBootstrap({ version: 1, endpoints: [] }), { code: 'invalid_bootstrap' });
+  for (const url of ['http://localhost/introduce', 'http://127.0.0.1/introduce', 'http://[::1]/introduce'])
+    assert.equal(validatePeerBootstrap({ version: 2, endpoints: [{ url }] }).endpoints[0].url, url);
+});
+
+test('explicit native WebSocket transport validates independently of introduction configuration', async () => {
+  const socket = new Socket(), calls = [];
+  const peer = connectPeer({ url: 'wss://peer.example/socket', route: 'direct' }, {
+    socket: (url, protocols) => { calls.push({ url, protocols }); return socket; },
+  });
+  await peer.ready;
+  assert.deepEqual(calls, [{ url: 'wss://peer.example/socket', protocols: [] }]);
+  for (const url of ['https://peer.example/socket', 'ws://peer.example/socket', 'wss://secret@peer.example/socket'])
+    assert.throws(() => connectPeer({ url, route: 'direct' }), { code: 'invalid_connection' });
+  peer.close();
 });
 
 test('abort before socket readiness removes bounded pending sends without blocking later traffic', async () => {

@@ -83,6 +83,7 @@ function environment({ defaultEntry = false } = {}) {
   };
   const configuration = { id: 'page', base: '/page/', version: 1, documentPath: 'app.html', publication,
     ws: '/page/_tendril/ws', application: { kind: 'peer', id: 'history-one' },
+    peerBootstrap: { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] },
     features: { push: true, vapid: 'AAAA', shared_by: 'Fixture', speech: null } };
   let api;
   if (defaultEntry) {
@@ -104,6 +105,8 @@ function environment({ defaultEntry = false } = {}) {
 
 test('a peer runtime operates with no host connection, host outbox, background fetch or diagnostics', async () => {
   const env = environment();
+  assert.deepEqual(plain(env.api.peers.initialBootstrap), { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] });
+  assert.throws(() => { env.api.peers.initialBootstrap.endpoints[0].url = 'https://elsewhere.example/'; }, TypeError);
   assert.equal(env.api.connected, false);
   const installed = backend(); env.api.application.install(installed);
   assert.equal(await env.api.application.ready(), installed); await flush();

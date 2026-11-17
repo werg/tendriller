@@ -89,6 +89,29 @@ it('requires an owned resident peer page and a complete explicit public configur
   expect((await body<MembershipInfo>(await page.api('GET', 'members'))).descriptor).toBeNull();
 });
 
+it('keeps a stalled enrollment body outside the administration queue and rechecks access when it arrives', async () => {
+  const page = await create({ listener: false, application: { kind: 'peer', id: 'membership' } });
+  await inDO(page.id, async t => {
+    const principal = await authenticateAgentToken(t, page.token);
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { body = controller; } });
+    const requestUrl = new URL('https://page.example/_tendril/members/requests');
+    const pending = handleMembership(t, new Request(requestUrl, { method: 'POST', body: stream }), requestUrl, 'members/requests', principal);
+    const rejected = expect(pending).rejects.toMatchObject({ status: 403, code: 'forbidden' });
+    try {
+      const infoUrl = new URL('https://page.example/_tendril/members');
+      const response = await handleMembership(t, new Request(infoUrl), infoUrl, 'members', principal);
+      expect((await response.json<MembershipInfo>()).requests).toEqual([]);
+      t.db.run('DELETE FROM tokens WHERE hash=?', principal.credentialHash);
+      body.enqueue(new TextEncoder().encode('{}')); body.close();
+      await rejected;
+    } finally {
+      // A failing test must not retain the pending body until its real deadline.
+      try { body.error(new Error('test finished')); } catch { /* Already closed. */ }
+    }
+  });
+});
+
 it('rechecks roster authorization after asynchronous descriptor preparation', async () => {
   const page = await create({ listener: false, application: { kind: 'peer', id: 'membership' } });
   await apiJson(page, 'PATCH', '', { lifetime: 'resident' });

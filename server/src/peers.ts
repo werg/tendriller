@@ -5,6 +5,10 @@ import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
 
 export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous)$/;
+/** Public connection configuration is read while serving the page, without a second discovery request. */
+export function peerBootstrap(t: Tendril) {
+  return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
+}
 interface PeerAttachment {
   kind: 'rendezvous'; channel: string; session: string; peerId: string; principal: Principal;
   role: 'offerer' | 'answerer'; expiresAt: number; ready: boolean; sent: boolean; complete: boolean;
@@ -43,7 +47,7 @@ export function expirePeers(t: Tendril): void { peers(t); }
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
   if (!authorized(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
   if (path === 'peers/bootstrap') {
-    if (req.method === 'GET') return json(t.db.get('peer_bootstrap', { version: 1, endpoints: [] }));
+    if (req.method === 'GET') return json(peerBootstrap(t));
     if (req.method === 'PUT') {
       if (principal.kind !== 'agent' && !(principal.kind === 'page' && principal.role === 'owner')) throw new HttpError(403, 'forbidden');
       let value;

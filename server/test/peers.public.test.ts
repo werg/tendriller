@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
+import { advance, api, apiJson, create, inDO, publishFilesJson, req, runAlarm, type Handle } from './helpers';
 import { createPeerRendezvous, PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
 import { closePeer } from '../src/peers';
 
@@ -19,11 +19,13 @@ async function open(h: Handle, channel: string, peerId: string, page = false) {
 
 it('introduces authorized peers, exchanges exactly two descriptions, and retires the host sockets', async () => {
   const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'peer-history' } });
-  const hints = { version: 1, endpoints: [{ route: 'direct', url: 'wss://resident.example/peer' }] };
+  const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
   expect(await apiJson(h, 'PUT', 'peers/bootstrap', hints)).toEqual(hints);
   expect(await apiJson(h, 'GET', 'peers/bootstrap')).toEqual(hints);
   expect((await req(`${h.api}/peers/bootstrap`, { anonymous: true })).status).toBe(401);
-  expect((await api(h, 'PUT', 'peers/bootstrap', { version: 1, endpoints: [{ route: 'direct', url: 'ws://insecure.example/' }] })).status).toBe(400);
+  expect((await api(h, 'PUT', 'peers/bootstrap', { version: 2, endpoints: [{ url: 'http://insecure.example/' }] })).status).toBe(400);
+  const html = await (await req(h.page_url)).text();
+  expect(JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]).peerBootstrap).toEqual(hints);
   const agent = await open(h, 'one', 'agent'), page = await open(h, 'one', 'browser', true);
   const [a, b] = await Promise.all([agent.connection.ready, page.connection.ready]);
   expect(a.role).toBe('offerer'); expect(b).toEqual({ session: a.session, role: 'answerer' });
@@ -45,6 +47,26 @@ it('has no hosted binary peer relay endpoint or protocol', async () => {
     { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' })).status).toBe(404);
   expect((await api(h, 'GET', 'peers/rendezvous?channel=x&peerId=y', undefined,
     { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' })).status).toBe(400);
+});
+
+it('serves current resident introductions in peer HTML without exposing them to display links', async () => {
+  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'initial-introductions' } });
+  await publishFilesJson(h, { 'index.html': '<head></head>Peer application', 'app.js': 'export const peer = true;' });
+  const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
+  await apiJson(h, 'PUT', 'peers/bootstrap', hints);
+  const response = await req(h.page_url + '_publications/1/index.html');
+  expect(response.headers.get('Cache-Control')).toBe('private, no-cache');
+  const config = (html: string) => JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
+  expect(config(await response.text()).peerBootstrap).toEqual(hints);
+  const next = { version: 2, endpoints: [{ url: 'https://replacement.example/introduce' }] };
+  await apiJson(h, 'PUT', 'peers/bootstrap', next);
+  expect(config(await (await req(h.page_url + '_publications/1/index.html')).text()).peerBootstrap).toEqual(next);
+  expect((await req(h.page_url + '_publications/1/app.js')).headers.get('Cache-Control')).toContain('immutable');
+  const display = await inDO(h.id, async t => t.renderLink(await t.createLink('display', null, null)));
+  expect(config(await (await req(display.url, { anonymous: true })).text()).peerBootstrap).toBeUndefined();
+  expect((await req(display.url + '_tendril/peers/bootstrap', { anonymous: true })).status).toBe(403);
+  expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length, devices: t.db.one('SELECT COUNT(*) AS n FROM devices') })))
+    .toEqual({ sockets: 0, devices: { n: 0 } });
 });
 
 it('does not register hosted application devices or sockets for a peer page', async () => {
