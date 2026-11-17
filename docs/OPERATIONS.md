@@ -26,7 +26,7 @@ The current-generation application can operate without host requests while its c
 
 ## Isolated branch previews
 
-The branch-preview controller selects a passing exact branch head and provisions isolated Worker/account/file resources. It checks that the branch still exists before deployment. Preview names and deletion targets derive from that branch; cleanup must remain scoped to its resources.
+The branch-preview controller selects a passing exact branch head and provisions isolated Worker/account/file resources. It checks that the branch still exists before deployment. The free-tier live preview slot holds one branch at a time: deploying another branch first removes previous preview resources, including its D1 database and R2 bucket. CI still tests every branch without a live preview. Preview names and deletion targets derive from the branch; cleanup must remain scoped to its resources.
 
 Previews use the same engine and code artifacts. They begin with creation paused and need their own working identity callbacks before accepting claims. Their disabled scheduled reconciliation means they do not qualify production scheduling. See `scripts/branch-preview.mjs plan --branch <branch>` for the concrete resource plan; deploying or deleting it is an external action.
 
