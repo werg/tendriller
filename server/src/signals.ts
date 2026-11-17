@@ -2,7 +2,7 @@ import { HOSTED_SIGNAL_PROTOCOL, SIGNAL_LIMITS, validateSignalInput } from '../.
 import type { EphemeralSignal } from '../../contract/signals.mjs';
 import type { Principal } from './access';
 import { accountActive, currentPrincipal, pageAccessAllowed, socketPrincipal } from './access';
-import { requireCloudflareApplication, selectedApplication } from './application';
+import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
@@ -33,13 +33,20 @@ const open = (ws: WebSocket): boolean => ws.readyState === WebSocket.READY_STATE
 function send(ws: WebSocket, message: unknown): void {
   if (!open(ws)) return;
   if ((ws as WebSocket & { bufferedAmount?: number }).bufferedAmount! > 256 * 1024) {
-    ws.close(1013, 'Live signal receiver is too slow'); return;
+    // A hosted page shares this socket with durable application requests.
+    // Drop its live delivery under pressure without retiring that connection.
+    if (isSignalSocket(ws)) ws.close(1013, 'Live signal receiver is too slow');
+    return;
   }
-  try { ws.send(JSON.stringify(message)); } catch { try { ws.close(1013, 'Live signal connection failed'); } catch {} }
+  try { ws.send(JSON.stringify(message)); }
+  catch {
+    // Live delivery owns only a dedicated signal socket. A shared page socket
+    // can still carry durable requests after a transient send failure.
+    if (isSignalSocket(ws)) { try { ws.close(1013, 'Live signal connection failed'); } catch {} }
+  }
 }
 
 export async function openSignalSocket(t: Tendril, req: Request, identity: Principal): Promise<Response> {
-  requireCloudflareApplication(t);
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'upgrade_required');
   if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(value => value.trim()).includes(HOSTED_SIGNAL_PROTOCOL))
     throw new HttpError(400, 'bad_request', `Live connections require ${HOSTED_SIGNAL_PROTOCOL}`);
@@ -57,7 +64,6 @@ export async function openSignalSocket(t: Tendril, req: Request, identity: Princ
 
 /** The existing browser socket and explicit SDK sockets share live authorization and fanout. */
 export async function signalCommand(t: Tendril, ws: WebSocket, message: Record<string, unknown>): Promise<Record<string, unknown>> {
-  requireCloudflareApplication(t);
   let author = principal(t, ws);
   if (!canRead(author) || !open(ws)) throw new HttpError(403, 'forbidden', 'Live signal access revoked');
   if (message.t === 'signal_subscribe' || message.t === 'signal_unsubscribe') {
@@ -112,7 +118,17 @@ export async function handleSignalMessage(t: Tendril, ws: WebSocket, raw: string
   let queue = queues.get(ws);
   if (!queue) { queue = { tail: Promise.resolve(), count: 0, bytes: 0 }; queues.set(ws, queue); }
   if (queue.count >= SIGNAL_LIMITS.pending || queue.bytes + bytes > SIGNAL_LIMITS.bytes * SIGNAL_LIMITS.pending) {
-    ws.close(1013, 'Live signal sender is too fast'); return;
+    if (isSignalSocket(ws)) ws.close(1013, 'Live signal sender is too fast');
+    else {
+      // Refuse this live attempt before admission. Keep the page connection
+      // available for unrelated state work and subsequent fresh signals.
+      try {
+        const message = JSON.parse(raw);
+        if (typeof message?.cid === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(message.cid))
+          send(ws, { t: 'ack', cid: message.cid, error: 'signal_overflow', message: 'Live signal sender is busy' });
+      } catch { /* A malformed excess frame is dropped without queued work. */ }
+    }
+    return;
   }
   queue.count++; queue.bytes += bytes;
   const current = queue;

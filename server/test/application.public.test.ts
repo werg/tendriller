@@ -77,7 +77,14 @@ it('pins coherent state and effective event history even as later operations fin
   const h = await create({ mode: 'dashboard', listener: false });
   await apiJson(h, 'POST', 'application/changes', { operationId: 'one', program: program(state(1), emit('counter', 1)) });
   const view = await apiJson<any>(h, 'GET', 'application/view');
+  expect(view).toMatchObject({ view: 'final', finalRevision: view.revision });
+  expect(await apiJson(h, 'GET', 'application/view?view=local')).toEqual({ ...view, view: 'local' });
+  expect((await api(h, 'GET', 'application/view?view=unknown')).status).toBe(400);
   await apiJson(h, 'POST', 'application/changes', { operationId: 'two', program: program(state(2), emit('counter', 2)) });
+  const advanced = await apiJson<any>(h, 'GET', 'application/view');
+  expect(advanced.revision).not.toBe(view.revision);
+  expect(advanced.finalRevision).toBe(advanced.revision);
+  expect(view.finalRevision).toBe(view.revision);
   const events = await apiJson<ApplicationEventBatch>(h, 'GET', `application/events?${new URLSearchParams({ revision: view.revision })}`);
   expect(view.state.task).toBe(1); expect(events.revision).toBe(view.revision); expect(events.transactions).toHaveLength(1);
   expect(events.transactions[0].events[0].payload).toBe(1);

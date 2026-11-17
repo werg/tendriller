@@ -36,15 +36,32 @@ test('Cloudflare captured read views retain their event prefix and release expli
   const calls = [];
   const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async path => {
     calls.push(path);
-    return path === 'application/view' ? { revision: 'opaque-1', state: { count: 1 }, scopes: [] }
+    return path === 'application/view?view=local' ? { view: 'local', revision: 'opaque-1', finalRevision: 'opaque-1', state: { count: 1 }, scopes: [] }
       : { revision: 'opaque-1', transactions: [], scannedThrough: 'cursor-1', hasMore: false };
   } });
-  const view = await backend.readView();
+  const view = await backend.readView({ view: 'local' });
+  assert.equal(view.view, 'local'); assert.equal(view.revision, 'opaque-1'); assert.equal(view.finalRevision, 'opaque-1');
   const state = view.query('state'); state.count = 99;
   assert.equal(view.query('state').count, 1);
   await view.readEvents({ topics: ['chat'] });
   assert.match(calls.at(-1), /revision=opaque-1/);
   view.release(); assert.throws(() => view.query('state'), { code: 'view_released' });
+});
+
+test('Cloudflare read views validate captured metadata and default to the final view', async () => {
+  const snapshot = { view: 'final', revision: 'r1', finalRevision: 'r1', state: {}, scopes: [] };
+  const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async path => {
+    assert.equal(path, 'application/view?view=final'); return { ...snapshot };
+  } });
+  const view = await backend.readView();
+  snapshot.revision = 'r2'; snapshot.finalRevision = 'r2';
+  assert.equal(view.revision, 'r1'); assert.equal(view.finalRevision, 'r1'); assert.equal(view.view, 'final');
+  view.release();
+  await assert.rejects(backend.readView({ view: 'unknown' }), { code: 'invalid_view' });
+  for (const malformed of [{ ...snapshot, view: 'local' }, { ...snapshot, finalRevision: '' }, { ...snapshot, finalRevision: undefined }]) {
+    const invalid = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => malformed });
+    await assert.rejects(invalid.readView(), { code: 'invalid_response' });
+  }
 });
 
 test('durable subscriptions pull one whole batch at a time and carry empty scan progress', async () => {
@@ -125,7 +142,7 @@ test('event readers require host-authenticated provenance outside user payloads'
 
 test('Cloudflare read views reject non-object state roots before publishing a snapshot', async () => {
   for (const state of [null, [], 'invalid', true, 42]) {
-    const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => ({ revision: 'r1', state, scopes: [] }) });
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async () => ({ view: 'final', revision: 'r1', finalRevision: 'r1', state, scopes: [] }) });
     await assert.rejects(backend.readView(), { code: 'invalid_response' });
   }
 });

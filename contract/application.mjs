@@ -204,14 +204,17 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
         try { await delay(signal); } catch (error) { if (signal?.aborted) return; throw error; }
       }
     } }),
-    async readView() {
-      const snapshot = await request('application/view');
-      if (!snapshot || typeof snapshot.revision !== 'string' || !snapshot.revision || !isStateObject(snapshot.state) || !Array.isArray(snapshot.scopes))
+    async readView(options = {}) {
+      const view = options.view ?? 'final';
+      if (!['local', 'final'].includes(view)) fail('invalid_view', 'Choose the local or final application view');
+      const snapshot = await request(`application/view?view=${view}`);
+      if (!snapshot || snapshot.view !== view || typeof snapshot.revision !== 'string' || !snapshot.revision ||
+          typeof snapshot.finalRevision !== 'string' || !snapshot.finalRevision || !isStateObject(snapshot.state) || !Array.isArray(snapshot.scopes))
         fail('invalid_response', 'Invalid application read snapshot');
       assertStateJson(snapshot.state);
       let released = false;
       const check = () => { if (released) fail('view_released', 'The application read view was released'); };
-      return Object.freeze({ revision: snapshot.revision,
+      return Object.freeze({ view, revision: snapshot.revision, finalRevision: snapshot.finalRevision,
         query(name, parameters = []) {
           check();
           if (parameters.length || !['state', 'scopes'].includes(name)) fail('unsupported_query', 'The JSON backend supports the state and scopes snapshot queries');

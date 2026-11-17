@@ -134,7 +134,14 @@ export async function handleApplication(t: Tendril, req: Request, url: URL, path
     if (path === 'application' && req.method === 'GET') return json({ selection: selectedApplication(t) });
     requireCloudflareApplication(t);
     if (path === 'application/changes' && req.method === 'POST') return json(await submitApplication(t, principal, await readJson(req, APPLICATION_LIMITS.programBytes + 4096)));
-    if (path === 'application/view' && req.method === 'GET') return json(t.transaction(() => ({ revision: revision(t), ...t.getState() })));
+    if (path === 'application/view' && req.method === 'GET') {
+      const view = url.searchParams.get('view') ?? 'final';
+      if (view !== 'local' && view !== 'final') throw new HttpError(400, 'invalid_view', 'Choose the local or final application view');
+      return json(t.transaction(() => {
+        const token = revision(t);
+        return { view, revision: token, finalRevision: token, ...t.getState() };
+      }));
+    }
     if (path === 'application/revision' && req.method === 'GET') {
       const view = url.searchParams.get('view') ?? 'final';
       if (view !== 'local' && view !== 'final') throw new HttpError(400, 'invalid_view', 'Choose the local or final application view');

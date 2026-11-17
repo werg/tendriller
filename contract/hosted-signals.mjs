@@ -2,7 +2,7 @@ import { SignalError } from './signals.mjs';
 
 export const HOSTED_SIGNAL_PROTOCOL = 'tendriller.signals.v1';
 export const SIGNAL_LIMITS = Object.freeze({ bytes: 16 * 1024, ttlMs: 30_000, futureSkewMs: 2_000,
-  pending: 32, subscriptions: 64, queue: 64, connections: 32 });
+  pending: 32, subscriptions: 64, queue: 64, latestKeys: 256, connections: 32 });
 const fail = (code, message) => { throw new SignalError(code, message); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -49,9 +49,25 @@ export function validateSignalEnvelope(value) {
   return structuredClone(value);
 }
 
+function waitForRequest(request, signal) {
+  return new Promise((resolve, reject) => {
+    const cancelled = () => {
+      signal.removeEventListener('abort', cancelled);
+      reject(signal.reason ?? new SignalError('signal_cancelled', 'Signal send cancelled'));
+    };
+    signal.addEventListener('abort', cancelled, { once: true });
+    request.then(value => {
+      signal.removeEventListener('abort', cancelled);
+      if (signal.aborted) cancelled(); else resolve(value);
+    }, error => { signal.removeEventListener('abort', cancelled); reject(error); });
+    if (signal.aborted) cancelled();
+  });
+}
+
 /** One bounded live port for the existing browser socket and explicit SDK connections. */
 export function createHostedSignalPort(host) {
   const readers = new Set();
+  const lifetime = new AbortController();
   let closed = false, generation = 0, sending = 0, subscribed = false, wanted = false, updating;
   const stopAll = error => { for (const reader of [...readers]) reader.stop(error); };
   const subscription = enabled => {
@@ -95,11 +111,17 @@ export function createHostedSignalPort(host) {
       if (options.signal?.aborted) throw options.signal.reason ?? new SignalError('signal_cancelled', 'Signal send cancelled');
       if (sending >= SIGNAL_LIMITS.pending) fail('signal_overflow', 'Too many pending live sends');
       const input = createSignalInput(topic, payload, options);
+      const signal = AbortSignal.any([lifetime.signal, ...(options.signal === undefined ? [] : [options.signal])]);
       sending++;
+      let request;
       try {
-        const reply = await host.request({ t: 'signal_send', message: input }, { signal: options.signal });
-        return validateSignalEnvelope(reply.signal);
-      } finally { sending--; }
+        request = Promise.resolve(host.request({ t: 'signal_send', message: input }, { signal }));
+      } catch (error) { sending--; throw error; }
+      // Cancellation releases the caller immediately. A noncooperative host's
+      // still-running request keeps its slot until it actually settles.
+      request.then(() => { sending--; }, () => { sending--; });
+      const reply = await waitForRequest(request, signal);
+      return validateSignalEnvelope(reply.signal);
     },
     subscribe(options = {}) {
       if (closed) fail('signal_disconnected', 'Signal port is closed');
@@ -107,15 +129,21 @@ export function createHostedSignalPort(host) {
           options.topics !== undefined && (!Array.isArray(options.topics) || options.topics.length > 128) ||
           options.mode !== undefined && !['all', 'latest'].includes(options.mode)) fail('invalid_signal', 'Invalid signal subscription');
       const topics = options.topics === undefined ? null : new Set(options.topics.map(validateSignalTopic));
+      const mode = options.mode ?? 'all', signal = options.signal;
       if (readers.size >= SIGNAL_LIMITS.subscriptions) fail('signal_overflow', 'Too many live subscriptions');
       let queue = [], waiter, ended = false, failure;
-      const prune = () => { queue = queue.filter(message => message.expiresAtMs > Date.now()); };
+      const highWater = new Map();
+      const prune = () => {
+        const now = Date.now();
+        queue = queue.filter(message => message.expiresAtMs > now);
+        for (const [key, value] of highWater) if (value.retainUntilMs <= now) highWater.delete(key);
+      };
       const key = message => JSON.stringify([message.authorId, message.sessionId, message.topic]);
-      const cleanup = () => options.signal?.removeEventListener('abort', aborted);
+      const cleanup = () => signal?.removeEventListener('abort', aborted);
       const reader = {
         stop(error) {
           if (ended) return;
-          ended = true; failure = error; queue = []; cleanup();
+          ended = true; failure = error; queue = []; highWater.clear(); cleanup();
           readers.delete(reader);
           if (!readers.size) subscription(false);
           if (waiter) { const current = waiter; waiter = undefined; error ? current.reject(error) : current.resolve({ done: true, value: undefined }); }
@@ -124,10 +152,22 @@ export function createHostedSignalPort(host) {
         push(message) {
           if (ended || topics && !topics.has(message.topic)) return;
           prune();
+          if (mode === 'latest') {
+            const identity = key(message), previous = highWater.get(identity);
+            if (previous && message.sequence <= previous.sequence) return;
+            if (!previous && highWater.size >= SIGNAL_LIMITS.latestKeys) {
+              reader.stop(new SignalError('signal_overflow', 'Too many active latest-value identities')); return;
+            }
+            // An earlier sequence can have a longer TTL than this value. The
+            // host accepted it before this value's dispatch/expiry, with at
+            // most the configured future skew plus maximum TTL still to run.
+            const retainUntilMs = Math.min(Number.MAX_SAFE_INTEGER, message.expiresAtMs + SIGNAL_LIMITS.futureSkewMs + SIGNAL_LIMITS.ttlMs);
+            highWater.set(identity, { sequence: message.sequence, retainUntilMs: Math.max(previous?.retainUntilMs ?? 0, retainUntilMs) });
+          }
           if (waiter) { const current = waiter; waiter = undefined; current.resolve({ done: false, value: structuredClone(message) }); return; }
-          if (options.mode === 'latest') {
+          if (mode === 'latest') {
             const index = queue.findIndex(item => key(item) === key(message));
-            if (index >= 0) { if (queue[index].sequence < message.sequence) queue[index] = message; return; }
+            if (index >= 0) { queue[index] = message; return; }
             if (queue.length === SIGNAL_LIMITS.queue) queue.shift();
           } else if (queue.length === SIGNAL_LIMITS.queue) {
             reader.stop(new SignalError('signal_overflow', 'Live subscriber fell behind; this stream has no replay')); return;
@@ -148,8 +188,8 @@ export function createHostedSignalPort(host) {
         return() { reader.stop(); return Promise.resolve({ done: true, value: undefined }); },
         [Symbol.asyncIterator]() { return this; },
       };
-      if (options.signal?.aborted) { ended = true; return iterator; }
-      readers.add(reader); options.signal?.addEventListener('abort', aborted, { once: true });
+      if (signal?.aborted) { ended = true; return iterator; }
+      readers.add(reader); signal?.addEventListener('abort', aborted, { once: true });
       if (readers.size === 1) subscription(true);
       return iterator;
     },
@@ -157,7 +197,8 @@ export function createHostedSignalPort(host) {
       if (closed) return;
       if (host.connected() && (subscribed || updating))
         void Promise.resolve().then(() => host.request({ t: 'signal_unsubscribe' })).catch(() => {});
-      closed = true; generation++; updating?.abort(); updating = undefined;
+      closed = true; generation++; lifetime.abort(error ?? new SignalError('signal_disconnected', 'Signal port closed'));
+      updating?.abort(); updating = undefined;
       offMessage(); offConnection(); stopAll(error); host.close?.();
     },
   };

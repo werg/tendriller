@@ -55,7 +55,9 @@ export interface ApplicationEvents<Submission = unknown> {
   subscribe(options?: ApplicationEventReadOptions): AsyncIterable<ApplicationEventBatch>;
 }
 export interface ApplicationReadView<QueryResult = unknown, Parameter = unknown> {
+  readonly view: 'local' | 'final';
   readonly revision: string;
+  readonly finalRevision: string;
   query(query: string, parameters?: readonly Parameter[]): QueryResult | Promise<QueryResult>;
   readEvents(options?: ApplicationEventReadOptions): ApplicationEventBatch | Promise<ApplicationEventBatch>;
   release(): void | Promise<void>;

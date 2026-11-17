@@ -41,6 +41,80 @@ test('FIFO overflow is visible to that consumer while latest remains bounded and
   await latest.return(); h.api.close();
 });
 
+test('latest suppresses reordered values after delivery, including an older value with a longer TTL', async t => {
+  let now = 10_000;
+  t.mock.method(Date, 'now', () => now);
+  const h = harness(), reader = h.api.subscribe({ mode: 'latest' });
+  h.receive(envelope(2)); assert.equal((await reader.next()).value.sequence, 2);
+  const waiting = reader.next();
+  h.receive(envelope(1)); h.receive(envelope(2)); h.receive(envelope(3));
+  assert.equal((await waiting).value.sequence, 3);
+  const older = { ...envelope(4), ...createSignalInput('progress', 'older-long-ttl', { ttlMs: SIGNAL_LIMITS.ttlMs }) };
+  h.receive({ ...envelope(5), ...createSignalInput('progress', 'newer-short-ttl', { ttlMs: 1 }) });
+  assert.equal((await reader.next()).value.sequence, 5);
+  now += 2;
+  h.connection(false); h.connection(true);
+  const afterExpiry = reader.next();
+  h.receive(older); h.receive(envelope(6));
+  assert.equal((await afterExpiry).value.sequence, 6, 'queue drain, expiry and reconnect do not reopen an older still-live value');
+  await reader.return(); h.api.close();
+});
+
+test('latest tracking is bounded without evicting still-protected identities and expires safely', async t => {
+  let now = 20_000;
+  t.mock.method(Date, 'now', () => now);
+  const h = harness(), full = h.api.subscribe({ mode: 'latest' });
+  for (let index = 0; index < SIGNAL_LIMITS.latestKeys; index++) h.receive(envelope(1, index, `author-${index}`));
+  h.receive(envelope(1, 'excess', 'extra-author'));
+  await assert.rejects(full.next(), { code: 'signal_overflow' });
+  const later = h.api.subscribe({ mode: 'latest' });
+  for (let index = 0; index < SIGNAL_LIMITS.latestKeys; index++) h.receive(envelope(1, index, `author-${index}`));
+  now += SIGNAL_LIMITS.ttlMs * 2 + SIGNAL_LIMITS.futureSkewMs + 1;
+  h.receive(envelope(1, 'fresh', 'fresh-author'));
+  assert.equal((await later.next()).value.payload, 'fresh');
+  await later.return(); h.api.close();
+});
+
+test('closing a shared port cancels pending sends even when its transport ignores cancellation', async () => {
+  let requestSignal, complete, calls = 0;
+  const api = createHostedSignalPort({ connected: () => true, onMessage: () => () => {},
+    request(message, options) {
+      calls++; requestSignal = options.signal;
+      return new Promise(resolve => { complete = () => resolve({ signal: { ...envelope(1), ...message.message } }); });
+    },
+  });
+  const sending = api.send('progress', 'working');
+  const cancelled = assert.rejects(sending, { code: 'signal_disconnected' });
+  api.close(); await cancelled;
+  assert.equal(requestSignal.aborted, true);
+  complete(); await turn();
+  assert.equal(calls, 1, 'closing does not resend and requires no shared-socket close');
+  await assert.rejects(api.send('progress', 'closed'), { code: 'signal_disconnected' });
+});
+
+test('cancelled noncooperative requests retain their bounded admission slots until settlement', async () => {
+  const pending = [];
+  const api = createHostedSignalPort({ connected: () => true, onMessage: () => () => {},
+    request(message, options) {
+      return new Promise(resolve => pending.push({ signal: options.signal,
+        complete: () => resolve({ signal: { ...envelope(pending.length), ...message.message } }) }));
+    },
+  });
+  for (let index = 0; index < SIGNAL_LIMITS.pending; index++) {
+    const stop = new AbortController(), sending = api.send('progress', index, { signal: stop.signal });
+    const cancelled = assert.rejects(sending, /cancelled by caller/);
+    stop.abort(new Error('cancelled by caller')); await cancelled;
+  }
+  assert.equal(pending.length, SIGNAL_LIMITS.pending);
+  assert.ok(pending.every(request => request.signal.aborted));
+  await assert.rejects(api.send('progress', 'excess'), { code: 'signal_overflow' });
+  for (const request of pending) request.complete();
+  await turn();
+  const fresh = api.send('progress', 'fresh'); pending.at(-1).complete();
+  assert.equal((await fresh).payload, 'fresh');
+  api.close();
+});
+
 test('expiry, cancellation and subscriber disposal release live work without replay', async () => {
   const h = harness(), stop = new AbortController(), iterator = h.api.subscribe({ signal: stop.signal });
   const pending = iterator.next(); stop.abort(); assert.equal((await pending).done, true);

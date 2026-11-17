@@ -77,14 +77,31 @@ it('rechecks sender and recipient credentials and makes display links receive-on
   viewer.ws.close(); page.ws.close();
 });
 
-it('authenticates native socket headers and refuses hosted signals on peer pages', async () => {
+it('authenticates native socket headers', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
   const native = await req(`${h.api}/signals/socket`, { anonymous: true, headers: { ...headers, 'Sec-WebSocket-Protocol': `${HOSTED_SIGNAL_PROTOCOL}, ${h.token}` } });
   expect(native.status).toBe(101); native.webSocket!.accept(); native.webSocket!.close();
   expect((await req(`${h.api}/signals/socket`, { anonymous: true, headers })).status).toBe(401);
-  const peer = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'peer-history' } });
-  expect((await api(peer, 'GET', 'signals/socket', undefined, headers)).status).toBe(409);
-  expect(await inDO(peer.id, t => t.ctx.getWebSockets().length)).toBe(0);
+});
+
+it('explicitly connects hosted signals on a peer-history page without enabling hosted application work', async () => {
+  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'peer-history' } });
+  const retained = () => inDO(h.id, t => ({ events: t.db.one('SELECT COUNT(*) AS n FROM events'),
+    changes: t.db.one('SELECT COUNT(*) AS n FROM application_changes'), streams: t.db.one('SELECT COUNT(*) AS n FROM stream_records') }));
+  const before = await retained();
+  expect(await inDO(h.id, t => t.ctx.getWebSockets().length)).toBe(0);
+  expect((await req(`${h.page_url}_tendril/ws`, { headers: { Upgrade: 'websocket' } })).status).toBe(409);
+  const agent = await connect(h), page = await connect(h, true);
+  await page.command({ t: 'signal_subscribe' }); await agent.command({ t: 'signal_subscribe' });
+  const sent = await agent.command({ t: 'signal_send', message: createSignalInput('progress', 'explicit-host-route') });
+  expect((await page.next()).signal).toEqual(sent.signal);
+  expect(sent.signal).toMatchObject({ scope: 'peer-history', authorId: 'agent:main' });
+  const response = await page.command({ t: 'signal_send', message: createSignalInput('attention', 'explicit-reply') });
+  expect((await agent.next()).signal).toEqual(response.signal);
+  expect(await retained()).toEqual(before);
+  expect((await api(h, 'POST', 'application/changes', { operationId: 'not-hosted', program: {} })).status).toBe(409);
+  expect(await inDO(h.id, t => t.ctx.getWebSockets().every(ws => ws.deserializeAttachment()?.kind === 'signals'))).toBe(true);
+  agent.ws.close(); page.ws.close();
 });
 
 it('bounds frames and pending authorization before creating a sender backlog', async () => {
@@ -97,4 +114,69 @@ it('bounds frames and pending authorization before creating a sender backlog', a
       JSON.stringify({ t: 'signal_send', cid: String(i), message: createSignalInput('sample', i, {}, t.now()) }))));
   });
   expect(await second.closed).toBe(1013);
+});
+
+it('refuses excess live work without interrupting durable requests on a shared page socket', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), page = await PageClient.connect(h.page_url);
+  await inDO(h.id, async t => {
+    const ws = t.ctx.getWebSockets().find(socket => socket.deserializeAttachment()?.deviceId === page.deviceId)!;
+    await Promise.all(Array.from({ length: SIGNAL_LIMITS.pending + 1 }, (_, i) => t.webSocketMessage(ws,
+      JSON.stringify({ t: 'signal_send', cid: `pressure-${i}`, message: createSignalInput('sample', i, {}, t.now()) }))));
+    expect(ws.readyState).toBe(WebSocket.READY_STATE_OPEN);
+  });
+  expect(await page.next(value => value.cid === `pressure-${SIGNAL_LIMITS.pending}`)).toMatchObject({ error: 'signal_overflow' });
+  const write = await page.request({ t: 'state', expected_generations: {}, ops: [{ op: 'set', path: ['stillConnected'], value: true }] });
+  expect(write.error).toBeUndefined();
+  expect((await page.request({ t: 'state_snapshot' })).state.stillConnected).toBe(true);
+  page.send({ t: 'signal_send', cid: 'fresh', message: createSignalInput('sample', 'fresh') });
+  expect(await page.next(value => value.cid === 'fresh')).toMatchObject({ signal: { payload: 'fresh' } });
+  expect(page.closed).toBeNull(); page.close();
+});
+
+it('drops a congested live delivery without closing the receiving page socket', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), sender = await connect(h), page = await PageClient.connect(h.page_url);
+  await page.request({ t: 'signal_subscribe' });
+  await inDO(h.id, t => {
+    const ws = t.ctx.getWebSockets().find(socket => socket.deserializeAttachment()?.deviceId === page.deviceId)!;
+    Object.defineProperty(ws, 'bufferedAmount', { configurable: true, value: 256 * 1024 + 1 });
+  });
+  expect(await sender.command({ t: 'signal_send', message: createSignalInput('sample', 'congested') })).toHaveProperty('signal');
+  expect(page.messages.some(value => value.t === 'signal')).toBe(false);
+  await inDO(h.id, t => {
+    const ws = t.ctx.getWebSockets().find(socket => socket.deserializeAttachment()?.deviceId === page.deviceId)!;
+    expect(ws.readyState).toBe(WebSocket.READY_STATE_OPEN);
+    Object.defineProperty(ws, 'bufferedAmount', { configurable: true, value: 0 });
+  });
+  const fresh = await sender.command({ t: 'signal_send', message: createSignalInput('sample', 'fresh') });
+  expect((await page.next('signal')).signal).toEqual(fresh.signal);
+  expect((await page.request({ t: 'state_snapshot' })).state).toEqual({});
+  sender.ws.close(); page.close();
+});
+
+it('isolates thrown live sends from the shared socket while retiring a failed dedicated socket', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), sender = await connect(h), dedicated = await connect(h);
+  const page = await PageClient.connect(h.page_url);
+  await dedicated.command({ t: 'signal_subscribe' }); await page.request({ t: 'signal_subscribe' });
+  await inDO(h.id, t => {
+    for (const ws of t.ctx.getWebSockets().filter(socket => socket.deserializeAttachment()?.live?.subscribed)) {
+      const original = ws.send;
+      ws.send = function (message) {
+        if (typeof message === 'string' && JSON.parse(message).t === 'signal') {
+          ws.send = original;
+          throw new Error('Injected live transport send failure');
+        }
+        original.call(ws, message);
+      };
+    }
+  });
+  expect(await sender.command({ t: 'signal_send', message: createSignalInput('sample', 'lost-live-attempt') })).toHaveProperty('signal');
+  expect(await dedicated.closed).toBe(1013);
+  expect(page.closed).toBeNull();
+  expect(page.messages.some(value => value.t === 'signal')).toBe(false);
+  const write = await page.request({ t: 'state', expected_generations: {}, ops: [{ op: 'set', path: ['liveFailureIsolated'], value: true }] });
+  expect(write.error).toBeUndefined();
+  expect((await page.request({ t: 'state_snapshot' })).state.liveFailureIsolated).toBe(true);
+  const fresh = await sender.command({ t: 'signal_send', message: createSignalInput('sample', 'fresh') });
+  expect((await page.next('signal')).signal).toEqual(fresh.signal);
+  sender.ws.close(); page.close();
 });

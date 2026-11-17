@@ -126,6 +126,13 @@ automatic reconnect or retry. A fresh connection is a fresh live session. Browse
 subscriptions follow the page's existing reconnect lifecycle, discard pending
 messages at disconnect, and resume with new traffic only.
 
+A peer-history page can explicitly choose this hosted channel too, using
+`connectHostedSignals` or the native client's `connectSignals`. Install that port
+in its signal binding when hosted live delivery is the intended route. The
+default peer runtime waits for the chosen port and opens no host signal socket.
+Hosted delivery uses page accounts and host credentials; those permissions do
+not confer Chronolog reader or writer rights.
+
 Owners, approved guests and agents may send. Display links may receive. Every
 participant sees only its selected page's live scope, but topics do not restrict
 the audience within that scope. Use a different authorized channel for private
@@ -135,10 +142,19 @@ credentials and account access are checked during delivery.
 
 Hosted limits are a 16 KiB frame, a 30 second maximum TTL (5 seconds by default),
 32 pending sends, 64 subscriptions and 64 queued messages per subscription.
+Each `latest` subscription tracks at most 256 author/session/topic identities.
+It suppresses older sequence numbers even after the latest value was consumed,
+until earlier frames can no longer be live. Exhausting that protected tracking
+bound ends only the affected subscription with `signal_overflow`.
 Senders may dispatch 50 messages per second. Dedicated SDK connections are bounded
 to 32 per page. Overload is explicit and stale work is discarded. The host stores
 session/rate metadata but no live payload, application receipt, event or replay
 history. Live dispatch does not synchronize workflows or wake the agent.
+
+On a shared page socket, excess live sends receive `signal_overflow`, and a
+congested recipient can lose live deliveries. Neither condition closes that
+socket or interrupts durable application requests. A dedicated signal socket
+may close under sustained pressure; open a fresh session for subsequent traffic.
 
 ## Producer streams
 
