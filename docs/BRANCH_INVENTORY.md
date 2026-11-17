@@ -1,12 +1,12 @@
-# Preserved branch heads — 18 November 2026
+# Branch inventory — 18 November 2026
 
-Each link below points to the exact commit that was at the tip of an unmerged remote branch during the cross-repository audit. An annotated `archive/2026-11-18/<branch>` tag in the same repository preserves that commit if the branch is later deleted. These are **preserved candidates and experiments**, not release approvals. The current default branches remain authoritative for shipped code.
+Each link below points to the commit at the tip of a remote branch that had commits outside its repository's default branch when this inventory was made. The branches themselves remain available. This inventory does not assess the value or readiness of their changes. The default branches remain authoritative for shipped code.
 
 The large `feat/portable-record-log`, `feat/chronolog-application-log`, and `feat/portable-peer-core` branches describe one possible next composition. They diverged before later default-branch changes; qualify their packages together and review their conflicts before integrating any part. See [release composition](RELEASE_COMPOSITION.md).
 
 ## Core
 
-| Branch | Preserved tip | Ahead / behind default |
+| Branch | Tip at inventory date | Ahead / behind default at inventory date |
 | --- | --- | ---: |
 | `feat/portable-record-log` | [eadb607f3d](https://github.com/werg/tendriller/commit/eadb607f3d2720ae2780285bf7847c9f0207e27e) — Bound release upload buffers independently of controls | 8 / 41 |
 | `preview/contract-2-rc1-20261115` | [0acb0ea9fb](https://github.com/werg/tendriller/commit/0acb0ea9fb791edad0ac65313669907e12e391a1) — preview: retry release candidate with quota-safe deployment controller | 1 / 445 |
@@ -21,7 +21,7 @@ The large `feat/portable-record-log`, `feat/chronolog-application-log`, and `fea
 
 ## Cookbooks
 
-| Branch | Preserved tip | Ahead / behind default |
+| Branch | Tip at inventory date | Ahead / behind default at inventory date |
 | --- | --- | ---: |
 | `feat/chronolog-application-log` | [da52ac2260](https://github.com/werg/tendriller-contrib/commit/da52ac226005754e0120da8d7f8ccb7bae2e957d) — Configure publication policy before reading release trust | 42 / 75 |
 | `qualification/peer-data-plane-20261117` | [c43a088efd](https://github.com/werg/tendriller-contrib/commit/c43a088efd89bc18226b88acd0ddb17acbfd4f1e) — Qualify coherent recovery views and actual served publication assets | 2 / 66 |
@@ -31,7 +31,7 @@ The large `feat/portable-record-log`, `feat/chronolog-application-log`, and `fea
 
 ## Chronolog
 
-| Branch | Preserved tip | Ahead / behind default |
+| Branch | Tip at inventory date | Ahead / behind default at inventory date |
 | --- | --- | ---: |
 | `feat/portable-peer-core` | [0b4d50836f](https://github.com/werg/chronolog-db/commit/0b4d50836f4fbb2bd9119951c70f5847e274ebdb) — Record clean native reader resource qualification | 51 / 78 |
 | `qualification/peer-data-plane-20261117` | [47c4b0252c](https://github.com/werg/chronolog-db/commit/47c4b0252c8a8107271517a6c8856b270ed5e622) — Advance final SQL from its verified immutable prefix | 3 / 72 |
