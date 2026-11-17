@@ -1,8 +1,10 @@
 export interface PeerSocket {
   readonly readyState: number;
+  binaryType?: string;
+  readonly bufferedAmount?: number;
   addEventListener(type: string, listener: (event: any) => void): void;
   removeEventListener(type: string, listener: (event: any) => void): void;
-  send(data: string): void;
+  send(data: string | ArrayBuffer | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
 }
 /** Optional HTTPS introductions, never application relay routes or credentials. */
@@ -43,6 +45,8 @@ export interface PeersClient extends PeerControlsClient {
   /** On-demand late-join/reconnect hint. Peer authentication remains independent. */
   invite(peerId: string, invitation: PeerInvitation, options?: { readonly signal?: AbortSignal }): Promise<void>;
   rendezvous(channel: string, peerId: string, options?: PeerRendezvousOptions): PeerRendezvous;
+  /** Two isolated binary lanes through the authenticated opaque relay. */
+  relay(channel: string, peerId: string, options: PeerRelayOptions): PeerRelay;
 }
 export declare const PEER_RENDEZVOUS_PROTOCOL: 'tendriller.rendezvous.v1';
 export declare const PEER_RENDEZVOUS_LIMITS: Readonly<{ descriptionBytes: number; messageBytes: number; sessions: number; lifetimeMs: number }>;
@@ -63,5 +67,7 @@ export * from './peer-controls.mjs';
 export * from './peer-participant.mjs';
 import type { PeerInvitation, PeerInvitationOptions, PeerInvitationListener } from './invitations.mjs';
 export * from './invitations.mjs';
+import type { PeerRelay, PeerRelayOptions } from './relay.mjs';
+export * from './relay.mjs';
 
 export { createPeerIntroductions } from './introductions.mjs';

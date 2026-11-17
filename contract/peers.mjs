@@ -6,6 +6,8 @@ import { createPeerParticipantClient } from './peer-participant.mjs';
 export * from './peer-participant.mjs';
 import { createPeerInvitationListener, validatePeerInvitation, PEER_INVITATION_PROTOCOL } from './invitations.mjs';
 export * from './invitations.mjs';
+import { createPeerRelay, PEER_RELAY_PROTOCOL } from './relay.mjs';
+export * from './relay.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
 const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
@@ -179,6 +181,24 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
       url.searchParams.set('channel', channel); url.searchParams.set('peerId', peerId);
       if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
       return createPeerRendezvous((options.socket || socket)(url.href, protocols), options);
+    },
+    relay(channel, peerId, options = {}) {
+      if (typeof channel !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(channel) ||
+          ![peerId, options.remotePeerId].every(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)) || peerId === options.remotePeerId)
+        fail('invalid_relay', 'Expected a bounded relay channel and two distinct signing identities');
+      if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+      const url = socketUrl('peers/relay', 'invalid_relay');
+      url.searchParams.set('channel', channel); url.searchParams.set('peerId', peerId); url.searchParams.set('remotePeerId', options.remotePeerId);
+      const relayProtocols = [PEER_RELAY_PROTOCOL, ...protocols.filter(value => ![PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL].includes(value))];
+      const open = lane => { const route = new URL(url); route.searchParams.set('lane', lane); return (options.socket || socket)(route.href, relayProtocols); };
+      let reliable, live;
+      try {
+        reliable = open('reliable'); live = open('live');
+        return createPeerRelay({ reliable, live }, { ...options, peerId });
+      } catch (error) {
+        for (const lane of [reliable, live]) try { lane?.close(1000, 'Relay construction failed'); } catch {}
+        throw error;
+      }
     },
   });
 }
