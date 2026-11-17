@@ -79,6 +79,10 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
 
   const callback = /^\/auth\/callback\/(github|google)$/.exec(path);
   if (callback && req.method === "GET") {
+    const started = performance.now();
+    const phases: string[] = [];
+    let previous = started;
+    const mark = (name: string) => { const now = performance.now(); phases.push(`${name};dur=${(now - previous).toFixed(1)}`); previous = now; };
     const provider = callback[1] as Provider;
     const c = client(env, provider);
     const state = url.searchParams.get("state");
@@ -93,6 +97,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     if (pending.link_account && (await serviceSession(req, env))?.accountId !== pending.link_account) {
       return errorResponse(403, "forbidden", "Linking session changed or expired");
     }
+    mark("state");
     const tokenUrl = provider === "github" ? "https://github.com/login/oauth/access_token" : "https://oauth2.googleapis.com/token";
     const tokenRes = await fetch(tokenUrl, {
       method: "POST", headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
@@ -103,8 +108,10 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     if (!tokenRes.ok) return errorResponse(502, "oauth_failed", "Token exchange failed");
     const token = await tokenRes.json() as { access_token?: string };
     if (!token.access_token) return errorResponse(502, "oauth_failed", "Provider did not issue a token");
+    mark("token");
     const profile = await providerProfile(provider, token.access_token);
     if (!profile) return errorResponse(502, "oauth_failed", "Could not verify provider identity");
+    mark("profile");
     const existing = await db.prepare("SELECT account_id FROM identities WHERE provider = ? AND subject = ?")
       .bind(provider, profile.subject).first<{ account_id: string }>();
     const account = existing ? await db.prepare("SELECT suspended_at, deleting_at FROM accounts WHERE id = ?").bind(existing.account_id)
@@ -137,7 +144,10 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     const session = randomUrlToken();
     await db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .bind(await sha256Hex(session), accountId, Date.now(), Date.now() + 30 * 86_400_000).run();
-    return redirect(account?.suspended_at ? "/dashboard" : safeReturn(pending.return_to), `__Host-tendriller=${session}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+    mark("account");
+    const response = redirect(account?.suspended_at ? "/dashboard" : safeReturn(pending.return_to), `__Host-tendriller=${session}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+    response.headers.set("Server-Timing", [...phases, `total;dur=${(performance.now() - started).toFixed(1)}`].join(", "));
+    return response;
   }
 
   if (path === "/auth/me" && req.method === "GET") {

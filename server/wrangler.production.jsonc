@@ -70,6 +70,16 @@
       }
     },
     {
+      "name": "PAGE_RATE",
+      "namespace_id": "107",
+      "simple": { "limit": 600, "period": 60 }
+    },
+    {
+      "name": "ACCOUNT_RATE",
+      "namespace_id": "108",
+      "simple": { "limit": 1800, "period": 60 }
+    },
+    {
       "name": "AUTH_RATE",
       "namespace_id": "104",
       "simple": {
