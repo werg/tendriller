@@ -1,6 +1,6 @@
 # Tendriller
 
-Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history and ordinary peer exchange in Chronolog over WebRTC. Tendriller supplies page assets, account access, participant administration, publication recovery and optional short-lived SDP rendezvous. Peer pages run without a background host socket or application-data relay. A Cloudflare JSON state/event backend remains an explicit alternative. The page owns its interface, application data and ordinary web dependencies.
+Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history and ordinary peer exchange in Chronolog over WebRTC. Tendriller supplies account access, participant administration, signed Chronolog page releases and optional short-lived SDP rendezvous. Peer pages run without a background host socket or application-data relay. A Cloudflare JSON state/event backend remains an explicit alternative. The page owns its interface, application data and ordinary web dependencies.
 
 Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
 
@@ -8,6 +8,7 @@ Start with authored HTML, JavaScript and assets. There is no starter, component 
 
 - [Agent guide](agent.md): create a page, establish delivery and publish complete files.
 - [Browser API](docs/BROWSER_API.md): transport, conversation, coherent state snapshots, conditional writes, durable timers, streams, captures and explicit device features.
+- [Peer page releases](docs/PAGE_RELEASES.md): separate publisher authority, exact bytes, durable activation and explicit updates.
 - [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
 - [Application backends](docs/APPLICATION_BACKENDS.md): one selected history, atomic programs, operation status and coherent event/query views.
 - [Live application signals](docs/APPLICATION_SIGNALS.md): independent send/subscribe, FIFO or latest delivery, expiration and durable completion.

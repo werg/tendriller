@@ -6,8 +6,9 @@ import type { Tendril } from './tendril';
 import { handleDiscovery } from './discovery';
 import { handlePeerGenerations } from './peer-generations';
 import { handleInvitations } from './peer-invitations';
+import { handlePeerReleases, RELEASE_ROUTE } from './peer-releases';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|directory|application|definition|generations|administration)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|directory|application|definition|generations|administration|releases(?:\/.*)?)$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -48,6 +49,8 @@ export function nextPeerDeadline(t: Tendril): number | null {
 export function expirePeers(t: Tendril): void { peers(t); }
 
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
+  if (RELEASE_ROUTE.test(path)) return handlePeerReleases(t, req, path, principal);
+  if (path.startsWith('peers/releases')) throw new HttpError(404, 'not_found');
   if (!authorized(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
   if (path === 'peers/application' || path === 'peers/definition' || path === 'peers/generations' || path === 'peers/administration') return handlePeerGenerations(t, req, path, principal);
   if (path === 'peers/directory') return handleDiscovery(t, req, principal);

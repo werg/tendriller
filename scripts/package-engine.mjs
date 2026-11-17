@@ -40,7 +40,7 @@ writeFileSync(join(engine, 'index.d.mts'), readFileSync(join(root, 'contract/eng
 mkdirSync(join(engine, 'migrations'), { recursive: true });
 copyFileSync(join(root, 'server/migrations/0001_accounts.sql'), join(engine, 'migrations/0001_accounts.sql'));
 await build({ entryPoints: [join(root, 'server/test/public-fixture.ts')], outfile: join(engine, 'testing.mjs'), bundle: true,
-  platform: 'neutral', format: 'esm', target: 'es2022', external: ['cloudflare:workers', 'cloudflare:test'], logLevel: 'warning' });
+  platform: 'neutral', format: 'esm', target: 'es2022', external: ['cloudflare:workers', 'cloudflare:test', 'node:async_hooks'], logLevel: 'warning' });
 copyFileSync(join(root, 'contract/testing.d.mts'), join(engine, 'testing.d.mts'));
 writeFileSync(join(engine, 'package.json'), JSON.stringify({
   name: '@tendriller/engine', version: CORE_RELEASE, type: 'module',

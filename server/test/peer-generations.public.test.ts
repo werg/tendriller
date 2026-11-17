@@ -273,7 +273,7 @@ for (const phase of ['initial configuration', 'control update', 'owner control u
       expect(t.db.get<{ publicKey: string }[]>('peer_generation_accounts', []).some(binding => binding.publicKey === b.publicKey)).toBe(false);
       if (phase === 'initial configuration') {
         expect(t.db.get('peer_generation_configuration', null)).toBeNull();
-        expect(t.db.all("SELECT key FROM membership_records WHERE key LIKE 'peer-generation/%'")).toEqual([]);
+        expect(t.db.all("SELECT key FROM membership_records WHERE key LIKE 'peer-generation/%'")).toEqual([{ key: 'peer-generation/identity' }]);
       }
     });
     if (before) expect(await apiJson(h, 'GET', 'peers/application')).toEqual(before);

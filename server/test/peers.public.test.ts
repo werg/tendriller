@@ -1,7 +1,9 @@
 import { expect, it } from 'vitest';
-import { advance, api, apiJson, create, inDO, publishFilesJson, req, runAlarm, type Handle } from './helpers';
+import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
 import { createPeerRendezvous, PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
 import { closePeer } from '../src/peers';
+import { createPeerIdentity } from '@chronolog/peer-generation/control';
+import { activateRelease, publishRelease, releaseApplicationId, releasePolicy } from './release-helpers';
 import { createTestPage } from './public-fixture';
 
 const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL };
@@ -77,18 +79,21 @@ it('has no hosted binary peer relay endpoint or protocol', async () => {
 });
 
 it('serves current resident introductions in peer HTML without exposing them to display links', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'initial-introductions' } });
-  await publishFilesJson(h, { 'index.html': '<head></head>Peer application', 'app.js': 'export const peer = true;' });
+  const applicationId = releaseApplicationId(), signer = await createPeerIdentity();
+  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: applicationId } });
+  await releasePolicy(h, [signer]);
+  const publication = await publishRelease(h, applicationId, signer, { 'index.html': '<head></head>Peer application', 'app.js': 'export const peer = true;' });
+  await activateRelease(h, applicationId, signer, publication.id);
   const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
   await apiJson(h, 'PUT', 'peers/bootstrap', hints);
-  const response = await req(h.page_url + '_publications/1/index.html');
+  const response = await req(h.page_url + `_publications/${publication.id}/index.html`);
   expect(response.headers.get('Cache-Control')).toBe('private, no-cache');
   const config = (html: string) => JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
   expect(config(await response.text()).peerBootstrap).toEqual(hints);
   const next = { version: 2, endpoints: [{ url: 'https://replacement.example/introduce' }] };
   await apiJson(h, 'PUT', 'peers/bootstrap', next);
-  expect(config(await (await req(h.page_url + '_publications/1/index.html')).text()).peerBootstrap).toEqual(next);
-  expect((await req(h.page_url + '_publications/1/app.js')).headers.get('Cache-Control')).toContain('immutable');
+  expect(config(await (await req(h.page_url + `_publications/${publication.id}/index.html`)).text()).peerBootstrap).toEqual(next);
+  expect((await req(h.page_url + `_publications/${publication.id}/app.js`)).headers.get('Cache-Control')).toContain('immutable');
   const display = await inDO(h.id, async t => t.renderLink(await t.createLink('display', null, null)));
   expect(config(await (await req(display.url, { anonymous: true })).text()).peerBootstrap).toBeUndefined();
   expect((await req(display.url + '_tendril/peers/bootstrap', { anonymous: true })).status).toBe(403);

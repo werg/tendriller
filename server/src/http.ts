@@ -49,7 +49,7 @@ export function withCors(res: Response): Response {
 }
 
 /** Bounds total read time as well as bytes, including a client that stops mid-body. */
-export async function readBody(req: Request, max: number, timeoutMs = 120_000): Promise<ArrayBuffer> {
+export async function readBody(req: Pick<Request, 'headers' | 'body' | 'signal'>, max: number, timeoutMs = 120_000): Promise<ArrayBuffer> {
   if (!Number.isSafeInteger(max) || max < 0) throw new TypeError("Invalid body byte limit");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new TypeError("Invalid body read deadline");
   const len = Number(req.headers.get("Content-Length") ?? "NaN");

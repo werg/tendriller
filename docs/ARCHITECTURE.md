@@ -118,7 +118,7 @@ final accepted intent, then use idempotency or reconciliation at their provider.
 
 Pages author their own conversation and status presentation. They receive stable message IDs and the distinction between queued, accepted and rejected commands. `conversation.presented(messageId)` acknowledges that the particular agent message was presented; receipt or an open socket does not imply presentation. Voice loads only when a page imports its optional module and explicitly starts the chosen behavior. Voice preferences belong to that adapter rather than a universal core presentation preference.
 
-The recovery route is service-owned HTML, independent of the page runtime. It authorizes the signed-in owner before changing agent connections, guest access or the selected publication. The floating link is convenience, not a security boundary. Selecting a retained publication changes files and preserves application data.
+The recovery route is service-owned HTML, independent of the page runtime. It authorizes the signed-in owner before changing agent connections and guest access. For peer pages it displays retained signed releases; selecting code still requires an authorized publisher signature. The Cloudflare profile retains its own owner publication selector. The floating link is convenience, not a security boundary.
 
 ## Hosted commands and preconditions
 
@@ -139,6 +139,24 @@ Private records stay outside shared state. One record, total record count and ag
 The private-response and exact-proposal cookbooks contain small reference policies. They are not a default sessions product. Their verification uses fresh text-only records. Private-media authorization and retention require a separately established storage policy; a text-record test makes no claim about those bytes.
 
 ## Publication and serving contract
+
+Peer code uses the independent Chronolog release control facet. The host owns
+account access, admitted publisher-account bindings, content storage and serving;
+the portable registry owns publisher policy, signed manifests, bounded streamed
+content verification, exact request retry and activation CAS. Application reader,
+writer, coordinator and administrator grants never imply publishing authority.
+A shared durable host root signs the independent data-control and release chains.
+See [Peer page releases](PAGE_RELEASES.md) for the public transport and ownership
+contract. Private data envelopes and epoch keys remain with data peers.
+
+Release content is explicitly admitted before a signed manifest can reference
+it. Upload and publication do not change the selected code. Activation atomically
+selects a complete graph at the configured application boundary. Earlier release
+graphs remain retained; data recovery and health reports cannot rewind the
+selection. The optional receive-only release watch carries signed selection
+hints and never performs automatic reload. Peer pages reject unsigned publication,
+rollback and bundle paths. The Cloudflare profile keeps its explicit hosted
+publication lifecycle.
 
 A publication locks complete page files and the current runtime artifact. `publication.base` identifies its immutable root; `publication.entry` identifies its canonical authored HTML entry. The separate `documentPath` identifies the actual requested logical HTML file. Each HTML response inserts a first base URL for that document's encoded directory, so nested pages resolve sibling assets correctly. Asset paths are encoded by segment, including spaces, Unicode and URL punctuation. Publication roots select the canonical entry; explicit nested directory requests select their declared `index.html`. An arbitrary missing route returns 404. Applications may use hash routing or publish explicit route files.
 

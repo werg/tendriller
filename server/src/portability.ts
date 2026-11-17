@@ -10,6 +10,7 @@ import { publicBase } from "./urls";
 import { commitImportedFiles } from "./storage";
 import { assertFilePath, assertValid } from "../../contract/index.mjs";
 import { listTimers } from "./timers";
+import { selectedApplication } from "./application";
 import type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
 export type { SessionBrief, SessionResult, SessionSummary, PortableBundle } from "../../contract/index.mjs";
 type SharedFile = NonNullable<PortableBundle["shared_files"]>[number];
@@ -20,6 +21,10 @@ interface StagedBundle {
 export const MAX_BUNDLE_BYTES = 36 * 1024 * 1024;
 const EMPTY_BRIEF: SessionBrief = { purpose: "", current_task: "", completed: [], decisions: [], open_questions: [], last_handled_seq: 0 };
 const bundleOperations = new WeakSet<Tendril>();
+function requireHostedPublication(t: Tendril): void {
+  if (selectedApplication(t).kind === 'peer')
+    throw new HttpError(409, 'signed_release_required', 'Peer page portability uses signed Chronolog release manifests and exact content');
+}
 async function withBundleLock<T>(t: Tendril, work: () => Promise<T>): Promise<T> {
   if (bundleOperations.has(t)) throw new HttpError(409, "bundle_busy", "Another bundle operation is in progress; try again when it finishes");
   bundleOperations.add(t);
@@ -94,6 +99,7 @@ async function snapshotBytes(t: Tendril, hash: string, size: number, label: stri
 }
 
 export async function exportBundle(t: Tendril, includeData: boolean): Promise<PortableBundle> {
+  requireHostedPublication(t);
   // Snapshot every logical reference before the first asynchronous content read.
   const version = servedVersion(t), fileRows = versionFiles(t, version);
   const entry = t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry;
@@ -151,6 +157,7 @@ function rewrite(value: unknown, mapping: Map<string, string>): any {
 
 /** Validate the entire bundle before storing bytes; publication is a separate operation. */
 export async function stageBundle(t: Tendril, value: unknown, by: string): Promise<StagedBundle> {
+  requireHostedPublication(t);
   return withBundleLock(t, () => stageBundleUnlocked(t, value, by));
 }
 async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Promise<StagedBundle> {
@@ -224,6 +231,7 @@ async function stageBundleUnlocked(t: Tendril, value: unknown, by: string): Prom
 }
 
 export async function publishStaged(t: Tendril, by: string, expectedHeadRevision: number, command: Preconditions) {
+  requireHostedPublication(t);
   return withBundleLock(t, () => publishStagedUnlocked(t, by, expectedHeadRevision, command));
 }
 async function publishStagedUnlocked(t: Tendril, by: string, expectedHeadRevision: number, command: Preconditions) {

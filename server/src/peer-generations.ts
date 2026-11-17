@@ -29,6 +29,12 @@ interface HostState {
   registry?: GenerationRegistry; signer?: PeerIdentity;
 }
 const hosts = new WeakMap<Tendril, HostState>();
+/** Release activation binds the immutable application boundary, independently of data generations. */
+export function peerApplicationBinding(t: Tendril) {
+  const descriptor = t.db.get<Configuration | null>(CONFIG, null)?.descriptor.payload;
+  return descriptor ? { historyId: descriptor.historyId, definitionDigest: descriptor.definitionDigest,
+    executionManifestDigest: descriptor.executionManifestDigest, schemaDigest: descriptor.schemaDigest } : null;
+}
 function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
   const current = currentPrincipal(t, principal), owner = t.db.get<string | null>('owner_account', null);
   if (!owner || !current || current.kind === 'producer' || current.kind === 'page' && (current.role === 'display' || !current.accountId))

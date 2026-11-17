@@ -55,6 +55,21 @@ test('release subscriptions coalesce signed selection hints and close when their
   await reader.return(); assert.equal(socket.closed.code, 1000); assert.deepEqual(socket.sent, []);
 });
 
+test('signed release writes preserve transport cancellation', async () => {
+  const calls = [], controller = new AbortController();
+  const peers = createPeersClient({ base: 'https://example.test/page', raw: async () => new Response(),
+    request: async (path, options) => {
+      calls.push({ path, options });
+      return path.endsWith('/manifests') ? { id, manifest: activation(1) } : activation(1);
+    },
+  });
+  await peers.releases.configure({ requestId: 'policy', expectedPolicy: null, publishers: [] }, { signal: controller.signal });
+  await peers.releases.publish(activation(1), { signal: controller.signal });
+  await peers.releases.activate(activation(1), { signal: controller.signal });
+  assert.equal(calls.length, 3);
+  for (const call of calls) assert.equal(call.options.signal, controller.signal);
+});
+
 test('release subscriptions reject private application frames and oversized notices', async () => {
   for (const message of [{ type: 'application', ciphertext: 'private' }, { ...activation(1), signature: 'x'.repeat(17 * 1024) }]) {
     const socket = new Socket(), reader = createReleaseWatch(socket)[Symbol.asyncIterator]();

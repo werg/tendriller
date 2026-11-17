@@ -1,5 +1,6 @@
 export interface TestMigration { name: string; queries: string[] }
 export type TestWorkflowCall = (module: string, operation: string, data?: unknown, guards?: Record<string, string>, cid?: string) => Promise<Response>;
+export type TestApiCall = (method: string, path: string, body?: unknown, options?: { headers?: Record<string, string> }) => Promise<Response>;
 export interface TestPeerSocket {
   readonly readyState: number;
   addEventListener(type: string, listener: (event: any) => void): void;
@@ -22,15 +23,18 @@ export declare function initializeTestService(migrations: TestMigration[]): Prom
 export declare function createTestPage(options?: { application?: { kind: 'cloudflare' | 'peer'; id: string }; lifetime?: 'ad_hoc' | 'resident' }): Promise<{
   owner: TestWorkflowCall;
   agent: TestWorkflowCall;
-  api(method: string, path: string, body?: unknown): Promise<Response>;
-  ownerApi(method: string, path: string, body?: unknown): Promise<Response>;
+  api: TestApiCall;
+  ownerApi: TestApiCall;
+  /** Fetch actual authored/rendered page responses with the fixture owner's access. */
+  fetchPage(path?: string): Promise<Response>;
   /** Real Worker HTTP and SDP frame traffic through this fixture; excludes synthetic setup. */
   readonly hostTraffic: TestHostTraffic;
   rendezvousSocket(channel: string, peerId: string): TestPeerSocket;
   ownerRendezvousSocket(channel: string, peerId: string): TestPeerSocket;
   invitationSocket(peerId: string): TestPeerSocket;
   ownerInvitationSocket(peerId: string): TestPeerSocket;
-  participant(): Promise<{ account: string; call: TestWorkflowCall; api(method: string, path: string, body?: unknown): Promise<Response>;
+  participant(): Promise<{ account: string; call: TestWorkflowCall; api: TestApiCall;
+    fetchPage(path?: string): Promise<Response>;
     rendezvousSocket(channel: string, peerId: string): TestPeerSocket; invitationSocket(peerId: string): TestPeerSocket }>;
   display(): Promise<TestWorkflowCall>;
   advance(milliseconds: number): Promise<void>;

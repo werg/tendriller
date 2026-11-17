@@ -1,5 +1,4 @@
 import { selectedApplication } from "./application";
-import { peerBootstrap } from "./peers";
 // Files, versions, health and serving (PROTOCOL sections 4 and 5).
 import type { Tendril } from "./tendril";
 import { addActivity } from "./activity";
@@ -11,6 +10,8 @@ import runtimeRelease from "./runtime-release.json";
 import { holdingPage, injectRuntime, type PublicationManifest } from "./inject";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
+import { servePeerPage } from './peer-release-serving';
+import { peerReleaseVersion } from './peer-releases';
 
 export type VersionStatus = "pending" | "healthy" | "failed";
 
@@ -29,6 +30,10 @@ export interface Pointers {
 }
 
 export function pointers(t: Tendril): Pointers {
+  if (selectedApplication(t).kind === 'peer') {
+    const current = peerReleaseVersion(t) || null;
+    return { current, latest: current, healthy: null };
+  }
   const z = (n: number) => (n > 0 ? n : null);
   return { current: z(t.db.get("current", 0)), latest: z(t.db.get("latest", 0)), healthy: z(t.db.get("healthy", 0)) };
 }
@@ -48,6 +53,7 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
   options: { entry?: string; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  if (selectedApplication(t).kind === 'peer') throw new HttpError(409, 'signed_release_required', 'Peer pages require a signed Chronolog release and activation');
   const entry = options.entry ?? "index.html";
   if (!files.has(entry) || !isHtmlType(files.get(entry)!.type)) throw new HttpError(400, "bad_publication", "The publication requires its declared HTML entry");
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
@@ -106,6 +112,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
 
 /** Serving rule: current unless failed, then healthy; else current; 0 = nothing uploaded. */
 export function servedVersion(t: Tendril): number {
+  if (selectedApplication(t).kind === 'peer') return peerReleaseVersion(t);
   const current = t.db.get<number>("current", 0);
   if (current > 0 && versionStatus(t, current) !== "failed") return current;
   const healthy = t.db.get<number>("healthy", 0);
@@ -114,6 +121,7 @@ export function servedVersion(t: Tendril): number {
 }
 
 export function reportHealth(t: Tendril, version: number, ok: boolean, errors: unknown[], device: string | null): void {
+  if (selectedApplication(t).kind === 'peer') throw new HttpError(409, 'signed_release_required');
   if (versionStatus(t, version) !== "pending") return;
   if (ok) {
     t.db.run("UPDATE versions SET status = 'healthy' WHERE version = ?", version);
@@ -125,6 +133,7 @@ export function reportHealth(t: Tendril, version: number, ok: boolean, errors: u
 }
 
 export function failVersion(t: Tendril, version: number, errors: unknown[]): void {
+  if (selectedApplication(t).kind === 'peer') throw new HttpError(409, 'signed_release_required');
   const errs = errors.slice(0, 20).map((e) => (typeof e === "string" ? e.slice(0, 4000) : e));
   t.db.run("UPDATE versions SET status = 'failed', errors = ? WHERE version = ?", JSON.stringify(errs), version);
   let rolledBackTo: number | null = null;
@@ -148,6 +157,7 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
 
 /** Makes `target` (or the newest healthy version older than current) current. */
 export function rollback(t: Tendril, target: number | null | undefined, by: string | null, device: string | null): number {
+  if (selectedApplication(t).kind === 'peer') throw new HttpError(409, 'signed_release_required', 'Reactivate a retained release with a fresh signed selection');
   const current = t.db.get<number>("current", 0);
   let v: number;
   if (target !== undefined && target !== null) {
@@ -204,9 +214,7 @@ export function retainPublication(t: Tendril, device: string, version: number): 
 export async function servePageFile(t: Tendril, req: Request, base: string, rest: string,
   role: "owner" | "guest" | "display", accountId: string | null): Promise<Response> {
   const application = selectedApplication(t);
-  // A display link has no peer-introduction permission. Application capabilities
-  // remain independently authenticated by Chronolog after connection setup.
-  const introductions = application.kind === "peer" && role !== "display" ? peerBootstrap(t) : undefined;
+  if (application.kind === 'peer') return servePeerPage(t, req, base, rest, role);
   const pinned = /^_publications\/([1-9][0-9]*)\/(.*)$/.exec(rest);
   let version = pinned ? Number(pinned[1]) : servedVersion(t);
   if (pinned) {
@@ -242,7 +250,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, documentPath: null, features: t.features(), publication: null });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -257,11 +265,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
-    // The authored publication is immutable; its injected resident addresses are
-    // current host configuration. Reloading may refresh them without changing
-    // the publication or adding a discovery poll to a running application.
-    if (application.kind === "peer") headers.set("Cache-Control", "private, no-cache");
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
     return new Response(req.method === "HEAD" ? null : html, { headers });
   }
   headers.set("Content-Length", String(file.size));

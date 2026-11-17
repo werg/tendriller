@@ -24,10 +24,10 @@ export interface ReleaseClient {
   /** Trusted HTTP bootstrap evidence, still verified by the portable Chronolog release client. */
   readonly initial: ReleaseBootstrap | null;
   state(options?: { readonly signal?: AbortSignal }): Promise<ReleaseState>;
-  configure(configuration: HostedReleasePolicyRequest): Promise<SignedReleasePolicy>;
-  publish(manifest: SignedReleaseManifest): Promise<ReleasePublication>;
+  configure(configuration: HostedReleasePolicyRequest, options?: { readonly signal?: AbortSignal }): Promise<SignedReleasePolicy>;
+  publish(manifest: SignedReleaseManifest, options?: { readonly signal?: AbortSignal }): Promise<ReleasePublication>;
   manifest(id: string, options?: { readonly signal?: AbortSignal }): Promise<SignedReleaseManifest | null>;
-  activate(request: SignedReleaseActivationRequest): Promise<SignedReleaseActivation>;
+  activate(request: SignedReleaseActivationRequest, options?: { readonly signal?: AbortSignal }): Promise<SignedReleaseActivation>;
   readonly content: {
     put(digest: string, bytes: Uint8Array | ArrayBuffer, options?: { readonly signal?: AbortSignal; readonly mediaType?: string }): Promise<{ digest: string; bytes: number }>;
     /** The exact authored bytes. Rendered HTML with trusted runtime injection uses separate page URLs. */

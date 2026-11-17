@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
-import { api, apiJson, create, inDO, publishFilesJson, req, type Handle } from "./helpers";
+import { api, apiJson, create, inDO, req, type Handle } from "./helpers";
+import { createPeerIdentity } from '@chronolog/peer-generation/control';
+import { activateRelease, publishRelease, releaseApplicationId, releasePolicy } from './release-helpers';
 
 it.each(["interactive", "dashboard"])("directs the initial %s peer agent to its selected backend", async mode => {
   const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode }) as Handle & {
@@ -25,14 +27,18 @@ it("rejects hosted agent wake sockets and tickets for peer pages while retaining
   expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length,
     tickets: t.db.one<{ count: number }>("SELECT COUNT(*) AS count FROM socket_tickets")!.count })))
     .toEqual({ sockets: 0, tickets: 0 });
-  for (const path of ["publications", "members", "logs", "peers/bootstrap"])
+  expect((await api(h, 'GET', 'publications')).status).toBe(409);
+  for (const path of ["members", "logs", "peers/bootstrap"])
     expect((await api(h, "GET", path)).status, path).toBe(200);
 });
 
 it("publishes an interactive peer page without hosted agent delivery", async () => {
-  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "interactive" });
-  const receipt = await publishFilesJson(h, { "index.html": "<h1>Peer application</h1>" });
-  expect(receipt).toEqual({ version: 1, head_revision: 1 });
+  const applicationId = releaseApplicationId(), signer = await createPeerIdentity();
+  const h = await create({ application: { kind: "peer", id: applicationId }, listener: false, mode: "interactive" });
+  await releasePolicy(h, [signer]);
+  const publication = await publishRelease(h, applicationId, signer, { "index.html": "<h1>Peer application</h1>" });
+  const { activation } = await activateRelease(h, applicationId, signer, publication.id);
+  expect(activation.payload.revision).toBe(0);
   expect(await (await req(h.page_url)).text()).toContain("<h1>Peer application</h1>");
   expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length, webhook: t.presenceFacts().webhook,
     tickets: t.db.one<{ count: number }>("SELECT COUNT(*) AS count FROM socket_tickets")!.count })))
@@ -45,20 +51,20 @@ it("guides peer agents to their selected backend and exposes only host tools", a
   const initial = (await rpc("initialize")).result;
   expect(initial.capabilities).toEqual({ tools: {} });
   expect(initial.instructions).toContain("client.signals");
-  expect(initial.instructions).toMatch(/Chronolog.*local and final views/);
-  expect(initial.instructions).toMatch(/local\(\).*final\(\).*accepted or rejected outcomes/);
-  expect(initial.instructions).toContain("select local previews explicitly");
-  expect(initial.instructions).toMatch(/application\.changes.*coherent readView.*release/);
+  expect(initial.instructions).toContain('applied()');
+  expect(initial.instructions).toMatch(/changes.*coherent readView.*release/);
+  expect(initial.instructions).toContain('separate publisher policy');
   expect(initial.instructions).toContain("agent's own application session");
   expect(initial.instructions).toContain("this host has no application event queue or wake subscription");
   expect(initial.instructions).not.toContain("Read stored events immediately with read_events");
   const names = (await rpc("tools/list")).result.tools.map((tool: { name: string }) => tool.name);
-  expect(names).toContain("publish_publication"); expect(names).toContain("tendril_info");
+  expect(names).toContain("publish_release"); expect(names).toContain("activate_release");
+  expect(names).toContain("release_state"); expect(names).toContain("tendril_info");
   expect(names).toContain("discover_peers"); expect(names).toContain("peer_application");
   expect(names).toContain("peer_definition");
   expect(names).toContain("select_peer_generation");
   expect(names).toContain("administer_peer_generation");
-  for (const name of ["read_events", "say", "get_state", "create_timer", "append_stream", "claim_event_consumer", "probe_delivery", "write_shared_file", "delete_shared_file"])
+  for (const name of ["publish_publication", "rollback_publication", "upload_text", "read_events", "say", "get_state", "create_timer", "append_stream", "claim_event_consumer", "probe_delivery", "write_shared_file", "delete_shared_file"])
     expect(names).not.toContain(name);
   expect((await rpc("tools/call", { name: "read_events" })).error.code).toBe(-32602);
   expect((await rpc("events/list")).result.events).toEqual([]);

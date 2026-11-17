@@ -32,9 +32,18 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
       traffic[new URL(url).pathname.endsWith('/peers/invitations') ? 'invitationUpgrades' : 'rendezvousUpgrades']++;
     return req(url, init);
   };
-  const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown) => request(
-    `${url}_tendril/${path}`, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown, options: { headers?: Record<string, string> } = {}) => {
+    const raw = typeof body === 'string' || body instanceof ArrayBuffer || body instanceof Uint8Array;
+    return request(`${url}_tendril/${path}`, { method,
+      headers: { ...(body === undefined || raw ? {} : { 'Content-Type': 'application/json' }), ...options.headers, ...headers },
+      ...(body === undefined ? {} : { body: raw ? body as BodyInit : JSON.stringify(body) }) });
+  };
+  const fetchPage = (base: string, headers: Record<string, string>) => (path = '') => {
+    const url = new URL(path, base);
+    if (url.origin !== new URL(base).origin || !url.pathname.startsWith(new URL(base).pathname))
+      throw new TypeError('The page fixture accepts only paths within its page');
+    return request(url.href, { headers });
+  };
   const workflow = (url: string, headers: Record<string, string>) =>
     (module: string, operation: string, data: unknown = {}, guards: Record<string, string> = {}, cid = crypto.randomUUID()) => request(
       `${url}workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, {
@@ -43,10 +52,10 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
       },
     );
   const owner = workflow(handle.page_url + '_tendril/', ownerHeaders(handle.page_url));
-  const agentApi = (method: string, path: string, body?: unknown) => {
+  const agentApi = (method: string, path: string, body?: unknown, options: { headers?: Record<string, string> } = {}) => {
     const raw = typeof body === 'string' || body instanceof ArrayBuffer || body instanceof Uint8Array;
     return request(`${handle.api}${path ? '/' + path : ''}`, {
-      method, headers: { Authorization: `Bearer ${handle.token}`, ...(body === undefined || raw ? {} : { 'Content-Type': 'application/json' }) },
+      method, headers: { ...(body === undefined || raw ? {} : { 'Content-Type': 'application/json' }), ...options.headers, Authorization: `Bearer ${handle.token}` },
       ...(body === undefined ? {} : { body: raw ? body as BodyInit : JSON.stringify(body) }),
     });
   };
@@ -65,6 +74,7 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
     invitationSocket: invitations(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
     ownerInvitationSocket: invitations(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
     ownerApi: pageApi(handle.page_url, ownerHeaders(handle.page_url)),
+    fetchPage: fetchPage(handle.page_url, ownerHeaders(handle.page_url)),
     api: agentApi,
     async participant() {
       const account = crypto.randomUUID(), secret = crypto.randomUUID();
@@ -76,7 +86,7 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
         return t.renderLink(invitation);
       });
       const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
-      return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers),
+      return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers), fetchPage: fetchPage(link.url, headers),
         rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers) };
     },
     async display() {

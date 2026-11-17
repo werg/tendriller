@@ -186,7 +186,7 @@ A page that only needs telemetry may use `mode:"dashboard"`; it has the same str
 
 ## Publish a complete page
 
-Upload immutable bytes, then commit one complete publication manifest. The optional core CLI does this for an ordinary file or directory; the public SDK exposes the same operations. This example publishes a hosted Cloudflare page; a peer page supplies its own Chronolog bootstrap and application API calls in the authored assets:
+Upload immutable bytes, then commit one complete publication manifest. The optional core CLI does this for an ordinary file or directory; the public SDK exposes the same operations. This example publishes a hosted Cloudflare page. Peer pages use the signed release publisher described below:
 
 ```js
 import { createClient } from "@tendriller/core";
@@ -213,8 +213,18 @@ The service injects its released runtime. Every publication locks that runtime a
 
 For the hosted Cloudflare runtime, a page's health report determines whether the publication becomes healthy. **Health remains `null` / `pending` until an eligible, visible tab loads the new publication**; a push or agent connection alone cannot mark it healthy. Visibility matters: a background tab does not declare a new page healthy. Existing hosted tabs may defer reload while preserving their drafts and remain on their original asset graph.
 
+Peer pages use `@chronolog/peer-session/releases` with
+`client.peers.releases`. The owner configures a separate account-bound publisher
+policy; data membership grants no publishing authority. Prepare and publish exact
+signed authored bytes, then activate the release against the observed activation
+ID. The publisher retains the signed request for exact retry after a lost reply.
+See [Peer page releases](docs/PAGE_RELEASES.md) for the complete example, binary
+content routes, explicit rollback and optional update watch. Peer pages reject
+the unsigned `publications` and bundle APIs shown for the Cloudflare profile.
+
 Peer pages use the quiet runtime, which sends no automatic host health report.
-Application readiness and synchronization come from the selected backend.
+Code activation never rewinds with application data recovery, and an update watch
+does not reload a page automatically. Application readiness and synchronization come from the selected backend.
 `tendril.application.ready()` waits for its installation; replica progress reports
 whether the selected profile, complete history and keys are ready. An installed adapter or RTC link alone is not synchronized state.
 

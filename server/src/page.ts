@@ -19,6 +19,7 @@ import { allows, authenticatePage } from "./access";
 import { handleManagement } from "./management";
 import { handleStorage, STORAGE_ROUTE } from "./storage";
 import { RECORD_LOG_ROUTE, handleRecordLog } from "./records";
+import { peerPublication } from './peer-release-serving';
 
 /**
  * The device making an HTTP request from the page, verified by its device secret
@@ -153,6 +154,11 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "info" && m === "GET") {
+    if (selectedApplication(t).kind === 'peer') {
+      const release = await peerPublication(t, base);
+      return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get('mode', 'interactive'), version: release.version, base,
+        files: release.publication?.assets.map(asset => asset.path) ?? [], publication: release.publication, peerRelease: release.bootstrap, features: t.features() });
+    }
     const v = servedVersion(t);
     return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }

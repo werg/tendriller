@@ -19,20 +19,20 @@ export function createReleaseClient({ request, raw, openWatch, initial }) {
       const value = await request('peers/releases', { signal: options.signal });
       return response(value?.profile === 'chronolog-release-v1' && Array.isArray(value.policies) && Array.isArray(value.activations), value);
     },
-    async configure(configuration) {
-      const value = await request('peers/releases/policy', { method: 'PUT', body: configuration });
+    async configure(configuration, options = {}) {
+      const value = await request('peers/releases/policy', { method: 'PUT', body: configuration, signal: options.signal });
       return response(signed(value), value);
     },
-    async publish(manifest) {
-      const value = await request('peers/releases/manifests', { method: 'POST', body: manifest });
+    async publish(manifest, options = {}) {
+      const value = await request('peers/releases/manifests', { method: 'POST', body: manifest, signal: options.signal });
       return response(digestPattern.test(value?.id) && signed(value?.manifest), value);
     },
     async manifest(id, options = {}) {
       const value = await request(`peers/releases/manifests/${digest(id)}`, { signal: options.signal });
       return response(value === null || signed(value), value);
     },
-    async activate(activation) {
-      const value = await request('peers/releases/activations', { method: 'POST', body: activation });
+    async activate(activation, options = {}) {
+      const value = await request('peers/releases/activations', { method: 'POST', body: activation, signal: options.signal });
       return response(signed(value) && digestPattern.test(value.id), value);
     },
     content: Object.freeze({

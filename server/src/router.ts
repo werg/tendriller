@@ -257,11 +257,13 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const invitationSocket = agentRest === "peers/invitations" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const signalSocket = agentRest === "signals/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const releaseSocket = agentRest === 'peers/releases/socket' && req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
       const socket = agentRest === "events/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
       const agentProtocol = socket && protocols.includes("tendriller.agent.v2");
       const socketToken = agentProtocol || peerSocket && protocols.includes("tendriller.rendezvous.v1") ||
-        invitationSocket && protocols.includes("tendriller.invitations.v1") || signalSocket && protocols.includes("tendriller.signals.v1")
+        invitationSocket && protocols.includes("tendriller.invitations.v1") || signalSocket && protocols.includes("tendriller.signals.v1") ||
+        releaseSocket && protocols.includes('tendriller.releases.v1')
         ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
       // A listen-only ticket (POST A/events/socket/ticket) can stand in for the token on the socket only.
       const socketTicket = agentProtocol && !socketToken ? protocols.find((s) => SOCKET_TICKET_RE.test(s)) : undefined;

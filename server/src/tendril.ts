@@ -2,6 +2,7 @@ import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isSignalSocket, handleSignalMessage } from './signals';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
+import { isReleaseSocket } from './peer-releases';
 import { applicationSelection } from "../../contract/application.mjs";
 import { selectedApplication } from "./application";
 import runtimeRelease from "./runtime-release.json";
@@ -249,6 +250,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isReleaseSocket(ws)) { ws.close(1008, 'Release subscriptions are receive-only'); return; }
     if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
     if (isSignalSocket(ws)) { await handleSignalMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
@@ -267,7 +269,7 @@ export class Tendril extends DurableObject<Env> {
     } catch {
       /* already closed */
     }
-    if (isSignalSocket(ws) || isInvitationSocket(ws)) return;
+    if (isSignalSocket(ws) || isInvitationSocket(ws) || isReleaseSocket(ws)) return;
     if (isPeerSocket(ws)) { closePeer(this, ws); return; }
     if (this.isAgentSocket(ws)) {
       const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
@@ -280,6 +282,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (isReleaseSocket(ws)) { try { ws.close(1011, 'Release transport failed'); } catch {} return; }
     if (isInvitationSocket(ws)) { try { ws.close(1011, 'Invitation transport failed'); } catch {} return; }
     if (isSignalSocket(ws)) return;
     if (isPeerSocket(ws)) { closePeer(this, ws); return; }
