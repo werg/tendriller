@@ -49,4 +49,4 @@ Commit and push incremental changes before publishing clean artifacts. A source 
 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
 
-For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md). The [branch inventory](BRANCH_ARCHIVE.md) records preserved unmerged heads separately from the shipped default branches.
+For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md). The [branch inventory](BRANCH_INVENTORY.md) records older unmerged branch heads for review.
