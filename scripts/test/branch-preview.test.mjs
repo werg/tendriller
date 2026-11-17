@@ -204,8 +204,17 @@ test("live smoke waits for exact deployed commit and checks database-backed serv
     const path = new URL(url).pathname; paths.push(path);
     if (path === "/health") return Response.json({ ok: true, preview: { commit: ++attempts === 1 ? "old" : commit } });
     if (path === "/api/service") return Response.json({contract:3});
-    return new Response(`Tendriller ${identity.url}`);
+    return new Response(path === "/agent.md" ? "Tendriller uses this service origin for API requests." : `Tendriller ${identity.url}`);
   } });
   assert.equal(attempts, 2);
   assert.deepEqual(paths.slice(2), ["/", "/status", "/api/service", "/agent.md"]);
+});
+
+test("live smoke rejects an agent guide with a stale production service URL", async () => {
+  await assert.rejects(smokePreview(identity, { delay: async () => {}, fetcher: async url => {
+    const path = new URL(url).pathname;
+    if (path === "/health") return Response.json({ ok: true, preview: { commit } });
+    if (path === "/api/service") return Response.json({ contract: 3 });
+    return new Response(path === "/agent.md" ? "Tendriller https://tendriller.dev/api/tendrils" : "Tendriller");
+  } }), /Agent guide points at another environment/);
 });
