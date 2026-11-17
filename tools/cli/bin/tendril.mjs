@@ -1,661 +1,115 @@
 #!/usr/bin/env node
-// Optional Tendriller operational CLI. Uses the public core contract.
-import { randomUUID, createHash } from "node:crypto";
-import { checkService } from "../lib/service.mjs";
-import { CONTRACT_VERSION } from "@tendriller/core/contract";
-import { readFileSync, writeFileSync, existsSync, lstatSync, mkdirSync } from "node:fs";
-import { basename, resolve, join, dirname } from "node:path";
-import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
-import {
-  resolveConfig, saveConfig, removeConfig, serverBase, configDir, cursorPath, readCursor, writeCursor, checkpointPath,
-} from "../lib/config.mjs";
-import { request, client, ApiError, sleep } from "../lib/api.mjs";
-import { pendingEvents, acknowledgeEvents } from "../../bridges/lib/pending-events.mjs";
-import { waitForAgentWake } from "../../bridges/bin/agent-socket.mjs";
-import { pack, guessType } from "../lib/pack.mjs";
-import { uploadBlob, downloadBlob, blobInfo } from "../lib/blobs.mjs";
-import { putSharedFile, getSharedFile, deleteSharedFile, listSharedFiles, fileHistory } from "../lib/shared-files.mjs";
-import { publishFiles, rollbackPublication } from "../lib/publications.mjs";
-import { changeTimer } from "../lib/timers.mjs";
-import { terminalQr } from "../lib/qr.mjs";
+import { once } from 'node:events';
+import { parseArgs, intFlag } from '../lib/args.mjs';
+import { resolveConfig, saveConfig, removeConfig, serverBase } from '../lib/config.mjs';
+import { request, client, ApiError } from '../lib/api.mjs';
+import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/session.mjs';
 
-const MAX_TRANSFER_BYTES = 5 * 1024 * 1024;
-function readTransferFile(path) {
-  const stats = lstatSync(path);
-  if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Transfer source must be a regular file, not a symlink");
-  if (stats.size > MAX_TRANSFER_BYTES) throw new Error(`Transfer source exceeds the effective ${MAX_TRANSFER_BYTES} byte limit`);
-  return readFileSync(path);
-}
+const usage = `Usage: tendril <command> [options]
 
-const HELP = `tendril <command> [args] [--tendril <name>] [--pretty]
+Owned application session (--session /absolute/application.mjs):
+  describe | status | query <name> [json]
+  command <name> <json> --operation ID [--based-on JSON] [--saved | --shared]
+  operation <id> | retry <id> [--saved]
+  reapply <old-id> <name> <json> --operation NEW_ID --based-on JSON
+  events [--cursor CURSOR] [--topics JSON] [--limit N] | watch
+  signal <topic> <json> [--ttl MILLISECONDS]
+  recovery inspect | takeover --transition ID | handover <device> --transition ID
+  definition | publication | publish <directory> --operation ID [--entry index.html]
 
-Create / attach
-  new [name] --owner <verified-email> [--mode interactive|dashboard] [--as <config-name>]
-  adopt <code> [--as <config-name>]
-  info [--show-url]            tendril handle, versions, devices, presence, wake (URL redacted)
-  meta [--name N] [--short-name S] [--icon <blob id|https url>] [--theme-color C]
-       [--background-color C] [--lifetime ad_hoc|resident]
-  rm --yes                     delete the tendril and everything in it
+Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
+  new [name] --owner VERIFIED_EMAIL [--server URL] [--as NAME]
+  info [--show-url] | service | meta <json> | release
+  link list | create <json> | rotate <id> | remove <id>
+  token list | create <name> | remove <name>
+  activity [--after N] | remove --yes
 
-Content
-  push <dir|file> [--message M] [--no-replace] [--as <path>] [--entry <html-path>] [--no-wait|--wait] [--timeout S]
-  publications | publication <version> | rollback <version> [--expected-head N] [--resume-file PATH]
-  blob upload <file> [--name N] [--type T] [--resume-file PATH]
-  blob download <id> <destination> [--overwrite] | blob info <id>
-  blob list [--after <blob-id>] [--limit N]
-  blob pin <id> --keep true|false [--cid C --generations JSON]
-  file put <path> <file> [--revision N] [--resume-file PATH]
-  file get <path> <destination> [--overwrite] | file list | file history <path>
-  file delete <path> [--revision N] [--resume-file PATH] [--cid C --generations JSON]
-
-Talk to the page
-  eval <js> | eval -f <file> | eval -   [--device primary|all|<id>] [--timeout-ms N]
-  say <text> [--no-speak] [--in-reply-to SEQ] [--device ID|all] [--speak-on ID|primary|none]
-  status <working|idle|done> [text]
-  notify <title> [body] [--url U] [--device D] [--tag T]
-  notifications                push readiness, subscribed devices and quota (no notification sent)
-  check [--device D]           accessibility audit (axe-core) in the page
-
-Hear from the page
-  pending [--limit N]          read pending input; auto-handle delivery probes only
-  ack <sequence>              save handled progress after replies/updates succeed
-  events [--after C] [--limit N] [--peek] [--follow [--wakes]] | events send --wake
-  wait [--timeout S]           wait over a WebSocket for one wake, print events JSON
-  logs [--after C] [--follow]
-  activity [--after C] [--note TEXT]
-  journey [--since UNIX_MS]     ordered event/read/reply/error timeline
-
-State, devices, sharing, wake
-  state get [path] | set <path> <json> | delete <path> | patch <json> | put <json>
-  devices | devices rename <id> <name> | devices purpose <id> <purpose> | devices rm <id>
-  focus [<device-id>|off] [--ttl SECONDS]
-  capabilities                 live browser and hardware report per device
-  link guest [--label L] [--expires S] | link list | link rm <id> | link rotate [id]
-  tokens | tokens new <name> | tokens rm <name>
-  wake [--webhook URL [--token T] | --off] [--schedule N|off] [--page-streak N] [--grace S]
-
-Durable work and trusted extensions
-  timers [list|history] | timers add <json|@file>
-  timers update <id> <json|@file> --revision N | timers cancel <id> --revision N | timers rm <id> --revision N
-       [--cid C --scope ID --generations JSON --resume-file PATH]
-  session [get] | session set <json|@file>
-  bundle export [new-file.json] [--include-data] | bundle stage <file.json>
-  bundle publish --expected-head N | bundle discard
-  remix --owner EMAIL [--name N] [--include-data] [--as CONFIG]
-  workflow <module> <operation> [json]  explicit trusted workflow command
-  scopes list|register|rotate|remove     authoritative generation controls
-
-Config: TENDRIL_API + TENDRIL_TOKEN, or --tendril <name> (~/.config/tendril/<name>.json,
-written by new/adopt), TENDRIL_SERVER (default https://tendriller.dev; use --server for local development), TENDRIL_OWNER.
-Creation is ad_hoc. Before claim, stream retention and request bodies are limited to 1 MiB each.
-Dashboard pushes return pending by default; --wait opts in. info --show-url reveals the private link.
-Guest invites need owner approval. Display links are created in the service utility.
-JSON arguments may be @file. Output is JSON; --pretty indents it.`;
-
-let PRETTY = false;
-const out = (x) => process.stdout.write((PRETTY ? JSON.stringify(x, null, 2) : JSON.stringify(x)) + "\n");
-const note = (s) => process.stderr.write(s + "\n");
-const fail = (msg, code = 1) => { const e = new Error(msg); e.exit = code; throw e; };
-function boundedInteger(value, name, fallback, min, max = Number.MAX_SAFE_INTEGER) {
-  const number = intFlag(value, name, fallback);
-  if (number < min || number > max) fail(`--${name} must be an integer from ${min} to ${max}`, 64);
-  return number;
-}
-const retryable = e => !(e instanceof ApiError) || [408, 425, 429].includes(e.status) || e.status >= 500;
-const sleepUntilAbort = (ms, signal) => new Promise(resolve => {
-  if (signal.aborted) return resolve();
-  const timer = setTimeout(done, ms);
-  function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
-  signal.addEventListener("abort", done, { once: true });
-});
-
-function transferRecord(cfg, what, key, flag) {
-  if (flag) return resolve(flag);
-  const path = join(configDir(), "transfers",
-    createHash("sha256").update(`${cfg.api}\0${what}\0${key}`).digest("hex") + ".json");
-  mkdirSync(dirname(path), { recursive:true, mode:0o700 });
-  return path;
-}
-function generationsOf(flags) { return flags.generations ? jsonArg(flags.generations, "generation preconditions") : {}; }
-function revisionOf(flags) { return flags.revision === undefined ? undefined : boundedInteger(flags.revision,"revision",0,0); }
-
-function jsonArg(s, what) {
-  if (s === undefined) fail(`missing ${what}`);
-  if (s.startsWith("@")) return JSON.parse(readFileSync(s.slice(1), "utf8"));
-  return parseJsonArg(s);
-}
-
-async function readStdin() {
-  const chunks = [];
-  for await (const c of process.stdin) chunks.push(c);
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function printHandle(h, saved) {
-  out({ ...h, config: saved ? saved.name : undefined, config_file: saved ? saved.path : undefined });
-  const qr = terminalQr(h.page_url);
-  note(h.mode === "dashboard" ? `\nDashboard URL: ${h.page_url}` : `\nPage URL (share after verifying the live listener): ${h.page_url}`);
-  if (qr) note(qr);
-  if (saved) note(`Saved to ${saved.path}. Use: tendril --tendril ${saved.name} <command>`);
-  if (h.unclaimed_limits) note(`Before claim: stream retention ${h.unclaimed_limits.stream_retained_bytes} bytes, request body ${h.unclaimed_limits.request_body_bytes} bytes. Claim the page before starting a large collector.`);
-}
-
-async function waitForHealth(api, version, timeoutS) {
-  const deadline = Date.now() + timeoutS * 1000;
-  let last;
-  for (;;) {
-    last = await api.get("/publications");
-    const v = (last.versions || []).find((x) => x.version === version);
-    if (v && v.status !== "pending") return { entry: v, list: last };
-    if (Date.now() > deadline) return { entry: v, list: last, timedOut: true };
-    await sleep(1000);
-  }
-}
-
-const commandMetadata = f => ({ cid: f.cid || randomUUID(), expected_generations: f.generations ? jsonArg(f.generations, "generation preconditions") : {}, ...(f.scope ? { scope: f.scope } : {}) });
-
-const commands = {
-  async new(args, f) {
-    for (const key of Object.keys(f)) if (!["owner", "as", "name", "server", "mode", "lifetime", "pretty"].includes(key)) fail(`new does not support --${key}`, 64);
-    const server = serverBase(process.env, f);
-    if (f.resident || (f.lifetime !== undefined && f.lifetime !== "ad_hoc")) fail("Create an ad_hoc page first. After the owner opens it, run meta --lifetime resident.", 64);
-    const owner = String(f.owner || process.env.TENDRIL_OWNER || "").trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner) || owner.length > 254) fail("new requires --owner <verified-email> (or TENDRIL_OWNER). Use an email verified by GitHub or Google.", 64);
-    if (f.mode !== undefined && !["interactive", "dashboard"].includes(f.mode)) fail("--mode must be interactive or dashboard; both support streams, and interactive requires an agent listener", 64);
-    const body = { name: args[0] || f.name || undefined, owner, lifetime: "ad_hoc" };
-    if (f.mode !== undefined) body.mode = f.mode;
-    const h = await request(`${server}/api/tendrils`, { method: "POST", json: body });
-    const saved = saveConfig(h, f.as || args[0] || h.name, process.env, server);
-    printHandle(h, saved);
-  },
-
-  async adopt(args, f) {
-    if (!args[0]) fail("usage: tendril adopt <code>");
-    const server = serverBase(process.env, f);
-    const h = await request(`${server}/api/adopt`, { method: "POST", json: { code: args[0] } });
-    const saved = saveConfig(h, f.as || h.name, process.env, server);
-    printHandle(h, saved);
-  },
-
-  async info(args, f, api) {
-    if (args.length || Object.keys(f).some(key => !["tendril", "pretty", "show-url"].includes(key))) fail("usage: tendril info [--show-url] [--pretty]", 64);
-    const details = await api.get("");
-    out({ ...details, ...(details.page_url !== undefined && !f["show-url"] ? { page_url: "[REDACTED; use --show-url privately]" } : {}) });
-  },
-
-  async meta(args, f, api) {
-    for (const key of Object.keys(f)) if (!["name","short-name","icon","theme-color","background-color","lifetime","pretty","tendril"].includes(key)) fail(`meta does not support --${key}`,64);
-    const map = { name: "name", "short-name": "short_name", icon: "icon", "theme-color": "theme_color",
-      "background-color": "background_color", lifetime: "lifetime" };
-    const body = {};
-    for (const [k, v] of Object.entries(map)) if (f[k] !== undefined) body[v] = f[k];
-    if (!Object.keys(body).length) fail("nothing to change; see tendril --help");
-    out(await api.patch("", body));
-  },
-
-  async rm(args, f, api, cfg) {
-    if (!f.yes) fail("this deletes the tendril and all its data; repeat with --yes");
-    await api.del("");
-    removeConfig(cfg);
-    out({ ok: true, deleted: cfg.id });
-  },
-
-  async push(args, f, api, cfg) {
-    if (f.wait && f["no-wait"]) fail("Choose either --wait or --no-wait", 64);
-    const healthTimeout = intFlag(f.timeout, "timeout", 20);
-    if (healthTimeout < 0) fail("--timeout must be nonnegative", 64);
-    const target = args[0];
-    if (!target || !existsSync(target)) fail("usage: tendril push <dir|file>");
-    const body = pack(target, { as: f.as, entry: f.entry, merge: !!f["no-replace"], message: f.message });
-    const generations = generationsOf(f);
-    const intent = JSON.stringify({target:resolve(target),entry:body.entry,message:body.message??null,
-      merge:!!f["no-replace"],generations,scope:f.scope??null,cid:f.cid??null,
-      files:body.files.map(({path,size,sha256,type})=>({path,size,sha256,type}))});
-    const r = await publishFiles(api, body, { merge: !!f["no-replace"], generations, scope:f.scope,
-      cid:f.cid, resumeFile:transferRecord(cfg,"push",intent,f["resume-file"]), maxBytes:5 * 1024 * 1024,
-      concurrency: boundedInteger(f.concurrency, "concurrency", 3, 1, 8) });
-    const result = { version: r.version, head_revision:r.head_revision, files: r.files, reused:r.reused };
-    if (f["no-wait"]) return out({ ...result, status: "pending" });
-    // No browser is required to be viewing a dashboard when publishing it.
-    if (!f.wait && (cfg.mode === "dashboard" || (!cfg.mode && (await api.get("")).mode === "dashboard")))
-      return out({ ...result, status: "pending", note: "Dashboard not yet viewed; use --wait to wait for browser health." });
-    const { entry, list, timedOut } = await waitForHealth(api, r.version, healthTimeout);
-    result.status = entry ? entry.status : "unknown";
-    result.healthy = result.status === "healthy" ? true : result.status === "failed" ? false : null;
-    if (entry?.errors?.length) result.errors = entry.errors;
-    if (list) result.current = list.current;
-    if (timedOut) result.note = "still pending: no device has loaded this version yet (open the page) or it is still starting";
-    out(result);
-    if (result.status === "failed") process.exitCode = 3;
-  },
-
-  async publications(args, f, api) { out(await api.get("/publications")); },
-  async publication(args, f, api) {
-    if (args.length !== 1 || !/^[1-9]\d*$/.test(args[0])) fail("usage: tendril publication <version>", 64);
-    out(await api.get(`/publications/${args[0]}`));
-  },
-  async rollback(args, f, api, cfg) {
-    if (args.length !== 1 || !/^[1-9]\d*$/.test(args[0])) fail("usage: tendril rollback <version>", 64);
-    const version = boundedInteger(args[0], "version", undefined, 1);
-    const expectedHeadRevision = f["expected-head"] === undefined ? undefined : boundedInteger(f["expected-head"], "expected-head", undefined, 0);
-    const generations = generationsOf(f);
-    const intent = JSON.stringify({version,expectedHeadRevision:expectedHeadRevision??null,generations,scope:f.scope??null,cid:f.cid??null});
-    out(await rollbackPublication(api, version, { expectedHeadRevision, generations, scope:f.scope, cid:f.cid,
-      resumeFile:transferRecord(cfg,"rollback",intent,f["resume-file"]) }));
-  },
-
-  async blob(args, f, api, cfg) {
-    const [verb, value, target] = args;
-    if (verb === "list" && args.length === 1) {
-      const limit = boundedInteger(f.limit, "limit", 100, 1, 1000);
-      if (f.after !== undefined && !/^b_[a-z2-7]{20}$/.test(f.after)) fail("--after must be a blob ID", 64);
-      return out(await api.get(`/blobs?limit=${limit}${f.after ? `&after=${encodeURIComponent(f.after)}` : ""}`));
-    }
-    if (verb === "info" && value && args.length === 2) return out(await blobInfo(api,value));
-    if (verb === "upload" && value && args.length === 2) {
-      const name = f.name || basename(value), type = f.type || guessType(value);
-      const bytes = readTransferFile(value);
-      const intent = JSON.stringify({local:resolve(value),name,type,cid:f.cid??null,
-        sha256:createHash("sha256").update(bytes).digest("hex")});
-      const record = transferRecord(cfg,"blob",intent,f["resume-file"]);
-      return out(await uploadBlob(api,bytes,{type,name,
-        cid:f.cid,resumeFile:record,maxBytes:MAX_TRANSFER_BYTES}));
-    }
-    if (verb === "download" && value && target && args.length === 3)
-      return out(await downloadBlob(api,value,target,{overwrite:!!f.overwrite}));
-    if (verb === "pin" && value && args.length === 2) {
-      if (f.keep !== "true" && f.keep !== "false") fail("blob pin needs --keep true|false",64);
-      return out(await api.put(`/blobs/${encodeURIComponent(value)}/pin`,{...commandMetadata(f),keep:f.keep === "true"}));
-    }
-    fail("usage: tendril blob upload|download|info|list|pin",64);
-  },
-
-  async file(args, f, api, cfg) {
-    const [verb, path, local] = args;
-    if (verb === "list" && args.length === 1) return out(await listSharedFiles(api));
-    if (verb === "history" && path && args.length === 2) return out(await fileHistory(api,path));
-    if (verb === "get" && path && local && args.length === 3)
-      return out(await getSharedFile(api,path,local,{overwrite:!!f.overwrite}));
-    if (verb === "put" && path && local && args.length === 3) {
-      const bytes = readTransferFile(local), type = f.type || guessType(local);
-      const expectedRevision = revisionOf(f), expectedGenerations = generationsOf(f);
-      const intent = JSON.stringify({path,local:resolve(local),name:basename(local),type,
-        sha256:createHash("sha256").update(bytes).digest("hex"),
-        expectedRevision:expectedRevision??null,expectedGenerations,scope:f.scope??null,cid:f.cid??null});
-      const record = transferRecord(cfg,"file",intent,f["resume-file"]);
-      return out(await putSharedFile(api,path,bytes,{localName:basename(local),
-        type,expectedRevision,cid:f.cid,expectedGenerations,scope:f.scope,
-        resumeFile:record,maxBytes:MAX_TRANSFER_BYTES}));
-    }
-    if (verb === "delete" && path && args.length === 2) {
-      const expectedRevision = revisionOf(f), expectedGenerations = generationsOf(f);
-      const intent = JSON.stringify({path,expectedRevision:expectedRevision??null,expectedGenerations,scope:f.scope??null,cid:f.cid??null});
-      return out(await deleteSharedFile(api,path,{cid:f.cid,expectedRevision,expectedGenerations,scope:f.scope,
-        resumeFile:transferRecord(cfg,"file-delete",intent,f["resume-file"])}));
-    }
-    fail("usage: tendril file put|get|list|history|delete",64);
-  },
-
-  async eval(args, f, api) {
-    let code = args.join(" ");
-    if (f.file) code = readFileSync(f.file, "utf8");
-    else if (code === "-") code = await readStdin();
-    if (!code.trim()) fail("usage: tendril eval <js> | -f file | -");
-    const body = { code };
-    if (f.device) body.device = f.device;
-    if (f["timeout-ms"]) body.timeout_ms = Number(f["timeout-ms"]);
-    const r = await api.post("/eval", body);
-    out(r);
-    if (r && r.ok === false) process.exitCode = 1;
-  },
-
-  async say(args, f, api) {
-    if (!args.length) fail("usage: tendril say <text>");
-    out(await api.post("/say", { text: args.join(" "), speak: !f["no-speak"],
-      ...(f["in-reply-to"] ? { in_reply_to: Number(f["in-reply-to"]) } : {}),
-      ...(f.device ? { device: f.device } : {}), ...(f["speak-on"] ? { speak_on: f["speak-on"] } : {}) }));
-  },
-
-  async status(args, f, api) {
-    const body = {};
-    if (args[0]) body.state = args[0];
-    if (args.length > 1) body.text = args.slice(1).join(" ");
-    out(await api.post("/status", body));
-  },
-
-  async notifications(args, f, api) {
-    if (args.length) fail("usage: tendril notifications", 64);
-    out(await api.get("/notify"));
-  },
-
-  async notify(args, f, api) {
-    if (!args[0]) fail("usage: tendril notify <title> [body]");
-    const body = { title: args[0] };
-    if (args.length > 1) body.body = args.slice(1).join(" ");
-    for (const k of ["url", "device", "tag"]) if (f[k]) body[k] = f[k];
-    out(await api.post("/notify", body));
-  },
-
-  async check(args, f, api) { out(await api.post("/check", f.device ? { device: f.device } : {})); },
-
-  async pending(args, f, _api, cfg) {
-    if (args.length) fail("usage: tendril pending [--limit N] [--checkpoint-file PATH]", 64);
-    for (const key of Object.keys(f)) if (!["limit", "checkpoint-file", "tendril", "pretty"].includes(key)) fail(`pending does not support --${key}`, 64);
-    out(await pendingEvents(cfg, checkpointPath(cfg, f), { limit: intFlag(f.limit, "limit", 100), initialCursor: 0 }));
-  },
-
-  async ack(args, f, _api, cfg) {
-    if (args.length !== 1) fail("usage: tendril ack <sequence> [--checkpoint-file PATH]", 64);
-    for (const key of Object.keys(f)) if (!["checkpoint-file", "tendril", "pretty"].includes(key)) fail(`ack does not support --${key}`, 64);
-    out(await acknowledgeEvents(cfg, checkpointPath(cfg, f), Number(args[0]), { initialCursor: 0 }));
-  },
-
-  async events(args, f, api, cfg) {
-    if (args[0] === "send") {
-      if (args.length !== 1 || !f.wake || Object.keys(f).some(key => !["wake", "tendril", "pretty"].includes(key))) fail("usage: tendril events send --wake", 64);
-      return out({ ...await api.post("/wake/probe", {}), diagnostic: "delivery_probe" });
-    }
-    if (args.length || f.wake) fail("usage: tendril events [--after C] [--limit N] [--peek] [--follow [--wakes]] | events send --wake", 64);
-    if (f.wait !== undefined) fail("--wait (long polling) was removed; use --follow for WebSocket delivery", 64);
-    const cpath = cursorPath(cfg, f);
-    const explicit = f.after !== undefined;
-    let after = explicit ? boundedInteger(f.after, "after", 0, 0) : readCursor(cpath);
-    const limit = boundedInteger(f.limit, "limit", 100, 1, 500);
-    const save = c => { if (!explicit && !f.peek) writeCursor(cpath, c); };
-    let failures = 0, backoff = 1000;
-    const readAvailable = async (signal) => {
-      for (;;) {
-        if (signal.aborted) return;
-        const old = after;
-        const r = await api.get(`/events?after=${after}&limit=${limit}`, { signal });
-        if (signal.aborted) return;
-        failures = 0;
-        backoff = 1000;
-        if (old !== after) return;
-        for (const event of r.events || []) if (!f.wakes || event.wake) out(event);
-        if (!Number.isSafeInteger(r.cursor) || r.cursor < old) throw Error("Event cursor regressed");
-        after = r.cursor;
-        save(after);
-        if (!r.events?.length || r.events.length < limit || after === old) return;
-      }
-    };
-    if (!f.follow) {
-      const r = await api.get(`/events?after=${after}&limit=${limit}`);
-      save(r.cursor);
-      return out(r);
-    }
-    for (;;) {
-      try {
-        await waitForAgentWake(cfg, readAvailable);
-      } catch (error) {
-        if (!retryable(error) || /protocol was not accepted|sockets need Node/i.test(error.message) || ++failures >= 5) throw error;
-        note(`events: ${error.message}; socket reconnect in ${backoff / 1000}s`);
-        await sleep(backoff);
-        backoff = Math.min(backoff * 2, 30000);
-      }
-    }
-  },
-
-  async wait(args, f, api, cfg) {
-    if (args.length) fail("usage: tendril wait [--timeout S]", 64);
-    const timeoutS = f.timeout === undefined ? null : boundedInteger(f.timeout, "timeout", 0, 0);
-    const cpath = cursorPath(cfg, f);
-    const controller = new AbortController();
-    const timer = timeoutS === null ? null : setTimeout(() => controller.abort(), timeoutS * 1000);
-    let finished = false;
-    let failures = 0, backoff = 1000;
-    const readAvailable = async (signal) => {
-      if (finished || controller.signal.aborted) return;
-      const start = readCursor(cpath);
-      let cursor = start;
-      const events = [];
-      for (;;) {
-        if (finished || controller.signal.aborted || signal.aborted) return;
-        const r = await api.get(`/events?after=${cursor}&limit=500`, { signal });
-        if (finished || controller.signal.aborted || signal.aborted) return;
-        failures = 0;
-        backoff = 1000;
-        if (!Number.isSafeInteger(r.cursor) || r.cursor < cursor) throw Error("Event cursor regressed");
-        events.push(...(r.events || []));
-        const previous = cursor;
-        cursor = r.cursor;
-        if (r.events?.some(event => event.wake)) {
-          writeCursor(cpath + ".prev", start);
-          writeCursor(cpath, cursor);
-          const owner = events.filter(event => event.type === "instruction" && event.role === "owner").length;
-          note(`tendril: ${events.length} event(s), ${owner} owner instruction(s); cursor ${start} -> ${cursor}`);
-          finished = true;
-          out({ ...r, events, cursor });
-          controller.abort();
-          return;
-        }
-        if (!r.events?.length || r.events.length < 500 || cursor === previous) return;
-      }
-    };
-    try {
-      for (; !finished && !controller.signal.aborted;) {
-        try {
-          await waitForAgentWake(cfg, readAvailable, undefined, controller.signal);
-        } catch (error) {
-          if (controller.signal.aborted) break;
-          if (!retryable(error) || /protocol was not accepted|sockets need Node/i.test(error.message) || ++failures >= 5) throw error;
-          note(`wait: ${error.message}; socket reconnect in ${backoff / 1000}s`);
-          await sleepUntilAbort(backoff, controller.signal);
-          if (controller.signal.aborted) break;
-          backoff = Math.min(backoff * 2, 30000);
-        }
-      }
-      if (!finished) { out({ timeout: true, cursor: readCursor(cpath) }); process.exitCode = 2; }
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-    }
-  },
-
-  async logs(args, f, api) {
-    let after = Number(f.after || 0);
-    if (!f.follow) return out(await api.get(`/logs?after=${after}${f.limit ? `&limit=${Number(f.limit)}` : ""}`));
-    for (;;) {
-      const r = await api.get(`/logs?after=${after}`);
-      for (const l of r.logs || []) out(l);
-      if (typeof r.cursor === "number") after = r.cursor;
-      await sleep(2000);
-    }
-  },
-
-  async activity(args, f, api) {
-    if (f.note) return out(await api.post("/activity", { text: f.note }));
-    out(await api.get(`/activity?after=${Number(f.after || 0)}${f.limit ? `&limit=${Number(f.limit)}` : ""}`));
-  },
-  async journey(args, f, api) { out(await api.get(`/journey?since=${Number(f.since || 0)}${f.limit ? `&limit=${Number(f.limit)}` : ""}`)); },
-
-  async state(args, f, api) {
-    const [sub, a, b] = args;
-    switch (sub || "get") {
-      case "get": {
-        const r = await api.get("/state");
-        if (!a) return out(r);
-        let v = r.state;
-        for (const k of toPath(a)) v = v == null ? undefined : v[k];
-        return out(v === undefined ? null : v);
-      }
-      case "set": return out(await api.patch("/state", { ...commandMetadata(f), ops: [{ op: "set", path: toPath(a), value: jsonArg(b, "value") }] }));
-      case "delete": return out(await api.patch("/state", { ...commandMetadata(f), ops: [{ op: "delete", path: toPath(a) }] }));
-      case "patch": return out(await api.patch("/state", { ...commandMetadata(f), ops: jsonArg(a, "state operations") }));
-      case "put": return out(await api.put("/state", { ...commandMetadata(f), state: jsonArg(a, "state object") }));
-      default: fail("usage: tendril state get [path] | set <path> <json> | delete <path> | patch <json> | put <json>");
-    }
-  },
-
-  async devices(args, f, api) {
-    const [sub, id, ...name] = args;
-    if (!sub) return out(await api.get("/devices"));
-    if (sub === "approve") fail("Agent tokens cannot approve devices or change roles. The owner approves signed-in guests in the service utility.", 64);
-    if (!id) fail("devices needs a device id", 64);
-    if (sub === "rename") {
-      if (!name.join(" ").trim()) fail("usage: tendril devices rename <id> <name>", 64);
-      return out(await api.patch(`/devices/${encodeURIComponent(id)}`, { name: name.join(" ") }));
-    }
-    if (sub === "purpose") {
-      const purpose = name[0];
-      if (!["general", "camera", "controller", "display", "speaker"].includes(purpose) || name.length !== 1)
-        fail("purpose must be general, camera, controller, display or speaker; it does not change access permissions", 64);
-      return out(await api.patch(`/devices/${encodeURIComponent(id)}`, { purpose }));
-    }
-    if (sub === "rm") { await api.del(`/devices/${encodeURIComponent(id)}`); return out({ ok: true }); }
-    fail("usage: tendril devices [rename <id> <name> | purpose <id> <purpose> | rm <id>]", 64);
-  },
-
-  async focus(args, f, api) {
-    if (!args[0]) return out(await api.get("/focus"));
-    out(await api.post("/focus", { device: args[0] === "off" ? null : args[0], ...(f.ttl !== undefined ? { ttl_seconds: intFlag(f.ttl, "ttl") } : {}) }));
-  },
-
-  async timers(args, f, api, cfg) {
-    const [sub = "list", id, settings] = args;
-    const reading = sub === "list" || sub === "history";
-    const allowed = ["pretty", "tendril", ...(reading ? [] : ["cid", "scope", "generations", "resume-file", "revision"])];
-    for (const key of Object.keys(f)) if (!allowed.includes(key)) fail(`timers ${sub} does not support --${key}`, 64);
-    if (reading) {
-      if (args.length > 1) fail(`timers ${sub} takes no additional arguments`, 64);
-      return out(await api.get(sub === "list" ? "/timers" : "/timers/history"));
-    }
-    if (!["add", "update", "cancel", "rm"].includes(sub)) fail("unknown timers command; see tendril --help", 64);
-    if (!id || args.length !== (sub === "update" ? 3 : 2)) fail("usage: timers add <json> | update <id> <json> --revision N | cancel <id> --revision N | rm <id> --revision N", 64);
-    if (sub === "add" && f.revision !== undefined) fail("timers add does not take --revision", 64);
-    if (sub !== "add" && f.revision === undefined) fail("Review timers list and supply --revision N for the timer you intend to change", 64);
-    const operation = sub === "add" ? "create" : sub === "rm" ? "delete" : "update";
-    const timer = sub === "add" ? undefined : id;
-    const body = sub === "add" ? jsonArg(id, "timer settings") : sub === "update" ? jsonArg(settings, "timer changes") : sub === "cancel" ? { state: "cancelled" } : {};
-    const options = { cid: f.cid, scope: f.scope, expectedGenerations: generationsOf(f),
-      expectedRevision: f.revision === undefined ? undefined : boundedInteger(f.revision, "revision", undefined, 1) };
-    const intent = JSON.stringify({ operation, timer: timer ?? null, settings: body, ...options });
-    return out(await changeTimer(api, operation, timer, body, { ...options, destination: cfg.api,
-      resumeFile: transferRecord(cfg, "timer", intent, f["resume-file"]) }));
-  },
-
-  async session(args, f, api) {
-    if (!args[0] || args[0] === "get") return out(await api.get("/session"));
-    if (args[0] === "set") return out(await api.put("/session", jsonArg(args[1], "session brief")));
-    fail("usage: tendril session [get|set <json|@file>]", 64);
-  },
-
-  async bundle(args, f, api) {
-    const [sub, file] = args;
-    if (sub === "export") {
-      const bundle = await api.get(`/bundle?include_data=${f["include-data"] === true}`);
-      if (!file) return out(bundle);
-      writeFileSync(file, JSON.stringify(bundle, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-      return out({ saved: resolve(file), includes_data: f["include-data"] === true });
-    }
-    if (sub === "stage") {
-      if (!file) fail("usage: tendril bundle stage <file.json>", 64);
-      return out(await api.put("/bundle", JSON.parse(readFileSync(file, "utf8"))));
-    }
-    if (sub === "publish") {
-      const head = intFlag(f["expected-head"], "expected-head");
-      if (!Number.isSafeInteger(head) || head < 0) fail("Review the prepared copy, then use bundle publish --expected-head <head-revision>", 64);
-      return out(await api.post("/bundle/publish", { ...commandMetadata(f), expected_head_revision: head }));
-    }
-    if (sub === "discard") { await api.del("/bundle"); return out({ discarded: true }); }
-    fail("usage: tendril bundle export [new-file.json] [--include-data] | stage <file.json> | publish --expected-head N | discard", 64);
-  },
-
-  async remix(args, f, api, cfg) {
-    const owner = String(f.owner || process.env.TENDRIL_OWNER || "").trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) fail("remix requires --owner <verified-email> (or TENDRIL_OWNER)", 64);
-    const handle = await api.post("/remix", { owner, ...(f.name ? { name: f.name } : {}), include_data: f["include-data"] === true });
-    const saved = saveConfig(handle, f.as || handle.id, process.env, new URL(cfg.api).origin);
-    printHandle(handle, saved);
-    note("The independent copy is prepared. Open its page, attach the receiver, then publish the bundle with --expected-head 0.");
-  },
-
-  async scopes(args, f, api) {
-    const [operation = "list", id, body] = args;
-    if (operation === "list") return out(await api.get("/scopes"));
-    if (!id) fail("scopes register|rotate|remove <id> [json]");
-    const path = "/scopes/" + encodeURIComponent(id), metadata = commandMetadata(f);
-    if (operation === "register") return out(await api.put(path, { ...metadata, ...jsonArg(body, "scope binding") }));
-    if (operation === "rotate") return out(await api.post(path + "/rotate", metadata));
-    if (operation === "remove") return out(await api.del(path, { json: metadata }));
-    fail("scopes list|register|rotate|remove");
-  },
-  async workflow(args, f, api, cfg) {
-    const [module, operation, data = "{}"] = args;
-    if (!module || !operation) fail("workflow <module> <operation> [json] [--scope ID --generations JSON --cid ID]");
-    await checkService(cfg.api, { requirements: { contract: CONTRACT_VERSION, workflows: { [module]: { interface_version: String(f["interface-version"] || "1"), schema_version: String(f["schema-version"] || "1") } } } });
-    out(await api.post(`/workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, { ...commandMetadata(f), data: jsonArg(data, "workflow data") }));
-  },
-
-  async capabilities(args, f, api) { out(await api.get("/capabilities")); },
-
-  async link(args, f, api) {
-    const [sub, id] = args;
-    if (!sub || sub === "list") return out(await api.get("/links"));
-    if (sub === "rm") {
-      if (!id) fail("usage: tendril link rm <id>", 64);
-      await api.del(`/links/${encodeURIComponent(id)}`); return out({ ok: true });
-    }
-    if (sub === "rotate") return out(await api.post(`/links/${encodeURIComponent(id || "l_main")}/rotate`, {}));
-    if (sub === "owner" || sub === "display") fail("Agents can create guest invitations only. Use the service utility to create display links; the existing main link is the owner link.", 64);
-    if (sub !== "guest") fail("usage: tendril link guest [--label L] [--expires S] | list | rm <id> | rotate [id]", 64);
-    const body = { role: sub };
-    if (f.label) body.label = f.label;
-    if (f.expires !== undefined) {
-      body.expires_in = Number(f.expires);
-      if (!Number.isFinite(body.expires_in) || body.expires_in <= 0) fail("--expires must be a positive number of seconds", 64);
-    }
-    const r = await api.post("/links", body);
-    out(r);
-    const qr = r.url && terminalQr(r.url);
-    if (qr) note(qr);
-  },
-
-  async tokens(args, f, api) {
-    const [sub, name] = args;
-    if (!sub) return out(await api.get("/tokens"));
-    if (sub === "new") return out(await api.post("/tokens", { name }));
-    if (sub === "rm") { await api.del(`/tokens/${encodeURIComponent(name)}`); return out({ ok: true }); }
-    fail("usage: tendril tokens [new <name> | rm <name>]");
-  },
-
-  async wake(args, f, api) {
-    const body = {};
-    if (f.off) body.webhook = null;
-    if (f.webhook) body.webhook = f.token ? { url: f.webhook, token: f.token } : { url: f.webhook };
-    if (f.schedule !== undefined) body.schedule_minutes = f.schedule === "off" ? null : Number(f.schedule);
-    if (f["page-streak"] !== undefined) {
-      body.budget = { page_streak: Number(f["page-streak"]) };
-    }
-    if (f.grace) body.grace_seconds = Number(f.grace);
-    out(Object.keys(body).length ? await api.put("/wake", body) : await api.get("/wake"));
-  },
-
-
+--timeout SECONDS bounds an invocation (default 30; watch waits until interrupted).
+--pretty formats JSON. The session module exports openSession({signal}) and returns
+{session, control?}; control is session.connectControlParticipant(...).
+Chronolog owns signing, exact retry, durable identity and recovery. No host data
+API or extra delivery queue is installed. A timed out waiter leaves its saved
+operation available under the original identity.`;
+const applicationCommands = new Set(['describe', 'status', 'query', 'command', 'operation', 'retry', 'reapply',
+  'events', 'watch', 'signal', 'recovery', 'definition', 'publication', 'publish']);
+const flagsByCommand = {
+  describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'], operation: [],
+  retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: [],
+  signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], publish: ['operation', 'entry'],
+  new: ['owner', 'server', 'as'], info: ['show-url'], service: [], meta: [], release: [], link: [], token: [],
+  activity: ['after'], remove: ['yes'],
 };
+const arity = { describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2], operation: [1, 1], retry: [1, 1],
+  reapply: [3, 3], events: [0, 0], watch: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
+  publish: [1, 1], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
+  link: [1, 2], token: [1, 2], activity: [0, 0], remove: [0, 0] };
+const invalid = message => Object.assign(Error(message), { exit: 64 });
+const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
-const NO_CONFIG = new Set(["new", "adopt"]);
+async function hostCommand(command, args, flags, signal) {
+  if (command === 'new') {
+    const owner = String(flags.owner ?? process.env.TENDRIL_OWNER ?? '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner) || owner.length > 254) throw invalid('new requires --owner VERIFIED_EMAIL');
+    const server = serverBase(process.env, flags);
+    const handle = await request(`${server}/api/tendrils`, { method: 'POST', signal,
+      json: { ...(args[0] ? { name: args[0] } : {}), owner, lifetime: 'ad_hoc' } });
+    const saved = saveConfig(handle, flags.as ?? args[0], process.env, server);
+    return { ...handle, config: saved.name, config_file: saved.path };
+  }
+  const config = resolveConfig(flags), api = client(config), options = { signal };
+  if (command === 'info') {
+    const result = await api.get('', options);
+    return { ...result, ...(result.page_url && !flags['show-url'] ? { page_url: '[REDACTED; use --show-url privately]' } : {}) };
+  }
+  if (command === 'service') return api.get('/service', options);
+  if (command === 'meta') return api.patch('', jsonInput(args[0]), options);
+  if (command === 'release') return api.post('/release', {}, options);
+  if (command === 'activity') return api.get(`/activity${flags.after === undefined ? '' : `?after=${checkedName(flags.after)}`}`, options);
+  if (command === 'remove') {
+    if (!flags.yes) throw invalid('remove deletes hosted control and publication state; supply --yes');
+    await api.del('', options); removeConfig(config); return { deleted: config.id };
+  }
+  const [action, input] = args;
+  const path = command === 'link' ? '/links' : '/tokens';
+  if (action === 'list' && args.length === 1) return api.get(path, options);
+  if (action === 'create' && args.length === 2) return api.post(path, command === 'link' ? jsonInput(input) : { name: input }, options);
+  if (action === 'remove' && args.length === 2) { await api.del(`${path}/${checkedName(input)}`, options); return { removed: input }; }
+  if (command === 'link' && action === 'rotate' && args.length === 2) return api.post(`${path}/${checkedName(input)}/rotate`, {}, options);
+  throw invalid(`Unknown ${command} action; see --help`);
+}
 
 async function main() {
-  let parsed;
-  try { parsed = parseArgs(process.argv.slice(2)); } catch (e) { note(e.message); process.exit(64); }
-  const { cmd, args, flags } = parsed;
-  PRETTY = !!flags.pretty;
-  if (!cmd || flags.help || cmd === "help") { process.stdout.write(HELP + "\n"); return; }
-  const fn = commands[cmd];
-  if (!fn) { note(`unknown command "${cmd}"\n\n${HELP}`); process.exit(64); }
+  const { cmd, args, flags } = parseArgs(process.argv.slice(2));
+  if (flags.help || cmd === 'help' || cmd === undefined) { console.log(usage); return; }
+  if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
+  const application = applicationCommands.has(cmd);
+  const allowed = new Set(['pretty', 'timeout', application ? 'session' : 'tendril', ...flagsByCommand[cmd]]);
+  for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
+  const [min, max] = arity[cmd];
+  if (args.length < min || args.length > max) throw invalid(`Invalid arguments for ${cmd}; see --help`);
+  if (flags.saved && flags.shared) throw invalid('Choose --saved or --shared');
+  if (cmd === 'reapply' && flags['based-on'] === undefined) throw invalid('reapply requires --based-on with the reviewed current revision');
+  const seconds = intFlag(flags.timeout, 'timeout', cmd === 'watch' ? 0 : 30);
+  if (seconds < 0 || seconds > 3600) throw invalid('--timeout must be between 0 and 3600 seconds');
+  const lifetime = new AbortController();
+  const abort = () => lifetime.abort(Error('Invocation interrupted'));
+  process.once('SIGINT', abort); process.once('SIGTERM', abort);
+  const timer = seconds ? setTimeout(() => lifetime.abort(Error('Invocation timed out; inspect or retry the original operation')), seconds * 1000) : undefined;
+  const emit = async value => {
+    if (!process.stdout.write(JSON.stringify(value, null, flags.pretty ? 2 : undefined) + '\n')) await once(process.stdout, 'drain', { signal: lifetime.signal });
+  };
   try {
-    let cfg, api;
-    if (!NO_CONFIG.has(cmd)) { cfg = resolveConfig(flags); api = client(cfg); }
-    await fn(args, flags, api, cfg);
-  } catch (e) {
-    if (e instanceof ApiError) {
-      process.stderr.write(JSON.stringify({ status: e.status, ...(e.body || { error: { message: e.message } }) }) + "\n");
-      process.exit(e.status === 409 ? 4 : 1);
-    }
-    if (e.code) process.stderr.write(JSON.stringify({ error: { code: e.code, message: e.message } }) + "\n");
-    else note(`tendril: ${e.message}`);
-    process.exit(e.exit || 1);
+    if (application) await withSession(flags.session, async owned => {
+      if (cmd === 'watch') await watchSession(owned, emit, { signal: lifetime.signal });
+      else await emit(await runSessionCommand(owned, cmd, args, flags, { signal: lifetime.signal }));
+    }, { signal: lifetime.signal });
+    else await emit(await hostCommand(cmd, args, flags, lifetime.signal));
+  } finally {
+    clearTimeout(timer); process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
   }
 }
-
-main();
+main().catch(error => {
+  console.error(JSON.stringify({ error: { code: error.code ?? 'command_failed', message: error.message },
+    ...(error instanceof ApiError ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}) }));
+  process.exitCode = error.exit ?? 1;
+});

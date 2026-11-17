@@ -6,7 +6,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
 
 export const DEFAULT_SERVER = "https://tendriller.dev";
 
@@ -51,7 +50,7 @@ export function resolveConfig(flags = {}, env = process.env) {
   throw new Error("no tendril selected: set TENDRIL_API and TENDRIL_TOKEN, or pass --tendril <name>");
 }
 
-// Writes the handle returned by POST /api/tendrils or /api/adopt. Returns {name, path}.
+// Writes the handle returned by POST /api/tendrils. Returns {name, path}.
 // If `name` is taken by a different tendril, appends the id.
 export function saveConfig(handle, wanted, env = process.env, server) {
   const dir = configDir(env);
@@ -75,30 +74,4 @@ export function saveConfig(handle, wanted, env = process.env, server) {
 
 export function removeConfig(cfg) {
   if (cfg.configFile && existsSync(cfg.configFile)) unlinkSync(cfg.configFile);
-}
-
-// Cursor files are keyed by tendril id and shared with scripts/tendril-wait.sh.
-export function cursorPath(cfg, flags = {}, env = process.env) {
-  if (flags["cursor-file"]) return flags["cursor-file"];
-  if (env.TENDRIL_CURSOR_FILE) return env.TENDRIL_CURSOR_FILE;
-  return join(configDir(env), "cursors", `${cfg.id || "default"}.cursor`);
-}
-
-// pending/ack checkpoints never share the events/wait read cursor.
-export function checkpointPath(cfg, flags = {}, env = process.env) {
-  return flags["checkpoint-file"] || env.TENDRIL_CHECKPOINT_FILE
-    || (cfg.configFile ? `${cfg.configFile}.events.json`
-      : join(configDir(env), "checkpoints", `${cfg.id || "page"}-${createHash("sha256").update(cfg.api.replace(/\/+$/, "")).digest("hex").slice(0, 12)}.json`));
-}
-
-export function readCursor(path) {
-  try {
-    const n = parseInt(readFileSync(path, "utf8").trim(), 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  } catch { return 0; }
-}
-
-export function writeCursor(path, n) {
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, `${n}\n`);
 }

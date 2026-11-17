@@ -3,9 +3,7 @@
 // Short flags: -f (file), -h (help).
 
 export const BOOLEAN = new Set([
-  "resident", "follow", "wakes", "pretty", "help", "no-replace", "no-speak", "no-wait",
-  "overwrite", "yes", "peek", "off", "headed", "headless", "desktop", "all", "include-data",
-  "wait", "show-url", "wake",
+  "pretty", "help", "yes", "headed", "headless", "desktop", "show-url", "saved", "shared",
 ]);
 
 const SHORT = { f: "file", h: "help", p: "pretty" };
@@ -45,19 +43,6 @@ export function parseArgs(argv) {
     pos.push(a);
   }
   return { cmd: pos[0], args: pos.slice(1), flags };
-}
-
-// "a.b.c" | ["a","b"] -> ["a","b","c"]
-export function toPath(p) {
-  if (Array.isArray(p)) return p.map(String);
-  if (p === undefined || p === null || p === "") return [];
-  return String(p).split(".").filter((s) => s.length > 0);
-}
-
-// Parse a CLI value as JSON, falling back to a plain string for convenience
-// (`state set title Hello` sets the string "Hello").
-export function parseJsonArg(s) {
-  try { return JSON.parse(s); } catch { return s; }
 }
 
 export function intFlag(v, name, dflt) {
