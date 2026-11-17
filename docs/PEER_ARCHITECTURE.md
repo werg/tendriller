@@ -139,7 +139,7 @@ coherent revision for SQL, events and outcomes. It has no `finalRevision`.
 Operations distinguish saved, applied and abandoned work. Recovery emits an
 explicit coherent reset; stale event cursors cannot pretend an excluded history
 is append-only. The public session supplies `query`, `readView` and `changes`.
-`createPeerGenerationApplicationBackend` from `@chronolog/peer-session/tendriller`
+`createApplicationBackend` from `@chronolog/peer-session/tendriller`
 binds an owned native or Worker session to this interface. Install it once with
 `tendril.application.install(backend)` and install the session's live port
 separately. See

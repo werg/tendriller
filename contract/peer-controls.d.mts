@@ -1,5 +1,6 @@
+import type { ParticipantTransport } from './participant.mjs';
 import type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, SignedTransitionRequest, TransitionRequest,
-  ApplicationDescription, SignedApplicationDescriptor, SignedApplicationSchema } from './peer-authority.mjs';
+  ApplicationDescription, SignedApplicationDescriptor, SignedApplicationSchema, SignedPublication } from './peer-authority.mjs';
 export type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, SignedTransitionRequest,
   ApplicationDescription, ApplicationInputSchema, SignedApplicationDescriptor, SignedApplicationSchema } from './peer-authority.mjs';
 export interface PeerAccountBinding { readonly publicKey: string; readonly accountId: string }
@@ -39,6 +40,9 @@ export interface PeerControlsClient {
   application(): Promise<AuthorityBundle>;
   /** Immutable schemas and genesis envelope. Verify against the pinned descriptor using Chronolog. */
   definition(): Promise<PeerApplicationPublication>;
+  /** Selected signed code release. The host's normal file retention and byte quotas still apply. */
+  publication(options?: { readonly id?: string }): Promise<PeerPublicationReceipt | null>;
+  publishPublication(publication: SignedPublication, assets: readonly PeerPublicationAsset[]): Promise<PeerPublicationReceipt>;
   /** Creates durable control state; no browser or native process gains a permanent role. */
   configureApplication(configuration: PeerApplicationConfiguration): Promise<AuthorityBundle>;
   /** Exact transition retries preserve selection identity, including after a lost reply. */
@@ -46,4 +50,6 @@ export interface PeerControlsClient {
   /** Owner account recovery without a creator device key. Candidate data and complete prefix come from a real peer. */
   administerGeneration(transition: PeerOwnerTransition, options?: { readonly control?: PeerControlUpdate }): Promise<SignedGeneration>;
 }
-export declare function createPeerControlsClient(request: (path: string, options?: { method?: 'PUT' | 'POST'; body?: unknown }) => Promise<unknown>): PeerControlsClient;
+export interface PeerPublicationAsset { readonly hash: string; readonly bytes: string }
+export interface PeerPublicationReceipt { readonly publication: SignedPublication; readonly version: number }
+export declare function createPeerControlsClient(participant: () => ParticipantTransport): PeerControlsClient;

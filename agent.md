@@ -58,7 +58,7 @@ write or coordinate application data.
 See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
 
 Use the session's public query, command, operation-inspection and view APIs.
-Bind that session with `createPeerGenerationApplicationBackend` from
+Bind that session with `createApplicationBackend` from
 `@chronolog/peer-session/tendriller` and install it once in `tendril.application`.
 The adapter supports owned native and browser Worker sessions; the session owns
 its persistence, retry identities and connection lifecycle.

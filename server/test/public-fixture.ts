@@ -1,7 +1,7 @@
 /** Test-only public fixture; never included in the deployed Worker graph. */
 import { env } from 'cloudflare:workers';
 import { applyD1Migrations } from 'cloudflare:test';
-import { api, create, inDO, ownerHeaders, req } from './helpers';
+import { api, create, inDO, ownerHeaders, req, peerClient } from './helpers';
 import { sha256Hex } from '../src/ids';
 import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
@@ -65,6 +65,8 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
     invitationSocket: invitations(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
     ownerInvitationSocket: invitations(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
     ownerApi: pageApi(handle.page_url, ownerHeaders(handle.page_url)),
+    ownerPeer: peerClient(handle.application.id, pageApi(handle.page_url, ownerHeaders(handle.page_url))),
+    peer: peerClient(handle.application.id, agentApi),
     api: agentApi,
     async participant() {
       const account = crypto.randomUUID(), secret = crypto.randomUUID();
@@ -77,6 +79,7 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
       });
       const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
       return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers),
+        peer: peerClient(handle.application.id, pageApi(link.url, headers)),
         rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers) };
     },
     async display() {

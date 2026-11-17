@@ -25,7 +25,7 @@ export function createPageHost(cfg: TendrilConfig, deviceHeaders: () => Record<s
   return Object.freeze({
     request, deviceHeaders,
     members: createMembersClient({ base: cfg.base + "_tendril", headers: deviceHeaders }),
-    peers: createPeersClient({ base: new URL(cfg.base + "_tendril", location.href).href, request, initialBootstrap: cfg.peerBootstrap }),
+    peers: createPeersClient({ applicationId: cfg.application?.kind === 'peer' ? cfg.application.id : undefined, base: new URL(cfg.base + "_tendril", location.href).href, request, initialBootstrap: cfg.peerBootstrap }),
     blobUrl(id: string) {
       if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
       return new URL(`_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href;

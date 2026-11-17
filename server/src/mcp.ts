@@ -10,7 +10,7 @@ import { HttpError, isPlainObject, json, readJson } from "./http";
 import { CONSUMER_TOOLS } from "./consumer-mcp";
 import { STREAM_TOOLS } from "./stream-mcp";
 import { STORAGE_TOOLS } from "./storage-mcp";
-import { PEER_CONTROL_TOOLS } from "./peer-mcp";
+import { peerControlTools } from "./peer-mcp";
 import {
   callbackUrlProblem, canonicalJson, MCP_EVENT_DEFINITION, MCP_EVENT_NAME, MCP_SUB_DEFAULT_TTL, MCP_SUB_MAX_TTL,
   MCP_SUB_MIN_TTL, mcpSubs, newSubId, requireSubsRoom, saveMcpSubs, validSecret, verifyCallback, type McpSub,
@@ -83,7 +83,6 @@ const TOOLS: Tool[] = [
   ...CONSUMER_TOOLS,
   ...STREAM_TOOLS,
   ...STORAGE_TOOLS,
-  ...PEER_CONTROL_TOOLS,
   {
     name: "tendril_info",
     description: "The tendril: page URL, current version, connected devices, presence and wake settings.",
@@ -338,12 +337,15 @@ async function dispatch(t: Tendril, token: string, method: string, params: Recor
 
 // Peer pages have no hosted application socket or event history. Advertising
 // their tools would direct agents to a second, unavailable application owner.
-const PEER_TOOL_NAMES = new Set([...PEER_CONTROL_TOOLS.map(tool => tool.name), "upload_text", "get_blob", "list_blobs", "pin_blob",
+const PEER_TOOL_NAMES = new Set(["upload_text", "get_blob", "list_blobs", "pin_blob",
   "list_publications", "get_publication", "publish_publication", "rollback_publication",
   "tendril_info", "notification_status", "notify", "list_devices", "configure_device", "read_logs"]);
 function availableTools(t: Tendril): Tool[] {
-  return selectedApplication(t).kind === "peer" ? TOOLS.filter(tool => PEER_TOOL_NAMES.has(tool.name))
-    : TOOLS.filter(tool => !PEER_CONTROL_TOOLS.some(control => control.name === tool.name));
+  const application = selectedApplication(t);
+  if (application.kind !== 'peer') return TOOLS;
+  const signed = t.db.get('peer_generation_configuration', null) !== null;
+  return [...TOOLS.filter(tool => PEER_TOOL_NAMES.has(tool.name) && !(signed && ['publish_publication', 'rollback_publication'].includes(tool.name))),
+    ...peerControlTools(application.id)];
 }
 
 async function callTool(t: Tendril, token: string, params: Record<string, any>, signal: AbortSignal, clientIp: string | null): Promise<unknown> {

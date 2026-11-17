@@ -3,7 +3,7 @@ import { PEER_INVITATION_LIMITS as LIMITS, PEER_INVITATION_PROTOCOL, validatePee
 import { validatePeerId } from '../../contract/discovery.mjs';
 import { accountActive, currentPrincipal, pageAccessAllowed, type Principal } from './access';
 import { selectedApplication } from './application';
-import { HttpError, json, readJson } from './http';
+import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
 interface PendingInvitation extends PeerInvitation { fingerprint: string }
@@ -60,13 +60,18 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     server.send(JSON.stringify({ t: 'ready', version: 1, peerId }));
     return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL } });
   }
-  if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
-  const input = await readJson(req, LIMITS.messageBytes);
+  throw new HttpError(405, 'method_not_allowed');
+}
+
+/** Explicit one-off delivery; no application traffic or background work. */
+export async function invitePeer(t: Tendril, input: unknown, principal: Principal): Promise<unknown> {
+  const owner = identity(t, principal);
+  if (new TextEncoder().encode(JSON.stringify(input)).byteLength > LIMITS.messageBytes) throw new HttpError(413, 'body_too_large');
   let peerId: string, invitation: PeerInvitation;
   try {
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 3) throw new Error('fields');
-    peerId = validatePeerId(input.peerId);
-    invitation = validatePeerInvitation({ channel: input.channel, requesterPeerId: input.requesterPeerId });
+    peerId = validatePeerId((input as Record<string, unknown>).peerId);
+    invitation = validatePeerInvitation({ channel: (input as Record<string, unknown>).channel, requesterPeerId: (input as Record<string, unknown>).requesterPeerId });
     if (peerId === invitation.requesterPeerId) throw new Error('self invitation');
   } catch { throw new HttpError(400, 'bad_request', 'Expected only a target peer and bounded invitation'); }
   const recipient = active(t).find(ws => attachment(ws)!.peerId === peerId);
@@ -81,7 +86,7 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     throw new HttpError(409, 'peer_unavailable', 'The invitation listener changed');
   const fingerprint = JSON.stringify([owner, invitation.channel, invitation.requesterPeerId]);
   const seen = t.now() - current.window < 60_000 ? current.seen : [];
-  if (seen.some(item => item.fingerprint === fingerprint)) return json({ invited: peerId, channel: invitation.channel });
+  if (seen.some(item => item.fingerprint === fingerprint)) return { invited: peerId, channel: invitation.channel };
   if (seen.some(item => item.channel === invitation.channel) || current.pending.some(item => item.channel === invitation.channel))
     throw new HttpError(409, 'peer_invitation_channel_reused', 'Use a fresh channel for a different invitation');
   if (seen.length >= LIMITS.invitationsPerMinute || current.pending.length >= LIMITS.pending)
@@ -91,7 +96,7 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     seen: [...seen, pending], pending: [...current.pending, pending] } satisfies Attachment);
   try { recipient.send(JSON.stringify({ t: 'invitation', ...invitation })); }
   catch { recipient.close(1011, 'Invitation delivery failed'); throw new HttpError(503, 'peer_unavailable'); }
-  return json({ invited: peerId, channel: invitation.channel });
+  return { invited: peerId, channel: invitation.channel };
 }
 
 /** Consumption acknowledgements only release a bounded routing-hint slot. */
@@ -103,7 +108,7 @@ export function handleInvitationMessage(t: Tendril, ws: WebSocket, message: stri
   try {
     const input = JSON.parse(message);
     if (!input || typeof input !== 'object' || Object.keys(input).length !== 3 || input.t !== 'received') throw new Error('frame');
-    const invitation = validatePeerInvitation({ channel: input.channel, requesterPeerId: input.requesterPeerId });
+    const invitation = validatePeerInvitation({ channel: (input as Record<string, unknown>).channel, requesterPeerId: (input as Record<string, unknown>).requesterPeerId });
     const pending = value.pending.filter(item => item.channel !== invitation.channel || item.requesterPeerId !== invitation.requesterPeerId);
     if (pending.length === value.pending.length) throw new Error('unknown acknowledgement');
     ws.serializeAttachment({ ...value, pending });

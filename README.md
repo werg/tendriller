@@ -1,6 +1,6 @@
 # Tendriller
 
-Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history and ordinary peer exchange in Chronolog over WebRTC. Tendriller supplies page assets, account access, participant administration, publication recovery and optional short-lived SDP rendezvous. Peer pages run without a background host socket or application-data relay. A Cloudflare JSON state/event backend remains an explicit alternative. The page owns its interface, application data and ordinary web dependencies.
+Tendriller hosts authenticated pages for an agent and a selected application backend. A resident peer deployment keeps its durable application history and ordinary peer exchange in Chronolog over WebRTC. Tendriller supplies page assets, account access, participant administration, publication recovery and optional short-lived SDP rendezvous. Peer pages run without a background host socket or application-data relay. A separate Cloudflare JSON state/event backend remains available for generic hosted pages. The page owns its interface, application data and ordinary web dependencies.
 
 Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
 

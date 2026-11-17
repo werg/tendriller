@@ -360,6 +360,7 @@ export class Tendril extends DurableObject<Env> {
     const application = selectedApplication(this);
     return {
       id: this.tid,
+      application,
       name: this.db.get("name", "Tendril"),
       page_url: this.mainPageUrl(),
       api: apiUrl(this.env, this.tid),

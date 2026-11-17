@@ -2,7 +2,7 @@ import { PEER_DIRECTORY_LIMITS as LIMITS, validatePeerAdvertisement, validatePee
   type PeerAdvertisement, type PeerAdvertisementLease } from '../../contract/discovery.mjs';
 import { accountActive, currentPrincipal, type Principal } from './access';
 import { selectedApplication } from './application';
-import { HttpError, json, readJson } from './http';
+import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
 interface StoredAdvertisement extends PeerAdvertisementLease { owner: string; principal: Principal }
@@ -22,47 +22,48 @@ function publicLease(row: StoredAdvertisement): PeerAdvertisementLease {
 }
 
 /** On-demand only. Directory expiry never wakes a Durable Object or selects authority. */
-export async function handleDiscovery(t: Tendril, req: Request, principal: Principal): Promise<Response> {
+export async function dispatchDiscovery(t: Tendril, action: string, input: unknown, principal: Principal): Promise<unknown> {
   identity(t, principal);
-  if (req.method === 'GET') {
+  if (action === 'read') {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new HttpError(400, 'bad_request');
     const before = active(t), accounts = [...new Set(before.flatMap(row => row.principal.kind === 'page' && row.principal.accountId ? [row.principal.accountId] : []))];
     const permitted = new Map(await Promise.all(accounts.map(async account => [account, await accountActive(t, account)] as const)));
     identity(t, principal);
     // Take another local snapshot after account reads; a concurrent withdrawal,
     // revocation or replacement must not leak its prior route into this response.
     const peers = active(t).filter(row => row.principal.kind !== 'page' || permitted.get(row.principal.accountId!) === true);
-    return json({ applicationId: selectedApplication(t).id, peers: peers.map(publicLease) });
+    return { applicationId: selectedApplication(t).id, peers: peers.map(publicLease) };
   }
-  if (req.method !== 'PUT' && req.method !== 'DELETE') throw new HttpError(405, 'method_not_allowed');
-  const input = await readJson(req, LIMITS.advertisementBytes);
+  if (action !== 'advertise' && action !== 'withdraw') throw new HttpError(400, 'peer_participant_action_unsupported');
+  if (new TextEncoder().encode(JSON.stringify(input)).byteLength > LIMITS.advertisementBytes) throw new HttpError(413, 'body_too_large');
   let advertisement: PeerAdvertisement | undefined, ttlMs: number | undefined, peerId: string;
   try {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Expected an advertisement request');
-    if (req.method === 'PUT') {
+    if (action === 'advertise') {
       if (Object.keys(input).some(field => !['advertisement', 'ttlMs'].includes(field))) throw new Error('Unknown advertisement request field');
-      advertisement = validatePeerAdvertisement(input.advertisement); ttlMs = validatePeerTtl(input.ttlMs); peerId = advertisement.peerId;
+      advertisement = validatePeerAdvertisement((input as Record<string, unknown>).advertisement); ttlMs = validatePeerTtl((input as Record<string, unknown>).ttlMs); peerId = advertisement.peerId;
     } else {
       if (Object.keys(input).some(field => field !== 'peerId')) throw new Error('Unknown withdrawal field');
-      peerId = validatePeerId(input.peerId);
+      peerId = validatePeerId((input as Record<string, unknown>).peerId);
     }
   } catch (error) { throw new HttpError(400, 'bad_request', error instanceof Error ? error.message : 'Invalid advertisement'); }
   const owner = identity(t, principal);
   return t.transaction(() => {
     const rows = active(t), previous = rows.find(row => row.advertisement.peerId === peerId);
     if (previous && previous.owner !== owner) throw new HttpError(409, 'peer_identity_conflict', 'Another participant owns this active advertisement');
-    if (req.method === 'DELETE') {
+    if (action === 'withdraw') {
       t.db.set(key, rows.filter(row => row.advertisement.peerId !== peerId));
-      return json({ withdrawn: peerId });
+      return { withdrawn: peerId };
     }
     if (!previous && (rows.length >= LIMITS.peers || rows.filter(row => row.owner === owner).length >= LIMITS.peersPerPrincipal))
       throw new HttpError(429, 'peer_directory_full', 'The bounded peer directory is full');
     // Duplicate availability updates do not create writes until the coalescing
     // window expires. Coverage is a hint; callers should not advertise per edit.
     if (previous && previous.refreshAfter > t.now() && JSON.stringify(previous.advertisement) === JSON.stringify(advertisement))
-      return json(publicLease(previous));
+      return publicLease(previous);
     const lease: StoredAdvertisement = { advertisement: advertisement!, owner, principal,
       expiresAt: t.now() + ttlMs!, refreshAfter: t.now() + Math.floor(ttlMs! / 2) };
     t.db.set(key, [...rows.filter(row => row.advertisement.peerId !== peerId), lease]);
-    return json(publicLease(lease));
+    return publicLease(lease);
   });
 }

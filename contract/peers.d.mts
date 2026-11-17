@@ -1,3 +1,5 @@
+import type { ParticipantTransport } from './participant.mjs';
+export * from './participant.mjs';
 export interface PeerSocket {
   readonly readyState: number;
   addEventListener(type: string, listener: (event: any) => void): void;
@@ -26,6 +28,8 @@ export interface PeerRendezvous {
   close(): void;
 }
 export interface PeersClient extends PeerControlsClient {
+  /** Explicit application-scoped control port. Construction and local filtering perform no I/O. */
+  participant(applicationId?: string): ParticipantTransport;
   /** Immutable initial-page snapshot; reading it performs no host request. Null for clients without an injected snapshot. */
   readonly initialBootstrap: PeerBootstrap | null;
   /** Explicitly fetch current host configuration. Ordinary peer connection/recovery uses initialBootstrap. */
@@ -48,8 +52,10 @@ export declare function validatePeerDescription(value: unknown): PeerDescription
 export declare function createPeerRendezvous(socket: PeerSocket, options?: PeerRendezvousOptions): PeerRendezvous;
 export declare function createPeersClient(options: {
   readonly base: string;
+  /** Required only when invoking participant operations; physical introductions remain independent. */
+  readonly applicationId?: string;
   readonly initialBootstrap?: PeerBootstrap;
-  readonly request: (path: string, options?: { method?: 'PUT' | 'DELETE' | 'POST'; body?: unknown }) => Promise<unknown>;
+  readonly request: (path: string, options?: { method?: 'PUT' | 'DELETE' | 'POST'; body?: unknown; signal?: AbortSignal }) => Promise<unknown>;
   readonly protocols?: readonly string[];
   readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
 }): PeersClient;

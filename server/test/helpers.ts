@@ -1,3 +1,4 @@
+import { createParticipantRequest, validateParticipantResponse, type ParticipantFacet } from '../../contract/participant.mjs';
 // Shared test helpers: API client, page WebSocket client, clock control.
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
@@ -21,6 +22,7 @@ export function req(path: string, init?: RequestInit & { anonymous?: boolean }):
 }
 
 export interface Handle {
+  application: { kind: 'cloudflare' | 'peer'; id: string };
   id: string;
   name: string;
   page_url: string;
@@ -355,4 +357,33 @@ export async function publishedFile(h: Handle, path: string): Promise<Response> 
   const file = manifest.files.find((entry: any) => entry.path === path);
   if (!file) throw Error(`No authored file ${path} in publication ${head.current}`);
   return api(h, "GET", `blobs/${file.blob_id}`);
+}
+
+/** Exercise the public envelope while exposing logical payloads to domain tests. */
+export function peerRequest(applicationId: string, facet: ParticipantFacet, action: string, payload: unknown = {}): Request {
+  return new Request('https://page.example/_tendril/peers/participant', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(createParticipantRequest({ applicationId, facet, action, payload })) });
+}
+export function peerClient(applicationId: string, request: (method: string, path: string, body?: unknown) => Promise<Response>) {
+  return async (facet: ParticipantFacet, action: string, payload: unknown = {}): Promise<Response> => {
+    const envelope = createParticipantRequest({ applicationId, facet, action, payload });
+    const response = await request('POST', 'peers/participant', envelope);
+    if (!response.ok) return response;
+    const value = validateParticipantResponse(await response.json(), envelope).payload;
+    return new Response(JSON.stringify(value), { status: response.status, headers: response.headers });
+  };
+}
+export function peerApi(h: Handle, facet: ParticipantFacet, action: string, payload: unknown = {}): Promise<Response> {
+  return peerClient(h.application.id, (method, path, body) => api(h, method, path, body))(facet, action, payload);
+}
+export async function peerJson<T = any>(h: Handle, facet: ParticipantFacet, action: string, payload: unknown = {}): Promise<T> {
+  const response = await peerApi(h, facet, action, payload);
+  if (!response.ok) throw new Error(`Participant operation failed (${response.status}): ${await response.text()}`);
+  return await response.json() as T;
+}
+
+export function ownerPeerApi(h: Handle, facet: ParticipantFacet, action: string, payload: unknown = {}): Promise<Response> {
+  return peerClient(h.application.id, (method, path, body) => req(`${h.page_url}_tendril/${path}`, {
+    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }))(facet, action, payload);
 }

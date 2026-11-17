@@ -134,7 +134,12 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
-  options: { entry?: string; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  options: { entry?: string; expectedHeadRevision?: number; signedPeerPublication?: boolean; beforeCommit?: () => Promise<void>; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  const authorizePublication = () => {
+    if (t.db.get('peer_generation_configuration', null) && !options.signedPeerPublication)
+      throw new HttpError(409, 'peer_signed_publication_required', 'Publish a signed manifest through the participant control port');
+  };
+  authorizePublication();
   const entry = options.entry ?? "index.html";
   if (!files.has(entry) || !isHtmlType(files.get(entry)!.type)) throw new HttpError(400, "bad_publication", "The publication requires its declared HTML entry");
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
@@ -155,7 +160,9 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   if (shouldHold) {
     await t.hold("High static screening score on young account");
   }
+  await options.beforeCommit?.();
   const n = t.transaction(() => {
+    authorizePublication();
     assertStoredContent(t, files.values());
     if (options.expectedHeadRevision !== undefined && t.db.get<number>("publication_head_revision", 0) !== options.expectedHeadRevision)
       throw new HttpError(409, "publication_conflict", "The publication head changed; inspect it before retrying",
@@ -191,8 +198,16 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   return n;
 }
 
-/** Serving rule: current unless failed, then healthy; else current; 0 = nothing uploaded. */
+/** Signed selections stay authoritative; health and moderation never choose another release. */
+function signedVersions(t: Tendril): readonly number[] | null {
+  if (!t.db.get('peer_generation_configuration', null)) return null;
+  return t.db.get<{ version: number }[]>('peer_publication_versions', []).map(row => row.version);
+}
+
+/** Ordinary hosted pages retain their healthy fallback. */
 export function servedVersion(t: Tendril): number {
+  const selected = signedVersions(t);
+  if (selected !== null) return selected.at(-1) ?? 0;
   const current = t.db.get<number>("current", 0);
   if (current > 0 && versionStatus(t, current) !== "failed") return current;
   const healthy = t.db.get<number>("healthy", 0);
@@ -216,7 +231,7 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
   t.db.run("UPDATE versions SET status = 'failed', errors = ? WHERE version = ?", JSON.stringify(errs), version);
   let rolledBackTo: number | null = null;
   const healthy = t.db.get<number>("healthy", 0);
-  if (t.db.get<number>("current", 0) === version && healthy > 0) {
+  if (!t.db.get('peer_generation_configuration', null) && t.db.get<number>("current", 0) === version && healthy > 0) {
     t.db.set("current", healthy);
     t.db.set("publication_head_revision", t.db.get<number>("publication_head_revision", 0) + 1);
     rolledBackTo = healthy;
@@ -235,6 +250,8 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
 
 /** Makes `target` (or the newest healthy version older than current) current. */
 export function rollback(t: Tendril, target: number | null | undefined, by: string | null, device: string | null): number {
+  if (t.db.get('peer_generation_configuration', null))
+    throw new HttpError(409, 'peer_signed_publication_required', 'Publish a new signed release to select different code');
   const current = t.db.get<number>("current", 0);
   let v: number;
   if (target !== undefined && target !== null) {
@@ -294,16 +311,17 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   // A display link has no peer-introduction permission. Application capabilities
   // remain independently authenticated by Chronolog after connection setup.
   const introductions = application.kind === "peer" && role !== "display" ? peerBootstrap(t) : undefined;
+  const selected = signedVersions(t);
   const pinned = /^_publications\/([1-9][0-9]*)\/(.*)$/.exec(rest);
   let version = pinned ? Number(pinned[1]) : servedVersion(t);
   if (pinned) {
-    if (!Number.isSafeInteger(version) || !t.db.one("SELECT 1 AS x FROM versions WHERE version=?", version))
+    if (!Number.isSafeInteger(version) || selected !== null && !selected.includes(version) || !t.db.one("SELECT 1 AS x FROM versions WHERE version=?", version))
       throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
     rest = pinned[2];
   }
   const risk = version > 0 ? t.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", version)?.risk_score ?? 0 : 0;
   if (risk >= 5 && role !== "owner") {
-    if (pinned) throw new HttpError(403, "publication_restricted", "This publication requires owner review");
+    if (pinned || selected !== null) throw new HttpError(403, "publication_restricted", "This publication requires owner review");
     version = t.db.one<{ version: number }>("SELECT MAX(version) AS version FROM versions WHERE risk_score < 5 AND status != 'failed' AND version <= ?", version)?.version ?? 0;
   }
   if (risk >= 5 && role === "owner" && accountId &&

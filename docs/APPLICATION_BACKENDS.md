@@ -25,8 +25,9 @@ applications that deliberately choose the hosted state authority.
 
 The selection is immutable. `id` is an application-owned stable identifier, not a
 host token, decryption key, grant, or authority key. Omitting `application` selects
-`{kind:'cloudflare', id:'cf:<page-id>'}`. Publication rollback changes code without
-changing the selected history. An unavailable authority never triggers failover
+`{kind:'cloudflare', id:'cf:<page-id>'}`. Code publication never changes the selected
+history. Configured generation applications select code through signed replacement
+manifests; generic publication rollback is rejected. An unavailable authority never triggers failover
 to Cloudflare or to a different finality policy. Historical chronological replicas use
 the same signed author-time execution order. A finality provider supplies
 inclusion evidence and closes the author-time frontier; it does not choose that
@@ -41,9 +42,9 @@ or SQL runtime. That control service does not implement a peer-generation sessio
 
 ```js
 // The page's composition module imports its selected public adapter.
-import { createPeerGenerationApplicationBackend } from '@chronolog/peer-session/tendriller';
+import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 
-const backend = createPeerGenerationApplicationBackend({
+const backend = createApplicationBackend({
   id: tendril.application.selection.id,
   session, // An owned public native or browser Worker ApplicationSession.
   sql: true,
@@ -360,7 +361,7 @@ it through this Tendriller contract requires a matching adapter; the existing
 `createChronologApplicationBackend` remains the chronological `local` / `final`
 adapter and does not convert a generation session.
 
-`peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision`. Its public execution wait is `applied()`, and requests for an unsupported final view fail explicitly. Recovery may abandon a recent applied suffix. Reserve `final()` for profiles that guarantee irreversible outcomes; generation sessions do not alias it to `applied()` or wait indefinitely for an unsupported guarantee.
+`peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares the `recovery` capability. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision`. Its public execution wait is `applied()`, and requests for an unsupported final view fail explicitly. Recovery may abandon a recent applied suffix. Reserve `final()` for profiles that guarantee irreversible outcomes; generation sessions do not alias it to `applied()` or wait indefinitely for an unsupported guarantee.
 
 The optional `basedOn` ordering barrier is profile-specific. The hosted JSON backend rejects it before HTTP delivery or durable outbox insertion; its explicit program state guards remain available. Event and conversation helpers preserve the barrier and receive the same rejection.
 

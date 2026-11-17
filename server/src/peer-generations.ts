@@ -4,19 +4,21 @@ import {
   validateApplicationDescription, applicationDescriptionDigest, verifyApplicationSchema,
   peerDigest, encodePeerValue, decodePeerValue, verifyAuthorityBundle,
   PEER_GENERATION_PROFILE, PEER_GENERATION_POLICY,
-  type AuthorityBundle, type GenerationRegistry, type PeerIdentity, type PeerStore, type PeerGrant,
+  type AuthorityBundle, type GenerationRegistry, type PeerIdentity, type BytesStore, type PeerGrant,
   type SignedApplicationDescriptor, type SignedControlRevision, type SignedTransitionRequest, type TransitionRequest,
   type ApplicationDescription, type SignedApplicationSchema,
 } from '@chronolog/peer-generation/control';
 import { accountActive, pageAccessAllowed, currentPrincipal, type Principal } from './access';
 import { selectedApplication } from './application';
-import { HttpError, json, readJson } from './http';
+import { HttpError } from './http';
+import { PARTICIPANT_LIMITS, type ParticipantRequest } from '../../contract/participant.mjs';
+import { readPeerPublication, publishPeerPublication } from './peer-publications';
 import type { Tendril } from './tendril';
 import { changeLifetime, hasResidentStorage } from './lifetime';
 
 const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts', IDENTITY = 'peer-generation/identity';
 const VALUE_LIMIT = 16 * 1024 * 1024;
-const MAX_PENDING_REQUESTS = 4;
+const MAX_PENDING_REQUESTS = PARTICIPANT_LIMITS.pending;
 const PUBLICATION_LIMIT = 256 * 1024;
 interface Configuration {
   descriptor: SignedApplicationDescriptor; control: SignedControlRevision; fingerprint: string;
@@ -24,11 +26,11 @@ interface Configuration {
 }
 interface AccountBinding { publicKey: string; accountId: string }
 interface HostState {
-  admitted: number; pending: Promise<unknown>; store: PeerStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
+  admitted: number; pending: Promise<unknown>; store: BytesStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
   registry?: GenerationRegistry; signer?: PeerIdentity;
 }
 const hosts = new WeakMap<Tendril, HostState>();
-function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
+export function peerAccount(t: Tendril, principal: Principal, ownerOnly = false): string {
   const current = currentPrincipal(t, principal), owner = t.db.get<string | null>('owner_account', null);
   if (!owner || !current || current.kind === 'producer' || current.kind === 'page' && (current.role === 'display' || !current.accountId))
     throw new HttpError(403, 'forbidden', 'Peer controls require an authenticated account');
@@ -37,10 +39,10 @@ function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
   if (selectedApplication(t).kind !== 'peer') throw new HttpError(409, 'application_backend', 'Generation controls belong to a peer application');
   return account;
 }
-async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
-  const account = identity(t, principal);
+export async function freshPeerAccess(t: Tendril, principal: Principal): Promise<void> {
+  const account = peerAccount(t, principal);
   if (!await pageAccessAllowed(t) || !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
-  identity(t, principal);
+  peerAccount(t, principal);
 }
 function host(t: Tendril): HostState {
   let state = hosts.get(t);
@@ -136,7 +138,7 @@ async function withControlParticipant(value: unknown, signer: PeerIdentity): Pro
   return [...value.filter(grant => grant?.publicKey !== signer.publicKey), hosted];
 }
 function authorizeRequester(t: Tendril, principal: Principal, request: SignedTransitionRequest): void {
-  const account = identity(t, principal);
+  const account = peerAccount(t, principal);
   if (!t.db.get<AccountBinding[]>(ACCOUNTS, []).some(binding => binding.accountId === account && binding.publicKey === request?.payload?.requester))
     throw new HttpError(403, 'peer_requester_account', 'The signed recovery requester is not enrolled to this account');
 }
@@ -145,35 +147,37 @@ function typedError(error: unknown): never {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
   if (code.startsWith('PEER_')) {
     const status = /FORBIDDEN|SIGNATURE_INVALID|KEY_MISMATCH/.test(code) ? 403 : /STATE_MISSING/.test(code) ? 503
-      : /CONFLICT|EXCLUDED|UNAVAILABLE|CHANGED|REQUIRED/.test(code) ? 409 : 400;
+      : /CONFLICT|EXCLUDED|UNAVAILABLE|CHANGED|REQUIRED|REUSED/.test(code) ? 409 : 400;
     throw new HttpError(status, code.toLowerCase(), code);
   }
   throw error;
 }
 
-/** Narrow governance service. Normal commands, outcomes and bodies never enter it. */
-export async function handlePeerGenerations(t: Tendril, req: Request, path: string, principal: Principal): Promise<Response> {
-  identity(t, principal, path === 'peers/administration' || path === 'peers/application' && req.method === 'PUT');
+/** Shared physical request admission is reserved before buffering any participant body. */
+export async function admitPeerParticipant<T>(t: Tendril, principal: Principal, work: () => Promise<T>): Promise<T> {
+  peerAccount(t, principal);
   const state = host(t);
   if (state.admitted >= MAX_PENDING_REQUESTS)
-    throw new HttpError(429, 'peer_control_busy', 'Too many pending generation control requests');
+    throw new HttpError(429, 'peer_control_busy', 'Too many pending participant requests');
   state.admitted++;
-  try { return await processPeerGenerations(t, req, path, principal); }
+  try { return await work(); }
   finally { state.admitted--; }
 }
-async function processPeerGenerations(t: Tendril, req: Request, path: string, principal: Principal): Promise<Response> {
-  // Reserve admission before reading, but do not put a stalled body ahead of
-  // complete operations in the serialized authority queue.
-  const ownerAction = path === 'peers/administration';
-  const input = req.method === 'PUT' || req.method === 'POST' ? await readJson(req, path === 'peers/application' ? 512 * 1024 : 4 * 1024 * 1024) : undefined;
+
+/** Payload-level governance and publication operations share one authority queue. */
+export async function dispatchPeerControl(t: Tendril, request: ParticipantRequest, principal: Principal): Promise<unknown> {
+  const { facet, action, payload: input } = request;
+  const ownerAction = facet === 'control' && action === 'administer';
   return serial(t, async state => {
     try {
-      identity(t, principal, ownerAction);
-      if (path === 'peers/application' && req.method === 'GET') {
+      peerAccount(t, principal, ownerAction);
+      if (facet === 'control' && action === 'read') {
+        object(input, []);
         const bundle = await (await registry(t, state)).read();
-        await freshAccess(t, principal); return json(bundle);
+        await freshPeerAccess(t, principal); return bundle;
       }
-      if (path === 'peers/definition' && req.method === 'GET') {
+      if (facet === 'publication' && action === 'definition') {
+        object(input, []);
         const configured = t.db.get<Configuration | null>(CONFIG, null);
         if (!configured) throw new HttpError(409, 'peer_application_unconfigured');
         if (!configured.definition || configured.schema === undefined) throw new HttpError(503, 'peer_publication_state_missing');
@@ -189,11 +193,11 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         } catch {
           throw new HttpError(503, 'peer_definition_state_mismatch', 'Retained peer metadata does not match its signed authority');
         }
-        await freshAccess(t, principal);
-        return json({ descriptor: configured.descriptor, definition: published.definition, schema: published.schema });
+        await freshPeerAccess(t, principal);
+        return { descriptor: configured.descriptor, definition: published.definition, schema: published.schema };
       }
-      if (path === 'peers/application' && req.method === 'PUT') {
-        const owner = identity(t, principal, true);
+      if (facet === 'control' && action === 'configure') {
+        const owner = peerAccount(t, principal, true);
         const value = object(input, ['historyId', 'executionManifestDigest', 'definition', 'schema', 'schemaAdministrator', 'epoch', 'keyDigest', 'members']);
         const published = await publication(value);
         // Description schemas can contain fractional bounds; their portable digest
@@ -201,7 +205,7 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         const fingerprint = await peerDigest({ ...value, definition: published.digest, schema: published.schemaDigest }), configured = t.db.get<Configuration | null>(CONFIG, null);
         if (configured) {
           if (configured.fingerprint !== fingerprint) throw new HttpError(409, 'peer_application_immutable', 'The application descriptor and initial policy are immutable');
-          const bundle = await (await registry(t, state)).read(); await freshAccess(t, principal); identity(t, principal, true); return json(bundle);
+          const bundle = await (await registry(t, state)).read(); await freshPeerAccess(t, principal); peerAccount(t, principal, true); return bundle;
         }
         if (t.db.get('membership_configuration', null)) throw new HttpError(409, 'peer_profile_conflict', 'This application already selected a different authenticated history profile');
         const applicationId = selectedApplication(t).id;
@@ -232,10 +236,10 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         const bundle = await initial.read();
         // Durable control state outlives any coordinating peer or page publication.
         await changeLifetime(t, 'resident');
-        await freshAccess(t, principal);
+        await freshPeerAccess(t, principal);
         await checkAccounts(t, bindings);
         t.transaction(() => {
-          identity(t, principal, true);
+          peerAccount(t, principal, true);
           checkAccountAdmission(t, bindings);
           if (!hasResidentStorage(t)) throw new HttpError(409, 'peer_control_storage_unavailable');
           if (t.db.get(CONFIG, null)) throw new HttpError(409, 'peer_application_conflict');
@@ -243,9 +247,9 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
           for (const [key, bytes] of staged) t.db.run('INSERT INTO membership_records(key,value) VALUES(?,?)', key, bytes.buffer);
           t.db.set(CONFIG, { descriptor, control, fingerprint, definition: published.definition, schema: published.schema }); t.db.set(ACCOUNTS, bindings);
         });
-        return json(bundle);
+        return bundle;
       }
-      if ((path === 'peers/generations' || ownerAction) && req.method === 'POST') {
+      if (facet === 'control' && (action === 'select' || ownerAction)) {
         const value = object(input, ownerAction ? ['transition', 'control'] : ['request', 'control']);
         const service = await registry(t, state), bundle = await service.read();
         let request: SignedTransitionRequest;
@@ -254,13 +258,13 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
           request = await signTransitionRequest({ ...transition, applicationId: bundle.descriptor.payload.applicationId,
             profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY, requester: state.signer!.publicKey } as TransitionRequest, state.signer!);
         } else request = value.request as SignedTransitionRequest;
-        const authorize = () => { identity(t, principal, ownerAction); authorizeRequester(t, principal, request); };
+        const authorize = () => { peerAccount(t, principal, ownerAction); authorizeRequester(t, principal, request); };
         authorize();
-        const fingerprint = await peerDigest([path, value]), fingerprintKey = `peer_generation_transition:${await peerDigest([request.payload.applicationId, request.payload.transitionId])}`;
+        const fingerprint = await peerDigest([action, value]), fingerprintKey = `peer_generation_transition:${await peerDigest([request.payload.applicationId, request.payload.transitionId])}`;
         const previousFingerprint = t.db.get<string | null>(fingerprintKey, null);
         if (previousFingerprint !== null) {
           if (fingerprint !== previousFingerprint) throw new HttpError(409, 'peer_transition_id_reused', 'The transition identity already binds different controls or account bindings');
-          const selected = await service.select(request); await freshAccess(t, principal); authorize(); return json(selected);
+          const selected = await service.select(request); await freshPeerAccess(t, principal); authorize(); return selected;
         }
         if (bundle.generations.some(generation => generation.payload.transition.payload.transitionId === request.payload.transitionId))
           throw new HttpError(503, 'peer_control_state_missing', 'The retained host transition identity is incomplete');
@@ -301,15 +305,32 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
           await checkAccounts(t, checkedBindings);
         }
         state.guard = () => { authorize(); checkAccountAdmission(t, checkedBindings); };
-        state.check = async () => { await freshAccess(t, principal); await checkAccounts(t, checkedBindings); };
+        state.check = async () => { await freshPeerAccess(t, principal); await checkAccounts(t, checkedBindings); };
         state.pendingAccounts = bindings;
         state.pendingFingerprint = { key: fingerprintKey, value: fingerprint };
         try {
           const selected = await service.select(request, control ? { control } : {});
-          authorize(); return json(selected);
+          authorize(); return selected;
         } finally { state.guard = undefined; state.check = undefined; state.pendingAccounts = undefined; state.pendingFingerprint = undefined; }
       }
-      throw new HttpError(405, 'method_not_allowed');
+      if (facet === 'publication' && (action === 'read' || action === 'publish')) {
+        const service = await registry(t, state);
+        const guard = (author?: string) => {
+          const account = peerAccount(t, principal);
+          if (author !== undefined && !t.db.get<AccountBinding[]>(ACCOUNTS, []).some(binding => binding.accountId === account && binding.publicKey === author))
+            throw new HttpError(403, 'peer_publication_account', 'The signed publisher is not enrolled to this account');
+        };
+        const context = { store: state.store, authority: () => service.read(), guard,
+          authorize: async (author?: string) => { await freshPeerAccess(t, principal); guard(author); } };
+        if (action === 'read') {
+          const query = object(input, ['id']);
+          if (query.id !== undefined && (typeof query.id !== 'string' || !/^[0-9a-f]{64}$/.test(query.id)))
+            throw new HttpError(400, 'peer_publication_id_invalid');
+          return await readPeerPublication(t, context, query.id);
+        }
+        return await publishPeerPublication(t, input, context);
+      }
+      throw new HttpError(400, 'peer_participant_action_unsupported');
     } catch (error) { return typedError(error); }
   });
 }

@@ -12,6 +12,7 @@ const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelco
 const controlImports = new Map([
   ['server/src/membership.ts', '@chronolog/membership'],
   ['server/src/peer-generations.ts', '@chronolog/peer-generation/control'],
+  ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],
 ]);
 const controlArtifacts = new Set(['node_modules/@chronolog/membership/index.mjs', 'node_modules/@chronolog/peer-generation/control.mjs']);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {

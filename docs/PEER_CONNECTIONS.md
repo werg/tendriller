@@ -172,8 +172,9 @@ invitations per minute. Consuming a hint acknowledges its queue slot. Exact
 invitation retries within the rate window are coalesced. Extra application fields,
 binary frames and arbitrary messages are rejected. A replaced, revoked or closed
 listener cannot receive later invitations prepared against its former identity.
-The routes are GET/POST `peers/invitations`; the WebSocket subprotocol is
-`tendriller.invitations.v1`.
+Listeners use GET `peers/invitations` with the `tendriller.invitations.v1`
+WebSocket subprotocol. Sending an invitation uses `ephemeral.invite` through
+POST `peers/participant`.
 
 Chronolog's maintained session owns listener reopening, bounded parallel
 negotiations and coarse advertisement renewal at `refreshAfter`. A ten-minute
@@ -184,4 +185,4 @@ signals and replication do not call these endpoints.
 
 Profile compatibility, `coordinatorEligible`, and optional retained-prefix coverage are **untrusted routing hints**. A page login, largest advertised sequence, or directory entry grants no authoring, recovery, or sequencing power. Chronolog verifies the signed application descriptor, selected generation, original author, and retained bytes independently. The directory contains no command, application body, SQL state, or per-object inventory. Applications should coalesce coverage updates with availability changes instead of advertising each edit.
 
-The directory is available through `GET`, `PUT`, and `DELETE peers/directory` on both authenticated page and agent routes. Only the participant that owns an active advertisement may update or withdraw it. The host performs no fetch to an advertised route.
+The directory uses the `discovery.read`, `discovery.advertise` and `discovery.withdraw` actions through `POST peers/participant` on both authenticated page and agent routes. These requests carry the explicit 32-byte application identity; the SDK domain methods preserve this scope. Only the participant that owns an active advertisement may update or withdraw it. The host performs no fetch to an advertised route.

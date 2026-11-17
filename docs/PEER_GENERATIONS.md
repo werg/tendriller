@@ -102,6 +102,54 @@ expiration downgrade while signed control state exists. This is an owned durable
 publication and control record, with no permanent native peer or process. Existing
 old-profile membership configuration cannot be installed on the same history.
 
+## Participant transport and signed page releases
+
+The host has one `POST peers/participant` request boundary. Its public
+`chronolog-participant-v1` envelope binds application ID, request ID, facet,
+action and JSON payload. The control policy accepts occasional governance,
+publication, discovery and invitation operations. Database operations, content
+chunks and live signals are rejected before dispatch; they belong to authenticated
+peer connections. Four physical host requests may be pending at once, with
+admission reserved before bounded request-body reading. There is no request loop
+or background synchronization at this boundary.
+
+The SDK keeps domain methods such as `peers.application()`,
+`peers.configureApplication()` and `peers.selectGeneration()`. These methods all
+use that participant transport. Its scope is the explicit 32-byte lowercase hex
+application ID supplied by the page configuration or returned creation handle.
+Standalone callers pass `applicationId` to `createPeersClient`, or use
+`peers.participant(applicationId)` directly. Missing scope fails before HTTP;
+constructing the client, bootstrap hints and physical introduction sockets do not
+require a generation scope and perform no implicit metadata lookup.
+
+`peers.publication()` returns the selected signed code manifest and hosted version,
+or `null` before the first signed release. `peers.publication({ id })` reads
+a scoped historical manifest and its immutable version mapping, including after
+its hosted assets expire, so a client can verify the complete signed chain. `peers.publishPublication(publication,
+assets)` accepts a Chronolog administrator-signed manifest and exact base64 bytes
+for its referenced hashes. The host verifies its scope, immutable definition and
+execution commitments, current administrator rights, enrolled caller account,
+parent publication and every asset's digest and size. It rejects reserved host
+paths and requires an authored HTML entry. Public code publication does not change
+application controls, data history, encryption keys or private content.
+
+The host prepares content-addressed files first, then commits the signed registry,
+immutable publication-to-version mapping and serving version in one SQLite
+transaction. Fresh account checks follow asynchronous preparation, and local
+access is checked again inside the transaction. Exact retries return the original
+version; a failed storage write or commit cannot advance the signed head. Once a
+generation application is configured, unsigned publication and rollback routes
+cannot replace its code. Health failures remain diagnostic, and moderation may
+withhold the selected files; neither silently serves an older release. A configured
+application without a signed release serves the holding page. To select different
+code, publish a new signed release.
+
+Code files retain the host's existing byte quotas and recent-version retention.
+The portable publication history is bounded to 256 revisions; it does not promise
+indefinite hosting of every historical asset. Retained version URLs remain
+immutable. If an old version has been pruned, an exact retry returns an explicit
+unavailable error instead of assigning that signed manifest to different bytes.
+
 ## Lifecycle calls
 
 `peers.application()` returns an `AuthorityBundle`: signed descriptor, monotonic
@@ -110,7 +158,7 @@ these records before using them. The transport client does not treat a received
 signature or route as verified authority.
 
 `peers.definition()` reads `{ descriptor, definition, schema }` from the authenticated
-immutable `GET peers/definition` route. The host verifies the signed descriptor,
+immutable `publication.definition` participant operation. The host verifies the signed descriptor,
 retained description digest and any genesis envelope, then rechecks account/page
 access before responding.
 Clients verify the descriptor against their pinned trust root and call Chronolog's
@@ -173,8 +221,8 @@ creator's private key. It preserves the original trust root and does not require
 a surviving device administrator signature. It cannot impersonate a coordinator
 handover, choose the host as coordinator, or bypass a protected recovery floor.
 Exact retries retain the original transition identity, including after a restart.
-The HTTP endpoint is `POST peers/administration`; the signed-device endpoint
-remains `POST peers/generations`.
+The owner operation is `control.administer`; signed devices use `control.select`.
+Both use the same authenticated `POST peers/participant` boundary.
 
 The host verifies order receipts and ancestry proofs but does not attest that a
 candidate actually has all bodies or has replayed SQL correctly. The Chronolog

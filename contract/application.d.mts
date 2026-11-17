@@ -119,7 +119,6 @@ export interface ApplicationBackend<Program = unknown, Submission extends Applic
 }
 export interface PeerGenerationApplicationBackend<Program = unknown, QueryResult = unknown, Parameter = unknown>
   extends ApplicationBackend<Program, PeerGenerationApplicationOperation, QueryResult, Parameter> {
-  readonly profile: 'peer-generation-v1';
   readonly status: PeerApplicationStatus;
   /** Reports current state once, then actual session changes; installs no polling. */
   onStatus(listener: (status: PeerApplicationStatus) => void): () => void;

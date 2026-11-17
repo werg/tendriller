@@ -6,7 +6,7 @@ import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperat
   FocusRequest, CreateTimer, DurableTimer, TimerWrite, TimerDelete, TimerDeleted, TimerRun, SessionSummary, SessionWrite, SessionResult,
   PortableBundle, BundleStageResult, BundlePublish, BundleReceipt, RemixRequest, ScopeDescriptor } from "./index.mjs";
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
-  expires_at?: number | null; next_step?: string;
+  expires_at?: number | null; next_step?: string; application?: import("./application.mjs").ApplicationSelection;
   unclaimed_limits?: { request_body_bytes: number; stream_retained_bytes: number } }
 export interface ClientOptions { fetch?: typeof globalThis.fetch; recordLogHints?: RecordLogClientOptions["subscribeHints"] }
 export interface EventBatch { events: PublicEvent[]; cursor: number; withheld: number; [key: string]: unknown }
@@ -57,7 +57,7 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   readEvents(options: { after: number; signal?: AbortSignal }): Promise<EventBatch>;
 }
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
-export function createClient(handle: Pick<PageHandle, "api" | "token">, options?: ClientOptions): AgentClient;
+export function createClient(handle: Pick<PageHandle, "api" | "token" | "application">, options?: ClientOptions): AgentClient;
 export function createPage(service: string, body: CreateRequest, options?: ClientOptions): Promise<PageHandle>;
 
 export interface CommandMetadata { cid: string; scope?: string; expected_generations: Record<string, string> }
