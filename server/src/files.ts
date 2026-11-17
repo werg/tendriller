@@ -79,8 +79,7 @@ export async function deleteUnreferencedContent(t: Tendril, hash: string, olderT
 }
 
 /** Stores the bytes content-addressed in R2 (skipped if already present). */
-export async function storeContent(t: Tendril, body: ArrayBuffer, type: string,
-  retain?: (hash: string) => void): Promise<{ hash: string; size: number }> {
+export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
   await contentOperation(t, hash, async () => {
     const riskScore = scanContent(body);
@@ -95,10 +94,7 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string,
       }
       const head = await t.env.FILES.head(key);
       if (!head) { await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }); uploaded = true; }
-      t.transaction(() => {
-        t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
-        retain?.(hash);
-      });
+      t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
     } catch (err) {
       if (reserved) {
         t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
@@ -121,8 +117,8 @@ export function versionFile(t: Tendril, version: number, path: string): VersionF
 
 /** Creates version latest+1 from a complete signed file map and selects it atomically. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
-  options: { entry?: string; expectedHeadRevision?: number; beforeCommit?: () => Promise<void>; commit?: (version: number) => void } = {}): Promise<number> {
-  const entry = options.entry ?? "index.html";
+  options: { entry: string; beforeCommit: () => Promise<void>; commit: (version: number) => void }): Promise<number> {
+  const entry = options.entry;
   if (!files.has(entry) || !isHtmlType(files.get(entry)!.type)) throw new HttpError(400, "bad_publication", "The publication requires its declared HTML entry");
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
   let riskScore = 0;
@@ -142,12 +138,9 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   if (shouldHold) {
     await t.hold("High static screening score on young account");
   }
-  await options.beforeCommit?.();
+  await options.beforeCommit();
   const n = t.transaction(() => {
     assertStoredContent(t, files.values());
-    if (options.expectedHeadRevision !== undefined && t.db.get<number>("publication_head_revision", 0) !== options.expectedHeadRevision)
-      throw new HttpError(409, "publication_conflict", "The publication head changed; inspect it before retrying",
-        { head_revision: t.db.get<number>("publication_head_revision", 0) });
     const next = t.db.get<number>("latest", 0) + 1;
     t.db.run("INSERT INTO versions (version, created_at, runtime_id, runtime_version, runtime_features, message, by, risk_score, risk_flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       next, t.now(), runtimeRelease.id, runtimeRelease.version, JSON.stringify(runtimeRelease.features), message, by, riskScore, JSON.stringify(riskFlags));
@@ -158,8 +151,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     t.db.run("UPDATE versions SET entry=? WHERE version=?", entry, next);
     t.db.set("latest", next);
     t.db.set("current", next);
-    t.db.set("publication_head_revision", t.db.get<number>("publication_head_revision", 0) + 1);
-    options.commit?.(next);
+    options.commit(next);
     addActivity(t, {
       kind: "version",
       summary: `Version ${next} pushed (${files.size} file${files.size === 1 ? "" : "s"})${message ? `: ${message}` : ""}`,

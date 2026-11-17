@@ -108,9 +108,8 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
     }
 
     let receipt: PeerPublicationReceipt | null = null;
-    const expectedHeadRevision = t.db.get<number>('publication_head_revision', 0);
     await createVersion(t, files, null, publication.payload.author, {
-      entry: publication.payload.entry, expectedHeadRevision,
+      entry: publication.payload.entry,
       beforeCommit: checkAccess,
       commit(version) {
         authorizeAuthor(publication.payload.author);
