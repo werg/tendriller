@@ -35,3 +35,15 @@ test('directory SDK performs only explicit requests and validates server hints',
   await assert.rejects(client.advertise(ad, { ttlMs: 1 }), { code: 'invalid_advertisement' });
   assert.equal(calls.length, 3);
 });
+
+test('rejects routes exceeding the URL bound after normalization before advertising', async () => {
+  const input = { ...advertisement(), routes: [{ kind: 'https', url: 'https://peer.test/' + 'é'.repeat(1000) }] };
+  assert.ok(input.routes[0].url.length < 2048);
+  assert.ok(new URL(input.routes[0].url).href.length > 2048);
+  assert.ok(new TextEncoder().encode(JSON.stringify({ advertisement: input })).byteLength < PEER_DIRECTORY_LIMITS.advertisementBytes);
+  assert.throws(() => validatePeerAdvertisement(input), { code: 'invalid_advertisement' });
+  let requests = 0;
+  const client = createPeersClient({ base: 'https://host.test/api', request: async () => { requests++; } });
+  await assert.rejects(client.advertise(input), { code: 'invalid_advertisement' });
+  assert.equal(requests, 0);
+});
