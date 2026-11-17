@@ -20,19 +20,18 @@ export function createPeerCore(cfg: TendrilConfig, selection: ApplicationSelecti
   if (!stored.name) { stored.name = guessName(); saveDevice(cfg.id, stored); }
   const device: Device = { id: stored.id, role: (stored.role as Role) || "owner", name: stored.name, pending: false };
   const host = createPageHost(cfg, () => ({ "X-Tendril-Device": stored.id, "X-Tendril-Device-Secret": stored.secret }));
-  let connected = !!selectedBackend;
   let reported = false;
   const health = {
     ready() { if (!reported) { reported = true; bus.emit("ready"); } },
     manual() {},
     get reported() { return reported; },
   };
-  // Backend availability is local. It neither opens a host connection nor
-  // claims that a remote replica or finality provider is currently reachable.
-  void application.ready().then(() => { connected = true; bus.emit("connect"); });
+  // Installation availability is separate from session synchronization and peer
+  // reachability. A peer runtime never claims a hosted application connection.
+  void application.ready().then(() => { bus.emit("application_ready"); });
   const core: Core & { readonly rev: number; health: typeof health } = {
     ...host, bus, config: cfg, device, application, health,
-    get connected() { return connected; },
+    get connected() { return false; },
     presence: null, transcript: [], welcome: null, rev: 0, service: null,
     state: unsupported<Core["state"]>(), timers: unsupported<Core["timers"]>(),
     streams: unsupported<Core["streams"]>(), records: unsupported<Core["records"]>(),

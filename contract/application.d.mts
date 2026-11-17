@@ -1,20 +1,37 @@
 /** Host selection is independent of a database's membership and authority keys. */
 export type ApplicationSelection = { readonly kind: 'cloudflare'; readonly id: string } | { readonly kind: 'peer'; readonly id: string };
-export interface ApplicationSubmitOptions { readonly operationId: string }
-export interface ApplicationOperationIdentity {
-  readonly operationId: string;
+export interface ApplicationSubmitOptions { readonly operationId: string; readonly basedOn?: string }
+export interface ApplicationOperationIdentity { readonly operationId: string }
+export interface FinalityOperationIdentity extends ApplicationOperationIdentity {
   readonly proposalId: string;
   readonly revision?: string;
 }
 /** Lifecycle and acceptance are independent; every executed result has an outcome. */
-export type ApplicationOperation = ApplicationOperationIdentity & (
+export type FinalityApplicationOperation = FinalityOperationIdentity & (
   | { readonly status: 'queued'; readonly outcome?: never; readonly error?: never; readonly message?: never }
   | { readonly status: 'provisional'; readonly outcome: 'accepted' | 'rejected'; readonly error?: string; readonly message?: string }
   | { readonly status: 'final'; readonly outcome: 'accepted' | 'rejected'; readonly error?: string; readonly message?: string }
 );
-export interface ApplicationOperations {
-  get(operationId: string): ApplicationOperation | null | Promise<ApplicationOperation | null>;
-  subscribe(options: { readonly operationId: string; readonly signal?: AbortSignal }): AsyncIterable<ApplicationOperation>;
+export interface PeerOperationIdentity extends ApplicationOperationIdentity {
+  readonly attemptId: string;
+  readonly generation: string;
+}
+export interface AppliedApplicationOperation extends PeerOperationIdentity {
+  readonly status: 'applied';
+  readonly author: string;
+  readonly sequence: number;
+  readonly outcome: 'accepted' | 'rejected';
+  readonly rejectionCode: string | null;
+}
+/** Applied outcomes remain conditional on selected ancestry; sharing is separate retention evidence. */
+export type PeerGenerationApplicationOperation =
+  | (PeerOperationIdentity & { readonly status: 'saved' })
+  | AppliedApplicationOperation
+  | (PeerOperationIdentity & { readonly status: 'abandoned' | 'needsReapply'; readonly selectedGeneration: string; readonly previous: AppliedApplicationOperation | null });
+export type ApplicationOperation = FinalityApplicationOperation | PeerGenerationApplicationOperation;
+export interface ApplicationOperations<Operation extends ApplicationOperation = ApplicationOperation> {
+  get(operationId: string): Operation | null | Promise<Operation | null>;
+  subscribe(options: { readonly operationId: string; readonly signal?: AbortSignal }): AsyncIterable<Operation>;
 }
 /** Backend-authenticated provenance, never copied from an application payload. */
 export interface ApplicationEventOrigin {
@@ -55,43 +72,58 @@ export interface ApplicationEvents<Submission extends ApplicationOperation = App
   /** Pulling the next batch is explicit backpressure; delivery is at least once. */
   subscribe(options?: ApplicationEventReadOptions): AsyncIterable<ApplicationEventBatch>;
 }
-export interface ApplicationReadView<QueryResult = unknown, Parameter = unknown> {
-  readonly view: 'local' | 'final';
-  readonly revision: string;
-  readonly finalRevision: string;
+export type ApplicationView = 'local' | 'final' | 'applied';
+export type ApplicationRevisionState =
+  | { readonly view: 'local' | 'final'; readonly revision: string; readonly finalRevision: string }
+  | { readonly view: 'applied'; readonly revision: string; readonly generation: string };
+export type ApplicationReadView<QueryResult = unknown, Parameter = unknown> = ApplicationRevisionState & {
   query(query: string, parameters?: readonly Parameter[]): QueryResult | Promise<QueryResult>;
   readEvents(options?: ApplicationEventReadOptions): ApplicationEventBatch | Promise<ApplicationEventBatch>;
   release(): void | Promise<void>;
-}
-export interface ApplicationChange {
-  readonly view: 'local' | 'final';
+};
+export type AppliedApplicationReadView<QueryResult = unknown, Parameter = unknown> = Extract<ApplicationReadView<QueryResult, Parameter>, { readonly view: 'applied' }>;
+export interface ApplicationRecoveryNotice {
+  readonly previousGeneration: string;
+  readonly generation: string;
+  readonly adopted: { readonly generation: string; readonly sequence: number; readonly root: string } | null;
   readonly revision: string;
-  readonly finalRevision: string;
+  readonly abandoned: readonly PeerGenerationApplicationOperation[];
+  readonly unknownLoss: boolean;
 }
-export interface ApplicationChangeOptions {
-  readonly view?: 'local' | 'final';
-  readonly signal?: AbortSignal;
-}
+export type ApplicationChange = ApplicationRevisionState & {
+  readonly kind?: 'update' | 'recovery';
+  readonly recovery?: ApplicationRecoveryNotice;
+};
+export interface ApplicationChangeOptions { readonly view?: ApplicationView; readonly signal?: AbortSignal }
 /**
- * Tendriller's live collaboration contract, with local and settled views. A future
- * asynchronous branch/merge API has no finality and is not modeled by this interface.
- * One selected backend owns persistence, proposal identity, retries and application
- * interpretation. The host neither queues a second copy nor interprets programs.
- * Query/program grammar is explicit in capabilities; a JSON backend does not claim SQL.
+ * One selected backend owns persistence, operation identity, retries and interpretation.
+ * The authenticated profile determines supported views and guarantees. In peer-generation-v1,
+ * current applied results can become abandoned at explicit recovery; finality is unsupported.
  */
 export interface ApplicationBackend<Program = unknown, Submission extends ApplicationOperation = ApplicationOperation, QueryResult = unknown, Parameter = unknown> {
   readonly id: string;
+  readonly profile?: string;
   readonly capabilities: readonly string[];
   submit(program: Program, options: ApplicationSubmitOptions): Promise<Submission>;
-  /** Current revision, then coalesced invalidations. Capture readView for data; no durable replay cursor. */
+  /** Coalesced invalidations; capture readView for data. Recovery resets are explicit. */
   changes(options?: ApplicationChangeOptions): AsyncIterable<ApplicationChange>;
-  readView(options?: { readonly view?: 'local' | 'final' }): ApplicationReadView<QueryResult, Parameter> | Promise<ApplicationReadView<QueryResult, Parameter>>;
+  readView(options?: { readonly view?: ApplicationView }): ApplicationReadView<QueryResult, Parameter> | Promise<ApplicationReadView<QueryResult, Parameter>>;
   readonly events: ApplicationEvents<Submission>;
-  readonly operations: ApplicationOperations;
+  readonly operations: ApplicationOperations<Submission>;
+}
+export interface PeerGenerationApplicationBackend<Program = unknown, QueryResult = unknown, Parameter = unknown>
+  extends ApplicationBackend<Program, PeerGenerationApplicationOperation, QueryResult, Parameter> {
+  readonly profile: 'peer-generation-v1';
+  readonly operations: ApplicationOperations<PeerGenerationApplicationOperation>;
+  readView(options?: { readonly view?: ApplicationView }): AppliedApplicationReadView<QueryResult, Parameter> | Promise<AppliedApplicationReadView<QueryResult, Parameter>>;
+  onRecovery(listener: (notice: ApplicationRecoveryNotice) => void): () => void;
+  inspectRecovery(): readonly ApplicationRecoveryNotice[];
 }
 export interface ApplicationBinding {
   readonly selection: ApplicationSelection;
   readonly backend: ApplicationBackend;
+  /** Installation availability only; this does not claim synchronization or coordinator reachability. */
+  readonly available: boolean;
   ready(): Promise<ApplicationBackend>;
   /** A peer page installs exactly one matching backend. There is no runtime failover. */
   install(backend: ApplicationBackend): void;
@@ -105,14 +137,14 @@ export interface CloudflareApplicationProgram {
   readonly scope?: string;
   readonly expected_generations: Readonly<Record<string, string>>;
 }
-export type CloudflareApplicationSubmission = Exclude<ApplicationOperation, { readonly status: 'provisional' }>;
+export type CloudflareApplicationSubmission = Exclude<FinalityApplicationOperation, { readonly status: 'provisional' }>;
 export declare const APPLICATION_LIMITS: Readonly<{ programBytes: number; steps: number; events: number; eventBytes: number; topicLength: number; batchTransactions: number; historyBytes: number; historyTransactions: number }>;
 export declare class ApplicationError extends Error { readonly code: string; constructor(code: string, message: string) }
 export declare function applicationSelection(value?: unknown, defaultId?: string): ApplicationSelection;
 export declare function createApplicationBinding(selection: ApplicationSelection, backend?: ApplicationBackend): ApplicationBinding;
 export declare function assertApplicationTopic(topic: unknown): string;
 export declare function assertApplicationOperationId(id: unknown): string;
-export declare function validateApplicationOperation(value: unknown, operationId: string, options?: { readonly terminal?: boolean }): ApplicationOperation;
+export declare function validateApplicationOperation(value: unknown, operationId: string, options?: { readonly terminal?: boolean }): FinalityApplicationOperation;
 export declare function validateCloudflareProgram(program: unknown): CloudflareApplicationProgram;
 export declare function applicationFilter(topics?: readonly string[]): readonly string[] | null;
 /** Conversation messages are ordinary durable events with stable caller-owned IDs. */

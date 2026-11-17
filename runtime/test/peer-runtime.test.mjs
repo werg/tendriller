@@ -111,7 +111,8 @@ test('a peer runtime operates with no host connection, host outbox, background f
   assert.equal(env.api.connected, false);
   const installed = backend(); env.api.application.install(installed);
   assert.equal(await env.api.application.ready(), installed); await flush();
-  assert.equal(env.api.connected, true, 'connected means the selected backend is installed, independently of host reachability');
+  assert.equal(env.api.connected, false, 'a peer runtime has no hosted application connection');
+  assert.equal(env.api.application.available, true, 'installation availability does not claim synchronized state');
   const first = await installed.submit({ value: 'original' }, { operationId: 'edit' });
   assert.equal(await installed.submit({ value: 'original' }, { operationId: 'edit' }), first);
   await installed.events.publish('messages', 'offline-host', { operationId: 'message' });

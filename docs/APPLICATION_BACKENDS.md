@@ -331,3 +331,23 @@ per batch, including nonmatches and rejections, and keep event groups whole.
 The retained application history allows 100,000 transactions and 64 MiB of
 accounted program/receipt/event bytes. Exhaustion is an explicit `history_quota`
 refusal; earlier exact retries remain available.
+
+## Peer-generation applied results
+
+`peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that view. Requests for a final view fail explicitly because this profile does not provide irrevocable settlement.
+
+Operations use `operationId` for caller intent and `attemptId` for exact authenticated bytes. Their states are:
+
+| State | Meaning |
+| --- | --- |
+| `saved` | The original signed attempt is durable locally. No rejection is inferred from a missing coordinator or lost reply. |
+| `applied` | Accepted or rejected at a specific generation and sequence. The outcome remains stable while its position belongs to selected history. |
+| `abandoned` / `needsReapply` | Recovery excluded the attempt. Original provenance and any previous applied outcome remain inspectable. |
+
+`shared` is separate retained-prefix evidence; it does not promote an applied outcome to finality. A deliberate reapplication uses a new operation identity and current permissions and guards. Ordinary retry preserves original bytes and the admission generation.
+
+A recovery notice identifies the adopted prefix, selected generation, known abandoned work, and whether additional loss is unknown. Applications receive a coherent recovery change and capture a fresh view. SQL, events and operation outcomes must not be combined across revisions. `PeerGenerationApplicationBackend.onRecovery()` and `inspectRecovery()` expose the same notice to UI and agent consumers.
+
+The host binding's `available` property means that an application adapter is installed. `ready()` also concerns installation. Neither promises peer reachability or synchronized application state. In peer mode `tendril.connected` stays false because there is no hosted application connection; actual readiness and recovery belong to the Chronolog session. Host requests remain explicit and the host never adds another application outbox.
+
+Existing chronological profiles and the hosted JSON backend retain their own explicit finality contracts. No old signed history is reinterpreted as a peer-generation history, and no migration or compatibility layer is supplied for this prerelease refactor.

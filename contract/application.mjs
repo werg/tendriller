@@ -33,7 +33,7 @@ export function createApplicationBinding(selection, initial) {
     resolveReady(value);
   };
   if (initial) install(initial);
-  return Object.freeze({ selection: selected, get backend() {
+  return Object.freeze({ selection: selected, get available() { return !!backend; }, get backend() {
     if (!backend) fail('backend_unavailable', 'Install this page\'s selected application backend before accessing application data');
     return backend;
   }, ready: () => ready, install });
@@ -165,7 +165,7 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
     const result = await request(`application/operations/${encodeURIComponent(assertApplicationOperationId(operationId))}`, { signal });
     return result === null ? null : validateApplicationOperation(result, operationId);
   };
-  return Object.freeze({ id, capabilities: Object.freeze(['json-state', 'events', 'conversation', 'revision-views', 'operation-status']), submit, events,
+  return Object.freeze({ id, profile: 'hosted-json-v1', capabilities: Object.freeze(['json-state', 'events', 'conversation', 'revision-views', 'operation-status']), submit, events,
     async *changes(options = {}) {
       const view = options.view ?? 'final', signal = options.signal;
       if (!['local', 'final'].includes(view)) fail('invalid_view', 'Choose the local or final application view');
