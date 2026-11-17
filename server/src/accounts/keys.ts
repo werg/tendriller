@@ -6,7 +6,9 @@ import { servicePage } from "./ui";
 
 function escape(s: string): string { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
 export async function dashboard(req: Request, env: Env, url: URL): Promise<Response> {
+  const started = performance.now();
   const session = await serviceSession(req, env, true);
+  const sessionMs = performance.now() - started;
   if (!session || !env.ACCOUNTS) return new Response(null, { status: 302, headers: { Location: `/auth?return_to=${encodeURIComponent(url.pathname)}` } });
   const db = env.ACCOUNTS;
   const notices = await db.prepare("SELECT kind, tendril_id, reason, created_at FROM account_notices WHERE account_id = ? ORDER BY created_at DESC LIMIT 50")
@@ -39,14 +41,23 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
   if (req.method === "GET") {
     const tendrils = await db.prepare("SELECT id, lifetime, state, created_at FROM tendrils WHERE owner_account = ? ORDER BY created_at DESC")
       .bind(session.accountId).all<{ id: string; lifetime: string; state: string; created_at: number }>();
+    const dbMs = performance.now() - started - sessionMs;
     const cards = await Promise.all(tendrils.results.map(async t => {
-      const response = await env.TENDRIL.get(env.TENDRIL.idFromName(t.id)).fetch(new Request("https://tendril.internal/account/summary", { headers: { "x-account-id": session.accountId } }));
-      const info = response.ok ? await response.json() as { name: string; page_url: string; version: number; held: boolean; bytes: number; agents: number; guests_waiting: number; last_activity: { ts: number; summary: string } | null } : null;
+      type Summary = { name: string; page_url: string; version: number; held: boolean; bytes: number; agents: number; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
+      let info: Summary | null = null;
+      try {
+        const response = await env.TENDRIL.get(env.TENDRIL.idFromName(t.id)).fetch(new Request("https://tendril.internal/account/summary", {
+          headers: { "x-account-id": session.accountId }, signal: AbortSignal.timeout(3000),
+        }));
+        if (response.ok) info = await response.json() as Summary;
+      } catch { /* An unavailable page must not prevent account navigation. */ }
       return `<article class="card"><span class="eyebrow">${escape(t.lifetime.replace("_", " "))} · ${info?.held ? "Held for review" : escape(t.state)}</span><h3>${escape(info?.name ?? t.id)}</h3><p class="muted">${info?.version ? `Version ${info.version}` : "Agent is preparing the first page"} · ${info ? `${(info.bytes / 1048576).toFixed(1)} MB stored · ${info.agents} agents` : "Details temporarily unavailable"}</p>${info?.last_activity ? `<p><small>Latest: ${escape(info.last_activity.summary)} · ${escape(new Date(info.last_activity.ts).toLocaleString())}</small></p>` : ""}${info?.guests_waiting ? `<p class="notice">${info.guests_waiting} guest ${info.guests_waiting === 1 ? "request" : "requests"} waiting</p>` : ""}<div class="actions">${info?.page_url && !info.held ? `<a class="button" href="${escape(info.page_url)}">Open page</a><button class="secondary" data-copy="${escape(info.page_url)}" type="button">Copy link</button><a href="${escape(info.page_url)}">Manage agents and guests ↗</a>` : ""}<a href="/dashboard/t/${escape(t.id)}">Page activity</a>${t.state === "held" ? `<a href="/appeal?tendril=${escape(t.id)}">Appeal hold</a>` : ""}</div></article>`;
     }));
     const body = `<section class="hero"><span class="eyebrow">Your workspace</span><h1>Pages made with your agents.</h1><p>Open a page to talk to its agent, share its link, or manage access. You're signed in as ${escape(session.email ?? session.accountId)}.</p>${signOut}</section>${noticeList}<h2>Your pages</h2><div class="grid">${cards.join("") || `<article class="card"><h3>Start with something useful</h3><p>Tell your agent what you want to do. It can create a page shaped around your task; cookbooks explain useful approaches and choices. Your first page will appear here.</p><a class="button" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a></article>`}</div><p><a href="/agent.md">Read the agent setup guide</a></p><details><summary>Account settings</summary><p><a href="/dashboard/export">Download account data</a> · <a href="/auth/link/github">Link GitHub</a> · <a href="/auth/link/google">Link Google</a></p><div class="card danger"><h2>Delete account</h2><p>Permanently deletes your pages and stored files.</p><form method="post" action="/dashboard/delete"><label>Type DELETE <input name="confirm" required></label><button>Delete account</button></form></div></details>`;
     const script = `<script>document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='Copied!'})</script>`;
-    return servicePage("Dashboard", body, script);
+    const response = servicePage("Dashboard", body, script);
+    response.headers.set("Server-Timing", `session;dur=${sessionMs.toFixed(1)}, account-db;dur=${dbMs.toFixed(1)}, page-summaries;dur=${(performance.now() - started - sessionMs - dbMs).toFixed(1)}, total;dur=${(performance.now() - started).toFixed(1)}`);
+    return response;
   }
   if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin", "Invalid dashboard origin");
   return errorResponse(404, "not_found");

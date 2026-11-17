@@ -5,6 +5,8 @@ export interface Env {
   ACCOUNTS: D1Database;
   CREATE_RATE?: RateLimit;
   AGENT_RATE?: RateLimit;
+  PAGE_RATE?: RateLimit;
+  ACCOUNT_RATE?: RateLimit;
   AUTH_RATE?: RateLimit;
   FAILED_AUTH_RATE?: RateLimit;
   REPORT_RATE?: RateLimit;

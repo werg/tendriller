@@ -14,6 +14,7 @@ import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
 import { handleMcp } from './mcp';
 import { Db } from './db';
+import { admitPageTraffic } from './traffic-budget';
 import { Transactions, type CommitEffect } from './transactions';
 import { deleteUnreferencedContent } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
@@ -71,6 +72,12 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- dispatch
 
+  /** Bound work before SQL or participant handling. Rate limits are approximate per Cloudflare location. */
+  private async admitTraffic(kind: string): Promise<void> {
+    if (kind !== "agent" && kind !== "page") return;
+    await admitPageTraffic(this.env, this.tid, this.db.get<string | null>("owner_account", null));
+  }
+
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const kind = url.pathname.split("/")[1];
@@ -78,6 +85,7 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "create") return await this.create(req);
       if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) throw new HttpError(404, "not_found", "No such tendril");
+      await this.admitTraffic(kind);
       if (kind === "agent" || kind === "page" || kind === "claim") {
         await recoverLifetimeChange(this);
         const owner = this.db.get<string | null>("owner_account", null);
@@ -156,6 +164,8 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    try { await this.admitTraffic("agent"); }
+    catch { ws.close(1013, "Page traffic limit reached; reconnect shortly"); return; }
     if (isRelaySocket(ws)) { handleRelayMessage(this, ws, message); return; }
     if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }

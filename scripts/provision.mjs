@@ -71,7 +71,8 @@ export function deploymentConfig(plan, databaseId, account) {
     d1_databases: [{ binding: 'ACCOUNTS', database_name: plan.database, database_id: databaseId, migrations_dir: 'migrations' }],
     r2_buckets: [{ binding: 'FILES', bucket_name: plan.bucket }], triggers: { crons: ['*/15 * * * *'] },
     ratelimits: [
-      ['CREATE_RATE', '101', 5], ['AGENT_RATE', '102', 300], ['AUTH_RATE', '104', 20],
+      ['CREATE_RATE', '101', 5], ['AGENT_RATE', '102', 300], ['PAGE_RATE', '107', 600],
+      ['ACCOUNT_RATE', '108', 1800], ['AUTH_RATE', '104', 20],
       ['FAILED_AUTH_RATE', '105', 20], ['REPORT_RATE', '106', 5],
     ].map(([name, namespace_id, limit]) => ({ name, namespace_id, simple: { limit, period: 60 } })),
     vars: { PUBLIC_BASE: `https://${plan.service}`, PAGE_BASE_DOMAIN: plan.pages, ...(plan.suffix ? { PAGE_HOST_SUFFIX: plan.suffix } : {}), CLOUDFLARE_ACCOUNT_ID: account },
