@@ -217,7 +217,10 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         const retainedSigner = await loadPeerControlIdentity(t);
         const signer = retainedSigner ?? await createPeerIdentity();
         const grants = await withControlParticipant(deviceGrants, signer);
-        bindings.push({ publicKey: signer.publicKey, accountId: owner });
+        const hostedBinding = bindings.find(binding => binding.publicKey === signer.publicKey);
+        if (hostedBinding && hostedBinding.accountId !== owner)
+          throw new HttpError(403, 'peer_host_control_account_immutable', 'The hosted control key belongs to the owner');
+        if (!hostedBinding) bindings.push({ publicKey: signer.publicKey, accountId: owner });
         const descriptor = await signApplicationDescriptor({ applicationId, historyId: value.historyId,
           profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY, controlPublicKey: signer.publicKey,
           schemaAdministrator: value.schemaAdministrator, schemaDigest: published.schemaDigest, executionManifestDigest: value.executionManifestDigest, definitionDigest: published.digest }, signer);
