@@ -170,7 +170,9 @@ try {
 }
 ```
 
-A held view pins both queries and effective event reads. Native Chronolog holds a
+A held view exposes its own `{view, revision, finalRevision}` and pins both
+queries and effective event reads. These fields describe the captured data even
+if the replica advances before rendering finishes. Native Chronolog holds a
 bounded snapshot; remote clients hold a bounded lease that can expire and must be
 recaptured. Independent widgets are not made atomic merely by labeling them with
 the same token: publish their combined view when every required projection is
@@ -184,7 +186,10 @@ current `{view,revision,finalRevision}` and then coalesces invalidations while a
 consumer is busy. Its default view is `final`; use `local` deliberately for an
 optimistic UI. Revision strings are opaque observations, never durable consumer
 cursors. A notification does not pin a snapshot; recapture `readView` and publish
-all related projections from that captured view.
+all related projections from that captured view. Its `revision` and
+`finalRevision` can be newer than the notification's tokens; use the captured
+metadata when displaying the result. Hosted local and final reads identify the
+same serially committed state while preserving the requested `view` label.
 
 ```js
 const stop = new AbortController();

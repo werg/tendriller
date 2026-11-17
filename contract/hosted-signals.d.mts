@@ -1,6 +1,6 @@
 import type { EphemeralSignal, Signals, SignalPayload, SignalSendOptions } from './signals.mjs';
 export declare const HOSTED_SIGNAL_PROTOCOL: 'tendriller.signals.v1';
-export declare const SIGNAL_LIMITS: Readonly<{ bytes: number; ttlMs: number; futureSkewMs: number; pending: number; subscriptions: number; queue: number; connections: number }>;
+export declare const SIGNAL_LIMITS: Readonly<{ bytes: number; ttlMs: number; futureSkewMs: number; pending: number; subscriptions: number; queue: number; latestKeys: number; connections: number }>;
 export interface SignalInput { topic: string; payload: SignalPayload; issuedAtMs: number; expiresAtMs: number }
 export declare function validateSignalTopic(topic: unknown): string;
 export declare function createSignalInput(topic: string, payload: SignalPayload, options?: SignalSendOptions, now?: number): SignalInput;

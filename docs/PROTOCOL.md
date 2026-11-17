@@ -45,7 +45,7 @@ contains `message:{topic,payload,issuedAtMs,expiresAtMs}`; delivery uses
 
 There is no durable ID, retry, replay cursor, receipt history, workflow execution
 or wake notification on this path. `ack` confirms live dispatch, not receipt or
-processing by another participant. The scope is the selected hosted application;
+processing by another participant. The scope is the page's selected application;
 peer pages use their installed peer signal channel. See
 [live signals](APPLICATION_SIGNALS.md) for permissions, expiration and bounds.
 

@@ -13,7 +13,7 @@ export interface EphemeralSignal {
 export interface SignalSendOptions { readonly ttlMs?: number; readonly signal?: AbortSignal }
 export interface SignalSubscribeOptions {
   readonly topics?: readonly string[];
-  /** all preserves admitted messages in a bounded FIFO; latest replaces pending author/session/topic values. */
+  /** all preserves admitted messages in a bounded FIFO; latest suppresses older author/session/topic values, including after delivery. */
   readonly mode?: 'all' | 'latest';
   readonly signal?: AbortSignal;
 }

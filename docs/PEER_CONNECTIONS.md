@@ -21,15 +21,18 @@ const signaling = tendril.peers.rendezvous(channelId, endpointId);
 const { role, session } = await signaling.ready;
 
 // The application composition owns this dependency, outside the Tendriller runtime.
-const rtc = await negotiateWebRtc({ role, signaling, onDataChannel(channel) {
-  // Transfer immediately, before sending: the exclusive replica Worker owns bytes.
-  replicaWorker.postMessage({ type: 'peer-channel', channel }, [channel]);
+const rtc = await negotiateWebRtc({ role, signaling, onDataChannels(channels) {
+  // Transfer both immediately: the exclusive replica Worker owns their bytes.
+  replicaWorker.postMessage({ type: 'peer-channels', channels },
+    [channels.reliable, channels.live]);
 } });
 ```
 
-`negotiateWebRtc` comes from `@chronolog/transport-webrtc`. The Worker frames the
-ordered reliable data channel and mutually authenticates its Chronolog reader
-capabilities before attaching it to the existing replica. Never put private keys
+`negotiateWebRtc` comes from `@chronolog/transport-webrtc`. The Worker uses
+`frameRtcPeerChannels(channels)` to keep ordered reliable history separate from
+unordered, unretransmitted live messages. One peer session authenticates both
+lanes and its Chronolog reader capabilities before attaching to the existing
+replica. Live loss or congestion does not stall reliable history. Never put private keys
 in the page's signaling messages. A host account, endpoint ID, session ID or
 channel name is not a database grant.
 
