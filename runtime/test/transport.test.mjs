@@ -133,17 +133,17 @@ test("state snapshots are bounded connected reads and never enter either deliver
   assert.equal(h.sent.length, 2); assert.deepEqual(h.persisted, []); assert.equal(h.clock.jobs.size, 0);
 });
 
-test('live requests are cancellable and never survive a disconnect or enter either queue', async () => {
+test('connected reads are cancellable and never survive a disconnect or enter either queue', async () => {
   const h = requestsSetup(true), stop = new AbortController();
-  const cancelled = assert.rejects(h.requests.request({ t: 'signal_send', cid: 'cancelled' }, { signal: stop.signal }), /disposed/);
+  const cancelled = assert.rejects(h.requests.request({ t: 'state_snapshot', cid: 'cancelled' }, { signal: stop.signal }), /disposed/);
   stop.abort(new Error('disposed')); await cancelled;
   assert.equal(h.clock.jobs.size, 0);
   assert.equal(h.requests.receive({ t: 'ack', cid: 'cancelled' }), false);
-  const pending = ['signal_send', 'signal_subscribe', 'signal_unsubscribe'].map((t, i) =>
+  const pending = ['state_snapshot'].map((t, i) =>
     assert.rejects(h.requests.request({ t, cid: `live-${i}` }), { code: 'offline' }));
   h.online(false); h.requests.disconnected(); await Promise.all(pending);
   assert.equal(h.clock.jobs.size, 0);
-  for (const t of ['signal_send', 'signal_subscribe', 'signal_unsubscribe']) {
+  for (const t of ['state_snapshot']) {
     h.requests.raw({ t });
     await assert.rejects(h.requests.request({ t }), { code: 'offline' });
   }

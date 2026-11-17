@@ -1,22 +1,26 @@
-import type { EphemeralSignal, Signals, SignalPayload, SignalSendOptions } from './signals.mjs';
+import type { EphemeralSignal, SignalPayload, Signals } from './signals.mjs';
 export declare const HOSTED_SIGNAL_PROTOCOL: 'tendriller.signals.v1';
-export declare const SIGNAL_LIMITS: Readonly<{ bytes: number; ttlMs: number; futureSkewMs: number; pending: number; subscriptions: number; queue: number; latestKeys: number; connections: number }>;
-export interface SignalInput { topic: string; payload: SignalPayload; issuedAtMs: number; expiresAtMs: number }
-export declare function validateSignalTopic(topic: unknown): string;
-export declare function createSignalInput(topic: string, payload: SignalPayload, options?: SignalSendOptions, now?: number): SignalInput;
-export declare function validateSignalInput(value: unknown, now?: number): SignalInput;
-export declare function validateSignalEnvelope(value: unknown): EphemeralSignal;
-export interface HostedSignals extends Signals { readonly connected: boolean; close(error?: Error): void }
+export declare const HOSTED_SIGNAL_LIMITS: Readonly<{ payloadBytes: number; frameBytes: number; defaultTtlMs: number; maxTtlMs: number; futureSkewMs: number;
+  subscriptions: number; queuedSignals: number; queuedBytes: number; pendingRequests: number; inFlightFrames: number;
+  jsonValues: number; latestKeys: number; sendsPerSecond: number; connections: number }>;
+export declare function signalTopic(value: unknown): string;
+export declare function signalPayload(value: unknown): SignalPayload;
+export declare function validateHostedSignal(value: unknown, scope?: string): EphemeralSignal;
 export interface HostedSignalTransport {
   connected(): boolean;
-  request(message: { t: string; [key: string]: unknown }, options?: { signal?: AbortSignal }): Promise<any>;
-  onMessage(listener: (message: unknown) => void): () => void;
-  onConnection?(listener: () => void): () => void;
-  close?(): void;
+  send(message: Record<string, unknown>): boolean;
+  onMessage(listener: (message: any) => void): () => void;
+  onDisconnect(listener: () => void): () => void;
+  readonly scope?: string;
+  readonly now?: () => number;
 }
-export declare function createHostedSignalPort(host: HostedSignalTransport): HostedSignals;
+export interface HostedSignals extends Signals { readonly connected: boolean; close(): void }
 export interface HostedSignalConnectionOptions {
-  base: string; protocols?: string[]; signal?: AbortSignal;
-  open?: (url: string, protocols: string[]) => Pick<WebSocket, 'readyState' | 'bufferedAmount' | 'send' | 'close' | 'addEventListener'>;
+  readonly api: string;
+  /** Agent token; omit for the cookie-authenticated page endpoint. */
+  readonly token?: string;
+  readonly socket?: (url: string, protocols: readonly string[]) => import('./peers.mjs').PeerSocket;
+  readonly signal?: AbortSignal;
 }
+export declare function createHostedSignals(transport: HostedSignalTransport): HostedSignals;
 export declare function connectHostedSignals(options: HostedSignalConnectionOptions): Promise<HostedSignals>;

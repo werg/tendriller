@@ -32,7 +32,7 @@
     "test:push": "node scripts/test-push.mjs"
   },
   "devDependencies": {
-    "@chronolog/membership": "file:test/artifacts/chronolog-membership-1f639740.tgz",
+    "@chronolog/membership": "file:test/artifacts/chronolog-membership-be7a2d5c.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@modelcontextprotocol/sdk": "1.32.2",

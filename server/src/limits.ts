@@ -6,6 +6,8 @@ export const MAX_FILE = RESOURCE_LIMITS.file_bytes;
 export const MAX_BLOB = RESOURCE_LIMITS.blob_bytes;
 export const MAX_EVENT_DATA = RESOURCE_LIMITS.event_bytes;
 export const MAX_STATE = RESOURCE_LIMITS.state_bytes;
+/** Transport envelope bound before parsing; domain limits remain stricter. */
+export const MAX_WS_FRAME = 4 * MB;
 export const MAX_EVAL_CODE = 256 * 1024;
 export const MAX_LOGS = 2000;
 export const MAX_EVENTS = 10_000;

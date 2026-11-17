@@ -1,6 +1,6 @@
 import { documentUrl, validateDocumentContext } from "./document";
 // Importing this module mounts nothing and requests no device permissions.
-// Hosted applications own one page connection. Peer applications use only their
+// Hosted applications own independent durable and live connections. Peer applications use only their
 // selected backend and explicit host operations. A page owns all application UI.
 import { createCore } from "./core";
 import { setupPush } from "./push";
@@ -11,7 +11,7 @@ import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi } from "../../contract/index.mjs";
 import { createSignalBinding } from "../../contract/signals.mjs";
-import { createHostedSignals } from './signals';
+import { createHostedPageSignals } from './signals';
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<void> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;
@@ -40,6 +40,9 @@ export function startRuntime(cfg: TendrilConfig, options: {
   }
   const core = createCore(cfg, options.application);
   const peerApplication = cfg.application?.kind === "peer";
+  const hostedSignals = options.signals || peerApplication || cfg.preview ? undefined : createHostedPageSignals({
+    api: new URL(cfg.base + '_tendril', location.href).href,
+  });
   let registration: Promise<void> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core);
   const tracker = installSensorWrappers();
@@ -59,18 +62,20 @@ export function startRuntime(cfg: TendrilConfig, options: {
   // BFCache restores the same JavaScript realm without running startRuntime again.
   // Suspend observation while away, then reattach and resynchronize the utility.
   window.addEventListener("pagehide", () => {
+    hostedSignals?.suspend();
     capabilityObserver?.dispose(); capabilityObserver = null;
     offSensors?.(); offSensors = null;
   });
   window.addEventListener("pageshow", event => {
     if (!event.persisted) return;
+    hostedSignals?.resume();
     offSensors ??= tracker.onChange(sensorChanged);
     capabilityObserver ??= observe();
     sensorChanged();
   });
   const api: RuntimeApi = {
     application: core.application, peers: core.peers, members: core.members,
-    signals: createSignalBinding(options.signals ?? (peerApplication ? undefined : createHostedSignals(core))),
+    signals: createSignalBinding(options.signals ?? hostedSignals),
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
     state: core.state, scopes: core.scopes, timers: core.timers,

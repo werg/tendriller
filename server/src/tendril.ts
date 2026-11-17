@@ -1,5 +1,4 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
-import { isSignalSocket, handleSignalMessage } from './signals';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
 import { applicationSelection } from "../../contract/application.mjs";
 import { selectedApplication } from "./application";
@@ -29,7 +28,7 @@ import type { Features } from "./inject";
 import {
   ACTIVITY_RETENTION, KEEP_VERSIONS,
   AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, DEDUPE_RETENTION, DEFAULT_GRACE_S, DEFAULT_PAGE_STREAK,
-  MAX_STATE, MAX_TRANSCRIPT, PRESENCE_TICK, MB, HOUR,
+  MAX_STATE, MAX_TRANSCRIPT, MAX_WS_FRAME, PRESENCE_TICK, MB, HOUR,
 } from "./limits";
 import { handlePage } from "./page";
 import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
@@ -40,6 +39,7 @@ import { blobReference } from "./blob-retention";
 import { apiUrl, pageUrl, publicBase } from "./urls";
 import { handleWsClose, handleWsMessage } from "./ws";
 import { emitBuiltinRecord, emitBuiltinSignal, pruneStreams } from "./streams";
+import { isSignalSocket, routeSignalMessage } from './signals';
 import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession, socketPrincipal } from "./access";
 
 import type { Role, DeviceInfo, StateChecks } from "../../contract/index.mjs";
@@ -57,7 +57,6 @@ export interface Att {
   sessionHash?: string | null;
   /** Per-stream live cursor; retained in the hibernating socket attachment. */
   streams?: Record<string, number>;
-  live?: import('./signals').SignalSession;
 }
 
 export interface DeviceRow {
@@ -248,7 +247,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (isSignalSocket(ws)) { await handleSignalMessage(this, ws, message); return; }
+    if (typeof message === 'string'
+      ? message.length > MAX_WS_FRAME || new TextEncoder().encode(message).byteLength > MAX_WS_FRAME
+      : message.byteLength > MAX_WS_FRAME) {
+      ws.close(1009, 'WebSocket frame too large'); return;
+    }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
     if (this.isAgentSocket(ws)) {
       // Normally answered by Durable Object's hibernation auto-response; also handle
@@ -256,6 +259,8 @@ export class Tendril extends DurableObject<Env> {
       if (message === '{"t":"ping"}') { this.send(ws, { t: "pong" }); return; }
       ws.close(1008, "Agent socket is receive-only"); return;
     }
+    const live = routeSignalMessage(this, ws, message);
+    if (live) { await live; return; }
     await handleWsMessage(this, ws, message);
   }
 

@@ -16,7 +16,7 @@ const compiled = await build({ entryPoints: [new URL('../src/kernel.ts', import.
 });
 const settle = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
 
-async function environment({ peer = false } = {}) {
+async function environment({ peer = false, preview = false } = {}) {
   const listeners = new Map(), sensorListeners = new Set(), reports = [], sensorReports = [], sensorUsage = [], timers = new Map();
   let active = [], pending = [], timerId = 0, pendingCamera;
   const bus = {
@@ -40,6 +40,7 @@ async function environment({ peer = false } = {}) {
   };
   runInNewContext(compiled.outputFiles[0].text, context);
   const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null,
+    preview,
     ...(peer ? { application: { kind: 'peer', id: 'history' } } : {}) });
   await settle();
   const flushTimers = () => { for (const [id, fn] of timers) { timers.delete(id); fn(); } };
@@ -95,4 +96,20 @@ test('peer sensor changes remain local while capability observations stay availa
   assert.deepEqual(env.sensorReports, [{ active: ['camera'], pending: [] }]);
   assert.deepEqual(env.reports, [true]);
   assert.deepEqual(env.sensorUsage, []);
+});
+
+test('hosted composition binds live signals while peer composition waits for its chosen implementation', async () => {
+  const hosted = await environment(), peer = await environment({ peer: true });
+  assert.equal(hosted.runtime.signals.available, true);
+  await assert.rejects(hosted.runtime.signals.send('typing', true), { code: 'signal_disconnected' });
+  assert.equal(peer.runtime.signals.available, false);
+  await assert.rejects(peer.runtime.signals.send('typing', true), { code: 'signal_unavailable' });
+  assert.deepEqual(hosted.sensorUsage, []); assert.deepEqual(peer.sensorUsage, []);
+});
+
+test('preview requires an explicit live port instead of opening a real network connection', async () => {
+  const preview = await environment({ preview: true });
+  assert.equal(preview.runtime.signals.available, false);
+  await assert.rejects(preview.runtime.signals.send('typing', true), { code: 'signal_unavailable' });
+  assert.deepEqual(preview.sensorUsage, []);
 });

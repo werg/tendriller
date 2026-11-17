@@ -70,12 +70,14 @@ Custom browser bootstraps can pass `{application: backend}` to
 `startRuntime(configuration, options)`. A hosted page uses its existing
 `window.tendril` and must not start another runtime.
 
-Peer pages run a separate quiet runtime. They open no host socket or IndexedDB
+Peer pages run a separate quiet runtime. They automatically open no host socket or IndexedDB
 outbox and send no background health reports, logs, heartbeats or sensor reports.
 State, input, conversation, timers, streams, shared-file references, scopes, captures, hosted uploads and
 retained-record APIs return `application_backend`. Application work and binary
 payload exchange belong to the replica. Explicit HTTP requests, membership,
 rendezvous, publication saving and existing blob URLs remain available.
+An explicitly installed hosted Signals port may use its own live socket without
+changing the owner of durable application history or enabling a fallback.
 `publication.saveOffline()` explicitly registers offline publication support.
 Automatic hosted publication health is a hosted-runtime facility; peer readiness
 belongs to the application backend. `tendril.connected` on a peer page indicates
@@ -222,9 +224,9 @@ permission to impersonate an owner or system role. Use the event's authenticated
 `origin` and application policy when presenting a message.
 
 Presence, typing, token chunks, and replaceable progress use
-[`tendril.signals`](APPLICATION_SIGNALS.md). Hosted pages receive it automatically;
-peer pages install it independently with `tendril.signals.install(client.signals)`.
-Use `send` and `subscribe`; choose
+[`tendril.signals`](APPLICATION_SIGNALS.md). Hosted pages bind the live host
+adapter automatically; peer pages install it independently with
+`tendril.signals.install(client.signals)`. Use `send` and `subscribe`; choose
 `mode:'latest'` only for replaceable values. Default FIFO preserves pending
 discrete events within explicit bounds. Signals require no program, SQL engine,
 outbox or finality service. End a generated response with a durable

@@ -24,11 +24,6 @@ const STATE_SNAPSHOT: DeliveryPolicy = Object.freeze({
   offlineMessage: "State snapshots need a connected page",
   disconnectMessage: "State snapshot connection closed",
 });
-const SIGNAL_REQUEST: DeliveryPolicy = Object.freeze({
-  ...TRANSIENT, request: "connected", disconnect: "reject",
-  offlineMessage: "Live signals need a connected page",
-  disconnectMessage: "Live signal connection closed",
-});
 
 /** Explicit operation names prevent new APIs accidentally inheriting a prefix policy. */
 export const DELIVERY_POLICIES = Object.freeze({
@@ -44,9 +39,6 @@ export const DELIVERY_POLICIES = Object.freeze({
   stream_subscribe: STREAM_REQUEST,
   stream_unsubscribe: STREAM_REQUEST,
   stream_publish: STREAM_REQUEST,
-  signal_send: SIGNAL_REQUEST,
-  signal_subscribe: SIGNAL_REQUEST,
-  signal_unsubscribe: SIGNAL_REQUEST,
 } satisfies Record<string, DeliveryPolicy>);
 
 export function deliveryPolicy(kind: string): DeliveryPolicy {

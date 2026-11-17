@@ -6,7 +6,7 @@ import { createStreamsClient } from "./streams-client.mjs";
 import { createBlobClient } from "./blobs-client.mjs";
 import { createRecordLogClient } from "./records.mjs";
 import { createMembersClient } from "./members.mjs";
-import { connectHostedSignals, HOSTED_SIGNAL_PROTOCOL } from './hosted-signals.mjs';
+import { connectHostedSignals } from "./hosted-signals.mjs";
 
 export class ApiError extends Error {
   constructor(status, error) {
@@ -54,7 +54,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     return response;
   }
   return {
-    connectSignals: options => connectHostedSignals({ ...options, base, protocols: [HOSTED_SIGNAL_PROTOCOL, token] }),
+    connectSignals: options => connectHostedSignals({ api: base, token, socket: options?.socket, signal: options?.signal }),
     async application() {
       const selection = applicationSelection((await request("/application")).selection);
       if (selection.kind !== "cloudflare") throw new ApiError(409, { code: "application_backend", message: "Connect to this page's selected peer backend" });

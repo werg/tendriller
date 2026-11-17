@@ -2,9 +2,12 @@
 
 Tendriller connects an authenticated page to an agent through shared state, events, files, blobs and streams. This is the entry point for **core contract 3**. Core owns the platform and optional operational tools. [Cookbooks](https://github.com/werg/tendriller-contrib) preserve reasoning that helps you author a page for the task.
 
-## Select the application history first
+## Choose the application primitives
 
-For an always-running native agent, create the page with
+Live-only applications can use hosted signals or a standalone signal channel
+without a database or durable application history.
+
+For a resident agent that owns durable application history, create the page with
 `application:{kind:'peer',id:'your-stable-history-id'}` and use the public Chronolog
 adapter. State, events, conversation, timers, and effects belong to that replica;
 the host does not queue a second copy or become a fallback authority. Install the
@@ -22,9 +25,12 @@ Choose the least durable mechanism that satisfies the task:
 | State and an event that must succeed together | Selected backend `submit` |
 | An irreversible external action | Final accepted intent plus durable effect checkpoint and provider idempotency/reconciliation |
 
-Hosted pages already have `tendril.signals`; native hosted agents explicitly use
-`await host.connectSignals({signal})` and close that connection when finished.
-Peer pages install signals independently with `tendril.signals.install(client.signals)`.
+Hosted pages receive live signals on a dedicated authenticated socket, independent
+of durable page traffic. On peer pages install signals independently with
+`tendril.signals.install(client.signals)`, or explicitly choose a hosted live port.
+The peer runtime never chooses or switches live transports automatically.
+An agent process can open the hosted live channel with `await host.connectSignals()`;
+this does not register a conversational wake listener.
 Signals have no operation ID, replay, durable retry, SQL or finality prerequisite.
 Default `mode:'all'` uses bounded FIFO; use `mode:'latest'` only for replaceable
 values. Expire presence/typing and clear previews on disconnect. A successful

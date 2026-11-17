@@ -1,7 +1,8 @@
 export class SignalError extends Error {
   constructor(code, message) { super(message); this.name = 'SignalError'; this.code = code; }
 }
-export { connectHostedSignals, createHostedSignalPort, HOSTED_SIGNAL_PROTOCOL, SIGNAL_LIMITS } from './hosted-signals.mjs';
+
+export { createHostedSignals, connectHostedSignals, HOSTED_SIGNAL_LIMITS, HOSTED_SIGNAL_PROTOCOL } from './hosted-signals.mjs';
 
 /** A live messaging port is independent of the page's durable application history. */
 export function createSignalBinding(initial) {

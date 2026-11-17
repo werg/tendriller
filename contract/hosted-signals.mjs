@@ -1,269 +1,279 @@
 import { SignalError } from './signals.mjs';
 
 export const HOSTED_SIGNAL_PROTOCOL = 'tendriller.signals.v1';
-export const SIGNAL_LIMITS = Object.freeze({ bytes: 16 * 1024, ttlMs: 30_000, futureSkewMs: 2_000,
-  pending: 32, subscriptions: 64, queue: 64, latestKeys: 256, connections: 32 });
-const fail = (code, message) => { throw new SignalError(code, message); };
-const plain = value => value !== null && typeof value === 'object' &&
-  (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
-const bounded = value => {
-  let nodes = 0;
-  function visit(item, depth) {
-    if (++nodes > 4096 || depth > 32) fail('signal_too_large', 'Signal payload is too complex');
-    if (item === null || typeof item === 'string' || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) return;
-    if (Array.isArray(item)) { for (const child of item) visit(child, depth + 1); return; }
-    if (plain(item)) { for (const child of Object.values(item)) visit(child, depth + 1); return; }
-    fail('invalid_signal', 'Signal payload must be a finite JSON value');
-  }
-  visit(value, 0);
-  if (new TextEncoder().encode(JSON.stringify(value)).length > SIGNAL_LIMITS.bytes - 1024)
-    fail('signal_too_large', 'Signal payload exceeds the live message limit');
+export const HOSTED_SIGNAL_LIMITS = Object.freeze({ payloadBytes: 32 * 1024, frameBytes: 36 * 1024,
+  defaultTtlMs: 5000, maxTtlMs: 30_000, futureSkewMs: 5000, subscriptions: 16,
+  queuedSignals: 128, queuedBytes: 512 * 1024, pendingRequests: 32, inFlightFrames: 64,
+  jsonValues: 4096, latestKeys: 256, sendsPerSecond: 50, connections: 32 });
+const fail = (code, message) => new SignalError(code, message);
+const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const plain = value => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const optionsOnly = (value, names) => {
+  if (!plain(value) || Object.keys(value).some(key => !names.includes(key)))
+    throw fail('signal_options_invalid', 'Signals have no durable retry or replay options');
 };
-export function validateSignalTopic(topic) {
-  if (typeof topic !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(topic))
-    fail('invalid_signal', 'Invalid live signal topic');
-  return topic;
+export function signalTopic(value) {
+  if (typeof value !== 'string' || !value || new TextEncoder().encode(value).byteLength > 256 ||
+      [...value].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127))
+    throw fail('signal_topic_invalid', 'A signal topic must have 1–256 UTF-8 bytes and no control characters');
+  return value;
 }
-/** TTL starts when the caller authors the live message, not after connection work. */
-export function createSignalInput(topic, payload, { ttlMs = 5000 } = {}, now = Date.now()) {
-  validateSignalTopic(topic); bounded(payload);
-  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > SIGNAL_LIMITS.ttlMs)
-    fail('invalid_signal', `Signal TTL must be from 1 to ${SIGNAL_LIMITS.ttlMs} milliseconds`);
-  return { topic, payload: structuredClone(payload), issuedAtMs: now, expiresAtMs: now + ttlMs };
-}
-export function validateSignalInput(value, now = Date.now()) {
-  if (!plain(value) || Object.keys(value).some(key => !['topic', 'payload', 'issuedAtMs', 'expiresAtMs'].includes(key)) ||
-      !Object.hasOwn(value, 'payload')) fail('invalid_signal', 'Expected a live message');
-  validateSignalTopic(value.topic); bounded(value.payload);
-  if (!Number.isSafeInteger(value.issuedAtMs) || value.issuedAtMs < 0 || !Number.isSafeInteger(value.expiresAtMs) ||
-      value.expiresAtMs <= value.issuedAtMs || value.expiresAtMs - value.issuedAtMs > SIGNAL_LIMITS.ttlMs ||
-      value.issuedAtMs > now + SIGNAL_LIMITS.futureSkewMs) fail('invalid_signal', 'Invalid live message lifetime');
-  if (value.expiresAtMs <= now) fail('signal_expired', 'The live message has expired');
-  return structuredClone(value);
-}
-export function validateSignalEnvelope(value) {
-  if (!plain(value) || Object.keys(value).some(key => !['scope', 'authorId', 'sessionId', 'sequence', 'topic', 'payload', 'issuedAtMs', 'expiresAtMs'].includes(key)) ||
-      !['scope', 'authorId', 'sessionId'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 256) ||
-      !Number.isSafeInteger(value.sequence) || value.sequence < 1) fail('invalid_response', 'Invalid signal envelope');
-  validateSignalInput({ topic: value.topic, payload: value.payload, issuedAtMs: value.issuedAtMs, expiresAtMs: value.expiresAtMs }, value.issuedAtMs);
-  return structuredClone(value);
-}
-
-function waitForRequest(request, signal) {
-  return new Promise((resolve, reject) => {
-    const cancelled = () => {
-      signal.removeEventListener('abort', cancelled);
-      reject(signal.reason ?? new SignalError('signal_cancelled', 'Signal send cancelled'));
-    };
-    signal.addEventListener('abort', cancelled, { once: true });
-    request.then(value => {
-      signal.removeEventListener('abort', cancelled);
-      if (signal.aborted) cancelled(); else resolve(value);
-    }, error => { signal.removeEventListener('abort', cancelled); reject(error); });
-    if (signal.aborted) cancelled();
-  });
-}
-
-/** One bounded live port for the existing browser socket and explicit SDK connections. */
-export function createHostedSignalPort(host) {
-  const readers = new Set();
-  const lifetime = new AbortController();
-  let closed = false, generation = 0, sending = 0, subscribed = false, wanted = false, updating;
-  const stopAll = error => { for (const reader of [...readers]) reader.stop(error); };
-  const subscription = enabled => {
-    wanted = enabled;
-    if (closed || !host.connected() || updating || subscribed === wanted) return;
-    const captured = generation;
-    const change = new AbortController(), desired = wanted;
-    updating = change;
-    Promise.resolve().then(() => {
-      if (change.signal.aborted) throw change.signal.reason;
-      return host.request({ t: desired ? 'signal_subscribe' : 'signal_unsubscribe' }, { signal: change.signal });
-    })
-      .then(() => { if (captured === generation) subscribed = desired; })
-      .catch(error => {
-        if (!closed && captured === generation && host.connected()) { subscribed = false; stopAll(error); }
-      }).finally(() => {
-        if (updating !== change) return;
-        updating = undefined;
-        subscription(wanted);
-      });
+export function signalPayload(value) {
+  const seen = new Set();
+  let values = 0;
+  const copy = (item, depth) => {
+    if (++values > HOSTED_SIGNAL_LIMITS.jsonValues || depth > 32) throw fail('signal_payload_invalid', 'Signal payload is too complex');
+    if (item === null || typeof item === 'string' || typeof item === 'boolean') return item;
+    if (typeof item === 'number' && Number.isFinite(item)) return Object.is(item, -0) ? 0 : item;
+    if (typeof item !== 'object' || seen.has(item))
+      throw fail('signal_payload_invalid', 'Signal payload must contain finite JSON values');
+    seen.add(item);
+    try {
+      if (Array.isArray(item)) {
+        if (Reflect.ownKeys(item).length !== item.length + 1) throw fail('signal_payload_invalid', 'Signal arrays cannot have additional properties');
+        const result = [];
+        for (let index = 0; index < item.length; index++) {
+          const descriptor = Object.getOwnPropertyDescriptor(item, index);
+          if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) throw fail('signal_payload_invalid', 'Signal arrays must contain ordinary values');
+          result.push(copy(descriptor.value, depth + 1));
+        }
+        return result;
+      }
+      if (!plain(item) || Reflect.ownKeys(item).length !== Object.keys(item).length)
+        throw fail('signal_payload_invalid', 'Signal objects must have ordinary enumerable JSON properties');
+      const result = Object.create(null);
+      for (const key of Object.keys(item)) {
+        const descriptor = Object.getOwnPropertyDescriptor(item, key);
+        if (!('value' in descriptor)) throw fail('signal_payload_invalid', 'Signal payloads cannot evaluate accessors');
+        result[key] = copy(descriptor.value, depth + 1);
+      }
+      return result;
+    } finally { seen.delete(item); }
   };
-  const offMessage = host.onMessage(value => {
-    if (closed) return;
-    let message;
-    try { message = validateSignalEnvelope(value); }
-    catch (error) { stopAll(error); return; }
-    if (message.expiresAtMs <= Date.now()) return;
-    for (const reader of [...readers]) reader.push(message);
+  const encoded = JSON.stringify(copy(value, 0));
+  if (encoded.length > HOSTED_SIGNAL_LIMITS.payloadBytes || new TextEncoder().encode(encoded).byteLength > HOSTED_SIGNAL_LIMITS.payloadBytes)
+    throw fail('signal_frame_too_large', 'Signal payload exceeds 32 KiB');
+  return JSON.parse(encoded);
+}
+export function validateHostedSignal(value, scope) {
+  if (!plain(value) || Object.keys(value).some(key => !['scope', 'authorId', 'sessionId', 'sequence', 'topic', 'payload', 'issuedAtMs', 'expiresAtMs'].includes(key)) ||
+      typeof value.scope !== 'string' || !value.scope || value.scope.length > 200 ||
+      typeof value.authorId !== 'string' || !value.authorId || value.authorId.length > 200 ||
+      typeof value.sessionId !== 'string' || !value.sessionId || value.sessionId.length > 80 ||
+      !Number.isSafeInteger(value.sequence) || value.sequence < 1 || !Number.isSafeInteger(value.issuedAtMs) || value.issuedAtMs < 0 ||
+      !Number.isSafeInteger(value.expiresAtMs) || value.expiresAtMs <= value.issuedAtMs || value.expiresAtMs - value.issuedAtMs > HOSTED_SIGNAL_LIMITS.maxTtlMs)
+    throw fail('signal_frame_invalid', 'Invalid authenticated signal envelope');
+  if (scope !== undefined && value.scope !== scope) throw fail('signal_scope_mismatch', 'Signal belongs to another hosted page');
+  return { scope: value.scope, authorId: value.authorId, sessionId: value.sessionId, sequence: value.sequence,
+    topic: signalTopic(value.topic), payload: signalPayload(value.payload), issuedAtMs: value.issuedAtMs, expiresAtMs: value.expiresAtMs };
+}
+
+/** A live socket port. It owns only bounded volatile requests and subscriber queues. */
+export function createHostedSignals(host) {
+  const clock = host.now ?? Date.now, subscribers = new Set(), pending = new Map();
+  let closed = false, wire = null, lastDelivery = 0, observedTime = 0;
+  const now = () => {
+    const current = clock();
+    if (!Number.isSafeInteger(current) || current < 0) throw fail('signal_clock_invalid', 'Signals need a valid wall clock');
+    observedTime = Math.max(observedTime, current);
+    return observedTime;
+  };
+  const online = () => !closed && host.connected();
+  const unavailable = () => fail('signal_disconnected', 'Signals require a live authenticated connection; nothing was queued');
+  const request = (message, expiresAt, signal) => {
+    const rejected = error => ({ dispatched: false, promise: Promise.reject(error) });
+    if (signal?.aborted) return rejected(signal.reason);
+    if (!online()) return rejected(unavailable());
+    let remaining;
+    try { remaining = expiresAt - now(); } catch (error) { return rejected(error); }
+    if (remaining <= 0) return rejected(fail('signal_expired', 'Live request expired before dispatch'));
+    if (pending.size >= HOSTED_SIGNAL_LIMITS.pendingRequests) return rejected(fail('signal_backpressure', 'Too many pending live requests'));
+    const attempt = { dispatched: false, promise: undefined };
+    attempt.promise = new Promise((resolve, reject) => {
+      const cid = 'signal_' + crypto.randomUUID();
+      let settled = false;
+      const finish = (success, value, release = true) => {
+        if (release) pending.delete(cid);
+        if (settled) return;
+        settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort);
+        success ? resolve(value) : reject(value);
+      };
+      // Cancellation/expiry cannot retract bytes already in a socket buffer.
+      // Keep their bounded slot until the host replies or the connection ends.
+      const abort = () => finish(false, signal.reason, false);
+      const timer = setTimeout(() => finish(false, fail('signal_expired', 'Live request expired'), false), remaining);
+      pending.set(cid, { finish }); signal?.addEventListener('abort', abort, { once: true });
+      try { attempt.dispatched = host.send({ ...message, cid }); if (!attempt.dispatched) finish(false, unavailable()); }
+      catch (error) { finish(false, error); }
+    });
+    return attempt;
+  };
+  const unsubscribeWire = () => {
+    if (subscribers.size || wire === null) return;
+    const dispatched = wire.dispatched;
+    wire = null;
+    if (dispatched && online()) host.send({ t: 'signal_unsubscribe' });
+  };
+  const finish = (subscriber, error) => {
+    if (!subscriber.active) return;
+    subscriber.active = false; subscriber.error = error; subscriber.queue.length = 0; subscriber.bytes = 0; subscriber.latest.clear();
+    subscribers.delete(subscriber); subscriber.signal?.removeEventListener('abort', subscriber.abort);
+    const waiting = subscriber.waiting; subscriber.waiting = null;
+    if (waiting) error ? waiting.reject(error) : waiting.resolve({ done: true, value: undefined });
+    unsubscribeWire();
+  };
+  const disconnect = () => {
+    wire = null; lastDelivery = 0;
+    const error = unavailable();
+    for (const value of [...pending.values()]) value.finish(false, error);
+    for (const subscriber of [...subscribers]) finish(subscriber, error);
+  };
+  const offDisconnect = host.onDisconnect(disconnect);
+  const offMessage = host.onMessage(message => {
+    if (message?.t !== 'signal' && message?.t !== 'signal_ack') return;
+    try {
+      if (!Number.isSafeInteger(message.delivery) || message.delivery < 1) throw fail('signal_frame_invalid', 'Invalid signal delivery credit');
+      if (message.delivery <= lastDelivery) return;
+      lastDelivery = message.delivery;
+      // Transport credit only: this is never an application acknowledgement.
+      if (online()) host.send({ t: 'signal_credit', through: message.delivery });
+      if (message.t === 'signal_ack') {
+        if (message.cid && pending.has(message.cid)) {
+          const error = message.error;
+          pending.get(message.cid).finish(!error, error ? fail(String(message.code || error?.code || error), message.message || 'Live request rejected') : message);
+        }
+        return;
+      }
+      const value = validateHostedSignal(message.signal, host.scope);
+      const receivedAt = now();
+      if (value.issuedAtMs > receivedAt + HOSTED_SIGNAL_LIMITS.futureSkewMs) throw fail('signal_clock_invalid', 'Signal dispatch time is too far in the future');
+      if (value.expiresAtMs <= receivedAt) return;
+      const size = bytes(value), key = JSON.stringify([value.authorId, value.sessionId, value.topic]);
+      for (const subscriber of [...subscribers]) {
+        if (subscriber.topics && !subscriber.topics.has(value.topic)) continue;
+        subscriber.queue = subscriber.queue.filter(item => item.value.expiresAtMs > now());
+        subscriber.bytes = subscriber.queue.reduce((sum, item) => sum + item.size, 0);
+        if (subscriber.mode === 'latest') {
+          for (const [identity, floor] of subscriber.latest) if (floor.until <= receivedAt) subscriber.latest.delete(identity);
+          const previous = subscriber.latest.get(key);
+          if (previous && value.sequence <= previous.sequence) continue;
+          if (!previous && subscriber.latest.size >= HOSTED_SIGNAL_LIMITS.latestKeys) {
+            finish(subscriber, fail('signal_subscription_overflow', 'Too many protected latest-value identities')); continue;
+          }
+          // Keep the floor after consumption and short-TTL expiry: an older
+          // sequence may still be live for the full admitted lifetime.
+          subscriber.latest.set(key, { sequence: value.sequence, until: Math.min(Number.MAX_SAFE_INTEGER,
+            Math.max(previous?.until ?? 0, value.expiresAtMs + HOSTED_SIGNAL_LIMITS.maxTtlMs + HOSTED_SIGNAL_LIMITS.futureSkewMs)) });
+          const index = subscriber.queue.findIndex(item => item.key === key);
+          if (index >= 0) { subscriber.bytes -= subscriber.queue[index].size; subscriber.queue.splice(index, 1); }
+        }
+        if (subscriber.queue.length >= HOSTED_SIGNAL_LIMITS.queuedSignals || subscriber.bytes + size > HOSTED_SIGNAL_LIMITS.queuedBytes) {
+          finish(subscriber, fail('signal_subscription_overflow', 'Live subscriber queue overflowed')); continue;
+        }
+        if (subscriber.waiting) {
+          const waiting = subscriber.waiting; subscriber.waiting = null;
+          waiting.resolve({ done: false, value: structuredClone(value) });
+        } else { subscriber.queue.push({ value, size, key }); subscriber.bytes += size; }
+      }
+    } catch (error) { for (const subscriber of [...subscribers]) finish(subscriber, error); }
   });
-  const offConnection = host.onConnection?.(() => {
-    generation++;
-    updating?.abort(); updating = undefined; subscribed = false;
-    for (const reader of readers) reader.clear();
-    if (readers.size) subscription(true);
-  }) ?? (() => {});
-  const port = {
-    get connected() { return !closed && host.connected(); },
+  return {
+    get connected() { return online(); },
     async send(topic, payload, options = {}) {
-      if (closed || !host.connected()) fail('signal_disconnected', 'A live connection is required');
-      if (Object.keys(options).some(key => !['ttlMs', 'signal'].includes(key))) fail('invalid_signal', 'Signals have no durable retry or replay options');
-      if (options.signal?.aborted) throw options.signal.reason ?? new SignalError('signal_cancelled', 'Signal send cancelled');
-      if (sending >= SIGNAL_LIMITS.pending) fail('signal_overflow', 'Too many pending live sends');
-      const input = createSignalInput(topic, payload, options);
-      const signal = AbortSignal.any([lifetime.signal, ...(options.signal === undefined ? [] : [options.signal])]);
-      sending++;
-      let request;
-      try {
-        request = Promise.resolve(host.request({ t: 'signal_send', message: input }, { signal }));
-      } catch (error) { sending--; throw error; }
-      // Cancellation releases the caller immediately. A noncooperative host's
-      // still-running request keeps its slot until it actually settles.
-      request.then(() => { sending--; }, () => { sending--; });
-      const reply = await waitForRequest(request, signal);
-      return validateSignalEnvelope(reply.signal);
+      optionsOnly(options, ['ttlMs', 'signal']);
+      const issuedAtMs = now(), ttlMs = options.ttlMs ?? HOSTED_SIGNAL_LIMITS.defaultTtlMs;
+      if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > HOSTED_SIGNAL_LIMITS.maxTtlMs) throw fail('signal_ttl_invalid', 'ttlMs must be from 1 to 30000');
+      options.signal?.throwIfAborted();
+      if (!online()) throw unavailable();
+      const expiresAtMs = issuedAtMs + ttlMs;
+      if (!Number.isSafeInteger(expiresAtMs)) throw fail('signal_clock_invalid', 'Signal expiry exceeds the supported clock range');
+      const reply = await request({ t: 'signal_send', topic: signalTopic(topic), payload: signalPayload(payload), issuedAtMs, expiresAtMs }, expiresAtMs, options.signal).promise;
+      if (expiresAtMs <= now()) throw fail('signal_expired', 'Signal expired before dispatch completed');
+      return validateHostedSignal(reply.signal, host.scope);
     },
     subscribe(options = {}) {
-      if (closed) fail('signal_disconnected', 'Signal port is closed');
-      if (Object.keys(options).some(key => !['topics', 'mode', 'signal'].includes(key)) ||
-          options.topics !== undefined && (!Array.isArray(options.topics) || options.topics.length > 128) ||
-          options.mode !== undefined && !['all', 'latest'].includes(options.mode)) fail('invalid_signal', 'Invalid signal subscription');
-      const topics = options.topics === undefined ? null : new Set(options.topics.map(validateSignalTopic));
-      const mode = options.mode ?? 'all', signal = options.signal;
-      if (readers.size >= SIGNAL_LIMITS.subscriptions) fail('signal_overflow', 'Too many live subscriptions');
-      let queue = [], waiter, ended = false, failure;
-      const highWater = new Map();
-      const prune = () => {
-        const now = Date.now();
-        queue = queue.filter(message => message.expiresAtMs > now);
-        for (const [key, value] of highWater) if (value.retainUntilMs <= now) highWater.delete(key);
-      };
-      const key = message => JSON.stringify([message.authorId, message.sessionId, message.topic]);
-      const cleanup = () => signal?.removeEventListener('abort', aborted);
-      const reader = {
-        stop(error) {
-          if (ended) return;
-          ended = true; failure = error; queue = []; highWater.clear(); cleanup();
-          readers.delete(reader);
-          if (!readers.size) subscription(false);
-          if (waiter) { const current = waiter; waiter = undefined; error ? current.reject(error) : current.resolve({ done: true, value: undefined }); }
-        },
-        clear() { queue = []; },
-        push(message) {
-          if (ended || topics && !topics.has(message.topic)) return;
-          prune();
-          if (mode === 'latest') {
-            const identity = key(message), previous = highWater.get(identity);
-            if (previous && message.sequence <= previous.sequence) return;
-            if (!previous && highWater.size >= SIGNAL_LIMITS.latestKeys) {
-              reader.stop(new SignalError('signal_overflow', 'Too many active latest-value identities')); return;
-            }
-            // An earlier sequence can have a longer TTL than this value. The
-            // host accepted it before this value's dispatch/expiry, with at
-            // most the configured future skew plus maximum TTL still to run.
-            const retainUntilMs = Math.min(Number.MAX_SAFE_INTEGER, message.expiresAtMs + SIGNAL_LIMITS.futureSkewMs + SIGNAL_LIMITS.ttlMs);
-            highWater.set(identity, { sequence: message.sequence, retainUntilMs: Math.max(previous?.retainUntilMs ?? 0, retainUntilMs) });
-          }
-          if (waiter) { const current = waiter; waiter = undefined; current.resolve({ done: false, value: structuredClone(message) }); return; }
-          if (mode === 'latest') {
-            const index = queue.findIndex(item => key(item) === key(message));
-            if (index >= 0) { queue[index] = message; return; }
-            if (queue.length === SIGNAL_LIMITS.queue) queue.shift();
-          } else if (queue.length === SIGNAL_LIMITS.queue) {
-            reader.stop(new SignalError('signal_overflow', 'Live subscriber fell behind; this stream has no replay')); return;
-          }
-          queue.push(message);
-        },
-      };
-      const aborted = () => reader.stop();
-      const iterator = {
-        next() {
-          if (failure) return Promise.reject(failure);
-          prune();
-          if (queue.length) return Promise.resolve({ done: false, value: structuredClone(queue.shift()) });
-          if (ended) return Promise.resolve({ done: true, value: undefined });
-          if (waiter) return Promise.reject(new SignalError('signal_concurrent_read', 'Read a signal iterator sequentially'));
-          return new Promise((resolve, reject) => { waiter = { resolve, reject }; });
-        },
-        return() { reader.stop(); return Promise.resolve({ done: true, value: undefined }); },
+      optionsOnly(options, ['topics', 'mode', 'signal']);
+      if (options.signal?.aborted) return {
         [Symbol.asyncIterator]() { return this; },
+        next: () => Promise.resolve({ done: true, value: undefined }),
+        return: () => Promise.resolve({ done: true, value: undefined }),
       };
-      if (signal?.aborted) { ended = true; return iterator; }
-      readers.add(reader); signal?.addEventListener('abort', aborted, { once: true });
-      if (readers.size === 1) subscription(true);
-      return iterator;
+      if (!online()) throw unavailable();
+      if (options.mode !== undefined && options.mode !== 'all' && options.mode !== 'latest') throw fail('signal_mode_invalid', 'Unknown live delivery mode');
+      if (options.topics !== undefined && (!Array.isArray(options.topics) || options.topics.length > 128)) throw fail('signal_topic_filter_invalid', 'At most 128 topic filters are allowed');
+      const topics = options.topics === undefined ? undefined : new Set(options.topics.map(signalTopic));
+      const deadline = now() + 5000;
+      if (subscribers.size >= HOSTED_SIGNAL_LIMITS.subscriptions) throw fail('signal_subscription_limit', 'At most 16 live subscriptions are allowed');
+      const subscriber = { active: true, queue: [], latest: new Map(), bytes: 0, topics, mode: options.mode ?? 'all', signal: options.signal, waiting: null, error: null,
+        abort: () => finish(subscriber) };
+      subscribers.add(subscriber); options.signal?.addEventListener('abort', subscriber.abort, { once: true });
+      if (wire === null) {
+        const opening = request({ t: 'signal_subscribe' }, deadline);
+        wire = opening;
+        void opening.promise.catch(error => { if (wire === opening) for (const value of [...subscribers]) finish(value, error); });
+      }
+      return {
+        [Symbol.asyncIterator]() { return this; },
+        next() {
+          if (subscriber.waiting) return Promise.reject(fail('signal_frame_invalid', 'Pull a live iterator one item at a time'));
+          if (subscriber.error) return Promise.reject(subscriber.error);
+          while (subscriber.queue.length) {
+            const item = subscriber.queue.shift(); subscriber.bytes -= item.size;
+            if (item.value.expiresAtMs > now()) return Promise.resolve({ done: false, value: structuredClone(item.value) });
+          }
+          if (!subscriber.active) return Promise.resolve({ done: true, value: undefined });
+          return new Promise((resolve, reject) => { subscriber.waiting = { resolve, reject }; });
+        },
+        return() { finish(subscriber); return Promise.resolve({ done: true, value: undefined }); },
+        throw(error) { finish(subscriber, error); return Promise.reject(error); },
+      };
     },
-    close(error) {
-      if (closed) return;
-      if (host.connected() && (subscribed || updating))
-        void Promise.resolve().then(() => host.request({ t: 'signal_unsubscribe' })).catch(() => {});
-      closed = true; generation++; lifetime.abort(error ?? new SignalError('signal_disconnected', 'Signal port closed'));
-      updating?.abort(); updating = undefined;
-      offMessage(); offConnection(); stopAll(error); host.close?.();
-    },
+    close() { if (closed) return; disconnect(); closed = true; offMessage(); offDisconnect(); },
   };
-  return Object.freeze(port);
 }
 
-/** Connect explicitly. Never persist, retry or reconnect an SDK signal send. */
-export function connectHostedSignals({ base, protocols = [HOSTED_SIGNAL_PROTOCOL], open = (url, values) => new WebSocket(url, values), signal }) {
-  if (signal?.aborted) return Promise.reject(signal.reason ?? new SignalError('signal_cancelled', 'Signal connection cancelled'));
-  const url = new URL(base.replace(/\/+$/, '') + '/signals/socket');
-  if (!['https:', 'http:'].includes(url.protocol)) return Promise.reject(new SignalError('invalid_signal', 'Signals require an HTTP service URL'));
+/** Explicit agent connection; it never registers a conversational wake listener. */
+export async function connectHostedSignals({ api, token, socket = (url, protocols) => new WebSocket(url, protocols), signal }) {
+  signal?.throwIfAborted();
+  const url = new URL(api.replace(/\/+$/, '') + '/signals/socket');
+  if (!['https:', 'http:'].includes(url.protocol)) throw fail('signal_options_invalid', 'Signals need an HTTP service URL');
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return new Promise((resolve, reject) => {
-    let socket, port, ready = false, closed = false, sequence = 0;
-    const pending = new Map(), listeners = new Set();
-    const finish = error => {
-      if (closed) return;
-      closed = true; clearTimeout(timer); signal?.removeEventListener('abort', aborted);
-      for (const item of [...pending.values()]) item.finish(error ?? new SignalError('signal_disconnected', 'Live connection closed'));
-      port?.close(error);
-      try { socket?.close(1000, 'Signal connection closed'); } catch {}
-      if (!ready) reject(error ?? new SignalError('signal_disconnected', 'Signal connection closed'));
-    };
-    const aborted = () => finish(signal.reason ?? new SignalError('signal_cancelled', 'Signal connection cancelled'));
-    const timer = setTimeout(() => finish(new SignalError('signal_timeout', 'Signal connection timed out')), 10_000);
-    const request = (message, options = {}) => {
-      if (!ready || closed || socket.readyState !== 1) return Promise.reject(new SignalError('signal_disconnected', 'A live connection is required'));
-      if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? new SignalError('signal_cancelled', 'Signal send cancelled'));
-      if (pending.size >= SIGNAL_LIMITS.pending || socket.bufferedAmount > 256 * 1024)
-        return Promise.reject(new SignalError('signal_overflow', 'Live connection is busy'));
-      const cid = String(++sequence);
-      return new Promise((resolveRequest, rejectRequest) => {
-        const cancel = () => item.finish(options.signal.reason ?? new SignalError('signal_cancelled', 'Signal send cancelled'));
-        const timeout = setTimeout(() => item.finish(new SignalError('signal_timeout', 'Live request timed out')), 5000);
-        const item = { finish(error, value) {
-          if (!pending.delete(cid)) return;
-          clearTimeout(timeout); options.signal?.removeEventListener('abort', cancel);
-          error ? rejectRequest(error) : resolveRequest(value);
-        } };
-        pending.set(cid, item); options.signal?.addEventListener('abort', cancel, { once: true });
-        try { socket.send(JSON.stringify({ ...message, cid })); }
-        catch (error) { item.finish(error); }
-      });
-    };
-    try { socket = open(url.href, protocols); }
-    catch (error) { finish(error); return; }
-    signal?.addEventListener('abort', aborted, { once: true });
-    socket.addEventListener('close', () => finish(new SignalError('signal_disconnected', 'Live connection closed')));
-    socket.addEventListener('error', () => finish(new SignalError('signal_disconnected', 'Live connection failed')));
-    socket.addEventListener('message', event => {
-      if (closed) return;
-      try {
-        if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).length > SIGNAL_LIMITS.bytes + 1024) throw new SignalError('invalid_response', 'Invalid live frame');
-        const value = JSON.parse(event.data);
-        if (!ready) {
-          if (value?.t !== 'signal_ready') throw new SignalError('invalid_response', 'Missing signal handshake');
-          ready = true; clearTimeout(timer);
-          port = createHostedSignalPort({ connected: () => !closed && socket.readyState === 1, request,
-            onMessage: listener => { listeners.add(listener); return () => listeners.delete(listener); }, close: () => finish() });
-          resolve(port); return;
-        }
-        if (value.t === 'signal') { for (const listener of listeners) listener(value.signal); }
-        else if (value.cid && pending.has(value.cid)) pending.get(value.cid).finish(value.error
-          ? new SignalError(value.error, value.message || value.error) : undefined, value);
-      } catch (error) { finish(error); }
-    });
-  });
+  const ws = socket(url.href, token === undefined ? [HOSTED_SIGNAL_PROTOCOL] : [HOSTED_SIGNAL_PROTOCOL, token]);
+  const messages = new Set(), disconnects = new Set();
+  let connected = false, ended = false, scope;
+  const service = createHostedSignals({ get scope() { return scope; }, connected: () => connected, send(message) {
+    if (!connected || ws.readyState !== 1) return false;
+    ws.send(JSON.stringify(message)); return true;
+  }, onMessage(listener) { messages.add(listener); return () => messages.delete(listener); },
+  onDisconnect(listener) { disconnects.add(listener); return () => disconnects.delete(listener); } });
+  let resolveReady, rejectReady;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const close = () => {
+    if (ended) return;
+    ended = true; connected = false;
+    for (const listener of [...disconnects]) listener();
+    service.close(); signal?.removeEventListener('abort', abort);
+    ws.removeEventListener('message', onMessage); ws.removeEventListener('error', onError); ws.removeEventListener('close', onClose);
+    ws.close();
+  };
+  const abort = () => { rejectReady(signal.reason); close(); };
+  signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => { rejectReady(fail('signal_disconnected', 'Live connection timed out')); close(); }, 5000);
+  function onMessage(event) {
+    try {
+      if (typeof event.data !== 'string' || event.data.length > HOSTED_SIGNAL_LIMITS.frameBytes || new TextEncoder().encode(event.data).byteLength > HOSTED_SIGNAL_LIMITS.frameBytes)
+        throw fail('signal_frame_too_large', 'Invalid live frame');
+      const message = JSON.parse(event.data);
+      if (message.t === 'signal_ready') { if (scope !== undefined || typeof message.scope !== 'string' || !message.scope || message.scope.length > 200) throw fail('signal_frame_invalid', 'Invalid live greeting'); scope = message.scope; connected = true; resolveReady(); }
+      else for (const listener of [...messages]) listener(message);
+    } catch (error) { rejectReady(error); close(); }
+  }
+  function onError() { rejectReady(fail('signal_disconnected', 'Live connection failed')); close(); }
+  function onClose() { rejectReady(fail('signal_disconnected', 'Live connection closed')); close(); }
+  ws.addEventListener('message', onMessage); ws.addEventListener('error', onError); ws.addEventListener('close', onClose);
+  if (signal?.aborted) abort();
+  else if (ws.readyState === 3) onClose();
+  try { await ready; return { get connected() { return service.connected; }, send: (...args) => service.send(...args), subscribe: (...args) => service.subscribe(...args), close }; }
+  catch (error) { close(); throw error; }
+  finally { clearTimeout(timer); }
 }

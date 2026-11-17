@@ -919,6 +919,16 @@ test("snapshot reads fail explicitly offline, on disconnect and on malformed rep
   assert.equal(env.database.stores.outbox.size, 0);
 });
 
+test("durable command identifiers share no reserved namespace with live signal correlation", async () => {
+  const env = await environment();
+  env.core.raw({ t: 'send', cid: 'signal_application_chosen_id', expected_generations: {}, data: { saved: true } });
+  await flush(); await env.commit();
+  assert.equal(env.database.stores.outbox.size, 1);
+  env.transport.receive({ t: 'ack', cid: 'signal_application_chosen_id', seq: 21 });
+  await commitAck(env);
+  assert.equal(env.database.stores.outbox.size, 0);
+});
+
 test("conditional replay keeps the exact durable predicate and never covers a newer snapshot", async () => {
   const first = await environment({ state: { owner: null } });
   void first.core.state.set("owner", "a", { conditions: [{ path: ["owner"], equals: null }] });

@@ -1,5 +1,4 @@
 import { requireCloudflareApplication, selectedApplication } from "./application";
-import { handleSignalMessage } from './signals';
 import { retainPublication } from "./files";
 // WebSocket protocol, page ↔ Durable Object (PROTOCOL section 7).
 import type { Att, DeviceRow, Tendril } from "./tendril";
@@ -40,16 +39,6 @@ const VIA = new Set(["voice", "text", "voice_layer"]);
 const chains = new WeakMap<WebSocket, Promise<void>>();
 
 export function handleWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-  // Expiring messages have their own bounded dispatch queue. They neither wait
-  // for application mutations nor synchronize workflows or record device activity.
-  // The live handler independently requires an authenticated, completed hello.
-  if (typeof raw === 'string') {
-    try {
-      const type = JSON.parse(raw)?.t;
-      if (['signal_send', 'signal_subscribe', 'signal_unsubscribe'].includes(type))
-        return handleSignalMessage(t, ws, raw);
-    } catch { /* The ordinary protocol reports malformed frames below. */ }
-  }
   const next = (chains.get(ws) ?? Promise.resolve()).then(() => processWsMessage(t, ws, raw));
   chains.set(ws, next.catch(() => {}));
   return next;
@@ -100,6 +89,10 @@ async function processWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBu
     if (!principal) { ws.close(4003, "page access revoked"); return; }
     const current = t.att(ws) as Att & { deviceId: string };
     const dev = { ...t.device(current.deviceId)!, role: principal.role, pending: 0 };
+    if (msg.t.startsWith('signal_')) {
+      t.send(ws, { t: 'error', code: 'signal_connection_required', message: 'Use the dedicated /_tendril/signals/socket live connection', cid: msg.cid });
+      return;
+    }
     t.db.run("UPDATE devices SET last_active = ? WHERE id = ?", t.now(), dev.id);
     const handler = HANDLERS[msg.t];
     if (!handler) {

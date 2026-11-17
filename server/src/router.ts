@@ -1,4 +1,5 @@
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
+import { HOSTED_SIGNAL_PROTOCOL } from '../../contract/hosted-signals.mjs';
 import { servicePage } from "./accounts/ui";
 import { assertValid, schemaDocument } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
@@ -255,11 +256,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       // Node's dependency-free WebSocket client cannot set Authorization. Keep the
       // private token in a TLS-protected subprotocol header, never in the URL.
       const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
-      const signalSocket = agentRest === "signals/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const signalSocket = agentRest === 'signals/socket' && req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
       const socket = agentRest === "events/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
       const agentProtocol = socket && protocols.includes("tendriller.agent.v2");
-      const socketToken = agentProtocol || peerSocket && protocols.includes("tendriller.rendezvous.v1") || signalSocket && protocols.includes("tendriller.signals.v1")
+      const socketToken = agentProtocol || peerSocket && protocols.includes("tendriller.rendezvous.v1") || signalSocket && protocols.includes(HOSTED_SIGNAL_PROTOCOL)
         ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
       // A listen-only ticket (POST A/events/socket/ticket) can stand in for the token on the socket only.
       const socketTicket = agentProtocol && !socketToken ? protocols.find((s) => SOCKET_TICKET_RE.test(s)) : undefined;

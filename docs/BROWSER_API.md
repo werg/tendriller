@@ -51,9 +51,9 @@ progress for application/network readiness.
 
 ## Live application signals
 
-`tendril.signals` is an independent messaging port. Hosted pages receive it over
-their existing authenticated socket. On a peer page, install
-the public peer client's implementation with
+`tendril.signals` is an independent messaging port. Hosted pages automatically
+bind it to a dedicated authenticated live socket. On peer pages, explicitly install
+the public client's implementation with
 `tendril.signals.install(client.signals)`, or pass `{signals}` to `startRuntime`.
 Its `available` flag reports installation; `ready()` explicitly waits for it.
 Sending or subscribing before installation fails immediately with
@@ -62,8 +62,12 @@ Sending or subscribing before installation fails immediately with
 Use `send(topic, json, {ttlMs?,signal?})` and
 `subscribe({topics?,mode?:'all'|'latest',signal?})`. Default `all` preserves pending
 messages within a bounded FIFO; `latest` coalesces replaceable values. This port
-works without a durable application backend. The binding creates no extra connection,
-outbox, SQL transaction or finality request. See [live signals](APPLICATION_SIGNALS.md)
+works without a durable application backend. It creates no outbox, SQL transaction
+or finality request. Hosted calls fail while their live connection is opening or
+offline, terminate subscriptions on disconnect and never replay. The ordinary
+page's `connected` flag describes its durable connection. A peer page may choose
+an explicit hosted port or its peer client; the runtime never chooses a fallback.
+Preview requires an injected signal port. See [live signals](APPLICATION_SIGNALS.md)
 for envelopes, error handling, authorization and expiring views.
 
 For peer application projections, `application.changes({view:'local',signal})`

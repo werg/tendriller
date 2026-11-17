@@ -21,20 +21,30 @@ const signaling = tendril.peers.rendezvous(channelId, endpointId);
 const { role, session } = await signaling.ready;
 
 // The application composition owns this dependency, outside the Tendriller runtime.
-const rtc = await negotiateWebRtc({ role, signaling, onDataChannels(channels) {
-  // Transfer both immediately: the exclusive replica Worker owns their bytes.
-  replicaWorker.postMessage({ type: 'peer-channels', channels },
-    [channels.reliable, channels.live]);
+const rtc = await negotiateWebRtc({ role, signaling, onDataChannels({ reliable, live }) {
+  // Transfer both immediately, before either sends: the replica Worker owns bytes.
+  replicaWorker.postMessage({ type: 'peer-channels', reliable, live }, [reliable, live]);
 } });
 ```
 
-`negotiateWebRtc` comes from `@chronolog/transport-webrtc`. The Worker uses
-`frameRtcPeerChannels(channels)` to keep ordered reliable history separate from
-unordered, unretransmitted live messages. One peer session authenticates both
-lanes and its Chronolog reader capabilities before attaching to the existing
-replica. Live loss or congestion does not stall reliable history. Never put private keys
-in the page's signaling messages. A host account, endpoint ID, session ID or
-channel name is not a database grant.
+`negotiateWebRtc` comes from `@chronolog/transport-webrtc`. Its callback is
+synchronous: both negotiated channels must move to the same owning Worker before
+either starts exchanging frames. The Worker composes them with
+`frameRtcPeerChannels({reliable,live})` and passes that connection to
+`peer.connectPeer({connection,peerIdentity,signal})`. The public connection service
+authenticates the peer and binds both lanes to the same reader identity before
+attaching history or live traffic. Never put private keys in signaling messages.
+A host account, endpoint ID, session ID or channel name is not a database grant.
+
+The reliable ordered lane carries history, bodies and control. The separate
+unordered live lane has no retransmission and its own bounded queues, so a signal
+does not wait in a bulk history queue or turn into a durable retry. Missing or
+failed live-channel support cannot silently fall back to reliable history frames.
+A failure in either lane retires their shared connection; applications reconnect
+explicitly with current admission policy. Safe congestion before live dispatch
+uses `signal_route_backpressure` and leaves the authenticated session alive. Both
+lanes still share the physical network, so independent queues do not promise a
+particular wall-clock latency.
 
 `PeerRendezvous` exposes `ready`, `messages`, `send(description)`, `close()` and a
 read-only `stats` snapshot. `ready` resolves to a fresh session ID and a server

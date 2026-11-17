@@ -32,23 +32,6 @@ then closes. It never relays application frames. Chronolog authenticates and
 owns the subsequent WebRTC data plane, membership and finality. See [peer connections](PEER_CONNECTIONS.md).
 The count-only wake route below belongs to the Cloudflare application deployment.
 
-## Live application messages
-
-Hosted pages use `signal_send`, `signal_subscribe` and `signal_unsubscribe` on
-their authenticated page socket. A native client opens `GET A/signals/socket`
-with `tendriller.signals.v1` and its agent token in the subprotocol header (or
-ordinary bearer authorization). Page clients may explicitly use the corresponding
-`_tendril/signals/socket` route with their page session and Origin. The host sends
-`signal_ready`; requests carry a correlation `cid` and receive `ack`. A send
-contains `message:{topic,payload,issuedAtMs,expiresAtMs}`; delivery uses
-`{t:'signal',signal:{scope,authorId,sessionId,sequence,...message}}`.
-
-There is no durable ID, retry, replay cursor, receipt history, workflow execution
-or wake notification on this path. `ack` confirms live dispatch, not receipt or
-processing by another participant. The scope is the page's selected application;
-peer pages use their installed peer signal channel. See
-[live signals](APPLICATION_SIGNALS.md) for permissions, expiration and bounds.
-
 ## Lifecycle and delivery
 
 `POST /api/tendrils` requires an owner email and accepts optional name and mode. Interactive pages require a live receiver or configured wake path before first publication; dashboards can publish without conversational delivery. Owner sign-in claims the page. Claim deadlines, residency, quotas, invited guest approval and suspension are enforced on the server.
@@ -56,6 +39,66 @@ peer pages use their installed peer signal channel. See
 `GET A/events?after=<cursor>` immediately replays retained events from an explicit nonnegative cursor; it never waits for future events. The former `wait` query parameter is rejected, including `wait=0`. An authenticated agent socket at `A/events/socket` uses `tendriller.agent.v2` and a token or one-use ticket in the WebSocket subprotocol header. It sends count-only wake notices; clients fetch event bodies through the authorized API. The Durable Object automatically answers exact JSON `{"t":"ping"}` messages with `{"t":"pong"}` while hibernating; host watchers should send a heartbeat more frequently than common proxy idle timeouts (for example every 25 seconds), detect missing pongs, and reconnect with an explicit `after` handled cursor. Arbitrary agent-socket messages are forbidden. Normal disconnects may still occur at network/proxy boundaries: a successful reconnect does not itself imply new work. The service records agent-socket connection and close code/reason/duration in `GET A/activity` without storing credentials, so operator diagnostics can distinguish server close frames from abnormal network disconnects (usually client code 1006). This does not identify an upstream proxy's internal cause without its logs. Tokens never belong in URLs.
 
 Wake transport success does not prove a host resumed the intended conversation. `POST A/wake/probe`, `GET A/wake/probe` and the returned acknowledgement URL exercise end-to-end delivery. Named consumers add independent processing checkpoints and bounded leases; reading alone never acknowledges handling. See [durability](DURABILITY.md).
+
+## Live application signals
+
+Hosted pages expose `tendril.signals` over a dedicated authenticated live socket.
+Agents explicitly open `GET A/signals/socket` with WebSocket subprotocols
+`["tendriller.signals.v1", token]`; the server responds with the protocol name
+and `{t:"signal_ready",scope:"hosted:<page-id>"}`. The SDK exposes this as
+`await client.connectSignals()`. Tokens never enter URLs. This connection is
+separate from the count-only wake listener and does not register agent attention.
+The hosted runtime and custom page bootstraps open `<page_url>_tendril/signals/socket` using the page
+session cookie, its actual Origin, and the protocol name without an agent token.
+This explicit live choice is independent of the selected durable backend.
+Peer runtimes open no hosted socket automatically and never switch to one after
+a peer failure. The ordinary page socket rejects live commands with
+`signal_connection_required`; live congestion cannot close the durable channel.
+
+Active owners, approved guests and agents may send; any currently authorized
+page role, including a display link, may read. Stream producers remain confined
+to their granted streams. A topic filter is not an audience permission. Sending follows the existing
+service write-availability policy. The host checks sender and reader access
+again after asynchronous authorization and assigns identity from those trusted
+principals, independently of payload fields.
+
+| Frame | Meaning |
+| --- | --- |
+| `{t:"signal_subscribe",cid}` | Start receiving live signals for this connection; no replay or cursor |
+| `{t:"signal_unsubscribe",cid?}` | Stop receiving future live deliveries |
+| `{t:"signal_send",cid,topic,payload,issuedAtMs,expiresAtMs}` | Dispatch once with the original caller's expiry |
+| `{t:"signal_ack",delivery,cid,signal?}` | Volatile dispatch/subscription result; errors add `error` and `message` |
+| `{t:"signal",delivery,signal}` | Authenticated live envelope with a connection-local transport sequence |
+| `{t:"signal_credit",through}` | Cumulative network receipt credit, independent of application processing |
+
+The envelope has `scope`, `authorId`, `sessionId`, `sequence`, `topic`, `payload`,
+`issuedAtMs` and `expiresAtMs`. Hosted authors are `page:<account-id>` or `agent:<name>`,
+matching durable event origin identities.
+The server chooses the socket session and sequence; incoming identity fields
+are forbidden. `cid` only correlates an in-flight request: it has no durable
+receipt or deduplication semantics, and signals are never retried automatically.
+The sender receives its envelope in the response; fan-out excludes its own socket.
+
+Signals allow at most 32 KiB of finite JSON payload and 36 KiB per frame. TTL is
+positive and at most 30 seconds, with a 5 second default and at most 5 seconds
+of future clock skew. JSON has at most 4096 values and 32 nesting levels. A
+connection can send 50 messages per second and hold at most 32 queued requests / 256 KiB;
+the page holds at most 128 queued requests / 1 MiB and 64 live reader connections.
+Replies and fan-out share one connection-local delivery sequence and credit window.
+Uncredited delivery is bounded to 64 frames / 512 KiB per connection, including
+dispatch replies to senders that never subscribe. Queue
+overflow closes the affected connection with code 1013; an oversized frame uses
+1009. Dedicated live sockets reject other protocol messages. All page WebSocket
+protocols also enforce a 4 MiB outer envelope cap before parsing, with their own
+stricter domain limits afterwards.
+
+The public adapter provides bounded FIFO delivery by default, optional `latest`
+coalescing per author/session/topic, expiry on consumption, and explicit
+subscription overflow. Disconnect terminates existing iterators; reconnect
+requires a fresh subscription or agent connection and never replays payloads.
+Small identity and transport-credit metadata stays with a hibernating socket;
+signal payloads, operation IDs and counters never enter application storage.
+See [live application signals](APPLICATION_SIGNALS.md) for usage and peer adapters.
 
 ## Opaque application data
 
