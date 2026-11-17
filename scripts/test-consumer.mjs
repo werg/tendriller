@@ -113,7 +113,7 @@ assert.match(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accoun
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
 import {createClient, type CommandMetadata} from '@tendriller/core';
-import {type RuntimeApi, type SendResult, type WireContracts, type SensorStatus} from '@tendriller/core/contract';
+import {type RuntimeApi, type HostedRuntimeApi, type SendResult, type WireContracts, type SensorStatus} from '@tendriller/core/contract';
 import {type WorkflowModule} from '@tendriller/core/host';
 import {type RecordLogClient, type RecordLogHead, type RecordLogAppendCondition} from '@tendriller/core/records';
 import {type ApplicationBackend, type ApplicationOperation, type CloudflareApplicationProgram, createApplicationBinding, publishConversation} from '@tendriller/core/application';
@@ -132,7 +132,21 @@ void client.updateState({...command,ops:[{op:'set',path:['job'],value:{status:'r
 void client.updateState({...command,conditions:[{path:['job'],exists:false}],expected_revision:0,ops:[]});
 // @ts-expect-error all commands need explicit stable IDs and preconditions
 void client.updateState({ops:[]});
-declare const page: RuntimeApi<{count:number}>;
+declare const page: HostedRuntimeApi<{count:number}>;
+declare const selectedPage: RuntimeApi;
+selectedPage.host.peers.discover();
+selectedPage.on('sensors', status => { const count:number = status.active.length; void count; });
+if (selectedPage.kind === 'peer') {
+  // @ts-expect-error a peer runtime has no fabricated hosted connection status
+  selectedPage.connected;
+  // @ts-expect-error peer data belongs to its installed application backend
+  selectedPage.state;
+  // @ts-expect-error a local device label carries no account or application role
+  selectedPage.device.role;
+}
+// @ts-expect-error explicit host services have no compatibility alias
+selectedPage.peers;
+
 declare const signals: Signals;
 page.signals.install(signals);
 const live: EphemeralSignal = await page.signals.send('typing', {active:true}, {ttlMs:1000});
@@ -143,11 +157,11 @@ void page.signals.send('typing', new Uint8Array());
 page.signals.subscribe({cursor:'saved'});
 void [live,startRuntime];
 const log: RecordLogClient = page.records;
-const members: MembersClient = page.members;
+const members: MembersClient = page.host.members;
 declare const configuration: MembershipConfiguration;
 void members.configure(configuration);
 void members.history({after:0, limit:128});
-const peerAuthority = await page.peers.application();
+const peerAuthority = await page.host.peers.application();
 const peerProfile:'peer-generation-v1' = peerAuthority.descriptor.payload.profile;
 void peerProfile;
 const backend: ApplicationBackend = await page.application.ready();
@@ -186,7 +200,7 @@ const noGuards: CloudflareApplicationProgram = {version:1,steps:[{kind:'emit',to
 // @ts-expect-error an operation subscription must select a bounded operation identity.
 backend.operations.subscribe({});
 const binding = createApplicationBinding({kind:'peer',id:'history'}, backend);
-const peer: PeerRendezvous = page.peers.rendezvous('session', 'browser');
+const peer: PeerRendezvous = page.host.peers.rendezvous('session', 'browser');
 void [operation,continuation,cfProgram,noGuards,binding,peer];
 declare const recordHead: RecordLogHead;
 void log.read({historyId:recordHead.historyId,after:recordHead.position,previous:recordHead});

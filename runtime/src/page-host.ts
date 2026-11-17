@@ -1,11 +1,11 @@
 import { createMembersClient } from "../../contract/members.mjs";
 import { createPeersClient } from "../../contract/peers.mjs";
-import type { RuntimeApi } from "../../contract/index.mjs";
+import type { HostServices } from "../../contract/index.mjs";
 import type { TendrilConfig } from "./types";
 
 /** Explicit page-host operations. Constructing this object performs no I/O. */
-export function createPageHost(cfg: TendrilConfig, deviceHeaders: () => Record<string, string>) {
-  const request: RuntimeApi["request"] = async (path, options = {}) => {
+export function createPageHost(cfg: TendrilConfig, deviceHeaders: () => Record<string, string>): HostServices {
+  const request: HostServices["request"] = async (path, options = {}) => {
     let decoded: string;
     try { decoded = decodeURIComponent(path.split("?", 1)[0]); } catch { throw new TypeError("Invalid service path"); }
     if (!decoded || path.includes("#") || /[?#\\]/.test(decoded) || decoded.startsWith("/") ||
@@ -22,7 +22,7 @@ export function createPageHost(cfg: TendrilConfig, deviceHeaders: () => Record<s
     });
     return result;
   };
-  return {
+  return Object.freeze({
     request, deviceHeaders,
     members: createMembersClient({ base: cfg.base + "_tendril", headers: deviceHeaders }),
     peers: createPeersClient({ base: new URL(cfg.base + "_tendril", location.href).href, request, initialBootstrap: cfg.peerBootstrap }),
@@ -30,5 +30,5 @@ export function createPageHost(cfg: TendrilConfig, deviceHeaders: () => Record<s
       if (!/^b_[a-z2-7]{20}$/.test(id)) throw new TypeError("Invalid blob identifier");
       return new URL(`_tendril/blobs/${id}`, new URL(cfg.base, location.href)).href;
     },
-  };
+  });
 }

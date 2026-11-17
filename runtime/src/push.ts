@@ -1,7 +1,7 @@
 // Web Push subscription on the page (PROTOCOL sections 7 and 10). Owned by the push agent.
 // subscribe() must be called from a user gesture (the control's toggle does that):
 // Notification.requestPermission() is the first thing it does, before any await.
-import type { Core, Push } from "./types";
+import type { HostedCore, Push } from "./types";
 
 export interface PushStatus {
   permission: NotificationPermission | "unsupported";
@@ -41,13 +41,12 @@ function sameKey(a: ArrayBuffer | null | undefined, b: Uint8Array): boolean {
   return x.length === b.length && x.every((v, i) => v === b[i]);
 }
 
-export function setupPush(core: Core): PushWithReason {
+export function setupPush(core: HostedCore): PushWithReason {
   const vapid = core.config.features?.push ? core.config.features.vapid : null;
   const supported = typeof window !== "undefined" && "PushManager" in window && "serviceWorker" in navigator && "Notification" in window;
 
   let staticReason: string | undefined;
-  if (core.config.application?.kind === "peer") staticReason = "Peer application notifications are owned by the selected application backend.";
-  else if (!vapid) staticReason = "Notifications are not set up on this server.";
+  if (!vapid) staticReason = "Notifications are not set up on this server.";
   else if (isIOS() && !isStandalone()) staticReason = IOS_REASON;
   else if (!supported) staticReason = "This browser does not support notifications.";
 

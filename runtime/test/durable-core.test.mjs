@@ -155,8 +155,9 @@ test("peer pages select one backend without opening a host socket or outbox", as
   assert.deepEqual(env.database.opened, []);
   assert.deepEqual(env.sent, []);
   assert.throws(() => env.core.application.backend, { code: "backend_unavailable" });
-  await assert.rejects(env.core.send({ type: "task" }), { code: "application_backend" });
-  assert.throws(() => env.core.state.apply([{ op: "set", path: ["task"], value: 1 }]), { code: "application_backend" });
+  assert.equal(env.core.kind, "peer");
+  assert.equal("send" in env.core, false);
+  assert.equal("state" in env.core, false);
   const authored = [], backend = { id: "history-one", capabilities: ["events"], async submit(program, options) { authored.push({ program, options }); },
     readView() {}, async *changes() {}, events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };
   env.core.application.install(backend);
@@ -270,7 +271,7 @@ test("application cursor reads use validated relative query URLs and keep revisi
   assert.equal(new URL(calls.at(-1), "https://fixture.test").searchParams.get("cursor"), "opaque/a+b=");
   assert.equal(new URL(calls.at(-1), "https://fixture.test").searchParams.get("topics"), '["tasks"]');
   for (const path of ["../outside?ok=1", "/outside?ok=1", "https://elsewhere.test?ok=1", "%2e%2e/outside?ok=1", "application/view#fragment"])
-    await assert.rejects(env.core.request(path), /relative path/);
+    await assert.rejects(env.core.host.request(path), /relative path/);
   view.release(); assert.throws(() => view.query("state"), { code: "view_released" });
   const local = await backend.readView({ view: "local" });
   assert.equal(local.view, "local"); assert.equal(local.finalRevision, "view-1");

@@ -34,7 +34,7 @@ async function environment({ peer = false } = {}) {
       return Promise.resolve(status());
     } } },
     setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
-    fixture: { core: { bus, raw(frame) { sensorUsage.push(frame); } }, tracker: {
+    fixture: { core: { kind: peer ? 'peer' : 'cloudflare', bus, raw(frame) { sensorUsage.push(frame); } }, tracker: {
       status: () => ({ active: [...active], pending: [...pending] }), onChange(fn) { sensorListeners.add(fn); return () => sensorListeners.delete(fn); },
     } },
   };

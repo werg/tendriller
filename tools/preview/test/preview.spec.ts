@@ -20,7 +20,7 @@ async function openWithServiceWorker(page: Page) {
 }
 
 const readDevices = (page: Page) => page.evaluate(async () => {
-  const response = await fetch("/_tendril/devices", { headers: window.tendril.deviceHeaders() });
+  const response = await fetch("/_tendril/devices", { headers: window.tendril.host.deviceHeaders() });
   return { status: response.status, body: await response.json() };
 });
 

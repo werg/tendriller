@@ -1,5 +1,5 @@
-import type { RuntimeApi, DurableTimer, TimerDeleted, TimerMutationResult } from "../index.mjs";
-declare const page: RuntimeApi;
+import type { HostedRuntimeApi, DurableTimer, TimerDeleted, TimerMutationResult } from "../index.mjs";
+declare const page: HostedRuntimeApi;
 
 const created: TimerMutationResult<DurableTimer> = await page.timers.create({ title: "Review", due_at: 2000 });
 if (created.status === "accepted") {

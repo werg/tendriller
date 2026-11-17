@@ -121,14 +121,16 @@ Application data never falls back to the hosted JSON backend implicitly.
 
 Peer pages start no hosted application socket, application outbox, heartbeat,
 console forwarding, automatic health report or background host polling. Explicit
-host operations remain available. `application.available` and `ready()` mean an
+host operations remain available. `application.available` and `application.ready()` mean an
 adapter is installed; actual session readiness and recovery remain separate.
 The generation backend exposes `status` and `onStatus()` for actual ready,
 waiting, recovering, awaiting-keys and closed phases, with coordinator/follower role, selected
 generation and authenticated synchronized peer count. Observing status starts no
 timer or host request.
-`tendril.connected` describes the hosted application connection and stays false
-in peer mode.
+`tendril.kind` distinguishes the peer and Cloudflare runtime surfaces. Peer pages
+have no hosted `connected`, `presence`, data, outbox or notification members.
+Explicit host calls live under `tendril.host`; application status comes from the
+installed session, and the local device label carries no authority.
 
 The generation backend contract uses `applied` and contains a selected generation and one
 coherent revision for SQL, events and outcomes. It has no `finalRevision`.

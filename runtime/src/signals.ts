@@ -1,8 +1,8 @@
 import { createHostedSignalPort } from '../../contract/hosted-signals.mjs';
-import type { Core } from './types';
+import type { HostedCore } from './types';
 
 /** Reuse the hosted page connection; no extra socket, persistent queue or stream setup. */
-export function createHostedSignals(core: Pick<Core, 'application' | 'bus' | 'connected' | 'transportRequest'>) {
+export function createHostedSignals(core: Pick<HostedCore, 'application' | 'bus' | 'connected' | 'transportRequest'>) {
   return createHostedSignalPort({
     connected: () => core.connected,
     scope: () => core.application.selection.id,

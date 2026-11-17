@@ -9,7 +9,7 @@ import { installSensorWrappers } from "./sensors";
 import { runtimeAsset } from "./assets";
 import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
-import type { RuntimeApi } from "../../contract/index.mjs";
+import type { RuntimeApi, RuntimeServices, RuntimeEventMap, PeerRuntimeApi, HostedRuntimeApi } from "../../contract/index.mjs";
 import { createSignalBinding } from "../../contract/signals.mjs";
 import { createHostedSignals } from "./signals";
 
@@ -28,10 +28,14 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
   } catch (error) { console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error); }
 }
 
-export function startRuntime(cfg: TendrilConfig, options: {
+export interface RuntimeOptions {
   application?: import("../../contract/application.mjs").ApplicationBackend;
   signals?: import("../../contract/signals.mjs").Signals;
-} = {}): RuntimeApi {
+}
+export function startRuntime(cfg: TendrilConfig & { application: { kind: "peer"; id: string } }, options?: RuntimeOptions): PeerRuntimeApi;
+export function startRuntime(cfg: TendrilConfig & { application?: { kind: "cloudflare"; id: string } }, options?: RuntimeOptions): HostedRuntimeApi;
+export function startRuntime(cfg: TendrilConfig, options?: RuntimeOptions): RuntimeApi;
+export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
   if (cfg.publication && cfg.version > 0) {
     const pinned = documentUrl(cfg, new URL(cfg.publication.base, location.href));
@@ -39,11 +43,9 @@ export function startRuntime(cfg: TendrilConfig, options: {
     if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
   }
   const core = createCore(cfg, options.application);
-  const peerApplication = cfg.application?.kind === "peer";
   let registration: Promise<void> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core);
   const tracker = installSensorWrappers();
-  const notifications = setupPush(core);
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null,
     base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
   const observe = () => observeCapabilities(() => tracker.status().active, report => core.bus.emit("capabilities", report));
@@ -51,7 +53,7 @@ export function startRuntime(cfg: TendrilConfig, options: {
   const sensorChanged = () => {
     const status = tracker.status();
     core.bus.emit("sensors", status);
-    if (!peerApplication) core.raw({ t: "sensor_usage", active: status.active });
+    if (core.kind === "cloudflare") core.raw({ t: "sensor_usage", active: status.active });
     capabilityObserver?.refresh();
   };
   let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
@@ -68,28 +70,14 @@ export function startRuntime(cfg: TendrilConfig, options: {
     capabilityObserver ??= observe();
     sensorChanged();
   });
-  const api: RuntimeApi = {
-    application: core.application, peers: core.peers, members: core.members,
-    signals: createSignalBinding(options.signals ?? (peerApplication ? undefined : createHostedSignals(core))),
-    send: (data, options) => core.send(data, options),
-    request: (path, options) => core.request(path, options),
-    state: core.state, scopes: core.scopes, timers: core.timers,
-    get service() { return core.service; },
-    conversation: core.conversation, streams: core.streams, records: core.records,
+  const shared: RuntimeServices = {
+    host: core.host, application: core.application,
+    signals: createSignalBinding(options.signals ?? (core.kind === "cloudflare" ? createHostedSignals(core) : undefined)),
     on: (type, listener) => core.bus.on(type, listener),
-    blobUrl: id => core.blobUrl(id),
-    upload: (blob, options) => core.upload(blob, options),
-    uploadEvent: (blob, options) => core.uploadEvent(blob, options),
-    captures: () => core.captures(), pendingWork: () => core.pendingWork(),
-    retryCapture: id => core.retryCapture(id), discardCapture: id => core.discardCapture(id),
-    setBlobRetention: (id, options) => core.setBlobRetention(id, options),
-    ready: Object.assign(() => core.ready(), { manual: () => core.readyManual() }),
+    ready: () => core.ready(),
     capabilities: () => describeCapabilities(tracker.status().active),
-    deviceHeaders: () => core.deviceHeaders(),
     get device() { return Object.freeze({ ...core.device }); },
     version: cfg.version,
-    get connected() { return core.connected; },
-    get presence() { return core.presence ? { ...core.presence } : null; },
     identity,
     publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); } },
     assetUrl(path) {
@@ -106,13 +94,30 @@ export function startRuntime(cfg: TendrilConfig, options: {
         return count;
       },
     },
-    notifications,
   };
-  // Saving a peer publication is an explicit host operation; loading and using
-  // the application must not trigger hidden service-worker fetches or updates.
-  if (!peerApplication) {
-    if (document.readyState === "complete") setTimeout(registerOffline, 0);
-    else window.addEventListener("load", registerOffline, { once: true });
-  }
-  return Object.freeze(api);
+  // Peer publication saving is explicit. There is no hosted data port, outbox,
+  // fake connection status, notification service or throw-only compatibility API.
+  if (core.kind === "peer") return Object.freeze({ ...shared, kind: "peer" });
+
+  const hosted: HostedRuntimeApi = {
+    ...shared, kind: "cloudflare",
+    send: (data, options) => core.send(data, options),
+    state: core.state, scopes: core.scopes, timers: core.timers,
+    get service() { return core.service; },
+    conversation: core.conversation, streams: core.streams, records: core.records,
+    on<K extends keyof RuntimeEventMap & string>(type: K, listener: (payload: RuntimeEventMap[K]) => void) { return core.bus.on(type, listener); },
+    upload: (blob, options) => core.upload(blob, options),
+    uploadEvent: (blob, options) => core.uploadEvent(blob, options),
+    captures: () => core.captures(), pendingWork: () => core.pendingWork(),
+    retryCapture: id => core.retryCapture(id), discardCapture: id => core.discardCapture(id),
+    setBlobRetention: (id, options) => core.setBlobRetention(id, options),
+    ready: Object.assign(() => core.ready(), { manual: () => core.readyManual() }),
+    get device() { return Object.freeze({ ...core.device }); },
+    get connected() { return core.connected; },
+    get presence() { return core.presence ? { ...core.presence } : null; },
+    notifications: setupPush(core),
+  };
+  if (document.readyState === "complete") setTimeout(registerOffline, 0);
+  else window.addEventListener("load", registerOffline, { once: true });
+  return Object.freeze(hosted);
 }

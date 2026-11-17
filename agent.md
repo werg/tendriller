@@ -43,6 +43,10 @@ Fresh peers and agents read `host.peers.definition()` and verify it against thei
 pinned descriptor; application assets and this metadata outlive the creator.
 Control configuration retains the owned host publication automatically; this is
 persistent control metadata, not a continuously running application process.
+Browser pages expose explicit control/discovery operations as `tendril.host.peers`.
+`tendril.kind` distinguishes peer and Cloudflare runtime services; peer pages have
+no hosted data/outbox/connection stubs. Their local device id/name grant no
+application authority. Use the installed session's status and recovery events.
 Ordinary initial members use `{publicKey, accountId?}`. Independent device rights
 are explicit grants; control administration and application data administration
 are separate. If a creator device key is lost, the owner can use

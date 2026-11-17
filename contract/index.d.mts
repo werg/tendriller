@@ -155,7 +155,12 @@ export interface FixtureTransport {
   onSend(listener: (frame: RuntimeFrame, reply: (frame: RuntimeFrame) => void) => void): () => void;
   disconnect(): void;
 }
-export interface RuntimeEventMap {
+export interface RuntimeLocalEventMap {
+  ready: void; application_ready: void;
+  capabilities: CapabilityReport;
+  sensors: SensorStatus; sensors_stopped: { count: number };
+}
+export interface RuntimeEventMap extends RuntimeLocalEventMap {
   connect: void; disconnect: void; role: Pick<Device, "role" | "pending">; presence: Presence;
   say: SayMessage; transcript: TranscriptEntry | null;
   upload: Omit<BlobReference, "name"> & { cid: string; name: string | null };
@@ -195,13 +200,40 @@ export interface NotificationsApi {
 }
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
-export interface RuntimeApi<T = Record<string, unknown>> {
-  readonly signals: import("./signals.mjs").SignalBinding;
+/** Explicit hosted operations. Constructing these services starts no connection or request. */
+export interface HostServices {
   readonly members: import("./members.mjs").MembersClient;
-  readonly application: import("./application.mjs").ApplicationBinding;
   readonly peers: import("./peers.mjs").PeersClient;
-  send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
   request<T = unknown>(path: string, options?: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal }): Promise<T>;
+  blobUrl(id: string): string;
+  /** Authentication for the page host; these headers do not grant application authority. */
+  deviceHeaders(): Record<string, string>;
+}
+export interface RuntimeServices {
+  readonly host: HostServices;
+  readonly signals: import("./signals.mjs").SignalBinding;
+  readonly application: import("./application.mjs").ApplicationBinding;
+  on<K extends keyof RuntimeLocalEventMap>(type: K, fn: (payload: RuntimeLocalEventMap[K]) => void): () => void;
+  /** Page UI readiness, independent of application synchronization. */
+  ready(): void;
+  capabilities(): Promise<CapabilityReport>;
+  readonly device: Readonly<Pick<Device, "id" | "name">>;
+  readonly version: number;
+  readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
+  /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
+  assetUrl(path: string): string;
+  /** Resolves only after the exact required publication graph is saved by its service worker. */
+  publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
+  sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
+}
+/** Application state, readiness, operations and authorization belong to the installed peer session. */
+export interface PeerRuntimeApi extends RuntimeServices {
+  readonly kind: "peer";
+}
+/** Hosted application services exist only when this backend was selected. */
+export interface HostedRuntimeApi<T = Record<string, unknown>> extends RuntimeServices {
+  readonly kind: "cloudflare";
+  send(data: unknown, opts?: OperationOptions & { wake?: boolean }): Promise<SendResult>;
   scopes: { list(): ScopeDescriptor[]; capture(scope: string): OperationOptions };
   timers: BrowserTimers;
   readonly service: ServiceDescriptor | null;
@@ -211,7 +243,6 @@ export interface RuntimeApi<T = Record<string, unknown>> {
     /** Reports presentation by the application, never a human read receipt. */
     presented(messageId: string): void;
   };
-  blobUrl(id: string): string;
   upload(blob: Blob, opts?: OperationOptions & { name?: string; keep?: boolean }): Promise<BlobReference>;
   uploadEvent(blob: Blob, options: CaptureOptions): Promise<CaptureResult>;
   /** Durable local work retained until its acknowledgement. */
@@ -221,18 +252,13 @@ export interface RuntimeApi<T = Record<string, unknown>> {
   state: StateApi<T>;
   streams: BrowserStreams;
   records: RecordLogClient;
+  on<K extends keyof RuntimeLocalEventMap>(type: K, fn: (payload: RuntimeLocalEventMap[K]) => void): () => void;
   on<K extends keyof RuntimeEventMap & string>(type: K, fn: (payload: RuntimeEventMap[K]) => void): () => void;
   ready: (() => void) & { manual(): void };
-  capabilities(): Promise<CapabilityReport>; deviceHeaders(): Record<string, string>;
-  readonly device: Readonly<Device>; readonly version: number; readonly connected: boolean; readonly presence: Presence | null;
-  readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
-  /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
-  assetUrl(path: string): string;
-  /** Resolves only after the exact required publication graph is saved by its service worker. */
-  publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
-  sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
+  readonly device: Readonly<Device>; readonly connected: boolean; readonly presence: Presence | null;
   notifications: NotificationsApi;
 }
+export type RuntimeApi<T = Record<string, unknown>> = PeerRuntimeApi | HostedRuntimeApi<T>;
 export type { EventConsumer, ConsumerClaim, ConsumerLease, ConsumerRenew, ConsumerAck, ConsumerBatch, TimerDelivery } from "./durability.mjs";
 export type { StreamInfo, StreamCreate, StreamInput, StreamAppend, StreamRecord, StreamBatch, StreamLatest, StreamTrim, StreamTrimResult, StreamHistory,
   StreamAppendResult, StreamReadOptions, StreamSubscribeOptions, BrowserStreams, Producer, ProducerCreate, ProducerResult } from "./streams.mjs";

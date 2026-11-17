@@ -4,7 +4,7 @@ import { createPageHost } from "./page-host";
 import { createPeerCore } from "./peer-core";
 import { documentUrl } from "./document";
 // Runtime core (PROTOCOL 7, 11.1): socket, bus, state, offline queue, eval, logs, health.
-import type { Bus, Core, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
+import type { Bus, HostedCore, RuntimeCore, Device, Presence, Role, StateApi, TendrilConfig, TranscriptEntry, Path } from "./types";
 import { runtimeAsset } from "./assets";
 import { OfflineStore, type OutboxItem } from "./offline";
 import { assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
@@ -25,7 +25,7 @@ import { captureData, type BlobReference, type CaptureOptions, type CaptureResul
 import { createBrowserBlobs, BlobHttpError } from "./blob-transfer";
 import { createBrowserTimers, TimerHttpError, type TimerTerminalResult } from "./timers";
 
-export type { Bus, Core } from "./types";
+export type { Bus, HostedCore, RuntimeCore } from "./types";
 
 const TRANSCRIPT_MAX = 200;
 
@@ -61,7 +61,7 @@ const permanentUploadFailure = (error: unknown): boolean => error instanceof Blo
   ? error.status < 500 && error.status !== 408 && error.status !== 429
   : ["invalid_response", "bad_request", "upload_closed"].includes((error as any)?.code);
 
-type Internal = Core & {
+type Internal = HostedCore & {
   readonly rev: number; health: ReturnType<typeof createHealth>;
   uploadEvent(blob: Blob, opts: CaptureOptions): Promise<CaptureResult>;
   captures(): PendingCapture[];
@@ -70,7 +70,7 @@ type Internal = Core & {
   setBlobRetention(id: string, opts: OperationOptions & { keep: boolean }): Promise<BlobReference>;
 };
 
-export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBackend): Internal {
+export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBackend): RuntimeCore {
   const selection = applicationSelection(cfg.application, `cf:${cfg.id}`);
   const bus = createBus();
   if (selection.kind === "peer") return createPeerCore(cfg, selection, bus, selectedBackend);
@@ -434,7 +434,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        core.request<ApplicationOperation>("application/changes", { method: "POST", signal: controller.signal,
+        core.host.request<ApplicationOperation>("application/changes", { method: "POST", signal: controller.signal,
           body: { program: item.msg.program, operationId: item.msg.operationId } }),
         new Promise<never>((_, reject) => { timer = setTimeout(() => {
           controller.abort(); reject(new Error("Application receipt timed out; retry the original operation"));
@@ -1006,7 +1006,8 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
   }
 
   const core: Internal = {
-    ...createPageHost(cfg, deviceHeaders),
+    kind: "cloudflare",
+    host: createPageHost(cfg, deviceHeaders),
     bus,
     config: cfg,
     device,
@@ -1168,7 +1169,7 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
           const item = store.items.find(item => item.msg.t === "application" && item.msg.operationId === operationId);
           if (item) return clone(item.msg.outcome || { operationId, proposalId: "", status: "queued" });
         }
-        return core.request(path, options as Parameters<typeof core.request>[1]);
+        return core.host.request(path, options as Parameters<typeof core.host.request>[1]);
       },
       async submit(input, options): Promise<CloudflareApplicationSubmission> {
         const program = validateCloudflareProgram(input), operationId = assertApplicationOperationId(options.operationId), cid = `app:${operationId}`;

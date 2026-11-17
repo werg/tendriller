@@ -65,7 +65,7 @@ alarm, including after restart. Explicit page/account deletion still applies;
 resident storage is not an independent backup guarantee.
 
 The public SDK exposes `agent.members`, and the authenticated browser runtime
-exposes `tendril.members`. `@tendriller/core/members` also exports the small fetch
+exposes `tendril.host.members`. `@tendriller/core/members` also exports the small fetch
 client. All byte fields in the host JSON API use canonical unpadded base64url.
 
 ```js

@@ -19,7 +19,7 @@ accept later joins; its lifecycle is separate from an established RTC data path.
 
 ```js
 // Browser page; native agents use client.peers.rendezvous with their agent token.
-const signaling = tendril.peers.rendezvous(channelId, endpointId);
+const signaling = tendril.host.peers.rendezvous(channelId, endpointId);
 const { role, session } = await signaling.ready;
 
 // The application composition owns this dependency, outside the Tendriller runtime.
@@ -88,7 +88,7 @@ former WebSocket hint shape are rejected. Introduction addresses do not carry
 application grants or keys and do not predict which ICE route will be selected.
 
 The initial peer HTML embeds the current configuration. Read
-`tendril.peers.initialBootstrap` to select a resident without another host
+`tendril.host.peers.initialBootstrap` to select a resident without another host
 request; the snapshot and its endpoints are immutable. A running connection or
 its recovery uses that snapshot and contacts the resident directly. Only the
 owner or an agent may replace hints. Authorized nondisplay page identities may
@@ -136,19 +136,19 @@ historical evidence for their original revisions.
 
 ## Ordinary-peer discovery
 
-Peer applications can use `tendril.peers` (or the SDK's `peers`) without a permanently reachable resident introduction service. The host offers a bounded authenticated directory:
+Peer applications can use `tendril.host.peers` (or the SDK's `peers`) without a permanently reachable resident introduction service. The host offers a bounded authenticated directory:
 
 ```js
-const availability = await tendril.peers.advertise({
+const availability = await tendril.host.peers.advertise({
   peerId: device.peerId,
   storageId: device.storageId,
   profiles: ['peer-generation-v1'],
   routes: [{ kind: 'invitation', peerId: device.id }],
   coordinatorEligible: true,
 });
-const directory = await tendril.peers.discover();
+const directory = await tendril.host.peers.discover();
 // Pass hints to the Chronolog session. It authenticates peers and verifies authority.
-await tendril.peers.withdraw(device.peerId);
+await tendril.host.peers.withdraw(device.peerId);
 ```
 
 An advertisement expires after two minutes by default (30 seconds to ten minutes is supported). `refreshAfter` identifies the coalescing boundary: identical early advertisements return the same lease without a storage write. Discovery is explicit on join or reconnect. Constructing the client starts no timer, polling, heartbeat, or host connection. Healthy peer sessions continue when the directory is unavailable.

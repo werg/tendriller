@@ -10,7 +10,7 @@ function environment(consent = () => true) {
   const document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
   class Recognition extends EventTarget { processLocally = false; start() { starts++; this.onstart?.(); } abort() { aborted++; this.onend?.(); } static async available() { return 'available'; } static async install() { installs++; return true; } }
   window.SpeechRecognition = Recognition;
-  const runtime = { identity: { page: 'page', base: 'https://test.example/page/' }, device: { role: 'owner', pending: false },
+  const runtime = { kind: 'cloudflare', identity: { page: 'page', base: 'https://test.example/page/' }, device: { role: 'owner', pending: false },
     assetUrl: path => new URL(path, 'https://test.example/runtime/').href,
     on(type, listener) { if (!handlers.has(type)) handlers.set(type, new Set()); handlers.get(type).add(listener); return () => handlers.get(type).delete(listener); } };
   const context = { window, document, navigator: { language: 'en-US' }, location: { href: runtime.identity.base },

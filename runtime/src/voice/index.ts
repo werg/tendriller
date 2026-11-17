@@ -71,10 +71,10 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
     preparing = task;
     try { return await task; } finally { if (preparing === task) preparing = null; }
   };
-  const offReply = runtime.on("reply", message => {
+  const offReply = runtime.kind === "cloudflare" ? runtime.on("reply", message => {
     if (options.speakReplies && runtime.device.role === "owner" && !runtime.device.pending && message.speak !== false) output.speak(message.text);
-  });
-  const offRole = runtime.on("role", () => { if (runtime.device.role !== "owner" || runtime.device.pending) stop(); });
+  }) : () => {};
+  const offRole = runtime.kind === "cloudflare" ? runtime.on("role", () => { if (runtime.device.role !== "owner" || runtime.device.pending) stop(); }) : () => {};
   const offSensors = runtime.on("sensors_stopped", stop);
   const visibility = () => { if (document.visibilityState !== "visible") stop(); };
   document.addEventListener("visibilitychange", visibility);

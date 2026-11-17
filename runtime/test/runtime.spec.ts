@@ -880,9 +880,9 @@ test("say, instruction and transcript; presence; request correlation", async ({ 
   await page.waitForTimeout(100);
   const tr = await page.evaluate(() => (window as any).tendril.conversation.entries().map((e: any) => `${e.from}:${e.text}`));
   expect(tr).toEqual(["agent:On it", "user:make it blue"]);
-  const devices = await page.evaluate(() => (window as any).tendril.request("devices"));
+  const devices = await page.evaluate(() => (window as any).tendril.host.request("devices"));
   expect(devices.devices[0].id).toBe("d_x");
-  const err = await page.evaluate(() => (window as any).tendril.request("adopt_code").then(() => "resolved", (e: any) => e.code));
+  const err = await page.evaluate(() => (window as any).tendril.host.request("adopt_code").then(() => "resolved", (e: any) => e.code));
   expect(err).toBe("forbidden");
 });
 

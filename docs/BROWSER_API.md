@@ -1,8 +1,10 @@
 # Headless browser API
 
 A published page receives `window.tendril` synchronously before its authored
-scripts. The connection becomes ready asynchronously. Core supplies transport,
-state, durable input, streams, captures, publication identity, and device operations.
+scripts. Its `kind` is `peer` or `cloudflare`, selected by the published application.
+Both expose publication identity, local browser services, a selected application
+binding, live signals, and explicit `host` services. The Cloudflare runtime also
+exposes its hosted connection, state, input, streams, timers and captures.
 The page owns its markup, styling, navigation, drafts, and conversation presentation.
 No conversation panel, voice engine, application schema, or browser rule language
 is started by the kernel.
@@ -15,39 +17,53 @@ active-use/stop affordance; use the public identity and sensor operations below.
 The hosted runtime is already installed, so do not start a second connection.
 
 Types are published in `@tendriller/core/contract` (`RuntimeApi`,
-`RuntimeEventMap`); `@tendriller/core/browser` declares `window.tendril`.
+`PeerRuntimeApi`, `HostedRuntimeApi`, `HostServices`, and the event maps); `@tendriller/core/browser` declares `window.tendril`.
 Optional voice types and code are separate exports.
 
 ## Selected application history
 
 For peer-backed pages, use `await tendril.application.ready()` and its selected
 backend's `submit`, `events`, `changes`, `readView`, and `operations` methods. Install the
-matching adapter once with `tendril.application.install(backend)`; host connection
-readiness belongs to that backend. `tendril.peers.initialBootstrap` contains the
+matching adapter once with `tendril.application.install(backend)`. Installation
+availability does not imply synchronization. Session readiness, connected peers,
+coordinator reachability, key availability and recovery belong to that backend. `tendril.host.peers.initialBootstrap` contains the
 immutable resident HTTPS addresses supplied in the initial page, requiring no
-discovery request. `tendril.peers.bootstrap()` is an explicit configuration
+discovery request. `tendril.host.peers.bootstrap()` is an explicit configuration
 refresh, and `.rendezvous(channel,peerId)` provides optional coordinated
 introductions without granting database membership. The Chronolog composition
 owns the actual WebRTC channel, authenticated readiness and recovery. See
 [application backends](APPLICATION_BACKENDS.md) and
 [peer connections](PEER_CONNECTIONS.md) for the public contracts.
 
-`tendril.members` exposes the host's portable membership administration and
+`tendril.host.members` exposes the host's portable membership administration and
 device-request API. Login identifies the account; a signed device request and
 explicit approval grant group capabilities. Approved readers can download the
 certified control history before their first authenticated peer connection.
 See [membership administration](MEMBERSHIP.md) for configuration, key ownership,
 bootstrap ordering and readiness.
 
-The state, conversation, input, timer, and stream operations below belong to the
-Cloudflare application deployment. A peer-selected page rejects these operations
-and stores application work only in its selected replica. Peer pages also reject
-hosted upload/capture, retained-record, scope and notification APIs. Explicit
-`request`, `members`, `peers`, existing `blobUrl`, local sensor controls and
-`publication.saveOffline()` remain available. No host socket, automatic health
-report, diagnostic forwarding, background poll or automatic service worker starts.
-On a peer page `connected` means its selected backend is installed; use replica
-progress for application/network readiness.
+The runtime is a discriminated union. Check `tendril.kind` before using a backend's
+additional services; TypeScript narrows it to the matching public interface.
+
+| Surface | Both runtime kinds | Cloudflare runtime only |
+| --- | --- | --- |
+| Explicit host operations | `host.request`, `host.peers`, `host.members`, `host.blobUrl`, `host.deviceHeaders` | |
+| Application and live state | `application`, `signals` | Hosted `state`, `send`, `conversation`, `scopes`, `timers`, `streams`, `records` |
+| Browser and publication | `sensors`, `capabilities`, `identity`, `assetUrl`, `publication`, `version`, local `ready()` | Hosted health deferral through `ready.manual()` |
+| Device and connection | Local device `id` and `name` | Account device role/pending state, `connected`, `presence`, `service`, `notifications` |
+| Durable hosted work | | Upload/capture/retention methods, `captures`, `pendingWork` |
+
+Peer runtimes omit the Cloudflare-only members. They contain no hosted outbox,
+placeholder connection state, or methods whose only purpose is to reject peer
+mode. Their `on` method accepts local runtime events: `ready`, `application_ready`,
+`capabilities`, `sensors`, and `sensors_stopped`. Application invalidations,
+operations, recovery and network status come from the installed session.
+
+Host requests occur only through explicit calls. Peer startup creates no host
+socket, health report, diagnostic forwarding, background poll or automatic
+service-worker registration. `publication.saveOffline()` explicitly saves the
+selected publication. `host.deviceHeaders()` authenticates the page host;
+application authority still comes from the signed Chronolog control state.
 
 ## Live application signals
 
@@ -78,14 +94,18 @@ Neither port creates an outbox, SQL transaction or finality request.
 See [live signals](APPLICATION_SIGNALS.md)
 for envelopes, error handling, authorization and expiring views.
 
-For peer application projections, `application.changes({view:'local',signal})`
-starts with the current revision and coalesces subsequent invalidations. Capture
-one `readView` to refresh related queries and event projections coherently; release
-it when finished. Durable event processing instead uses `events.subscribe` with
-a saved processed cursor. Events expose authenticated `origin` independently of
-their payload. Operation lifecycle (`queued`, `provisional`, `final`) is separate
-from acceptance (`outcome:'accepted'|'rejected'`). A final rejection is settled,
-not successful. See [application backends](APPLICATION_BACKENDS.md).
+For `peer-generation-v1` projections, the backend's `changes({view:'applied',signal})`
+starts with the current revision and coalesces invalidations. Capture one
+`readView({view:'applied'})` for related queries and event projections, then release
+it. The view identifies its selected generation without inventing a `finalRevision`.
+Recovery emits an explicit notice, and a cursor from an excluded suffix requires a
+reset. Operation states include `saved`, `applied`, `abandoned`, and `needsReapply`;
+an applied result separately says whether execution accepted or rejected it.
+
+Other selected profiles declare their own supported views and completion states.
+Durable event consumers save their processed cursor atomically with their own
+state. Events expose authenticated `origin` independently of their payload. See
+[application backends](APPLICATION_BACKENDS.md).
 
 ## Conversation and durable outcomes
 
@@ -288,7 +308,7 @@ not cover newer shared state. `scopes.list()` describes known scopes. These
 concurrency checks do not grant permissions or enforce ownership against other
 authorized writers who omit them.
 
-`request(path,{method?,body?})` accesses a documented page-side `_tendril/` route
+`host.request(path,{method?,body?})` accesses a documented page-side `_tendril/` route
 with current device credentials. Use a relative path without traversal or query
 syntax. It is not a generic agent-token or private-transport escape hatch. The
 service applies authorization to each request; errors expose `code` and `status`.
@@ -445,7 +465,7 @@ observer receives its own detached copy, as does each waiting caller.
 `upload(blob,{name?,keep?,scope?,expected_generations?})` durably queues a standalone
 immutable upload and returns its verified blob metadata after completion. Optional
 pinning preserves its own original command ID and guards across retries.
-`blobUrl(id)` resolves the immutable byte URL; `setBlobRetention(id,{keep,...context})`
+`host.blobUrl(id)` resolves the immutable byte URL; `setBlobRetention(id,{keep,...context})`
 performs an explicit guarded pin change. See [Captures](CAPTURES.md). Private cached records still require the current
 application's authorization policy before display.
 
@@ -492,7 +512,7 @@ work too. One-shot and aborted motion listeners stop counting as active. Observa
 remains best-effort browser instrumentation, not a security boundary; browser
 permission controls and service authorization remain authoritative.
 
-`notifications.status()` distinguishes browser permission, local subscription, and
+On a Cloudflare runtime, `notifications.status()` distinguishes browser permission, local subscription, and
 server registration. `subscribe()` must be called from a user gesture;
 `unsubscribe()` and `test()` affect this device. Availability and failure reasons
 are public, and no settings panel is required. See [Notifications](PUSH_NOTIFICATIONS.md).
@@ -509,9 +529,12 @@ base, pinned URL, and update reload target. Offline root navigation uses the
 canonical publication entry, including after a nested document announces itself.
 
 `identity` is readonly: `{page,version,publication,base,managementUrl}`.
-`device` is a readonly current snapshot; reread it after `role` or `device_config`
-events. `connected`, `presence`, `service`, `version`, and `pendingWork()` expose
-separate transport, agent, capability, publication, and local-work states.
+`device` is a readonly current snapshot. A peer runtime exposes only its local
+`id` and `name`; these labels confer no application permissions. A Cloudflare
+runtime also exposes authenticated device role/pending state and emits `role`
+and `device_config` changes. Its `connected`, `presence`, `service`, and
+`pendingWork()` describe hosted transport, agent, capability and queued work.
+The shared `version` identifies the publication, independently of session state.
 
 `assetUrl(path)` resolves a deliberately selected runtime dependency against this
 publication's exact runtime. It accepts an ordinary unencoded relative path;

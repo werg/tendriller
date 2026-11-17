@@ -106,19 +106,19 @@ function environment({ defaultEntry = false } = {}) {
 
 test('a peer runtime operates with no host connection, host outbox, background fetch or diagnostics', async () => {
   const env = environment();
-  assert.deepEqual(plain(env.api.peers.initialBootstrap), { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] });
-  assert.throws(() => { env.api.peers.initialBootstrap.endpoints[0].url = 'https://elsewhere.example/'; }, TypeError);
-  assert.equal(env.api.connected, false);
+  assert.deepEqual(plain(env.api.host.peers.initialBootstrap), { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] });
+  assert.throws(() => { env.api.host.peers.initialBootstrap.endpoints[0].url = 'https://elsewhere.example/'; }, TypeError);
+  assert.equal(env.api.kind, 'peer');
   const installed = backend(); env.api.application.install(installed);
   assert.equal(await env.api.application.ready(), installed); await flush();
-  assert.equal(env.api.connected, false, 'a peer runtime has no hosted application connection');
+  assert.equal('connected' in env.api, false, 'connection state belongs to the selected session');
   assert.equal(env.api.application.available, true, 'installation availability does not claim synchronized state');
   const first = await installed.submit({ value: 'original' }, { operationId: 'edit' });
   assert.equal(await installed.submit({ value: 'original' }, { operationId: 'edit' }), first);
   await installed.events.publish('messages', 'offline-host', { operationId: 'message' });
   assert.deepEqual(installed.readView().query(), ['edit', 'message']);
   assert.equal(installed.operations.get('edit').status, 'final');
-  env.api.ready(); env.api.ready.manual();
+  env.api.ready();
   env.context.console.error('application-local diagnostic');
   for (const type of ['load', 'online', 'offline', 'pagehide']) env.window.dispatchEvent(new Event(type));
   env.window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
@@ -126,8 +126,8 @@ test('a peer runtime operates with no host connection, host outbox, background f
   env.window.addEventListener('devicemotion', () => {});
   for (let i = 0; i < 3; i++) await env.advance();
   assert.deepEqual(plain(env.api.sensors.status().active), ['motion']);
-  assert.deepEqual(plain(env.api.pendingWork()), { events: 0, state: 0, captures: 0, timers: 0 });
-  assert.equal(env.api.notifications.available, false);
+  assert.equal('pendingWork' in env.api, false);
+  assert.equal('notifications' in env.api, false);
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
 });
 
@@ -140,14 +140,14 @@ test('signals work before any durable backend is installed and never open a host
   env.api.signals.install({ async send(topic, payload, options) { sent.push({ topic, payload, options }); return signal; },
     async *subscribe() { yield signal; } });
   assert.equal(env.api.signals.available, true);
-  assert.equal(env.api.connected, false, 'live messaging does not install a durable application backend');
+  assert.equal(env.api.application.available, false, 'live messaging does not install a durable application backend');
   assert.throws(() => env.api.application.backend, { code: 'backend_unavailable' });
   assert.equal(await env.api.signals.send('typing', signal.payload, { ttlMs: 1000 }), signal);
   assert.equal((await env.api.signals.subscribe({ mode: 'latest' })[Symbol.asyncIterator]().next()).value, signal);
   assert.equal(sent.length, 1);
   for (let i = 0; i < 3; i++) await env.advance();
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
-  assert.deepEqual(plain(env.api.pendingWork()), { events: 0, state: 0, captures: 0, timers: 0 });
+  assert.equal('pendingWork' in env.api, false);
 });
 
 test('the served bootstrap mounts working management and sensor controls without touching hosted application services', async () => {
@@ -187,7 +187,7 @@ test('the served bootstrap mounts working management and sensor controls without
 
 test('peer host operations remain explicit and publication saving registers offline support on demand', async () => {
   const env = environment(); await flush();
-  assert.deepEqual(plain(await env.api.request('members')), { explicit: true });
+  assert.deepEqual(plain(await env.api.host.request('members')), { explicit: true });
   assert.equal(env.calls.fetch.length, 1);
   assert.equal(env.calls.fetch[0].url, '/page/_tendril/members');
   assert.equal(env.calls.fetch[0].options.credentials, 'same-origin');
@@ -198,13 +198,15 @@ test('peer host operations remain explicit and publication saving registers offl
   assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);
 });
 
-test('peer pages reject hosted application and upload work instead of creating another queue', async () => {
+test('peer runtime exposes only supported services and leaves authority to the application session', async () => {
   const env = environment();
-  for (const method of [() => env.api.send({ value: 1 }), () => env.api.upload(new Blob(['local'])),
-    () => env.api.uploadEvent(new Blob(['local']), {}), () => env.api.setBlobRetention('b_' + 'a'.repeat(20), { keep: true })])
-    await assert.rejects(method, { code: 'application_backend' });
-  for (const method of [() => env.api.state.apply([]), () => env.api.streams.read('events'),
-    () => env.api.records.head(), () => env.api.scopes.list(), () => env.api.timers.list()])
-    assert.throws(method, { code: 'application_backend' });
+  for (const name of ['send', 'state', 'scopes', 'conversation', 'timers', 'streams', 'records', 'upload', 'uploadEvent',
+    'setBlobRetention', 'retryCapture', 'discardCapture', 'captures', 'pendingWork', 'connected', 'presence', 'service', 'notifications',
+    'peers', 'members', 'request', 'blobUrl', 'deviceHeaders']) assert.equal(name in env.api, false, name);
+  assert.deepEqual(Object.keys(env.api.device).sort(), ['id', 'name']);
+  assert.equal('manual' in env.api.ready, false);
+  for (const name of ['peers', 'members', 'request', 'blobUrl', 'deviceHeaders']) assert.ok(env.api.host[name], name);
+  assert.equal(Object.isFrozen(env.api), true); assert.equal(Object.isFrozen(env.api.host), true);
+  await env.advance();
   assert.equal(env.calls.fetch.length, 0); assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);
 });
