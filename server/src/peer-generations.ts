@@ -177,8 +177,20 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         const configured = t.db.get<Configuration | null>(CONFIG, null);
         if (!configured) throw new HttpError(409, 'peer_application_unconfigured');
         if (!configured.definition || configured.schema === undefined) throw new HttpError(503, 'peer_publication_state_missing');
+        let published;
+        try {
+          // Public immutable metadata remains verifiable without the private signer.
+          // The retained signed genesis control authenticates its original descriptor.
+          await verifyAuthorityBundle({ descriptor: configured.descriptor, controls: [configured.control], generations: [] });
+          published = await publication({ ...configured.descriptor.payload, definition: configured.definition, schema: configured.schema });
+          if (published.digest !== configured.descriptor.payload.definitionDigest || published.schemaDigest !== configured.descriptor.payload.schemaDigest)
+            throw new Error('Retained metadata commitments differ from the signed descriptor');
+          if (published.schema !== null) await verifyApplicationSchema(published.schema, configured.descriptor.payload);
+        } catch {
+          throw new HttpError(503, 'peer_definition_state_mismatch', 'Retained peer metadata does not match its signed authority');
+        }
         await freshAccess(t, principal);
-        return json({ descriptor: configured.descriptor, definition: configured.definition, schema: configured.schema });
+        return json({ descriptor: configured.descriptor, definition: published.definition, schema: published.schema });
       }
       if (path === 'peers/application' && req.method === 'PUT') {
         const owner = identity(t, principal, true);

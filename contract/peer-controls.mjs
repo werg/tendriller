@@ -11,15 +11,19 @@ export function createPeerControlsClient(request) {
       throw Object.assign(new Error('Invalid generation selection response'), { code: 'invalid_response' });
     return value;
   };
+  const definition = value => {
+    if (!value || typeof value !== 'object' || value.descriptor?.payload?.profile !== 'peer-generation-v1' ||
+        typeof value.descriptor?.signature !== 'string' || typeof value.descriptor.payload.definitionDigest !== 'string' ||
+        !value.definition || typeof value.definition.id !== 'string' || typeof value.definition.version !== 'string' ||
+        !(value.definition.schema === null || typeof value.definition.schema === 'string') ||
+        !Array.isArray(value.definition.commands) || !Array.isArray(value.definition.queries) ||
+        !Object.hasOwn(value, 'schema') || value.schema !== null && (!value.schema || typeof value.schema !== 'object' || Array.isArray(value.schema)))
+      throw Object.assign(new Error('Invalid peer definition response'), { code: 'invalid_response' });
+    return value;
+  };
   return Object.freeze({
     async application() { return authority(await request('peers/application')); },
-    async definition() {
-      const value = await request('peers/definition');
-      if (value?.descriptor?.payload?.profile !== 'peer-generation-v1' || !value.definition || typeof value.definition !== 'object' || Array.isArray(value.definition) ||
-          !Object.hasOwn(value, 'schema') || value.schema !== null && (typeof value.schema !== 'object' || Array.isArray(value.schema)))
-        throw Object.assign(new Error('Invalid peer definition response'), { code: 'invalid_response' });
-      return value;
-    },
+    async definition() { return definition(await request('peers/definition')); },
     async configureApplication(configuration) { return authority(await request('peers/application', { method: 'PUT', body: configuration })); },
     async selectGeneration(signedRequest, options = {}) {
       return generation(await request('peers/generations', { method: 'POST', body: { request: signedRequest,

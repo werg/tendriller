@@ -1,5 +1,5 @@
 import type { ApplicationOperation, AppliedApplicationReadView, PeerGenerationApplicationBackend } from '../application.mjs';
-import type { PeerApplicationMember, PeerControlsClient, PeerApplicationConfiguration } from '../peer-controls.mjs';
+import type { ApplicationDescription, PeerApplicationMember, PeerControlsClient, PeerApplicationConfiguration } from '../peer-controls.mjs';
 const applied: ApplicationOperation = { status: 'applied', operationId: 'edit', attemptId: 'signed-attempt', author: 'device',
   generation: 'generation', sequence: 1, outcome: 'accepted', rejectionCode: null };
 const abandoned: ApplicationOperation = { status: 'abandoned', operationId: 'edit', attemptId: 'signed-attempt',
@@ -37,3 +37,13 @@ const definitionId: string = configuration.definition.id;
 // @ts-expect-error The host derives the descriptor commitment from the published definition.
 const digest: string = configuration.definitionDigest;
 void [definitionId, digest];
+
+void controls.definition().then(result => {
+  const metadata: ApplicationDescription = result.definition;
+  const digest: string = result.descriptor.payload.definitionDigest;
+  void [metadata, digest];
+});
+// @ts-expect-error Configuration requires the canonical public definition.
+const missingDefinition: PeerApplicationConfiguration = { historyId: 'history', executionManifestDigest: 'execution',
+  schemaAdministrator: 'administrator', epoch: 0, keyDigest: 'key', members: [member] };
+void missingDefinition;

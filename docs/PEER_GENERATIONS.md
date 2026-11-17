@@ -62,7 +62,12 @@ administrator rights. A null role grants no data-collective membership; retain
 that distinction when revoking participants or configuring a control-only device.
 
 The host creates a separate control signing identity and atomically retains it
-with the signed descriptor, initial control and registry. Repeating the exact
+with the signed descriptor, canonical public definition, initial control and registry.
+Chronolog's portable verifier checks the bounded description and computes its
+digest before any durable control or lifetime write. Unknown metadata, unsupported
+schemas and mismatched signed schema bindings are rejected. The description contains public command
+and query schemas, never executable command handlers or application history.
+Repeating the exact
 configuration returns the same identity and current authority. A different
 configuration is rejected. A missing retained identity or registry is an explicit
 unavailable condition; the host never silently rekeys or creates empty history.
@@ -103,6 +108,17 @@ old-profile membership configuration cannot be installed on the same history.
 controls and selected generations. A session pins the descriptor and verifies
 these records before using them. The transport client does not treat a received
 signature or route as verified authority.
+
+`peers.definition()` reads `{ descriptor, definition, schema }` from the authenticated
+immutable `GET peers/definition` route. The host verifies the signed descriptor,
+retained description digest and any genesis envelope, then rechecks account/page
+access before responding.
+Clients verify the descriptor against their pinned trust root and call Chronolog's
+`applicationDescriptionDigest(definition)` before using its public schemas. This
+transport call does not itself authenticate signatures or create a session. Missing
+or corrupted retained metadata is an explicit failure; it is never replaced on read.
+The MCP `peer_definition` tool exposes the same bounded metadata for local tools.
+These reads share the control request admission limit and install no polling.
 
 `peers.selectGeneration(request, { control? })` submits an exact signed
 `SignedTransitionRequest` prepared by Chronolog. It names the expected current

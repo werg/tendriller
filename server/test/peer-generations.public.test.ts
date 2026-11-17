@@ -1,8 +1,7 @@
-import { expect, it } from 'vitest';
+import { beforeAll, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, generationStartRoot,
-  participantGrant, controlParticipantGrant,
-  applicationDescriptionDigest, signApplicationSchema, verifyApplicationSchema, peerDigest,
+  participantGrant, controlParticipantGrant, applicationDescriptionDigest, signApplicationSchema, verifyApplicationSchema, peerDigest,
   type ApplicationDescription, type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
 import type { PeerApplicationConfiguration } from '../../contract/peer-controls.mjs';
 import { api, apiJson, create, inDO, req, type Handle } from './helpers';
@@ -12,8 +11,12 @@ import { handlePeerGenerations } from '../src/peer-generations';
 import type { Tendril } from '../src/tendril';
 
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ ...participantGrant(peer.publicKey, { administrator: true }), ...extra });
-const definition: ApplicationDescription = { id: 'peer-test', version: '1', schema: null, commands: [{ name: 'edit', description: 'Publish an edit',
-  input: { type: 'object', properties: { progress: { type: 'number', minimum: 0.5 } }, additionalProperties: false } }], queries: [] };
+const definition = { id: 'peer-control-test', version: '1', schema: null,
+  commands: [{ name: 'append', description: 'Append an entry', input: { type: 'object', properties: { text: { type: 'string', maxLength: 128 }, progress: { type: 'number', minimum: 0.5 } }, required: ['text'], additionalProperties: false } }],
+  queries: [{ name: 'entries', description: 'Read entries', input: { type: 'object', properties: {}, additionalProperties: false } }],
+} as const satisfies ApplicationDescription;
+let definitionDigest: string;
+beforeAll(async () => { definitionDigest = await applicationDescriptionDigest(definition); });
 const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', executionManifestDigest: '12'.repeat(32),
   definition, schemaAdministrator: peers[0].publicKey, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) } satisfies PeerApplicationConfiguration);
@@ -82,6 +85,87 @@ it('publishes durable governance without a native resident, preserves root on re
   const changedDefinition = { ...definition, version: '2' };
   expect((await page.api('PUT', 'peers/application', { ...config, definition: changedDefinition })).status).toBe(409);
   expect(await (await page.api('GET', 'peers/definition')).json()).toEqual({ descriptor: initial.descriptor, definition, schema: null });
+});
+
+it('returns the immutable canonical definition with its signed binding to admitted accounts after restart', async () => {
+  const a = await createPeerIdentity();
+  const page = await createTestPage({ application: { kind: 'peer', id: applicationId() } });
+  const configured = await page.ownerApi('PUT', 'peers/application', configuration([a]));
+  expect(configured.status).toBe(200);
+  const authority = await configured.json() as AuthorityBundle;
+  await verifyAuthorityBundle(authority);
+  const expected = { descriptor: authority.descriptor, definition, schema: null };
+  const participant = await page.participant();
+  const first = await participant.api('GET', 'peers/definition');
+  expect(first.status).toBe(200); expect(await first.json()).toEqual(expected);
+  expect(await applicationDescriptionDigest(definition)).toBe(authority.descriptor.payload.definitionDigest);
+  await page.restart();
+  expect(await (await page.ownerApi('GET', 'peers/definition')).json()).toEqual(expected);
+  const deniedWrite = await page.ownerApi('PUT', 'peers/definition', definition);
+  expect(deniedWrite.status).toBe(405);
+  await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), participant.account).run();
+  // Page GET authentication redirects to sign-in; the public fixture follows it.
+  const denied = await participant.api('GET', 'peers/definition');
+  expect(denied.redirected).toBe(true);
+  expect(denied.headers.get('Content-Type')).toContain('text/html');
+  const signIn = await denied.text();
+  expect(signIn).toContain('Sign in to open it');
+  expect(signIn).not.toContain(definitionDigest);
+});
+
+it('rejects missing, unknown, malformed and mismatched definition metadata before control or lifetime writes', async () => {
+  const a = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+  const valid = configuration([a]);
+  const { definition: omitted, ...missing } = valid;
+  const variants = [missing, { ...valid, definition: { ...definition, unrecognized: true } },
+    { ...valid, definition: { ...definition, commands: [{ ...definition.commands[0], input: { type: 'object', properties: {}, additionalProperties: true } }] } },
+    { ...valid, definitionDigest: '78'.repeat(32) }, { ...valid, unknownMetadata: true }];
+  const before = await inDO(h.id, t => t.db.get('lifetime', 'ad_hoc'));
+  for (const input of variants) {
+    expect((await api(h, 'PUT', 'peers/application', input)).status).toBe(400);
+    expect(await inDO(h.id, t => ({ configuration: t.db.get('peer_generation_configuration', null),
+      accounts: t.db.get('peer_generation_accounts', null), retained: t.db.all("SELECT key FROM membership_records WHERE key LIKE 'peer-generation/%'"),
+      lifetime: t.db.get('lifetime', 'ad_hoc') }))).toEqual({ configuration: null, accounts: null, retained: [], lifetime: before });
+  }
+  expect((await api(h, 'PUT', 'peers/application', valid)).status).toBe(200);
+  expect((await req(`${h.api}/peers/definition`, { anonymous: true })).status).toBe(401);
+});
+
+it('refuses a retained definition whose contents no longer match the signed descriptor', async () => {
+  const a = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+  await apiJson(h, 'PUT', 'peers/application', configuration([a]));
+  await inDO(h.id, t => {
+    const current = t.db.get<any>('peer_generation_configuration', null);
+    t.db.set('peer_generation_configuration', { ...current, definition: { ...current.definition, version: 'tampered' } });
+  });
+  const response = await api(h, 'GET', 'peers/definition');
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ error: { code: 'peer_definition_state_mismatch' } });
+});
+
+it('rechecks local access after asynchronous definition verification before disclosing its schemas', async () => {
+  const a = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+  await apiJson(h, 'PUT', 'peers/application', configuration([a]));
+  await inDO(h.id, async t => {
+    const principal = await authenticateAgentToken(t, h.token), original = t.env.ACCOUNTS;
+    let checked = false;
+    t.env.ACCOUNTS = { prepare(sql: string) {
+      const statement = original.prepare(sql);
+      if (!sql.includes('FROM accounts WHERE id')) return statement;
+      return { bind(...args: unknown[]) {
+        const bound = statement.bind(...args);
+        return { async first() { const result = await bound.first(); checked = true; t.db.run('DELETE FROM tokens'); return result; } };
+      } };
+    } } as D1Database;
+    try {
+      await expect(handlePeerGenerations(t, new Request(`${h.api}/peers/definition`), 'peers/definition', principal))
+        .rejects.toMatchObject({ status: 403 });
+      expect(checked).toBe(true);
+    } finally { t.env.ACCOUNTS = original; }
+  });
 });
 
 it('selects one racing successor using the shared verifier and stores no application bodies', async () => {
@@ -215,6 +299,8 @@ it('bounds admitted control bodies before reading and releases slots after body 
         excessReads++; controller.enqueue(new TextEncoder().encode('{}')); controller.close();
       } }, { highWaterMark: 0 }) });
       await expect(handlePeerGenerations(t, extra, 'peers/administration', principal))
+        .rejects.toMatchObject({ status: 429, code: 'peer_control_busy' });
+      await expect(handlePeerGenerations(t, new Request(url), 'peers/definition', principal))
         .rejects.toMatchObject({ status: 429, code: 'peer_control_busy' });
       expect(excessReads).toBe(0);
     } finally {
@@ -425,4 +511,11 @@ it('retains a verified signed genesis schema as metadata without executing SQL o
   await inDO(h.id, t => t.db.run('DELETE FROM membership_records WHERE key=?', 'peer-generation/identity'));
   expect((await api(h, 'GET', 'peers/application')).status).toBe(503);
   expect(await apiJson(h, 'GET', 'peers/definition')).toEqual(publication);
+  await inDO(h.id, t => {
+    const stored = t.db.get<any>('peer_generation_configuration', null);
+    t.db.set('peer_generation_configuration', { ...stored, schema: { ...stored.schema, signature: '00'.repeat(64) } });
+  });
+  const corrupted = await api(h, 'GET', 'peers/definition');
+  expect(corrupted.status).toBe(503);
+  expect(await corrupted.json()).toMatchObject({ error: { code: 'peer_definition_state_mismatch' } });
 });

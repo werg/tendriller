@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createPeersClient } from '../peers.mjs';
 
 test('peer control transport is explicit, carries exact transition bytes, and never submits a command', async () => {
-  const calls = [], bundle = { descriptor: { payload: { profile: 'peer-generation-v1' } }, controls: [], generations: [] };
+  const calls = [], bundle = { descriptor: { payload: { profile: 'peer-generation-v1', definitionDigest: 'digest' }, signature: 'signed' }, controls: [], generations: [] };
   const publication = { descriptor: bundle.descriptor, definition: { id: 'test', version: '1', schema: null, commands: [], queries: [] }, schema: null };
   const generation = { id: 'generation', payload: { profile: 'peer-generation-v1' }, signature: 'signed' };
   const client = createPeersClient({ base: 'https://host.test', request: async (path, options) => {
@@ -30,7 +30,25 @@ test('peer control transport is explicit, carries exact transition bytes, and ne
 test('peer control transport refuses malformed or foreign-profile authority responses', async () => {
   const client = createPeersClient({ base: 'https://host.test', request: async () => ({ descriptor: { payload: { profile: 'unknown' } }, controls: [], generations: [] }) });
   await assert.rejects(client.application(), { code: 'invalid_response' });
+  await assert.rejects(client.definition(), { code: 'invalid_response' });
   await assert.rejects(client.selectGeneration({}), { code: 'invalid_response' });
   await assert.rejects(client.administerGeneration({}), { code: 'invalid_response' });
-  await assert.rejects(client.definition(), { code: 'invalid_response' });
+});
+
+test('peer definitions are an explicit immutable metadata read with signed binding and no background requests', async () => {
+  const definition = { id: 'conversation', version: '1', schema: null, commands: [], queries: [] };
+  const result = { descriptor: { payload: { profile: 'peer-generation-v1', definitionDigest: 'digest' }, signature: 'signed' }, definition, schema: null };
+  const calls = [];
+  let response = result;
+  const client = createPeersClient({ base: 'https://host.test', request: async (path, options) => {
+    calls.push({ path, options }); return response;
+  } });
+  assert.deepEqual(calls, []);
+  assert.equal(await client.definition(), result);
+  assert.deepEqual(calls, [{ path: 'peers/definition', options: undefined }]);
+  for (const invalid of [null, { ...result, definition: null }, { ...result, definition: { ...definition, queries: null } },
+    { ...result, descriptor: { ...result.descriptor, signature: undefined } }, { ...result, schema: undefined }, { ...result, schema: [] }]) {
+    response = invalid;
+    await assert.rejects(client.definition(), { code: 'invalid_response' });
+  }
 });

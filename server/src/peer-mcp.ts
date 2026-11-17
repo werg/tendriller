@@ -5,7 +5,7 @@ export const PEER_CONTROL_TOOLS: Tool[] = [
   { name: 'peer_application', description: 'Read the signed peer-generation application descriptor and selected control history. The local Chronolog session must verify this evidence against its pinned descriptor.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     call: () => ({ method: 'GET', rest: 'peers/application' }) },
-  { name: 'peer_definition', description: 'Read immutable public command/query schemas and the signed initial schema envelope. Verify the definition digest and schema signature through Chronolog before opening the application session; this metadata grants no command execution authority.',
+  { name: 'peer_definition', description: 'Read immutable public command/query schemas, their signed descriptor and the signed initial schema envelope. Verify the descriptor, definition digest and schema signature through Chronolog before opening a session or constructing local tools; this metadata grants no command execution authority.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     call: () => ({ method: 'GET', rest: 'peers/definition' }) },
   { name: 'discover_peers', description: 'Look up bounded unexpired peer routing hints on join or reconnect. Hints confer no permissions and do not prove data retention. Healthy sessions do not poll this tool.',
