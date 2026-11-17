@@ -49,8 +49,11 @@ function closeSession(t: Tendril, session: string, code: number, reason: string)
   for (const ws of members(t, session)) ws.close(code, reason);
   t.scheduleAlarm();
 }
+// Refresh ahead of the hard admission expiry so a normal packet cannot race
+// the same timestamp as the alarm. A stalled refresh still fails closed.
+const refreshAt = (value: Attachment): number => value.authorizedUntil - Math.floor(LIMITS.authorizationMs / 3);
 function deadline(value: Attachment): number {
-  return Math.min(value.expiresAt, value.authorizedUntil,
+  return Math.min(value.expiresAt, refreshAt(value),
     value.pending.length ? value.progressAt + LIMITS.progressMs : Infinity);
 }
 function active(t: Tendril): WebSocket[] {
@@ -77,7 +80,7 @@ export async function expireRelays(t: Tendril): Promise<void> {
   const sessions = new Set(active(t).map(ws => attachment(ws)!.session));
   for (const session of sessions) {
     const selected = members(t, session);
-    if (!selected.some(ws => attachment(ws)!.authorizedUntil <= t.now())) continue;
+    if (!selected.some(ws => refreshAt(attachment(ws)!) <= t.now())) continue;
     try {
       const principals = new Map(selected.map(ws => { const value = attachment(ws)!; return [value.owner, value.principal] as const; }));
       await Promise.all([...principals.values()].map(principal => authorize(t, principal)));

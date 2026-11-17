@@ -144,7 +144,13 @@ it('fences local revocation on every packet and rechecks account policy in the a
 it('refreshes admitted idle connections and enforces the absolute relay lifetime', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'lifetime');
   try {
-    await advance(h.id, LIMITS.authorizationMs + 1); await runAlarm(h.id);
+    const refresh = LIMITS.authorizationMs - Math.floor(LIMITS.authorizationMs / 3);
+    const due = await inDO(h.id, async t => (await t.ctx.storage.getAlarm())! - (t.now() - t.skew));
+    expect(due).toBeLessThanOrEqual(refresh);
+    expect(due).toBeGreaterThan(refresh - 2000);
+    await advance(h.id, refresh + 1); await runAlarm(h.id);
+    // The first authorization would expire here. The earlier alarm renewed it.
+    await advance(h.id, LIMITS.authorizationMs - refresh);
     p.a.reliable.socket.send(packet(1)); await expect.poll(() => p.b.reliable.messages.length).toBe(2);
     await advance(h.id, LIMITS.lifetimeMs); await runAlarm(h.id);
     expect(await p.a.reliable.closed).toBe(1008); expect(await p.b.live.closed).toBe(1008);
