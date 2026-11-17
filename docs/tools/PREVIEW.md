@@ -51,7 +51,11 @@ export async function openPreview() {
 ```
 
 The worker module opens the actual application and calls the public
-`serveApplicationWorker`. Its enrollment and connection configuration are part
+`serveApplicationWorker` from `@chronolog/peer-session/worker`. Opening the session
+starts its lightweight protocol participant. Database code and OPFS stay deferred
+until the authored page actually uses durable data; signaling and control do not
+wait for a database. Keep SQL/WASM imports inside the materializer factory. Its
+enrollment and connection configuration are part
 of the complete deployment, not hidden preview fixtures. Production and preview
 use the same commands, queries, journal and recovery behavior. Missing setup is
 an explicit error; the preview does not substitute an in-memory data model.

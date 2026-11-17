@@ -13,6 +13,33 @@ const installed = await tendril.application.ready();
 
 The ID must equal the session's pinned application ID. Installation is single-assignment. `available` and `ready()` describe whether the adapter is installed, not whether peers are reachable or history is synchronized. `session.deviceId` owns the signing identity.
 
+## Protocol first, durable data on demand
+
+Install the normal Chronolog session when the page starts. Its authenticated peer
+connections, live signals, membership/control updates and signed code publications
+work while `status.database` is `idle`. Reading status or capabilities, installing
+the backend, and awaiting `application.ready()` do not open an application database.
+
+Chronolog initializes its one durable data component on the first command, query,
+history read, durable content operation or other explicit data use. Concurrent
+first operations share that initialization. Browser OPFS acquisition, the exclusive
+application-storage lock, replica, journal and materializer belong to that component.
+SQL/WASM loading belongs in the lazy materializer factory. The existing participant,
+signing identity and peer connections continue through activation.
+
+`status.database` reports `idle`, `opening`, `ready`, `failed` or `closed`; it is
+separate from protocol connectivity. A first-use storage failure leaves the protocol
+participant available and remains visible instead of silently retrying setup.
+Connecting to a peer, receiving live signals or observing a database update hint
+does not activate a cold follower. An authorized data request may activate the
+selected coordinator that must serve it.
+
+The browser stores only the device identity and verified control/publication
+metadata in a small IndexedDB store before durable data is used. It does not acquire
+OPFS or a database ownership lock for those protocol responsibilities. This metadata
+is necessary for stable identity and monotonic signed control; it is not a second
+application database or a temporary journal to migrate later.
+
 Native agents use the session directly. Browser code owns its session in a Worker and uses the public Worker facade. Both expose the same operations and recovery model. The Tendriller adapter changes API composition, not application semantics.
 
 ## Mandatory behavior

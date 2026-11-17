@@ -15,6 +15,13 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 
 Chronolog owns application execution, signing identity, local bytes, command attempts and replication. The Worker embeds only portable participant/control verification. It has no application extension registry, SQL executor or second data model. Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
 
+The browser Chronolog participant is independent of database activation. Its protocol
+identity and verified control metadata use small browser-native storage; OPFS, database
+ownership, history and materialization load on first durable use inside that same
+participant. The public `/browser` import contains the page facade; `/worker` contains
+the protocol owner and reaches durable code through a dynamic import. Keep optional
+SQL engine imports inside `createMaterializer`, never in a page's eager import graph.
+
 `@tendriller/core` publishes host/participant and browser contracts. The runtime archive contains exact code/assets plus kernel and voice declarations. The engine exports the generic Worker, `Tendril`, `Admission`, account schema and public test fixture. Tools are a separate self-contained Node archive with `tendril` and `tendril-preview` executables and preview/pack/session exports.
 
 Run `contract:generate` after executable metadata-schema edits. `contract:check` rejects stale generated files. `check:boundaries` examines source imports and built dependency graphs. `test:consumer` installs only public archives in an independent directory and checks runtime imports and strict declarations.

@@ -33,7 +33,7 @@ test('application installation binds one identity without starting host transpor
   const fixture = mock.create(); await open(page, fixture);
   const result = await page.evaluate(async () => {
     const application = { id: window.__TENDRIL__.application.id, capabilities: ['events'],
-      status: { phase: 'ready', role: 'coordinator', generation: 'g', coordinator: 'device', connectedPeers: 0 },
+      status: { phase: 'ready', database: 'ready', role: 'coordinator', generation: 'g', coordinator: 'device', connectedPeers: 0 },
       onStatus() { return () => {}; }, onRecovery() { return () => {}; }, async inspectRecovery() { return []; },
       async submit() {}, readView() {}, async *changes() {},
       events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };

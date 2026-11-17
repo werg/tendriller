@@ -17,6 +17,14 @@ const runtime = startRuntime(configuration, {
 
 The application and signal ports may instead be installed once after startup. Their readiness indicates installation only. The owned session supplies status, recovery and its signing `deviceId`.
 
+Chronolog's protocol participant can be installed immediately without activating
+durable application data. Signals, peer authentication, membership and code updates
+remain available while `application.backend.status.database` is `idle`. The first
+actual data operation loads the database component and acquires OPFS inside the same
+owning Worker. The page-side `@chronolog/peer-session/browser` entry is only the
+Worker facade; the Worker imports its owner from `@chronolog/peer-session/worker`.
+See [the data lifecycle](APPLICATION_BACKENDS.md#protocol-first-durable-data-on-demand).
+
 ## Public services
 
 | Service | Purpose |

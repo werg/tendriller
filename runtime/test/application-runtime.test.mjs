@@ -24,7 +24,7 @@ function backend() {
     return operations.get(operationId);
   };
   return { id: '12'.repeat(32), capabilities: ['events'], submit,
-    status: { phase: 'ready', role: 'coordinator', generation: 'g', coordinator: 'a', connectedPeers: 0 },
+    status: { phase: 'ready', database: 'ready', role: 'coordinator', generation: 'g', coordinator: 'a', connectedPeers: 0 },
     onStatus() { return () => {}; }, onRecovery() { return () => {}; }, async inspectRecovery() { return []; },
     async *changes() { yield { view: 'applied', revision: 'one', generation: 'g' }; },
     readView: () => ({ view: 'applied', revision: 'one', generation: 'g', query: () => [...operations.keys()], readEvents: async () => ({}), release() {} }),

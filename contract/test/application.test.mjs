@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applicationSelection, createApplicationBinding, applicationFilter, publishConversation } from '../application.mjs';
 const id = '12'.repeat(32);
 function application() {
-  return { id, capabilities: ['events'], status: { phase: 'ready', role: 'coordinator', generation: 'g', coordinator: 'a', connectedPeers: 0 },
+  return { id, capabilities: ['events'], status: { phase: 'ready', database: 'ready', role: 'coordinator', generation: 'g', coordinator: 'a', connectedPeers: 0 },
     onStatus() { return () => {}; }, onRecovery() { return () => {}; }, async inspectRecovery() { return []; },
     async submit() {}, readView() {}, async *changes() {},
     events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };

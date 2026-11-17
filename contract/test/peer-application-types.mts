@@ -1,6 +1,7 @@
 import type { ApplicationBackend, ApplicationOperation, ApplicationReadView } from '../application.mjs';
 declare const application: ApplicationBackend;
 const status = application.status;
+const database: 'idle' | 'opening' | 'ready' | 'failed' | 'closed' = status.database;
 application.onRecovery(notice => { const loss: boolean = notice.unknownLoss; void loss; });
 application.onStatus(value => { const phase: string = value.phase; void phase; });
 void application.inspectRecovery();
@@ -16,4 +17,4 @@ async function inspect() {
   await application.readView({ view: 'final' });
   void label;
 }
-void status; void inspect;
+void status; void database; void inspect;

@@ -98,6 +98,8 @@ export interface ApplicationBackend<Program = unknown, Submission extends Applic
 }
 export interface ApplicationStatus {
   readonly phase: 'ready' | 'waiting' | 'recovering' | 'awaiting-keys' | 'closed';
+  /** Durable data lifecycle; protocol traffic and backend installation stay available while idle. */
+  readonly database: 'idle' | 'opening' | 'ready' | 'failed' | 'closed';
   readonly role: 'coordinator' | 'follower';
   readonly generation: string;
   readonly coordinator: string;
