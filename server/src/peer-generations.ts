@@ -199,8 +199,9 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         const deviceGrants: PeerGrant[] = [], rawBindings = [];
         for (const member of value.members) {
           const explicit = member && typeof member === 'object' && 'grant' in member;
-          const row = object(member, explicit ? ['grant', 'accountId'] : ['publicKey', 'administrator', 'dataRole', 'accountId']);
-          const grant = 'grant' in row ? row.grant : participantGrant(row.publicKey, { administrator: row.administrator, dataRole: row.dataRole });
+          const row = object(member, explicit ? ['grant', 'accountId'] : ['publicKey', 'administrator', 'publisher', 'dataRole', 'accountId']);
+          const grant = 'grant' in row ? row.grant : participantGrant(row.publicKey, { administrator: row.administrator,
+            publisher: row.publisher, dataRole: row.dataRole });
           deviceGrants.push(grant); rawBindings.push({ publicKey: grant?.publicKey, accountId: row.accountId ?? owner });
         }
         const bindings = accounts(rawBindings); await checkAccounts(t, bindings);
@@ -278,7 +279,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           if (!control.payload.grants.every(grant => bindings!.some(binding => binding.publicKey === grant.publicKey)))
             throw new HttpError(400, 'peer_account_binding_required', 'Every granted device needs its authenticated account binding');
           for (const grant of control.payload.grants) {
-            if (grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator || grant.dataRole !== null)
+            if (grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator || grant.publisher || grant.dataRole !== null)
               requiredAccounts.add(grant.publicKey);
           }
           // Historical bindings preserve enrollment identity and exact retries.

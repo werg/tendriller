@@ -35,9 +35,9 @@ Ordinary current-generation work requires no host request. Discovery advertiseme
 
 ## Signed code release
 
-The publication manifest binds application/history identity, fixed wire version, current control revision, administrator author, operation ID, monotonically increasing revision, previous release ID, definition/engine digests, HTML entry and sorted complete file graph. Assets are referenced by digest and size, with canonical media types.
+The publication manifest binds application/history identity, fixed wire version, current control revision, publisher author, operation ID, monotonically increasing revision, previous release ID, definition/engine digests, HTML entry and sorted complete file graph. Assets are referenced by digest and size, with canonical media types.
 
-The host verifies the signature and current administrator grant, checks predecessor CAS, bounds the manifest and release history, verifies all supplied bytes, and rechecks account access around storage effects. A single database transaction selects the immutable code version and signed publication head. A failure leaves the previous head selected.
+The host verifies the signature and current publisher grant, checks predecessor CAS, bounds the manifest and release history, verifies all supplied bytes, and rechecks account access around storage effects. Publication rights are independent of control administration and application data rights; the host's control-only identity receives no publisher grant. A single database transaction selects the immutable code version and signed publication head. A failure leaves the previous head selected.
 
 An exact retained operation retry returns its original `{publication,version}` receipt. Changed intent under the same operation ID fails. A missing byte or stale predecessor fails explicitly. `publication/read` with `{}` returns the head; `{id}` returns that exact retained release or null. The session verifies the chain and persists the selected head outside lossy application history.
 

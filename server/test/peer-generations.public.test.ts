@@ -429,6 +429,33 @@ it('lets the owner remove inactive accounts while retaining immutable enrollment
   expect(authority.grant(b.publicKey)).toBeNull();
 });
 
+it('requires explicit publisher enrollment and rechecks publication-only account rights during control changes', async () => {
+  const coordinator = await createPeerIdentity(), publisher = await createPeerIdentity();
+  const page = await createTestPage({ application: { id: applicationId() } });
+  const guest = await page.participant();
+  const publicationOnly = { ...participantGrant(publisher.publicKey, { publisher: true }),
+    reader: false, writer: false, coordinator: false, recovery: false, dataRole: null };
+  const configured = await page.ownerExchange('control/configure', { ...configuration([coordinator]),
+    members: [{ publicKey: coordinator.publicKey, publisher: true }, { grant: publicationOnly, accountId: guest.account }] });
+  expect(configured.status).toBe(200);
+  const initial = await configured.json() as AuthorityBundle;
+  expect((await verifyAuthorityBundle(initial)).grant(coordinator.publicKey)).toMatchObject({ publisher: true, administrator: false });
+  const first = await page.ownerExchange('control/administer', { transition: { transitionId: 'before-publisher-suspension',
+    expectedGeneration: null, coordinator: coordinator.publicKey, controlRevision: 0, reason: 'create', base: null } });
+  const generation = await first.json() as SignedGeneration;
+  await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), guest.account).run();
+  const transition = { transitionId: 'publisher-control-change', expectedGeneration: generation.id, coordinator: coordinator.publicKey,
+    controlRevision: 1, reason: 'control-change', base: { point: { generation: generation.id, sequence: 0,
+      root: await generationStartRoot(generation) }, receipt: null, bridge: [] } };
+  const control = { epoch: 0, keyDigest: '56'.repeat(32), recoveryFloor: null,
+    grants: [participantGrant(coordinator.publicKey), publicationOnly] };
+  expect((await page.ownerExchange('control/administer', { transition, control })).status).toBe(403);
+  const revoked = await page.ownerExchange('control/administer', { transition,
+    control: { ...control, grants: [control.grants[0], { ...publicationOnly, publisher: false }] } });
+  expect(revoked.status).toBe(200); await revoked.text();
+  expect((await verifyAuthorityBundle(await (await page.ownerExchange('control/read')).json() as AuthorityBundle)).grant(publisher.publicKey)?.publisher).toBe(false);
+});
+
 it('rechecks local token revocation after asynchronous authorization before committing a generation', async () => {
   const a = await createPeerIdentity();
   const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });

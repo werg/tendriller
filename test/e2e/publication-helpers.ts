@@ -15,7 +15,7 @@ async function publisher(peers: PeerControlsClient) {
         definition: { id: 'authored-page-check', version: '1', schema: null, commands: [], queries: [] },
         schemaAdministrator: author.publicKey, epoch: 0,
         keyDigest: await bytesDigest(crypto.getRandomValues(new Uint8Array(32))),
-        members: [{ grant: participantGrant(author.publicKey, { administrator: true }) }],
+        members: [{ grant: participantGrant(author.publicKey, { publisher: true }) }],
       });
       await verifyAuthorityBundle(authority);
       return { author, authority };

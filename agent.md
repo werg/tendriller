@@ -97,7 +97,7 @@ const signed = await control.preparePublication({
 const receipt = await control.publish(signed, assets);
 ```
 
-Each asset is `{hash, bytes}`, with canonical base64 bytes. The signed manifest binds application/history identity, current control revision, author, operation identity, previous release and immutable definition/engine commitments. Publishing requires a current device administrator and authorized host account. The host checks every supplied byte before storage effects and selects the release atomically. An exact retry returns its original receipt; a stale predecessor conflicts.
+Each asset is `{hash, bytes}`, with canonical base64 bytes. The signed manifest binds application/history identity, current control revision, author, operation identity, previous release and immutable definition/engine commitments. Publishing requires an explicit current `publisher: true` device grant and authorized host account. Control administration does not imply publication rights, and a publisher can be granted no application data access. The host checks every supplied byte before storage effects and selects the release atomically. An exact retry returns its original receipt; a stale predecessor conflicts.
 
 `control.publication()` verifies and remembers the selected release chain. Historical code remains available at its immutable publication URL. Restoring old code requires a new signed publication; diagnostics and the management page cannot silently switch the selected code. Application recovery and code publication have separate histories.
 

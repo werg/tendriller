@@ -59,6 +59,8 @@ export interface PeerGrant {
 	readonly coordinator: boolean;
 	readonly recovery: boolean;
 	readonly administrator: boolean;
+	/** May sign code/page releases; independent of controls, data access and sequencing. */
+	readonly publisher: boolean;
 	/** Membership of the durable application data collective, independent of coordination. */
 	readonly dataRole: "member" | "admin" | null;
 }
@@ -469,7 +471,7 @@ export interface SignedPublication extends Signed<PublicationManifest> {
 }
 export declare function validatePublicationManifest(input: unknown): PublicationManifest;
 export declare function signPublicationManifest(input: PublicationManifest, signer: PeerIdentity): Promise<SignedPublication>;
-/** Historical validity survives a later administrator change; acceptance uses authorizePublication. */
+/** Historical validity survives a later publisher revocation; acceptance uses authorizePublication. */
 export declare function verifyPublicationManifest(input: SignedPublication, authority: PeerAuthority): Promise<void>;
 /** Select a new release only under the current control and exact retained publication head. */
 export declare function authorizePublication(input: SignedPublication, authority: PeerAuthority, previous: SignedPublication | null): Promise<void>;
@@ -509,6 +511,7 @@ export declare function signApplicationDescriptor(payload: ApplicationDescriptor
 /** The supported shared-application policy; every granted power remains explicit on the wire. */
 export declare function participantGrant(publicKey: string, options?: {
 	readonly administrator?: boolean;
+	readonly publisher?: boolean;
 	readonly dataRole?: "member" | "admin" | null;
 }): PeerGrant;
 /** Explicit control-only host role, enabling account ownership recovery without a creator device. */

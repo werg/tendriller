@@ -1,11 +1,11 @@
 import { expect, it } from 'vitest';
 import {
-  createPeerIdentity, signPublicationManifest, bytesDigest, participantGrant, type AuthorityBundle,
-  type PeerIdentity, type SignedPublication,
+  createPeerIdentity, signPublicationManifest, bytesDigest, participantGrant, generationStartRoot, verifyAuthorityBundle,
+  type AuthorityBundle, type PeerIdentity, type SignedPublication, type SignedGeneration,
 } from '@chronolog/peer-generation/control';
 import { createTestPage } from './public-fixture';
-import { api, create, inDO } from './helpers';
-import { peerApi, peerApiJson, participantMessage } from './peer-exchange';
+import { create, inDO } from './helpers';
+import { peerApiJson, participantMessage } from './peer-exchange';
 import { authenticateAgentToken } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { servedVersion } from '../src/files';
@@ -15,7 +15,8 @@ const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
 function configuration(a: PeerIdentity, b: PeerIdentity) {
   return { historyId: 'code-history', executionManifestDigest: '12'.repeat(32), definition,
     schemaAdministrator: a.publicKey, epoch: 0, keyDigest: '34'.repeat(32),
-    members: [{ grant: participantGrant(a.publicKey, { administrator: true }) }, { grant: participantGrant(b.publicKey) }] };
+    members: [{ grant: { ...participantGrant(a.publicKey, { publisher: true }), reader: false, writer: false,
+      coordinator: false, recovery: false, dataRole: null } }, { grant: participantGrant(b.publicKey, { administrator: true }) }] };
 }
 async function release(authority: AuthorityBundle, author: PeerIdentity, operationId: string, previous: SignedPublication | null = null, text = 'version one') {
   const assets = [], files = [];
@@ -38,6 +39,9 @@ it('projects signed page code atomically, retains exact old releases, and resume
   const a = await createPeerIdentity(), b = await createPeerIdentity();
   const page = await createTestPage({ application: { id: applicationId() } });
   const authority = await (await page.exchange('control/configure', configuration(a, b))).json() as AuthorityBundle;
+  expect((await verifyAuthorityBundle(authority)).grant(a.publicKey)).toMatchObject({ publisher: true,
+    administrator: false, reader: false, writer: false, coordinator: false, recovery: false, dataRole: null });
+  expect((await verifyAuthorityBundle(authority)).grant(authority.descriptor.payload.controlPublicKey)?.publisher).toBe(false);
   expect(await (await page.exchange('publication/read')).json()).toBeNull();
   const first = await release(authority, a, 'release-one');
   const initial = await (await page.exchange('publication/publish', first)).json() as { publication: SignedPublication; version: number };
@@ -55,11 +59,35 @@ it('projects signed page code atomically, retains exact old releases, and resume
   expect(await (await page.exchange('control/read')).json()).toEqual(authority);
 });
 
-it('rejects unauthorized publishers, changed retry identity, wrong bytes and stale release heads', async () => {
+it('revokes publishing at a control boundary while retaining exact earlier releases', async () => {
+  const publisher = await createPeerIdentity(), administrator = await createPeerIdentity();
+  const page = await createTestPage({ application: { id: applicationId() } });
+  const initial = await (await page.exchange('control/configure', configuration(publisher, administrator))).json() as AuthorityBundle;
+  const first = await release(initial, publisher, 'published-before-revocation');
+  const retained = await (await page.exchange('publication/publish', first)).json();
+  const created = await page.ownerExchange('control/administer', { transition: { transitionId: 'select-data-coordinator',
+    expectedGeneration: null, coordinator: administrator.publicKey, controlRevision: 0, reason: 'create', base: null } });
+  expect(created.status).toBe(200);
+  const generation = await created.json() as SignedGeneration;
+  const revoked = await page.ownerExchange('control/administer', {
+    transition: { transitionId: 'revoke-publisher', expectedGeneration: generation.id, coordinator: administrator.publicKey,
+      controlRevision: 1, reason: 'control-change', base: { point: { generation: generation.id, sequence: 0,
+        root: await generationStartRoot(generation) }, receipt: null, bridge: [] } },
+    control: { epoch: 0, keyDigest: '34'.repeat(32), recoveryFloor: null,
+      grants: [participantGrant(administrator.publicKey, { administrator: true })] },
+  });
+  expect(revoked.status).toBe(200); await revoked.text();
+  const current = await (await page.exchange('control/read')).json() as AuthorityBundle;
+  expect((await page.exchange('publication/publish', await release(current, publisher, 'after-revocation', first.publication))).status).toBe(403);
+  expect(await (await page.exchange('publication/publish', first)).json()).toEqual(retained);
+  expect(await (await page.exchange('publication/read')).json()).toEqual(retained);
+});
+
+it('rejects administrators without publishing rights, changed retry identity, wrong bytes and stale release heads', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
   const page = await createTestPage({ application: { id: applicationId() } });
   const authority = await (await page.exchange('control/configure', configuration(a, b))).json() as AuthorityBundle;
-  expect((await page.exchange('publication/publish', await release(authority, b, 'non-admin'))).status).toBe(403);
+  expect((await page.exchange('publication/publish', await release(authority, b, 'non-publisher-admin'))).status).toBe(403);
   const first = await release(authority, a, 'release');
   const invalidBytes = { ...first, assets: first.assets.map((asset, index) => index ? asset : { ...asset, bytes: btoa('tampered') }) };
   expect((await page.exchange('publication/publish', invalidBytes)).status).toBe(400);
@@ -83,6 +111,21 @@ it('rejects all hosted data facets before control state or page content changes'
   }
   for (const path of ['peers/application', 'peers/definition', 'peers/generations', 'peers/administration', 'peers/directory'])
     expect((await page.api('GET', path)).status).toBe(404);
+});
+
+it('selects one signed successor when code publishers race on the same release head', async () => {
+  const publisher = await createPeerIdentity(), administrator = await createPeerIdentity();
+  const page = await createTestPage({ application: { id: applicationId() } });
+  const authority = await (await page.exchange('control/configure', configuration(publisher, administrator))).json() as AuthorityBundle;
+  const candidates = await Promise.all(['left', 'right'].map(name => release(authority, publisher, `racing-${name}`, null, name)));
+  const responses = await Promise.all(candidates.map(candidate => page.exchange('publication/publish', candidate)));
+  expect(responses.map(response => response.status).sort()).toEqual([200, 409]);
+  const winner = await responses.find(response => response.status === 200)!.json() as { publication: SignedPublication; version: number };
+  expect(winner.version).toBe(1);
+  expect(candidates.some(candidate => candidate.publication.id === winner.publication.id)).toBe(true);
+  expect(await (await page.exchange('publication/read')).json()).toEqual(winner);
+  await page.restart();
+  expect(await (await page.exchange('publication/read')).json()).toEqual(winner);
 });
 
 it('rechecks account authorization after code upload before selecting a release', async () => {

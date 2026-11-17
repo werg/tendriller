@@ -10,9 +10,9 @@ The host derives and verifies definition/schema commitments. Configuration persi
 
 ## Independent rights
 
-Ordinary participants receive the common participant grant. Explicit grants can independently control recovery requests, coordinator eligibility, writes, reads, key access, schema administration and protected data roles. Device control administration and application data administration are separate rights. A browser and a native process use the same rights model.
+Ordinary participants receive the common participant grant. Explicit grants can independently control recovery requests, coordinator eligibility, writes, reads, code publication, key access, schema administration and protected data roles. Device control administration, code publication and application data administration are separate rights. A browser and a native process use the same rights model.
 
-The host has a declared control-only grant. It can sign authorized membership/control revisions and explicit owner recovery. It cannot become the application coordinator, receive database body replication or submit ordinary commands.
+The host has a declared control-only grant. It can sign authorized membership/control revisions and explicit owner recovery. It cannot become the application coordinator, receive database body replication, submit ordinary commands or author code releases. Its transport receives and materializes releases authorized by a publisher.
 
 ## Changes and recovery
 
@@ -22,6 +22,8 @@ If a creator device is lost, an authenticated owner may use `control/administer`
 
 Revoking host credentials stops subsequent control and introduction access. Revoking a device grant changes what signed protocol actions are permitted. These are distinct decisions and must both be checked at the boundary they govern.
 
-## Code administration
+## Code publication
 
-A current device administrator may sign a code release bound to the current control revision. The host also requires the submitting account to be authorized for that author. Exact old release retries remain historical evidence; new releases require current authority. The session verifies publication signatures and ancestry before accepting a selected code head.
+A device needs an explicit `publisher: true` grant to sign a code release bound to the current control revision. Neither a control administrator nor an ordinary application writer receives this right implicitly. The initial configuration accepts `{publicKey, publisher: true}` for an ordinary peer that may publish; a complete explicit grant can give a device only publication rights, without application keys or administrative rights.
+
+The host also requires the submitting account to be authorized for that author. Publisher-only devices must still belong to active admitted accounts when controls retain their rights. Exact old release retries remain historical evidence; new releases require current authority. The session verifies publication signatures and ancestry before accepting a selected code head.

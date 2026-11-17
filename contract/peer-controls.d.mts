@@ -5,7 +5,7 @@ export type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, Signed
   ApplicationDescription, ApplicationInputSchema, SignedApplicationDescriptor, SignedApplicationSchema } from './peer-authority.mjs';
 export interface PeerAccountBinding { readonly publicKey: string; readonly accountId: string }
 /** The ordinary shared-application grant, or an explicit set of independent device rights. */
-export type PeerApplicationMember = { readonly publicKey: string; readonly administrator?: boolean; readonly dataRole?: 'member' | 'admin' | null; readonly accountId?: string }
+export type PeerApplicationMember = { readonly publicKey: string; readonly administrator?: boolean; readonly publisher?: boolean; readonly dataRole?: 'member' | 'admin' | null; readonly accountId?: string }
   | { readonly grant: PeerGrant; readonly accountId?: string };
 /** Host scope and requester are pinned to its explicit control-only participant. */
 export type PeerOwnerTransition = Pick<TransitionRequest, 'transitionId' | 'expectedGeneration' | 'coordinator' | 'controlRevision' | 'reason' | 'base'>;
