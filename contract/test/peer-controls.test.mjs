@@ -11,8 +11,10 @@ test('peer control transport is explicit, carries exact transition bytes, and ne
   } });
   assert.equal(calls.length, 0);
   assert.equal(await client.application(), bundle);
-  const config = { definitionDigest: 'definition' };
+  const config = { historyId: 'history', executionManifestDigest: '12'.repeat(32), definition: publication.definition,
+    schemaAdministrator: '34'.repeat(32), schema: null, epoch: 0, keyDigest: '56'.repeat(32), members: [{ publicKey: '34'.repeat(32) }] };
   assert.equal(await client.configureApplication(config), bundle);
+  assert.deepEqual(calls[1], { path: 'peers/application', options: { method: 'PUT', body: config } });
   const request = { payload: { transitionId: 'same-transition' }, signature: 'original' }, control = { epoch: 1 };
   assert.equal(await client.selectGeneration(request, { control }), generation);
   assert.equal(await client.selectGeneration(request, { control }), generation);

@@ -4,6 +4,7 @@ import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, gener
   participantGrant, controlParticipantGrant,
   applicationDescriptionDigest, signApplicationSchema, verifyApplicationSchema, peerDigest,
   type ApplicationDescription, type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
+import type { PeerApplicationConfiguration } from '../../contract/peer-controls.mjs';
 import { api, apiJson, create, inDO, req, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 import { authenticateAgentToken } from '../src/access';
@@ -15,7 +16,7 @@ const definition: ApplicationDescription = { id: 'peer-test', version: '1', sche
   input: { type: 'object', properties: { progress: { type: 'number', minimum: 0.5 } }, additionalProperties: false } }], queries: [] };
 const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', executionManifestDigest: '12'.repeat(32),
   definition, schemaAdministrator: peers[0].publicKey, epoch: 0, keyDigest: '56'.repeat(32),
-  members: peers.map(peer => ({ grant: grant(peer) })) });
+  members: peers.map(peer => ({ grant: grant(peer) })) } satisfies PeerApplicationConfiguration);
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
 async function admitGuest(h: Handle): Promise<string> {
   return inDO(h.id, async t => {
@@ -379,10 +380,10 @@ it('requires immutable canonical public command/query metadata before publishing
   const config = configuration([a]), { definition: omitted, ...missing } = config;
   expect((await page.api('GET', 'peers/definition')).status).toBe(409);
   expect((await page.api('PUT', 'peers/application', missing)).status).toBe(400);
-  expect((await page.api('PUT', 'peers/application', { ...config, definitionDigest: '00'.repeat(32) })).status).toBe(400);
+  expect((await page.api('PUT', 'peers/application', { ...config, definitionDigest: await applicationDescriptionDigest(definition) })).status).toBe(400);
   expect((await page.api('PUT', 'peers/application', { ...config, definition: { ...definition,
     commands: [{ ...definition.commands[0], input: { type: 'object', properties: {} } }] } })).status).toBe(400);
-  expect((await page.api('PUT', 'peers/application', { ...config, schemaDigest: '78'.repeat(32) })).status).toBe(400);
+  expect((await page.api('PUT', 'peers/application', { ...config, schemaDigest: null })).status).toBe(400);
   expect((await page.api('GET', 'peers/application')).status).toBe(409);
   const configured = await page.api('PUT', 'peers/application', config);
   expect(configured.status).toBe(200);
@@ -391,6 +392,8 @@ it('requires immutable canonical public command/query metadata before publishing
   const published = await (await participant.api('GET', 'peers/definition')).json() as { descriptor: AuthorityBundle['descriptor']; definition: ApplicationDescription; schema: null };
   expect(published).toEqual({ descriptor: authority.descriptor, definition, schema: null });
   expect(await applicationDescriptionDigest(published.definition)).toBe(authority.descriptor.payload.definitionDigest);
+  expect(authority.descriptor.payload.schemaDigest).toBeNull();
+  expect(await (await page.api('PUT', 'peers/application', { ...config, schema: null })).json()).toEqual(authority);
   void omitted;
 });
 
@@ -403,13 +406,18 @@ it('retains a verified signed genesis schema as metadata without executing SQL o
   const digest = await applicationDescriptionDigest(sqlDefinition);
   const payload = { applicationId: id, definitionDigest: digest, executionManifestDigest: '12'.repeat(32), program };
   const schema = await signApplicationSchema(payload, a), invalid = await signApplicationSchema(payload, wrongSigner);
-  const config = { ...configuration([a]), definition: sqlDefinition, schema };
+  const config: PeerApplicationConfiguration = { ...configuration([a]), definition: sqlDefinition, schema };
   expect((await api(h, 'PUT', 'peers/application', { ...config, schema: invalid })).status).toBe(403);
+  for (const field of ['applicationId', 'definitionDigest', 'executionManifestDigest'] as const) {
+    const wrongBinding = await signApplicationSchema({ ...payload, [field]: '00'.repeat(32) }, a);
+    expect((await api(h, 'PUT', 'peers/application', { ...config, schema: wrongBinding })).status).toBe(400);
+  }
   expect((await api(h, 'PUT', 'peers/application', { ...config, schema: null })).status).toBe(400);
   expect((await api(h, 'GET', 'peers/application')).status).toBe(409);
   const authority = await apiJson<AuthorityBundle>(h, 'PUT', 'peers/application', config);
   expect(authority.descriptor.payload.definitionDigest).toBe(digest);
   expect(authority.descriptor.payload.schemaDigest).toBe(await peerDigest(schema));
+  expect(await apiJson<AuthorityBundle>(h, 'PUT', 'peers/application', config)).toEqual(authority);
   const publication = await apiJson(h, 'GET', 'peers/definition');
   expect(publication).toEqual({ descriptor: authority.descriptor, definition: sqlDefinition, schema });
   expect((await verifyApplicationSchema(publication.schema, publication.descriptor.payload)).version).toBe(3);

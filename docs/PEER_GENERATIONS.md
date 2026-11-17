@@ -68,12 +68,17 @@ unavailable condition; the host never silently rekeys or creates empty history.
 
 `peers.definition()` returns `{ descriptor, definition, schema }`. Chronolog's
 portable `applicationDescriptionDigest` validates the exact same public metadata
-used by sessions and agent tools. The host checks that digest before publication;
-clients check it against their pinned descriptor before using the schemas. Object
-inputs are closed, command/query names are unique and sorted, and metadata is
-limited to 256 KiB including the signed schema envelope. The host verifies that
-envelope with the declared schema administrator and checks its program against
-the published definition. It never executes the schema SQL.
+used by sessions and agent tools. The host derives the descriptor's
+`definitionDigest` from that metadata and its `schemaDigest` from the complete
+signed schema envelope using `peerDigest` (null for events-only applications).
+Configuration accepts the definition and schema themselves, without separate
+digest inputs. Clients check these digests against their pinned descriptor before
+using the schemas. Object inputs are closed, command/query names are unique and
+sorted, and metadata is limited to 256 KiB including the signed schema envelope.
+The host verifies that
+envelope with `verifyApplicationSchema`, checking its application identity,
+definition, execution profile and declared schema administrator, and checks its
+program against the published definition. It never executes the schema SQL.
 
 The immutable metadata and retained assets survive page versions and creator
 device loss. Reading the already signed metadata does not require the private

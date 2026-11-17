@@ -186,7 +186,7 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         const published = await publication(value);
         // Description schemas can contain fractional bounds; their portable digest
         // binds the complete canonical metadata without narrowing it to control integers.
-        const fingerprint = await peerDigest({ ...value, definition: published.digest }), configured = t.db.get<Configuration | null>(CONFIG, null);
+        const fingerprint = await peerDigest({ ...value, definition: published.digest, schema: published.schemaDigest }), configured = t.db.get<Configuration | null>(CONFIG, null);
         if (configured) {
           if (configured.fingerprint !== fingerprint) throw new HttpError(409, 'peer_application_immutable', 'The application descriptor and initial policy are immutable');
           const bundle = await (await registry(t, state)).read(); await freshAccess(t, principal); identity(t, principal, true); return json(bundle);

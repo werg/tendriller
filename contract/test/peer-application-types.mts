@@ -22,10 +22,17 @@ const member: PeerApplicationMember = { publicKey: 'device', dataRole: 'member' 
 // @ts-expect-error Explicit grants include data authority instead of inventing a compatibility default.
 const incompleteGrant: PeerApplicationMember = { grant: { publicKey: 'device', reader: true, writer: true, coordinator: true, recovery: true, administrator: false } };
 declare const controls: PeerControlsClient;
+const configuration: PeerApplicationConfiguration = { historyId: 'history', executionManifestDigest: 'execution',
+  definition: { id: 'application', version: '1', schema: null, commands: [], queries: [] },
+  schemaAdministrator: 'schema-owner', epoch: 0, keyDigest: 'key', members: [member] };
+void controls.configureApplication(configuration);
+// @ts-expect-error Descriptor digests are derived from the published definition and cannot be supplied independently.
+void controls.configureApplication({ ...configuration, definitionDigest: 'redundant' });
+// @ts-expect-error The signed schema envelope determines its descriptor digest.
+void controls.configureApplication({ ...configuration, schemaDigest: null });
 void controls.administerGeneration({ transitionId: 'owner-recovery', expectedGeneration: 'current', coordinator: 'real-peer',
   controlRevision: 1, reason: 'takeover', base: { point: { generation: 'current', sequence: 0, root: 'root' }, receipt: null, bridge: [] } });
 void [member, incompleteGrant];
-declare const configuration: PeerApplicationConfiguration;
 const definitionId: string = configuration.definition.id;
 // @ts-expect-error The host derives the descriptor commitment from the published definition.
 const digest: string = configuration.definitionDigest;

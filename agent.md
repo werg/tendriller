@@ -36,11 +36,9 @@ execution, peer connections, replication and recovery.
 Publish the immutable descriptor and initial device grants through
 `host.peers.configureApplication(...)`, then bootstrap the session from verified
 `host.peers.application()` evidence and `host.peers.discover()` routing hints.
-Supply the public `definition` and signed `schema` when present; the host derives
-their descriptor digests from the verified contents rather than accepting
-separately maintained digest fields.
-Publish `definition` from Chronolog's `describeApplication`, its matching
-`applicationDefinitionDigest`, and the signed genesis `schema` when using SQL.
+Publish `definition` from Chronolog's `describeApplication` and the signed genesis
+`schema` when using SQL. The host derives their descriptor digests and verifies
+the schema with the declared `schemaAdministrator` before publication.
 Fresh peers and agents read `host.peers.definition()` and verify it against their
 pinned descriptor; application assets and this metadata outlive the creator.
 Control configuration retains the owned host publication automatically; this is
