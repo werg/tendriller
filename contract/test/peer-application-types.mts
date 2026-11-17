@@ -1,5 +1,5 @@
 import type { ApplicationOperation, AppliedApplicationReadView, PeerGenerationApplicationBackend } from '../application.mjs';
-import type { PeerApplicationMember, PeerControlsClient } from '../peer-controls.mjs';
+import type { PeerApplicationMember, PeerControlsClient, PeerApplicationConfiguration } from '../peer-controls.mjs';
 const applied: ApplicationOperation = { status: 'applied', operationId: 'edit', attemptId: 'signed-attempt', author: 'device',
   generation: 'generation', sequence: 1, outcome: 'accepted', rejectionCode: null };
 const abandoned: ApplicationOperation = { status: 'abandoned', operationId: 'edit', attemptId: 'signed-attempt',
@@ -25,3 +25,8 @@ declare const controls: PeerControlsClient;
 void controls.administerGeneration({ transitionId: 'owner-recovery', expectedGeneration: 'current', coordinator: 'real-peer',
   controlRevision: 1, reason: 'takeover', base: { point: { generation: 'current', sequence: 0, root: 'root' }, receipt: null, bridge: [] } });
 void [member, incompleteGrant];
+declare const configuration: PeerApplicationConfiguration;
+const definitionId: string = configuration.definition.id;
+// @ts-expect-error The host derives the descriptor commitment from the published definition.
+const digest: string = configuration.definitionDigest;
+void [definitionId, digest];

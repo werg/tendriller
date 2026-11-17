@@ -16,10 +16,10 @@ export interface PeerApplicationPublication {
 export interface PeerApplicationConfiguration {
   readonly historyId: string;
   readonly executionManifestDigest: string;
-  readonly definitionDigest: string;
+  /** The host derives the bound digest using Chronolog's portable validator. */
   readonly definition: ApplicationDescription;
   readonly schemaAdministrator: string;
-  readonly schemaDigest?: string | null;
+  /** The host verifies the signature and derives its descriptor commitment. */
   readonly schema?: SignedApplicationSchema | null;
   readonly epoch: number;
   readonly keyDigest: string;

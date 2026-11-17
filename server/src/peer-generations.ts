@@ -92,12 +92,11 @@ async function publication(value: Record<string, any>) {
     const definition = validateApplicationDescription(value.definition), schema = value.schema ?? null;
     if (new TextEncoder().encode(JSON.stringify({ definition, schema })).byteLength > PUBLICATION_LIMIT)
       throw new HttpError(413, 'peer_publication_too_large', 'Published definition and signed schema are limited to 256 KiB');
-    if ((definition.schema === null) !== (schema === null) || schema !== null && schema.payload?.program !== definition.schema ||
-        schema === null && (value.schemaDigest ?? null) !== null)
+    if ((definition.schema === null) !== (schema === null) || schema !== null && schema.payload?.program !== definition.schema)
       throw new HttpError(400, 'peer_schema_definition_mismatch', 'The signed genesis schema must match the published definition');
     const digest = await applicationDescriptionDigest(definition);
-    if (digest !== value.definitionDigest) throw new HttpError(400, 'peer_definition_digest_mismatch', 'The published definition does not match its pinned digest');
-    return { definition, schema: schema as SignedApplicationSchema | null, digest };
+    return { definition, schema: schema as SignedApplicationSchema | null, digest,
+      schemaDigest: schema === null ? null : await peerDigest(schema) };
   } catch (error) {
     if (error instanceof HttpError) throw error;
     throw new HttpError(400, 'peer_definition_invalid', error instanceof Error ? error.message : 'Invalid application definition');
@@ -183,7 +182,7 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
       }
       if (path === 'peers/application' && req.method === 'PUT') {
         const owner = identity(t, principal, true);
-        const value = object(input, ['historyId', 'executionManifestDigest', 'definition', 'definitionDigest', 'schema', 'schemaAdministrator', 'schemaDigest', 'epoch', 'keyDigest', 'members']);
+        const value = object(input, ['historyId', 'executionManifestDigest', 'definition', 'schema', 'schemaAdministrator', 'epoch', 'keyDigest', 'members']);
         const published = await publication(value);
         // Description schemas can contain fractional bounds; their portable digest
         // binds the complete canonical metadata without narrowing it to control integers.
@@ -210,7 +209,7 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         bindings.push({ publicKey: signer.publicKey, accountId: owner });
         const descriptor = await signApplicationDescriptor({ applicationId, historyId: value.historyId,
           profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY, controlPublicKey: signer.publicKey,
-          schemaAdministrator: value.schemaAdministrator, schemaDigest: value.schemaDigest ?? null, executionManifestDigest: value.executionManifestDigest, definitionDigest: value.definitionDigest }, signer);
+          schemaAdministrator: value.schemaAdministrator, schemaDigest: published.schemaDigest, executionManifestDigest: value.executionManifestDigest, definitionDigest: published.digest }, signer);
         if (published.schema !== null) await verifyApplicationSchema(published.schema, descriptor.payload);
         const control = await signControlRevision({ applicationId, profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY,
           revision: 0, previous: null, epoch: value.epoch, keyDigest: value.keyDigest, grants, recoveryFloor: null }, signer);

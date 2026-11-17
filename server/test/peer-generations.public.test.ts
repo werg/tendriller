@@ -13,9 +13,8 @@ import type { Tendril } from '../src/tendril';
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ ...participantGrant(peer.publicKey, { administrator: true }), ...extra });
 const definition: ApplicationDescription = { id: 'peer-test', version: '1', schema: null, commands: [{ name: 'edit', description: 'Publish an edit',
   input: { type: 'object', properties: { progress: { type: 'number', minimum: 0.5 } }, additionalProperties: false } }], queries: [] };
-const definitionDigest = await applicationDescriptionDigest(definition);
 const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', executionManifestDigest: '12'.repeat(32),
-  definition, definitionDigest, schemaAdministrator: peers[0].publicKey, schemaDigest: null, epoch: 0, keyDigest: '56'.repeat(32),
+  definition, schemaAdministrator: peers[0].publicKey, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) });
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
 async function admitGuest(h: Handle): Promise<string> {
@@ -80,8 +79,7 @@ it('publishes durable governance without a native resident, preserves root on re
   expect((await page.api('PATCH', '', { lifetime: 'ad_hoc' })).status).toBe(409);
   expect(await (await page.api('PUT', 'peers/application', config)).json()).toEqual(resumed);
   const changedDefinition = { ...definition, version: '2' };
-  expect((await page.api('PUT', 'peers/application', { ...config, definition: changedDefinition,
-    definitionDigest: await applicationDescriptionDigest(changedDefinition) })).status).toBe(409);
+  expect((await page.api('PUT', 'peers/application', { ...config, definition: changedDefinition })).status).toBe(409);
   expect(await (await page.api('GET', 'peers/definition')).json()).toEqual({ descriptor: initial.descriptor, definition, schema: null });
 });
 
@@ -405,11 +403,13 @@ it('retains a verified signed genesis schema as metadata without executing SQL o
   const digest = await applicationDescriptionDigest(sqlDefinition);
   const payload = { applicationId: id, definitionDigest: digest, executionManifestDigest: '12'.repeat(32), program };
   const schema = await signApplicationSchema(payload, a), invalid = await signApplicationSchema(payload, wrongSigner);
-  const config = { ...configuration([a]), definition: sqlDefinition, definitionDigest: digest, schema, schemaDigest: await peerDigest(schema) };
-  expect((await api(h, 'PUT', 'peers/application', { ...config, schema: invalid, schemaDigest: await peerDigest(invalid) })).status).toBe(403);
+  const config = { ...configuration([a]), definition: sqlDefinition, schema };
+  expect((await api(h, 'PUT', 'peers/application', { ...config, schema: invalid })).status).toBe(403);
   expect((await api(h, 'PUT', 'peers/application', { ...config, schema: null })).status).toBe(400);
   expect((await api(h, 'GET', 'peers/application')).status).toBe(409);
   const authority = await apiJson<AuthorityBundle>(h, 'PUT', 'peers/application', config);
+  expect(authority.descriptor.payload.definitionDigest).toBe(digest);
+  expect(authority.descriptor.payload.schemaDigest).toBe(await peerDigest(schema));
   const publication = await apiJson(h, 'GET', 'peers/definition');
   expect(publication).toEqual({ descriptor: authority.descriptor, definition: sqlDefinition, schema });
   expect((await verifyApplicationSchema(publication.schema, publication.descriptor.payload)).version).toBe(3);

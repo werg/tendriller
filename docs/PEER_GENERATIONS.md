@@ -36,10 +36,9 @@ from the SDK or page runtime. Configuration contains:
 | --- | --- |
 | `historyId` | Stable application history identity |
 | `executionManifestDigest` | Exact deterministic execution profile |
-| `definitionDigest` | Public application command/query definition |
-| `definition` | Immutable portable description: id, version, schema, sorted command/query names and closed input schemas |
-| `schemaAdministrator`, `schemaDigest` | Authorized signed initial schema; null digest for events-only applications |
-| `schema` | Signed initial schema envelope matching `definition.schema`; omitted or null for events-only applications |
+| `definition` | Immutable portable description: id, version, schema, sorted command/query names and closed input schemas; the host derives its descriptor commitment |
+| `schemaAdministrator` | Public identity authorized to sign the initial schema |
+| `schema` | Signed initial schema envelope matching `definition.schema`; omitted or null for events-only applications; the host verifies it and derives its descriptor commitment |
 | `epoch`, `keyDigest` | Initial encryption policy; no application body is uploaded |
 | `members` | Explicit device grants plus their authenticated account bindings |
 
@@ -195,3 +194,26 @@ HTTP and hibernatable invitation transports do not determine its authority or
 subscribe it to ordinary application edits. Future publication facets can bind
 page/code manifests to content and explicit activation boundaries; the current
 publication and metadata APIs keep those concerns separate from command order.
+
+## The host as a constrained participant
+
+The host participates through a portable control verifier and a transport adapter
+for authenticated HTTP lifecycle calls. Its signed grant is independent of that
+transport: reader, writer and coordinator stay false, even if the same device
+identity connects by another route. Routing filters reduce unnecessary exchange;
+the verified authority determines which updates a participant may accept.
+
+| Exchange | Host responsibility |
+| --- | --- |
+| Descriptors, public definitions and signed initializers | Retain and serve the pinned application contract |
+| Membership controls and generation transitions | Verify, serialize and durably select the authoritative successor |
+| Discovery and rendezvous | Supply bounded routing hints and introduction messages |
+| Commands, SQL results and live application signals | No subscription, execution or retention |
+| Published page assets | Serve the existing immutable publication independently of application rollback |
+
+Content-addressed code bundles and signed release records could share Chronolog's
+content and control mechanisms. Release authority and activation would still need
+their own policy: adopting an older application-data prefix cannot reinstall an
+older release or restore a revoked publisher. The current publication service
+remains responsible for initial page loading and recovery until that release
+policy is explicitly implemented and qualified.
