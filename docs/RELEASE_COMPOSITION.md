@@ -14,15 +14,15 @@ Choose one full 40-character commit SHA from each repository: [core](https://git
 | Chronolog | `pnpm install --frozen-lockfile && pnpm lint && pnpm typecheck && pnpm test` |
 | Cookbooks | `npm ci && npm run check && npm run build` |
 
-Chronolog's [independent application workflow](https://github.com/werg/chronolog-db/actions/workflows/webrtc.yml) builds public Chronolog session archives, core host artifacts, and cookbook consumers. It checks native and browser participation, SQL, hosted serving, and WebSocket fallback. Dispatch it with the candidate core and cookbook SHAs; the Chronolog workflow ref selects the third SHA:
+Chronolog's [independent application workflow](https://github.com/werg/chronolog-db/actions/workflows/webrtc.yml) builds public Chronolog session archives, core host artifacts, and cookbook consumers. It checks native and browser participation, SQL, hosted serving, and WebSocket fallback. Dispatch it with the candidate core and cookbook SHAs. GitHub requires the workflow `--ref` to be a branch or tag, so point a tag at the selected Chronolog commit (or use a branch whose head is that commit):
 
 ```sh
-gh workflow run webrtc.yml --repo werg/chronolog-db --ref <chronolog-branch-or-commit> \
+gh workflow run webrtc.yml --repo werg/chronolog-db --ref <chronolog-branch-or-tag> \
   -f host_ref=<core-40-character-commit> \
   -f contrib_ref=<cookbooks-40-character-commit>
 ```
 
-Inspect that run's `application-*` artifact and its `composition.json`. The checkout step rejects abbreviated refs and verifies the exact companion commits. The workflow's ordinary push and PR runs retain their pinned reference pair, so candidate qualification does not silently move an established release checkpoint. If this candidate passes, update the pinned pair in a reviewed PR and run the default-branch workflow again.
+Verify the run's `headSha` is the recorded Chronolog SHA, then inspect its `application-*` artifact and `composition.json`. The checkout step rejects abbreviated companion refs and verifies their exact commits. The workflow's ordinary push and PR runs retain their pinned reference pair, so candidate qualification does not silently move an established release checkpoint. If this candidate passes, update the pinned pair in a reviewed PR and run the default-branch workflow again.
 
 ## Stage the host
 
