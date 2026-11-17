@@ -1,8 +1,8 @@
 import {
-  createPeerIdentity, exportPeerIdentity, importPeerIdentity, createGenerationRegistry, signApplicationDescriptor,
+  createGenerationRegistry, signApplicationDescriptor,
   signControlRevision, signTransitionRequest, participantGrant, controlParticipantGrant,
   validateApplicationDescription, applicationDescriptionDigest, verifyApplicationSchema,
-  peerDigest, encodePeerValue, decodePeerValue, verifyAuthorityBundle,
+  peerDigest, verifyAuthorityBundle,
   PEER_GENERATION_PROFILE, PEER_GENERATION_POLICY,
   type AuthorityBundle, type GenerationRegistry, type PeerIdentity, type BytesStore, type PeerGrant,
   type SignedApplicationDescriptor, type SignedControlRevision, type SignedTransitionRequest, type TransitionRequest,
@@ -14,8 +14,9 @@ import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 import { changeLifetime, hasResidentStorage } from './lifetime';
+import { ensurePeerControlIdentity, loadPeerControlIdentity } from './peer-control-identity';
 
-const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts', IDENTITY = 'peer-generation/identity';
+const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts';
 const VALUE_LIMIT = 16 * 1024 * 1024;
 const PUBLICATION_LIMIT = 256 * 1024;
 interface Configuration {
@@ -79,9 +80,9 @@ export function withUnconfiguredPeerApplication<T>(t: Tendril, work: () => Promi
 async function registry(t: Tendril, state: HostState): Promise<GenerationRegistry> {
   const configuration = t.db.get<Configuration | null>(CONFIG, null);
   if (!configuration) throw new HttpError(409, 'peer_application_unconfigured', 'Publish the signed peer application descriptor first');
-  const bytes = await state.store.get(IDENTITY);
-  if (!bytes) throw new HttpError(503, 'peer_control_state_missing', 'The pinned control identity is unavailable; recovery must preserve its original trust state');
-  state.signer = await importPeerIdentity(decodePeerValue(bytes));
+  const signer = await loadPeerControlIdentity(t);
+  if (!signer) throw new HttpError(503, 'peer_control_state_missing', 'The pinned control identity is unavailable; recovery must preserve its original trust state');
+  state.signer = signer;
   if (state.signer.publicKey !== configuration.descriptor.payload.controlPublicKey) throw new HttpError(503, 'peer_control_state_mismatch');
   if (!state.registry) {
     state.registry = await createGenerationRegistry({ store: state.store, descriptor: configuration.descriptor,
@@ -213,7 +214,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           deviceGrants.push(grant); rawBindings.push({ publicKey: grant?.publicKey, accountId: row.accountId ?? owner });
         }
         const bindings = accounts(rawBindings); await checkAccounts(t, bindings);
-        const signer = await createPeerIdentity();
+        const signer = await ensurePeerControlIdentity(t);
         const grants = await withControlParticipant(deviceGrants, signer);
         bindings.push({ publicKey: signer.publicKey, accountId: owner });
         const descriptor = await signApplicationDescriptor({ applicationId, historyId: value.historyId,
@@ -225,7 +226,6 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         const staged = new Map<string, Uint8Array>();
         const initial = await createGenerationRegistry({ descriptor, controls: [control], signer,
           store: { get: async key => staged.get(key) ?? null, put: async (key, bytes) => { staged.set(key, bytes.slice()); } } });
-        staged.set(IDENTITY, encodePeerValue(await exportPeerIdentity(signer)));
         const bundle = await initial.read();
         // Durable control state outlives any coordinating peer or page publication.
         await changeLifetime(t, 'resident');
