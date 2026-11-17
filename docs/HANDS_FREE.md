@@ -8,8 +8,7 @@ engine choice never resumes listening or unmutes a new visit.
 
 An authored experience supplies its controls, visible active-use state, a stop
 path, typed fallback, consent callback, and transcript callback. The transcript
-callback decides whether to review/edit text, send a semantic event, or call
-`conversation.send(text,{via:"voice"})`. Reading a voice cookbook does not select an
+callback decides whether to review/edit text, submit a declared command through its application session. Reading a voice cookbook does not select an
 engine or install a listening behavior.
 
 ## Public lifecycle
@@ -31,10 +30,8 @@ engine or install a listening behavior.
 `listening`, `speaking`, `muted`, and `outputStatus` are observable; `options.status` reports
 output, capture, and wake progress/errors. `outputStatus` names the selected engine
 and its preparation state; `muted` reports session playback consent separately.
-`options.speakReplies:true` deliberately
-routes suitable authenticated-owner replies to enabled local speech. The default
-is false. Role changes, hidden pages, navigation, and the public sensor-stop signal
-stop active voice use. Backgrounding never automatically rearms recognition.
+The page explicitly calls `voice.speak(text)` for the application output it chooses.
+Hidden pages, navigation, and the public sensor-stop signal stop active voice use. Backgrounding never automatically rearms recognition.
 Voice choices can persist for a later visit; playback consent is local to this
 adapter session. Another tab cannot unmute this adapter or change its active engine.
 
