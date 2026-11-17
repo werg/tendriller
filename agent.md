@@ -20,11 +20,13 @@ selection still uses the hosted Cloudflare backend. See
 
 The host generation-control registry, verifier and lifecycle calls are
 implemented. Chronolog supplies the encrypted replica and public
-`@chronolog/peer-session` preview with native/browser entries, framed network
-transport and maintained RTC integration. The preserved packed native/events run
-uses an in-process link and dirty-source artifacts. The newer RTC consumer needs
-its own exact-archive evidence; implemented transport does not establish browser
-or Internet/deployed readiness, provider cost or a recovery-age bound. Configuring host controls does not open or connect the session.
+`@chronolog/peer-session` with native/browser entries, maintained RTC and a
+Tendriller adapter. Public host tests exercise actual workerd HTTP and sockets;
+independent packed native RTC runs cover blocked-control progress and recovery.
+Use the [qualification record](https://github.com/werg/tendriller-contrib/blob/feat/chronolog-application-log/cookbooks/run-a-peer-application/notes/peer-generation-qualification.md) for exact paired archives and
+measured scope. Browser storage, deployed login, Internet routes, cost and
+recovery age remain separate gates. Configuring controls does not open or connect
+the session.
 
 The preview composition creates a page with
 `application:{kind:'peer',id:'<64 lowercase hex characters>'}` and uses a public
@@ -56,8 +58,10 @@ write or coordinate application data.
 See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
 
 Use the session's public query, command, operation-inspection and view APIs.
-Binding that session to `tendril.application` requires a matching generation
-adapter; the existing chronological adapter does not convert it.
+Bind that session with `createPeerGenerationApplicationBackend` from
+`@chronolog/peer-session/tendriller` and install it once in `tendril.application`.
+The adapter supports owned native and browser Worker sessions; the session owns
+its persistence, retry identities and connection lifecycle.
 `tendril.application.ready()` and `available` describe adapter installation,
 not synchronized history or qualified connectivity.
 Use applied coherent views and generation-scoped outcomes. A valid recovery may
@@ -66,8 +70,9 @@ with current guards. Several minutes of recovery freshness is a measured target,
 not a guarantee when peers or their data disappear.
 
 The session contract keeps current-generation commands, queries, live signals
-and replication working without control calls; the preserved preview verifies
-this at the portable in-process control boundary. If the coordinator also disappears, keep local signed work
+and replication working without control calls. The independent qualification
+records distinguish portable-control, actual RTC, and actual Tendriller HTTP
+boundaries. If the coordinator also disappears, keep local signed work
 while a new selected generation waits for host control availability. There is no
 fallback to another backend and no automatic old-branch merge.
 

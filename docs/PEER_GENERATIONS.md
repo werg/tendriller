@@ -1,18 +1,19 @@
 # Peer-generation controls
 
-**Implementation status:** Tendriller implements the hosted control registry and
-its public SDK, runtime and MCP lifecycle calls. Chronolog supplies the portable
-control verifier, encrypted replica and public `@chronolog/peer-session` preview,
-including native/browser entries, framed network transport and maintained RTC
-integration. The preserved packed native/events report uses an in-process link
-and dirty-source artifacts; it does not qualify the newer RTC path, a clean
-release, actual HTTP control routes or deployed networks. Configuring
-host controls does not install or connect an application session. Supply a matching
-session archive and qualify the selected composition explicitly. The unified
-target uses local/final results with an explicit selected-history recovery
-exception. The current preview exports `applied()`; do not invent a `final()`
-alias. [Historical chronological semantics](APPLICATION_BACKENDS.md) retain their
-original immutable-prefix guarantee and evidence.
+**Implementation status:** Tendriller implements the hosted control registry,
+public definition publication, bounded discovery/invitations, and SDK/runtime/MCP
+lifecycle calls. Chronolog supplies the shared portable control verifier, encrypted
+replica and public session composition with native/browser entries and maintained
+RTC. The host suite exercises real workerd HTTP and socket boundaries; independent
+packed native RTC runs cover selected-prefix recovery and blocked control access.
+The [paired qualification record](https://github.com/werg/tendriller-contrib/blob/feat/chronolog-application-log/cookbooks/run-a-peer-application/notes/peer-generation-qualification.md) names exact artifacts, sources,
+cleanliness and the distinct actual-host/browser/deployed gates. Configuration
+alone does not install or connect a session.
+
+The current peer-session execution wait is `applied()`. The unified target names
+local/final results with an explicit selected-history recovery exception; those
+names are not compatibility aliases. Historical chronological semantics retain
+their original immutable-prefix guarantee and separate evidence.
 
 The adopted target peer profile is Chronolog's authenticated `peer-generation-v1`
 policy. Its preview session lets a replaceable peer order ordinary commands.

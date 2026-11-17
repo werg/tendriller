@@ -2,11 +2,14 @@
 
 **Implementation status:** the hosted generation-control registry, lifecycle API
 and portable authority verifier are implemented. Chronolog now supplies an
-encrypted replica and public session preview with native/browser entries, framed
-network transport and maintained RTC integration. The preserved independent
-package run covers native/events sessions over an in-process link with dirty-source
-artifacts. New transport implementation needs its own exact-archive qualification;
-it does not establish actual HTTP/browser/Internet readiness or a clean release.
+encrypted replica and public session with native/browser entries, framed network
+transport, maintained RTC integration and a generation-specific Tendriller adapter.
+The host's public HTTP controls, discovery, invitations and rendezvous run in
+actual workerd tests. Independent packed native RTC scenarios cover lost replies,
+selected-prefix recovery, fresh peers and returning branches. See the
+[paired qualification record](https://github.com/werg/tendriller-contrib/blob/feat/chronolog-application-log/cookbooks/run-a-peer-application/notes/peer-generation-qualification.md) for exact archive/source identities
+and the separate actual-host gate. Browser storage, deployed login, Internet
+routes, relay cost and recovery freshness require their own measured evidence.
 The unified target uses `local()` for applied-here results and `final()` for
 committed/applied selected-history results, with explicit recovery able to abandon
 a recent suffix. The preview still exports `applied()`; historical chronological
@@ -136,9 +139,11 @@ The generation backend contract uses `applied` and contains a selected generatio
 coherent revision for SQL, events and outcomes. It has no `finalRevision`.
 Operations distinguish saved, applied and abandoned work. Recovery emits an
 explicit coherent reset; stale event cursors cannot pretend an excluded history
-is append-only. The public session supplies `query`, `readView` and `changes`;
-Tendriller composition still needs a matching adapter for that contract. The
-existing chronological adapter does not convert generations. See
+is append-only. The public session supplies `query`, `readView` and `changes`.
+`createPeerGenerationApplicationBackend` from `@chronolog/peer-session/tendriller`
+binds an owned native or Worker session to this interface. Install it once with
+`tendril.application.install(backend)` and install the session's live port
+separately. See
 [application backends](APPLICATION_BACKENDS.md).
 
 Agents use their own Chronolog session for application description, coherent

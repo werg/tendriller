@@ -19,7 +19,7 @@ applications that deliberately choose the hosted state authority.
   owner: 'owner@example.com',
   mode: 'dashboard',
   lifetime: 'resident',
-  application: { kind: 'peer', id: 'team-task-history' }
+  application: { kind: 'peer', id: '<64 lowercase hex characters>' }
 }
 ```
 
@@ -41,11 +41,11 @@ or SQL runtime. That control service does not implement a peer-generation sessio
 
 ```js
 // The page's composition module imports its selected public adapter.
-import { createChronologApplicationBackend } from '@chronolog/transport-tendriller';
+import { createPeerGenerationApplicationBackend } from '@chronolog/peer-session/tendriller';
 
-const backend = createChronologApplicationBackend({
+const backend = createPeerGenerationApplicationBackend({
   id: tendril.application.selection.id,
-  replica, // An independently opened ChronologNode or ChronologClient.
+  session, // An owned public native or browser Worker ApplicationSession.
   sql: true,
 });
 tendril.application.install(backend);
@@ -62,38 +62,49 @@ Custom browser bootstraps can pass `{application: backend}` to
 
 Peer pages run a separate quiet runtime. They open no host socket or IndexedDB
 outbox and send no background health reports, logs, heartbeats or sensor reports.
-State, input, conversation, timers, streams, shared-file references, scopes, captures, hosted uploads and
-retained-record APIs return `application_backend`. Application work and binary
-payload exchange belong to the replica. Explicit HTTP requests, membership,
-rendezvous, publication saving and existing blob URLs remain available.
-`publication.saveOffline()` explicitly registers offline publication support.
-Automatic hosted publication health is a hosted-runtime facility; peer readiness
-belongs to the application backend. `tendril.connected` stays false on a peer page
-because it has no hosted application connection. `application.available` and
-`application.ready()` describe backend installation, not remote peer reachability.
+`tendril.kind` is `peer` or `cloudflare`. A peer runtime omits hosted state,
+input, conversation, timers, streams, records, scopes, uploads, captures,
+notifications and connection fields. Application work belongs to its session.
+Explicit HTTP, membership, discovery and rendezvous are grouped under
+`tendril.host`; the native SDK's host client retains its `peers` and `members`
+services. `publication.saveOffline()` explicitly saves the publication.
+
+`application.available` and `application.ready()` describe adapter installation.
+The generation backend's `status` and `onStatus()` expose actual synchronization,
+coordinator reachability, missing keys and recovery. Local browser device labels
+grant no application permissions. See the [runtime service split](BROWSER_API.md).
 
 ## Small public contract
+
+Supported views, program shape and operation states belong to the selected
+profile. The peer-generation adapter accepts named programs `{name,input}` and
+exposes applied views; its [generation outcomes](#peer-generation-applied-results)
+carry an attempt identity and selected generation. The chronological and hosted
+profiles below keep their own finality contracts.
 
 | Member | Meaning |
 | --- | --- |
 | `id`, `capabilities` | Stable selected identity and explicit program/query capabilities |
 | `submit(program, {operationId})` | Author one atomic program through the selected backend |
 | `events.publish(topic, payload, {operationId})` | Convenience authoring of one event-only program |
-| `events.read({cursor?,topics?,limit?,signal?})` | Bounded whole-transaction final replay |
+| `events.read({cursor?,topics?,limit?,signal?})` | Bounded whole-transaction replay in the supported view |
 | `events.subscribe(options)` | At-least-once continuation with pull backpressure |
-| `readView({view?:'local'|'final'})` | Captured revision with `query`, `readEvents`, and `release` |
-| `changes({view?:'local'|'final',signal?})` | Current revision, then coalesced invalidations for that view |
+| `readView({view?:'applied'|'local'|'final'})` | Captured revision with `query`, `readEvents`, and `release` |
+| `changes({view?:'applied'|'local'|'final',signal?})` | Current revision, then coalesced invalidations for that view |
 | `operations.get(operationId)` | Recover the status of this author's durable operation |
 | `operations.subscribe({operationId,signal?})` | Observe that operation, including finality-only changes |
 
 Program and query types remain backend-specific. The generic contract does not
-translate SQL into JSON state operations. Chronolog accepts its versioned
-SQL/platform/emit `ChangeProgram`; the Cloudflare implementation advertises
+translate SQL into JSON state operations. A peer session invokes declared named
+commands that produce its deterministic program. The chronological adapter
+accepts a versioned SQL/platform/emit `ChangeProgram`; the Cloudflare implementation advertises
 `json-state`, `events`, `conversation`, and `revision-views`, and accepts the
 program below. The adapter's `sql` option describes the execution profile; it does
 not grant SQL permission or change acceptance rules.
 
-An operation receipt separates lifecycle from acceptance. `status` is `queued`,
+### Chronological and hosted operation results
+
+For these profiles, a receipt separates lifecycle from acceptance. `status` is `queued`,
 `provisional`, or `final`; `outcome` is `accepted` or `rejected` once execution has
 produced a result. Both provisional outcomes can change during replay. Both final
 outcomes are settled. In particular, `status:'final'` alone does **not** mean that
@@ -240,7 +251,7 @@ outbox or finality service. End a generated response with a durable
 result event. Only a consumer of accepted final intent dispatches external work;
 reducers and SQL callbacks never send messages or perform tools during replay.
 
-## Finality and authority
+## Chronological finality and authority
 
 The Chronolog adapter implements live collaboration by default. Signed proposals,
 timestamp ordering and deterministic replay are reusable foundations; finality
