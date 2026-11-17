@@ -34,15 +34,11 @@
     "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-1c3cef17.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
-    "@modelcontextprotocol/sdk": "1.32.2",
     "@playwright/test": "^1.65.0",
-    "axe-core": "4.10.3",
     "esbuild": "^0.28.2",
-    "qrcode-generator": "^2.0.4",
     "typescript": "^7.0.2",
     "vitest": "4.1",
-    "wrangler": "^4.161.0",
-    "ws": "^8.21.0"
+    "wrangler": "^4.161.0"
   },
   "dependencies": {
     "ipaddr.js": "^2.5.0",

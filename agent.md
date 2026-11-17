@@ -42,7 +42,6 @@ import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 const backend = createApplicationBackend({
   id: session.applicationId,
   session,
-  sql: true, // Include only when this application provides SQL.
   eventCommand: 'publishEvent', // An ordinary declared domain command, if provided.
 });
 tendril.application.install(backend);

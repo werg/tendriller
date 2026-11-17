@@ -36,7 +36,7 @@ export async function authenticateAgent(t: Tendril, req: Request): Promise<Agent
   return authenticateAgentToken(t, token);
 }
 
-/** One account/page policy for HTTP, socket requests, and ongoing stream delivery. */
+/** One account/page policy for host requests and peer introductions. */
 export async function pageAccessAllowed(t: Tendril): Promise<boolean> {
   if (t.db.get("disabled", false)) return false;
   const status = await t.env.ACCOUNTS.prepare(`SELECT t.state,t.owner_account,a.id AS owner_id,a.suspended_at,a.deleting_at

@@ -40,8 +40,8 @@ if (!(automated.headers.get("content-type") || "").includes("application/json"))
 const automatedGuide = await (await get("/agent.md", { "User-Agent": "Python-urllib/3.12" })).text();
 if (!automatedGuide.includes("Tendriller")) throw new Error("Automated clients cannot read the agent guide");
 requireService(descriptor);
-if (descriptor.workflows.length) throw new Error('The default service must have an empty trusted workflow registry');
+if (!descriptor.limits?.participant) throw new Error('The service must advertise its filtered participant contract');
 const runtime = JSON.parse(readFileSync(new URL("../server/src/runtime-release.json",import.meta.url)));
 const manifest = await (await get(`/_tendril/runtime/${runtime.id}/manifest.json`)).json();
 if(manifest.id!==runtime.id)throw Error("Runtime artifact mismatch");
-console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} with no application workflow installed`);
+console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} with the filtered participant transport`);

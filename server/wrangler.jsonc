@@ -27,8 +27,6 @@
   "ratelimits": [
     { "name": "CREATE_RATE", "namespace_id": "101", "simple": { "limit": 5, "period": 60 } },
     { "name": "AGENT_RATE", "namespace_id": "102", "simple": { "limit": 300, "period": 60 } },
-    { "name": "EVAL_RATE", "namespace_id": "103", "simple": { "limit": 60, "period": 60 } },
-    { "name": "FILE_READ_RATE", "namespace_id": "108", "simple": { "limit": 120, "period": 60 } },
     { "name": "AUTH_RATE", "namespace_id": "104", "simple": { "limit": 20, "period": 60 } },
     { "name": "FAILED_AUTH_RATE", "namespace_id": "105", "simple": { "limit": 20, "period": 60 } },
     { "name": "REPORT_RATE", "namespace_id": "106", "simple": { "limit": 5, "period": 60 } }

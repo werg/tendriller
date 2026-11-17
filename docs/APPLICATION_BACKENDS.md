@@ -28,7 +28,7 @@ Native agents use the session directly. Browser code owns its session in a Worke
 | `onRecovery(...)`, `inspectRecovery()` | Observe and inspect retained recovery evidence |
 | `events.read/subscribe` | Read emitted facts from captured application history |
 
-The adapter's `sql:true` option exposes SQL read views when supplied by the application. `eventCommand` names an ordinary declared command accepting `{topic,payload}`; it enables `events.publish`. An unspecified event command does not create a hidden generic write path.
+The adapter derives SQL query availability from the session's materializer capabilities. `eventCommand` names an ordinary declared command accepting `{topic,payload}`; it enables `events.publish`. An unspecified event command does not create a hidden generic write path.
 
 ## Outcomes and reads
 

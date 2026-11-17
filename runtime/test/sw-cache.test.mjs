@@ -282,9 +282,10 @@ test("live API responses and undeclared resources never gain offline cache acces
   await sw.install(); await sw.announce("a", a.publication);
   const paths = ["_tendril/info", "_tendril/peers/participant", "%5Ftendril/session", "_tendril/future-api", "api/private", "app.js", a.publication.base + "not-declared.js", a.publication.base + "app.js?mutable=1"];
   for (const path of paths) {
-    const first = await (await sw.request(path)).json();
-    const second = await (await sw.request(path)).json();
-    assert.notEqual(first.live, second.live);
+    const before = net.calls.length;
+    await sw.request(path);
+    await sw.request(path);
+    assert.equal(net.calls.length, before + 2, `${path} must reach the network on every read`);
   }
   net.online = false;
   for (const path of paths) await assert.rejects(sw.request(path), /offline/);

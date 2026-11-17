@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tendriller-production",
-  "main": "../dist/service/worker.mjs",
+  "main": "../dist/engine/worker.mjs",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": [
     "nodejs_compat"
@@ -15,19 +15,23 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "TendrilV5"
+        "class_name": "Tendril"
       },
       {
         "name": "ADMISSION",
-        "class_name": "AdmissionV5"
+        "class_name": "Admission"
       }
     ]
   },
   "exports": {
-    "TendrilV4": { "type": "durable-object", "state": "deleted" },
-    "AdmissionV4": { "type": "durable-object", "state": "deleted" },
-    "TendrilV5": { "type": "durable-object", "storage": "sqlite" },
-    "AdmissionV5": { "type": "durable-object", "storage": "sqlite" }
+    "Tendril": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "Admission": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
   },
   "d1_databases": [
     {
@@ -66,14 +70,6 @@
       }
     },
     {
-      "name": "EVAL_RATE",
-      "namespace_id": "103",
-      "simple": {
-        "limit": 60,
-        "period": 60
-      }
-    },
-    {
       "name": "AUTH_RATE",
       "namespace_id": "104",
       "simple": {
@@ -94,14 +90,6 @@
       "namespace_id": "106",
       "simple": {
         "limit": 5,
-        "period": 60
-      }
-    },
-    {
-      "name": "FILE_READ_RATE",
-      "namespace_id": "108",
-      "simple": {
-        "limit": 120,
         "period": 60
       }
     }

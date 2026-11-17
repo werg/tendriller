@@ -44,8 +44,6 @@ export async function buildPublicArtifacts() {
   writeJson(join(runtime, "inputs.json"), graphs["kernel.mjs"].inputs);
   writeJson(join(runtime, "build-metrics.json"), graphs);
   cpSync(join(root, "node_modules/phonon-tts"), join(assets, "tts"), { recursive: true });
-  for (const [source, target] of [["axe.min.js", "axe.min.js"], ["LICENSE", "axe-LICENSE.txt"], ["LICENSE-3RD-PARTY.txt", "axe-LICENSE-3RD-PARTY.txt"]])
-    copyFileSync(join(root, "node_modules/axe-core", source), join(assets, target));
   mkdirSync(join(assets, "brand"), { recursive: true });
   for (const [source, target] of [["tendriller-logo-ai-compressed.png", "logo.png"], ["tendriller-logo-ai.webp", "logo.webp"], ["tendriller-icon-64.png", "icon-64.png"], ["tendriller-icon-180.png", "icon-180.png"], ["tendriller-favicon.ico", "favicon.ico"]])
     copyFileSync(join(root, "docs/assets", source), join(assets, "brand", target));
@@ -92,8 +90,6 @@ export async function buildEngine() {
   mkdirSync(join(dist, "engine"), { recursive: true });
   const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], metafile: true, logLevel: "warning" });
   writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
-  mkdirSync(join(dist, "service"), { recursive: true });
-  await build({ entryPoints: [join(root, "server/src/deploy-entry.ts")], outfile: join(dist, "service/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], logLevel: "warning" });
 }
 export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }
 if (!process.argv.includes("--skip-initial")) await buildAll();

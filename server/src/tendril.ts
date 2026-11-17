@@ -220,8 +220,6 @@ export class Tendril extends DurableObject<Env> {
     this.db.del("adopt");
     this.db.run("DELETE FROM tokens");
     const token = await this.addToken("main");
-    this.db.del("last_checkin");
-    this.db.del("wake_pending_since");
     addActivity(this, { kind: "adopted", summary: "A new agent session adopted this tendril; earlier agent tokens were revoked" });
     this.scheduleAlarm();
     return json(this.handle(token));
@@ -454,14 +452,14 @@ export class Tendril extends DurableObject<Env> {
     return last + AD_HOC_IDLE;
   }
 
-  // ---------------------------------------------------------------- agent auth and check-in
+  // ---------------------------------------------------------------- agent authentication
 
   /** Resolves identity only. Request handlers explicitly record agent activity. */
   async authAgent(req: Request): Promise<string> {
     return (await authenticateAgent(this, req)).name;
   }
 
-  /** Resolves identity without changing presence or pending wake state. */
+  /** Resolves a host agent's identity without changing stored activity. */
   async authToken(token: string): Promise<string> {
     return (await authenticateAgentToken(this, token)).name;
   }

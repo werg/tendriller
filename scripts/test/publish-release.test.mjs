@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import test from 'node:test';
 
 const fakeGh = `#!/usr/bin/env node
@@ -40,7 +39,9 @@ if(args[0]==='api'){
 `;
 
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'release-test-'));
+  const scratch = resolve(import.meta.dirname, '../../.build');
+  mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(join(scratch, 'release-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const dir of ['bin', 'dist', 'publisher', 'remote/assets']) mkdirSync(join(root, dir), { recursive: true });
   copyFileSync(new URL('../publish-release.mjs', import.meta.url), join(root, 'publisher/publish-release.mjs'));
@@ -59,7 +60,7 @@ function fixture(t) {
   return {
     root, source, manifest, commands,
     publish: (ref = 'refs/heads/release/v1.2.3', extraFiles = [], env = {}) => spawnSync(process.execPath, [join(root, 'publisher/publish-release.mjs'), ref, ...extraFiles], {
-      encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, TEST_RELEASE_ROOT: join(root, 'remote'), GITHUB_SHA: source, ...env },
+      encoding: 'utf8', env: { ...process.env, TMPDIR: root, PATH: `${join(root, 'bin')}:${process.env.PATH}`, TEST_RELEASE_ROOT: join(root, 'remote'), GITHUB_SHA: source, ...env },
     }),
     setTag: (sha = source, type = 'commit') => writeFileSync(join(root, 'remote/ref.json'), JSON.stringify({ ref: 'refs/tags/v1.2.3', object: { type, sha } })),
     setRelease: () => writeFileSync(join(root, 'remote/release'), 'v1.2.3'),
