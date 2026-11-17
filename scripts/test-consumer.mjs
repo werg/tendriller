@@ -91,6 +91,7 @@ assert.equal(typeof client.application, 'function');
 assert.equal(typeof client.peers.rendezvous, 'function');
 assert.equal(typeof client.peers.discover, 'function');
 assert.equal(typeof client.peers.application, 'function');
+assert.equal(typeof client.peers.definition, 'function');
 assert.equal(typeof client.peers.selectGeneration, 'function');
 assert.equal(typeof client.peers.listenInvitations, 'function');
 assert.equal(typeof client.peers.invite, 'function');

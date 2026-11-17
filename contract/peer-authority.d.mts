@@ -130,6 +130,245 @@ export interface PeerStore {
 	get(key: string): Promise<Uint8Array | null>;
 	put(key: string, value: Uint8Array): Promise<void>;
 }
+/** SQLite's five storage classes; the only values a transaction can bind. */
+export type SqlValue = {
+	readonly kind: "null";
+} | {
+	readonly kind: "integer";
+	readonly value: bigint;
+} | {
+	readonly kind: "real";
+	readonly value: number;
+} | {
+	readonly kind: "text";
+	readonly value: string;
+} | {
+	readonly kind: "blob";
+	readonly value: Uint8Array;
+};
+export interface SqlBinding {
+	readonly parameter: {
+		readonly kind: "index";
+		readonly index: number;
+	} | {
+		readonly kind: "name";
+		readonly name: string;
+	};
+	readonly value: SqlValue;
+}
+export interface SqlStatement {
+	readonly sql: string;
+	readonly bindings: readonly SqlBinding[];
+}
+export interface SealedContext {
+	readonly groupId: Uint8Array;
+	readonly policyId: Uint8Array;
+	readonly policyVersion: bigint;
+	readonly slot: string;
+	readonly dataVersion: bigint;
+}
+/** A policy snapshots each reader's registered HPKE key; key registration alone changes no policy. */
+export interface SealedRecipient {
+	readonly readerId: Uint8Array;
+	readonly publicKey: Uint8Array;
+}
+export interface SealedKeyWrap extends SealedRecipient {
+	readonly encapsulatedKey: Uint8Array;
+	readonly ciphertext: Uint8Array;
+}
+export interface SealedEnvelope {
+	readonly context: SealedContext;
+	readonly nonce: Uint8Array;
+	readonly ciphertext: Uint8Array;
+	/** Strictly increasing reader ids. Every current policy reader has exactly one wrap. */
+	readonly wraps: readonly SealedKeyWrap[];
+}
+export type SealedPlatformOp = {
+	readonly op: "register_reader_key";
+	readonly publicKey: Uint8Array;
+} | {
+	readonly op: "reader_policy";
+	readonly table: string;
+	readonly rowKey: readonly SqlValue[];
+	/** Absent only when creating a new policy generation (expectedVersion = 0). */
+	readonly expectedPolicyId?: Uint8Array;
+	readonly expectedVersion: bigint;
+	/** Signing-key ids, strictly sorted and unique. No owner or administrator is added implicitly. */
+	readonly readers: readonly Uint8Array[];
+} | {
+	readonly op: "sealed_put";
+	readonly policyId: Uint8Array;
+	readonly expectedPolicyVersion: bigint;
+	readonly expectedDataVersion: bigint;
+	readonly slot: string;
+	readonly envelope: SealedEnvelope;
+};
+export type GrantOperation = "insert" | "update" | "delete";
+export type CollectiveRole = "member" | "admin";
+/** The least role a collective member needs to insert, update or delete the collective's rows. */
+export interface CollectiveGovernance {
+	readonly insert: CollectiveRole;
+	readonly update: CollectiveRole;
+	readonly delete: CollectiveRole;
+}
+export interface MemberChange {
+	readonly member: Uint8Array;
+	/** A new role (inviting the key if it is not an active member), or `remove`. */
+	readonly role: CollectiveRole | "remove";
+}
+export type TransferScope = {
+	readonly kind: "row";
+	readonly table: string;
+	readonly rowKey: readonly SqlValue[];
+}
+/** Snapshot of every row the owner holds when offered; changes invalidate acceptance. */
+ | {
+	readonly kind: "all";
+};
+export type OwnershipPlatformOp = {
+	readonly op: "grant";
+	readonly table: string;
+	readonly grantee: Uint8Array;
+	/** Whose rows the grant covers; defaults to the signer. A row grant's grantor is the row's owner. */
+	readonly grantor?: Uint8Array;
+	/** Primary-key values of one row; absent for a whole-table grant. */
+	readonly rowKey?: readonly SqlValue[];
+	readonly operations: readonly GrantOperation[];
+	/** Columns an update may change; absent means every column. */
+	readonly columns?: readonly string[];
+} | {
+	readonly op: "revoke_grant";
+	readonly grantId: Uint8Array;
+} | {
+	readonly op: "create_collective";
+	readonly governance: CollectiveGovernance;
+	readonly invitees: readonly Uint8Array[];
+} | {
+	readonly op: "accept_membership";
+	readonly collectiveId: Uint8Array;
+} | {
+	readonly op: "leave";
+	readonly collectiveId: Uint8Array;
+} | {
+	readonly op: "set_members";
+	readonly collectiveId: Uint8Array;
+	readonly changes: readonly MemberChange[];
+} | {
+	readonly op: "transfer_offer";
+	readonly scope: TransferScope;
+	/** Defaults to the signer (a row offer: the row's owner). */
+	readonly fromOwner?: Uint8Array;
+	readonly toOwner: Uint8Array;
+	/** Move same-owner dependents along owner-composite ON UPDATE CASCADE foreign keys. */
+	readonly carry: boolean;
+} | {
+	readonly op: "transfer_accept";
+	readonly offerId: Uint8Array;
+} | {
+	readonly op: "transfer_cancel";
+	readonly offerId: Uint8Array;
+} | {
+	readonly op: "seed_rows";
+	readonly table: string;
+	/** Must include chronolog_owner: seeded rows keep their source owners. */
+	readonly columns: readonly string[];
+	readonly rows: readonly (readonly SqlValue[])[];
+}
+/** Closes fork seeding for good; the fork-seed plan ends with it. Genesis root only. */
+ | {
+	readonly op: "end_seeding";
+};
+export type PlatformOp = OwnershipPlatformOp | SealedPlatformOp;
+export type EventPayload = null | boolean | number | string | readonly EventPayload[] | {
+	readonly [key: string]: EventPayload;
+};
+export interface EmitStep {
+	readonly op: "emit";
+	readonly topic: string;
+	readonly payload: EventPayload;
+}
+/** One signed program, one outcome, and one atomic SQL/event visibility boundary. */
+export type ProgramStep = SqlStatement | PlatformOp | EmitStep;
+export interface ChangeProgram {
+	readonly version: 3;
+	readonly steps: readonly ProgramStep[];
+}
+/** The deliberately small JSON Schema subset accepted by application tools. */
+export type ApplicationInputSchema = ({
+	readonly type: "string";
+	readonly minLength?: number;
+	readonly maxLength?: number;
+	readonly enum?: readonly string[];
+} | {
+	readonly type: "number" | "integer";
+	readonly minimum?: number;
+	readonly maximum?: number;
+} | {
+	readonly type: "boolean" | "null";
+} | {
+	readonly type: "array";
+	readonly items: ApplicationInputSchema;
+	readonly minItems?: number;
+	readonly maxItems?: number;
+} | {
+	readonly type: "object";
+	readonly properties: Readonly<Record<string, ApplicationInputSchema>>;
+	readonly required?: readonly string[];
+	readonly additionalProperties?: false;
+} | {
+	readonly anyOf: readonly ApplicationInputSchema[];
+}) & {
+	readonly description?: string;
+};
+export type ApplicationInput<S extends ApplicationInputSchema> = ApplicationInputSchema extends S ? EventPayload : S extends {
+	readonly anyOf: readonly (infer T extends ApplicationInputSchema)[];
+} ? ApplicationInput<T> : S extends {
+	readonly type: "string";
+	readonly enum: readonly (infer T extends string)[];
+} ? T : S extends {
+	readonly type: "string";
+} ? string : S extends {
+	readonly type: "number" | "integer";
+} ? number : S extends {
+	readonly type: "boolean";
+} ? boolean : S extends {
+	readonly type: "null";
+} ? null : S extends {
+	readonly type: "array";
+	readonly items: infer T extends ApplicationInputSchema;
+} ? readonly ApplicationInput<T>[] : S extends {
+	readonly type: "object";
+	readonly properties: infer P extends Readonly<Record<string, ApplicationInputSchema>>;
+} ? {
+	readonly [K in keyof P as K extends RequiredInputKeys<S> ? K : never]: ApplicationInput<P[K]>;
+} & {
+	readonly [K in keyof P as K extends RequiredInputKeys<S> ? never : K]?: ApplicationInput<P[K]>;
+} : never;
+export type RequiredInputKeys<S> = S extends {
+	readonly required: readonly (infer K extends string)[];
+} ? K : never;
+/** Validate, copy and freeze JSON. Accessors, prototypes, undefined, NaN and sparse arrays fail. */
+export declare function parseApplicationInput(schema: ApplicationInputSchema, value: unknown): EventPayload;
+export declare function checkedApplicationInputSchema(value: ApplicationInputSchema): ApplicationInputSchema;
+export interface ApplicationDescription {
+	readonly id: string;
+	readonly version: string;
+	readonly schema: string | null;
+	readonly commands: readonly ApplicationEntryDescription[];
+	readonly queries: readonly ApplicationEntryDescription[];
+}
+export interface ApplicationEntryDescription {
+	readonly name: string;
+	readonly description: string;
+	readonly input: ApplicationInputSchema;
+}
+/** One bounded, executable schema contract is used by peers, host metadata, and tools. */
+export declare function validateApplicationDescription(value: ApplicationDescription): ApplicationDescription;
+/** Authenticates published schemas and semantic version without executable application code. */
+export declare function applicationDescriptionDigest(value: ApplicationDescription): Promise<string>;
+export declare function signApplicationSchema(payload: ApplicationSchema, signer: PeerIdentity): Promise<SignedApplicationSchema>;
+/** A trusted schema authority signs genesis state, independently of the control host. */
+export declare function verifyApplicationSchema(schema: SignedApplicationSchema, descriptor: ApplicationDescriptor): Promise<ChangeProgram>;
 export declare class PeerGenerationError extends Error {
 	readonly code: string;
 	constructor(code: string);

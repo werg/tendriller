@@ -37,7 +37,9 @@ from the SDK or page runtime. Configuration contains:
 | `historyId` | Stable application history identity |
 | `executionManifestDigest` | Exact deterministic execution profile |
 | `definitionDigest` | Public application command/query definition |
+| `definition` | Immutable portable description: id, version, schema, sorted command/query names and closed input schemas |
 | `schemaAdministrator`, `schemaDigest` | Authorized signed initial schema; null digest for events-only applications |
+| `schema` | Signed initial schema envelope matching `definition.schema`; omitted or null for events-only applications |
 | `epoch`, `keyDigest` | Initial encryption policy; no application body is uploaded |
 | `members` | Explicit device grants plus their authenticated account bindings |
 
@@ -64,6 +66,20 @@ with the signed descriptor, initial control and registry. Repeating the exact
 configuration returns the same identity and current authority. A different
 configuration is rejected. A missing retained identity or registry is an explicit
 unavailable condition; the host never silently rekeys or creates empty history.
+
+`peers.definition()` returns `{ descriptor, definition, schema }`. Chronolog's
+portable `applicationDescriptionDigest` validates the exact same public metadata
+used by sessions and agent tools. The host checks that digest before publication;
+clients check it against their pinned descriptor before using the schemas. Object
+inputs are closed, command/query names are unique and sorted, and metadata is
+limited to 256 KiB including the signed schema envelope. The host verifies that
+envelope with the declared schema administrator and checks its program against
+the published definition. It never executes the schema SQL.
+
+The immutable metadata and retained assets survive page versions and creator
+device loss. Reading the already signed metadata does not require the private
+control signer, while selecting a new generation does. Missing control identity
+therefore cannot cause the host to invent a new trust root or empty application.
 
 The initial signed control includes a visible hosted participant created by
 Chronolog's `controlParticipantGrant`: recovery and control administration only,
@@ -162,7 +178,7 @@ coordinator also disappears, peers retain local attempts while selection waits.
 Returning excluded work is inspected as an abandoned branch and can only return
 through deliberate new attempts. No old suffix is automatically readopted.
 
-The host MCP offers `peer_application`, `discover_peers`,
+The host MCP offers `peer_application`, `peer_definition`, `discover_peers`,
 `configure_peer_application`, `select_peer_generation` and
 `administer_peer_generation`. Routine application
 commands execute through the agent's own Chronolog session. The host MCP has no
@@ -173,3 +189,9 @@ reconciliation. Protect the complete prerequisite program when its business
 conditions must survive recovery. The preview's applied result does not promise
 irreversibility; neither does the unified target's selected-history final result
 when its documented recovery exception applies.
+
+The host is a Chronolog participant with a deliberately small control role. Its
+HTTP and hibernatable invitation transports do not determine its authority or
+subscribe it to ordinary application edits. Future publication facets can bind
+page/code manifests to content and explicit activation boundaries; the current
+publication and metadata APIs keep those concerns separate from command order.

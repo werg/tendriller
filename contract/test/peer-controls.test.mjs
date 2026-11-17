@@ -4,9 +4,10 @@ import { createPeersClient } from '../peers.mjs';
 
 test('peer control transport is explicit, carries exact transition bytes, and never submits a command', async () => {
   const calls = [], bundle = { descriptor: { payload: { profile: 'peer-generation-v1' } }, controls: [], generations: [] };
+  const publication = { descriptor: bundle.descriptor, definition: { id: 'test', version: '1', schema: null, commands: [], queries: [] }, schema: null };
   const generation = { id: 'generation', payload: { profile: 'peer-generation-v1' }, signature: 'signed' };
   const client = createPeersClient({ base: 'https://host.test', request: async (path, options) => {
-    calls.push({ path, options }); return ['peers/generations', 'peers/administration'].includes(path) ? generation : bundle;
+    calls.push({ path, options }); return path === 'peers/definition' ? publication : ['peers/generations', 'peers/administration'].includes(path) ? generation : bundle;
   } });
   assert.equal(calls.length, 0);
   assert.equal(await client.application(), bundle);
@@ -20,6 +21,8 @@ test('peer control transport is explicit, carries exact transition bytes, and ne
   const transition = { transitionId: 'owner-recovery', coordinator: 'real-peer', expectedGeneration: 'previous' };
   assert.equal(await client.administerGeneration(transition, { control }), generation);
   assert.deepEqual(calls[4], { path: 'peers/administration', options: { method: 'POST', body: { transition, control } } });
+  assert.equal(await client.definition(), publication);
+  assert.deepEqual(calls[5], { path: 'peers/definition', options: undefined });
 });
 
 test('peer control transport refuses malformed or foreign-profile authority responses', async () => {
@@ -27,4 +30,5 @@ test('peer control transport refuses malformed or foreign-profile authority resp
   await assert.rejects(client.application(), { code: 'invalid_response' });
   await assert.rejects(client.selectGeneration({}), { code: 'invalid_response' });
   await assert.rejects(client.administerGeneration({}), { code: 'invalid_response' });
+  await assert.rejects(client.definition(), { code: 'invalid_response' });
 });

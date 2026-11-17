@@ -14,9 +14,9 @@ const generation: string = view.generation;
 const finalRevision: string = view.finalRevision;
 declare const backend: PeerGenerationApplicationBackend;
 const profile: 'peer-generation-v1' = backend.profile;
-const phase: 'ready' | 'waiting' | 'recovering' | 'closed' = backend.status.phase;
+const phase: 'ready' | 'waiting' | 'recovering' | 'awaiting-keys' | 'closed' = backend.status.phase;
 const unsubscribe = backend.onStatus(status => { const connections: number = status.connectedPeers; void connections; });
-for (const notice of backend.inspectRecovery()) { const lost: boolean = notice.unknownLoss; void lost; }
+for (const notice of await backend.inspectRecovery()) { const lost: boolean = notice.unknownLoss; void lost; }
 void [applied, abandoned, missingAttempt, missingGeneration, generation, finalRevision, profile, phase, unsubscribe];
 const member: PeerApplicationMember = { publicKey: 'device', dataRole: 'member' };
 // @ts-expect-error Explicit grants include data authority instead of inventing a compatibility default.

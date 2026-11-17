@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, generationStartRoot,
   participantGrant, controlParticipantGrant,
-  type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
+  applicationDescriptionDigest, signApplicationSchema, verifyApplicationSchema, peerDigest,
+  type ApplicationDescription, type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
 import { api, apiJson, create, inDO, req, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 import { authenticateAgentToken } from '../src/access';
@@ -10,8 +11,11 @@ import { handlePeerGenerations } from '../src/peer-generations';
 import type { Tendril } from '../src/tendril';
 
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ ...participantGrant(peer.publicKey, { administrator: true }), ...extra });
+const definition: ApplicationDescription = { id: 'peer-test', version: '1', schema: null, commands: [{ name: 'edit', description: 'Publish an edit',
+  input: { type: 'object', properties: { progress: { type: 'number', minimum: 0.5 } }, additionalProperties: false } }], queries: [] };
+const definitionDigest = await applicationDescriptionDigest(definition);
 const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', executionManifestDigest: '12'.repeat(32),
-  definitionDigest: '34'.repeat(32), schemaAdministrator: peers[0].publicKey, schemaDigest: null, epoch: 0, keyDigest: '56'.repeat(32),
+  definition, definitionDigest, schemaAdministrator: peers[0].publicKey, schemaDigest: null, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) });
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
 async function admitGuest(h: Handle): Promise<string> {
@@ -75,7 +79,10 @@ it('publishes durable governance without a native resident, preserves root on re
   expect(resumed.descriptor).toEqual(initial.descriptor);
   expect((await page.api('PATCH', '', { lifetime: 'ad_hoc' })).status).toBe(409);
   expect(await (await page.api('PUT', 'peers/application', config)).json()).toEqual(resumed);
-  expect((await page.api('PUT', 'peers/application', { ...config, definitionDigest: '78'.repeat(32) })).status).toBe(409);
+  const changedDefinition = { ...definition, version: '2' };
+  expect((await page.api('PUT', 'peers/application', { ...config, definition: changedDefinition,
+    definitionDigest: await applicationDescriptionDigest(changedDefinition) })).status).toBe(409);
+  expect(await (await page.api('GET', 'peers/definition')).json()).toEqual({ descriptor: initial.descriptor, definition, schema: null });
 });
 
 it('selects one racing successor using the shared verifier and stores no application bodies', async () => {
@@ -366,4 +373,48 @@ it('rechecks local token revocation after asynchronous authorization before comm
   });
   const authority = await (await req(`${h.page_url}_tendril/peers/application`)).json() as AuthorityBundle;
   expect(authority.generations).toEqual([]);
+});
+
+it('requires immutable canonical public command/query metadata before publishing authority', async () => {
+  const a = await createPeerIdentity();
+  const page = await createTestPage({ application: { kind: 'peer', id: applicationId() } });
+  const config = configuration([a]), { definition: omitted, ...missing } = config;
+  expect((await page.api('GET', 'peers/definition')).status).toBe(409);
+  expect((await page.api('PUT', 'peers/application', missing)).status).toBe(400);
+  expect((await page.api('PUT', 'peers/application', { ...config, definitionDigest: '00'.repeat(32) })).status).toBe(400);
+  expect((await page.api('PUT', 'peers/application', { ...config, definition: { ...definition,
+    commands: [{ ...definition.commands[0], input: { type: 'object', properties: {} } }] } })).status).toBe(400);
+  expect((await page.api('PUT', 'peers/application', { ...config, schemaDigest: '78'.repeat(32) })).status).toBe(400);
+  expect((await page.api('GET', 'peers/application')).status).toBe(409);
+  const configured = await page.api('PUT', 'peers/application', config);
+  expect(configured.status).toBe(200);
+  const authority = await configured.json() as AuthorityBundle;
+  const participant = await page.participant();
+  const published = await (await participant.api('GET', 'peers/definition')).json() as { descriptor: AuthorityBundle['descriptor']; definition: ApplicationDescription; schema: null };
+  expect(published).toEqual({ descriptor: authority.descriptor, definition, schema: null });
+  expect(await applicationDescriptionDigest(published.definition)).toBe(authority.descriptor.payload.definitionDigest);
+  void omitted;
+});
+
+it('retains a verified signed genesis schema as metadata without executing SQL on the control host', async () => {
+  const a = await createPeerIdentity(), wrongSigner = await createPeerIdentity(), id = applicationId();
+  const h = await create({ application: { kind: 'peer', id }, listener: false, mode: 'dashboard' });
+  // Public Chronolog encodeChangeProgram(program('CREATE TABLE tasks (id INTEGER PRIMARY KEY)')).
+  const program = 'a2000301818200a200782b435245415445205441424c45207461736b732028696420494e5445474552205052494d415259204b4559290180';
+  const sqlDefinition: ApplicationDescription = { ...definition, id: 'sql-test', schema: program };
+  const digest = await applicationDescriptionDigest(sqlDefinition);
+  const payload = { applicationId: id, definitionDigest: digest, executionManifestDigest: '12'.repeat(32), program };
+  const schema = await signApplicationSchema(payload, a), invalid = await signApplicationSchema(payload, wrongSigner);
+  const config = { ...configuration([a]), definition: sqlDefinition, definitionDigest: digest, schema, schemaDigest: await peerDigest(schema) };
+  expect((await api(h, 'PUT', 'peers/application', { ...config, schema: invalid, schemaDigest: await peerDigest(invalid) })).status).toBe(403);
+  expect((await api(h, 'PUT', 'peers/application', { ...config, schema: null })).status).toBe(400);
+  expect((await api(h, 'GET', 'peers/application')).status).toBe(409);
+  const authority = await apiJson<AuthorityBundle>(h, 'PUT', 'peers/application', config);
+  const publication = await apiJson(h, 'GET', 'peers/definition');
+  expect(publication).toEqual({ descriptor: authority.descriptor, definition: sqlDefinition, schema });
+  expect((await verifyApplicationSchema(publication.schema, publication.descriptor.payload)).version).toBe(3);
+  expect(await inDO(h.id, t => t.db.one("SELECT name FROM sqlite_master WHERE name='tasks'"))).toBeNull();
+  await inDO(h.id, t => t.db.run('DELETE FROM membership_records WHERE key=?', 'peer-generation/identity'));
+  expect((await api(h, 'GET', 'peers/application')).status).toBe(503);
+  expect(await apiJson(h, 'GET', 'peers/definition')).toEqual(publication);
 });

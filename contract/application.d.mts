@@ -126,10 +126,10 @@ export interface PeerGenerationApplicationBackend<Program = unknown, QueryResult
   readonly operations: ApplicationOperations<PeerGenerationApplicationOperation>;
   readView(options?: { readonly view?: ApplicationView }): AppliedApplicationReadView<QueryResult, Parameter> | Promise<AppliedApplicationReadView<QueryResult, Parameter>>;
   onRecovery(listener: (notice: ApplicationRecoveryNotice) => void): () => void;
-  inspectRecovery(): readonly ApplicationRecoveryNotice[];
+  inspectRecovery(): Promise<readonly ApplicationRecoveryNotice[]>;
 }
 export interface PeerApplicationStatus {
-  readonly phase: 'ready' | 'waiting' | 'recovering' | 'closed';
+  readonly phase: 'ready' | 'waiting' | 'recovering' | 'awaiting-keys' | 'closed';
   readonly role: 'coordinator' | 'follower';
   readonly generation: string;
   readonly coordinator: string;

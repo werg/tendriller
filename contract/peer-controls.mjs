@@ -13,6 +13,13 @@ export function createPeerControlsClient(request) {
   };
   return Object.freeze({
     async application() { return authority(await request('peers/application')); },
+    async definition() {
+      const value = await request('peers/definition');
+      if (value?.descriptor?.payload?.profile !== 'peer-generation-v1' || !value.definition || typeof value.definition !== 'object' || Array.isArray(value.definition) ||
+          !Object.hasOwn(value, 'schema') || value.schema !== null && (typeof value.schema !== 'object' || Array.isArray(value.schema)))
+        throw Object.assign(new Error('Invalid peer definition response'), { code: 'invalid_response' });
+      return value;
+    },
     async configureApplication(configuration) { return authority(await request('peers/application', { method: 'PUT', body: configuration })); },
     async selectGeneration(signedRequest, options = {}) {
       return generation(await request('peers/generations', { method: 'POST', body: { request: signedRequest,

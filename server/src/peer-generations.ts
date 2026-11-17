@@ -1,10 +1,12 @@
 import {
   createPeerIdentity, exportPeerIdentity, importPeerIdentity, createGenerationRegistry, signApplicationDescriptor,
   signControlRevision, signTransitionRequest, participantGrant, controlParticipantGrant,
+  validateApplicationDescription, applicationDescriptionDigest, verifyApplicationSchema,
   peerDigest, encodePeerValue, decodePeerValue, verifyAuthorityBundle,
   PEER_GENERATION_PROFILE, PEER_GENERATION_POLICY,
   type AuthorityBundle, type GenerationRegistry, type PeerIdentity, type PeerStore, type PeerGrant,
   type SignedApplicationDescriptor, type SignedControlRevision, type SignedTransitionRequest, type TransitionRequest,
+  type ApplicationDescription, type SignedApplicationSchema,
 } from '@chronolog/peer-generation/control';
 import { accountActive, pageAccessAllowed, currentPrincipal, type Principal } from './access';
 import { selectedApplication } from './application';
@@ -15,8 +17,10 @@ import { changeLifetime, hasResidentStorage } from './lifetime';
 const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts', IDENTITY = 'peer-generation/identity';
 const VALUE_LIMIT = 16 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 4;
+const PUBLICATION_LIMIT = 256 * 1024;
 interface Configuration {
   descriptor: SignedApplicationDescriptor; control: SignedControlRevision; fingerprint: string;
+  definition: ApplicationDescription; schema: SignedApplicationSchema | null;
 }
 interface AccountBinding { publicKey: string; accountId: string }
 interface HostState {
@@ -82,6 +86,22 @@ function object(value: unknown, fields: readonly string[]): Record<string, any> 
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(field => !fields.includes(field)))
     throw new HttpError(400, 'bad_request', 'Unexpected peer control fields');
   return value as Record<string, any>;
+}
+async function publication(value: Record<string, any>) {
+  try {
+    const definition = validateApplicationDescription(value.definition), schema = value.schema ?? null;
+    if (new TextEncoder().encode(JSON.stringify({ definition, schema })).byteLength > PUBLICATION_LIMIT)
+      throw new HttpError(413, 'peer_publication_too_large', 'Published definition and signed schema are limited to 256 KiB');
+    if ((definition.schema === null) !== (schema === null) || schema !== null && schema.payload?.program !== definition.schema ||
+        schema === null && (value.schemaDigest ?? null) !== null)
+      throw new HttpError(400, 'peer_schema_definition_mismatch', 'The signed genesis schema must match the published definition');
+    const digest = await applicationDescriptionDigest(definition);
+    if (digest !== value.definitionDigest) throw new HttpError(400, 'peer_definition_digest_mismatch', 'The published definition does not match its pinned digest');
+    return { definition, schema: schema as SignedApplicationSchema | null, digest };
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, 'peer_definition_invalid', error instanceof Error ? error.message : 'Invalid application definition');
+  }
 }
 function accounts(value: unknown, defaultAccount?: string): AccountBinding[] {
   if (!Array.isArray(value) || value.length > 1024) throw new HttpError(400, 'bad_request', 'Expected bounded device/account bindings');
@@ -154,10 +174,20 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         const bundle = await (await registry(t, state)).read();
         await freshAccess(t, principal); return json(bundle);
       }
+      if (path === 'peers/definition' && req.method === 'GET') {
+        const configured = t.db.get<Configuration | null>(CONFIG, null);
+        if (!configured) throw new HttpError(409, 'peer_application_unconfigured');
+        if (!configured.definition || configured.schema === undefined) throw new HttpError(503, 'peer_publication_state_missing');
+        await freshAccess(t, principal);
+        return json({ descriptor: configured.descriptor, definition: configured.definition, schema: configured.schema });
+      }
       if (path === 'peers/application' && req.method === 'PUT') {
         const owner = identity(t, principal, true);
-        const value = object(input, ['historyId', 'executionManifestDigest', 'definitionDigest', 'schemaAdministrator', 'schemaDigest', 'epoch', 'keyDigest', 'members']);
-        const fingerprint = await peerDigest(value), configured = t.db.get<Configuration | null>(CONFIG, null);
+        const value = object(input, ['historyId', 'executionManifestDigest', 'definition', 'definitionDigest', 'schema', 'schemaAdministrator', 'schemaDigest', 'epoch', 'keyDigest', 'members']);
+        const published = await publication(value);
+        // Description schemas can contain fractional bounds; their portable digest
+        // binds the complete canonical metadata without narrowing it to control integers.
+        const fingerprint = await peerDigest({ ...value, definition: published.digest }), configured = t.db.get<Configuration | null>(CONFIG, null);
         if (configured) {
           if (configured.fingerprint !== fingerprint) throw new HttpError(409, 'peer_application_immutable', 'The application descriptor and initial policy are immutable');
           const bundle = await (await registry(t, state)).read(); await freshAccess(t, principal); identity(t, principal, true); return json(bundle);
@@ -181,6 +211,7 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
         const descriptor = await signApplicationDescriptor({ applicationId, historyId: value.historyId,
           profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY, controlPublicKey: signer.publicKey,
           schemaAdministrator: value.schemaAdministrator, schemaDigest: value.schemaDigest ?? null, executionManifestDigest: value.executionManifestDigest, definitionDigest: value.definitionDigest }, signer);
+        if (published.schema !== null) await verifyApplicationSchema(published.schema, descriptor.payload);
         const control = await signControlRevision({ applicationId, profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY,
           revision: 0, previous: null, epoch: value.epoch, keyDigest: value.keyDigest, grants, recoveryFloor: null }, signer);
         const staged = new Map<string, Uint8Array>();
@@ -199,7 +230,7 @@ async function processPeerGenerations(t: Tendril, req: Request, path: string, pr
           if (t.db.get(CONFIG, null)) throw new HttpError(409, 'peer_application_conflict');
           if (t.db.get('membership_configuration', null)) throw new HttpError(409, 'peer_profile_conflict');
           for (const [key, bytes] of staged) t.db.run('INSERT INTO membership_records(key,value) VALUES(?,?)', key, bytes.buffer);
-          t.db.set(CONFIG, { descriptor, control, fingerprint }); t.db.set(ACCOUNTS, bindings);
+          t.db.set(CONFIG, { descriptor, control, fingerprint, definition: published.definition, schema: published.schema }); t.db.set(ACCOUNTS, bindings);
         });
         return json(bundle);
       }

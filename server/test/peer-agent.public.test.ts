@@ -55,6 +55,7 @@ it("guides peer agents to their selected backend and exposes only host tools", a
   const names = (await rpc("tools/list")).result.tools.map((tool: { name: string }) => tool.name);
   expect(names).toContain("publish_publication"); expect(names).toContain("tendril_info");
   expect(names).toContain("discover_peers"); expect(names).toContain("peer_application");
+  expect(names).toContain("peer_definition");
   expect(names).toContain("select_peer_generation");
   expect(names).toContain("administer_peer_generation");
   for (const name of ["read_events", "say", "get_state", "create_timer", "append_stream", "claim_event_consumer", "probe_delivery", "write_shared_file", "delete_shared_file"])

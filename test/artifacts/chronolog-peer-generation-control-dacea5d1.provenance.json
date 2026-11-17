@@ -1,6 +1,6 @@
 {
   "repository": "werg/chronolog-db",
-  "source": "b2e18239b21c115f98ab677ae9d170443a9c671a",
+  "source": "dacea5d1d864ad6cca300b956f0a655e58178a2c",
   "profile": "peer-generation-v1",
   "dirty": false,
   "inputs": [
@@ -21,6 +21,8 @@
     "packages/peer-generation/src/codec.ts",
     "packages/peer-generation/src/control-types.ts",
     "packages/peer-generation/src/control.ts",
+    "packages/peer-generation/src/definition.ts",
+    "packages/peer-generation/src/schema.ts",
     "packages/protocol/src/bytes.ts",
     "packages/protocol/src/cbor.ts",
     "packages/protocol/src/errors.ts",
@@ -37,7 +39,7 @@
     "packages/protocol/src/views.ts"
   ],
   "sha256": {
-    "control.mjs": "a516669837fc799bdf4b94321ed7809887cd3c9dd6f57197bbc37852205ceedb",
-    "control.d.ts": "70d86bc7944c2dadf333f2074ab71b6d55e959ff3bcdd4f45e72ad076d508d23"
+    "control.mjs": "8b054231d0d8ac3bae18a65d14f88fd904b7959506496cdc9488b9e22e15046a",
+    "control.d.ts": "9ac1eeebb87e18ddae2a76b81b3b2d9a40d10113ed3dabc3ab51fc0bb03f34b4"
   }
 }
