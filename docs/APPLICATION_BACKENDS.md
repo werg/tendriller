@@ -3,8 +3,7 @@
 A page selects one application history at creation. Tendriller hosts the page,
 account sessions, publication recovery, explicit blob facilities, connection hints
 and short-lived WebRTC rendezvous. The selected backend owns application persistence, authored operations,
-retry identity, execution and event replay. The current Tendriller application
-contract is for live collaboration and includes finality.
+retry identity, execution, event replay, and finality.
 
 For a resident native agent deployment, select a Chronolog peer backend. Run a
 replica, timers and effect workers in the resident agent service. A finality
@@ -30,19 +29,6 @@ to Cloudflare or to a different finality policy. Chronolog replicas always use
 the same signed author-time execution order. A finality provider supplies
 inclusion evidence and closes the author-time frontier; it does not choose that
 execution order.
-
-Timestamp-ordered live collaboration is the default Chronolog interpretation for
-Tendriller. A local provisional suffix provides responsive editing while a
-steadily advancing closed author-time frontier settles results. Closing time
-requires authenticated evidence and complete admitted history, not merely a
-wall-clock delay. Missing proof, bodies or keys keep progress pending.
-
-A future asynchronous branch/merge interpretation can reuse signed operations,
-timestamp ordering and deterministic replay while choosing histories through
-different inclusion and merge rules. It has **no finality concept**. Branch tips
-are not final frontiers, and it would not implement this live contract by
-inventing dummy final states or final-intent readers. That mode is not implemented
-by the current Tendriller adapter.
 
 ## Installation and readiness
 
@@ -108,6 +94,12 @@ produced a result. Both provisional outcomes can change during replay. Both fina
 outcomes are settled. In particular, `status:'final'` alone does **not** mean that
 the operation succeeded: check `outcome:'accepted'` as well.
 
+The TypeScript contract expresses this as a discriminated union: `queued` has no
+outcome, and both executed states require one. The default public backend returns
+an `ApplicationOperation` from `submit` and `events.publish`, so page code can
+inspect it directly without guessing a backend-specific return type. Exact
+retries can return the original final outcome immediately.
+
 | Status | Outcome | Meaning |
 | --- | --- | --- |
 | `queued` | Absent | The original operation is saved or submitted; no execution result is established |
@@ -137,7 +129,10 @@ has `id`, `proposalId`, `eventOrdinal`, `topic`, `payload`, and `origin`. The ev
 identity is derived from its proposal and ordinal. Topics filter a shared history;
 they have no separate sequencer and do not provide confidentiality.
 
-`origin` is authenticated backend metadata. Every backend supplies `kind`,
+An event returned by the selected, validated backend carries authenticated
+metadata in `origin`. An arbitrary object with an `origin` field proves nothing;
+trust comes from that backend's authenticated publication and read path.
+Every backend supplies `kind`,
 `authorId`, and `operationId`; backend-specific fields describe how the author
 was authorized. Hosted events retain their application identity and authenticated
 `owner` or `agent` role. Chronolog retains the signed group, author, membership
@@ -146,6 +141,15 @@ original provenance. Fields named `author`, `role`, or `origin` inside `payload`
 remain application data. Check the trusted origin against application policy
 before treating an event as an instruction. Being an accepted event does not by
 itself authorize an agent to execute its text.
+Chronolog `authorId` is lowercase hexadecimal; `groupId`, `membershipRevision`
+and `writerCapability` use canonical base64url. Operation IDs are chosen by
+callers and proposal IDs are opaque. Preserve identifiers unchanged.
+`authorTimestampMs` is the signed integer timestamp encoded as a
+decimal string. Static membership policies
+use `writerCapability:null`; governed groups retain the exact signed grant.
+This metadata describes the original publication. A current permission check,
+tool credential, or approved external action remains an application policy
+decision. A durable worker retains the origin with its intent through recovery.
 
 Cursors and revisions are opaque. Store and return them unchanged. A continuation
 binds the history and normalized topic filter. Changing a filter requires a new
@@ -222,9 +226,9 @@ permission to impersonate an owner or system role. Use the event's authenticated
 `origin` and application policy when presenting a message.
 
 Presence, typing, token chunks, and replaceable progress use
-[`tendril.signals`](APPLICATION_SIGNALS.md). Hosted pages receive it automatically;
-peer pages install it independently with `tendril.signals.install(client.signals)`.
-Use `send` and `subscribe`; choose
+[`tendril.signals`](APPLICATION_SIGNALS.md). Hosted owner pages already have the
+live port; peer composition installs it independently with
+`tendril.signals.install(client.signals)`. Use `send` and `subscribe`; choose
 `mode:'latest'` only for replaceable values. Default FIFO preserves pending
 discrete events within explicit bounds. Signals require no program, SQL engine,
 outbox or finality service. End a generated response with a durable

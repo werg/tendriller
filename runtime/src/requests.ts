@@ -63,13 +63,16 @@ export function createRequests(host: RequestHost, clock: Clock = globalThis) {
         };
         request.cleanup = () => options.signal?.removeEventListener("abort", cancel);
         options.signal?.addEventListener("abort", cancel, { once: true });
-        if (policy.request === "outbox") host.enqueue(msg);
-        else if (!(host.connected() && host.send(msg))) {
-          if (policy.request === "connected") {
-            remove(request);
-            reject(failure("offline", policy.disconnectMessage || "Connection closed"));
-          } else memory.push(msg);
-        }
+        try {
+          if (policy.request === "outbox") host.enqueue(msg);
+          else if (!(host.connected() && host.send(msg))) {
+            if (policy.request === "connected") {
+              remove(request);
+              reject(failure(host.connected() ? policy.busyCode || "offline" : "offline",
+                host.connected() && policy.busyMessage || policy.disconnectMessage || "Connection closed"));
+            } else memory.push(msg);
+          }
+        } catch (error) { remove(request); reject(error); }
       });
     },
     /** A correlated ACK still continues through the caller's domain acknowledgement handler. */

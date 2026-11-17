@@ -11,7 +11,7 @@ import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi } from "../../contract/index.mjs";
 import { createSignalBinding } from "../../contract/signals.mjs";
-import { createHostedSignals } from './signals';
+import { createHostedSignals } from "./signals";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<void> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;

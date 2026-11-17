@@ -291,7 +291,8 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
     if (rawSend({ t: "health", version: cfg.version, visible: true, ...pendingHealth })) pendingHealth = null;
   };
   const receipts = createCommandReceipts(() => connection.connected);
-  const requests = createRequests({ connected: () => connection.connected, send: rawSend,
+  const requests = createRequests({ connected: () => connection.connected,
+    send: message => ["signal_send", "signal_subscribe", "signal_unsubscribe"].includes(message.t) ? connection.sendLive(message) : rawSend(message),
     enqueue: message => enqueue(message), newCid });
   window.addEventListener("online", connection.reconnect);
   document.addEventListener("visibilitychange", () => {

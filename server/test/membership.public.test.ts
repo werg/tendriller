@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { decodeSignedGenesis, encodeSignedEnrollmentRequest, loadOrCreateEnrollmentIdentity,
   membershipDescriptor, prepareEnrollmentRequest, provisionMembership, createMembershipLedgerClient,
   type DurableOperationStore } from '@chronolog/membership';
@@ -134,6 +134,35 @@ it('requires an owned resident peer page and a complete explicit public configur
   expect((await page.api('PUT', 'members', missing)).status).toBe(400);
   expect((await page.api('PUT', 'members', { ...config(), nativeAuthority: { ...config().nativeAuthority, url: 'http://example.test/' } })).status).toBe(400);
   expect((await body<MembershipInfo>(await page.api('GET', 'members'))).descriptor).toBeNull();
+});
+
+it('requires explicit writer rights before staging an approval and leaves sync free of invalid decisions', async () => {
+  const page = await createTestPage({ application: { kind: 'peer', id: 'membership' }, lifetime: 'resident' });
+  await body(await page.api('PUT', 'members', config()));
+  const info = await body<MembershipInfo>(await page.api('GET', 'members'));
+  const accepted = await body<MemberRequest>(await page.api('POST', 'members/requests', { signedRequest: await request(info) }));
+  const decision = { operationId: 'reviewed-approval', requestId: accepted.id, grantFullHistory: true };
+  const outbound = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+  try {
+    for (const rights of [{ roles: ['reader', 'writer'] }, { roles: ['reader'], writerProgram: { sql: false, topics: [], signals: [] } }]) {
+      const response = await page.api('POST', 'members/approve', { ...decision, ...rights });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: 'bad_request', message: 'writerProgram is required exactly when roles includes writer' } });
+    }
+    expect(outbound).not.toHaveBeenCalled();
+    expect((await body<MembershipInfo>(await page.api('GET', 'members'))).pendingActions).toBe(0);
+    expect((await body<MemberRequest>(await page.api('GET', `members/requests/${accepted.id}`))).status).toBe('requested');
+    // Sync can still reach the native authority: no malformed durable decision
+    // runs first and wedges resume. This fixture deliberately keeps it offline.
+    const syncing = await page.api('POST', 'members/sync');
+    expect(syncing.status).toBe(503);
+    expect(await syncing.json()).toMatchObject({ error: { code: 'membership_pending' } });
+    expect(outbound).toHaveBeenCalled();
+    expect((await body<MembershipInfo>(await page.api('GET', 'members'))).pendingActions).toBe(0);
+    // The same operation ID remains available for a correctly reviewed choice.
+    expect((await page.api('POST', 'members/approve', { ...decision, roles: ['reader'] })).status).toBe(503);
+    expect((await body<MembershipInfo>(await page.api('GET', 'members'))).pendingActions).toBe(1);
+  } finally { outbound.mockRestore(); }
 });
 
 it('keeps a stalled enrollment body outside the administration queue and rechecks access when it arrives', async () => {

@@ -6,6 +6,8 @@ export interface DeliveryPolicy {
   readonly disconnect: "wait" | "reject";
   readonly offlineMessage?: string;
   readonly disconnectMessage?: string;
+  readonly busyCode?: string;
+  readonly busyMessage?: string;
 }
 
 const MEMORY: DeliveryPolicy = Object.freeze({ raw: "memory", request: "memory", outboxCompletion: "written", disconnect: "wait" });
@@ -28,6 +30,7 @@ const SIGNAL_REQUEST: DeliveryPolicy = Object.freeze({
   ...TRANSIENT, request: "connected", disconnect: "reject",
   offlineMessage: "Live signals need a connected page",
   disconnectMessage: "Live signal connection closed",
+  busyCode: "signal_backpressure", busyMessage: "Live signal route is busy",
 });
 
 /** Explicit operation names prevent new APIs accidentally inheriting a prefix policy. */

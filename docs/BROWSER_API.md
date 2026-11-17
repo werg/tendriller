@@ -51,10 +51,14 @@ progress for application/network readiness.
 
 ## Live application signals
 
-`tendril.signals` is an independent messaging port. Hosted pages receive it over
-their existing authenticated socket. On a peer page, install
-the public peer client's implementation with
-`tendril.signals.install(client.signals)`, or pass `{signals}` to `startRuntime`.
+`tendril.signals` is independent of durable application history. Hosted owner
+pages receive an installed live port over their existing authenticated page
+socket; guests and displays cannot publish or subscribe under this built-in
+hosted policy. Other audiences use an explicitly selected live implementation
+and authorization policy; the common port does not impose an owner-only model.
+A peer page starts with
+an uninstalled port. Its bootstrap installs the public peer client's implementation
+with `tendril.signals.install(client.signals)`, or passes `{signals}` to `startRuntime`.
 Its `available` flag reports installation; `ready()` explicitly waits for it.
 Sending or subscribing before installation fails immediately with
 `signal_unavailable` and queues nothing.
@@ -62,8 +66,16 @@ Sending or subscribing before installation fails immediately with
 Use `send(topic, json, {ttlMs?,signal?})` and
 `subscribe({topics?,mode?:'all'|'latest',signal?})`. Default `all` preserves pending
 messages within a bounded FIFO; `latest` coalesces replaceable values. This port
-works without a durable application backend. The binding creates no extra connection,
-outbox, SQL transaction or finality request. See [live signals](APPLICATION_SIGNALS.md)
+works without waiting for durable application readiness. The binding creates no
+connection itself; a hosted port reuses the page socket and a peer port uses its
+own selected live route. Peer compositions can explicitly install a hosted port
+if host account authorization is the desired live policy; this grants no
+Chronolog permissions and creates no automatic fallback. The hosted port
+registers a server subscription only while local
+readers exist, restores it after reconnect, and discards old queued values and
+in-flight sends. Ordinary live pressure does not close the shared page socket.
+Neither port creates an outbox, SQL transaction or finality request.
+See [live signals](APPLICATION_SIGNALS.md)
 for envelopes, error handling, authorization and expiring views.
 
 For peer application projections, `application.changes({view:'local',signal})`

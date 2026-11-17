@@ -13,14 +13,17 @@ assert that a state change succeeded. See [application backends](APPLICATION_BAC
 
 `@tendriller/core/signals` exports the dependency-free `Signals` contract and
 `createSignalBinding`. The browser exposes that binding as `tendril.signals`.
-It is independent of `tendril.application`. Hosted pages receive an implementation
-over their existing authenticated page socket. Peer pages install their chosen
-implementation explicitly; the binding itself starts no network connection.
+It is independent of `tendril.application`.
+
+A hosted Cloudflare page already has its live implementation installed. It uses
+the page's existing authenticated connection and bypasses its command outbox.
+A peer page installs its selected live implementation explicitly:
 
 ```js
-// Peer composition owns connections and authentication. The public Chronolog client
+// Peer composition only. A hosted Cloudflare page already has its signal port.
+// Composition owns connections and authentication. The public Chronolog client
 // talks to the replica's owning Worker; page code does not hold its private keys.
-tendril.signals.install(client.signals); // Omit on hosted pages: already installed.
+tendril.signals.install(client.signals);
 
 // No operation ID, transaction, or durable retry follows this call.
 await tendril.signals.send('typing', { active: true }, { ttlMs: 1500 });
@@ -65,15 +68,17 @@ every sample or chunk must be recoverable. Even a reliable transport cannot
 deliver through a disconnected session indefinitely.
 
 The binding's `available` flag means an implementation is installed, not that a
-remote peer is reachable. It is already true on hosted pages. `ready()` explicitly
-waits for installation on a peer page. Calling
+remote peer is reachable. `ready()` explicitly waits for installation. Calling
 `send` or `subscribe` before installation fails with `signal_unavailable`, so
 stale messages cannot accumulate while bootstrap runs. Install once; the signal
-implementation owns its connection lifetime. Custom browser bootstraps can instead pass
+implementation owns its connection lifecycle. The hosted page port registers one
+server subscription while local readers exist, unregisters it when the last
+reader ends, and restores that registration on the page's existing reconnects.
+It discards pending delivery at disconnect and sends no previous messages on the
+new connection. A new subscription starts with future traffic; it has no catch-up.
+Custom browser bootstraps can instead pass
 `{signals: client.signals}` to `startRuntime`. No database backend installation is
-required by either form. Start live subscriptions independently of application
-catch-up or finality. A standard SQL-peer bootstrap still opens its replica before
-exposing its governed port; use a standalone channel when no SQL engine is needed.
+required by either form.
 
 ## Standalone or governed peers
 
@@ -101,66 +106,106 @@ comes from the selected encrypted transport and its admission policy. Applicatio
 policy decides whether that sender may issue instructions; receiving a message
 on a topic named `instruction` is insufficient.
 
-## Hosted application signals
+## Hosted owner and agent sessions
 
-The default hosted runtime supplies `tendril.signals` with no stream creation or
-schema setup. Native agents explicitly open a live connection with the public SDK:
+The SDK opens an explicit live connection. Constructing the host client does not
+connect, poll, register a wake listener, or start an agent conversation:
 
 ```js
-const signals = await host.connectSignals({ signal: lifetime.signal });
+const host = createClient(pageHandle);
+const signals = await host.connectSignals({ signal: stop.signal });
 try {
-  await signals.send('run.progress', { runId, completed: 3 }, { ttlMs: 2000 });
-  for await (const message of signals.subscribe({
-    topics: ['attention'], mode: 'latest', signal: lifetime.signal,
-  })) {
-    // Check authenticated sender + application policy before acting on suggestions.
-    observeAttention(message);
+  const input = signals.subscribe({ topics: ['preview/control'] });
+  await signals.send('progress', { completed: 3, total: 10 }, { ttlMs: 5000 });
+  for await (const message of input) {
+    // Enforce application policy using authenticated authorId, never payload.role.
+    inspectPreviewControl(message.authorId, message.payload);
   }
 } finally {
   signals.close();
 }
 ```
 
-The SDK socket uses the agent token in a WebSocket subprotocol header. It has no
-automatic reconnect or retry. A fresh connection is a fresh live session. Browser
-subscriptions follow the page's existing reconnect lifecycle, discard pending
-messages at disconnect, and resume with new traffic only.
+`connectSignals` resolves after the host establishes the session. The returned
+object implements `send` and `subscribe`, exposes current `connected`, and has
+an idempotent `close()`. A disconnect ends this explicit agent session. Open a new
+session when desired; the SDK has no automatic reconnect or replay loop. The
+connection abort signal closes it and releases pending reads and sends.
 
-A peer-history page can explicitly choose this hosted channel too, using
-`connectHostedSignals` or the native client's `connectSignals`. Install that port
-in its signal binding when hosted live delivery is the intended route. The
-default peer runtime waits for the chosen port and opens no host signal socket.
-Hosted delivery uses page accounts and host credentials; those permissions do
-not confer Chronolog reader or writer rights.
+A peer-history page can explicitly select this hosted live route too, using
+`connectHostedSignals` or the native client's `connectSignals`, then installing
+the returned port in its signal binding. The default peer runtime opens no host
+socket and never falls back to hosted signals while peer services initialize.
+This explicit transport choice uses host accounts and agent credentials; it
+confers no Chronolog reader, SQL, publication or signal grant.
 
-Owners, approved guests and agents may send. Display links may receive. Every
-participant sees only its selected page's live scope, but topics do not restrict
-the audience within that scope. Use a different authorized channel for private
-messages. The host supplies the sender identity, session and sequence; payload
-fields cannot impersonate an owner or authorize an agent instruction. Current
-credentials and account access are checked during delivery.
+Hosted signals are private to currently authorized **owners and agent tokens**.
+Guests, display links, producer tokens and unauthenticated connections cannot
+publish or receive them. This is the built-in hosted authorization policy. The
+common `Signals` interface and standalone signed signals support other audiences
+through an explicitly selected implementation and authorization policy. Choose
+such a policy when building guest collaboration or public display updates.
 
-Hosted limits are a 16 KiB frame, a 30 second maximum TTL (5 seconds by default),
-32 pending sends, 64 subscriptions and 64 queued messages per subscription.
-Each `latest` subscription tracks at most 256 author/session/topic identities.
-It suppresses older sequence numbers even after the latest value was consumed,
-until earlier frames can no longer be live. Exhausting that protected tracking
-bound ends only the affected subscription with `signal_overflow`.
-Senders may dispatch 50 messages per second. Dedicated SDK connections are bounded
-to 32 per page. Overload is explicit and stale work is discarded. The host stores
-session/rate metadata but no live payload, application receipt, event or replay
-history. Live dispatch does not synchronize workflows or wake the agent.
+The host authenticates the original sender and supplies
+`account:<account-id>` or `agent:<token-name>` as `authorId`, a fresh connection
+session, a sequence and application scope. Clients cannot choose these fields.
+The sender chooses the bounded lifetime; the host checks it before dispatch and
+after asynchronous authorization without renewing it.
+Confidentiality and origin trust come from the authenticated TLS session; these
+envelopes are not independently signed peer proofs. Topic names are filtering,
+not additional permissions or a reason to obey received text.
 
-On a shared page socket, excess live sends receive `signal_overflow`, and a
-congested recipient can lose live deliveries. Neither condition closes that
-socket or interrupts durable application requests. A dedicated signal socket
-may close under sustained pressure; open a fresh session for subsequent traffic.
+The host checks sender and recipient credentials again during asynchronous
+delivery. Revoking a token or owner session stops its participation. A signal
+socket does not register a browser device, update conversation presence, append
+an application/event/stream record, or wake a conversational agent. Only bounded
+per-connection sequence, subscription and rate metadata accompany the live
+socket; payloads are not retained in storage. Selecting this route does not
+enable hosted durable application operations on a peer-history page.
 
-## Producer streams
+| Hosted bound | Limit |
+| --- | ---: |
+| JSON payload / wire frame | 16 KiB / 20 KiB |
+| TTL | 1–30,000 ms; default 5,000 ms; maximum future clock skew 2,000 ms |
+| Outstanding sends / subscriptions | 32 / 16 |
+| Queue per subscription | 64 messages and 256 KiB |
+| Protected latest-value identities per subscription | 256 author/session/topic keys |
+| Dedicated live connections / subscribed recipient routes | 64 / 64 |
+| Publication rate per connection | 50 messages/second |
+| Authorization work | One send per connection, eight sends per hosted application |
+| Request deadline | Earlier of message TTL and 10 seconds; controls use 10 seconds |
+
+Expiry starts at the sender's attempt and is checked again at host dispatch.
+Both machines need a usable wall clock. Delayed work expires instead of receiving
+a fresh lifetime. Cancellation, timeout and pressure never schedule a retry;
+some recipients may already have received a message whose send reports an
+error. An invalid message or ordinary live pressure does not close a hosted
+page's durable application connection. `signal_backpressure` rejects excess
+local sends; busy recipient routes may drop a dispatch. The host retains no
+authorization backlog. A send that succeeds may have no listening recipients.
+The subscription's `all` overflow is an explicit gap; `latest` retains a bounded
+per-sender sequence high-water mark after consumption and reconnect until all
+earlier frames must have expired, so an older value with a longer TTL cannot
+replace a newer one. Both modes fail that subscription visibly
+when its byte or sender bounds are exceeded.
+
+SDK connections close when their owner aborts or calls `close()`. Shared page
+subscriptions attempt one bounded unsubscribe when a subscribe acknowledgement
+is uncertain; they do not retry indefinitely. Cancelling a send releases its
+pending request but cannot retract bytes already dispatched. Custom transports
+used with `createHostedSignalPort` must respect the supplied request abort signal
+and report connect/disconnect transitions; uncooperative requests continue to
+occupy their work budget until they settle.
+An actual transport send failure may close a dedicated signal socket. Live
+delivery never closes a shared page socket, and ordinary congestion closes
+neither kind of connection.
+
+## Named producer streams
 
 For the Cloudflare application backend, [named ephemeral streams](STREAMS.md)
-serve scoped collector ingestion with explicit stream readers and producer
-permissions. Choose them when that stream administration is part of the task:
+remain a separate hosted ingestion facility with explicit audience, producer
+and retention policy. They are useful when those stream features are needed;
+creating a named stream is not required for ordinary application signals:
 
 ```js
 // Create once with the agent SDK.

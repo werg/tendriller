@@ -6,7 +6,7 @@ import { createStreamsClient } from "./streams-client.mjs";
 import { createBlobClient } from "./blobs-client.mjs";
 import { createRecordLogClient } from "./records.mjs";
 import { createMembersClient } from "./members.mjs";
-import { connectHostedSignals, HOSTED_SIGNAL_PROTOCOL } from './hosted-signals.mjs';
+import { connectHostedSignals, HOSTED_SIGNAL_PROTOCOL } from "./hosted-signals.mjs";
 
 export class ApiError extends Error {
   constructor(status, error) {

@@ -126,6 +126,16 @@ void members.configure(configuration);
 void members.history({after:0, limit:128});
 const backend: ApplicationBackend = await page.application.ready();
 const operation: ApplicationOperation | null = await backend.operations.get('stable-operation');
+const submitted: ApplicationOperation = await backend.events.publish('conversation', {text:'Hello'}, {operationId:'typed-operation'});
+if (submitted.status === 'final') {
+  const outcome:'accepted'|'rejected' = submitted.outcome;
+  void outcome;
+}
+// @ts-expect-error a final result must say whether execution accepted or rejected it.
+const missingOutcome: ApplicationOperation = {operationId:'id',proposalId:'proposal',status:'final'};
+// @ts-expect-error queued is preparation, not an executed outcome.
+const prematureOutcome: ApplicationOperation = {operationId:'id',proposalId:'proposal',status:'queued',outcome:'accepted'};
+void [missingOutcome,prematureOutcome];
 for await (const status of backend.operations.subscribe({operationId:'stable-operation'})) { const id:string = status.proposalId; void id; }
 const view = await backend.readView({view:'final'});
 const eventBatch = await view.readEvents({topics:['conversation']});

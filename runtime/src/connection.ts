@@ -122,6 +122,12 @@ export function createConnection(host: ConnectionHost, options: ConnectionOption
       }, PING_MS);
     },
     send,
+    /** Disposable traffic must not create an unbounded browser transport queue. */
+    sendLive(message: unknown) {
+      if (!connected || !socket || ((socket as RuntimeSocket & { bufferedAmount?: number }).bufferedAmount ?? 0) +
+          new TextEncoder().encode(JSON.stringify(message)).byteLength > 256 * 1024) return false;
+      return send(message);
+    },
     close(code?: number, reason?: string) { socket?.close(code, reason); },
   };
 }

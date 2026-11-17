@@ -22,12 +22,18 @@ Choose the least durable mechanism that satisfies the task:
 | State and an event that must succeed together | Selected backend `submit` |
 | An irreversible external action | Final accepted intent plus durable effect checkpoint and provider idempotency/reconciliation |
 
-Hosted pages already have `tendril.signals`; native hosted agents explicitly use
-`await host.connectSignals({signal})` and close that connection when finished.
-Peer pages install signals independently with `tendril.signals.install(client.signals)`.
+Hosted owner pages already have an authenticated `tendril.signals` port. A hosted
+agent explicitly opens `await host.connectSignals({signal})` and closes that
+connection when finished. Guests and displays do not join this built-in hosted
+channel; those audiences require an explicitly selected live implementation and
+authorization policy. The common signal interface supports them.
+A peer bootstrap installs its independent port with
+`tendril.signals.install(client.signals)` before awaiting durable synchronization.
 Signals have no operation ID, replay, durable retry, SQL or finality prerequisite.
 Default `mode:'all'` uses bounded FIFO; use `mode:'latest'` only for replaceable
-values. Expire presence/typing and clear previews on disconnect. A successful
+values. Subscribe only while a view or worker needs traffic, and dispose the
+iterator or abort its signal when finished. Expire presence/typing and clear
+previews on disconnect. A successful
 send is not a remote acknowledgement. See [live signals](docs/APPLICATION_SIGNALS.md).
 
 Treat provisional results as replaceable views. Internal rollback/redo rebuilds
@@ -36,11 +42,6 @@ User Undo/Redo is a new conditional program with a new operation ID. Retrying an
 old operation preserves its exact bytes and signed time, even if a closed
 frontier now rejects it. A deliberate new intent follows review, not an automatic
 retimestamp.
-
-Timestamp-ordered live collaboration is Tendriller's Chronolog mode: show the
-provisional local view promptly, and consume final accepted intent for durable
-effects. A future asynchronous branch/merge mode would share timestamp ordering
-and replay but have no finality, final view, or final-intent consumer contract.
 
 For the UI, observe `application.changes({view:'local',signal})`, capture a
 `readView({view:'local'})` on each invalidation, read related projections from that
@@ -59,6 +60,10 @@ are separate roles. Co-location grants no permissions. Authenticate instruction
 authority through application policy using `event.origin.authorId` and its
 backend-authenticated authorization metadata, or the signal's authenticated
 sender. Roles or author IDs inside an event payload remain untrusted data.
+Authenticated provenance identifies the original request and its historical
+publication rights; application policy still decides which requests may invoke
+which tools. Keep that origin with the intent through any worker checkpoint and
+recovery. Tool credentials belong to the configured worker, never the payload.
 On a peer page MCP exposes host operations and describes the peer backend;
 consume application events through the resident/Worker client.
 

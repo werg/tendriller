@@ -39,14 +39,33 @@ their authenticated page socket. A native client opens `GET A/signals/socket`
 with `tendriller.signals.v1` and its agent token in the subprotocol header (or
 ordinary bearer authorization). Page clients may explicitly use the corresponding
 `_tendril/signals/socket` route with their page session and Origin. The host sends
-`signal_ready`; requests carry a correlation `cid` and receive `ack`. A send
+`{t:'signal_ready',scope}`; requests carry a nonempty correlation `cid` of at most
+80 characters and receive `ack`. A send
 contains `message:{topic,payload,issuedAtMs,expiresAtMs}`; delivery uses
 `{t:'signal',signal:{scope,authorId,sessionId,sequence,...message}}`.
+
+Only currently authorized owners and agents participate in this built-in hosted
+channel. A socket receives traffic only after `signal_subscribe`, until
+`signal_unsubscribe` or disconnect. These control requests contain only `t` and
+`cid`; they accept no replay cursor. The SDK shares one registration across local
+readers and restores that registration after a page reconnect. A dedicated SDK
+connection has no automatic reconnect. Guests or display audiences require an
+explicit implementation and authorization policy; the common Signals interface
+does not restrict those use cases.
+
+TTL is 1–30,000 ms from authoring, with at most 2,000 ms future skew; authorization
+never restarts it. Payloads are strict JSON of at most 16 KiB and frames at most
+20 KiB. Ordinary pressure returns `signal_backpressure` or drops recipient live
+traffic without closing the shared page socket or blocking durable operations.
+Expired input returns `signal_expired`; caller-supplied origin fields are invalid.
 
 There is no durable ID, retry, replay cursor, receipt history, workflow execution
 or wake notification on this path. `ack` confirms live dispatch, not receipt or
 processing by another participant. The scope is the page's selected application;
-peer pages use their installed peer signal channel. See
+peer pages install their chosen signal channel explicitly. They may opt into
+this hosted route without enabling hosted durable operations; host credentials
+grant no Chronolog permissions. Peer startup creates no host signal connection
+or automatic fallback. See
 [live signals](APPLICATION_SIGNALS.md) for permissions, expiration and bounds.
 
 ## Lifecycle and delivery

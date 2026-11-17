@@ -1,16 +1,17 @@
 /** Host selection is independent of a database's membership and authority keys. */
 export type ApplicationSelection = { readonly kind: 'cloudflare'; readonly id: string } | { readonly kind: 'peer'; readonly id: string };
 export interface ApplicationSubmitOptions { readonly operationId: string }
-export interface ApplicationOperation {
+export interface ApplicationOperationIdentity {
   readonly operationId: string;
   readonly proposalId: string;
-  /** Lifecycle and acceptance are independent: a final result can be rejected. */
-  readonly status: 'queued' | 'provisional' | 'final';
-  readonly outcome?: 'accepted' | 'rejected';
-  readonly error?: string;
-  readonly message?: string;
   readonly revision?: string;
 }
+/** Lifecycle and acceptance are independent; every executed result has an outcome. */
+export type ApplicationOperation = ApplicationOperationIdentity & (
+  | { readonly status: 'queued'; readonly outcome?: never; readonly error?: never; readonly message?: never }
+  | { readonly status: 'provisional'; readonly outcome: 'accepted' | 'rejected'; readonly error?: string; readonly message?: string }
+  | { readonly status: 'final'; readonly outcome: 'accepted' | 'rejected'; readonly error?: string; readonly message?: string }
+);
 export interface ApplicationOperations {
   get(operationId: string): ApplicationOperation | null | Promise<ApplicationOperation | null>;
   subscribe(options: { readonly operationId: string; readonly signal?: AbortSignal }): AsyncIterable<ApplicationOperation>;
@@ -48,7 +49,7 @@ export interface ApplicationEventReadOptions {
   readonly limit?: number;
   readonly signal?: AbortSignal;
 }
-export interface ApplicationEvents<Submission = unknown> {
+export interface ApplicationEvents<Submission extends ApplicationOperation = ApplicationOperation> {
   publish(topic: string, payload: unknown, options: ApplicationSubmitOptions): Promise<Submission>;
   read(options?: ApplicationEventReadOptions): Promise<ApplicationEventBatch>;
   /** Pulling the next batch is explicit backpressure; delivery is at least once. */
@@ -78,7 +79,7 @@ export interface ApplicationChangeOptions {
  * interpretation. The host neither queues a second copy nor interprets programs.
  * Query/program grammar is explicit in capabilities; a JSON backend does not claim SQL.
  */
-export interface ApplicationBackend<Program = unknown, Submission = unknown, QueryResult = unknown, Parameter = unknown> {
+export interface ApplicationBackend<Program = unknown, Submission extends ApplicationOperation = ApplicationOperation, QueryResult = unknown, Parameter = unknown> {
   readonly id: string;
   readonly capabilities: readonly string[];
   submit(program: Program, options: ApplicationSubmitOptions): Promise<Submission>;
@@ -104,15 +105,7 @@ export interface CloudflareApplicationProgram {
   readonly scope?: string;
   readonly expected_generations: Readonly<Record<string, string>>;
 }
-export interface CloudflareApplicationSubmission {
-  readonly operationId: string;
-  readonly proposalId: string;
-  readonly status: 'queued' | 'final';
-  readonly outcome?: 'accepted' | 'rejected';
-  readonly revision?: string;
-  readonly error?: string;
-  readonly message?: string;
-}
+export type CloudflareApplicationSubmission = Exclude<ApplicationOperation, { readonly status: 'provisional' }>;
 export declare const APPLICATION_LIMITS: Readonly<{ programBytes: number; steps: number; events: number; eventBytes: number; topicLength: number; batchTransactions: number; historyBytes: number; historyTransactions: number }>;
 export declare class ApplicationError extends Error { readonly code: string; constructor(code: string, message: string) }
 export declare function applicationSelection(value?: unknown, defaultId?: string): ApplicationSelection;
@@ -123,7 +116,7 @@ export declare function validateApplicationOperation(value: unknown, operationId
 export declare function validateCloudflareProgram(program: unknown): CloudflareApplicationProgram;
 export declare function applicationFilter(topics?: readonly string[]): readonly string[] | null;
 /** Conversation messages are ordinary durable events with stable caller-owned IDs. */
-export declare function publishConversation<Submission>(events: ApplicationEvents<Submission>, message: { readonly messageId: string; readonly text: string; readonly inReplyTo?: string }, options: ApplicationSubmitOptions): Promise<Submission>;
+export declare function publishConversation<Submission extends ApplicationOperation>(events: ApplicationEvents<Submission>, message: { readonly messageId: string; readonly text: string; readonly inReplyTo?: string }, options: ApplicationSubmitOptions): Promise<Submission>;
 export declare function createCloudflareApplicationBackend(options: {
   readonly id: string;
   readonly request: (path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal }) => Promise<any>;

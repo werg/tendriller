@@ -1,150 +1,140 @@
-import { HOSTED_SIGNAL_PROTOCOL, SIGNAL_LIMITS, validateSignalInput } from '../../contract/hosted-signals.mjs';
+import { SIGNAL_LIMITS as LIMITS, HOSTED_SIGNAL_PROTOCOL, validateSignalInput } from '../../contract/hosted-signals.mjs';
+import { SignalError } from '../../contract/signals.mjs';
 import type { EphemeralSignal } from '../../contract/signals.mjs';
-import type { Principal } from './access';
-import { accountActive, currentPrincipal, pageAccessAllowed, socketPrincipal } from './access';
+import { accountActive, authorizeSocket, currentPrincipal, pageAccessAllowed, socketPrincipal, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
-/** Session metadata only: no payloads, application receipts, stream rows or replay. */
 export interface SignalSession { sessionId: string; sequence: number; subscribed: boolean; second: number; count: number }
-interface SignalAttachment { kind: 'signals'; principal: Principal; live: SignalSession }
+interface SignalAttachment { kind?: string; principal?: Principal; live?: SignalSession }
+const attachment = (ws: WebSocket): SignalAttachment => ws.deserializeAttachment() ?? {};
+export const isSignalSocket = (ws: WebSocket): boolean => attachment(ws).kind === 'signals';
 const session = (): SignalSession => ({ sessionId: crypto.randomUUID(), sequence: 0, subscribed: false, second: 0, count: 0 });
-const attached = (ws: WebSocket): SignalAttachment | null => {
-  const value = ws.deserializeAttachment();
-  return value?.kind === 'signals' ? value : null;
+const live = (ws: WebSocket): SignalSession => {
+  const value = attachment(ws);
+  if (value.live) return value.live;
+  const created = session(); ws.serializeAttachment({ ...value, live: created }); return created;
 };
-export const isSignalSocket = (ws: WebSocket): boolean => attached(ws) !== null;
-function principal(t: Tendril, ws: WebSocket): Principal | null {
-  const live = attached(ws);
-  return live ? currentPrincipal(t, live.principal) : socketPrincipal(t, ws);
-}
-function state(ws: WebSocket): SignalSession {
-  const value = ws.deserializeAttachment();
-  if (!value) throw new HttpError(403, 'forbidden');
-  if (!value.live) ws.serializeAttachment({ ...value, live: session() });
-  return ws.deserializeAttachment().live;
-}
-function update(ws: WebSocket, value: SignalSession): void { ws.serializeAttachment({ ...ws.deserializeAttachment(), live: value }); }
-const canRead = (value: Principal | null): value is Exclude<Principal, { kind: 'producer' }> => !!value && value.kind !== 'producer';
-const canSend = (value: Principal | null): boolean => canRead(value) && (value.kind === 'agent' || value.role !== 'display');
-const actor = (value: Principal): string => `${value.kind}:${value.name}`;
-const open = (ws: WebSocket): boolean => ws.readyState === WebSocket.READY_STATE_OPEN;
-function send(ws: WebSocket, message: unknown): void {
-  if (!open(ws)) return;
-  if ((ws as WebSocket & { bufferedAmount?: number }).bufferedAmount! > 256 * 1024) {
-    // A hosted page shares this socket with durable application requests.
-    // Drop its live delivery under pressure without retiring that connection.
-    if (isSignalSocket(ws)) ws.close(1013, 'Live signal receiver is too slow');
-    return;
+const save = (ws: WebSocket, value: SignalSession) => ws.serializeAttachment({ ...attachment(ws), live: value });
+const authorized = (t: Tendril, principal: Principal): boolean => {
+  const current = currentPrincipal(t, principal);
+  return !!current && (current.kind === 'agent' || current.kind === 'page' && current.role === 'owner');
+};
+const current = (t: Tendril, ws: WebSocket): Principal | null => {
+  const value = attachment(ws);
+  const principal = value.kind === 'signals' && value.principal ? currentPrincipal(t, value.principal) : socketPrincipal(t, ws);
+  return principal && authorized(t, principal) ? principal : null;
+};
+async function principalFor(t: Tendril, ws: WebSocket): Promise<Principal | null> {
+  if (!isSignalSocket(ws)) {
+    const principal = await authorizeSocket(t, ws, { fresh: true });
+    return principal && authorized(t, principal) ? principal : null;
   }
-  try { ws.send(JSON.stringify(message)); }
+  const principal = current(t, ws);
+  if (!principal || !await pageAccessAllowed(t) ||
+      principal.kind === 'page' && principal.accountId && !await accountActive(t, principal.accountId)) return null;
+  return current(t, ws);
+}
+
+/** Transport pressure drops live traffic; it never closes the shared durable socket. */
+function send(ws: WebSocket, message: unknown): boolean {
+  if (ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
+  const encoded = JSON.stringify(message);
+  if (((ws as WebSocket & { bufferedAmount?: number }).bufferedAmount ?? 0) + new TextEncoder().encode(encoded).byteLength > LIMITS.pendingBytes)
+    return false;
+  try { ws.send(encoded); return true; }
   catch {
-    // Live delivery owns only a dedicated signal socket. A shared page socket
-    // can still carry durable requests after a transient send failure.
-    if (isSignalSocket(ws)) { try { ws.close(1013, 'Live signal connection failed'); } catch {} }
+    // Actual transport failure can retire a dedicated live connection. The
+    // live handler never owns the lifecycle of a shared durable page socket.
+    if (isSignalSocket(ws)) { try { ws.close(1011, 'Live signal connection failed'); } catch { /* Already closed. */ } }
+    return false;
   }
 }
 
-export async function openSignalSocket(t: Tendril, req: Request, identity: Principal): Promise<Response> {
+/** A live session is not a conversation listener or a retained application writer. */
+export async function openSignalSocket(t: Tendril, req: Request, principal: Principal): Promise<Response> {
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'upgrade_required');
   if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(value => value.trim()).includes(HOSTED_SIGNAL_PROTOCOL))
-    throw new HttpError(400, 'bad_request', `Live connections require ${HOSTED_SIGNAL_PROTOCOL}`);
-  if (!canRead(currentPrincipal(t, identity)) || !await pageAccessAllowed(t) ||
-      identity.kind === 'page' && identity.accountId && !await accountActive(t, identity.accountId) ||
-      !canRead(currentPrincipal(t, identity))) throw new HttpError(403, 'forbidden', 'Live signal access revoked');
-  if (t.ctx.getWebSockets('signals').filter(open).length >= SIGNAL_LIMITS.connections)
-    throw new HttpError(429, 'signal_overflow', 'Too many live signal connections');
+    throw new HttpError(400, 'bad_request', `Signals require ${HOSTED_SIGNAL_PROTOCOL}`);
+  if (!authorized(t, principal) || !await pageAccessAllowed(t) ||
+      principal.kind === 'page' && principal.accountId && !await accountActive(t, principal.accountId) || !authorized(t, principal))
+    throw new HttpError(403, 'forbidden', 'Hosted signals are private to page owners and agents');
+  if (t.ctx.getWebSockets('signals').filter(ws => ws.readyState === WebSocket.READY_STATE_OPEN).length >= LIMITS.connections)
+    throw new HttpError(429, 'signal_backpressure', 'Too many live signal connections');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, ['signals']);
-  server.serializeAttachment({ kind: 'signals', principal: identity, live: session() } satisfies SignalAttachment);
-  send(server, { t: 'signal_ready', scope: selectedApplication(t).id });
+  server.serializeAttachment({ kind: 'signals', principal, live: session() } satisfies SignalAttachment);
+  server.send(JSON.stringify({ t: 'signal_ready', scope: selectedApplication(t).id }));
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': HOSTED_SIGNAL_PROTOCOL } });
 }
 
-/** The existing browser socket and explicit SDK sockets share live authorization and fanout. */
-export async function signalCommand(t: Tendril, ws: WebSocket, message: Record<string, unknown>): Promise<Record<string, unknown>> {
-  let author = principal(t, ws);
-  if (!canRead(author) || !open(ws)) throw new HttpError(403, 'forbidden', 'Live signal access revoked');
-  if (message.t === 'signal_subscribe' || message.t === 'signal_unsubscribe') {
-    if (Object.keys(message).some(key => !['t', 'cid'].includes(key))) throw new HttpError(400, 'invalid_signal', 'Live subscriptions have no replay cursor');
-    update(ws, { ...state(ws), subscribed: message.t === 'signal_subscribe' });
-    return { subscribed: message.t === 'signal_subscribe' };
-  }
-  if (message.t !== 'signal_send' || Object.keys(message).some(key => !['t', 'cid', 'message'].includes(key)))
-    throw new HttpError(400, 'invalid_signal', 'Unknown live signal command');
-  if (!canSend(author)) throw new HttpError(403, 'forbidden', 'Display links cannot send live signals');
-  let input;
-  try { input = validateSignalInput(message.message, t.now()); }
-  catch (error) { throw new HttpError(400, (error as { code?: string }).code ?? 'invalid_signal', (error as Error).message); }
-  const current = state(ws), second = Math.floor(t.now() / 1000), count = current.second === second ? current.count + 1 : 1;
-  if (count > 50) throw new HttpError(429, 'signal_overflow', 'Live sender rate exceeded');
-  update(ws, { ...current, second, count });
-  if (!await pageAccessAllowed(t) || author.kind === 'page' && author.accountId && !await accountActive(t, author.accountId))
-    throw new HttpError(403, 'forbidden', 'Live signal access revoked');
-  author = principal(t, ws);
-  if (!canSend(author) || !open(ws)) throw new HttpError(403, 'forbidden', 'Live signal access revoked');
-  if (input.expiresAtMs <= t.now()) throw new HttpError(409, 'signal_expired', 'The live message expired before dispatch');
-  const next = state(ws);
-  if (!Number.isSafeInteger(next.sequence + 1)) throw new HttpError(429, 'signal_overflow', 'Reconnect to start a new live session');
-  const envelope: EphemeralSignal = { ...input, scope: selectedApplication(t).id, authorId: actor(author!), sessionId: next.sessionId, sequence: next.sequence + 1 };
-  update(ws, { ...next, sequence: envelope.sequence });
-  const accounts = new Map<string, boolean>();
-  for (const recipient of t.ctx.getWebSockets()) {
-    if (recipient === ws || !open(recipient) || !recipient.deserializeAttachment()?.live?.subscribed) continue;
-    let reader = principal(t, recipient);
-    if (reader?.kind === 'page' && reader.accountId) {
-      if (!accounts.has(reader.accountId)) accounts.set(reader.accountId, await accountActive(t, reader.accountId));
-      if (!accounts.get(reader.accountId)) { recipient.close(4003, 'Live access revoked'); continue; }
-    }
-    // Account lookups yield: recheck both endpoints and expiry before releasing bytes.
-    reader = principal(t, recipient);
-    if (!canRead(reader)) { recipient.close(4003, 'Live access revoked'); continue; }
-    if (!canSend(principal(t, ws)) || !open(ws)) throw new HttpError(403, 'forbidden', 'Live sender access revoked');
-    if (input.expiresAtMs <= t.now()) break;
-    if (recipient.deserializeAttachment()?.live?.subscribed) send(recipient, { t: 'signal', signal: envelope });
-  }
-  return { signal: envelope };
-}
-
-interface Pending { tail: Promise<void>; count: number; bytes: number }
-const queues = new WeakMap<WebSocket, Pending>();
-/** Bound work before asynchronous authorization, then preserve each session's order. */
+const busy = new WeakSet<WebSocket>(), active = new WeakMap<Tendril, number>();
+/** Bounded live work: no authorization backlog, SQL payload, event, outbox or wake. */
 export async function handleSignalMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-  if (!open(ws)) return;
-  if (!t.exists()) { ws.close(4004, 'Tendril deleted'); return; }
-  const bytes = typeof raw === 'string' ? new TextEncoder().encode(raw).length : raw.byteLength;
-  if (typeof raw !== 'string' || bytes > SIGNAL_LIMITS.bytes) { ws.close(1009, 'Live message is too large'); return; }
-  let queue = queues.get(ws);
-  if (!queue) { queue = { tail: Promise.resolve(), count: 0, bytes: 0 }; queues.set(ws, queue); }
-  if (queue.count >= SIGNAL_LIMITS.pending || queue.bytes + bytes > SIGNAL_LIMITS.bytes * SIGNAL_LIMITS.pending) {
-    if (isSignalSocket(ws)) ws.close(1013, 'Live signal sender is too fast');
-    else {
-      // Refuse this live attempt before admission. Keep the page connection
-      // available for unrelated state work and subsequent fresh signals.
-      try {
-        const message = JSON.parse(raw);
-        if (typeof message?.cid === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(message.cid))
-          send(ws, { t: 'ack', cid: message.cid, error: 'signal_overflow', message: 'Live signal sender is busy' });
-      } catch { /* A malformed excess frame is dropped without queued work. */ }
+  if (ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+  let cid: string | undefined, entered = false;
+  try {
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > LIMITS.frameBytes) {
+      // Malformed oversized input is a protocol violation, not ordinary pressure.
+      if (isSignalSocket(ws)) ws.close(1009, 'Live frame exceeds 20 KiB');
+      throw new SignalError('signal_too_large', 'Signal frame exceeds 20 KiB');
     }
-    return;
+    const input = JSON.parse(raw);
+    if (input && typeof input.cid === 'string' && input.cid.length <= 80) cid = input.cid;
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+        !['signal_send', 'signal_subscribe', 'signal_unsubscribe'].includes(input.t) ||
+        typeof input.cid !== 'string' || input.cid.length > 80 || !input.cid.length ||
+        Object.keys(input).some(key => !['t', 'cid', ...(input.t === 'signal_send' ? ['message'] : [])].includes(key)))
+      throw new SignalError('invalid_signal', 'Invalid live signal request');
+    cid = input.cid;
+    if (!current(t, ws)) throw new SignalError('signal_unauthorized', 'Hosted signals require a current owner or agent identity');
+    const state = live(ws);
+    if (input.t !== 'signal_send') {
+      const subscribed = input.t === 'signal_subscribe';
+      if (subscribed && !state.subscribed && t.ctx.getWebSockets().filter(peer =>
+        peer.readyState === WebSocket.READY_STATE_OPEN && attachment(peer).live?.subscribed).length >= LIMITS.connections)
+        throw new SignalError('signal_backpressure', 'Too many live signal subscribers');
+      // No I/O: unsubscribe takes effect even while another message awaits
+      // authorization. Every payload delivery still checks account access fresh.
+      state.subscribed = subscribed; save(ws, state);
+      send(ws, { t: 'ack', cid }); return;
+    }
+    if (busy.has(ws) || (active.get(t) ?? 0) >= LIMITS.authorizations)
+      throw new SignalError('signal_backpressure', 'Live authorization is busy');
+    const value = validateSignalInput(input.message, t.now());
+    const second = Math.floor(t.now() / 1000);
+    if (state.second !== second) { state.second = second; state.count = 0; }
+    if (++state.count > LIMITS.messagesPerSecond) { save(ws, state); throw new SignalError('signal_backpressure', 'Live message rate exceeded'); }
+    save(ws, state);
+    busy.add(ws); active.set(t, (active.get(t) ?? 0) + 1); entered = true;
+    const principal = await principalFor(t, ws);
+    if (!principal || !authorized(t, principal)) throw new SignalError('signal_unauthorized', 'Hosted signals require a current owner or agent identity');
+    if (value.expiresAtMs <= t.now()) throw new SignalError('signal_expired', 'Signal expired before live dispatch');
+    if (ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+    // Refresh metadata after I/O so a concurrent unsubscribe is not overwritten.
+    const currentSession = live(ws);
+    if (!Number.isSafeInteger(currentSession.sequence + 1)) throw new SignalError('signal_closed', 'Start a fresh live sender session');
+    currentSession.sequence++; save(ws, currentSession);
+    const envelope: EphemeralSignal = { scope: selectedApplication(t).id,
+      authorId: principal.kind === 'agent' ? `agent:${principal.name}` : `account:${principal.kind === 'page' ? principal.accountId : ''}`,
+      sessionId: currentSession.sessionId, sequence: currentSession.sequence, ...value };
+    const recipients = t.ctx.getWebSockets().filter(peer => peer !== ws && attachment(peer).live?.subscribed).slice(0, LIMITS.connections);
+    for (const peer of recipients) {
+      if (t.now() >= value.expiresAtMs || !authorized(t, principal) || ws.readyState !== WebSocket.READY_STATE_OPEN) break;
+      const recipient = await principalFor(t, peer);
+      // All local authorization and subscription checks occur again after each
+      // asynchronous account read, immediately before any bytes are released.
+      if (t.now() >= value.expiresAtMs || !authorized(t, principal) || ws.readyState !== WebSocket.READY_STATE_OPEN) break;
+      if (!recipient || !authorized(t, recipient) || !attachment(peer).live?.subscribed) continue;
+      send(peer, { t: 'signal', signal: envelope });
+    }
+    if (!authorized(t, principal)) throw new SignalError('signal_unauthorized', 'Signal access changed during dispatch');
+    send(ws, { t: 'ack', cid, signal: envelope });
+  } catch (error) {
+    send(ws, { t: 'ack', cid, error: error instanceof SignalError || error instanceof HttpError ? error.code : 'invalid_signal',
+      message: error instanceof Error ? error.message : 'Invalid live signal' });
+  } finally {
+    if (entered) { busy.delete(ws); active.set(t, Math.max(0, (active.get(t) ?? 1) - 1)); }
   }
-  queue.count++; queue.bytes += bytes;
-  const current = queue;
-  const task = current.tail.then(async () => {
-    if (!open(ws)) return;
-    let cid: string | undefined;
-    try {
-      const message = JSON.parse(raw);
-      if (!message || typeof message !== 'object' || Array.isArray(message) || typeof message.cid !== 'string' ||
-          !/^[A-Za-z0-9_.:-]{1,200}$/.test(message.cid)) { ws.close(1008, 'Invalid live request'); return; }
-      cid = message.cid;
-      send(ws, { t: 'ack', cid, ...await signalCommand(t, ws, message) });
-    } catch (error) {
-      send(ws, { t: 'ack', cid, error: error instanceof HttpError ? error.code : 'invalid_signal', message: (error as Error).message });
-    }
-  }).finally(() => { current.count--; current.bytes -= bytes; });
-  current.tail = task.catch(() => { if (open(ws)) ws.close(1011, 'Live signal dispatch failed'); });
-  await current.tail;
 }

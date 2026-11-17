@@ -40,7 +40,7 @@ const VIA = new Set(["voice", "text", "voice_layer"]);
 const chains = new WeakMap<WebSocket, Promise<void>>();
 
 export function handleWsMessage(t: Tendril, ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-  // Expiring messages have their own bounded dispatch queue. They neither wait
+  // Expiring messages have their own bounded dispatch work. They neither wait
   // for application mutations nor synchronize workflows or record device activity.
   // The live handler independently requires an authenticated, completed hello.
   if (typeof raw === 'string') {

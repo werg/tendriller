@@ -4,10 +4,10 @@ import { buildSync } from "esbuild";
 import { fileURLToPath } from "node:url";
 
 const built = buildSync({ stdin: {
-  contents: 'export * from "./connection"; export * from "./requests"; export * from "./delivery";',
+  contents: 'export * from "./connection"; export * from "./requests"; export * from "./delivery"; export * from "./signals";',
   resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts",
 }, bundle: true, write: false, format: "esm", platform: "browser", target: "es2022" });
-const { createConnection, createRequests, createCommandReceipts, deliveryPolicy } =
+const { createConnection, createRequests, createCommandReceipts, deliveryPolicy, createHostedSignals } =
   await import("data:text/javascript;base64," + Buffer.from(built.outputFiles[0].text).toString("base64"));
 
 class Clock {
@@ -161,6 +161,50 @@ test('cancelling an unsent request removes its volatile work before reconnect', 
   assert.equal(h.requests.receive({ t: 'versions', cid: 'discarded' }), false);
 });
 
+test('live request pressure is nonfatal, releases correlation work and does not enter an outbox', async () => {
+  const h = requestsSetup(true);
+  h.sendable(false);
+  await assert.rejects(h.requests.request({ t: 'signal_send' }), { code: 'signal_backpressure' });
+  assert.equal(h.clock.jobs.size, 0);
+  h.sendable(true); h.requests.flush();
+  assert.deepEqual(h.sent, []); assert.deepEqual(h.persisted, []);
+  const later = h.requests.request({ t: 'signal_send', cid: 'later' });
+  h.requests.receive({ t: 'ack', cid: 'later', signal: { payload: 'current' } });
+  assert.equal((await later).signal.payload, 'current');
+});
+
+test('the hosted page adapter restores subscriptions after reconnect and discards old data without replay', async () => {
+  const h = requestsSetup(true), listeners = new Map();
+  let online = true;
+  const bus = { on(type, listener) {
+    const values = listeners.get(type) ?? new Set(); values.add(listener); listeners.set(type, values);
+    return () => values.delete(listener);
+  }, emit(type, value) { for (const listener of listeners.get(type) ?? []) listener(value); } };
+  const port = createHostedSignals({ bus, application: { selection: { kind: 'cloudflare', id: 'cf:page' } },
+    get connected() { return online; }, transportRequest: h.requests.request });
+  assert.deepEqual(h.sent, []);
+  const input = port.subscribe();
+  h.requests.receive({ t: 'ack', cid: h.sent.at(-1).cid });
+  await new Promise(resolve => setImmediate(resolve));
+  const now = Date.now(), message = { scope: 'cf:page', authorId: 'agent:main', sessionId: 'one', sequence: 1,
+    topic: 'progress', payload: 1, issuedAtMs: now, expiresAtMs: now + 5000 };
+  bus.emit('signal', { signal: message });
+  const pending = port.send('progress', 2);
+  online = false; h.online(false); h.requests.disconnected(); bus.emit('disconnect');
+  await assert.rejects(pending);
+  online = true; h.online(true); bus.emit('connect');
+  h.requests.receive({ t: 'ack', cid: h.sent.at(-1).cid });
+  assert.deepEqual(h.sent.map(value => value.t), ['signal_subscribe', 'signal_send', 'signal_subscribe']);
+  bus.emit('signal', { signal: { ...message, scope: 'cf:other' } });
+  bus.emit('signal', { signal: { ...message, sequence: 3, payload: 3 } });
+  assert.equal((await input.next()).value.sequence, 3);
+  await input.return(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.sent.at(-1).t, 'signal_unsubscribe');
+  h.requests.receive({ t: 'ack', cid: h.sent.at(-1).cid });
+  await new Promise(resolve => setImmediate(resolve)); port.close();
+  assert.deepEqual(h.persisted, []); assert.equal(h.clock.jobs.size, 0);
+});
+
 test("stream send failures do not queue, and both response error envelopes preserve their error codes", async () => {
   const h = requestsSetup(true);
   h.sendable(false);
@@ -231,6 +275,18 @@ function connectionSetup({ failOpens = 0 } = {}) {
   } });
   return { connection, clock, sockets, messages, disconnects, rev(value) { rev = value; }, attempts: () => attempts };
 }
+
+test('a full live browser buffer leaves the shared connection and durable send path usable', () => {
+  const h = connectionSetup(); h.connection.start();
+  const socket = h.sockets[0]; socket.open(); socket.message({ t: 'welcome' });
+  socket.bufferedAmount = 256 * 1024;
+  assert.equal(h.connection.sendLive({ t: 'signal_send', message: { payload: 'drop me' } }), false);
+  assert.equal(h.connection.connected, true); assert.deepEqual(socket.closed, []);
+  assert.equal(h.connection.send({ t: 'state', cid: 'durable' }), true);
+  socket.bufferedAmount = 0;
+  assert.equal(h.connection.sendLive({ t: 'signal_send', message: { payload: 'fresh' } }), true);
+  assert.deepEqual(socket.sent.map(message => message.t), ['hello', 'state', 'signal_send']);
+});
 
 test("connection waits for initialization and ignores callbacks from an earlier socket generation", () => {
   const h = connectionSetup();

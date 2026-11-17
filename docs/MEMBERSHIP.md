@@ -143,7 +143,9 @@ Every approval includes the reader role. Include `writerProgram` exactly when
 granting the writer role, with explicit SQL, event-topic and signal-topic rights.
 The decision may narrow the signed request's rights, but cannot expand them.
 Missing rights, rights without a writer role and invalid role sets are rejected
-before the host retains an administrative action.
+before the host retains an administrative action, so an invalid review cannot
+block later membership synchronization. There are no implicit publication rights:
+`sql`, durable event `topics`, and ephemeral `signals` are separate grants.
 
 The operation identity is retained with the original decision. Lost responses and
 host eviction are recovered by retrying that identity and contents; changing the
