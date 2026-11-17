@@ -26,7 +26,7 @@ export function createApplicationBinding(selection, initial) {
   const install = value => {
     if (backend) fail('backend_already_selected', 'The application backend cannot change within a page history');
     if (!value || value.id !== selected.id || !Array.isArray(value.capabilities) || typeof value.submit !== 'function' ||
-        typeof value.readView !== 'function' || !value.events || ['publish', 'read', 'subscribe'].some(key => typeof value.events[key] !== 'function') ||
+        typeof value.readView !== 'function' || typeof value.changes !== 'function' || !value.events || ['publish', 'read', 'subscribe'].some(key => typeof value.events[key] !== 'function') ||
         !value.operations || ['get', 'subscribe'].some(key => typeof value.operations[key] !== 'function'))
       fail('invalid_backend', 'The backend must implement the public contract and selected identity');
     backend = value;
@@ -97,17 +97,17 @@ function delay(signal) {
 /** Validate a saved or remote receipt before using it to retire durable work. */
 export function validateApplicationOperation(value, operationId, { terminal = false } = {}) {
   if (!value || typeof value !== 'object' || value.operationId !== operationId || typeof value.proposalId !== 'string' ||
-      !['queued', 'provisional', 'final', 'rejected'].includes(value.status) ||
-      (terminal && !['final', 'rejected'].includes(value.status)) ||
-      (value.status === 'final' && (!value.proposalId || value.outcome !== 'accepted')) ||
-      (value.outcome !== undefined && !['accepted', 'rejected'].includes(value.outcome)) ||
-      (value.status === 'rejected' && value.outcome !== undefined && value.outcome !== 'rejected') ||
+      !['queued', 'provisional', 'final'].includes(value.status) ||
+      (terminal && value.status !== 'final') ||
+      (value.status === 'queued' ? value.outcome !== undefined : !['accepted', 'rejected'].includes(value.outcome)) ||
+      (value.status !== 'queued' && !value.proposalId && !(value.status === 'final' && value.outcome === 'rejected' &&
+        ['operation_conflict', 'history_quota'].includes(value.error))) ||
       (value.error !== undefined && typeof value.error !== 'string') || (value.message !== undefined && typeof value.message !== 'string') ||
       (value.revision !== undefined && typeof value.revision !== 'string'))
     fail('invalid_response', 'Invalid application operation receipt; preserve the original queued operation');
   return structuredClone(value);
 }
-function validateEventBatch(value) {
+function validateEventBatch(value, applicationId) {
   if (!value || !Array.isArray(value.transactions) || value.transactions.length > APPLICATION_LIMITS.batchTransactions ||
       typeof value.scannedThrough !== 'string' || !value.scannedThrough || typeof value.revision !== 'string' || !value.revision || typeof value.hasMore !== 'boolean')
     fail('invalid_response', 'Invalid durable event batch');
@@ -118,13 +118,18 @@ function validateEventBatch(value) {
     for (const event of transaction.events) {
       if (!event || event.proposalId !== transaction.proposalId || !Number.isSafeInteger(event.eventOrdinal) || event.eventOrdinal <= ordinal ||
           event.id !== `${transaction.proposalId}:${event.eventOrdinal}` || !Object.hasOwn(event, 'payload')) fail('invalid_response', 'Invalid event identity');
+      const origin = event.origin;
+      if (!origin || origin.kind !== 'hosted' || origin.applicationId !== applicationId ||
+          typeof origin.authorId !== 'string' || !origin.authorId || !['owner', 'agent'].includes(origin.role) ||
+          typeof origin.operationId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(origin.operationId))
+        fail('invalid_response', 'Missing authenticated event origin');
       ordinal = event.eventOrdinal; assertApplicationTopic(event.topic); assertStateJson(event.payload);
     }
   }
   if (new TextEncoder().encode(JSON.stringify(value)).length > 2 * 1024 * 1024) fail('invalid_response', 'Event batch exceeds its byte bound');
   return value;
 }
-export function createCloudflareApplicationBackend({ id, request, submit: enqueue }) {
+export function createCloudflareApplicationBackend({ id, request, submit: enqueue, onChange }) {
   applicationSelection({ kind: 'cloudflare', id });
   const submit = async (program, options) => {
     const exact = validateCloudflareProgram(program);
@@ -138,7 +143,7 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
     if (topics !== null) query.set('topics', JSON.stringify(topics));
     if (options.limit !== undefined) query.set('limit', String(options.limit));
     if (revision !== undefined) query.set('revision', revision);
-    return validateEventBatch(await request(`application/events?${query}`, { signal: options.signal }));
+    return validateEventBatch(await request(`application/events?${query}`, { signal: options.signal }), id);
   };
   const events = Object.freeze({
     publish(topic, payload, options) { return submit({ version: 1, steps: [{ kind: 'emit', topic, payload }], expected_generations: {} }, options); },
@@ -159,14 +164,43 @@ export function createCloudflareApplicationBackend({ id, request, submit: enqueu
     const result = await request(`application/operations/${encodeURIComponent(assertApplicationOperationId(operationId))}`, { signal });
     return result === null ? null : validateApplicationOperation(result, operationId);
   };
-  return Object.freeze({ id, capabilities: Object.freeze(['json-state', 'events', 'conversation', 'revision-views']), submit, events,
+  return Object.freeze({ id, capabilities: Object.freeze(['json-state', 'events', 'conversation', 'revision-views', 'operation-status']), submit, events,
+    async *changes(options = {}) {
+      const view = options.view ?? 'final', signal = options.signal;
+      if (!['local', 'final'].includes(view)) fail('invalid_view', 'Choose the local or final application view');
+      if (signal?.aborted) return;
+      let version = 0, wake, previous;
+      const dispose = onChange?.(() => { version++; wake?.(); });
+      try {
+        while (!signal?.aborted) {
+          // Register before reading so a mutation during the read cannot be lost.
+          const observed = version;
+          const value = await request(`application/revision?view=${view}`, { signal });
+          if (!value || value.view !== view || typeof value.revision !== 'string' || !value.revision ||
+              typeof value.finalRevision !== 'string' || !value.finalRevision)
+            fail('invalid_response', 'Invalid application revision');
+          const encoded = JSON.stringify([value.revision, value.finalRevision]);
+          if (encoded !== previous) { previous = encoded; yield value; }
+          if (signal?.aborted) return;
+          if (onChange) {
+            if (observed === version) await new Promise(resolve => {
+              const ready = () => { signal?.removeEventListener('abort', ready); wake = undefined; resolve(); };
+              wake = ready;
+              signal?.addEventListener('abort', ready, { once: true });
+              if (signal?.aborted || observed !== version) ready();
+            });
+          } else await delay(signal);
+        }
+      } catch (error) { if (!signal?.aborted) throw error; }
+      finally { dispose?.(); }
+    },
     operations: Object.freeze({ get: operationId => getOperation(operationId), async *subscribe({ operationId, signal }) {
       assertApplicationOperationId(operationId);
       let last;
       while (!signal?.aborted) {
         const value = await getOperation(operationId, signal), encoded = JSON.stringify(value);
         if (value && last !== encoded) { yield value; last = encoded; }
-        if (value?.status === 'final' || value?.status === 'rejected') return;
+        if (value?.status === 'final') return;
         try { await delay(signal); } catch (error) { if (signal?.aborted) return; throw error; }
       }
     } }),

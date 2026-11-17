@@ -1,5 +1,5 @@
 import { APPLICATION_LIMITS, applicationFilter, applicationSelection, assertApplicationOperationId, validateCloudflareProgram, ApplicationError } from '../../contract/application.mjs';
-import type { ApplicationEvent, ApplicationEventBatch, ApplicationOperation, ApplicationSelection } from '../../contract/application.mjs';
+import type { ApplicationEvent, ApplicationEventBatch, ApplicationOperation, ApplicationSelection, HostedApplicationEventOrigin } from '../../contract/application.mjs';
 import type { Principal } from './access';
 import { currentPrincipal } from './access';
 import { checkGenerations, preconditions } from './scopes';
@@ -8,7 +8,7 @@ import { sha256Hex } from './ids';
 import { statePaths, validateOps, validateStateChecks } from './state';
 import type { Tendril } from './tendril';
 
-export const APPLICATION_ROUTE = /^application(?:\/(?:changes|events|view|operations\/[A-Za-z0-9_.:-]+))?$/;
+export const APPLICATION_ROUTE = /^application(?:\/(?:changes|events|view|revision|operations\/[A-Za-z0-9_.:-]+))?$/;
 export function selectedApplication(t: Tendril): ApplicationSelection {
   return applicationSelection(t.db.get('application', undefined), `cf:${t.tid}`);
 }
@@ -23,22 +23,24 @@ const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(
   : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(',')}}`
     : JSON.stringify(value);
 const actorKey = (principal: Principal) => `${principal.kind}:${principal.name}`;
-function authorize(t: Tendril, principal: Principal, write = false): void {
+function authorize(t: Tendril, principal: Principal, write = false): Exclude<Principal, { kind: 'producer' }> {
   const current = currentPrincipal(t, principal);
   if (!current || current.kind === 'producer' || current.kind === 'page' && current.role === 'display')
     throw new HttpError(403, 'forbidden', 'Application history requires an authorized peer host identity');
   if (write && current.kind === 'page' && current.role !== 'owner') throw new HttpError(403, 'forbidden', 'Application writes require the page owner');
+  return current;
 }
 interface ChangeRow { seq: number; actor: string; operation_id: string; proposal_id: string; program: string; result: string; events: string; bytes: number }
 function head(t: Tendril): number { return t.db.one<{ seq: number }>('SELECT COALESCE(MAX(seq),0) AS seq FROM application_changes')!.seq; }
-function revision(t: Tendril, position = head(t)): string { return btoa(JSON.stringify(['tendriller.application.view', 1, t.tid, selectedApplication(t).id, position, t.getState().rev])); }
+function revision(t: Tendril, position = head(t)): string { return btoa(JSON.stringify(['tendriller.application.view', 2, t.tid, selectedApplication(t).id, position, t.getState().rev, t.db.get('scope_revision', 0)])); }
 function readRevision(t: Tendril, value?: string): { position: number; revision: string } {
   if (value === undefined) return { position: head(t), revision: revision(t) };
   let fields: unknown;
   try { fields = JSON.parse(atob(value)); } catch { throw new HttpError(400, 'invalid_revision', 'Invalid application revision'); }
-  if (!Array.isArray(fields) || fields.length !== 6 || fields[0] !== 'tendriller.application.view' || fields[1] !== 1 ||
+  if (!Array.isArray(fields) || fields.length !== 7 || fields[0] !== 'tendriller.application.view' || fields[1] !== 2 ||
       fields[2] !== t.tid || fields[3] !== selectedApplication(t).id || !Number.isSafeInteger(fields[4]) || fields[4] < 0 || fields[4] > head(t) ||
-      !Number.isSafeInteger(fields[5]) || fields[5] < 0 || btoa(JSON.stringify(fields)) !== value)
+      !Number.isSafeInteger(fields[5]) || fields[5] < 0 || fields[5] > t.getState().rev ||
+      !Number.isSafeInteger(fields[6]) || fields[6] < 0 || fields[6] > t.db.get<number>('scope_revision', 0) || btoa(JSON.stringify(fields)) !== value)
     throw new HttpError(409, 'revision_mismatch', 'The revision does not identify this applied application history');
   return { position: fields[4], revision: value };
 }
@@ -64,13 +66,15 @@ export async function submitApplication(t: Tendril, principal: Principal, input:
   const canonical = stable(program), actor = actorKey(principal);
   const proposalId = await sha256Hex(stable(['tendriller.application.change', t.tid, selectedApplication(t).id, actor, operationId, program]));
   return t.transaction(() => {
-    authorize(t, principal, true);
+    const current = authorize(t, principal, true);
     const previous = t.db.one<ChangeRow>('SELECT * FROM application_changes WHERE actor=? AND operation_id=?', actor, operationId);
     if (previous) {
       if (previous.program !== canonical) throw new HttpError(409, 'operation_conflict', 'Operation identity already binds different contents');
       return JSON.parse(previous.result);
     }
     let events: ApplicationEvent[] = [];
+    const origin: HostedApplicationEventOrigin = { kind: 'hosted', applicationId: selectedApplication(t).id,
+      authorId: actorKey(current), operationId, role: current.kind === 'agent' ? 'agent' : 'owner' };
     let result: ApplicationOperation;
     try {
       t.transaction(() => {
@@ -82,7 +86,7 @@ export async function submitApplication(t: Tendril, principal: Principal, input:
           } else {
             checkGenerations(t, program, { operations: ['event'] });
             const eventOrdinal = events.length;
-            events.push({ id: `${proposalId}:${eventOrdinal}`, proposalId, eventOrdinal, topic: step.topic, payload: step.payload });
+            events.push({ id: `${proposalId}:${eventOrdinal}`, proposalId, eventOrdinal, topic: step.topic, payload: step.payload, origin });
           }
         }
       });
@@ -90,7 +94,7 @@ export async function submitApplication(t: Tendril, principal: Principal, input:
     } catch (error) {
       if (!(error instanceof HttpError) || !['state_conflict', 'stale_generation', 'generation_required', 'too_large', 'bad_request'].includes(error.code)) throw error;
       events = [];
-      result = { operationId, proposalId, status: 'rejected', outcome: 'rejected', error: error.code, message: error.message };
+      result = { operationId, proposalId, status: 'final', outcome: 'rejected', error: error.code, message: error.message };
     }
     const next = head(t) + 1;
     result = { ...result, revision: revision(t, next) };
@@ -131,6 +135,12 @@ export async function handleApplication(t: Tendril, req: Request, url: URL, path
     requireCloudflareApplication(t);
     if (path === 'application/changes' && req.method === 'POST') return json(await submitApplication(t, principal, await readJson(req, APPLICATION_LIMITS.programBytes + 4096)));
     if (path === 'application/view' && req.method === 'GET') return json(t.transaction(() => ({ revision: revision(t), ...t.getState() })));
+    if (path === 'application/revision' && req.method === 'GET') {
+      const view = url.searchParams.get('view') ?? 'final';
+      if (view !== 'local' && view !== 'final') throw new HttpError(400, 'invalid_view', 'Choose the local or final application view');
+      const token = revision(t);
+      return json({ view, revision: token, finalRevision: token });
+    }
     if (path === 'application/events' && req.method === 'GET') {
       const topics = url.searchParams.has('topics') ? JSON.parse(url.searchParams.get('topics')!) : undefined;
       return json(readApplicationEvents(t, { cursor: url.searchParams.get('cursor') ?? undefined, topics,

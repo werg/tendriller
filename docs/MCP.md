@@ -22,6 +22,10 @@ error `-32602`. Peer pages advertise no MCP application wake capability,
 `events/list` is empty, and a subscription request is rejected. `tendril_info`
 reports `agent_delivery.mode:'peer'` and the selected backend identity. Its
 application messages belong to `client.signals` or durable final event readers.
+The peer instructions distinguish view invalidations (`application.changes`) from
+durable event consumption. They also require checking both final lifecycle and
+accepted outcome before acting, and checking authenticated `event.origin` against
+application instruction policy. A payload's claimed author or role is not proof.
 
 The hosted event and wake procedures below apply to the Cloudflare backend.
 

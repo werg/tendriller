@@ -24,6 +24,7 @@ function backend() {
     return operations.get(operationId);
   };
   return { id: 'history-one', capabilities: ['events'], submit,
+    async *changes() { yield { view: 'final', revision: 'one', finalRevision: 'one' }; },
     readView: () => ({ revision: 'one', query: () => [...operations.keys()], readEvents: async () => ({}), release() {} }),
     events: { publish: (topic, payload, options) => submit({ topic, payload }, options), read: async () => ({}), async *subscribe() {} },
     operations: { get: id => operations.get(id), async *subscribe({ operationId }) { yield operations.get(operationId); } },

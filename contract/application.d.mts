@@ -4,7 +4,8 @@ export interface ApplicationSubmitOptions { readonly operationId: string }
 export interface ApplicationOperation {
   readonly operationId: string;
   readonly proposalId: string;
-  readonly status: 'queued' | 'provisional' | 'final' | 'rejected';
+  /** Lifecycle and acceptance are independent: a final result can be rejected. */
+  readonly status: 'queued' | 'provisional' | 'final';
   readonly outcome?: 'accepted' | 'rejected';
   readonly error?: string;
   readonly message?: string;
@@ -14,12 +15,24 @@ export interface ApplicationOperations {
   get(operationId: string): ApplicationOperation | null | Promise<ApplicationOperation | null>;
   subscribe(options: { readonly operationId: string; readonly signal?: AbortSignal }): AsyncIterable<ApplicationOperation>;
 }
+/** Backend-authenticated provenance, never copied from an application payload. */
+export interface ApplicationEventOrigin {
+  readonly kind: string;
+  readonly authorId: string;
+  readonly operationId: string;
+}
+export interface HostedApplicationEventOrigin extends ApplicationEventOrigin {
+  readonly kind: 'hosted';
+  readonly applicationId: string;
+  readonly role: 'owner' | 'agent';
+}
 export interface ApplicationEvent {
   readonly id: string;
   readonly proposalId: string;
   readonly eventOrdinal: number;
   readonly topic: string;
   readonly payload: unknown;
+  readonly origin: ApplicationEventOrigin;
 }
 export interface ApplicationEventTransaction { readonly proposalId: string; readonly events: readonly ApplicationEvent[] }
 export interface ApplicationEventBatch {
@@ -47,6 +60,15 @@ export interface ApplicationReadView<QueryResult = unknown, Parameter = unknown>
   readEvents(options?: ApplicationEventReadOptions): ApplicationEventBatch | Promise<ApplicationEventBatch>;
   release(): void | Promise<void>;
 }
+export interface ApplicationChange {
+  readonly view: 'local' | 'final';
+  readonly revision: string;
+  readonly finalRevision: string;
+}
+export interface ApplicationChangeOptions {
+  readonly view?: 'local' | 'final';
+  readonly signal?: AbortSignal;
+}
 /**
  * One selected backend owns persistence, proposal identity, retries and application
  * interpretation. The host neither queues a second copy nor interprets programs.
@@ -56,6 +78,8 @@ export interface ApplicationBackend<Program = unknown, Submission = unknown, Que
   readonly id: string;
   readonly capabilities: readonly string[];
   submit(program: Program, options: ApplicationSubmitOptions): Promise<Submission>;
+  /** Current revision, then coalesced invalidations. Capture readView for data; no durable replay cursor. */
+  changes(options?: ApplicationChangeOptions): AsyncIterable<ApplicationChange>;
   readView(options?: { readonly view?: 'local' | 'final' }): ApplicationReadView<QueryResult, Parameter> | Promise<ApplicationReadView<QueryResult, Parameter>>;
   readonly events: ApplicationEvents<Submission>;
   readonly operations: ApplicationOperations;
@@ -79,7 +103,7 @@ export interface CloudflareApplicationProgram {
 export interface CloudflareApplicationSubmission {
   readonly operationId: string;
   readonly proposalId: string;
-  readonly status: 'queued' | 'final' | 'rejected';
+  readonly status: 'queued' | 'final';
   readonly outcome?: 'accepted' | 'rejected';
   readonly revision?: string;
   readonly error?: string;
@@ -101,4 +125,6 @@ export declare function createCloudflareApplicationBackend(options: {
   readonly request: (path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal }) => Promise<any>;
   /** A browser supplies its one durable outbox. Native callers preserve the original program and operationId. */
   readonly submit?: (program: CloudflareApplicationProgram, options: ApplicationSubmitOptions) => Promise<CloudflareApplicationSubmission>;
+  /** Reuse the browser's existing socket; non-browser callers use bounded revision polling. */
+  readonly onChange?: (notify: () => void) => () => void;
 }): ApplicationBackend<CloudflareApplicationProgram, CloudflareApplicationSubmission, unknown, unknown>;

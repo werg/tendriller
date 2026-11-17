@@ -21,7 +21,7 @@ Optional voice types and code are separate exports.
 ## Selected application history
 
 For peer-backed pages, use `await tendril.application.ready()` and its selected
-backend's `submit`, `events`, `readView`, and `operations` methods. Install the
+backend's `submit`, `events`, `changes`, `readView`, and `operations` methods. Install the
 matching adapter once with `tendril.application.install(backend)`; host connection
 readiness belongs to that backend. `tendril.peers.initialBootstrap` contains the
 immutable resident HTTPS addresses supplied in the initial page, requiring no
@@ -64,6 +64,15 @@ messages within a bounded FIFO; `latest` coalesces replaceable values. This port
 works without a durable application backend. It creates no host connection,
 outbox, SQL transaction or finality request. See [live signals](APPLICATION_SIGNALS.md)
 for envelopes, error handling, authorization and expiring views.
+
+For peer application projections, `application.changes({view:'local',signal})`
+starts with the current revision and coalesces subsequent invalidations. Capture
+one `readView` to refresh related queries and event projections coherently; release
+it when finished. Durable event processing instead uses `events.subscribe` with
+a saved processed cursor. Events expose authenticated `origin` independently of
+their payload. Operation lifecycle (`queued`, `provisional`, `final`) is separate
+from acceptance (`outcome:'accepted'|'rejected'`). A final rejection is settled,
+not successful. See [application backends](APPLICATION_BACKENDS.md).
 
 ## Conversation and durable outcomes
 
@@ -506,12 +515,16 @@ including spaces, literal `%`, `?`, and `#`. Nested documents resolve relative
 assets within their own directory. Offline navigation serves the requested saved
 HTML file; a missing file does not silently display another entry page.
 
-The runtime reports health after startup in a visible page. Call `ready.manual()`
+The hosted Cloudflare runtime reports health after startup in a visible page. Call `ready.manual()`
 when authored asynchronous initialization must finish first, then `ready()` when
-it has genuinely succeeded. Page updates emit `reload` and a cancelable
+it has succeeded. Hosted page updates emit `reload` and a cancelable
 `tendril:before-reload` DOM event whose `detail.apply()` applies the update after
 saving drafts. Health, offline readiness, owner identity, and agent listening are
 independent states.
+
+Peer pages send no automatic health report and run no background host update
+loop. `application.ready()` reports backend installation. The application's
+replica APIs report synchronization, applied finality and network connectivity.
 
 ## Optional voice
 

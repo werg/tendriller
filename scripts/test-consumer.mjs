@@ -123,8 +123,19 @@ const operation: ApplicationOperation | null = await backend.operations.get('sta
 for await (const status of backend.operations.subscribe({operationId:'stable-operation'})) { const id:string = status.proposalId; void id; }
 const view = await backend.readView({view:'final'});
 const eventBatch = await view.readEvents({topics:['conversation']});
+for (const transaction of eventBatch.transactions) for (const event of transaction.events) {
+  const author:string = event.origin.authorId, authoredOperation:string = event.origin.operationId;
+  void [author,authoredOperation];
+}
 const continuation:string = eventBatch.scannedThrough;
 await view.release();
+for await (const change of backend.changes({view:'local'})) {
+  const revision:string = change.revision, finalRevision:string = change.finalRevision;
+  void [revision,finalRevision];
+  break;
+}
+// @ts-expect-error view invalidation has no durable replay cursor.
+backend.changes({cursor:'processed-event-cursor'});
 void publishConversation(backend.events, {messageId:'message-one',text:'Hello'}, {operationId:'send-one'});
 const cfProgram: CloudflareApplicationProgram = {version:1,expected_generations:{},steps:[{kind:'emit',topic:'tasks',payload:{id:'one'}}]};
 // @ts-expect-error explicit original scope guards are required before queueing.

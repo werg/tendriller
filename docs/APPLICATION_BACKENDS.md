@@ -77,6 +77,7 @@ that its selected backend is installed, not that any remote peer is reachable.
 | `events.read({cursor?,topics?,limit?,signal?})` | Bounded whole-transaction final replay |
 | `events.subscribe(options)` | At-least-once continuation with pull backpressure |
 | `readView({view?:'local'|'final'})` | Captured revision with `query`, `readEvents`, and `release` |
+| `changes({view?:'local'|'final',signal?})` | Current revision, then coalesced invalidations for that view |
 | `operations.get(operationId)` | Recover the status of this author's durable operation |
 | `operations.subscribe({operationId,signal?})` | Observe that operation, including finality-only changes |
 
@@ -87,14 +88,24 @@ SQL/platform/emit `ChangeProgram`; the Cloudflare implementation advertises
 program below. The adapter's `sql` option describes the execution profile; it does
 not grant SQL permission or change acceptance rules.
 
-An operation receipt identifies `operationId`, `proposalId`, and `status`:
-`queued`, `provisional`, `final`, or `rejected`. A proposal that is locally rejected
-but not final is still `provisional` with an outcome of `rejected`; replay can
-replace that outcome. Final rejection preserves the original operation identity
-and recoverable draft. A Cloudflare admission refusal can have an empty
-`proposalId` and no `outcome`: the draft was refused before a retained proposal was
-created. Only an exact-identity conflict or retained-history quota refusal is
-classified this way. A lost, malformed, or timed-out response, or a host
+An operation receipt separates lifecycle from acceptance. `status` is `queued`,
+`provisional`, or `final`; `outcome` is `accepted` or `rejected` once execution has
+produced a result. Both provisional outcomes can change during replay. Both final
+outcomes are settled. In particular, `status:'final'` alone does **not** mean that
+the operation succeeded: check `outcome:'accepted'` as well.
+
+| Status | Outcome | Meaning |
+| --- | --- | --- |
+| `queued` | Absent | The original operation is saved or submitted; no execution result is established |
+| `provisional` | `accepted` or `rejected` | A replaceable local result; earlier incoming work can change it |
+| `final` | `accepted` | The accepted result is settled under the configured policy |
+| `final` | `rejected` | The rejection is settled; preserve the reviewed draft for a deliberate new operation |
+
+Receipts always identify `operationId` and `proposalId`. A Cloudflare admission
+refusal has an empty `proposalId`, `status:'final'`, and `outcome:'rejected'`: the
+draft was refused before a retained proposal was created. Only an exact-identity
+conflict or retained-history quota refusal is classified this way. A lost,
+malformed, or timed-out response, or a host
 authentication/routing failure, establishes no rejection: an earlier submission
 may already have committed. Keep its original program queued for receipt recovery.
 
@@ -108,9 +119,19 @@ conditions, or message identity to make it pass after a reset.
 
 Each batch has `transactions`, `scannedThrough`, `hasMore`, and `revision`.
 Transactions contain `proposalId` and complete matching event groups. Each event
-has `id`, `proposalId`, `eventOrdinal`, `topic`, and `payload`. The event's stable
+has `id`, `proposalId`, `eventOrdinal`, `topic`, `payload`, and `origin`. The event's stable
 identity is derived from its proposal and ordinal. Topics filter a shared history;
 they have no separate sequencer and do not provide confidentiality.
+
+`origin` is authenticated backend metadata. Every backend supplies `kind`,
+`authorId`, and `operationId`; backend-specific fields describe how the author
+was authorized. Hosted events retain their application identity and authenticated
+`owner` or `agent` role. Chronolog retains the signed group, author, membership
+revision, writer capability, and author timestamp. Retries and replay retain this
+original provenance. Fields named `author`, `role`, or `origin` inside `payload`
+remain application data. Check the trusted origin against application policy
+before treating an event as an instruction. Being an accepted event does not by
+itself authorize an agent to execute its text.
 
 Cursors and revisions are opaque. Store and return them unchanged. A continuation
 binds the history and normalized topic filter. Changing a filter requires a new
@@ -141,13 +162,45 @@ recaptured. Independent widgets are not made atomic merely by labeling them with
 the same token: publish their combined view when every required projection is
 ready. Keep focus, scroll, selection, and unfinished typing local.
 
+## Observe views separately from consuming history
+
+Use `changes` to refresh UI projections, including SQL-only changes, remote
+provisional work, rollback/redo, and finality-only progress. It first yields the
+current `{view,revision,finalRevision}` and then coalesces invalidations while a
+consumer is busy. Its default view is `final`; use `local` deliberately for an
+optimistic UI. Revision strings are opaque observations, never durable consumer
+cursors. A notification does not pin a snapshot; recapture `readView` and publish
+all related projections from that captured view.
+
+```js
+const stop = new AbortController();
+for await (const change of application.changes({ view: 'local', signal: stop.signal })) {
+  const view = await application.readView({ view: change.view });
+  try {
+    const tasks = await view.query('SELECT id, status FROM tasks');
+    // Read the other required projections through this same view.
+    renderTasks(tasks, view.revision);
+  } finally {
+    await view.release();
+  }
+}
+```
+
+`events.subscribe` serves a different purpose: processing every accepted final
+event and saving a durable processed cursor. It is not a view invalidation feed.
+A state-only program can alter the UI without emitting an event. Slow UI readers
+may skip obsolete revisions; durable event consumers must process their full
+transaction batches. Hosted browser changes reuse the existing socket and
+recheck on reconnect. Native hosted HTTP clients poll a small revision endpoint.
+Peer clients use their replica's change stream and make no host requests.
+
 ## Conversation and ephemeral traffic
 
 `publishConversation(application.events, {messageId,text,inReplyTo?}, {operationId})`
 emits the ordinary `conversation` event `message.posted` version 1. It does not
 invoke the agent, perform speech, declare a human read receipt, or grant the author
-permission to impersonate an owner or system role. Use recorded author/grant
-provenance and application policy when presenting a message.
+permission to impersonate an owner or system role. Use the event's authenticated
+`origin` and application policy when presenting a message.
 
 Presence, typing, token chunks, and replaceable progress use
 [`tendril.signals`](APPLICATION_SIGNALS.md), installed independently with
@@ -234,7 +287,7 @@ and does not advertise local provisional SQL. Native SDK users obtain it with
 before calling submit.
 
 HTTP routes are relative to the agent API or the page's `_tendril/` prefix:
-`GET application`, `POST application/changes`, `GET application/view`,
+`GET application`, `POST application/changes`, `GET application/view`, `GET application/revision`,
 `GET application/events`, and `GET application/operations/<operationId>`.
 Event reads accept `cursor`, JSON-encoded `topics`, `limit`, and an optional pinned
 `revision`. Writes require the owner page or an authorized agent; display and

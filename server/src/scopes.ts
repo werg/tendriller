@@ -104,7 +104,10 @@ export function mutateDecision<T>(t: Tendril, actor: string, input: unknown, tar
   return decision.value;
 }
 
-function changed(t: Tendril): void { t.broadcast({ t: 'scopes', scopes: scopes(t) }); }
+function changed(t: Tendril): void {
+  t.db.set('scope_revision', t.db.get<number>('scope_revision', 0) + 1);
+  t.broadcast({ t: 'scopes', scopes: scopes(t) });
+}
 export function registerScope(t: Tendril, id: string, bindings: unknown, owner: string | null = null, expected?: string): ScopeDescriptor {
   assertValid('scopeId', id);
   const checked = assertValid('scopeBindings', bindings);

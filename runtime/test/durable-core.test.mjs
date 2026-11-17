@@ -158,7 +158,7 @@ test("peer pages select one backend without opening a host socket or outbox", as
   await assert.rejects(env.core.send({ type: "task" }), { code: "application_backend" });
   assert.throws(() => env.core.state.apply([{ op: "set", path: ["task"], value: 1 }]), { code: "application_backend" });
   const authored = [], backend = { id: "history-one", capabilities: ["events"], async submit(program, options) { authored.push({ program, options }); },
-    readView() {}, events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };
+    readView() {}, async *changes() {}, events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };
   env.core.application.install(backend);
   assert.equal(await env.core.application.ready(), backend);
   await backend.submit({ exact: "proposal" }, { operationId: "original" });
@@ -303,10 +303,46 @@ test("application admission refusals preserve the reviewed draft and terminal st
   assert.equal(first.database.stores.outbox.size, 1);
   first.transport.disconnect();
   const second = await environment({ database: first.database, localStorage: first.localStorage, fetcher, online: false });
-  assert.equal((await second.core.application.backend.operations.get("retained")).status, "rejected");
+  assert.equal((await second.core.application.backend.operations.get("retained")).status, "final");
+  assert.equal((await second.core.application.backend.operations.get("retained")).outcome, "rejected");
   assert.equal((await second.core.application.backend.submit(program, { operationId: "retained" })).error, "history_quota");
   await assert.rejects(second.core.application.backend.submit({ ...program, steps: [{ kind: "emit", topic: "tasks", payload: "different" }] }, { operationId: "retained" }), { code: "operation_conflict" });
   assert.equal(calls, 1);
+});
+
+test("final rejected application outcomes retain the original draft without repeated submission", async () => {
+  let calls = 0;
+  const receipt = { operationId: "rejected", proposalId: "original", status: "final", outcome: "rejected", error: "state_conflict" };
+  const fetcher = async () => { calls++; return json(receipt); };
+  const first = await environment({ fetcher });
+  const program = { version: 1, expected_generations: {}, steps: [{ kind: "emit", topic: "tasks", payload: { reviewed: true } }] };
+  const submitted = first.core.application.backend.submit(program, { operationId: "rejected" });
+  await flush(); await first.commit(); await first.commit();
+  assert.deepEqual(plain(await submitted), receipt);
+  assert.equal(first.database.stores.outbox.size, 1);
+  first.transport.disconnect();
+  const resumed = await environment({ database: first.database, localStorage: first.localStorage, fetcher });
+  assert.deepEqual(plain(await resumed.core.application.backend.operations.get("rejected")), receipt);
+  assert.deepEqual(plain(await resumed.core.application.backend.submit(program, { operationId: "rejected" })), receipt);
+  assert.equal(calls, 1, "final rejection is a saved outcome, not unresolved work");
+});
+
+test("application changes use the existing socket and observe event-free invalidations without polling", async () => {
+  let revision = "r1", reads = 0;
+  const env = await environment({ fetcher: async url => {
+    assert.ok(url.endsWith("application/revision?view=local")); reads++;
+    return json({ view: "local", revision, finalRevision: revision });
+  } });
+  const stop = new AbortController(), iterator = env.core.application.backend.changes({ view: "local", signal: stop.signal })[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).value.revision, "r1");
+  const pending = iterator.next();
+  await flush(); await env.expire(250);
+  assert.equal(reads, 1, "a subscribed connected browser performs no background revision polling");
+  revision = "r2";
+  env.transport.receive({ t: "application_revision", revision });
+  assert.equal((await pending).value.revision, "r2");
+  stop.abort();
+  assert.equal((await iterator.next()).done, true);
 });
 
 test("sensor observers receive isolated snapshots without changing later observers or service usage", async () => {

@@ -21,13 +21,19 @@ application reports will identify their separately qualified source revisions.
 
 ## Historical qualification before WebRTC rendezvous
 
-This branch implements the Tendriller boundary in the 16 November 2026 P2P
-events follow-up. The default Cloudflare Durable Object runs a portable,
-bandwidth-thin membership administrator. The earlier complete public
+The sections below preserve qualification of the source and artifact versions
+named in each checkpoint. They describe the earlier binary relay and its
+successive protocol changes; they do not describe the current connection API or
+qualify later source. Current behavior is documented in
+[the architecture](PEER_ARCHITECTURE.md) and [application contract](APPLICATION_BACKENDS.md).
+
+The 16 November 2026 P2P events follow-up implemented the Tendriller boundary
+with a portable, bandwidth-thin membership administrator in the default
+Cloudflare Durable Object. The earlier complete public
 workerd/native/browser qualification passed at the exact pins recorded below.
 The subsequent review and dependency checkpoint is recorded separately.
 
-## Implemented boundaries
+### Boundaries at that checkpoint
 
 - One immutable selected application backend per page, a public
   installation/readiness boundary, opaque event continuations and
@@ -52,7 +58,7 @@ application bodies or loading SQL. Devices keep their private signing and
 reader keys. The administrator retains shared epoch keys to wrap for approved
 public keys and remains trusted with those keys.
 
-## Author-time finality follow-up
+### Author-time finality follow-up
 
 Application execution order is always derived by replicas from the signed author
 timestamp and deterministic tie-breakers. The selected provider certifies an
@@ -68,7 +74,7 @@ The qualification reports below predate this change and retain their historical
 scope. New finality, closure-recovery and conditional-append results must be tied
 to the new source and packed artifacts.
 
-## Review and dependency checkpoint
+### Review and dependency checkpoint
 
 The review adds exact application receipt recovery after host authorization
 failures, repeated and concurrent exact-operation callers, ordered relay
@@ -76,11 +82,11 @@ forwarding across asynchronous authorization, retired pair isolation, stricter
 public snapshot/hash contracts, and resumable resident-lifetime changes that
 cannot race membership or retained-log provisioning into expiring storage.
 
-The current embedded administrator comes from clean Chronolog source
+The embedded administrator at that checkpoint came from clean Chronolog source
 `8476228ca7645ddd003be74e663a3617e3f5c758`, with 57 audited portable inputs.
 It includes the author-time finality and closure-boundary governance changes,
 plus the earlier ledger, peer-recovery, explicit device-identity reopening and
-atomic membership-page ingestion corrections, including the latest peer-session
+atomic membership-page ingestion corrections, including its peer-session
 connection cleanup.
 An unchanged verified prefix performs no durable ledger write. A changed bounded
 page validates and commits together; late invalid input or failed storage cannot
@@ -91,7 +97,7 @@ The separately verified Chronolog continuity checkpoint
 making keys usable, fences uncertain feed writes until reopening, and refuses to
 restart a native authority history beneath its retained configuration or
 certificate. Connection-bound cleanup prevents a stale session from detaching a
-newer route. The current embedded package comes from the merged source checkpoint
+newer route. That embedded package came from the merged source checkpoint
 above; its portable fixes accompany the author-time finality changes.
 
 The [native cost review](https://github.com/werg/tendriller-contrib/blob/d6e27d660feac31175cf0dc34c9fce18494378d2/cookbooks/run-a-peer-application/notes/membership-cost-review-2026-11-16.md)
@@ -103,7 +109,7 @@ history and recipient key-wrap costs remain explicit.
 The earlier full CI numbers below describe their explicitly identified source
 pins; current review validation is recorded in the PR description.
 
-## Earlier verified implementation
+### Earlier verified implementation
 
 Tendriller implementation head
 [`43cac4e75b0bbe1e422f4879b7249d6db5988440`](https://github.com/werg/tendriller/commit/43cac4e75b0bbe1e422f4879b7249d6db5988440)
@@ -123,7 +129,7 @@ Durable Object restart. The strict independent consumer checks the exact
 embedded membership provenance and requires no external Chronolog runtime
 package or private checkout.
 
-## Complete thin-administrator qualification
+### Complete thin-administrator qualification
 
 [Chronolog browser run 43940378818](https://github.com/werg/chronolog-db/actions/runs/43940378818)
 passed at authored head `5cfa04440029c24d4313e7b8e88e593952180adb`, tested merge
@@ -164,7 +170,7 @@ has SHA-256 `910ac51584c70818dcbf93c945a0766abc01ecaa16c168f80b7cf6810e2b877d`.
 The [contrib evidence](https://github.com/werg/tendriller-contrib/blob/feat/chronolog-application-log/cookbooks/run-a-peer-application/notes/thin-membership-administration.md)
 preserves the reports, package hashes and scenario limits.
 
-## Deployment scope
+### Deployment scope of those reports
 
 Direct public-agent, WebRTC and Iroh route measurements, paired provider cost,
 authority volume-loss/restore drills and deployed device/privacy qualification

@@ -1,19 +1,34 @@
-# Core mechanisms, authored pages and cookbooks
+# Application history, live signals, and hosting
 
 Tendriller separates dependable platform behavior from application design. Core is independently buildable. Contrib is a collection of adaptable decision guides, with optional page-owned snippets and deliberately selected trusted references.
 
-## One selected application authority
+## Three independent responsibilities
 
 Each page selects an immutable backend identity at creation. The preferred
 resident-agent deployment uses the Chronolog public adapter for durable state,
-events, conversation, operation status, and captured revision views. The native
-agent certifies inclusion and a closed author-time frontier and runs resident
-workers; every replica derives application order from the same signed author-time
-key. Tendriller remains the host.
+events, conversation, operation status, and captured revision views. Every replica
+derives application order from signed proposal metadata. The configured finality
+policy establishes when those results can no longer change. A resident agent
+consumes accepted final intent and performs external work; running that agent
+does not give it finality, membership, or schema administration powers.
 A Cloudflare JSON backend implements the same small contract as an alternative.
 Peer pages disable its application routes and never open a second application
 outbox. There is no automatic authority fallback. See
 [application backends](APPLICATION_BACKENDS.md).
+
+Live application messages use an independently installed `signals` service. Its
+`send` and `subscribe` operations require no durable backend, SQL transaction,
+operation identity, replay cursor, or finality service. Presence, previews,
+pointer movements, progress, and temporary response chunks belong here. FIFO is
+the default; replaceable values opt into latest-value delivery. Expiration,
+authorization, bounded queues, and live routes are the signal service's concerns.
+See [live signals](APPLICATION_SIGNALS.md).
+
+The host supplies assets, account access, publication recovery, explicit blob
+storage, participant administration, and optional introductions. A host login is
+not a database grant. A network introduction is not reader permission. A signal
+signature proves authorship, not instruction authority. Applications make those
+authorization decisions explicitly from authenticated provenance.
 
 The public [peer rendezvous](PEER_CONNECTIONS.md) boundary forwards one bounded
 WebRTC description per endpoint, then closes. Chronolog owns authenticated
@@ -34,8 +49,11 @@ execution order. Normal application writes do not wait for this host.
 
 | Surface | Owner | Dependency boundary |
 | --- | --- | --- |
-| Identity, roles, state, events, files, blobs, streams and lifecycle | Core engine | Public core contract |
-| Durable commands, conversation data, sensor tracking and publication readiness | Headless core runtime | Public core contract |
+| Durable programs, event history, outcomes and local/final views | Selected application backend | Public application contract |
+| Live signals, expiry and bounded delivery | Independently installed signal service | Public signals contract |
+| Hosted JSON state, commands, conversation and streams | Cloudflare backend | Public hosted contract |
+| Page accounts, assets, blobs and publication lifecycle | Core host | Public core contract |
+| Backend binding, local sensor controls and publication readiness | Headless runtime | Public browser contract |
 | Active-use stop and recovery link | Hosted utility | Public browser API |
 | Spoken input/output | Explicit optional runtime adapter | Public conversation, captures and asset URLs |
 | Private records and synchronous atomic operations | Core trusted host | `@tendriller/core/host` |
@@ -69,13 +87,32 @@ commit and inputs without a sibling checkout or an unpublished dependency.
 
 ## Browser and UI boundary
 
-Importing `@tendriller/runtime/kernel` mounts nothing and asks for no permissions. `startRuntime` supplies one connection, durable commands, state, streams, conversation records, capture lifecycle, publication identity and capability inspection. The hosted entry starts this kernel and adds only a recovery link plus sensor status/stop for active resources and pending acquisitions.
+Importing `@tendriller/runtime/kernel` mounts nothing and asks for no permissions.
+`startRuntime` installs the selected application binding and an independent signal
+binding. A peer page runs the quiet runtime: no host application socket, outbox,
+heartbeat, diagnostic forwarding, or background host requests. A Cloudflare page
+uses its hosted connection, durable commands, state, conversation and streams.
+The served entry adds a recovery link plus sensor status/stop for active resources
+and pending acquisitions.
+
+Observe `application.changes({view:'local'})` to rebuild an optimistic interface,
+then read every related projection through one captured `readView`. Changes are
+coalesced invalidations; they have no durable cursor. Use `events.subscribe` when
+every accepted final event must be processed, and persist the processed cursor
+with the consumer's own state. Event provenance lives in `event.origin`, outside
+the untrusted payload. A payload claiming an owner role grants nothing.
+
+Operation lifecycle is `queued`, `provisional`, or `final`; acceptance is a
+separate `outcome`. A final rejection remains a rejection. Internal rollback/redo
+rebuilds a provisional suffix with deterministic reducers and no external
+effects. User Undo is a new conditional operation. External workers wait for
+final accepted intent, then use idempotency or reconciliation at their provider.
 
 Pages author their own conversation and status presentation. They receive stable message IDs and the distinction between queued, accepted and rejected commands. `conversation.presented(messageId)` acknowledges that the particular agent message was presented; receipt or an open socket does not imply presentation. Voice loads only when a page imports its optional module and explicitly starts the chosen behavior. Voice preferences belong to that adapter rather than a universal core presentation preference.
 
 The recovery route is service-owned HTML, independent of the page runtime. It authorizes the signed-in owner before changing agent connections, guest access or the selected publication. The floating link is convenience, not a security boundary. Selecting a retained publication changes files and preserves application data.
 
-## One transaction boundary
+## Hosted commands and preconditions
 
 A protected command carries a stable `cid`, an optional opaque scope, original `expected_generations`, and its payload. Scopes are authoritative records with protected paths and operation targets. They are separate from application JSON. Binding changes, reset and retirement deliberately change command meaning and therefore generations.
 

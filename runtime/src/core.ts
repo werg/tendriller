@@ -552,13 +552,13 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
                 // already accepted operation whose earlier response was lost.
                 if (!(failure.status === 429 && failure.code === "history_quota" ||
                     failure.status === 409 && failure.code === "operation_conflict")) throw error;
-                received = { operationId: item.msg.operationId, proposalId: "", status: "rejected", error: failure.code || "admission_failed", message: failure.message };
+                received = { operationId: item.msg.operationId, proposalId: "", status: "final", outcome: "rejected", error: failure.code || "admission_failed", message: failure.message };
               }
             }
             const outcome = validateApplicationOperation(received, item.msg.operationId, { terminal: true });
             applicationOutcomes.set(item.cid, outcome);
-            if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(outcome), ...(outcome.status === "rejected" ? { failed: true } : {}) });
-            if (outcome.status !== "rejected") await store.removeDurable(item.cid);
+            if (!item.msg.outcome) await store.updateDurable(item, { ...item.msg, outcome: clone(outcome), ...(outcome.outcome === "rejected" ? { failed: true } : {}) });
+            if (outcome.outcome !== "rejected") await store.removeDurable(item.cid);
             sentThisConn.delete(item.cid);
             applicationOutcomes.delete(item.cid);
             bus.emit("application_operation", clone(outcome));
@@ -826,6 +826,9 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
       case "record_log_head":
         try { bus.emit("record_log_head", validateRecordHead(m.head)); }
         catch { bus.emit("error", { code: "invalid_response", message: "Invalid record log hint" }); }
+        break;
+      case "application_revision":
+        if (typeof m.revision === "string") bus.emit("application_revision", { revision: m.revision });
         break;
       case "welcome": {
         welcome = m;
@@ -1153,6 +1156,10 @@ export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBack
   {
     let authoring = Promise.resolve();
     application.install(createCloudflareApplicationBackend({ id: selection.id,
+      onChange(notify) {
+        const stop = [bus.on("application_revision", notify), bus.on("state", notify), bus.on("scopes", notify), bus.on("connect", notify)];
+        return () => { for (const off of stop) off(); };
+      },
       request: async (path, options) => {
         if (path.startsWith("application/operations/")) {
           await storeReady;

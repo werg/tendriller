@@ -10,7 +10,7 @@ Authenticated pages connected to agents through dependable mechanisms. The page 
 - [Protocol](https://tendriller.dev/docs/PROTOCOL.md): identity, authorization, command generations and atomicity.
 - [MCP](https://tendriller.dev/docs/MCP.md): authenticated tools for immutable uploads, shared files and publications.
 - [Browser API](https://tendriller.dev/docs/BROWSER_API.md): headless transport, state, conversation, streams, captures and device APIs.
-- [Application backends](https://tendriller.dev/docs/APPLICATION_BACKENDS.md): durable programs, provisional versus final views, retries, replay and distinct authority roles.
+- [Application backends](https://tendriller.dev/docs/APPLICATION_BACKENDS.md): durable programs, view changes, authenticated event origins, independent lifecycle/outcomes, retries, replay and distinct authority roles.
 - [Live signals](https://tendriller.dev/docs/APPLICATION_SIGNALS.md): independent ephemeral send/subscribe, FIFO versus latest, expiration and standalone composition.
 - [Streams](https://tendriller.dev/docs/STREAMS.md): ordered observations, replay, retention and resource policy.
 - [Captures](https://tendriller.dev/docs/CAPTURES.md): durable media, review and event acceptance.
