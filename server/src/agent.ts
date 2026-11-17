@@ -1,6 +1,7 @@
 /** Explicit page-host lifecycle and the filtered Chronolog participant transport. */
 import { changeLifetime } from './lifetime';
 import { PEER_ROUTE, handlePeers } from './peers';
+import { withUnconfiguredPeerApplication } from './peer-generations';
 import { handleApplication, selectedApplication } from './application';
 import type { Tendril } from './tendril';
 import { validName } from './tendril';
@@ -93,7 +94,7 @@ route("DELETE", /^$/, async (t) => {
   return new Response(null, { status: 204 });
 });
 
-route("POST", /^release$/, async (t) => {
+route("POST", /^release$/, t => withUnconfiguredPeerApplication(t, async () => {
   const owner = t.db.get<string | null>("owner_account", null);
   if (!owner) throw new HttpError(409, "unclaimed", "This tendril is not claimed");
   t.db.run("DELETE FROM release_events WHERE at < ?", t.now() - 24 * 60 * 60_000);
@@ -132,7 +133,7 @@ route("POST", /^release$/, async (t) => {
   for (const ws of t.ctx.getWebSockets()) ws.close(4003, "claim released");
   t.scheduleAlarm();
   return json({ released: true, expires_at: t.expiresAt() });
-});
+}));
 
 route("POST", /^links$/, async (t, req) => {
   const b = await readJson(req, 4096);

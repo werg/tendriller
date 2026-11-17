@@ -5,7 +5,7 @@ import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, gener
   participantGrant, controlParticipantGrant, applicationDescriptionDigest, signApplicationSchema, verifyApplicationSchema, peerDigest,
   type ApplicationDescription, type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
 import type { PeerApplicationConfiguration } from '../../contract/peer-controls.mjs';
-import { api, apiJson, create, inDO, req, type Handle } from './helpers';
+import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 import { authenticateAgentToken } from '../src/access';
 import { exchangePeerControl } from '../src/peer-generations';
@@ -88,6 +88,41 @@ it('publishes durable governance without a native resident, preserves root on re
   const changedDefinition = { ...definition, version: '2' };
   expect((await page.exchange('control/configure', { ...config, definition: changedDefinition })).status).toBe(409);
   expect(await (await page.exchange('publication/definition')).json()).toEqual({ descriptor: initial.descriptor, definition, schema: null });
+});
+
+it('refuses claim release and retains signed controls through expiry, alarm and restart', async () => {
+  const a = await createPeerIdentity(), h = await create({ application: { id: applicationId() } });
+  await peerApiJson(h, 'control/configure', configuration([a]));
+  const selected = await select(h, a, a, null, 'retained-owner');
+  expect(selected.response.status).toBe(200); await selected.response.text();
+  const retained = await peerApiJson<AuthorityBundle>(h, 'control/read');
+  const owner = await inDO(h.id, t => t.db.get('owner_account', null));
+
+  const released = await api(h, 'POST', 'release');
+  expect(released.status).toBe(409);
+  expect(await released.json()).toMatchObject({ error: { code: 'peer_controls_require_owner' } });
+  expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(h.id).first('owner_account')).toBe(owner);
+  await advance(h.id, 2 * 86_400_000);
+  await runAlarm(h.id);
+  expect(await inDO(h.id, t => ({ owner: t.db.get('owner_account', null), lifetime: t.db.get('lifetime', null),
+    expiresAt: t.expiresAt(), unclaimedSince: t.db.get('unclaimed_since', null),
+    releases: t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM release_events')!.n })))
+    .toEqual({ owner, lifetime: 'resident', expiresAt: null, unclaimedSince: null, releases: 0 });
+  await inDO(h.id, t => { t.ctx.abort('Retained controls after rejected claim release'); }).catch(() => {});
+  expect(await peerApiJson(h, 'control/read')).toEqual(retained);
+});
+
+it('releases an unconfigured claim and expires it without creating peer control state', async () => {
+  const h = await create({ application: { id: applicationId() } });
+  const released = await apiJson(h, 'POST', 'release');
+  expect(released).toMatchObject({ released: true, expires_at: expect.any(Number) });
+  expect(await inDO(h.id, t => ({ owner: t.db.get('owner_account', null), configured: t.db.get('peer_generation_configuration', null),
+    records: t.db.all('SELECT key FROM participant_records'), expiresAt: t.expiresAt() })))
+    .toEqual({ owner: null, configured: null, records: [], expiresAt: released.expires_at });
+  expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(h.id).first('owner_account')).toBeNull();
+  await advance(h.id, 2 * 86_400_000);
+  await runAlarm(h.id);
+  expect((await api(h, 'GET', '')).status).toBe(404);
 });
 
 it('returns the immutable canonical definition with its signed binding to admitted accounts after restart', async () => {

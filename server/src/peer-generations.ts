@@ -68,6 +68,14 @@ function serial<T>(t: Tendril, work: (state: HostState) => Promise<T>): Promise<
   const state = host(t), result = state.pending.then(() => work(state));
   state.pending = result.catch(() => {}); return result;
 }
+/** Claim release and the first durable control configuration cannot interleave. */
+export function withUnconfiguredPeerApplication<T>(t: Tendril, work: () => Promise<T>): Promise<T> {
+  return serial(t, async () => {
+    if (t.db.get(CONFIG, null))
+      throw new HttpError(409, 'peer_controls_require_owner', 'Signed peer control state must retain its owner account until explicitly deleted');
+    return work();
+  });
+}
 async function registry(t: Tendril, state: HostState): Promise<GenerationRegistry> {
   const configuration = t.db.get<Configuration | null>(CONFIG, null);
   if (!configuration) throw new HttpError(409, 'peer_application_unconfigured', 'Publish the signed peer application descriptor first');

@@ -45,6 +45,6 @@ Old code remains at its immutable publication URL. The host never selects old co
 
 ## Storage and lifecycle
 
-Fresh host storage contains account access, signed participant records, code versions/assets and bounded host audit metadata. It has no ordinary application state, event log, command receipts, database history or delivery queue. File storage is content-addressed; release references retain bytes. Page/account deletion deliberately removes their hosted control/code resources.
+Fresh host storage contains account access, signed participant records, code versions/assets and bounded host audit metadata. It has no ordinary application state, event log, command receipts, database history or delivery queue. File storage is content-addressed; release references retain bytes. A configured peer application retains its resident lifetime and owner account; generic claim release is rejected. Page/account deletion deliberately removes their hosted control/code resources.
 
 One pre-release schema is supported. A mismatched existing schema is rejected before mutation; provision fresh resources. No migration, compatibility routing or alternate application pipeline is provided.
