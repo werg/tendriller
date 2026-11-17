@@ -43,6 +43,34 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  artifacts:
+    name: Public package artifacts
+    needs: [check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Consumers pin a source commit, not GitHub's temporary PR merge ref.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:artifacts
+      - run: npm run test:consumer
+      - run: npm run release:artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-packages
+          if-no-files-found: error
+          path: |
+            dist/tendriller-*.tgz
+            dist/manifest.json
+            dist/SHA256SUMS
+
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
     needs: [check]
