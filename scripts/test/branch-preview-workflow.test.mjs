@@ -272,3 +272,20 @@ test('failed rotation preserves the old deployment record and aborts', async () 
   f.github.deployments[0].environment = 'preview/not-owned';
   await assert.rejects(preview.rotatePreviews({ ...f, branch, remove: async () => {} }), /unexpected environment/);
 });
+
+test('deployment status retries transient GitHub failures but not permission errors', async () => {
+  let calls = 0;
+  const value = await preview.retryTransient(async () => {
+    calls++;
+    if (calls < 3) throw Object.assign(new Error('temporary'), { status: 500 });
+    return 'updated';
+  }, async () => {});
+  assert.equal(value, 'updated');
+  assert.equal(calls, 3);
+  calls = 0;
+  await assert.rejects(preview.retryTransient(async () => {
+    calls++;
+    throw Object.assign(new Error('forbidden'), { status: 403 });
+  }, async () => {}), /forbidden/);
+  assert.equal(calls, 1);
+});
