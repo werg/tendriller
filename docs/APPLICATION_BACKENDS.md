@@ -47,3 +47,8 @@ const control = session.connectControlParticipant({
 ```
 
 This is the session's control participant over an authenticated HTTP transport. It verifies authority, public definition and signed publication ancestry. Ordinary application execution and peer replication continue independently while control is unavailable, as long as the selected coordinator remains reachable. Selecting a new generation requires control availability and explicit recovery rules.
+
+
+## Owned participation
+
+Call `session.participate({control,discovery,transport,...})` once to give the session its discovery and raw connection ports. `createPeerIntroductions` from `@tendriller/core/peers` supplies those two ports for this host. The controller owns connection attempts, reconnect grace, authenticated candidate evaluation, freshness budgets and recovery selection; applications do not implement a second policy loop. Observe its status and call `approveRecovery` only for the current displayed proposal when approval is required. See [peer participation](PEER_CONNECTIONS.md).

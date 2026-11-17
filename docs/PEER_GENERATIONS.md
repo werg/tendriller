@@ -14,7 +14,7 @@ The host SDK's methods use the shared participant envelope:
 | `selectGeneration(request,{control?})` | Exact signed transition and optional next membership revision |
 | `administerGeneration(transition,{control?})` | Explicit owner recovery using a real peer coordinator/prefix |
 
-Direct host SDK results are transport evidence. The session's `connectControlParticipant({exchange})` verifies and persists authority through its own replica. Prefer its lifecycle-owned interface once the session is open.
+Direct host SDK results are transport evidence. The session's `connectControlParticipant({exchange})` verifies and persists authority through its own replica. Pass that verified control participant to `session.participate(...)`. The owned controller evaluates candidates, reconnect grace and freshness before selecting recovery; applications present exact approval proposals rather than assembling their own selection loops.
 
 ## Selection and retries
 

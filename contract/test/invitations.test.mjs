@@ -54,8 +54,8 @@ test('the public client preserves private protocol credentials and only posts on
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, 'peers/participant');
   assert.deepEqual([calls[0].options.body.facet, calls[0].options.body.action, calls[0].options.body.payload], ['ephemeral', 'invite', { peerId: 'target', channel: 'fresh', requesterPeerId: 'source' }]);
-  const advertisement = validatePeerAdvertisement({ peerId: 'target', storageId: 'disk', profiles: ['peer-generation-v1'],
-    routes: [{ kind: 'invitation', peerId: 'target' }], coordinatorEligible: true });
+  const advertisement = validatePeerAdvertisement({ peerId: 'target', storageId: 'disk',
+    routes: [{ kind: 'invitation', peerId: 'target' }] });
   assert.deepEqual(advertisement.routes, [{ kind: 'invitation', peerId: 'target' }]);
   listener.close();
 });

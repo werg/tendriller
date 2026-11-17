@@ -50,7 +50,7 @@ import { createClient, requireService } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
 import { createApplicationBinding } from '@tendriller/core/application';
 import { createSignalBinding } from '@tendriller/core/signals';
-import { createParticipantRequest, createParticipantResponse } from '@tendriller/core/peers';
+import { createParticipantRequest, createParticipantResponse, createPeerIntroductions } from '@tendriller/core/peers';
 import { startRuntime } from '@tendriller/runtime/kernel';
 import { createVoice } from '@tendriller/runtime/voice';
 import schema from '@tendriller/core/schema' with {type: 'json'};
@@ -67,6 +67,10 @@ const client = createClient({api:'https://host.test/api/t/test',token:'private'}
   requests++; return Response.json(createParticipantResponse(JSON.parse(init.body), null));
 }});
 assert.deepEqual(Object.keys(client).sort(), ['info', 'peers', 'request', 'service']);
+assert.equal(requests, 0);
+const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32), openConnection: async () => ({ close() {} }) });
+assert.equal(typeof introductions.discovery.invitations, 'function');
+assert.equal(typeof introductions.transport.open, 'function');
 assert.equal(requests, 0);
 const request = createParticipantRequest({applicationId: application.id, facet:'publication', action:'read', payload:{}});
 assert.equal((await client.peers.exchange(request)).payload, null);
@@ -86,7 +90,7 @@ import type {ApplicationBackend, ApplicationOperation} from '@tendriller/core/ap
 import {createApplicationBinding} from '@tendriller/core/application';
 import {startRuntime} from '@tendriller/runtime/kernel';
 import {createVoice} from '@tendriller/runtime/voice';
-import type {ParticipantRequest} from '@tendriller/core/peers';
+import {createPeerIntroductions, type ParticipantRequest} from '@tendriller/core/peers';
 declare const application: ApplicationBackend;
 declare const runtime: RuntimeApi;
 const cfg: RuntimeConfiguration = {id:'page',base:'/p/',version:0,documentPath:null,application:{id:'12'.repeat(32)},features:{speech:null,shared_by:'Owner'}};
@@ -102,6 +106,11 @@ application.onStatus(status => { const peers:number=status.connectedPeers; void 
 await application.inspectRecovery();
 const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
 void client.peers.application(); void client.peers.publication();
+const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
+  openConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; } });
+const raw = await introductions.transport.open({ peer: { identity:'56'.repeat(32), route:{kind:'invitation',peerId:'56'.repeat(32)} } }, { signal: new AbortController().signal });
+const kind:'raw'=raw.kind; void kind;
+
 void createPage('https://host.test', {owner:'owner@example.test',application:cfg.application});
 declare const message: ParticipantRequest;
 void client.peers.exchange(message);

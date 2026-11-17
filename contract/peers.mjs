@@ -145,14 +145,14 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
-    async discover() { return validatePeerDirectory(await participant.request('discovery', 'read', {})); },
+    async discover(options = {}) { return validatePeerDirectory(await participant.request('discovery', 'read', {}, options)); },
     async advertise(value, options = {}) {
       return validatePeerAdvertisementLease(await participant.request('discovery', 'advertise',
-        { advertisement: validatePeerAdvertisement(value), ttlMs: validatePeerTtl(options.ttlMs) }));
+        { advertisement: validatePeerAdvertisement(value), ttlMs: validatePeerTtl(options.ttlMs) }, options));
     },
-    async withdraw(peerId) {
+    async withdraw(peerId, options = {}) {
       peerId = validatePeerId(peerId);
-      const result = await participant.request('discovery', 'withdraw', { peerId });
+      const result = await participant.request('discovery', 'withdraw', { peerId }, options);
       if (!result || result.withdrawn !== peerId) fail('invalid_response', 'Invalid withdrawal response');
     },
     listenInvitations(peerId, options = {}) {
@@ -164,9 +164,9 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
       const invitationProtocols = [PEER_INVITATION_PROTOCOL, ...protocols.filter(value => value !== PEER_RENDEZVOUS_PROTOCOL && value !== PEER_INVITATION_PROTOCOL)];
       return createPeerInvitationListener((options.socket || socket)(url.href, invitationProtocols), peerId, options);
     },
-    async invite(peerId, input) {
+    async invite(peerId, input, options = {}) {
       peerId = validatePeerId(peerId); const invitation = validatePeerInvitation(input);
-      const result = await participant.request('ephemeral', 'invite', { peerId, ...invitation });
+      const result = await participant.request('ephemeral', 'invite', { peerId, ...invitation }, options);
       if (!result || result.invited !== peerId || result.channel !== invitation.channel) fail('invalid_response', 'Invalid invitation response');
     },
     rendezvous(channel, peerId, options = {}) {
@@ -182,3 +182,5 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
     },
   });
 }
+
+export { createPeerIntroductions } from './introductions.mjs';

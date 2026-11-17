@@ -30,7 +30,23 @@ const control = session.connectControlParticipant({
 });
 ```
 
-The session owns this connection's lifetime and verification. Ordinary current-generation commands, queries, signals and replication require no control call. Discovery and connection invitations happen on join or reconnect; healthy sessions do not poll the host.
+Install the session's one participation controller with the host introduction adapter:
+
+```js
+import { createPeerIntroductions } from '@tendriller/core/peers';
+const participation = await session.participate({
+  control,
+  ...createPeerIntroductions({
+    peers: host.peers,
+    identity: session.deviceId,
+    openConnection, // The native or owned Worker raw RTC opener.
+  }),
+});
+```
+
+The session owns discovery, connection retries, authentication, reconnect grace, candidate policy and recovery. The host adapter only supplies routing and SDP introduction mechanics. Use the controller's status to show connection progress and any exact recovery proposal requiring approval. Do not add application-level election or retry loops. See [peer participation](docs/PEER_CONNECTIONS.md) for the environment openers and lifecycle.
+
+Ordinary commands, queries, signals and replication require no host control call. Coarse availability-lease renewal is separate lifecycle traffic, independent of application edits.
 
 ## Compose the browser runtime
 

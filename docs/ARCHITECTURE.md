@@ -6,7 +6,7 @@ One Chronolog application session owns each local application's execution and ex
 
 | Owner | Responsibility |
 | --- | --- |
-| Chronolog session | Signing device identity, byte store, operation journal, materialization, queries, events, signals, replication and recovery |
+| Chronolog session | Signing device identity, byte store, operation journal, materialization, queries, events, signals, owned participation, replication and recovery |
 | Coordinating peer | Orders the currently selected generation; no permanent process or host privilege is implied |
 | Tendriller participant | Signed controls, membership changes, immutable public definition and signed page-code release chain |
 | Tendriller page host | Account access, isolation, immutable file serving, bounded discovery/introductions and lifecycle quotas |

@@ -54,7 +54,7 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
     if (!previous && (rows.length >= LIMITS.peers || rows.filter(row => row.owner === owner).length >= LIMITS.peersPerPrincipal))
       throw new HttpError(429, 'peer_directory_full', 'The bounded peer directory is full');
     // Duplicate availability updates do not create writes until the coalescing
-    // window expires. Coverage is a hint; callers should not advertise per edit.
+    // window expires. Discovery carries routing hints, never per-edit updates.
     if (previous && previous.refreshAfter > t.now() && JSON.stringify(previous.advertisement) === JSON.stringify(advertisement))
       return publicLease(previous);
     const lease: StoredAdvertisement = { advertisement: advertisement!, owner, principal,

@@ -2,9 +2,8 @@ import { peerApi, peerApiJson, peerOwnerApi, participantMessage, participantPayl
 import { expect, it } from 'vitest';
 import { advance, api, apiJson, create, inDO, req } from './helpers';
 import { createTestPage } from './public-fixture';
-const advertisement = (peerId = 'peer-a') => ({ peerId, storageId: `store:${peerId}`, profiles: ['peer-generation-v1'],
-  routes: [{ kind: 'rendezvous', channel: `join:${peerId}` }], coordinatorEligible: true,
-  recovery: { generation: 'g1', sequence: 8, root: 'ab'.repeat(32), controlRevision: 0, retainedAt: 100 } });
+const advertisement = (peerId = 'peer-a') => ({ peerId, storageId: `store:${peerId}`,
+  routes: [{ kind: 'rendezvous', channel: `join:${peerId}` }] });
 
 it('discovers independent peers, coalesces duplicate availability, and expires without host wakeups', async () => {
   const h = await create({ mode: 'dashboard', listener: false, application: { id: 'e17410f37bea544015af1bb0ed29baef7a9cc99617ca3d4fb8bfca77189f32e7' } });
@@ -47,12 +46,14 @@ it('withdraws revoked credentials from discovery and survives Durable Object res
   expect(await (await peerOwnerApi(h, 'discovery/read')).json()).toEqual({ applicationId: '70b342eb4017a99a5e12f7b4cb5248ce45775765f520f1f3fef112e96f9b5f33', peers: [] });
 });
 
-it('bounds directory size and rejects unsigned data-plane fields, anonymous readers, and unconfigured applications', async () => {
+it('bounds directory size and rejects extra metadata and anonymous readers', async () => {
   const h = await create({ mode: 'dashboard', listener: false, application: { id: '30a54be9f9164e2efb2d815abce5d81744fed1f6497e7fdff295614508c89a33' } });
   expect((await req(`${h.api}/peers/participant`, { anonymous: true })).status).toBe(401);
   for (let i = 0; i < 8; i++) expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement(`peer-${i}`) })).status).toBe(200);
   expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement('overflow') })).status).toBe(429);
   expect((await peerApi(h, 'discovery/advertise', { advertisement: { ...advertisement(), commands: [] } })).status).toBe(400);
+  for (const claims of [{ profiles: ['peer-generation-v1'] }, { coordinatorEligible: true }, { recovery: { generation: 'g1' } }])
+    expect((await peerApi(h, 'discovery/advertise', { advertisement: { ...advertisement(), ...claims } })).status).toBe(400);
   expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement(), ttlMs: 10 })).status).toBe(400);
   const hosted = await create({ mode: 'dashboard', listener: false });
   expect((await peerApi(hosted, 'discovery/read')).status).toBe(200);

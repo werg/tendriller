@@ -35,6 +35,10 @@ The application and signal ports may instead be installed once after startup. Th
 
 Construction starts no host connection, fetch, IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
 
+## Connection lifecycle
+
+Install `session.participate(...)` with the [host introduction adapter](PEER_CONNECTIONS.md). For browser RTC, `openWorkerWebRtcConnection` and the page's `serveWorkerWebRtcConnections` bridge keep the connection's authentication, replication and recovery inside the owned Worker. The runtime remains a view and utility binding; it starts no second controller. Show participation status and exact recovery proposals instead of implementing local polling or elections.
+
 ## Applied views and operation state
 
 Use the [application contract](APPLICATION_BACKENDS.md) or the session directly. Capture coherent applied read views and release them. Keep saved, applied and shared progress distinct. Show recovery notices and abandoned operations explicitly; let the user decide whether to reapply with current arguments and guards.

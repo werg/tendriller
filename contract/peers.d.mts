@@ -34,14 +34,14 @@ export interface PeersClient extends PeerControlsClient {
   bootstrap(): Promise<PeerBootstrap>;
   setBootstrap(hints: PeerBootstrap): Promise<PeerBootstrap>;
   /** Explicit lookup on join/reconnect. No background polling is installed. */
-  discover(): Promise<PeerDirectory>;
+  discover(options?: { readonly signal?: AbortSignal }): Promise<PeerDirectory>;
   /** Coalesced availability hints. Peer authentication and authority are verified independently. */
-  advertise(advertisement: PeerAdvertisement, options?: { readonly ttlMs?: number }): Promise<PeerAdvertisementLease>;
-  withdraw(peerId: string): Promise<void>;
+  advertise(advertisement: PeerAdvertisement, options?: { readonly ttlMs?: number; readonly signal?: AbortSignal }): Promise<PeerAdvertisementLease>;
+  withdraw(peerId: string, options?: { readonly signal?: AbortSignal }): Promise<void>;
   /** Hibernatable connection invitations; no heartbeat or application traffic. */
   listenInvitations(peerId: string, options?: PeerInvitationOptions): PeerInvitationListener;
   /** On-demand late-join/reconnect hint. Peer authentication remains independent. */
-  invite(peerId: string, invitation: PeerInvitation): Promise<void>;
+  invite(peerId: string, invitation: PeerInvitation, options?: { readonly signal?: AbortSignal }): Promise<void>;
   rendezvous(channel: string, peerId: string, options?: PeerRendezvousOptions): PeerRendezvous;
 }
 export declare const PEER_RENDEZVOUS_PROTOCOL: 'tendriller.rendezvous.v1';
@@ -63,3 +63,5 @@ export * from './peer-controls.mjs';
 export * from './peer-participant.mjs';
 import type { PeerInvitation, PeerInvitationOptions, PeerInvitationListener } from './invitations.mjs';
 export * from './invitations.mjs';
+
+export { createPeerIntroductions } from './introductions.mjs';
