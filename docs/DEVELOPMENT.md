@@ -46,3 +46,5 @@ Every build writes exact source commit/tree, clean/dirty state and archive SHA-2
 Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree. Release publication is separate from deployment. Use `check:release` and the repository's release workflow for a deliberately selected release ref.
 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
+
+For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md). The [branch inventory](BRANCH_ARCHIVE.md) records preserved unmerged heads separately from the shipped default branches.

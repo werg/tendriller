@@ -17,6 +17,7 @@ Author HTML, JavaScript and assets for the task. The page owns its layout, appli
 - [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.
 - [CLI and preview](docs/tools/CLI.md): explicit public-session tools and authored-file preview.
 - [Cookbooks](https://github.com/werg/tendriller-contrib): reasoning, application examples and independent qualification.
+- [Three-repository qualification](docs/RELEASE_COMPOSITION.md): choose exact core, Chronolog and cookbook commits, run the public gates, and stage the host.
 
 ## Build and verify
 
