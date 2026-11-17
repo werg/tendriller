@@ -14,12 +14,13 @@ import { changeLifetime, hasResidentStorage } from './lifetime';
 
 const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts', IDENTITY = 'peer-generation/identity';
 const VALUE_LIMIT = 16 * 1024 * 1024;
+const MAX_PENDING_REQUESTS = 4;
 interface Configuration {
   descriptor: SignedApplicationDescriptor; control: SignedControlRevision; fingerprint: string;
 }
 interface AccountBinding { publicKey: string; accountId: string }
 interface HostState {
-  pending: Promise<unknown>; store: PeerStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
+  admitted: number; pending: Promise<unknown>; store: PeerStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
   registry?: GenerationRegistry; signer?: PeerIdentity;
 }
 const hosts = new WeakMap<Tendril, HostState>();
@@ -40,7 +41,7 @@ async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
 function host(t: Tendril): HostState {
   let state = hosts.get(t);
   if (state) return state;
-  state = { pending: Promise.resolve(), store: {
+  state = { admitted: 0, pending: Promise.resolve(), store: {
     async get(key) {
       const row = t.db.one<{ value: ArrayBuffer }>('SELECT value FROM membership_records WHERE key=?', key);
       return row ? new Uint8Array(row.value).slice() : null;
@@ -133,8 +134,18 @@ function typedError(error: unknown): never {
 
 /** Narrow governance service. Normal commands, outcomes and bodies never enter it. */
 export async function handlePeerGenerations(t: Tendril, req: Request, path: string, principal: Principal): Promise<Response> {
+  identity(t, principal, path === 'peers/administration' || path === 'peers/application' && req.method === 'PUT');
+  const state = host(t);
+  if (state.admitted >= MAX_PENDING_REQUESTS)
+    throw new HttpError(429, 'peer_control_busy', 'Too many pending generation control requests');
+  state.admitted++;
+  try { return await processPeerGenerations(t, req, path, principal); }
+  finally { state.admitted--; }
+}
+async function processPeerGenerations(t: Tendril, req: Request, path: string, principal: Principal): Promise<Response> {
+  // Reserve admission before reading, but do not put a stalled body ahead of
+  // complete operations in the serialized authority queue.
   const ownerAction = path === 'peers/administration';
-  identity(t, principal, ownerAction || path === 'peers/application' && req.method === 'PUT');
   const input = req.method === 'PUT' || req.method === 'POST' ? await readJson(req, path === 'peers/application' ? 512 * 1024 : 4 * 1024 * 1024) : undefined;
   return serial(t, async state => {
     try {
@@ -222,12 +233,12 @@ export async function handlePeerGenerations(t: Tendril, req: Request, path: stri
           if (!Number.isSafeInteger(revision) || revision < 1 || revision > bundle.controls.length) throw new HttpError(409, 'peer_control_revision_mismatch');
           const previous = bundle.controls[revision - 1]!;
           bindings = t.db.get<AccountBinding[]>(ACCOUNTS, []);
-          const newlyEnrolled = new Set<string>();
+          const requiredAccounts = new Set<string>();
           if (change.accounts !== undefined) {
             for (const binding of accounts(change.accounts)) {
               const enrolled = bindings.find(row => row.publicKey === binding.publicKey);
               if (enrolled && enrolled.accountId !== binding.accountId) throw new HttpError(409, 'peer_account_binding_immutable', 'A device key retains its original enrollment account');
-              if (!enrolled) { bindings = [...bindings, binding]; newlyEnrolled.add(binding.publicKey); }
+              if (!enrolled) { bindings = [...bindings, binding]; requiredAccounts.add(binding.publicKey); }
             }
           }
           if (bindings.length > 1024) throw new HttpError(429, 'peer_account_binding_full');
@@ -237,16 +248,19 @@ export async function handlePeerGenerations(t: Tendril, req: Request, path: stri
             grants: await withControlParticipant(change.grants, state.signer!), recoveryFloor: change.recoveryFloor }, state.signer!);
           if (!control.payload.grants.every(grant => bindings!.some(binding => binding.publicKey === grant.publicKey)))
             throw new HttpError(400, 'peer_account_binding_required', 'Every granted device needs its authenticated account binding');
-          const granted = new Set(control.payload.grants.filter(grant =>
-            grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator || grant.dataRole !== null).map(grant => grant.publicKey));
+          for (const grant of control.payload.grants) {
+            if (grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator || grant.dataRole !== null)
+              requiredAccounts.add(grant.publicKey);
+          }
           // Historical bindings preserve enrollment identity and exact retries.
           // An inactive former participant must not prevent its own revocation;
           // new enrollments and devices retaining any rights still need access.
-          checkedBindings = bindings.filter(binding => newlyEnrolled.has(binding.publicKey) || granted.has(binding.publicKey));
+          checkedBindings = bindings.filter(binding => requiredAccounts.has(binding.publicKey));
           await checkAccounts(t, checkedBindings);
         }
         state.guard = () => { authorize(); checkAccountAdmission(t, checkedBindings); };
-        state.check = async () => { await freshAccess(t, principal); await checkAccounts(t, checkedBindings); }; state.pendingAccounts = bindings;
+        state.check = async () => { await freshAccess(t, principal); await checkAccounts(t, checkedBindings); };
+        state.pendingAccounts = bindings;
         state.pendingFingerprint = { key: fingerprintKey, value: fingerprint };
         try {
           const selected = await service.select(request, control ? { control } : {});

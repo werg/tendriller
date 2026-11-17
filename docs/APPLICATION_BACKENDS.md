@@ -351,6 +351,8 @@ adapter and does not convert a generation session.
 
 `peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that current preview view. Its public execution wait is `applied()`, and requests for an unsupported final view fail explicitly. The unified target uses `local()` for applied-here results and `final()` for committed/applied selected-history results; explicit recovery may still abandon a recent suffix, including previously final work. Those target method names are not aliases exported by the current preview.
 
+The optional `basedOn` ordering barrier is profile-specific. The hosted JSON backend rejects it before HTTP delivery or durable outbox insertion; its explicit program state guards remain available. Event and conversation helpers preserve the barrier and receive the same rejection.
+
 Operations use `operationId` for caller intent and `attemptId` for exact authenticated bytes. Their states are:
 
 | State | Meaning |

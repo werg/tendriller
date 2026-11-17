@@ -99,6 +99,13 @@ retains a bounded control registry, not an application log. Its 16 MiB retained
 registry value bound is explicit; reaching it requires an operator decision and
 does not discard control history.
 
+At most four control requests may be admitted at once, including bodies still
+arriving and operations waiting to commit. Excess requests receive
+`peer_control_busy` before their bodies are read. A stalled body does not block
+complete requests while capacity remains, and every completion or failure frees
+its slot. Configuration bodies are limited to 512 KiB and transition bodies to
+4 MiB; these endpoints install no background polling.
+
 A `control` update supplies `{ epoch, keyDigest, grants, recoveryFloor, accounts? }`.
 It activates together with a generation boundary. Reader revocation requires key
 rotation. New account bindings are enrolled explicitly; a public key retains its
@@ -111,7 +118,9 @@ device grants. Supplying that host grant with different rights is rejected. Old
 device/account bindings remain enrollment provenance, so deactivating an account
 does not prevent the owner from removing its application grant. Admission and
 account activity are checked for new enrollments and every device retaining any
-application or control rights, including dataRole.
+application or control rights, including dataRole. The host repeats those checks
+after asynchronous preparation and rechecks local admission in the storage
+transaction.
 
 ### Owner recovery after device-key loss
 

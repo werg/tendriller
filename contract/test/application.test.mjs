@@ -32,6 +32,28 @@ test('conversation helpers preserve message and retry identities without perform
   await publishConversation({ publish: async (...args) => { calls.push(args); return { id: 'p' }; } }, { messageId: 'message-1', text: 'Hello', inReplyTo: 'message-0' }, { operationId: 'send-1' });
   assert.deepEqual(calls, [['conversation', { type: 'message.posted', version: 1, messageId: 'message-1', text: 'Hello', inReplyTo: 'message-0' }, { operationId: 'send-1' }]]);
 });
+for (const route of ['request', 'outbox']) {
+  test(`hosted ${route} rejects unsupported ordering barriers before retaining or sending work`, async () => {
+    const calls = [], receipt = { operationId: 'edit', proposalId: 'hosted-edit', status: 'final', outcome: 'accepted' };
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page',
+      request: async (...args) => { calls.push(['request', ...args]); return receipt; },
+      ...(route === 'outbox' ? { submit: async (...args) => { calls.push(['outbox', ...args]); return receipt; } } : {}),
+    });
+    const program = { version: 1, expected_generations: {}, steps: [{ kind: 'emit', topic: 'tasks', payload: null }] };
+    const options = { operationId: 'edit', basedOn: 'applied-generation-revision' };
+    assert.equal(backend.profile, 'hosted-json-v1');
+    await assert.rejects(backend.submit(program, options), { code: 'unsupported_barrier' });
+    await assert.rejects(backend.events.publish('tasks', null, options), { code: 'unsupported_barrier' });
+    await assert.rejects(publishConversation(backend.events, { messageId: 'message', text: 'Keep the guard' }, options),
+      { code: 'unsupported_barrier' });
+    await assert.rejects(backend.readView({ view: 'applied' }), { code: 'invalid_view' });
+    await assert.rejects(backend.changes({ view: 'applied' })[Symbol.asyncIterator]().next(), { code: 'invalid_view' });
+    assert.deepEqual(calls, [], 'unsupported profile guarantees must fail before HTTP or durable outbox access');
+    assert.deepEqual(await backend.submit(program, { operationId: 'edit' }), receipt);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], route);
+  });
+}
 for (const queued of [false, true]) for (const method of ['submit', 'events.publish']) {
   test(`Cloudflare ${method} rejects an unsupported ordering barrier before ${queued ? 'queueing' : 'requesting'}`, async () => {
     let requests = 0, enqueues = 0;

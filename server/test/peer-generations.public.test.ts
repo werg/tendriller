@@ -7,12 +7,43 @@ import { api, apiJson, create, inDO, req, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 import { authenticateAgentToken } from '../src/access';
 import { handlePeerGenerations } from '../src/peer-generations';
+import type { Tendril } from '../src/tendril';
 
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ ...participantGrant(peer.publicKey, { administrator: true }), ...extra });
 const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', executionManifestDigest: '12'.repeat(32),
   definitionDigest: '34'.repeat(32), schemaAdministrator: peers[0].publicKey, schemaDigest: null, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) });
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
+async function admitGuest(h: Handle): Promise<string> {
+  return inDO(h.id, async t => {
+    const account = crypto.randomUUID(), link = await t.createLink('guest', 'control target', null);
+    await t.env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)')
+      .bind(account, t.now(), `${account}@example.test`).run();
+    t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', account, link.id, t.now());
+    return account;
+  });
+}
+/** Revoke the target at the requester's final asynchronous access check, after signing preparation. */
+async function revokePreparedTarget(t: Tendril, account: string, run: () => Promise<void>): Promise<void> {
+  const original = t.env.ACCOUNTS, owner = t.db.get('owner_account', '');
+  let checkedTarget = false, revoked = false;
+  t.env.ACCOUNTS = { prepare(sql: string) {
+    const statement = original.prepare(sql);
+    if (!sql.includes('FROM accounts WHERE id')) return statement;
+    return { bind(...args: unknown[]) {
+      const bound = statement.bind(...args);
+      return { async first() {
+        const result = await bound.first();
+        if (args[0] === account) checkedTarget = true;
+        if (checkedTarget && args[0] === owner && !revoked) {
+          revoked = true; t.db.run('DELETE FROM guest_accounts WHERE account_id=?', account);
+        }
+        return result;
+      } };
+    } };
+  } } as D1Database;
+  try { await run(); expect(revoked).toBe(true); } finally { t.env.ACCOUNTS = original; }
+}
 async function select(h: Handle, requester: PeerIdentity, coordinator: PeerIdentity, current: SignedGeneration | null, transitionId: string,
   overrides: Partial<TransitionRequest> = {}) {
   const payload: TransitionRequest = { applicationId: (await apiJson<AuthorityBundle>(h, 'GET', 'peers/application')).descriptor.payload.applicationId,
@@ -153,6 +184,102 @@ it('fences a missing control identity instead of silently generating a replaceme
   expect((await api(h, 'GET', 'peers/application')).status).toBe(503);
   expect((await api(h, 'PUT', 'peers/application', configuration([a]))).status).toBe(503);
   expect(await inDO(h.id, t => t.db.get<any>('peer_generation_configuration', null).descriptor)).toEqual(original.descriptor);
+});
+
+it('bounds admitted control bodies before reading and releases slots after body failure', async () => {
+  const a = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+  await apiJson(h, 'PUT', 'peers/application', configuration([a]));
+  await inDO(h.id, async t => {
+    const principal = await authenticateAgentToken(t, h.token), controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const pending: Promise<unknown>[] = [], url = 'https://page.example/_tendril/peers/generations';
+    let excessReads = 0;
+    try {
+      for (let index = 0; index < 4; index++) {
+        const body = new ReadableStream<Uint8Array>({ start(controller) { controllers.push(controller); } }, { highWaterMark: 0 });
+        const path = index % 2 ? 'peers/administration' : 'peers/generations';
+        const operation = handlePeerGenerations(t, new Request(url, { method: 'POST', body }), path, principal);
+        pending.push(operation); void operation.catch(() => {});
+        if (index === 0) {
+          const available = await handlePeerGenerations(t, new Request(url), 'peers/application', principal);
+          expect(available.status).toBe(200);
+        }
+      }
+      const extra = new Request(url, { method: 'POST', body: new ReadableStream<Uint8Array>({ pull(controller) {
+        excessReads++; controller.enqueue(new TextEncoder().encode('{}')); controller.close();
+      } }, { highWaterMark: 0 }) });
+      await expect(handlePeerGenerations(t, extra, 'peers/administration', principal))
+        .rejects.toMatchObject({ status: 429, code: 'peer_control_busy' });
+      expect(excessReads).toBe(0);
+    } finally {
+      for (const controller of controllers) { try { controller.error(new Error('test body stopped')); } catch { /* Already closed. */ } }
+      await Promise.allSettled(pending);
+    }
+    expect((await handlePeerGenerations(t, new Request(url), 'peers/application', principal)).status).toBe(200);
+  });
+});
+
+for (const phase of ['initial configuration', 'control update', 'owner control update'] as const) {
+  it(`rechecks target admission at the ${phase} commit after signing preparation`, async () => {
+    const a = await createPeerIdentity(), b = await createPeerIdentity();
+    const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+    const account = await admitGuest(h);
+    let path = 'peers/application', method = 'PUT', body: unknown = { ...configuration([a]),
+      members: [{ grant: grant(a) }, { grant: grant(b), accountId: account }] };
+    let before: AuthorityBundle | null = null;
+    if (phase !== 'initial configuration') {
+      await apiJson(h, 'PUT', path, configuration([a]));
+      const initial = await select(h, a, a, null, 'initial'), current = await initial.response.json() as SignedGeneration;
+      before = await apiJson<AuthorityBundle>(h, 'GET', path);
+      const request = await signTransitionRequest({ ...initial.request.payload, transitionId: 'enroll-b', expectedGeneration: current.id,
+        controlRevision: 1, reason: 'control-change', base: { point: { generation: current.id, sequence: 0, root: await generationStartRoot(current) }, receipt: null, bridge: [] } }, a);
+      const control = { epoch: 1, keyDigest: '89'.repeat(32), grants: [grant(a), grant(b)], recoveryFloor: null,
+        accounts: [{ publicKey: b.publicKey, accountId: account }] };
+      body = { request, control };
+      path = 'peers/generations'; method = 'POST';
+      if (phase === 'owner control update') {
+        const { transitionId, expectedGeneration, coordinator, controlRevision, reason, base } = request.payload;
+        body = { transition: { transitionId, expectedGeneration, coordinator, controlRevision, reason, base }, control };
+        path = 'peers/administration';
+      }
+    }
+    await inDO(h.id, async t => {
+      const principal = await authenticateAgentToken(t, h.token);
+      await revokePreparedTarget(t, account, async () => {
+        await expect(handlePeerGenerations(t, new Request(`https://page.example/_tendril/${path}`, { method,
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), path, principal))
+          .rejects.toMatchObject({ status: 403, code: 'forbidden' });
+      });
+      expect(t.db.get<{ publicKey: string }[]>('peer_generation_accounts', []).some(binding => binding.publicKey === b.publicKey)).toBe(false);
+      if (phase === 'initial configuration') {
+        expect(t.db.get('peer_generation_configuration', null)).toBeNull();
+        expect(t.db.all("SELECT key FROM membership_records WHERE key LIKE 'peer-generation/%'")).toEqual([]);
+      }
+    });
+    if (before) expect(await apiJson(h, 'GET', 'peers/application')).toEqual(before);
+  });
+}
+
+it('can revoke an inactive account while retaining its immutable enrollment for exact retries', async () => {
+  const a = await createPeerIdentity(), b = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId() }, mode: 'dashboard', listener: false });
+  const account = await admitGuest(h);
+  await apiJson(h, 'PUT', 'peers/application', { ...configuration([a]), members: [{ grant: grant(a) }, { grant: grant(b), accountId: account }] });
+  const initial = await select(h, a, a, null, 'initial'), current = await initial.response.json() as SignedGeneration;
+  await inDO(h.id, async t => {
+    t.db.run('DELETE FROM guest_accounts WHERE account_id=?', account);
+    await t.env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(t.now(), account).run();
+  });
+  const request = await signTransitionRequest({ ...initial.request.payload, transitionId: 'revoke-b', expectedGeneration: current.id,
+    controlRevision: 1, reason: 'control-change', base: { point: { generation: current.id, sequence: 0, root: await generationStartRoot(current) }, receipt: null, bridge: [] } }, a);
+  const control = { epoch: 1, keyDigest: '89'.repeat(32), recoveryFloor: null,
+    grants: [grant(a), grant(b, { reader: false, writer: false, coordinator: false, recovery: false, administrator: false, dataRole: null })] };
+  const selected = await apiJson(h, 'POST', 'peers/generations', { request, control });
+  expect(await apiJson(h, 'POST', 'peers/generations', { request, control })).toEqual(selected);
+  const authority = await verifyAuthorityBundle(await apiJson(h, 'GET', 'peers/application'));
+  expect(authority.grant(b.publicKey)?.reader).toBe(false);
+  expect(await inDO(h.id, t => t.db.get<any[]>('peer_generation_accounts', []).find(binding => binding.publicKey === b.publicKey)))
+    .toEqual({ publicKey: b.publicKey, accountId: account });
 });
 
 it('recovers through explicit owner control authority without a creator device key or data privileges', async () => {
