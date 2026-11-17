@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { api, create, inDO, PageClient, req, type Handle } from './helpers';
+import { api, apiJson, create, inDO, PageClient, req, type Handle } from './helpers';
 import { HOSTED_SIGNAL_PROTOCOL, createSignalInput, SIGNAL_LIMITS } from '../../contract/hosted-signals.mjs';
 import type { Tendril } from '../src/tendril';
 
@@ -141,11 +141,64 @@ it('rechecks established senders and recipients after token revocation', async (
     await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
     expect(await agent.command({ t: 'signal_send', message: createSignalInput('progress', 1) })).toMatchObject({ error: 'signal_unauthorized' });
     await owner.command({ t: 'signal_send', message: createSignalInput('progress', 2) });
-    await agent.command({ t: 'signal_unsubscribe' });
+    expect(await agent.closed).toBe(4003);
     expect(agent.messages.filter(message => message.t === 'signal')).toEqual([]);
     expect(owner.messages.filter(message => message.t === 'signal')).toEqual([]);
   } finally { agent.ws.close(); owner.ws.close(); }
 });
+
+it('reclaims revoked dedicated connection and subscription slots before admitting a new live session', async () => {
+  const h = await create({ mode: 'dashboard', listener: false });
+  const token = await apiJson<{ token: string }>(h, 'POST', 'tokens', { name: 'temporary' }, 201);
+  const revoked: Awaited<ReturnType<typeof connect>>[] = [];
+  let replacement: Awaited<ReturnType<typeof connect>> | undefined;
+  try {
+    for (let i = 0; i < SIGNAL_LIMITS.connections; i++) {
+      const peer = await connect({ ...h, token: token.token });
+      revoked.push(peer);
+      expect(await peer.command({ t: 'signal_subscribe' })).not.toHaveProperty('error');
+    }
+    const full = await api(h, 'GET', 'signals/socket', undefined, headers);
+    expect(full.status).toBe(429); await full.text();
+    expect((await api(h, 'DELETE', 'tokens/temporary')).status).toBe(204);
+    replacement = await connect(h);
+    expect(await inDO(h.id, t => t.ctx.getWebSockets('signals').filter(ws =>
+      ws.readyState === WebSocket.READY_STATE_OPEN).map(ws => ws.deserializeAttachment()?.principal?.name))).toEqual(['main']);
+    expect(await Promise.all(revoked.map(peer => peer.closed))).toEqual(Array(SIGNAL_LIMITS.connections).fill(4003));
+    expect(await replacement.command({ t: 'signal_subscribe' })).not.toHaveProperty('error');
+    expect(await replacement.command({ t: 'signal_send', message: createSignalInput('sample', 'fresh') })).toHaveProperty('signal');
+  } finally { for (const peer of revoked) peer.ws.close(); replacement?.ws.close(); }
+});
+
+for (const admission of ['subscribe', 'fanout'] as const) {
+  it(`reclaims a revoked shared live subscription during ${admission} without closing the durable socket`, async () => {
+    const h = await create({ mode: 'dashboard', listener: false }), page = await PageClient.connect(h.page_url), agent = await connect(h);
+    try {
+      await page.request({ t: 'signal_subscribe' });
+      const session = await inDO(h.id, t => {
+        const ws = t.ctx.getWebSockets().find(ws => ws.deserializeAttachment()?.deviceId === page.deviceId)!;
+        const row = t.db.one<{ hash: string; account_id: string; role: string; expires_at: number }>(
+          'SELECT * FROM page_sessions WHERE hash=?', ws.deserializeAttachment().sessionHash)!;
+        t.db.run('DELETE FROM page_sessions WHERE hash=?', row.hash);
+        return row;
+      });
+      const result = await agent.command(admission === 'subscribe' ? { t: 'signal_subscribe' } :
+        { t: 'signal_send', message: createSignalInput('sample', 'must not escape') });
+      expect(result).not.toHaveProperty('error');
+      await inDO(h.id, t => {
+        const ws = t.ctx.getWebSockets().find(ws => ws.deserializeAttachment()?.deviceId === page.deviceId)!;
+        expect(ws.readyState).toBe(WebSocket.READY_STATE_OPEN);
+        expect(ws.deserializeAttachment().live.subscribed).toBe(false);
+        t.db.run('INSERT INTO page_sessions (hash,account_id,role,expires_at) VALUES (?,?,?,?)',
+          session.hash, session.account_id, session.role, session.expires_at);
+      });
+      expect(page.closed).toBeNull();
+      expect(await page.request({ t: 'state', expected_generations: {}, ops: [{ op: 'set', path: ['liveAccessIsolated'], value: true }] })).not.toHaveProperty('error');
+      expect((await page.request({ t: 'state_snapshot' })).state.liveAccessIsolated).toBe(true);
+      expect(page.messages.filter(message => message.t === 'signal')).toEqual([]);
+    } finally { page.close(); agent.ws.close(); }
+  });
+}
 
 it('drops excess live authorization work and leaves the shared durable page socket usable', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), page = await PageClient.connect(h.page_url);
@@ -245,7 +298,8 @@ for (const change of ['sender revoked', 'recipient revoked', 'unsubscribe', 'exp
           if (change === 'expiry') t.skew += 6000;
         }, () => t.webSocketMessage(sender, JSON.stringify({ t: 'signal_send', cid: 'yielded', message: createSignalInput('preview', 'must not escape', {}, t.now()) })));
       });
-      await owner.command({ t: 'signal_unsubscribe' });
+      if (change === 'recipient revoked') expect(await owner.closed).toBe(4003);
+      else await owner.command({ t: 'signal_unsubscribe' });
       expect(owner.messages.filter(message => message.t === 'signal')).toEqual([]);
     } finally { agent.ws.close(); owner.ws.close(); }
   });
