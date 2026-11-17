@@ -2,7 +2,7 @@ import runtimeRelease from "../src/runtime-release.json";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { route } from "../src/router";
-import { api, apiJson, BASE, create, PageClient, req } from "./helpers";
+import { api, apiJson, BASE, create, inDO, PageClient, req } from "./helpers";
 
 describe("public routes", () => {
   it("serves health, landing page and 404s", async () => {
@@ -49,9 +49,30 @@ describe("public routes", () => {
 });
 
 describe("create", () => {
+  it("rejects omitted or invalid application selection before retaining a page", async () => {
+    const before = await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first<{ count: number }>();
+    for (const application of [undefined, null, { kind: 'peer' }, { kind: 'unknown', id: 'application' }]) {
+      const response = await req('/api/tendrils', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner: 'owner@example.test', application }) });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: 'bad_request' } });
+    }
+    expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first()).toEqual(before);
+    const id = 'bad-selection-fixture', stub = env.TENDRIL.get(env.TENDRIL.idFromName(id));
+    const direct = await stub.fetch(new Request('https://tendril.internal/create', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tendril-id': id }, body: JSON.stringify({ owner: 'owner@example.test' }) }));
+    expect(direct.status).toBe(400); await direct.text();
+    expect(await inDO(id, t => t.exists())).toBe(false);
+  });
 
-
-
+  it("preserves an explicit peer identity without configuring a descriptor or host receiver", async () => {
+    const application = { kind: 'peer', id: 'ab'.repeat(32) };
+    const h = await create({ application, listener: false });
+    expect(h.application).toEqual(application);
+    expect(await inDO(h.id, t => t.db.get('peer_generation_configuration', null))).toBeNull();
+    expect((await apiJson(h, 'GET', '')).agent_delivery.mode).toBe('peer');
+    expect((await api(h, 'GET', 'events')).status).toBe(409);
+  });
   it("rejects missing or wrong tokens", async () => {
     const h = await create();
     const none = await req(h.api);

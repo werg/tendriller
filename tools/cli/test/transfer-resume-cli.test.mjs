@@ -8,12 +8,58 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTRACT_VERSION, CORE_RELEASE } from "@tendriller/core/contract";
+import { saveConfig } from "../lib/config.mjs";
 
 const cli = fileURLToPath(new URL("../bin/tendril.mjs", import.meta.url));
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const run = (args, env) => new Promise(resolve => execFile(process.execPath, [cli, ...args],
   {env:{...process.env,...env},timeout:15_000},
   (error,stdout,stderr) => resolve({code:error?.code??0,stdout,stderr})));
+
+test("a peer publication commits exact bytes without health, metadata or application traffic afterward", async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tendriller-peer-publish-')), source = join(root, 'index.html');
+  const bytes = Buffer.from('<!doctype html><title>Peer page</title>'), requests = [];
+  const file = { path: 'index.html', blob_id: 'b_aaaaaaaaaaaaaaaaaaaa', sha256: sha256(bytes), size: bytes.length, type: 'text/html' };
+  let committed = false, upgrades = 0;
+  const server = createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    requests.push([req.method, req.url]);
+    const json = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+    if (committed) return json({ error: { code: 'unexpected_after_publication', message: req.url } }, 500);
+    if (req.url === '/api/service') return json({ contract: CONTRACT_VERSION, core_release: CORE_RELEASE, workflows: [], limits: {} });
+    if (req.url === '/api/t/abcdefghijkl/publications' && req.method === 'GET') return json({ current: 1, head_revision: 1, versions: [] });
+    if (req.url === '/api/t/abcdefghijkl/publications/1') return json({ version: 1, entry: 'index.html', files: [file] });
+    if (req.url === '/api/t/abcdefghijkl/publications' && req.method === 'POST') {
+      const body = JSON.parse(raw);
+      assert.equal(body.expected_head_revision, 1);
+      assert.deepEqual(body.files, [{ path: file.path, blob_id: file.blob_id, type: file.type }]);
+      committed = true; return json({ version: 2, head_revision: 2 });
+    }
+    return json({ error: { code: 'unexpected_route', message: req.url } }, 404);
+  });
+  server.on('upgrade', (_req, socket) => { upgrades++; socket.destroy(); });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`, env = { TENDRIL_CONFIG_DIR: join(root, 'config') };
+    const saved = saveConfig({ id: 'abcdefghijkl', token: 'tk_peer', api: `${origin}/api/t/abcdefghijkl`, page_url: `${origin}/page/`,
+      application: { kind: 'peer', id: 'ab'.repeat(32) }, mode: 'interactive' }, 'peer', env, origin);
+    writeFileSync(source, bytes);
+    const result = await run(['push', source, '--tendril', saved.name], env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { version: 2, head_revision: 2, files: 1, reused: 1, status: 'pending',
+      note: 'Publication committed; application readiness is observed through its selected backend.' });
+    assert.deepEqual(requests, [['GET', '/api/t/abcdefghijkl/publications'], ['GET', '/api/t/abcdefghijkl/publications/1'],
+      ['GET', '/api/service'], ['POST', '/api/t/abcdefghijkl/publications']]);
+    assert.equal(upgrades, 0);
+    const waiting = await run(['push', source, '--tendril', saved.name, '--wait'], env);
+    assert.equal(waiting.code, 64);
+    assert.match(waiting.stderr, /peer readiness belongs to the application session/);
+    assert.equal(requests.length, 4, 'an unsupported hosted wait must fail before any request');
+  } finally {
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("CLI changed bytes at the same path get a new transfer; identical retries reuse their receipt", async () => {
   const root=mkdtempSync(join(tmpdir(),"tendriller-resume-")), source=join(root,"bytes.dat");

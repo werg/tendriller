@@ -17,7 +17,7 @@ beforeAll(async () => {
 });
 
 async function createPublic(owner = "person@example.com", ip = "192.0.2.10"): Promise<Handle> {
-  const res = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": ip }, body: JSON.stringify({ owner }) });
+  const res = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": ip }, body: JSON.stringify({ owner, application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(res.status).toBe(201);
   return res.json<Handle>();
 }
@@ -358,7 +358,7 @@ it("requires an owner email and refuses a different verified account", async () 
 
 it("blocks keyless creation from a configured CIDR range", async () => {
   await db.prepare("INSERT INTO blocks (kind, value, reason) VALUES ('cidr', '198.51.100.0/24', 'test')").run();
-  const blocked = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": "198.51.100.42" }, body: JSON.stringify({ owner: "person@example.com" }) });
+  const blocked = await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, "CF-Connecting-IP": "198.51.100.42" }, body: JSON.stringify({ owner: "person@example.com", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(blocked.status).toBe(403);
   expect((await createPublic("person@example.com", "198.51.101.42")).id).toBeTruthy();
 });
@@ -435,7 +435,7 @@ it("keeps suspended owners on an appeal-only session with in-app notices", async
   expect((await req("/auth/me", { headers: { Cookie: cookie } })).status).toBe(401);
   expect((await req("/dashboard/keys", { method: "POST", headers: { Cookie: cookie, Origin: BASE, "Content-Type": "application/json" }, body: '{"name":"blocked"}' })).status).toBe(403);
   expect((await req("/dashboard/export", { headers: { Cookie: cookie } })).status).toBe(401);
-  expect((await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: "Bearer obsolete" }, body: JSON.stringify({ owner: "person@example.com" }) })).status).toBe(400);
+  expect((await req("/api/tendrils", { method: "POST", headers: { ...creatorHeaders, Authorization: "Bearer obsolete" }, body: JSON.stringify({ owner: "person@example.com", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) })).status).toBe(400);
 });
 
 it("lets a suspended identity sign in again and redirects it to restricted dashboard", async () => {
@@ -641,7 +641,7 @@ it("keeps page hosts separate from the service and rejects sibling origins", asy
 
 it("deletes a reported unclaimed tendril and blocks its creator for 24 hours", async () => {
   const headers = { ...creatorHeaders, "CF-Connecting-IP": "192.0.2.99" };
-  const created = await req("/api/tendrils", { method: "POST", headers, body: JSON.stringify({ owner: "person@example.com" }) });
+  const created = await req("/api/tendrils", { method: "POST", headers, body: JSON.stringify({ owner: "person@example.com", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(created.status).toBe(201);
   const h = await created.json<Handle>();
   const stub = env.TENDRIL.get(env.TENDRIL.idFromName(h.id));
@@ -649,7 +649,7 @@ it("deletes a reported unclaimed tendril and blocks its creator for 24 hours", a
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "external", account_id: null, reason: "deceptive" }) }));
   expect(report.status).toBe(200);
   expect((await db.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(h.id).first())).toBeNull();
-  const blocked = await req("/api/tendrils", { method: "POST", headers, body: JSON.stringify({ owner: "person@example.com" }) });
+  const blocked = await req("/api/tendrils", { method: "POST", headers, body: JSON.stringify({ owner: "person@example.com", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(blocked.status).toBe(403);
 });
 

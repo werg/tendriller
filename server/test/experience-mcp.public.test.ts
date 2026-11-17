@@ -10,7 +10,7 @@ beforeAll(async () => {
 });
 async function fixture() {
   const account = crypto.randomUUID(), email = `${account}@example.com`;
-  const response = await req("/api/tendrils", { method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.93" }, body: JSON.stringify({ owner: email }) });
+  const response = await req("/api/tendrils", { method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.93" }, body: JSON.stringify({ owner: email, application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(response.status).toBe(201); const handle = await response.json<Handle>();
   await env.ACCOUNTS.prepare("INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)").bind(account, email, Date.now() - 30 * 86400000).run();
   await env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account=?,claimed_at=? WHERE id=?").bind(account, Date.now(), handle.id).run();

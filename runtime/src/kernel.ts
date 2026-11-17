@@ -33,7 +33,7 @@ export interface RuntimeOptions {
   signals?: import("../../contract/signals.mjs").Signals;
 }
 export function startRuntime(cfg: TendrilConfig & { application: { kind: "peer"; id: string } }, options?: RuntimeOptions): PeerRuntimeApi;
-export function startRuntime(cfg: TendrilConfig & { application?: { kind: "cloudflare"; id: string } }, options?: RuntimeOptions): HostedRuntimeApi;
+export function startRuntime(cfg: TendrilConfig & { application: { kind: "cloudflare"; id: string } }, options?: RuntimeOptions): HostedRuntimeApi;
 export function startRuntime(cfg: TendrilConfig, options?: RuntimeOptions): RuntimeApi;
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);

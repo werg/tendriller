@@ -12,8 +12,10 @@ The current public peer-session preview still spells its execution wait
 `applied()` and exposes retained coverage separately through `shared()`; use the
 actual archive API without adding aliases. The historical chronological adapter
 retains its older immutable-prefix guarantee and `local()` / `final()` methods;
-its checks do not qualify the new recovery model. Omitting the application
-selection still uses the hosted Cloudflare backend. See
+its checks do not qualify the new recovery model. Creation requires an explicit
+immutable application selection. Choose `peer` for ordinary stateful application
+work; choose `cloudflare` only for an application that deliberately uses hosted
+state and delivery. Omitting the selection is rejected before a page is created. See
 [application contracts](docs/APPLICATION_BACKENDS.md).
 
 ### Peer-generation session preview
@@ -149,18 +151,29 @@ Inspect the task and existing files before choosing a cookbook. Read the relevan
 ## Create and establish delivery
 
 Create with the intended owner's verified email and selected application backend.
-For a hosted Cloudflare application:
+For an ordinary peer application:
 
 ```http
 POST /api/tendrils
 Content-Type: application/json
 
-{"owner":"owner@example.test","name":"My page","mode":"interactive"}
+{"owner":"owner@example.test","name":"My page","mode":"interactive","application":{"kind":"peer","id":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
 ```
 
-For a peer application, include
-`"application":{"kind":"peer","id":"your-stable-history-id"}` in that request.
+The 64-character ID above is illustrative. Supply the application's own identity,
+which its signed descriptor will bind. Page creation allocates no application
+keys, schema, descriptor or session; configure those explicitly through Chronolog
+and the peer control port. The SDK exposes the same required selection through
+`createPage(service, {owner, application: {kind: 'peer', id}, ...})` from
+`@tendriller/core`. The CLI equivalent is
+`tendril new 'My page' --owner owner@example.test --application peer --application-id ID`.
 The backend choice is immutable for that page.
+
+A deliberately hosted application supplies
+`"application":{"kind":"cloudflare","id":"hosted:my-page"}` instead. Its
+state, delivery and timer procedures below remain available only for that explicit
+choice. Static authored files need no database schema; an unconfigured peer page
+can serve them without opening a hosted application connection.
 
 Save the returned handle (`id`, `api`, `token`, `page_url`) in private host storage. `api` is the page's agent API base, called `A` below. Send `Authorization: Bearer <token>` for agent operations. Give the person only `page_url`. **The human owner must open it in a visible tab and sign in with the verified owner identity** to claim it. The agent token and page key cannot sign in for the owner. `expires_at` is an absolute Unix-millisecond timestamp. An unclaimed ad_hoc page expires after 24 hours even if a collector is publishing; once claimed, ad_hoc expires after 24 hours of inactivity. After claim, `PATCH A` with `{"lifetime":"resident"}` for a long-lived page. The creation response also provides `next_step` and `unclaimed_limits`
 (`request_body_bytes` and `stream_retained_bytes`, both 1 MiB). Claim the page

@@ -23,7 +23,7 @@ export type InjectConfig = {
   base: string;
   version: number;
   features: Features;
-  application?: import("../../contract/application.mjs").ApplicationSelection;
+  application: import("../../contract/application.mjs").ApplicationSelection;
   peerBootstrap?: import("../../contract/peers.mjs").PeerBootstrap;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
 

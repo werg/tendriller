@@ -71,7 +71,7 @@ type Internal = HostedCore & {
 };
 
 export function createCore(cfg: TendrilConfig, selectedBackend?: ApplicationBackend): RuntimeCore {
-  const selection = applicationSelection(cfg.application, `cf:${cfg.id}`);
+  const selection = applicationSelection(cfg.application);
   const bus = createBus();
   if (selection.kind === "peer") return createPeerCore(cfg, selection, bus, selectedBackend);
   if (selectedBackend) throw new TypeError("A custom backend requires an explicit peer application selection");

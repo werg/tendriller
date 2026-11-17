@@ -112,12 +112,13 @@ test("config: env vars, named config files (mode 600), precedence", () => {
   const e = resolveConfig({}, { ...env, TENDRIL_API: "http://h/api/t/abc234abc234/", TENDRIL_TOKEN: "tk_x" });
   assert.equal(e.api, "http://h/api/t/abc234abc234");
   assert.equal(e.id, "abc234abc234");
-  const handle = { id: "abc234abc234", name: "Kitchen Tablet", page_url: "http://h/t/abc/s/k/", api: "http://h/api/t/abc234abc234", token: "tk_y", lifetime: "resident" };
+  const handle = { id: "abc234abc234", application: { kind: 'peer', id: 'ab'.repeat(32) }, name: "Kitchen Tablet", page_url: "http://h/t/abc/s/k/", api: "http://h/api/t/abc234abc234", token: "tk_y", lifetime: "resident" };
   const saved = saveConfig(handle, undefined, env, "http://h");
   assert.equal(saved.name, "kitchen-tablet");
   assert.equal(statSync(saved.path).mode & 0o777, 0o600);
   const c = resolveConfig({ tendril: "kitchen-tablet" }, env);
   assert.equal(c.token, "tk_y");
+  assert.deepEqual(c.application, handle.application);
   assert.equal(c.configName, "kitchen-tablet");
   // --tendril wins over env
   assert.equal(resolveConfig({ tendril: "kitchen-tablet" }, { ...env, TENDRIL_API: "http://o/api/t/zz", TENDRIL_TOKEN: "tk_o" }).token, "tk_y");

@@ -18,14 +18,19 @@ applications that deliberately choose the hosted state authority.
 {
   owner: 'owner@example.com',
   mode: 'dashboard',
-  lifetime: 'resident',
-  application: { kind: 'peer', id: '<64 lowercase hex characters>' }
+  lifetime: 'ad_hoc',
+  application: { kind: 'peer', id: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }
 }
 ```
 
-The selection is immutable. `id` is an application-owned stable identifier, not a
-host token, decryption key, grant, or authority key. Omitting `application` selects
-`{kind:'cloudflare', id:'cf:<page-id>'}`. Code publication never changes the selected
+The selection is required and immutable. The example ID is illustrative; supply
+the application's own stable identifier, which is not a host token, decryption
+key, grant or authority key. Ordinary stateful apps select `peer`. A deliberate
+hosted application supplies `{kind:'cloudflare', id:'hosted:my-page'}`. Omitting
+`application` is rejected before creation; runtime construction also requires an
+explicit selection. Creation does not invent a descriptor, keys, schema or data
+participant. Claim an ad_hoc page before changing its lifetime to resident.
+Code publication never changes the selected
 history. Configured generation applications select code through signed replacement
 manifests; generic publication rollback is rejected. An unavailable authority never triggers failover
 to Cloudflare or to a different finality policy. Historical chronological replicas use

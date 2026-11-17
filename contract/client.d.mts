@@ -58,6 +58,7 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
 }
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
 export function createClient(handle: Pick<PageHandle, "api" | "token" | "application">, options?: ClientOptions): AgentClient;
+/** Requires an explicit immutable application selection; does not configure its descriptor, schema, keys or session. */
 export function createPage(service: string, body: CreateRequest, options?: ClientOptions): Promise<PageHandle>;
 
 export interface CommandMetadata { cid: string; scope?: string; expected_generations: Record<string, string> }

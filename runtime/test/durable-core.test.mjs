@@ -136,7 +136,7 @@ async function environment({ database = new Database(), localStorage = storage()
     sent.push(structuredClone(frame));
     if (frame.t === "hello" && online) reply({ t: "welcome", state, scopes, rev, role: "owner", pending: false, transcript: [] });
   });
-  const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, documentPath: null, ws: "wss://fixture.test/page/_tendril/ws", preview: true, features: {push:false,vapid:null,shared_by:"Fixture",speech:null}, ...configuration });
+  const core = globals.Runtime.createCore({ id: "page", base: "/page/", version: 1, documentPath: null, ws: "wss://fixture.test/page/_tendril/ws", preview: true, application: { kind: 'cloudflare', id: 'cf:page' }, features: {push:false,vapid:null,shared_by:"Fixture",speech:null}, ...configuration });
   onCore?.(core);
   await flush();
   return { core, database, localStorage, transport, sent, window, blobs, navigations,

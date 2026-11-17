@@ -3,6 +3,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import { checkService } from "../lib/service.mjs";
 import { CONTRACT_VERSION } from "@tendriller/core/contract";
+import { applicationSelection } from "@tendriller/core/application";
 import { readFileSync, writeFileSync, existsSync, lstatSync, mkdirSync } from "node:fs";
 import { basename, resolve, join, dirname } from "node:path";
 import { parseArgs, toPath, parseJsonArg, intFlag } from "../lib/args.mjs";
@@ -30,7 +31,8 @@ function readTransferFile(path) {
 const HELP = `tendril <command> [args] [--tendril <name>] [--pretty]
 
 Create / attach
-  new [name] --owner <verified-email> [--mode interactive|dashboard] [--as <config-name>]
+  new [name] --owner <verified-email> --application peer|cloudflare --application-id <identity>
+      [--mode interactive|dashboard] [--as <config-name>]
   adopt <code> [--as <config-name>]
   info [--show-url]            tendril handle, versions, devices, presence, wake (URL redacted)
   meta [--name N] [--short-name S] [--icon <blob id|https url>] [--theme-color C]
@@ -88,7 +90,8 @@ Durable work and trusted extensions
 Config: TENDRIL_API + TENDRIL_TOKEN, or --tendril <name> (~/.config/tendril/<name>.json,
 written by new/adopt), TENDRIL_SERVER (default https://tendriller.dev; use --server for local development), TENDRIL_OWNER.
 Creation is ad_hoc. Before claim, stream retention and request bodies are limited to 1 MiB each.
-Dashboard pushes return pending by default; --wait opts in. info --show-url reveals the private link.
+Peer pushes return pending without health polling. Hosted dashboards also return pending by default; --wait opts in for a saved Cloudflare selection.
+info --show-url reveals the private link.
 Guest invites need owner approval. Display links are created in the service utility.
 JSON arguments may be @file. Output is JSON; --pretty indents it.`;
 
@@ -134,7 +137,8 @@ async function readStdin() {
 function printHandle(h, saved) {
   out({ ...h, config: saved ? saved.name : undefined, config_file: saved ? saved.path : undefined });
   const qr = terminalQr(h.page_url);
-  note(h.mode === "dashboard" ? `\nDashboard URL: ${h.page_url}` : `\nPage URL (share after verifying the live listener): ${h.page_url}`);
+  note(h.application?.kind === "peer" ? `\nPeer page URL: ${h.page_url}`
+    : h.mode === "dashboard" ? `\nDashboard URL: ${h.page_url}` : `\nPage URL (share after verifying the live listener): ${h.page_url}`);
   if (qr) note(qr);
   if (saved) note(`Saved to ${saved.path}. Use: tendril --tendril ${saved.name} <command>`);
   if (h.unclaimed_limits) note(`Before claim: stream retention ${h.unclaimed_limits.stream_retained_bytes} bytes, request body ${h.unclaimed_limits.request_body_bytes} bytes. Claim the page before starting a large collector.`);
@@ -156,13 +160,18 @@ const commandMetadata = f => ({ cid: f.cid || randomUUID(), expected_generations
 
 const commands = {
   async new(args, f) {
-    for (const key of Object.keys(f)) if (!["owner", "as", "name", "server", "mode", "lifetime", "pretty"].includes(key)) fail(`new does not support --${key}`, 64);
+    for (const key of Object.keys(f)) if (!["owner", "as", "name", "server", "mode", "lifetime", "pretty", "application", "application-id"].includes(key)) fail(`new does not support --${key}`, 64);
     const server = serverBase(process.env, f);
     if (f.resident || (f.lifetime !== undefined && f.lifetime !== "ad_hoc")) fail("Create an ad_hoc page first. After the owner opens it, run meta --lifetime resident.", 64);
     const owner = String(f.owner || process.env.TENDRIL_OWNER || "").trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner) || owner.length > 254) fail("new requires --owner <verified-email> (or TENDRIL_OWNER). Use an email verified by GitHub or Google.", 64);
-    if (f.mode !== undefined && !["interactive", "dashboard"].includes(f.mode)) fail("--mode must be interactive or dashboard; both support streams, and interactive requires an agent listener", 64);
-    const body = { name: args[0] || f.name || undefined, owner, lifetime: "ad_hoc" };
+    if (!["peer", "cloudflare"].includes(f.application) || !f["application-id"])
+      fail("new requires --application peer|cloudflare and --application-id <identity>; use the application-owned identity, not a page token", 64);
+    let application;
+    try { application = applicationSelection({ kind: f.application, id: f["application-id"] }); }
+    catch (error) { fail(error.message, 64); }
+    if (f.mode !== undefined && !["interactive", "dashboard"].includes(f.mode)) fail("--mode must be interactive or dashboard; hosted interactive pages require an agent listener", 64);
+    const body = { name: args[0] || f.name || undefined, owner, lifetime: "ad_hoc", application };
     if (f.mode !== undefined) body.mode = f.mode;
     const h = await request(`${server}/api/tendrils`, { method: "POST", json: body });
     const saved = saveConfig(h, f.as || args[0] || h.name, process.env, server);
@@ -202,6 +211,8 @@ const commands = {
 
   async push(args, f, api, cfg) {
     if (f.wait && f["no-wait"]) fail("Choose either --wait or --no-wait", 64);
+    if (f.wait && cfg.application?.kind !== "cloudflare")
+      fail("--wait requires a saved Cloudflare application selection; peer readiness belongs to the application session", 64);
     const healthTimeout = intFlag(f.timeout, "timeout", 20);
     if (healthTimeout < 0) fail("--timeout must be nonnegative", 64);
     const target = args[0];
@@ -216,9 +227,14 @@ const commands = {
       concurrency: boundedInteger(f.concurrency, "concurrency", 3, 1, 8) });
     const result = { version: r.version, head_revision:r.head_revision, files: r.files, reused:r.reused };
     if (f["no-wait"]) return out({ ...result, status: "pending" });
+    // An explicit hosted selection alone enables automatic hosted health work.
+    // Peer publication and bare credential handles never trigger metadata reads
+    // to guess a backend, health polling, state requests or a receiver socket.
+    if (cfg.application?.kind !== "cloudflare")
+      return out({ ...result, status: "pending", note: "Publication committed; application readiness is observed through its selected backend." });
     // No browser is required to be viewing a dashboard when publishing it.
-    if (!f.wait && (cfg.mode === "dashboard" || (!cfg.mode && (await api.get("")).mode === "dashboard")))
-      return out({ ...result, status: "pending", note: "Dashboard not yet viewed; use --wait to wait for browser health." });
+    if (!f.wait && cfg.mode !== "interactive")
+      return out({ ...result, status: "pending", note: "Publication committed; use --wait to observe hosted browser health." });
     const { entry, list, timedOut } = await waitForHealth(api, r.version, healthTimeout);
     result.status = entry ? entry.status : "unknown";
     result.healthy = result.status === "healthy" ? true : result.status === "failed" ? false : null;

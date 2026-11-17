@@ -21,6 +21,7 @@ const publication = {
   assets: ['app.html', 'index.html', 'notes #1?/café 100%/review.html'].map(path => ({ path, type: 'text/html', sha256: 'a'.repeat(64) })),
 };
 const configuration = { id: 'page', base: '/page/', version: 7, ws: '/page/_tendril/ws',
+  application: { kind: 'cloudflare', id: 'cf:page' },
   features: { push: false, vapid: null, shared_by: 'Fixture', speech: null }, publication, documentPath: 'app.html' };
 test('startup rejects missing or undeclared document context before browser side effects', () => {
   const context = {};

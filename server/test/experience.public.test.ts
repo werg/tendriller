@@ -17,7 +17,7 @@ const command = (extra: Record<string, unknown> = {}) => ({ cid: crypto.randomUU
 let index = 0;
 async function setup() {
   const account = crypto.randomUUID(), email = `${account}@example.com`, raw = crypto.randomUUID();
-  const response = await req("/api/tendrils", { method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": `198.51.100.${++index}` }, body: JSON.stringify({ owner: email }) });
+  const response = await req("/api/tendrils", { method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": `198.51.100.${++index}` }, body: JSON.stringify({ owner: email, application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(response.status).toBe(201);
   const handle = await response.json<Handle>();
   await env.ACCOUNTS.prepare("INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)").bind(account, email, Date.now() - 30 * 86400000).run();
@@ -141,6 +141,9 @@ it("remix creates an independent unpublished copy and preserves the listener gat
   await publishFilesJson(h, { "index.html": "<h1>A reusable tool</h1>" });
   const copy = await apiJson(h, "POST", "remix", { owner: "new-owner@example.com", name: "My new copy" }, 201);
   expect(copy.id).not.toBe(h.id); expect(copy.token).not.toBe(h.token); expect(copy.remix.staged).toBe(true);
+  expect(copy.application.kind).toBe('cloudflare');
+  expect(copy.application.id).not.toBe(h.application.id);
+  expect((await apiJson(copy, 'GET', 'application')).selection).toEqual(copy.application);
   expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(428);
   const nextSocket = await listener(copy);
   expect((await api(copy, "POST", "bundle/publish", { cid: crypto.randomUUID(), expected_generations: {}, expected_head_revision: 0 })).status).toBe(200);

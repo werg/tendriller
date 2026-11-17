@@ -3,13 +3,14 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../bin/tendril.mjs", import.meta.url));
 const requests = [];
+const hostedSelection = ['--application', 'cloudflare', '--application-id', 'cf:contract-page'];
 let server, origin, configDir;
 before(async () => {
   configDir = mkdtempSync(join(tmpdir(), "tendril-public-cli-"));
@@ -22,6 +23,7 @@ before(async () => {
     if (req.url === "/api/tendrils") {
       res.statusCode = 201;
       res.end(JSON.stringify({ id: "abcdefghijkl", name: "Contract page", lifetime: "ad_hoc", token: "tk_private",
+        application: JSON.parse(body).application,
         mode: body ? JSON.parse(body).mode || "interactive" : "interactive",
         api: `${origin}/api/t/abcdefghijkl`, page_url: `${origin}/page/`, agent_setup: { event_delivery: "not_configured" } }));
     } else if (req.url === "/api/t/abcdefghijkl" && req.method === "GET") {
@@ -60,20 +62,40 @@ test("new requires a verified owner before making a request", async () => {
   assert.equal(requests.length, before);
 });
 
-test("new creates ad_hoc with owner and never sends a retired creation key", async () => {
-  const result = await cli(["new", "A page", "--owner", "person@example.com"], { TENDRIL_CREATE_KEY: "retired-secret" });
+test("new creates an explicitly hosted ad_hoc page without a retired creation key", async () => {
+  const result = await cli(["new", "A page", "--owner", "person@example.com", ...hostedSelection], { TENDRIL_CREATE_KEY: "retired-secret" });
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(requests.at(-1), { method: "POST", path: "/api/tendrils", authorization: undefined,
-    body: { name: "A page", owner: "person@example.com", lifetime: "ad_hoc" } });
+    body: { name: "A page", owner: "person@example.com", lifetime: "ad_hoc", application: { kind: 'cloudflare', id: 'cf:contract-page' } } });
   assert.equal(JSON.parse(result.stdout).lifetime, "ad_hoc");
   assert.match(result.stderr, /verifying the live listener/);
-  assert.equal((await cli(["new", "Environment owner"], { TENDRIL_OWNER: "owner@example.com" })).code, 0);
+  assert.equal((await cli(["new", "Environment owner", ...hostedSelection], { TENDRIL_OWNER: "owner@example.com" })).code, 0);
   assert.equal(requests.at(-1).body.owner, "owner@example.com");
+});
+
+test("new requires a complete explicit selection and safely retains the peer identity", async () => {
+  const before = requests.length;
+  for (const flags of [[], ['--application', 'peer'], ['--application-id', 'app'],
+    ['--application', 'other', '--application-id', 'app'], ['--application', 'peer', '--application-id', '../app']]) {
+    const result = await cli(['new', 'Peer page', '--owner', 'person@example.com', ...flags]);
+    assert.equal(result.code, 64, result.stderr);
+  }
+  assert.equal(requests.length, before);
+  const application = { kind: 'peer', id: 'ab'.repeat(32) };
+  const result = await cli(['new', 'Peer page', '--owner', 'person@example.com', '--application', 'peer', '--application-id', application.id]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(requests.length, before + 1, 'creation does not discover, configure or connect a backend');
+  assert.deepEqual(requests.at(-1).body.application, application);
+  const handle = JSON.parse(result.stdout), saved = JSON.parse(readFileSync(handle.config_file, 'utf8'));
+  assert.deepEqual(saved.application, application);
+  assert.equal(saved.token, handle.token);
+  assert.match(result.stderr, /Peer page URL:/);
+  assert.doesNotMatch(result.stderr, /live listener/);
 });
 
 test("creation selects either supported mode and rejects misspelled options before creating a page", async () => {
   for (const mode of ["interactive", "dashboard"]) {
-    const result = await cli(["new", "Mode test", "--owner", "person@example.com", "--mode", mode]);
+    const result = await cli(["new", "Mode test", "--owner", "person@example.com", ...hostedSelection, "--mode", mode]);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(requests.at(-1).body.mode, mode);
     assert.equal(JSON.parse(result.stdout).mode, mode);

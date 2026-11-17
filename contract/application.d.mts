@@ -155,7 +155,7 @@ export interface CloudflareApplicationProgram {
 export type CloudflareApplicationSubmission = Exclude<FinalityApplicationOperation, { readonly status: 'provisional' }>;
 export declare const APPLICATION_LIMITS: Readonly<{ programBytes: number; steps: number; events: number; eventBytes: number; topicLength: number; batchTransactions: number; historyBytes: number; historyTransactions: number }>;
 export declare class ApplicationError extends Error { readonly code: string; constructor(code: string, message: string) }
-export declare function applicationSelection(value?: unknown, defaultId?: string): ApplicationSelection;
+export declare function applicationSelection(value: unknown): ApplicationSelection;
 export declare function createApplicationBinding(selection: ApplicationSelection, backend?: ApplicationBackend): ApplicationBinding;
 export declare function assertApplicationTopic(topic: unknown): string;
 export declare function assertApplicationOperationId(id: unknown): string;

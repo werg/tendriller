@@ -21,7 +21,7 @@ test("a passive dashboard replays training history and receives live samples fro
   });
   const request = await requester();
   const created = await request.post(`${SERVICE}/api/tendrils`, { headers: { "CF-Connecting-IP": "198.19.1.23" },
-    data: { owner: OWNER, name: "Training streams", mode: "dashboard" } });
+    data: { owner: OWNER, name: "Training streams", mode: "dashboard", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } } });
   expect(created.status(), await created.text()).toBe(201);
   const h = await created.json() as Handle;
   try {

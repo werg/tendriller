@@ -44,6 +44,7 @@ function randomTestIp(): string {
 
 /**
  * Creates a tendril the way the public service does: for an owner email, from a creator IP.
+ * Hosted fixtures explicitly select a fresh Cloudflare history unless overridden.
  * Unless `claim: false` is passed, it then signs in as that owner and keeps the page-session
  * cookie, so `PageClient.connect(h.page_url)` connects as the owner without further setup.
  */
@@ -56,7 +57,7 @@ export async function create(body: Record<string, unknown> & { claim?: boolean; 
   if (claim) await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, now, email).run();
   const res = await req("/api/tendrils", { method: "POST",
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": randomTestIp() },
-    body: JSON.stringify({ ...rest, owner: email }) });
+    body: JSON.stringify({ application: { kind: 'cloudflare', id: `cf:test-${crypto.randomUUID()}` }, ...rest, owner: email }) });
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
   const h = (await res.json()) as Handle;
   if (claim) ownerCookies.set(h.id, await signInAsOwner(h, account, email));

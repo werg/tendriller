@@ -37,7 +37,7 @@ page.on("say", message => { const audioOnly: boolean = message.present === false
 void [session, timer, bundle, guestConfig];
 
 declare const publication: PublicationManifest;
-const runtimeBase = { id: "page", base: "/page/", version: 1, ws: "/page/_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: null } };
+const runtimeBase = { id: "page", application: { kind: "cloudflare" as const, id: "cf:page" }, base: "/page/", version: 1, ws: "/page/_tendril/ws", features: { push: false, vapid: null, shared_by: "Fixture", speech: null } };
 const nestedRuntime: RuntimeConfiguration = { ...runtimeBase, publication, documentPath: "docs/review.html" };
 const holdingRuntime: RuntimeConfiguration = { ...runtimeBase, documentPath: null };
 // @ts-expect-error publication identity cannot supply the current document implicitly.
@@ -46,4 +46,6 @@ const missingDocument: RuntimeConfiguration = { ...runtimeBase, publication };
 const missingPublication: RuntimeConfiguration = { ...runtimeBase, documentPath: "docs/review.html" };
 // @ts-expect-error published documents cannot have a null path.
 const nullDocument: RuntimeConfiguration = { ...runtimeBase, publication, documentPath: null };
-void [nestedRuntime, holdingRuntime, missingDocument, missingPublication, nullDocument];
+// @ts-expect-error a runtime must never infer its application authority.
+const missingApplication: RuntimeConfiguration = { ...runtimeBase, application: undefined, documentPath: null };
+void [nestedRuntime, holdingRuntime, missingDocument, missingPublication, nullDocument, missingApplication];

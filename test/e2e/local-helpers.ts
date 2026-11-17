@@ -56,7 +56,7 @@ export async function disconnectAgentSocket(h: Handle) {
 export async function createPage(owner = OWNER): Promise<Handle> {
   const res = await (await requester()).post(`${SERVICE}/api/tendrils`, { headers: {
     "Content-Type": "application/json", "CF-Connecting-IP": `198.18.0.${nextIp++}`,
-  }, data: JSON.stringify({ owner, name: "E2E page" }) });
+  }, data: JSON.stringify({ owner, name: "E2E page", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(res.status(), await res.text()).toBe(201);
   return res.json() as Promise<Handle>;
 }

@@ -4,12 +4,12 @@ The optional core CLI performs authenticated requests and publishes ordinary
 files. It has no page template, component installer or application schema.
 Use `tendril --help` for the complete command reference.
 
-## A plain-files page
+## Select the application and publish plain files
 
 From a **source checkout** with development dependencies installed:
 
 ```sh
-node tools/cli/bin/tendril.mjs new 'A useful page' --owner you@example.com --as example
+node tools/cli/bin/tendril.mjs new 'A useful page' --owner you@example.com --application peer --application-id 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --as example
 node tools/cli/bin/tendril.mjs --tendril example push ./page
 node tools/cli/bin/tendril.mjs --tendril example publications
 node tools/preview/bin/tendril-preview.mjs ./page
@@ -20,14 +20,28 @@ and `node /path/to/private-tools/bin/tendril-preview.mjs` instead. The release
 archive has `bin/`, not `tools/cli/bin/` or `tools/preview/bin/`. See
 [artifact installation](ARTIFACTS.md) for `manifest.json` and `SHA256SUMS`.
 
+Creation requires `--application peer|cloudflare` and `--application-id ID`.
+The 64-character example above is illustrative; replace it with the real
+application-owned identity. `peer` is the normal stateful app choice. Page
+creation does not construct a descriptor, schema, keys or session. Configure
+the application's Chronolog composition explicitly. Plain static files need
+none of those database inputs and can use the quiet peer runtime.
+
+For a deliberately hosted app, use `--application cloudflare --application-id
+hosted:my-page`. Hosted state, streams and timers remain separate capabilities.
+The hosted remix command creates an independent Cloudflare history; it does not
+copy the original application's identity.
+
 Creation uses an email verified by the service's identity provider. Opening the
-owner URL claims the page. An interactive page also needs a verified live agent
-receiver; choose dashboard mode only when no conversational receiver is needed.
+owner URL claims the page. A hosted Cloudflare interactive page also needs a
+verified live agent receiver; its dashboard mode omits that requirement.
+Peer publication never requires a hosted receiver.
 The create response includes `unclaimed_limits`: the unclaimed stream retention
 budget and per-request body limit are each **1 MiB (1048576 bytes)**. Claim
 with the owner before starting a collector or sending a large backlog. A producer
 heartbeat does not claim the page.
-A private handle contains credentials and is saved with mode 0600. `--tendril`
+A private handle contains credentials and the immutable application selection,
+and is saved with mode 0600. `--tendril`
 selects a named handle, while `TENDRIL_API` and `TENDRIL_TOKEN` can supply one
 privately through the environment. `TENDRIL_SERVER` chooses the service origin.
 
@@ -46,9 +60,17 @@ The service verifies uploaded content and commits one complete manifest against
 the captured publication head revision. Unchanged SHA-256/size pairs reuse
 verified blobs from the current manifest. A changed head returns a conflict;
 the CLI does not overwrite a newer publication by recapturing its revision.
-`push` returns `status:"pending"` immediately by default for dashboards,
+`push` returns `status:"pending"` immediately for peer pages, with no follow-up
+host health polling, metadata read, state traffic or socket. Readiness belongs to
+the installed application session. Once generation controls are configured,
+publish signed code through the peer publication API; generic `push` cannot
+replace an authenticated publication head.
+
+For explicitly selected Cloudflare handles, `push` returns `status:"pending"` immediately by default for dashboards,
 where nobody may be viewing the page. `--wait` opts dashboards into health
-polling. Interactive pages wait by default; `--no-wait` returns immediately.
+polling. Hosted interactive pages wait by default; `--no-wait` returns immediately.
+`--wait` requires a saved Cloudflare selection; bare API/token credentials never
+infer a backend or enable automatic health polling.
 Pending means no device has reported a terminal health result; it is not proof
 of failure.
 A failed publication returns exit status 3. Reopen the authored page and inspect

@@ -130,7 +130,7 @@ export type RuntimeConfiguration = {
   id: string; base: string; version: number; ws: string;
   features: RuntimeArtifactFeatures & { push: boolean; vapid: string | null; shared_by: string };
   preview?: boolean;
-  application?: import("./application.mjs").ApplicationSelection;
+  application: import("./application.mjs").ApplicationSelection;
   /** Public resident introduction addresses supplied with the initial page. */
   peerBootstrap?: import("./peers.mjs").PeerBootstrap;
 } & (

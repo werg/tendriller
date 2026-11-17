@@ -11,7 +11,7 @@ if (!base || !owner || new URL(base).protocol !== "https:") {
 
 async function makePage(name: string): Promise<Handle> {
   const created = await fetch(`${base}/api/tendrils`, { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner, mode: "dashboard" }) });
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, owner, mode: "dashboard", application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) });
   expect(created.status, await created.clone().text()).toBe(201);
   const handle = await created.json() as Handle;
   await publishAssetGraph(createClient(handle), { "index.html": { type: "text/html",

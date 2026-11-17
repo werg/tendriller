@@ -86,7 +86,7 @@ const coreSchemas = {
   }, ["contract", "core_release", "workflows", "limits"]),
   error,
   errorResponse: object({ error }, ["error"]),
-  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" }, mode: { enum: ["interactive", "dashboard"] }, application: object({ kind: { enum: ["cloudflare", "peer"] }, id: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" } }, ["kind", "id"]) }, ["owner"]),
+  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" }, mode: { enum: ["interactive", "dashboard"] }, application: object({ kind: { enum: ["cloudflare", "peer"] }, id: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" } }, ["kind", "id"]) }, ["owner", "application"]),
   say: object(sayProperties, ["text"]),
   probeNonce: { type: "string", pattern: "^[a-z2-7]{20}$" },
   deliveryProbe: object({ nonce: { type: "string", pattern: "^[a-z2-7]{20}$" }, seq: { type: "integer", minimum: 1 },

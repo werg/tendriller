@@ -19,8 +19,11 @@ semantics as HTTP. It does not define a separate storage or publication model.
 
 ## Selected backend and peer connections
 
-Creation accepts immutable `application:{kind:'peer'|'cloudflare',id}`. Read the
-selection with `GET A/application`; omitting it selects the Cloudflare backend.
+Creation requires immutable `application:{kind:'peer'|'cloudflare',id}`. Read the
+selection with `GET A/application`; omission is rejected before creating a page.
+`peer` is the ordinary stateful application choice; hosted state and delivery
+require explicit `cloudflare` selection. Creation does not initialize a peer
+descriptor, schema, keys or session.
 Peer application writes never pass through Cloudflare state, stream, conversation,
 timer, workflow, producer, or data-bundle routes. The public
 [application boundary](APPLICATION_BACKENDS.md) defines atomic programs, final
@@ -70,7 +73,7 @@ or automatic fallback. See
 
 ## Lifecycle and delivery
 
-`POST /api/tendrils` requires an owner email and accepts optional name and mode. Interactive pages require a live receiver or configured wake path before first publication; dashboards can publish without conversational delivery. Owner sign-in claims the page. Claim deadlines, residency, quotas, invited guest approval and suspension are enforced on the server.
+`POST /api/tendrils` requires an owner email and an explicit application selection, and accepts optional name and mode. Hosted Cloudflare interactive pages require a live receiver or configured wake path before first publication; hosted dashboards can publish without conversational delivery. Peer publication has no hosted receiver prerequisite. Owner sign-in claims the page. Claim deadlines, residency, quotas, invited guest approval and suspension are enforced on the server.
 
 `GET A/events?after=<cursor>` immediately replays retained events from an explicit nonnegative cursor; it never waits for future events. The former `wait` query parameter is rejected, including `wait=0`. An authenticated agent socket at `A/events/socket` uses `tendriller.agent.v2` and a token or one-use ticket in the WebSocket subprotocol header. It sends count-only wake notices; clients fetch event bodies through the authorized API. The Durable Object automatically answers exact JSON `{"t":"ping"}` messages with `{"t":"pong"}` while hibernating; host watchers should send a heartbeat more frequently than common proxy idle timeouts (for example every 25 seconds), detect missing pongs, and reconnect with an explicit `after` handled cursor. Arbitrary agent-socket messages are forbidden. Normal disconnects may still occur at network/proxy boundaries: a successful reconnect does not itself imply new work. The service records agent-socket connection and close code/reason/duration in `GET A/activity` without storing credentials, so operator diagnostics can distinguish server close frames from abnormal network disconnects (usually client code 1006). This does not identify an upstream proxy's internal cause without its logs. Tokens never belong in URLs.
 

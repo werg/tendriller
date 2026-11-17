@@ -31,7 +31,7 @@ export function loadPlaywright(cwd = process.cwd(), explicitPath) {
 }
 
 export function injectRuntime(html, publication, documentPath) {
-  const config = { id: "preview", base: "/", version: publication.version, preview: true, publication, documentPath, ws: "/_tendril/ws", features: {
+  const config = { id: "preview", application: { kind: "cloudflare", id: "cf:preview" }, base: "/", version: publication.version, preview: true, publication, documentPath, ws: "/_tendril/ws", features: {
     push: false, vapid: null, shared_by: "Local preview", speech: null,
   } };
   const directory = posix.dirname(documentPath);

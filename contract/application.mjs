@@ -11,8 +11,7 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
   : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
     : JSON.stringify(value);
 
-export function applicationSelection(value, defaultId = 'cloudflare') {
-  if (value === undefined) return Object.freeze({ kind: 'cloudflare', id: defaultId });
+export function applicationSelection(value) {
   if (!value || typeof value !== 'object' || !['cloudflare', 'peer'].includes(value.kind) ||
       typeof value.id !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(value.id) || Object.keys(value).some(key => !['kind', 'id'].includes(key)))
     fail('invalid_backend', 'Application selection requires a kind and stable identity');

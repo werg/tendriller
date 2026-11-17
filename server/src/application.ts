@@ -10,7 +10,7 @@ import type { Tendril } from './tendril';
 
 export const APPLICATION_ROUTE = /^application(?:\/(?:changes|events|view|revision|operations\/[A-Za-z0-9_.:-]+))?$/;
 export function selectedApplication(t: Tendril): ApplicationSelection {
-  return applicationSelection(t.db.get('application', undefined), `cf:${t.tid}`);
+  return applicationSelection(t.db.get('application', undefined));
 }
 /** The selection is made at creation. An outage can never switch its authority. */
 export function requireCloudflareApplication(t: Tendril): void {

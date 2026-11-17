@@ -40,7 +40,7 @@ async function environment({ peer = false } = {}) {
   };
   runInNewContext(compiled.outputFiles[0].text, context);
   const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null,
-    ...(peer ? { application: { kind: 'peer', id: 'history' } } : {}) });
+    application: peer ? { kind: 'peer', id: 'history' } : { kind: 'cloudflare', id: 'cf:page' } });
   await settle();
   const flushTimers = () => { for (const [id, fn] of timers) { timers.delete(id); fn(); } };
   return { reports, sensorReports, sensorUsage, runtime,

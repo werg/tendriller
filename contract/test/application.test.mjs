@@ -11,7 +11,9 @@ test('one selected backend owns the history and readiness never silently falls b
   const ready = selected.ready(); selected.install(backend);
   assert.equal(await ready, backend); assert.equal(selected.backend, backend);
   assert.throws(() => selected.install(backend), { code: 'backend_already_selected' });
-  assert.deepEqual(applicationSelection(undefined, 'page'), { kind: 'cloudflare', id: 'page' });
+  assert.throws(() => applicationSelection(undefined), { code: 'invalid_backend' });
+  assert.throws(() => createApplicationBinding(undefined), { code: 'invalid_backend' });
+  assert.deepEqual(applicationSelection({ kind: 'cloudflare', id: 'page' }), { kind: 'cloudflare', id: 'page' });
 });
 test('programs bind all steps and preserve captured scope guards', () => {
   const input = { version: 1, scope: 'work', expected_generations: { work: 'original' }, steps: [

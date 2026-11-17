@@ -3547,7 +3547,8 @@
         }
       },
       "required": [
-        "owner"
+        "owner",
+        "application"
       ],
       "additionalProperties": false
     },

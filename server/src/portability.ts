@@ -291,7 +291,10 @@ export async function remix(t: Tendril, req: Request, body: unknown, by: string,
   const { route } = await import("./router");
   const created = await route(new Request(`${publicBase(t.env)}/api/tendrils`, { method: "POST", headers: {
     "Content-Type": "application/json", "CF-Connecting-IP": req.headers.get("CF-Connecting-IP") ?? "remix" },
-    body: JSON.stringify({ owner, name: body.name ?? `${bundle.name.slice(0, 85)} copy` }) }), t.env);
+    // Remix is a hosted-data operation. A copy owns a fresh hosted history;
+    // it never inherits the source identity or relies on a creation default.
+    body: JSON.stringify({ owner, name: body.name ?? `${bundle.name.slice(0, 85)} copy`,
+      application: { kind: "cloudflare", id: `cf:${crypto.randomUUID()}` } }) }), t.env);
   if (!created.ok) return created;
   const handle = await created.json<{ id: string; api: string; token: string; page_url: string }>();
   const destination = t.env.TENDRIL.get(t.env.TENDRIL.idFromName(handle.id));

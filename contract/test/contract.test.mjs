@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs";
 import { assertValid, validate, schemas, schemaDocument, ContractError } from "../index.mjs";
 import { createPage, createClient, ApiError, requireService, describeService } from "../client.mjs";
 
-test("public creation requires an owner and valid lifecycle", async () => {
+test("public creation requires an owner, explicit application and valid lifecycle before HTTP", async () => {
   let called = false;
   const fetch = async () => { called = true; throw Error("unexpected request"); };
   await assert.rejects(createPage("https://example.test", { name: "Kitchen", lifetime: "resident" }, { fetch }), ContractError);
+  for (const application of [undefined, null, { kind: 'peer' }, { kind: 'unknown', id: 'app' }])
+    await assert.rejects(createPage("https://example.test", { owner: "owner@example.test", application }, { fetch }), ContractError);
   assert.equal(called, false);
-  assert.equal(validate("create", { owner: "owner@example.test", name: "Kitchen" }).length, 0);
+  for (const kind of ['peer', 'cloudflare'])
+    assert.equal(validate("create", { owner: "owner@example.test", name: "Kitchen", application: { kind, id: 'ab'.repeat(32) } }).length, 0);
   for (const body of [{ owner: "not-an-email" }, { owner: "owner@example.test", pairing: "open" }, { owner: "owner@example.test", lifetime: "resident" }])
     assert.ok(validate("create", body).length);
 });
@@ -142,5 +145,5 @@ test("service requirements compare interfaces independently of contrib release",
 test("typed clients reject successful HTTP responses that break the wire contract", async () => {
   const client = createClient({ api: "https://example.test", token: "tk_test" }, { fetch: async () => new Response(JSON.stringify({ rev: "wrong", state: [] }), { status: 200 }) });
   await assert.rejects(client.state(), error => error instanceof ApiError && error.code === "invalid_response" && error.details.some(issue => issue.path === "$.rev"));
-  await assert.rejects(createPage("https://example.test", { owner: "owner@example.test" }, { fetch: async () => new Response('{"id":"page-with-no-credentials"}', { status: 201 }) }), error => error.code === "invalid_response");
+  await assert.rejects(createPage("https://example.test", { owner: "owner@example.test", application: { kind: 'peer', id: 'ab'.repeat(32) } }, { fetch: async () => new Response('{"id":"page-with-no-credentials"}', { status: 201 }) }), error => error.code === "invalid_response");
 });
