@@ -191,13 +191,23 @@ async function rotatePreviews({ github, context, core, branch, remove }) {
   for (const [owner, ids] of previous) {
     await remove(owner);
     for (const deployment_id of ids) {
-      await github.rest.repos.createDeploymentStatus({
+      await retryTransient(() => github.rest.repos.createDeploymentStatus({
         ...context.repo, deployment_id, state: 'inactive', log_url: runUrl(context),
         description: 'Replaced by another live preview', auto_inactive: false,
-      });
+      }));
     }
     core.notice(`Rotated preview resources for ${owner}.`);
   }
 }
 
-module.exports = { branchKey, validateBranch, head, trustedRun, select, current, startDeployment, finishDeployment, finishCleanup, rotatePreviews };
+async function retryTransient(operation, delay = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      if (attempt >= 3 || ![429, 500, 502, 503, 504].includes(error.status)) throw error;
+      await delay(1000 * 2 ** attempt);
+    }
+  }
+}
+
+module.exports = { branchKey, validateBranch, head, trustedRun, select, current, startDeployment, finishDeployment, finishCleanup, rotatePreviews, retryTransient };
