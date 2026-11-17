@@ -20,7 +20,8 @@ identity and verified control metadata use small browser-native storage; OPFS, d
 ownership, history and materialization load on first durable use inside that same
 participant. The public `/browser` import contains the page facade; `/worker` contains
 the protocol owner and reaches durable code through a dynamic import. Keep optional
-SQL engine imports inside `createMaterializer`, never in a page's eager import graph.
+SQL engine imports inside `createEngine` (or a custom `createMaterializer`), never
+in a page's eager import graph.
 
 `@tendriller/core` publishes host/participant and browser contracts. The runtime archive contains exact code/assets plus kernel and voice declarations. The engine exports the generic Worker, `Tendril`, `Admission`, account schema and public test fixture. Tools are a separate self-contained Node archive with `tendril` and `tendril-preview` executables and preview/pack/session exports.
 

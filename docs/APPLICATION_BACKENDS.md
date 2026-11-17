@@ -24,7 +24,9 @@ Chronolog initializes its one durable data component on the first command, query
 history read, durable content operation or other explicit data use. Concurrent
 first operations share that initialization. Browser OPFS acquisition, the exclusive
 application-storage lock, replica, journal and materializer belong to that component.
-SQL/WASM loading belongs in the lazy materializer factory. The existing participant,
+The `/sql` entry accepts `createEngine({signal})`; import and create the SQL/WASM
+engine inside that factory. A custom materializer uses `createMaterializer` with
+the same on-demand lifecycle. The existing participant,
 signing identity and peer connections continue through activation.
 
 `status.database` reports `idle`, `opening`, `ready`, `failed` or `closed`; it is
