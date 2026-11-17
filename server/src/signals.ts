@@ -26,6 +26,22 @@ const current = (t: Tendril, ws: WebSocket): Principal | null => {
   const principal = value.kind === 'signals' && value.principal ? currentPrincipal(t, value.principal) : socketPrincipal(t, ws);
   return principal && authorized(t, principal) ? principal : null;
 };
+function revokeLive(ws: WebSocket): void {
+  const value = attachment(ws);
+  if (value.live?.subscribed) ws.serializeAttachment({ ...value, live: { ...value.live, subscribed: false } });
+  // The live handler owns dedicated sessions, but only its subscription on a
+  // shared page socket. Durable socket authorization has its own lifecycle.
+  if (value.kind === 'signals') { try { ws.close(4003, 'Live signal access revoked'); } catch { /* Already closed. */ } }
+}
+/** Reclaim locally revoked slots without queuing asynchronous account checks. */
+function currentLiveSockets(t: Tendril): WebSocket[] {
+  return t.ctx.getWebSockets().filter(ws => {
+    const value = attachment(ws);
+    if (ws.readyState !== WebSocket.READY_STATE_OPEN || !value.live && value.kind !== 'signals') return false;
+    if (current(t, ws)) return true;
+    revokeLive(ws); return false;
+  });
+}
 async function principalFor(t: Tendril, ws: WebSocket): Promise<Principal | null> {
   if (!isSignalSocket(ws)) {
     const principal = await authorizeSocket(t, ws, { fresh: true });
@@ -60,7 +76,7 @@ export async function openSignalSocket(t: Tendril, req: Request, principal: Prin
   if (!authorized(t, principal) || !await pageAccessAllowed(t) ||
       principal.kind === 'page' && principal.accountId && !await accountActive(t, principal.accountId) || !authorized(t, principal))
     throw new HttpError(403, 'forbidden', 'Hosted signals are private to page owners and agents');
-  if (t.ctx.getWebSockets('signals').filter(ws => ws.readyState === WebSocket.READY_STATE_OPEN).length >= LIMITS.connections)
+  if (currentLiveSockets(t).filter(isSignalSocket).length >= LIMITS.connections)
     throw new HttpError(429, 'signal_backpressure', 'Too many live signal connections');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, ['signals']);
@@ -92,8 +108,7 @@ export async function handleSignalMessage(t: Tendril, ws: WebSocket, raw: string
     const state = live(ws);
     if (input.t !== 'signal_send') {
       const subscribed = input.t === 'signal_subscribe';
-      if (subscribed && !state.subscribed && t.ctx.getWebSockets().filter(peer =>
-        peer.readyState === WebSocket.READY_STATE_OPEN && attachment(peer).live?.subscribed).length >= LIMITS.connections)
+      if (subscribed && !state.subscribed && currentLiveSockets(t).filter(peer => attachment(peer).live?.subscribed).length >= LIMITS.connections)
         throw new SignalError('signal_backpressure', 'Too many live signal subscribers');
       // No I/O: unsubscribe takes effect even while another message awaits
       // authorization. Every payload delivery still checks account access fresh.
@@ -119,14 +134,15 @@ export async function handleSignalMessage(t: Tendril, ws: WebSocket, raw: string
     const envelope: EphemeralSignal = { scope: selectedApplication(t).id,
       authorId: principal.kind === 'agent' ? `agent:${principal.name}` : `account:${principal.kind === 'page' ? principal.accountId : ''}`,
       sessionId: currentSession.sessionId, sequence: currentSession.sequence, ...value };
-    const recipients = t.ctx.getWebSockets().filter(peer => peer !== ws && attachment(peer).live?.subscribed).slice(0, LIMITS.connections);
+    const recipients = currentLiveSockets(t).filter(peer => peer !== ws && attachment(peer).live?.subscribed).slice(0, LIMITS.connections);
     for (const peer of recipients) {
       if (t.now() >= value.expiresAtMs || !authorized(t, principal) || ws.readyState !== WebSocket.READY_STATE_OPEN) break;
       const recipient = await principalFor(t, peer);
       // All local authorization and subscription checks occur again after each
       // asynchronous account read, immediately before any bytes are released.
       if (t.now() >= value.expiresAtMs || !authorized(t, principal) || ws.readyState !== WebSocket.READY_STATE_OPEN) break;
-      if (!recipient || !authorized(t, recipient) || !attachment(peer).live?.subscribed) continue;
+      if (!recipient || !authorized(t, recipient)) { revokeLive(peer); continue; }
+      if (!attachment(peer).live?.subscribed) continue;
       send(peer, { t: 'signal', signal: envelope });
     }
     if (!authorized(t, principal)) throw new SignalError('signal_unauthorized', 'Signal access changed during dispatch');
