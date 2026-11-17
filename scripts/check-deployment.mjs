@@ -26,6 +26,15 @@ if (health?.ok !== true) throw new Error("Health response did not report ok: tru
 const status = await (await get("/status")).text();
 if (!/Operational|New page creation paused|Read-only or unavailable/.test(status))
   throw new Error("Service status did not read the account database");
+// A static health response and D1 read can pass after the account-wide Durable
+// Object storage quota is exhausted. Touch one nonexistent, fixed Tendril so
+// its SQLite-backed namespace must complete a real read before deployment is
+// reported healthy. The missing tendril is the expected result.
+const objectResponse = await fetch(new URL("/api/t/aaaaaaaaaaaa", base), { signal: AbortSignal.timeout(15_000) });
+const objectResult = await objectResponse.json().catch(() => null);
+if (objectResponse.status !== 404 || objectResult?.error?.message !== "No such tendril") {
+  throw new Error(`Durable Object storage readiness failed: HTTP ${objectResponse.status}`);
+}
 const guide = await (await get("/agent.md")).text();
 if (!guide.includes("Tendriller")) throw new Error("Agent guide is missing or incomplete");
 console.log(`Deployment smoke check passed: ${base}`);

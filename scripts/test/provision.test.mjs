@@ -5,7 +5,7 @@ import { requiredStorageSchema } from '../storage-schema.mjs';
 
 const current = { name:'tendriller-staging', vars:{PUBLIC_BASE:'https://staging.tendriller.dev',PAGE_BASE_DOMAIN:'tendriller.dev'},
   d1_databases:[{database_name:'tendriller-staging-accounts'}],r2_buckets:[{bucket_name:'tendriller-staging-files'}] };
-const environment = {STAGING_PUBLIC_BASE:'https://candidate.tendriller.dev',STAGING_PAGE_HOST_SUFFIX:'--candidate'};
+const environment = {STAGING_PUBLIC_BASE:'https://candidate.tendriller.dev',STAGING_PAGE_HOST_SUFFIX:'--p-aaaaaaaaaaaa'};
 const fresh = () => deploymentPlan('staging',{name:'tendriller-candidate',fresh:true},environment,current);
 const absent = code => Object.assign(new Error('Resource does not exist'), {stderr:`[code: ${code}]`});
 
@@ -15,10 +15,16 @@ test('fresh deployment uses distinct Worker, storage, service and page identitie
   assert.equal(config.name,'tendriller-candidate');
   assert.equal(config.d1_databases[0].database_name,'tendriller-candidate-accounts');
   assert.equal(config.r2_buckets[0].bucket_name,'tendriller-candidate-files');
-  assert.equal(config.vars.PAGE_HOST_SUFFIX,'--candidate');
-  assert.ok(config.routes.some(route=>route.pattern==='*--candidate.tendriller.dev/*'));
+  assert.equal(config.vars.PAGE_HOST_SUFFIX,'--p-aaaaaaaaaaaa');
+  assert.ok(config.routes.some(route=>route.pattern==='*--p-aaaaaaaaaaaa.tendriller.dev/*'));
+  assert.ok(config.routes.some(route=>route.pattern==='candidate.tendriller.dev/*'));
   assert.ok(config.durable_objects.bindings.every(binding=>!binding.script_name));
   assert.ok(!JSON.stringify(config).includes('tendriller-staging'));
+});
+
+test('provisioning rejects suffixes the runtime cannot route', () => {
+  assert.throws(()=>deploymentPlan('staging',{name:'tendriller-candidate',fresh:true},
+    {...environment,STAGING_PAGE_HOST_SUFFIX:'--candidate'},current),/twelve lowercase hexadecimal/);
 });
 
 test('fresh provisioning refuses configured resources and either reused origin', () => {
