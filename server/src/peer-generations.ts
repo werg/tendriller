@@ -1,5 +1,5 @@
 import {
-  createGenerationRegistry, signApplicationDescriptor,
+  createGenerationRegistry, createPeerIdentity, exportPeerIdentity, encodePeerValue, signApplicationDescriptor,
   signControlRevision, signTransitionRequest, participantGrant, controlParticipantGrant,
   validateApplicationDescription, applicationDescriptionDigest, verifyApplicationSchema,
   peerDigest, verifyAuthorityBundle,
@@ -14,7 +14,7 @@ import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 import { changeLifetime, hasResidentStorage } from './lifetime';
-import { ensurePeerControlIdentity, loadPeerControlIdentity } from './peer-control-identity';
+import { loadPeerControlIdentity } from './peer-control-identity';
 
 const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts';
 const VALUE_LIMIT = 16 * 1024 * 1024;
@@ -214,7 +214,8 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           deviceGrants.push(grant); rawBindings.push({ publicKey: grant?.publicKey, accountId: row.accountId ?? owner });
         }
         const bindings = accounts(rawBindings); await checkAccounts(t, bindings);
-        const signer = await ensurePeerControlIdentity(t);
+        const retainedSigner = await loadPeerControlIdentity(t);
+        const signer = retainedSigner ?? await createPeerIdentity();
         const grants = await withControlParticipant(deviceGrants, signer);
         bindings.push({ publicKey: signer.publicKey, accountId: owner });
         const descriptor = await signApplicationDescriptor({ applicationId, historyId: value.historyId,
@@ -226,6 +227,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         const staged = new Map<string, Uint8Array>();
         const initial = await createGenerationRegistry({ descriptor, controls: [control], signer,
           store: { get: async key => staged.get(key) ?? null, put: async (key, bytes) => { staged.set(key, bytes.slice()); } } });
+        if (!retainedSigner) staged.set('peer-generation/identity', encodePeerValue(await exportPeerIdentity(signer)));
         const bundle = await initial.read();
         // Durable control state outlives any coordinating peer or page publication.
         await changeLifetime(t, 'resident');
@@ -236,6 +238,9 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           checkAccountAdmission(t, bindings);
           if (!hasResidentStorage(t)) throw new HttpError(409, 'peer_control_storage_unavailable');
           if (t.db.get(CONFIG, null)) throw new HttpError(409, 'peer_application_conflict');
+          const root = t.db.one<{ value: ArrayBuffer }>("SELECT value FROM participant_records WHERE key='peer-generation/identity'");
+          if (root && !retainedSigner || !root && retainedSigner)
+            throw new HttpError(409, 'peer_control_identity_conflict');
           for (const [key, bytes] of staged) t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', key, bytes.buffer);
           t.db.set(CONFIG, { descriptor, control, fingerprint, definition: published.definition, schema: published.schema }); t.db.set(ACCOUNTS, bindings);
         });

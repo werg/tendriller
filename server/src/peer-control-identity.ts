@@ -7,7 +7,7 @@ import type { Tendril } from './tendril';
 const KEY = 'peer-generation/identity';
 
 function stored(t: Tendril): Uint8Array | null {
-  const row = t.db.one<{ value: ArrayBuffer }>('SELECT value FROM membership_records WHERE key=?', KEY);
+  const row = t.db.one<{ value: ArrayBuffer }>('SELECT value FROM participant_records WHERE key=?', KEY);
   return row ? new Uint8Array(row.value).slice() : null;
 }
 
@@ -26,7 +26,7 @@ export async function ensurePeerControlIdentity(t: Tendril): Promise<PeerIdentit
   const selected = t.transaction(() => {
     const prior = stored(t);
     if (prior) return prior;
-    t.db.run('INSERT INTO membership_records(key,value) VALUES(?,?)', KEY, candidate.slice().buffer);
+    t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', KEY, candidate.slice().buffer);
     return candidate;
   });
   return selected === candidate ? identity : importPeerIdentity(decodePeerValue(selected));
