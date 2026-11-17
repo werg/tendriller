@@ -17,10 +17,11 @@ function until(value, signal) {
 }
 
 /** Host routing only. The owned Chronolog session supplies policy and authenticates every opened peer. */
-export function createPeerIntroductions({ peers, identity, openConnection }) {
-  if (!identityKey(identity) || typeof openConnection !== 'function' ||
-      !['discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous'].every(key => typeof peers?.[key] === 'function'))
-    invalid('Provide the session device identity, host peers client and raw connection opener');
+export function createPeerIntroductions({ peers, identity, openDirectConnection, openRelayConnection, directTimeoutMs = 5000 }) {
+  if (!identityKey(identity) || typeof openDirectConnection !== 'function' || typeof openRelayConnection !== 'function' ||
+      !Number.isSafeInteger(directTimeoutMs) || directTimeoutMs < 1 || directTimeoutMs > 30_000 ||
+      !['discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
+    invalid('Provide the session device identity, host peers client and direct/relay connection openers');
   let activeListener, nextListener = Promise.withResolvers();
   return Object.freeze({
     discovery: Object.freeze({
@@ -85,18 +86,37 @@ export function createPeerIntroductions({ peers, identity, openConnection }) {
           } else if (route.kind === 'rendezvous') channel = route.channel;
           else invalid('This host adapter needs an invitation or rendezvous route');
         }
-        const signaling = peers.rendezvous(channel, identity, { signal });
+        const direct = new AbortController(), directSignal = AbortSignal.any([signal, direct.signal]);
+        const signaling = peers.rendezvous(channel, identity, { signal: directSignal });
+        let timer;
         try {
           if (invite) await peers.invite(peer.identity, { channel, requesterPeerId: identity }, { signal });
-          const { role } = await signaling.ready;
-          signal.throwIfAborted();
-          const connection = await openConnection({ role, signaling, signal });
-          if (signal.aborted) {
-            try { await connection.close(); } catch { /* Preserve the cancellation reason after cleanup. */ }
-            signal.throwIfAborted();
+          timer = setTimeout(() => direct.abort(new Error('PEER_DIRECT_CONNECTION_TIMEOUT')), directTimeoutMs);
+          const opening = until(signaling.ready, directSignal).then(async ({ role }) => {
+            directSignal.throwIfAborted();
+            return openDirectConnection({ role, signaling, signal: directSignal });
+          });
+          // A slow platform opener cannot leak its connection after the fallback wins.
+          const owned = opening.then(async value => { if (directSignal.aborted) await value.close(); return value; });
+          void owned.catch(() => {});
+          try {
+            const connection = await until(owned, directSignal);
+            directSignal.throwIfAborted(); return connection;
+          } catch (error) {
+            direct.abort(error);
+            // Keep an uncooperative platform opener charged to the session's
+            // physical-opening budget until it actually relinquishes resources.
+            await owned.catch(() => {}); signal.throwIfAborted();
           }
-          return connection;
-        } finally { signaling.close(); }
+        } finally { clearTimeout(timer); signaling.close(); }
+        signal.throwIfAborted();
+        const relay = peers.relay(channel, identity, { remotePeerId: peer.identity, signal });
+        const opening = Promise.resolve().then(() => { signal.throwIfAborted(); return openRelayConnection({ relay, signal }); });
+        void opening.then(value => { if (signal.aborted) return value.close(); }, () => {}).catch(() => {});
+        try {
+          const connection = await until(opening, signal);
+          signal.throwIfAborted(); return connection;
+        } catch (error) { relay.close(); throw error; }
       },
     }),
   });

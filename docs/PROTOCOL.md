@@ -31,7 +31,13 @@ Host account access and device grants are independent. Owner accounts authorize 
 
 A control revision records device rights and key epoch. Generation selection has signed transition identity, expected predecessor, a real peer coordinator and an authenticated adopted prefix. Exact retries return retained evidence. Competing predecessors conflict. The host's declared control role cannot read, write or coordinate ordinary application history.
 
-Ordinary current-generation work requires no host request. Discovery advertisements are hints, not membership or retention evidence. A coordinator loss can require explicit generation recovery; clients retain signed local attempts while waiting and report abandoned or unknown history honestly.
+Ordinary current-generation work requires no host control request. Direct connections bypass the host; fallback WebSocket connections use its opaque relay transport and consume host bandwidth. Discovery advertisements are hints, not membership or retention evidence. A coordinator loss can require explicit generation recovery; clients retain signed local attempts while waiting and report abandoned or unknown history honestly.
+
+## Opaque peer relay
+
+`GET .../peers/relay?channel=...&peerId=...&remotePeerId=...&lane=reliable|live` upgrades with `tendriller.relay.v1` after account or agent authentication. Agent credentials remain in the TLS-protected subprotocol header. Four sockets form exactly one reciprocal peer pair with separate reliable and disposable lanes. Public identity hints route the connection; Chronolog independently proves the signing identities and encrypts every post-handshake channel above the transport.
+
+The relay parses bounded admission, sequence and recipient-receipt metadata only. It forwards application ciphertext unchanged and stores no payloads. Unpredictable per-packet recipient receipts bound outstanding egress; live pressure drops packets while reliable overflow closes the session. Local credential revocation is checked per packet; the alarm refreshes account admission every 30 seconds and expires stalled or old sessions. The filtered HTTP control participant retains its existing facet policy and never executes relayed commands.
 
 ## Signed code release
 

@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { env } from 'cloudflare:workers';
 import { createPeerRelay, PEER_RELAY_LIMITS as LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
 import { advance, api, create, inDO, req, runAlarm, type Handle } from './helpers';
 import { closeRelay } from '../src/peer-relay';
@@ -125,13 +126,39 @@ it('fences local revocation on every packet and rechecks account policy in the a
   p.a.reliable.socket.send(packet(1)); expect(await p.a.live.closed).toBe(1008);
   expect(p.b.reliable.messages.length).toBe(1); p.close();
   const second = await create({ mode: 'dashboard', listener: false }), q = await pair(second, 'account');
+  const account = await inDO(second.id, t => t.db.get('owner_account', ''));
+  await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), account).run();
   await advance(second.id, LIMITS.authorizationMs + 1);
-  await inDO(second.id, async t => {
+  await runAlarm(second.id);
+  expect(await q.a.reliable.closed).toBe(4003); expect(await q.b.live.closed).toBe(4003); q.close();
+  const third = await create({ mode: 'dashboard', listener: false }), r = await pair(third, 'policy-outage');
+  await advance(third.id, LIMITS.authorizationMs + 1);
+  await inDO(third.id, async t => {
     const original = t.env.ACCOUNTS;
     t.env.ACCOUNTS = { prepare() { throw new Error('Injected account policy outage'); } } as unknown as D1Database;
     try { await t.alarm(); } finally { t.env.ACCOUNTS = original; }
   });
-  expect(await q.a.reliable.closed).toBe(4003); expect(await q.b.live.closed).toBe(4003); q.close();
+  expect(await r.a.reliable.closed).toBe(4003); expect(await r.b.live.closed).toBe(4003); r.close();
+});
+
+it('refreshes admitted idle connections and enforces the absolute relay lifetime', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'lifetime');
+  try {
+    await advance(h.id, LIMITS.authorizationMs + 1); await runAlarm(h.id);
+    p.a.reliable.socket.send(packet(1)); await expect.poll(() => p.b.reliable.messages.length).toBe(2);
+    await advance(h.id, LIMITS.lifetimeMs); await runAlarm(h.id);
+    expect(await p.a.reliable.closed).toBe(1008); expect(await p.b.live.closed).toBe(1008);
+  } finally { p.close(); }
+});
+
+it('rejects oversized and out-of-order packets before forwarding their payloads', async () => {
+  for (const invalid of [packet(1, LIMITS.packetBytes + 1), packet(2)]) {
+    const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'invalid');
+    try {
+      p.a.reliable.socket.send(invalid);
+      expect(await p.b.reliable.closed).toBe(1008); expect(p.b.reliable.messages.length).toBe(1);
+    } finally { p.close(); }
+  }
 });
 
 it('closes all lanes on disconnect and isolates stale close events from a reused channel', async () => {

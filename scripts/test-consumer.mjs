@@ -68,7 +68,8 @@ const client = createClient({api:'https://host.test/api/t/test',token:'private'}
 }});
 assert.deepEqual(Object.keys(client).sort(), ['info', 'peers', 'request', 'service']);
 assert.equal(requests, 0);
-const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32), openConnection: async () => ({ close() {} }) });
+const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
+  openDirectConnection: async () => ({ close() {} }), openRelayConnection: async () => ({ close() {} }) });
 assert.equal(typeof introductions.discovery.invitations, 'function');
 assert.equal(typeof introductions.transport.open, 'function');
 assert.equal(requests, 0);
@@ -107,7 +108,8 @@ await application.inspectRecovery();
 const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
 void client.peers.application(); void client.peers.publication();
 const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
-  openConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; } });
+  openDirectConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; },
+  openRelayConnection: async options => { await options.relay.ready; return { kind:'raw' as const, close() {} }; } });
 const raw = await introductions.transport.open({ peer: { identity:'56'.repeat(32), route:{kind:'invitation',peerId:'56'.repeat(32)} } }, { signal: new AbortController().signal });
 const kind:'raw'=raw.kind; void kind;
 

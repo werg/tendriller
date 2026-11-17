@@ -5,8 +5,8 @@ import { createPeerIntroductions, createPeersClient } from '../peers.mjs';
 const local = 'ab'.repeat(32), remote = 'cd'.repeat(32), other = 'ef'.repeat(32);
 const options = () => ({ signal: new AbortController().signal });
 const route = identity => ({ kind: 'invitation', peerId: identity });
-function fixture(overrides = {}, opener) {
-  const calls = [], openings = [], channels = [];
+function fixture(overrides = {}, opener, options = {}) {
+  const calls = [], openings = [], relayOpenings = [], channels = [];
   const peers = {
     async discover(value) { calls.push(['discover', value]); return { peers: [] }; },
     async advertise(value, options) { calls.push(['advertise', value, options]); },
@@ -25,11 +25,16 @@ function fixture(overrides = {}, opener) {
         messages: { async *[Symbol.asyncIterator]() {} }, async send() {}, close() { calls.push(['closeSignaling', channel]); } };
       channels.push(signaling); return signaling;
     },
+    relay(channel, identity, options) {
+      calls.push(['relay', channel, identity, options]);
+      return { ready: Promise.resolve({ session: 'relay-paired' }), close() { calls.push(['closeRelay']); } };
+    },
     ...overrides,
   };
   const connection = { async close() { calls.push(['closeConnection']); } };
-  const ports = createPeerIntroductions({ peers, identity: local, openConnection: opener ?? (async input => { openings.push(input); return connection; }) });
-  return { ...ports, calls, openings, channels, connection };
+  const ports = createPeerIntroductions({ peers, identity: local, openDirectConnection: opener ?? (async input => { openings.push(input); return connection; }),
+    openRelayConnection: async input => { relayOpenings.push(input); return connection; }, ...options });
+  return { ...ports, calls, openings, relayOpenings, channels, connection };
 }
 
 test('construction is inert and discovery pins only valid remote identities with supported routes', async () => {
@@ -69,10 +74,10 @@ test('outbound introduction uses a fresh channel, the paired role and closes hos
   const f = fixture(), selected = options(), peer = { identity: remote, route: route(remote) };
   assert.equal(await f.transport.open({ peer }, selected), f.connection);
   const [opened, invitation, closed] = f.calls;
-  assert.equal(opened[0], 'rendezvous'); assert.equal(opened[2], local); assert.equal(opened[3].signal, selected.signal);
+  assert.equal(opened[0], 'rendezvous'); assert.equal(opened[2], local); assert.equal(opened[3].signal.aborted, false);
   assert.deepEqual(invitation, ['invite', remote, { channel: opened[1], requesterPeerId: local }, selected]);
   assert.deepEqual(closed, ['closeSignaling', opened[1]]);
-  assert.deepEqual(f.openings, [{ role: 'answerer', signaling: f.channels[0], signal: selected.signal }]);
+  assert.deepEqual(f.openings, [{ role: 'answerer', signaling: f.channels[0], signal: opened[3].signal }]);
   await f.transport.open({ peer }, selected);
   assert.notEqual(f.calls[3][1], opened[1], 'A new transport attempt cannot reuse the previous pairing channel');
 });
@@ -152,4 +157,53 @@ test('advertising waits for the owned invitation listener acknowledgement and re
   cancelled.abort(Error('session ended before listening'));
   await assert.rejects(waiting, /session ended before listening/);
   assert.equal(f.calls.length, 1);
+});
+
+test('one failed direct attempt falls back through the same channel and expected peer', async () => {
+  const f = fixture({}, async () => { throw Error('ICE unavailable'); }), selected = options();
+  assert.equal(await f.transport.open({ peer: { identity: remote, route: route(remote) } }, selected), f.connection);
+  assert.deepEqual(f.calls.map(call => call[0]), ['rendezvous', 'invite', 'closeSignaling', 'relay']);
+  const opened = f.calls[0], relayed = f.calls[3];
+  assert.equal(relayed[1], opened[1]); assert.equal(relayed[2], local);
+  assert.deepEqual(relayed[3], { remotePeerId: remote, signal: selected.signal });
+  assert.equal(f.relayOpenings.length, 1); assert.equal(f.relayOpenings[0].signal, selected.signal);
+});
+
+test('an interrupted SDP exchange can use the relay without replacing the invitation', async () => {
+  const calls = [], f = fixture({ rendezvous(channel) {
+    calls.push(channel); return { ready: Promise.reject(Error('SDP service ended')), close() { calls.push('closed'); } };
+  } });
+  await f.transport.open({ peer: { identity: remote, route: route(remote) }, invitation: { channel: 'join:accepted', requesterPeerId: remote } }, options());
+  assert.deepEqual(calls, ['join:accepted', 'closed']);
+  assert.deepEqual(f.calls.map(call => call[0]), ['relay']); assert.equal(f.calls[0][1], 'join:accepted');
+  assert.equal(f.openings.length, 0); assert.equal(f.relayOpenings.length, 1);
+});
+
+test('the direct deadline cancels the platform opener before the relay opens', async () => {
+  let stopped = false;
+  const f = fixture({}, async ({ signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => { stopped = true; reject(signal.reason); }, { once: true });
+  }), { directTimeoutMs: 1 });
+  await f.transport.open({ peer: { identity: remote, route: route(remote) } }, options());
+  assert.equal(stopped, true); assert.equal(f.relayOpenings.length, 1);
+});
+
+test('an uncooperative direct opener stays owned until its late connection is closed', async () => {
+  const pending = Promise.withResolvers(); let closed = false;
+  const f = fixture({}, async () => pending.promise, { directTimeoutMs: 1 });
+  const opening = f.transport.open({ peer: { identity: remote, route: route(remote) } }, options());
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(f.relayOpenings.length, 0, 'Do not free the physical opening budget while the platform still owns work');
+  pending.resolve({ async close() { closed = true; } });
+  await opening; assert.equal(closed, true); assert.equal(f.relayOpenings.length, 1);
+});
+
+test('owner cancellation never opens a relay and failed relay framing closes both sockets', async () => {
+  const controller = new AbortController();
+  const f = fixture({}, async () => { controller.abort(Error('owner ended')); throw controller.signal.reason; });
+  await assert.rejects(f.transport.open({ peer: { identity: remote, route: route(remote) } }, { signal: controller.signal }), /owner ended/);
+  assert.equal(f.relayOpenings.length, 0);
+  const failed = fixture({}, async () => { throw Error('direct failed'); }, { openRelayConnection: async () => { throw Error('relay framing failed'); } });
+  await assert.rejects(failed.transport.open({ peer: { identity: remote, route: route(remote) } }, options()), /relay framing failed/);
+  assert.deepEqual(failed.calls.map(call => call[0]), ['rendezvous', 'invite', 'closeSignaling', 'relay', 'closeRelay']);
 });

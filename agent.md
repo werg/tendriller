@@ -34,19 +34,21 @@ Install the session's one participation controller with the host introduction ad
 
 ```js
 import { createPeerIntroductions } from '@tendriller/core/peers';
+import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 const participation = await session.participate({
   control,
   ...createPeerIntroductions({
     peers: host.peers,
     identity: session.deviceId,
-    openConnection, // The native or owned Worker raw RTC opener.
+    openDirectConnection, // The native or owned Worker raw RTC opener.
+    openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
   }),
 });
 ```
 
-The session owns discovery, connection retries, authentication, reconnect grace, candidate policy and recovery. The host adapter only supplies routing and SDP introduction mechanics. Use the controller's status to show connection progress and any exact recovery proposal requiring approval. Do not add application-level election or retry loops. See [peer participation](docs/PEER_CONNECTIONS.md) for the environment openers and lifecycle.
+The session owns discovery, connection retries, authentication, reconnect grace, candidate policy and recovery. Each host-adapter attempt tries direct RTC, then the opaque WebSocket relay after direct failure or its five-second budget. Both use the same authenticated encrypted peer channels and application session. Use the controller's status to show connection progress and any exact recovery proposal requiring approval. Do not add application-level election or retry loops. See [peer participation](docs/PEER_CONNECTIONS.md) for the environment openers and lifecycle.
 
-Ordinary commands, queries, signals and replication require no host control call. Coarse availability-lease renewal is separate lifecycle traffic, independent of application edits.
+Ordinary commands, queries, signals and replication require no host control call. Direct traffic bypasses the host; relay traffic consumes host bandwidth and requires the relay to remain available. Coarse availability-lease renewal is separate lifecycle traffic, independent of application edits.
 
 ## Compose the browser runtime
 
