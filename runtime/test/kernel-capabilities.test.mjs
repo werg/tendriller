@@ -28,7 +28,7 @@ async function environment({ peer = false } = {}) {
   const window = Object.assign(new EventTarget(), { isSecureContext: true });
   const mediaDevices = Object.assign(new EventTarget(), { getUserMedia() { throw Error('must not request media'); } });
   const status = () => Object.assign(new EventTarget(), { state: 'granted' });
-  const context = { URL, window, document: {}, screen: {}, location: new URL('https://fixture.test/page/'),
+  const context = { URL, AbortController, AbortSignal, window, document: {}, screen: {}, location: new URL('https://fixture.test/page/'),
     navigator: { userAgent: 'Fixture', mediaDevices, permissions: { query({ name }) {
       if (name === 'camera' && pendingCamera) { const reply = pendingCamera; pendingCamera = undefined; return reply; }
       return Promise.resolve(status());

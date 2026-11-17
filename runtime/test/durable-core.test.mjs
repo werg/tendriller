@@ -258,10 +258,13 @@ test("application cursor reads use validated relative query URLs and keep revisi
   const calls = [];
   const env = await environment({ fetcher: async url => {
     calls.push(url);
-    if (url.endsWith("application/view")) return json({ revision: "view-1", state: { task: 1 }, scopes: [] });
-    return json({ transactions: [], scannedThrough: "cursor-2", hasMore: false, revision: new URL(url, "https://fixture.test").searchParams.get("revision") || "view-2" });
+    const request = new URL(url, "https://fixture.test");
+    if (request.pathname.endsWith("/application/view")) return json({ view: request.searchParams.get("view"),
+      revision: "view-1", finalRevision: "view-1", state: { task: 1 }, scopes: [] });
+    return json({ transactions: [], scannedThrough: "cursor-2", hasMore: false, revision: request.searchParams.get("revision") || "view-2" });
   } });
   const backend = env.core.application.backend, view = await backend.readView();
+  assert.equal(view.view, "final"); assert.equal(view.finalRevision, "view-1");
   const batch = await view.readEvents({ cursor: "opaque/a+b=", topics: ["tasks"] });
   assert.equal(batch.revision, view.revision); assert.equal(view.query("state").task, 1);
   assert.equal(new URL(calls.at(-1), "https://fixture.test").searchParams.get("cursor"), "opaque/a+b=");
@@ -269,6 +272,10 @@ test("application cursor reads use validated relative query URLs and keep revisi
   for (const path of ["../outside?ok=1", "/outside?ok=1", "https://elsewhere.test?ok=1", "%2e%2e/outside?ok=1", "application/view#fragment"])
     await assert.rejects(env.core.request(path), /relative path/);
   view.release(); assert.throws(() => view.query("state"), { code: "view_released" });
+  const local = await backend.readView({ view: "local" });
+  assert.equal(local.view, "local"); assert.equal(local.finalRevision, "view-1");
+  assert.equal(new URL(calls.at(-1), "https://fixture.test").searchParams.get("view"), "local");
+  local.release();
 });
 
 test("malformed or lost application receipts retain exact authored work across reload", async () => {
