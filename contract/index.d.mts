@@ -133,6 +133,8 @@ export type RuntimeConfiguration = {
   application?: import("./application.mjs").ApplicationSelection;
   /** Public resident introduction addresses supplied with the initial page. */
   peerBootstrap?: import("./peers.mjs").PeerBootstrap;
+  /** Signed code selection is independent of the application's recoverable data history. */
+  peerRelease?: import('./releases.mjs').ReleaseBootstrap;
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }

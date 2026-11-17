@@ -1,6 +1,8 @@
 import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeerDirectory, validatePeerId, validatePeerTtl } from './discovery.mjs';
 export * from './discovery.mjs';
 import { createPeerControlsClient } from './peer-controls.mjs';
+import { createReleaseClient, RELEASE_SOCKET_PROTOCOL } from './releases.mjs';
+export * from './releases.mjs';
 export { createPeerControlsClient } from './peer-controls.mjs';
 import { createPeerInvitationListener, validatePeerInvitation, PEER_INVITATION_PROTOCOL } from './invitations.mjs';
 export * from './invitations.mjs';
@@ -126,7 +128,7 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
 }
 
 /** Shared browser/agent host client. Construction performs no network work. */
-export function createPeersClient({ base, request, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
+export function createPeersClient({ base, request, raw, initialBootstrap, initialRelease, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
   const prefix = base.replace(/\/+$/, '');
   const socketUrl = (path, code) => {
     const url = new URL(prefix + '/' + path);
@@ -138,6 +140,9 @@ export function createPeersClient({ base, request, initialBootstrap, protocols =
   };
   return Object.freeze({
     ...createPeerControlsClient(request),
+    releases: createReleaseClient({ request, raw, initial: initialRelease,
+      openWatch: () => socket(socketUrl('peers/releases/socket', 'invalid_release').href,
+        [RELEASE_SOCKET_PROTOCOL, ...protocols.filter(value => value !== PEER_RENDEZVOUS_PROTOCOL)]) }),
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },

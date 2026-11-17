@@ -26,6 +26,7 @@ export interface PeerRendezvous {
   close(): void;
 }
 export interface PeersClient extends PeerControlsClient {
+  readonly releases: import('./releases.mjs').ReleaseClient;
   /** Immutable initial-page snapshot; reading it performs no host request. Null for clients without an injected snapshot. */
   readonly initialBootstrap: PeerBootstrap | null;
   /** Explicitly fetch current host configuration. Ordinary peer connection/recovery uses initialBootstrap. */
@@ -49,7 +50,9 @@ export declare function createPeerRendezvous(socket: PeerSocket, options?: PeerR
 export declare function createPeersClient(options: {
   readonly base: string;
   readonly initialBootstrap?: PeerBootstrap;
-  readonly request: (path: string, options?: { method?: 'PUT' | 'DELETE' | 'POST'; body?: unknown }) => Promise<unknown>;
+  readonly initialRelease?: import('./releases.mjs').ReleaseBootstrap;
+  readonly request: (path: string, options?: { method?: 'GET' | 'PUT' | 'DELETE' | 'POST'; body?: unknown; signal?: AbortSignal }) => Promise<unknown>;
+  readonly raw: import('./releases.mjs').ReleaseRawRequest;
   readonly protocols?: readonly string[];
   readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
 }): PeersClient;
@@ -59,3 +62,4 @@ import type { PeerControlsClient } from './peer-controls.mjs';
 export * from './peer-controls.mjs';
 import type { PeerInvitation, PeerInvitationOptions, PeerInvitationListener } from './invitations.mjs';
 export * from './invitations.mjs';
+export * from './releases.mjs';
