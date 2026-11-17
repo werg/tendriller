@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/werg/chronolog-db",
+  "sourceCommit": "4efa3546f930734328879bdca3984282bd19156b",
+  "sourceTree": "2924663de85fcf9a709377c99de3a49c41bc026b",
+  "sourceDirty": false,
+  "buildCommand": "node tools/package-membership.mjs",
+  "package": "@chronolog/membership",
+  "version": "0.0.0-4efa3546",
+  "artifact": "chronolog-membership-4efa3546.tgz",
+  "bytes": 60663,
+  "sha256": "9f293978c1b43eea3998d0ef75cbe1911f1ee5eafdf47da6d303b053ea0d9008",
+  "entrySha256": {
+    "index.mjs": "d712162b3fe0c3bcfce3d518c2f43b5f4f329df9f04719ac0bb31e5f2b1aa403",
+    "index.d.ts": "b3d3c70d1f811b76d52741bb176e206211561c47ce5939b928fa487b49e48317"
+  },
+  "runtimeInputs": 65,
+  "purpose": "Portable root membership with explicit writer rights, atomic revocation and key epochs, and fixed validator authority confined to genesis rather than capability revisions."
+}

@@ -32,8 +32,10 @@ execution order.
 
 ## Installation and readiness
 
-`@tendriller/core/application` exports the dependency-free public contracts.
-Tendriller does not import Chronolog, SQL, or application UI code.
+`@tendriller/core/application` exports dependency-free application contracts; that
+boundary imports no Chronolog, SQL or application UI code. The host's separate
+generation-control service embeds Chronolog's portable verifier, not its replica
+or SQL runtime. That control service does not implement a peer-generation session.
 
 ```js
 // The page's composition module imports its selected public adapter.
@@ -64,8 +66,9 @@ payload exchange belong to the replica. Explicit HTTP requests, membership,
 rendezvous, publication saving and existing blob URLs remain available.
 `publication.saveOffline()` explicitly registers offline publication support.
 Automatic hosted publication health is a hosted-runtime facility; peer readiness
-belongs to the application backend. `tendril.connected` on a peer page indicates
-that its selected backend is installed, not that any remote peer is reachable.
+belongs to the application backend. `tendril.connected` stays false on a peer page
+because it has no hosted application connection. `application.available` and
+`application.ready()` describe backend installation, not remote peer reachability.
 
 ## Small public contract
 
@@ -333,6 +336,11 @@ accounted program/receipt/event bytes. Exhaustion is an explicit `history_quota`
 refusal; earlier exact retries remain available.
 
 ## Peer-generation applied results
+
+The public types below describe the intended generation-scoped backend. Hosted
+control APIs are implemented, but Chronolog's peer-generation replica/session
+and the adapter supplying these application results are not yet shipped. Use
+the chronological backend above for the current `local` / `final` implementation.
 
 `peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that view. Requests for a final view fail explicitly because this profile does not provide irrevocable settlement.
 

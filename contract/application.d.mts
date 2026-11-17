@@ -1,6 +1,10 @@
 /** Host selection is independent of a database's membership and authority keys. */
 export type ApplicationSelection = { readonly kind: 'cloudflare'; readonly id: string } | { readonly kind: 'peer'; readonly id: string };
-export interface ApplicationSubmitOptions { readonly operationId: string; readonly basedOn?: string }
+export interface ApplicationSubmitOptions {
+  readonly operationId: string;
+  /** Profile-supported ordering barrier. Unsupported profiles reject it; they never silently ignore it. */
+  readonly basedOn?: string;
+}
 export interface ApplicationOperationIdentity { readonly operationId: string }
 export interface FinalityOperationIdentity extends ApplicationOperationIdentity {
   readonly proposalId: string;

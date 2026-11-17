@@ -4,8 +4,23 @@ Tendriller connects an authenticated page to an agent through shared state, even
 
 ## Select the application history first
 
-For an ordinary browser or agent peer application, create the page with
-`application:{kind:'peer',id:'<64 lowercase hex characters>'}` and use the public
+For implemented peer applications, explicitly select a chronological Chronolog
+backend and install its public Tendriller adapter. Native operation handles use
+`local()` and `final()`; both return accepted or rejected outcomes. Inspect the
+final outcome before dependent work. Queries and views default to the current
+applied final prefix without waiting for pending writes; request local previews
+explicitly. Omitting the application selection uses the hosted Cloudflare
+backend. See [current application backends](docs/APPLICATION_BACKENDS.md).
+
+### Proposed generation session
+
+The host generation-control registry, verifier and lifecycle calls are
+implemented. The `peer-generation-v1` replica, command data path and browser/native
+session are not yet shipped. The following session composition is the target
+design; configuring host controls does not make that runtime available.
+
+The proposed composition creates a page with
+`application:{kind:'peer',id:'<64 lowercase hex characters>'}` and would use a public
 Chronolog `peer-generation-v1` session. A replaceable coordinating peer orders
 commands; the host selects a generation only at creation or a handover. No native
 resident process is required. The session owns signed attempts, history,
@@ -18,17 +33,19 @@ Control configuration retains the owned host publication automatically; this is
 persistent control metadata, not a continuously running application process.
 See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
 
-Install the session's public Tendriller backend once. `tendril.application.ready()`
+When available, install the session's public Tendriller backend once. `tendril.application.ready()`
 and `available` describe installation; the session reports actual readiness.
 Use applied coherent views and generation-scoped outcomes. A valid recovery may
 abandon a recent suffix, and deliberate reapplication creates a new signed attempt
 with current guards. Several minutes of recovery freshness is a measured target,
 not a guarantee when peers or their data disappear.
 
-Current-generation commands, queries, live signals and replication continue with
-the host unavailable. If the coordinator also disappears, keep local signed work
+The intended session keeps current-generation commands, queries, live signals
+and replication working with the host unavailable. If the coordinator also disappears, keep local signed work
 while a new selected generation waits for host control availability. There is no
 fallback to another backend and no automatic old-branch merge.
+
+### Choose primitives and permissions
 
 Choose the least durable mechanism that satisfies the task:
 
@@ -54,17 +71,19 @@ iterator or abort its signal when finished. Expire presence/typing and clear
 previews on disconnect. A successful
 send is not a remote acknowledgement. See [live signals](docs/APPLICATION_SIGNALS.md).
 
-An applied result identifies its generation, sequence and accepted/rejected outcome.
+In the proposed generation session, an applied result identifies its generation,
+sequence and accepted/rejected outcome.
 Exact retries preserve the original signed attempt and admission generation.
 Cancellation or timeout stops a waiter; it does not reject or cancel the command.
 An adopted operation retains its identity and result. An excluded operation becomes
 `abandoned` or `needsReapply`; inspect it, reread the current state, and deliberately
 create a new guarded attempt when reapplication is appropriate.
 
-Observe `application.changes({view:'applied',signal})`, capture an applied
-`readView()` for related SQL/events/outcomes, and release it. Recovery publishes a
+That session will expose `application.changes({view:'applied',signal})` and a captured
+applied `readView()` for related SQL/events/outcomes. Release each captured view.
+Recovery is required to publish a
 coherent reset with known abandoned work and an explicit unknown-loss flag.
-The default profile has no final revision and cannot feed automatic irreversible
+The generation profile has no final revision and cannot feed automatic irreversible
 effect workers. Reducers and projections remain free of external effects.
 
 An agent, membership administrator, finality signer and SQL schema administrator
@@ -162,7 +181,7 @@ For the hosted Cloudflare runtime, a page's health report determines whether the
 Peer pages use the quiet runtime, which sends no automatic host health report.
 Application readiness and synchronization come from the selected backend.
 `tendril.application.ready()` waits for its installation; replica progress reports
-whether the selected generation, complete history and keys are ready. An installed adapter or RTC link alone is not synchronized state.
+whether the selected profile, complete history and keys are ready. An installed adapter or RTC link alone is not synchronized state.
 
 ## Author the interaction
 

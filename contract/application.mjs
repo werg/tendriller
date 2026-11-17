@@ -133,6 +133,7 @@ function validateEventBatch(value, applicationId) {
 export function createCloudflareApplicationBackend({ id, request, submit: enqueue, onChange }) {
   applicationSelection({ kind: 'cloudflare', id });
   const submit = async (program, options) => {
+    if (options?.basedOn !== undefined) fail('unsupported_barrier', 'The hosted-json-v1 profile does not support ordering barriers');
     const exact = validateCloudflareProgram(program);
     assertApplicationOperationId(options?.operationId);
     return validateApplicationOperation(await (enqueue ? enqueue(exact, options) : request('application/changes', { method: 'POST', body: { program: exact, operationId: options.operationId } })), options.operationId, { terminal: !enqueue });

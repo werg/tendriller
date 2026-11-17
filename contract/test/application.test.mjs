@@ -32,6 +32,22 @@ test('conversation helpers preserve message and retry identities without perform
   await publishConversation({ publish: async (...args) => { calls.push(args); return { id: 'p' }; } }, { messageId: 'message-1', text: 'Hello', inReplyTo: 'message-0' }, { operationId: 'send-1' });
   assert.deepEqual(calls, [['conversation', { type: 'message.posted', version: 1, messageId: 'message-1', text: 'Hello', inReplyTo: 'message-0' }, { operationId: 'send-1' }]]);
 });
+for (const queued of [false, true]) for (const method of ['submit', 'events.publish']) {
+  test(`Cloudflare ${method} rejects an unsupported ordering barrier before ${queued ? 'queueing' : 'requesting'}`, async () => {
+    let requests = 0, enqueues = 0;
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page',
+      request: async () => { requests++; return { operationId: 'guarded', proposalId: 'p', status: 'final', outcome: 'accepted' }; },
+      ...(queued ? { submit: async () => { enqueues++; return { operationId: 'guarded', proposalId: '', status: 'queued' }; } } : {}),
+    });
+    const options = { operationId: 'guarded', basedOn: 'captured-revision' };
+    const submission = method === 'submit'
+      ? backend.submit({ version: 1, expected_generations: {}, steps: [{ kind: 'emit', topic: 'tasks', payload: null }] }, options)
+      : backend.events.publish('tasks', null, options);
+    await assert.rejects(submission, { name: 'ApplicationError', code: 'unsupported_barrier' });
+    assert.equal(requests, 0);
+    assert.equal(enqueues, 0);
+  });
+}
 test('Cloudflare captured read views retain their event prefix and release explicitly', async () => {
   const calls = [];
   const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async path => {

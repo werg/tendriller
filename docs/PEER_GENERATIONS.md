@@ -1,14 +1,23 @@
 # Peer-generation controls
 
-The default peer profile is Chronolog's authenticated `peer-generation-v1` policy.
-A replaceable peer orders ordinary commands. Tendriller retains the small monotonic
+**Implementation status:** Tendriller implements the hosted control registry and
+its public SDK, runtime and MCP lifecycle calls. Chronolog supplies the portable
+control verifier. The end-to-end `peer-generation-v1` replica, command data path,
+browser/native session and recovery integration are not yet shipped. Configuring
+the host controls does not install that missing session or qualify its behavior.
+Use the [current application backends](APPLICATION_BACKENDS.md) for implemented
+chronological `local` / `final` views and operation outcomes.
+
+The proposed default peer profile is Chronolog's authenticated `peer-generation-v1`
+policy. Its intended session lets a replaceable peer order ordinary commands.
+Tendriller retains the small monotonic
 control history and atomically selects the next generation at creation, handover,
 crash takeover, or a restrictive control change. It does not receive application
 commands, execute SQL, sign batches, or require a hosted data copy.
 
 The normative authority and recovery rules live in Chronolog's
 [peer-generation ADR](https://github.com/werg/chronolog-db/blob/feat/portable-peer-core/docs/peer-generation-v1.md).
-This host embeds the same portable verifier used by peers, with exact source and
+This host embeds the portable verifier required by future peer replicas, with exact source and
 module digests exposed in `@tendriller/engine/peer-generation-provenance`.
 
 ## Publication and enrollment
@@ -78,7 +87,11 @@ candidate actually has all bodies or has replayed SQL correctly. The Chronolog
 session must validate its complete recovery point before requesting selection.
 The host need not see SQL or encrypted command bodies to enforce selected ancestry.
 
-## Separation from normal application work
+## Intended session behavior and implemented host boundaries
+
+The command, replication and recovery behavior in this section is the target
+contract for the pending peer session. The discovery and host MCP calls described
+here are implemented; they do not themselves provide that session.
 
 Use `peers.discover()` and coalesced `peers.advertise()` on join, reconnect or
 availability changes. Directory eligibility and coverage are hints; they cannot

@@ -1,9 +1,17 @@
 # Peer applications: replaceable peers and a quiet host
 
+**Implementation status:** the hosted generation-control registry, lifecycle API
+and portable authority verifier are implemented. The generation-scoped replica,
+command data path and browser/native session described below remain target
+architecture. Their recovery and host-outage guarantees are not yet qualified by
+a shipped session. The [current application backends](APPLICATION_BACKENDS.md)
+retain their chronological `local` / `final` contract; adding host controls does
+not change those histories or install a peer-generation runtime.
+
 ## Ownership and trust
 
 A peer application selects one authenticated Chronolog history profile. The
-default `peer-generation-v1` delegates ordering to a replaceable coordinating
+proposed default `peer-generation-v1` delegates ordering to a replaceable coordinating
 peer. Browser, agent and optional native processes are ordinary participants.
 The creator is not a permanent authority, and a long-running process gains no
 administrative or finality rights merely by remaining online.
@@ -101,7 +109,7 @@ adapter is installed; actual session readiness and recovery remain separate.
 `tendril.connected` describes the hosted application connection and stays false
 in peer mode.
 
-The default public view is `applied` and contains a selected generation and one
+The proposed generation session's default view is `applied` and contains a selected generation and one
 coherent revision for SQL, events and outcomes. It has no `finalRevision`.
 Operations distinguish saved, applied and abandoned work. Recovery emits an
 explicit coherent reset; stale event cursors cannot pretend an excluded history

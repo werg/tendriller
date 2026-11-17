@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { env } from 'cloudflare:workers';
 import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, generationStartRoot,
   type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
 import { api, apiJson, create, inDO, req, type Handle } from './helpers';
@@ -99,6 +100,44 @@ it('activates restrictive controls atomically, enforces key rotation, and keeps 
   expect(authority.grant(a.publicKey)?.writer).toBe(false);
   expect(authority.control.payload.epoch).toBe(1);
   expect((await select(h, a, b, authority.current, 'revoked-a')).response.status).toBe(403);
+});
+
+it('revokes an inactive enrolled account without granting it new rights or forgetting its binding', async () => {
+  const owner = await createPeerIdentity(), guest = await createPeerIdentity(), newDevice = await createPeerIdentity();
+  const page = await createTestPage({ application: { kind: 'peer', id: applicationId() } });
+  const participant = await page.participant();
+  const config = { ...configuration([owner, guest]), members: [
+    { grant: grant(owner) }, { grant: grant(guest), accountId: participant.account },
+  ] };
+  const initial = await (await page.api('PUT', 'peers/application', config)).json() as AuthorityBundle;
+  const first = await signTransitionRequest({ applicationId: initial.descriptor.payload.applicationId, profile: 'peer-generation-v1',
+    policy: 'eligible-members-v1', transitionId: 'initial', requester: owner.publicKey, coordinator: owner.publicKey,
+    expectedGeneration: null, controlRevision: 0, reason: 'create', base: null }, owner);
+  const g0 = await (await page.api('POST', 'peers/generations', { request: first })).json() as SignedGeneration;
+  await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), participant.account).run();
+  const request = await signTransitionRequest({ ...first.payload, transitionId: 'revoke-inactive', expectedGeneration: g0.id,
+    reason: 'control-change', controlRevision: 1,
+    base: { point: { generation: g0.id, sequence: 0, root: await generationStartRoot(g0) }, receipt: null, bridge: [] } }, owner);
+  const control = { epoch: 1, keyDigest: '89'.repeat(32), recoveryFloor: null,
+    grants: [grant(owner), grant(guest, { reader: false, writer: false, coordinator: false, recovery: false, administrator: false })] };
+  expect((await page.api('POST', 'peers/generations', { request, control: { ...control, grants: [grant(owner), grant(guest)] } })).status).toBe(403);
+  expect((await page.api('POST', 'peers/generations', { request, control: { ...control,
+    accounts: [{ publicKey: newDevice.publicKey, accountId: participant.account }] } })).status).toBe(403);
+  expect((await (await page.api('GET', 'peers/application')).json() as AuthorityBundle).controls).toHaveLength(1);
+  const response = await page.api('POST', 'peers/generations', { request, control });
+  expect(response.status).toBe(200);
+  const selected = await response.json();
+  await page.restart();
+  expect(await (await page.api('POST', 'peers/generations', { request, control })).json()).toEqual(selected);
+  const authority = await verifyAuthorityBundle(await (await page.api('GET', 'peers/application')).json() as AuthorityBundle);
+  expect(authority.control.payload.epoch).toBe(1);
+  expect(authority.grant(guest.publicKey)).toEqual(control.grants[1]);
+  const replacement = await page.participant();
+  const next = await signTransitionRequest({ ...request.payload, transitionId: 'reassign-revoked-device',
+    expectedGeneration: authority.current!.id, controlRevision: 2,
+    base: { point: { generation: authority.current!.id, sequence: 0, root: await generationStartRoot(authority.current!) }, receipt: null, bridge: [] } }, owner);
+  expect((await page.api('POST', 'peers/generations', { request: next,
+    control: { ...control, accounts: [{ publicKey: guest.publicKey, accountId: replacement.account }] } })).status).toBe(409);
 });
 
 it('fences a missing control identity instead of silently generating a replacement', async () => {

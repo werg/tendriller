@@ -194,21 +194,27 @@ export async function handlePeerGenerations(t: Tendril, req: Request, path: stri
           if (!Number.isSafeInteger(revision) || revision < 1 || revision > bundle.controls.length) throw new HttpError(409, 'peer_control_revision_mismatch');
           const previous = bundle.controls[revision - 1]!;
           bindings = t.db.get<AccountBinding[]>(ACCOUNTS, []);
+          const newlyEnrolled = new Set<string>();
           if (change.accounts !== undefined) {
             for (const binding of accounts(change.accounts)) {
               const enrolled = bindings.find(row => row.publicKey === binding.publicKey);
               if (enrolled && enrolled.accountId !== binding.accountId) throw new HttpError(409, 'peer_account_binding_immutable', 'A device key retains its original enrollment account');
-              if (!enrolled) bindings = [...bindings, binding];
+              if (!enrolled) { bindings = [...bindings, binding]; newlyEnrolled.add(binding.publicKey); }
             }
           }
           if (bindings.length > 1024) throw new HttpError(429, 'peer_account_binding_full');
-          await checkAccounts(t, bindings);
           control = await signControlRevision({ applicationId: bundle.descriptor.payload.applicationId,
             profile: PEER_GENERATION_PROFILE, policy: PEER_GENERATION_POLICY, revision: previous.payload.revision + 1,
             previous: await peerDigest(previous), epoch: change.epoch, keyDigest: change.keyDigest,
             grants: change.grants, recoveryFloor: change.recoveryFloor }, state.signer!);
           if (!control.payload.grants.every(grant => bindings!.some(binding => binding.publicKey === grant.publicKey)))
             throw new HttpError(400, 'peer_account_binding_required', 'Every granted device needs its authenticated account binding');
+          const granted = new Set(control.payload.grants.filter(grant =>
+            grant.reader || grant.writer || grant.coordinator || grant.recovery || grant.administrator).map(grant => grant.publicKey));
+          // Historical bindings preserve enrollment identity and exact retries.
+          // An inactive former participant must not prevent its own revocation;
+          // new enrollments and devices retaining any rights still need access.
+          await checkAccounts(t, bindings.filter(binding => newlyEnrolled.has(binding.publicKey) || granted.has(binding.publicKey)));
         }
         state.guard = () => authorizeRequester(t, principal, request); state.check = () => freshAccess(t, principal); state.pendingAccounts = bindings;
         state.pendingFingerprint = { key: fingerprintKey, value: fingerprint };
