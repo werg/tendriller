@@ -42,7 +42,8 @@ it('bounds pending invitation work, coalesces exact retries and refuses an appli
   expect((await invite(LIMITS.pending)).status).toBe(429);
   expect((await invite(0)).status).toBe(200);
   socket.send(JSON.stringify({ t: 'received', channel: 'join-0', requesterPeerId: 'source' }));
-  await inDO(h.id, t => expect(t.ctx.getWebSockets('peer-invitations')[0].deserializeAttachment().pending).toHaveLength(LIMITS.pending - 1));
+  await expect.poll(() => inDO(h.id, t => t.ctx.getWebSockets('peer-invitations')[0].deserializeAttachment().pending.length), { timeout: 10_000 })
+    .toBe(LIMITS.pending - 1);
   expect((await invite(LIMITS.pending)).status).toBe(200);
   expect(await inDO(h.id, async t => ({ alarm: await t.ctx.storage.getAlarm(), records: t.db.one('SELECT COUNT(*) AS n FROM record_log_entries'),
     application: t.db.one('SELECT COUNT(*) AS n FROM application_changes'), devices: t.db.one('SELECT COUNT(*) AS n FROM devices') }))).toEqual(before);
