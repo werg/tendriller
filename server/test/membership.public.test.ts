@@ -66,7 +66,7 @@ it('provisions a durable membership root with explicitly separate schema and nat
   const genesis = decodeSignedGenesis(decode(first.descriptor!.genesis));
   expect(bytes(genesis.manifest.rootAdminPublicKey)).not.toBe(input.schemaAdministratorPublicKey);
   expect(bytes(genesis.manifest.schemaAdminPublicKey)).toBe(input.schemaAdministratorPublicKey);
-  expect(genesis.manifest.initialCapabilities.map(capability => capability.role)).toEqual(['administrator']);
+  expect(genesis.manifest.initialCapabilities.map(capability => capability.role)).toEqual([]);
   expect(genesis.manifest.historyPolicy).toMatchObject({ kind: 'coordinated', historyId: input.nativeAuthority.historyId,
     authorityPublicKey: decode(input.nativeAuthority.publicKey) });
   expect(await body(await page.api('PUT', 'members', input))).toEqual(first);
@@ -109,6 +109,16 @@ it('requires an owned resident peer page and a complete explicit public configur
   expect((await page.api('PUT', 'members', missing)).status).toBe(400);
   expect((await page.api('PUT', 'members', { ...config(), nativeAuthority: { ...config().nativeAuthority, url: 'http://example.test/' } })).status).toBe(400);
   expect((await body<MembershipInfo>(await page.api('GET', 'members'))).descriptor).toBeNull();
+});
+
+it('requires explicit writer rights before queueing an approval', async () => {
+  const page = await createTestPage({ application: { kind: 'peer', id: 'membership' }, lifetime: 'resident' });
+  await page.api('PUT', 'members', config());
+  const input = { operationId: 'explicit-rights', requestId: 'r_' + 'a'.repeat(64), grantFullHistory: true };
+  expect((await page.api('POST', 'members/approve', { ...input, roles: ['writer'] })).status).toBe(400);
+  expect((await page.api('POST', 'members/approve', { ...input, roles: ['reader'],
+    writerProgram: { sql: true, topics: [], signals: [] } })).status).toBe(400);
+  expect((await body<MembershipInfo>(await page.api('GET', 'members'))).pendingActions).toBe(0);
 });
 
 it('keeps a stalled enrollment body outside the administration queue and rechecks access when it arrives', async () => {

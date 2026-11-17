@@ -89,6 +89,11 @@ Use exact topic names or `'*'` for all topics. A chat application can instead gr
 `topics: ['chat/message']`.
 `initialMembers` is optional and contains public keys only. Each initial member
 receives a reader capability; `writerProgram` explicitly adds writer rights.
+There is no grantable membership-administrator capability: the signed genesis
+root key and its administration feed control membership. The root receives no
+implicit reader, writer, validator or SQL rights. An approval that includes
+`writer` must specify its SQL, event-topic and signal-topic rights; omitting the
+program never grants SQL. A reader-only approval cannot carry writer rights.
 
 Configuration is immutable for the page. A retry with the same configuration
 returns the original signed genesis. Provisioning stores the root and descriptor

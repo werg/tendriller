@@ -350,6 +350,8 @@ function parseApproval(value: unknown): MemberApproval {
       typeof value.requestId !== 'string' || !/^r_[0-9a-f]{64}$/.test(value.requestId) || !Array.isArray(value.roles) ||
       !value.roles.length || value.roles.length > 2 || value.roles.some(role => !['reader', 'writer'].includes(role)) ||
       typeof value.grantFullHistory !== 'boolean') throw new HttpError(400, 'bad_request', 'Expected one explicit membership approval');
+  if (value.roles.includes('writer') !== (value.writerProgram !== undefined))
+    throw new HttpError(400, 'bad_request', 'Writer approval requires explicit SQL, event and signal rights; reader-only approval cannot carry them');
   return { operationId: operationId(value.operationId), requestId: value.requestId, roles: [...new Set(value.roles)].sort() as MemberApproval['roles'],
     grantFullHistory: value.grantFullHistory, ...(value.writerProgram === undefined ? {} : { writerProgram: program(value.writerProgram) }) };
 }

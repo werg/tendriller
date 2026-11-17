@@ -23,6 +23,7 @@ export interface MembershipInfo {
 }
 export interface MemberApproval {
   operationId: string; requestId: string; roles: ('reader' | 'writer')[];
+  /** writerProgram is required exactly when roles includes writer; no implicit SQL or signal grant. */
   grantFullHistory: boolean; writerProgram?: MemberProgram;
 }
 export interface MembersClient {
