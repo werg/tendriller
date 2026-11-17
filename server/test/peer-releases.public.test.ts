@@ -280,3 +280,33 @@ it('uses the same signed release operations through public MCP without hosting a
   expect((await call('release_state')).activations).toEqual([selected]);
   expect(await (await req(h.page_url)).text()).toContain('MCP signed release');
 });
+
+it('bounds aggregate upload buffers before reading while policy changes remain available', async () => {
+  const applicationId = releaseApplicationId(), signer = await createPeerIdentity();
+  const h = await create({ application: { kind: 'peer', id: applicationId }, listener: false });
+  const policy = await releasePolicy(h, [signer]);
+  const bytes = new TextEncoder().encode('bounded upload'), digest = await sha256Hex(bytes);
+  await inDO(h.id, async t => {
+    const principal = await authenticateAgentToken(t, h.token);
+    let enter!: () => void, resume!: () => void, extraReads = 0;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { resume = resolve; });
+    const path = `peers/releases/content/${digest}`;
+    const stream = new ReadableStream<Uint8Array>({ async pull(controller) {
+      enter(); await held; controller.enqueue(bytes); controller.close();
+    } }, { highWaterMark: 0 });
+    const pending = handlePeerReleases(t, new Request('https://example.test/' + path, { method: 'PUT', body: stream }), path, principal);
+    try {
+      await entered;
+      const extra = new Request('https://example.test/' + path, { method: 'PUT', body: new ReadableStream({ pull() { extraReads++; } }, { highWaterMark: 0 }) });
+      await expect(handlePeerReleases(t, extra, path, principal)).rejects.toMatchObject({ status: 429, code: 'release_upload_busy' });
+      expect(extraReads).toBe(0);
+      const result = await handlePeerReleases(t, new Request('https://example.test/peers/releases/policy', { method: 'PUT', body: JSON.stringify({
+        requestId: 'freeze-during-upload', expectedPolicy: await peerDigest(policy), publishers: [],
+      }) }), 'peers/releases/policy', principal);
+      expect(result.status).toBe(200);
+      resume(); expect((await pending).status).toBe(200);
+      expect((await handlePeerReleases(t, new Request('https://example.test/' + path, { method: 'PUT', body: bytes }), path, principal)).status).toBe(200);
+    } finally { resume(); await pending.catch(() => {}); }
+  });
+});

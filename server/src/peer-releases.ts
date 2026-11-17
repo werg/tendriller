@@ -28,7 +28,7 @@ interface CommitContext {
   check?: () => Promise<void>;
   committed?: (key: string) => void;
 }
-interface HostState { admitted: number; store: PeerStore; registry?: Promise<ReleaseRegistry> }
+interface HostState { admitted: number; uploadBytes: number; store: PeerStore; registry?: Promise<ReleaseRegistry> }
 const contexts = new AsyncLocalStorage<CommitContext>();
 const hosts = new WeakMap<Tendril, HostState>();
 
@@ -77,7 +77,7 @@ async function activeAccounts(t: Tendril, bindings: readonly AccountBinding[]): 
 function host(t: Tendril): HostState {
   let state = hosts.get(t);
   if (state) return state;
-  state = { admitted: 0, store: {
+  state = { admitted: 0, uploadBytes: 0, store: {
     async get(key) {
       const row = t.db.one<{ value: ArrayBuffer }>('SELECT value FROM membership_records WHERE key=?', key);
       return row ? new Uint8Array(row.value).slice() : null;
@@ -101,6 +101,18 @@ function host(t: Tendril): HostState {
     },
   } };
   hosts.set(t, state); return state;
+}
+
+/** Reserve before reading; undeclared bodies take the full slot and cannot exceed it. */
+function reserveUpload(t: Tendril, request: Request): { bytes: number; release(): void } {
+  const declared = request.headers.get('Content-Length');
+  const bytes = declared === null ? RELEASE_LIMITS.fileBytes : Number(declared);
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new HttpError(400, 'release_content_length');
+  if (bytes > RELEASE_LIMITS.fileBytes) throw new HttpError(413, 'release_content_limit');
+  const state = host(t);
+  if (state.uploadBytes + bytes > RELEASE_LIMITS.fileBytes) throw new HttpError(429, 'release_upload_busy');
+  state.uploadBytes += bytes;
+  return { bytes, release() { state.uploadBytes -= bytes; } };
 }
 
 async function* content(t: Tendril, asset: ReleaseAsset, signal?: AbortSignal): AsyncIterable<Uint8Array> {
@@ -252,15 +264,18 @@ async function processRelease(t: Tendril, req: Request, path: string, principal:
   const contentId = /^peers\/releases\/content\/([0-9a-f]{64})$/.exec(path)?.[1];
   if (contentId && method === 'PUT') {
     mayUpload(t, principal);
-    const body = await readBody(req, RELEASE_LIMITS.fileBytes);
-    if (await sha256Hex(body) !== contentId) throw new HttpError(422, 'release_content_digest_mismatch');
-    await freshAccess(t, principal); mayUpload(t, principal);
-    const result = await storeContent(t, body, 'application/octet-stream', hash => {
-      mayUpload(t, principal);
-      t.db.run('INSERT INTO page_release_content(hash,size,created_at) VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET created_at=excluded.created_at', hash, body.byteLength, t.now());
-    }, async () => { await freshAccess(t, principal); mayUpload(t, principal); });
-    await freshAccess(t, principal);
-    return json({ digest: result.hash, bytes: result.size });
+    const reservation = reserveUpload(t, req);
+    try {
+      const body = await readBody(req, reservation.bytes, 30_000);
+      if (await sha256Hex(body) !== contentId) throw new HttpError(422, 'release_content_digest_mismatch');
+      await freshAccess(t, principal); mayUpload(t, principal);
+      const result = await storeContent(t, body, 'application/octet-stream', hash => {
+        mayUpload(t, principal);
+        t.db.run('INSERT INTO page_release_content(hash,size,created_at) VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET created_at=excluded.created_at', hash, body.byteLength, t.now());
+      }, async () => { await freshAccess(t, principal); mayUpload(t, principal); });
+      await freshAccess(t, principal);
+      return json({ digest: result.hash, bytes: result.size });
+    } finally { reservation.release(); }
   }
   if (contentId && method === 'GET') {
     const record = t.db.one<{ size: number }>('SELECT size FROM page_release_content WHERE hash=?', contentId);

@@ -94,7 +94,10 @@ new publication and activation. Exact accepted requests remain retryable after
 their publisher is revoked, provided the caller still has page/account access.
 
 The host admits at most eight simultaneous release requests and 64 explicit
-release watches per page. The portable protocol bounds a manifest at 256 safe
+release watches per page. Uploads reserve at most 32 MiB of aggregate buffered
+input before reading a body; a body without a declared length reserves the whole
+budget. Policy changes remain independent of upload buffering. The portable
+protocol bounds a manifest at 256 safe
 relative ASCII paths, 32 MiB per file and 128 MiB total, with at most 128 current
 publishers, 256 policies, 1,024 accepted manifests and 1,024 activations. These
 limits fail explicitly. Verification streams chunks of at most 64 KiB with a
