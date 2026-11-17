@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPeersClient, createParticipantRequest, createParticipantResponse } from '../peers.mjs';
+import { createPeersClient, createPeerParticipantClient, createParticipantRequest, createParticipantResponse } from '../peers.mjs';
 const applicationId = 'ab'.repeat(32);
 const bundle = { descriptor: { payload: { profile: 'peer-generation-v1', definitionDigest: 'digest' }, signature: 'signed' }, controls: [], generations: [] };
 const publication = { descriptor: bundle.descriptor, definition: { id: 'test', version: '1', schema: null, commands: [], queries: [] }, schema: null };
@@ -63,4 +63,19 @@ test('immutable scope is discovered once for explicit convenience calls and the 
   assert.deepEqual(await client.publication(), receipt);
   assert.deepEqual(await client.publish({ id: 'code-release' }, []), receipt);
   assert.deepEqual(calls, ['application', 'peers/participant', 'peers/participant', 'peers/participant']);
+});
+
+test('cancelled calls and forbidden convenience facets never resolve scope or contact the host', async () => {
+  let lookups = 0, requests = 0;
+  const request = async () => { requests++; throw Error('Unexpected host request'); };
+  for (const applicationId of [undefined, async () => { lookups++; return 'ab'.repeat(32); }]) {
+    const client = createPeerParticipantClient({ applicationId, request });
+    for (const [facet, action] of [['database', 'submit'], ['content', 'chunk'], ['ephemeral', 'signal']])
+      await assert.rejects(client.request(facet, action, {}), { code: 'PEER_PARTICIPANT_FACET_FORBIDDEN' });
+    const cancelled = new AbortController(); cancelled.abort(Error('session closed'));
+    await assert.rejects(client.request('control', 'read', {}, { signal: cancelled.signal }), /session closed/);
+    await assert.rejects(client.exchange(createParticipantRequest({ applicationId: 'ab'.repeat(32), facet: 'control', action: 'read', payload: {} }),
+      { signal: cancelled.signal }), /session closed/);
+  }
+  assert.equal(lookups, 0); assert.equal(requests, 0);
 });

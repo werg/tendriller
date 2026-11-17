@@ -1,4 +1,5 @@
-import { createParticipantTransport, validateParticipantRequest } from './participant.mjs';
+import { createParticipantTransport, validateParticipantRequest, participantAccepts,
+  CONTROL_PARTICIPANT_POLICY, ParticipantProtocolError } from './participant.mjs';
 export * from './participant.mjs';
 
 /** A page's immutable application scope is resolved once at its bootstrap boundary. */
@@ -16,11 +17,15 @@ export function createPeerParticipantClient({ applicationId, request }) {
   };
   return Object.freeze({
     async exchange(message, options) {
+      options?.signal?.throwIfAborted();
       // Reject unwanted facets before a scope lookup or transport request.
       const input = validateParticipantRequest(message);
       return (await open(input.applicationId)).exchange(input, options);
     },
     async request(facet, action, payload, options) {
+      options?.signal?.throwIfAborted();
+      if (!participantAccepts(CONTROL_PARTICIPANT_POLICY, { facet, action }))
+        throw new ParticipantProtocolError('PEER_PARTICIPANT_FACET_FORBIDDEN');
       return (await open()).request(facet, action, payload, options);
     },
   });
