@@ -36,6 +36,7 @@ jobs:
           path: |
             dist/tendriller-*.tgz
             dist/manifest.json
+            dist/provenance.json
             dist/SHA256SUMS
       - name: Publish immutable release candidate assets
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')

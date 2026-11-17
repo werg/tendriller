@@ -1,170 +1,21 @@
-/** The public wire contract. This module has no runtime dependencies and works in
- * browsers, Workers and Node. Matching declarations are in index.d.mts. */
-import { durabilitySchemas } from "./durability.mjs";
-import { streamSchemas } from "./streams.mjs";
-import { blobSchemas, blobNameSchema, isWellFormedUnicode } from "./blobs.mjs";
-import { assertStateJson, normalizeStateChecks, normalizeStateOps, STATE_CONDITIONS_MAX } from "./state.mjs";
-export { assertFilePath, assertAttachments, assertPublicationEntries } from "./blobs.mjs";
-export { STREAM_RECORD_BYTES, STREAM_SNAPSHOT_RECORD_BYTES } from "./streams.mjs";
+/** Public page host metadata and browser composition contract. */
+import { isWellFormedUnicode } from './paths.mjs';
+export { assertFilePath } from './paths.mjs';
+export { RESOURCE_LIMITS } from './limits.mjs';
 export const CONTRACT_VERSION = 3;
-export const CORE_RELEASE = "0.3.0-rc.9";
-export { RESOURCE_LIMITS, STREAM_LIMITS } from "./limits.mjs";
-export const ROLES = Object.freeze(["owner", "guest", "display"]);
-export const DEVICE_PURPOSES = Object.freeze(["general", "camera", "controller", "display", "speaker"]);
-const string = { type: "string" };
-const integer = { type: "integer", minimum: 0 };
-const object = (properties, required = [], additionalProperties = false) => ({ type: "object", properties, required, additionalProperties });
-const path = { anyOf: [string, { type: "array", items: { anyOf: [string, { type: "integer" }] } }] };
-const jsonObject = { type: "object" };
-const boolean = { type: "boolean" };
-const nullableString = { type: ["string", "null"] };
-const nullableTime = { anyOf: [integer, { type: "null" }] };
-const shortText = { type: "string", minLength: 1, maxLength: 200 };
-const sayProperties = { text: string, speak: boolean, in_reply_to: { type: "integer", minimum: 1 }, device: string, speak_on: string };
-const error = object({ code: string, message: string, details: { type: "array", items: object({ path: string, message: string }, ["path", "message"]) } }, ["code", "message"], true);
-const blobReference = blobSchemas.blobMetadata;
-const stateOperation = { anyOf: [
-  object({ op: { const: "set" }, path, value: {} }, ["op", "path", "value"]),
-  object({ op: { const: "delete" }, path }, ["op", "path"]),
-] };
-const stateCondition = { anyOf: [
-  object({ path, equals: {} }, ["path", "equals"]),
-  object({ path, exists: boolean }, ["path", "exists"]),
-] };
-const stateChecks = { conditions: { type: "array", maxItems: STATE_CONDITIONS_MAX, items: stateCondition }, expected_revision: integer };
-const deviceInfo = object({ id: string, name: nullableString, role: { enum: ROLES }, purpose: { enum: DEVICE_PURPOSES },
-  pending: boolean, connected: boolean, primary: boolean, last_seen: nullableTime, ua: nullableString, link: nullableString,
-}, ["id", "name", "role", "purpose", "pending", "connected", "primary", "last_seen", "ua", "link"]);
-const focus = object({ device: string, expires_at: integer }, ["device", "expires_at"]);
-const timerRepeat = { anyOf: [
-  object({ every_minutes: { type: "integer", minimum: 1, maximum: 525600 } }, ["every_minutes"]),
-  object({ at: { type: "string", pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$" }, days: { type: "array", minItems: 1, maxItems: 7, items: { type: "integer", minimum: 0, maximum: 6 } } }, ["at"]),
-] };
-const timerProperties = {
-  title: shortText, due_at: { type: "integer", minimum: 0, maximum: 8640000000000000 }, timezone: { type: "string", minLength: 1, maxLength: 100 },
-  repeat: timerRepeat, missed: { enum: ["fire_once", "skip"] }, device: string, notify: boolean, state: { enum: ["scheduled", "cancelled", "completed"] },
-};
-const timerWriteProperties = { ...timerProperties, repeat: { anyOf: [timerRepeat, { type: "null" }] }, device: nullableString };
-const timerRevision = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
-const timer = object({ ...timerProperties, id: string, revision: timerRevision, created_at: integer, updated_at: integer }, ["id", "revision", "title", "due_at", "timezone", "missed", "notify", "state", "created_at", "updated_at"]);
-const sessionProperties = {
-  purpose: { type: "string", maxLength: 4000 }, current_task: { type: "string", maxLength: 4000 },
-  ...Object.fromEntries(["completed", "decisions", "open_questions"].map(key => [key, { type: "array", maxItems: 50, items: { type: "string", maxLength: 2000 } }])),
-  last_handled_seq: integer, source: { type: "string", maxLength: 4000 },
-};
-const session = object(sessionProperties, ["purpose", "current_task", "completed", "decisions", "open_questions", "last_handled_seq"]);
-// Platform preconditions are transport metadata. Application JSON is opaque.
-const identifier = { type: "string", minLength: 1, maxLength: 200 };
-const scopeId = { type: "string", pattern: "^(?!(?:__proto__|constructor|prototype)$)[A-Za-z0-9_.:-]{1,160}$" };
-const generationToken = { type: "string", minLength: 1, maxLength: 160 };
-const commandId = { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,200}$" };
-const scopeOperation = { type: "string", pattern: "^(?:state|event|capture|blob\\.pin|file\\.write|publication\\.publish|bundle\\.publish|timer\\.write|workflow:[a-z][a-z0-9-]{0,63}:(?:[a-zA-Z][a-zA-Z0-9]{0,79}|\\*))$" };
-const generationMap = { type: "object", maxProperties: 128, propertyNames: scopeId, additionalProperties: generationToken };
-const guards = { cid: commandId, scope: scopeId, expected_generations: generationMap };
-const scopeDescriptor = object({ id: scopeId, generation: generationToken,
-  paths: { type: "array", items: { type: "array", items: string } }, operations: { type: "array", items: scopeOperation },
-}, ["id", "generation", "paths", "operations"]);
-const workflowDescriptor = object({ id: identifier, interface_version: identifier, schema_version: identifier, implementation_version: identifier, operations: jsonObject },
-  ["id", "interface_version", "schema_version"]);
-
-const coreSchemas = {
-  ...durabilitySchemas,
-  ...streamSchemas,
-  ...blobSchemas,
-  scopeId,
-  scopeOperation,
-  scopeBindings: object({paths: {type:"array",maxItems:128,items:path},operations:{type:"array",maxItems:128,items:scopeOperation}}, ["paths","operations"]),
-  preconditions: object(guards,["cid","expected_generations"],true),
-  generationMap,
-  scopeDescriptor,
-  scopeList: object({ scopes: { type: "array", items: scopeDescriptor } }, ["scopes"]),
-  scopeWrite: object({ ...guards, paths: { type: "array", items: path }, operations: { type: "array", items: scopeOperation } }, ["cid", "expected_generations", "paths", "operations"]),
-  command: object({ ...guards, data: {} }, ["cid", "expected_generations", "data"]),
-  workflowDescriptor,
-  serviceDescriptor: object({ contract: { const: 3 }, core_release: identifier,
-    workflows: { type: "array", items: workflowDescriptor }, limits: jsonObject,
-  }, ["contract", "core_release", "workflows", "limits"]),
-  error,
-  errorResponse: object({ error }, ["error"]),
-  create: object({ name: { type: "string", maxLength: 200 }, owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, lifetime: { const: "ad_hoc" }, mode: { enum: ["interactive", "dashboard"] } }, ["owner"]),
-  say: object(sayProperties, ["text"]),
-  probeNonce: { type: "string", pattern: "^[a-z2-7]{20}$" },
-  deliveryProbe: object({ nonce: { type: "string", pattern: "^[a-z2-7]{20}$" }, seq: { type: "integer", minimum: 1 },
-    created_at: integer, ack_at: nullableTime, status_url: string, ack_url: string }, ["nonce", "seq", "created_at", "ack_at", "status_url", "ack_url"]),
-  sayMessage: object({ ...sayProperties, message_id: { type: "string", minLength: 1 }, ts: integer, present: boolean }, ["text", "message_id", "ts"], true),
-  stateOperation,
-  stateOperations: { type: "array", items: stateOperation },
-  stateCondition,
-  stateChecks: object(stateChecks),
-  stateWriteOptions: object({ scope: scopeId, expected_generations: generationMap, ...stateChecks }),
-  stateUpdate: { anyOf: [
-    object({ ...guards, ...stateChecks, ops: { type: "array", items: stateOperation } }, ["cid", "expected_generations", "ops"]),
-    object({ ...guards, ...stateChecks, state: jsonObject }, ["cid", "expected_generations", "state"]),
-  ] },
-  sendResult: { anyOf: [
-    object({ status: { const: "accepted" }, seq: { type: "integer", minimum: 1 } }, ["status", "seq"]),
-    object({ status: { const: "queued" } }, ["status"]),
-    object({ status: { const: "rejected" }, error: string, message: string }, ["status", "error"]),
-  ] },
-  blobReference,
-  captureOptions: object({ scope: scopeId, expected_generations: generationMap, name: blobNameSchema, data: jsonObject,
-    dataPath: { type: "array", items: string }, keep: { type: "boolean" }, wake: { type: "boolean" } }, ["data"]),
-  captureResult: { anyOf: [
-    object({ capture_id: string, status: { const: "accepted" }, seq: { type: "integer", minimum: 1 }, blob: blobReference }, ["capture_id", "status", "seq", "blob"]),
-    object({ capture_id: string, status: { const: "queued" } }, ["capture_id", "status"]),
-    object({ capture_id: string, status: { const: "rejected" }, error: string, message: string }, ["capture_id", "status", "error"]),
-  ] },
-  event: object({ seq: { type: "integer", minimum: 1 }, ts: integer, type: string, role: { enum: [...ROLES, null] }, device: { anyOf: [string, { type: "null" }] }, by: nullableString, data: {}, wake: { type: "boolean" }, withheld: { type: "boolean" }, context: object({ scope: identifier, generations: generationMap, workflow: identifier, operation: identifier }, ["generations"]) }, ["seq", "ts", "type", "data"], true),
-  device: object({ id: string, name: string, role: { enum: ROLES }, purpose: { enum: DEVICE_PURPOSES }, pending: { type: "boolean" } }, ["id", "role"], true),
-  deviceInfo,
-  deviceUpdate: object({ id: string, name: { anyOf: [{ type: "string", minLength: 1, maxLength: 100 }, { type: "null" }] }, purpose: { enum: DEVICE_PURPOSES } }),
-  deviceConfiguration: object({ devices: { type: "array", items: deviceInfo }, focus: { anyOf: [focus, { type: "null" }] } }, ["devices", "focus"]),
-  focus,
-  focusRequest: object({ device: nullableString, ttl_seconds: { type: "integer", minimum: 30, maximum: 86400 } }, ["device"]),
-  timerRepeat,
-  timer,
-  timerWrite: object({ ...guards, ...timerWriteProperties, expected_revision: timerRevision }, ["cid", "expected_generations", "expected_revision"]),
-  timerCreate: object({ ...guards, ...timerWriteProperties }, ["cid", "expected_generations", "title"]),
-  timerDelete: object({ ...guards, expected_revision: timerRevision }, ["cid", "expected_generations", "expected_revision"]),
-  timerDeleted: object({ id: string, revision: timerRevision, deleted: { const: true } }, ["id", "revision", "deleted"]),
-  timerRun: object({ id: string, timer_id: string, scheduled_at: integer, fired_at: integer, status: { enum: ["fired", "skipped"] }, event_seq: nullableTime,
-    delivery: { anyOf: [durabilitySchemas.timerDelivery, { type: "null" }] },
-  }, ["id", "timer_id", "scheduled_at", "fired_at", "status", "event_seq", "delivery"]),
-  session,
-  sessionWrite: object({ ...sessionProperties, expected_revision: integer }),
-  sessionSummary: object({ session, revision: integer, version: integer, staged_remix: boolean,
-    pending_inputs: object({ after: integer, count: integer, earliest_available_seq: nullableTime, history_gap: boolean }, ["after", "count", "earliest_available_seq", "history_gap"]),
-    timers: { type: "array", items: timer }, devices: { type: "array", items: deviceInfo },
-    recent_activity: { type: "array", items: object({ ts: integer, kind: string, summary: string }, ["ts", "kind", "summary"]) },
-  }, ["session", "revision", "version", "staged_remix", "pending_inputs", "timers", "devices", "recent_activity"]),
-  bundle: object({ format: { const: "tendriller-bundle" }, version: { const: 3 }, entry: blobSchemas.filePath, name: { type: "string", minLength: 1, maxLength: 200 },
-    files: { type: "array", minItems: 1, maxItems: 2000, items: object({ path: string, type: blobReference.properties.type, base64: string }, ["path", "type", "base64"]) },
-    state: jsonObject, session, shared_files: { type: "array", maxItems: 512, items: object({ path: blobSchemas.filePath, blob_id: blobSchemas.blobId, name: blobNameSchema, type: blobReference.properties.type }, ["path", "blob_id"]) },
-    media: { type: "array", items: object({ id: blobReference.properties.id, type: blobReference.properties.type, name: { anyOf: [blobNameSchema, { type: "null" }] }, base64: string }, ["id", "type", "name", "base64"]) },
-  }, ["format", "version", "entry", "name", "files", "media"]),
-  bundlePublish: object({ ...guards, expected_head_revision: integer }, ["cid", "expected_generations", "expected_head_revision"]),
-  remix: object({ owner: { type: "string", maxLength: 254, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" }, name: { type: "string", maxLength: 200 }, include_data: boolean }, ["owner"]),
-  remixPage: object({ name: { type: "string", maxLength: 200 }, include_data: boolean }),
-
-};
-const list = items => ({ type: "array", items });
-const pageHandle = object({ id: string, api: string, token: string, page_url: string, name: string,
-  expires_at: { anyOf: [integer, { type: "null" }] }, next_step: string }, ["id", "api", "token", "page_url"], true);
+export const CORE_RELEASE = '0.3.0-rc.10';
+export const ROLES = Object.freeze(['owner', 'guest', 'display']);
+const string = { type: 'string' }, integer = { type: 'integer', minimum: 0 };
+const object = (properties, required = [], additionalProperties = false) => ({ type: 'object', properties, required, additionalProperties });
+const application = object({ id: { type: 'string', pattern: '^[0-9a-f]{64}$' } }, ['id']);
+const error = object({ code: string, message: string, details: {} }, ['code', 'message'], true);
 export const schemas = Object.freeze({
-  ...coreSchemas,
-  pageHandle,
-  objectResponse: jsonObject,
-  sayResult: object({ ok: { const: true }, message_id: string, in_reply_to: nullableTime }, ["ok", "message_id", "in_reply_to"], true),
-  stateSnapshot: object({ state: jsonObject, rev: integer, scopes: { type: "array", items: scopeDescriptor } }, ["state", "rev", "scopes"], true),
-  stateRevision: object({ rev: integer }, ["rev"], true),
-  eventBatch: object({ events: list(coreSchemas.event), cursor: integer, withheld: integer }, ["events", "cursor", "withheld"], true),
-  timerList: object({ timers: list(timer), execution: { const: "server" }, lifetime: { enum: ["ad_hoc", "resident"] }, expires_at: nullableTime }, ["timers", "execution", "lifetime", "expires_at"], true),
-  timerHistory: object({ runs: list(coreSchemas.timerRun) }, ["runs"], true),
-  sessionResult: object({ session, revision: integer }, ["session", "revision"], true),
-  bundleStage: object({ staged: { const: true }, files: integer, media: integer, expected_head_revision: integer, requires_publication: { const: true } }, ["staged", "files", "media", "expected_head_revision", "requires_publication"], true),
-  bundleReceipt: object({ version: integer, head_revision: integer, restored: { const: true } }, ["version", "head_revision", "restored"]),
-  remixResult: object({ ...pageHandle.properties, remix: object({ staged: { const: true }, requires_receiver: { const: true }, publish_url: string, expected_head_revision: integer }, ["staged", "requires_receiver", "publish_url", "expected_head_revision"], true) }, [...pageHandle.required, "remix"], true),
-
+  create: object({ name: { type: 'string', maxLength: 200 }, owner: { type: 'string', maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' },
+    lifetime: { const: 'ad_hoc' }, mode: { enum: ['interactive', 'dashboard'] }, application }, ['owner']),
+  pageHandle: object({ id: string, api: string, token: string, page_url: string, name: string, application,
+    expires_at: { anyOf: [integer, { type: 'null' }] }, next_step: string }, ['id', 'api', 'token', 'page_url', 'application'], true),
+  serviceDescriptor: object({ contract: { const: 3 }, core_release: string, limits: { type: 'object' } }, ['contract', 'core_release', 'limits']),
+  objectResponse: { type: 'object' }, error, errorResponse: object({ error }, ['error']),
 });
 
 export const schemaDocument = Object.freeze({
@@ -234,16 +85,6 @@ export function validateSchema(schema, value, path = "$", depth = 0) {
 export function validate(name, value) {
   if (!Object.hasOwn(schemas, name)) throw new TypeError(`Unknown contract schema: ${name}`);
   const issues = validateSchema(schemas[name], value);
-  // Wire JSON cannot carry undefined, accessors, cycles or sparse arrays. Apply
-  // the same restrictions before in-process SDK/runtime serialization as well.
-  if (!issues.length) try {
-    if (name === "stateOperation") normalizeStateOps([value]);
-    if (name === "stateOperations") normalizeStateOps(value);
-    if (name === "stateCondition") normalizeStateChecks({ conditions: [value] });
-    if (name === "stateWriteOptions" || name === "stateUpdate") assertStateJson(value);
-    if (name === "stateChecks" || name === "stateWriteOptions" || name === "stateUpdate") normalizeStateChecks(value);
-    if (name === "stateUpdate") normalizeStateOps("state" in value ? [{ op: "set", path: [], value: value.state }] : value.ops);
-  } catch (error) { issues.push({ path: "$", message: error.message }); }
   return issues;
 }
 

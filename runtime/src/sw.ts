@@ -2,7 +2,6 @@ import { encodePublicationPath, validPublicationPath } from "./paths";
 // A publication owns an immutable page/runtime asset graph. Live APIs are never
 // cached. Client-to-publication bindings survive worker restarts, so a deferred
 // reload cannot mix an old executing page with a new component or runtime.
-import { registerPushHandlers } from "./sw-push";
 import type { PublicationManifest, PublicationAsset } from "../../contract/index.mjs";
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -162,20 +161,28 @@ async function navigate(event: FetchEvent): Promise<Response> {
   // Ordinary file routing: an offline nested URL must never show another entry page.
   const savedURL = publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;
   const saved = publication && savedURL ? await (await caches.open(cacheName(publication.id))).match(savedURL) : undefined;
+  let networkPublicationId: string | undefined;
   const network = fetch(event.request).then(async response => {
     if (response.ok && !noStore(response)) {
       const text = await response.clone().text();
       const config = /window\.__TENDRIL__\s*=\s*(\{[\s\S]*?\})\s*;/.exec(text);
       if (config) {
         try {
-          const current = JSON.parse(config[1]).publication;
+          const { publication: current, documentPath } = JSON.parse(config[1]);
           if (validManifest(current)) {
-            const id = event.resultingClientId;
+            networkPublicationId = current.id;
+            const document = safePath(documentPath) && current.assets.find(asset =>
+              asset.path === documentPath && asset.type.split(";", 1)[0] === "text/html");
+            // The source graph is immutable, but a fetched document carries
+            // current host configuration. Retain this exact response for the
+            // next offline launch without re-fetching its unchanged assets.
+            const refreshed = document && response.headers.get("X-Tendril-Publication") === current.id
+              ? { url: absolute(encodePublicationPath(document.path), absolute(current.base)), response: response.clone() } : null;
             event.waitUntil(queued(async () => {
               const next = await readRegistry();
-              if (id) next.clients[id] = current.id;
               next.publications[current.id] = current;
               await writeRegistry(next);
+              if (refreshed) await (await caches.open(cacheName(current.id))).put(refreshed.url, refreshed.response);
               await savePublication(current, !pin);
             }).catch(() => {}));
           }
@@ -184,9 +191,20 @@ async function navigate(event: FetchEvent): Promise<Response> {
     }
     return response;
   });
-  if (!saved) { try { return await network; } catch { return offlinePage(); } }
+  const selectNetwork = (response: Response): Response => {
+    // A response that arrives after the offline deadline may refresh caches,
+    // but only the document delivered to this client can change its binding.
+    const id = networkPublicationId;
+    if (event.resultingClientId && id) event.waitUntil(queued(async () => {
+      const next = await readRegistry();
+      next.clients[event.resultingClientId] = id;
+      await writeRegistry(next);
+    }).catch(() => {}));
+    return response;
+  };
+  if (!saved) { try { return selectNetwork(await network); } catch { return offlinePage(); } }
   event.waitUntil(network.then(() => {}).catch(() => {}));
-  try { const response = await withinDeadline(network); if (response) return response; } catch { /* offline */ }
+  try { const response = await withinDeadline(network); if (response) return selectNetwork(response); } catch { /* offline */ }
   if (event.resultingClientId && publication) await queued(async () => {
     const next = await readRegistry();
     next.clients[event.resultingClientId] = publication.id;
@@ -273,5 +291,3 @@ sw.addEventListener("fetch", event => {
   if (request.mode === "navigate" && url.href.startsWith(SCOPE)) event.respondWith(navigate(event));
   else if (!url.search && !url.hash && (/\/_publications\/[A-Za-z0-9_-]+\//.test(url.pathname) || /\/_tendril\/(runtime|assets)\/[a-f0-9]{64}\//.test(url.pathname))) event.respondWith(staticAsset(event));
 });
-
-registerPushHandlers(sw);

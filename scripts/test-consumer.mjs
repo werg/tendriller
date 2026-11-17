@@ -1,10 +1,11 @@
 // Verify that only public release artifacts are needed in a clean consumer.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CORE_RELEASE } from '../contract/index.mjs';
+import { createHash } from 'node:crypto';
 const root = resolve(import.meta.dirname, '..');
 // A sibling of the source tree cannot silently resolve undeclared dependencies
 // through the checkout's node_modules. All consumer inputs are packed artifacts.
@@ -26,93 +27,113 @@ try {
   assert.equal(core.dependencies, undefined); assert.equal(runtime.dependencies, undefined);
   assert.deepEqual(engine.dependencies, { '@cloudflare/workers-types': workersTypes.version });
   assert.deepEqual(engine.peerDependencies, { '@tendriller/core': CORE_RELEASE });
+  const hostProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/provenance.json')));
+  const packagesProof = JSON.parse(readFileSync(join(root, 'dist/provenance.json')));
+  assert.equal(hostProof.repository, 'werg/tendriller');
+  assert.match(hostProof.source, /^[a-f0-9]{40}$/); assert.match(hostProof.sourceTree, /^[a-f0-9]{40}$/);
+  assert.equal(typeof hostProof.dirty, 'boolean');
+  for (const key of ['repository', 'source', 'sourceTree', 'dirty']) assert.equal(packagesProof[key], hostProof[key]);
+  for (const [file, hash] of Object.entries(hostProof.files))
+    assert.equal(createHash('sha256').update(readFileSync(join(directory, 'node_modules/@tendriller/engine', file))).digest('hex'), hash);
+  assert.deepEqual(packagesProof.artifacts.map(item => item.name), ['@tendriller/core', '@tendriller/runtime', '@tendriller/engine']);
+  for (const artifact of packagesProof.artifacts)
+    assert.equal(createHash('sha256').update(readFileSync(join(root, 'dist', artifact.file))).digest('hex'), artifact.sha256);
+  const peerProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/peer-generation-provenance.json')));
+  assert.equal(peerProof.dirty, false); assert.equal(peerProof.profile, 'peer-generation-v1');
+  assert.ok(peerProof.inputs.every(input => !/(?:materializer|peer-session|transport-ssb|node-core\/src\/node\.ts|node:)/.test(input)));
+  assert.equal(existsSync(join(directory, 'node_modules/@chronolog')), false, 'The engine embeds its portable participant dependency');
+  for (const key of ['./records', './members', './scopes', './host']) assert.equal(core.exports[key], undefined);
+  assert.equal(runtime.exports['./preview-support'], undefined);
   writeFileSync(join(directory, 'consumer.mjs'), `
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
 import { createClient, requireService } from '@tendriller/core';
-import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/contract';
+import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
+import { createApplicationBinding } from '@tendriller/core/application';
+import { createSignalBinding } from '@tendriller/core/signals';
+import { createParticipantRequest, createParticipantResponse, createPeerIntroductions } from '@tendriller/core/peers';
+import { startRuntime } from '@tendriller/runtime/kernel';
+import { createVoice } from '@tendriller/runtime/voice';
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
-import {applyOps, validateOps, validateStateChecks, checkState, historyPage} from '@tendriller/runtime/preview-support';
-assert.equal(CONTRACT_VERSION, 3); assert.equal(schema.$defs.decision, undefined);
-assert.equal(schema.$defs.uploadStart.properties.cid.type, 'string');
-assert.equal(schema.$defs.publicationWrite.properties.expected_head_revision.type, 'integer');
+const application = { id: '12'.repeat(32) };
+assert.equal(CONTRACT_VERSION, 3); assert.equal(typeof startRuntime, 'function'); assert.equal(typeof createVoice, 'function');
+assert.equal(schema.$defs.stateUpdate, undefined); assert.equal(schema.$defs.create.properties.application.properties.kind, undefined);
 assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
 assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
-assertValid('command', {cid:'event-1',expected_generations:{},data:{type:'job.status',session:'application data'}});
-assert.deepEqual(applyOps({}, validateOps([{op:'set',path:['experiment'],value:{session_id:'opaque'}}])), {experiment:{session_id:'opaque'}});
-const conditional = {cid:'claim',expected_generations:{},conditions:[{path:['claim'],exists:false}],ops:[{op:'set',path:['claim'],value:'a'}]};
-assertValid('stateUpdate', conditional);
-checkState({}, 0, validateStateChecks(conditional));
-assert.throws(() => checkState({claim:'b'}, 1, validateStateChecks(conditional)), {code:'state_conflict'});
-assert.equal(historyPage([{seq:1}], {after:0,limit:2,latest:1,earliest:1}).cursor, 1);
-assert.equal(STREAM_LIMITS.record_bytes, 65536);
-assert.throws(() => requireService({contract:2,workflows:[]}), /contract/);
-const client = createClient({api:'https://example.test/api/t/test',token:'private'}, {fetch: async () => new Response(JSON.stringify({events:[],cursor:2,withheld:0}))});
-assert.equal((await client.readEvents({after:2})).cursor, 2);
-assert.equal(client.createDecision, undefined);
-assert.match(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'), /CREATE TABLE accounts/);
+assertValid('create', {owner:'owner@example.test', application});
+assert.throws(() => requireService({contract:2,core_release:'old',limits:{}}), /contract/);
+let requests = 0;
+const client = createClient({api:'https://host.test/api/t/test',token:'private'}, {applicationId: application.id, fetch: async (_url, init) => {
+  requests++; return Response.json(createParticipantResponse(JSON.parse(init.body), null));
+}});
+assert.deepEqual(Object.keys(client).sort(), ['info', 'peers', 'request', 'service']);
+assert.equal(requests, 0);
+const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
+  openDirectConnection: async () => ({ close() {} }), openRelayConnection: async () => ({ close() {} }) });
+assert.equal(typeof introductions.discovery.invitations, 'function');
+assert.equal(typeof introductions.transport.open, 'function');
+assert.equal(requests, 0);
+const request = createParticipantRequest({applicationId: application.id, facet:'publication', action:'read', payload:{}});
+assert.equal((await client.peers.exchange(request)).payload, null);
+assert.equal(requests, 1);
+await assert.rejects(client.peers.exchange({...request, facet:'database', action:'submit'}), {code:'PEER_PARTICIPANT_FACET_FORBIDDEN'});
+assert.equal(requests, 1);
+const selection = createApplicationBinding(application);
+assert.throws(() => selection.backend, {code:'backend_unavailable'});
+const signals = createSignalBinding();
+await assert.rejects(signals.send('typing', null), {code:'signal_unavailable'});
 `);
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
-import {createClient, type CommandMetadata} from '@tendriller/core';
-import {type RuntimeApi, type SendResult, type WireContracts, type SensorStatus} from '@tendriller/core/contract';
-import {type WorkflowModule} from '@tendriller/core/host';
-import {createFixtureTransport} from '@tendriller/runtime/preview';
-import type {} from '@tendriller/core/browser';
-const command: CommandMetadata = {cid:'durable-command',expected_generations:{}};
-const client = createClient({api:'https://example.test',token:'private'});
-void client.updateState({...command,ops:[{op:'set',path:['job'],value:{status:'ready'}}]});
-void client.updateState({...command,conditions:[{path:['job'],exists:false}],expected_revision:0,ops:[]});
-// @ts-expect-error all commands need explicit stable IDs and preconditions
-void client.updateState({ops:[]});
-declare const page: RuntimeApi<{count:number}>;
-const sensors: SensorStatus = page.sensors.status();
-page.sensors.on(status => { const pending: SensorStatus['pending'] = status.pending; void pending; });
-page.on('sensors', status => { const active: SensorStatus['active'] = status.active; void active; });
-void sensors;
-void page.state.apply([{op:'set',path:['count'],value:1}],{conditions:[{path:['count'],equals:0}]});
-const snapshot = await page.state.snapshot();
-const count:number = snapshot.state.count;
-void page.state.apply([{op:'set',path:['count'],value:count+1}],{expected_revision:snapshot.rev});
-// @ts-expect-error a state condition has one predicate, never both.
-void page.state.apply([],{conditions:[{path:['count'],equals:0,exists:true}]});
-const stateResult = await page.state.apply([]);
-if (stateResult.status === 'accepted' || stateResult.status === 'queued') { const cid:string = stateResult.cid; void cid; }
-// @ts-expect-error unchanged work has no durable command identity.
-if (stateResult.status === 'unchanged') stateResult.cid;
-for (const command of page.state.pending()) { const keys:string[] = command.ops[0].path; void keys; }
-page.on('state_queue', commands => { const pending:string|undefined = commands[0]?.cid; void pending; });
-page.on('state_result', receipt => { const keys:string[] = receipt.ops[0].path; void keys; });
-const result: SendResult = await page.send({session:'opaque'});
-if(result.status==='accepted'){const seq:number=result.seq; void seq;}
-// @ts-expect-error queued is not accepted
-if(result.status==='queued') result.seq;
-declare const module: WorkflowModule;
-void module;
-const json: WireContracts['streamJson'] = {readings:[1, null, {valid:true}]};
-// @ts-expect-error nested stream data must remain JSON rather than any
-const invalidJson: WireContracts['streamJson'] = {readings:[() => 1]};
-void [json, invalidJson];
-const fixture = createFixtureTransport();
-fixture.onSend((frame,reply) => { if(frame.t==='hello') reply({t:'welcome'}); });
+import {createClient, createPage} from '@tendriller/core';
+import type {RuntimeApi, RuntimeConfiguration} from '@tendriller/core/contract';
+import type {ApplicationBackend, ApplicationOperation} from '@tendriller/core/application';
+import {createApplicationBinding} from '@tendriller/core/application';
+import {startRuntime} from '@tendriller/runtime/kernel';
+import {createVoice} from '@tendriller/runtime/voice';
+import {createPeerIntroductions, type ParticipantRequest} from '@tendriller/core/peers';
+declare const application: ApplicationBackend;
+declare const runtime: RuntimeApi;
+const cfg: RuntimeConfiguration = {id:'page',base:'/p/',version:0,documentPath:null,application:{id:'12'.repeat(32)},features:{speech:null,shared_by:'Owner'}};
+const page = startRuntime(cfg, {application});
+const binding = createApplicationBinding(cfg.application, application);
+const operation: ApplicationOperation = await binding.backend.submit({}, {operationId:'exact-id'});
+if (operation.status === 'applied') { const outcome:'accepted'|'rejected'=operation.outcome; void outcome; }
+const view = await binding.backend.readView();
+const applied:'applied'=view.view;
+await view.query('items'); await view.readEvents(); await view.release();
+application.onRecovery(notice => { const loss:boolean=notice.unknownLoss; void loss; });
+application.onStatus(status => { const peers:number=status.connectedPeers; void peers; });
+await application.inspectRecovery();
+const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
+void client.peers.application(); void client.peers.publication();
+const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
+  openDirectConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; },
+  openRelayConnection: async options => { await options.relay.ready; return { kind:'raw' as const, close() {} }; } });
+const raw = await introductions.transport.open({ peer: { identity:'56'.repeat(32), route:{kind:'invitation',peerId:'56'.repeat(32)} } }, { signal: new AbortController().signal });
+const kind:'raw'=raw.kind; void kind;
+
+void createPage('https://host.test', {owner:'owner@example.test',application:cfg.application});
+declare const message: ParticipantRequest;
+void client.peers.exchange(message);
+void createVoice(page, {consent:async()=>true,transcript:()=>{},status:()=>{}});
+// @ts-expect-error There is no parallel runtime profile.
+runtime.kind;
+// @ts-expect-error Host state is not an application backend.
+runtime.state;
+// @ts-expect-error No alternate finality view.
+application.readView({view:'final'});
+void applied;
 `);
   writeFileSync(join(directory, 'worker.mts'), `
-import worker, {Admission, Tendril, configureWorkflows} from '@tendriller/engine';
-import type {WorkflowModule} from '@tendriller/core/host';
-import {initializeTestService} from '@tendriller/engine/testing';
-const capability: WorkflowModule = {
-  id:'review', interfaceVersion:'1', schemaVersion:'1', implementationVersion:'fixture',
-  operations:{ submit:{ access:'participant', mutate:true, run(host, data) {
-    host.records.put('private', host.identity.actor, data);
-    host.afterCommit(() => host.notify('changed', 'owner'));
-    return {accepted:true};
-  } } },
-};
-configureWorkflows([capability]);
-// @ts-expect-error trusted extensions must provide their complete public contract
-configureWorkflows([{id:'incomplete'}]);
+import worker, {Admission, Tendril} from '@tendriller/engine';
+import {initializeTestService, createTestPage} from '@tendriller/engine/testing';
 void initializeTestService([{name:'empty.sql',queries:[]}]);
+async function test() {
+  const page = await createTestPage({application:{id:'12'.repeat(32)}});
+  await page.exchange('control/read'); await page.asset('page.mjs'); await page.restart();
+}
+void test;
 export {Admission, Tendril};
 export default {
   fetch(request, env, context) { return worker.fetch(request, env, context); },
@@ -120,7 +141,7 @@ export default {
 } satisfies typeof worker;
 `);
   run(process.execPath, [join(root,'node_modules/typescript/bin/tsc'),'--noEmit','--strict','--target','es2022','--module','nodenext','--moduleResolution','nodenext','--lib','es2023,dom','consumer.mts','worker.mts']);
-  console.log('Independent SDK/runtime/engine consumer passed with strict declarations and no source checkout dependencies.');
+  console.log('Independent SDK/runtime/engine consumer passed with strict declarations and only public artifacts.');
 } catch(error) {
   if(error.stdout) process.stderr.write(error.stdout);
   if(error.stderr) process.stderr.write(error.stderr);

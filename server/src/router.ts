@@ -11,7 +11,7 @@ import { adminPage, appealPage } from "./abuse/admin";
 import { budgetWebhook } from "./budget";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, toErrorResponse, withCors } from "./http";
-import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, SOCKET_TICKET_RE, TENDRIL_ID_RE } from "./ids";
+import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
 import { serviceDescriptor } from "./descriptor";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
@@ -24,7 +24,6 @@ function stub(env: Env, id: string): DurableObjectStub {
 /** Forwards a request to the tendril's Durable Object under an internal path. */
 function forward(env: Env, id: string, kind: string, req: Request, url: URL, headers: Record<string, string>): Promise<Response> {
   const h = new Headers(req.headers);
-  h.delete("x-tendril-socket-ticket"); // only ever derived from the socket subprotocol below
   h.set("x-tendril-id", id);
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
   const init: RequestInit = { method: req.method, headers: h, signal: req.signal };
@@ -254,25 +253,19 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const agentRest = safeDecode(m[2] ?? "");
       // Node's dependency-free WebSocket client cannot set Authorization. Keep the
       // private token in a TLS-protected subprotocol header, never in the URL.
-      const socket = agentRest === "events/socket" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const invitationSocket = agentRest === "peers/invitations" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      const relaySocket = agentRest === "peers/relay" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
-      const agentProtocol = socket && protocols.includes("tendriller.agent.v2");
-      const socketToken = agentProtocol ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
-      // A listen-only ticket (POST A/events/socket/ticket) can stand in for the token on the socket only.
-      const socketTicket = agentProtocol && !socketToken ? protocols.find((s) => SOCKET_TICKET_RE.test(s)) : undefined;
-      if (socket && !socketToken && !socketTicket) return errorResponse(401, "unauthorized", "Agent socket needs its private token or a socket ticket");
-      const token = socketToken || socketTicket || /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
+      const socketToken = peerSocket && protocols.includes("tendriller.rendezvous.v1") ||
+        invitationSocket && protocols.includes("tendriller.invitations.v1") || relaySocket && protocols.includes("tendriller.relay.v1")
+        ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
+      const token = socketToken || /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
       if (token && env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: await sha256Hex(token) })).success) {
         throw new HttpError(429, "rate_limited", "Agent request rate limit reached");
       }
-      if (req.method === "POST" && agentRest === "eval" && env.EVAL_RATE && !(await env.EVAL_RATE.limit({ key: m[1] })).success) {
-        throw new HttpError(429, "rate_limited", "Eval rate limit reached");
-      }
-      if (req.method === "GET" && /^(?:files|blobs)\//.test(agentRest) && env.FILE_READ_RATE &&
-        !(await env.FILE_READ_RATE.limit({ key: m[1] })).success) throw new HttpError(429, "rate_limited", "File read rate limit reached");
       const res = await forward(env, m[1], "agent", req, url, { "x-tendril-rest": encodeURIComponent(agentRest),
-        ...(socketToken ? { Authorization: `Bearer ${socketToken}` } : {}),
-        ...(socketTicket ? { "x-tendril-socket-ticket": socketTicket } : {}) });
+        ...(socketToken ? { Authorization: `Bearer ${socketToken}` } : {}) });
       if (res.status === 401 && env.FAILED_AUTH_RATE &&
         !(await env.FAILED_AUTH_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
         await res.body?.cancel();

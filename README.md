@@ -1,19 +1,22 @@
 # Tendriller
 
-Tendriller connects an authenticated page to an agent. Core supplies reliable mechanisms: conditional shared-state transactions, events, streams, captures, durable timer commands, publication identity and explicit trusted server extensions. The page owns its interface, application data and ordinary web dependencies.
+Tendriller hosts authenticated pages and participates in Chronolog through a filtered control transport. Each application uses one owned Chronolog session for commands, queries, applied views, operation state, live signals, replication and recovery. The host handles account access, signed membership and generation control, signed page-code publications, discovery and bounded connection introductions.
 
-Start with authored HTML, JavaScript and assets. There is no starter, component registry, required application schema or automatic dependency download. [Cookbooks](https://github.com/werg/tendriller-contrib) explain choices and failure cases that help an agent adapt an implementation to a task.
+A page has one stable application identity, `{id}`, independent of its URL and the devices that join it. Native agents and browser Workers use the same application contract. The host's role and transport decide which protocol updates it receives; ordinary application commands, database history, content replication and live UI signals stay between peers.
+
+Author HTML, JavaScript and assets for the task. The page owns its layout, application policy and ordinary web dependencies. A small runtime utility provides a management link and a stop action for tracked sensors. The headless kernel mounts no interface; voice is an explicit optional module.
 
 ## Start here
 
-- [Agent guide](agent.md): create a page, establish delivery and publish complete files.
-- [Browser API](docs/BROWSER_API.md): transport, conversation, coherent state snapshots, conditional writes, durable timers, streams, captures and explicit device features.
-- [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
-- [Operational tools](docs/tools/CLI.md): optional core-owned publishing, preview, collectors and host bridges.
+- [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.
+- [Application contract](docs/APPLICATION_BACKENDS.md): commands, applied operations, coherent reads and explicit recovery.
+- [Browser API](docs/BROWSER_API.md): session installation, signals, host access, sensors and offline code.
+- [Participant protocol](docs/PROTOCOL.md): role filters, authorization and signed publication atomicity.
+- [Membership](docs/MEMBERSHIP.md): account access, independent device rights and control changes.
+- [Peer connections](docs/PEER_CONNECTIONS.md): discovery, invitations and bounded SDP rendezvous.
 - [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.
-- [Cookbooks](https://github.com/werg/tendriller-contrib): adaptable decision guides and reviewed reference implementations.
-
-The hosted runtime adds a small operational link and a stop action while tracked sensors are active. Conversation, recording, voice, sharing and application navigation are page choices. A separate service-owned recovery page works even if the authored JavaScript is broken. The pure kernel export mounts no interface; voice is an explicit optional module.
+- [CLI and preview](docs/tools/CLI.md): explicit public-session tools and authored-file preview.
+- [Cookbooks](https://github.com/werg/tendriller-contrib): reasoning, application examples and independent qualification.
 
 ## Build and verify
 
@@ -26,22 +29,18 @@ npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-`npm run build` emits the generic Worker and the public SDK, runtime and engine archives. `npm run build:tools` builds the optional operational archive against those public artifacts. `npm run build:artifacts` builds all four. `npm run check:release` runs the full core, tool and browser gates before release publication.
+`npm run build` emits the SDK, runtime and engine archives. `npm run build:tools` builds the separate tools archive against those public artifacts. `npm run check:release` runs the core, tools and browser gates. Each artifact records its exact source and hashes; independent consumers use clean checkpoints.
 
-The generic engine has an empty trusted-extension registry. A deployment may deliberately select reviewed modules through `configureWorkflows`. Reading a cookbook or publishing page files never installs server code. Core builds independently of contrib; cookbook checks consume built public artifacts in one direction.
-
-`npm run dev` runs the generic engine locally. [Development](docs/DEVELOPMENT.md) explains validation, and [operations](docs/OPERATIONS.md) describes fresh deployment provisioning. The optional preview runs from its self-contained core archive and serves exactly the authored files.
-
-## Repository layout
+`npm run dev` runs the local host. [Development](docs/DEVELOPMENT.md) describes verification; [operations](docs/OPERATIONS.md) describes fresh deployment provisioning. Deployments require separate authorization.
 
 | Directory | Responsibility |
 | --- | --- |
-| `contract/` | Executable schemas, SDK, browser declarations, trusted-host types and resource limits |
-| `server/` | Identity, authorization, transactions, private records, delivery, serving and lifecycle |
-| `runtime/` | Headless browser connection, durable outbox, state/streams, sensor tracking and optional voice |
-| `preview-support/` | Public runtime and preview boundaries |
-| `tools/` | Optional CLI, exact-file preview, host bridges and bounded collectors |
-| `scripts/` | Build, artifact checks, release publication and service operations |
-| `docs/` | Protocol, design, testing and operations |
+| `contract/` | Host SDK, participant transport, application binding, signals and browser declarations |
+| `server/` | Accounts, filtered control participant, signed code storage, introductions and lifecycle |
+| `runtime/` | Browser composition, immutable code cache, sensor tracking and optional voice |
+| `preview-support/` | Public kernel and voice declarations |
+| `tools/` | Session CLI, authored-file packing and explicit browser preview |
+| `scripts/` | Builds, artifact checks, release publication and service operations |
+| `docs/` | Current protocol, design, testing and operations |
 
-This is one unreleased target baseline. Development state is recreated from its fresh schemas. Source history and provenance remain evidence; they are not supported runtime dependencies. No new license is inferred for extracted project code; third-party notices accompany distributed artifacts.
+This is one pre-release target. Development storage is recreated from its fresh schema. There are no compatibility readers, alternate application stacks or data migrations. Existing notices and source attribution remain; this refactor grants no new license.

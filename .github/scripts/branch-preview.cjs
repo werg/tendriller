@@ -168,4 +168,36 @@ async function finishCleanup({ github, context, core, env = process.env }) {
     .addRaw(`<p>Removed the preview resources for <code>${escapeHtml(env.PREVIEW_BRANCH)}</code>.</p>`).write();
 }
 
-module.exports = { branchKey, validateBranch, head, trustedRun, select, current, startDeployment, finishDeployment, finishCleanup };
+// The free-tier account has a small D1 database quota. Keep at most one
+// deployed branch preview: remove resources owned by older deployment records
+// before provisioning another branch. Exact-branch deletion remains scoped by
+// scripts/branch-preview.mjs, and a failed deletion aborts the new deployment.
+async function rotatePreviews({ github, context, core, branch, remove }) {
+  validateBranch(branch, context.payload.repository.default_branch);
+  const deployments = await github.paginate(github.rest.repos.listDeployments, {
+    ...context.repo, task: 'deploy:preview', per_page: 100,
+  });
+  const previous = new Map();
+  for (const deployment of deployments) {
+    const owner = deployment.payload?.controller === 'live-branch-previews' && deployment.payload.branch;
+    if (!owner || owner === branch) continue;
+    validateBranch(owner, context.payload.repository.default_branch);
+    if (deployment.environment !== `preview/${branchKey(owner)}`) {
+      throw new Error('Preview deployment has an unexpected environment; refusing rotation.');
+    }
+    if (!previous.has(owner)) previous.set(owner, []);
+    previous.get(owner).push(deployment.id);
+  }
+  for (const [owner, ids] of previous) {
+    await remove(owner);
+    for (const deployment_id of ids) {
+      await github.rest.repos.createDeploymentStatus({
+        ...context.repo, deployment_id, state: 'inactive', log_url: runUrl(context),
+        description: 'Replaced by another live preview', auto_inactive: false,
+      });
+    }
+    core.notice(`Rotated preview resources for ${owner}.`);
+  }
+}
+
+module.exports = { branchKey, validateBranch, head, trustedRun, select, current, startDeployment, finishDeployment, finishCleanup, rotatePreviews };

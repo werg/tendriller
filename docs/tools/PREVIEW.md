@@ -1,121 +1,86 @@
-# Truthful local preview
+# Preview exact authored files and the real session
 
-`tendril-preview` serves the exact authored page directory with the production
-runtime from the same core build. It supplies a small, explicit fixture adapter
-for local iteration. Missing files remain missing. No catalog, recipe declaration,
-component graph, or upstream source lock participates in preview.
-
-## Start a page
+The preview serves a complete authored asset graph. It does not emulate hosted
+state, streams, event sockets, upload receipts or a second application runtime.
+A static page can be inspected without installing application services:
 
 ```sh
-node tools/preview/bin/tendril-preview.mjs ./page
-node tools/preview/bin/tendril-preview.mjs ./page --headless --fixture ./scenario.json --out ./page.png
-# If Playwright is elsewhere, choose that module explicitly:
-node tools/preview/bin/tendril-preview.mjs ./page --headless --playwright-path /path/to/node_modules/playwright
+tendril-preview ./page
 ```
 
-The directory must contain `index.html`. The first command prints a local URL and
-keeps serving until stopped. The second requires Playwright and Chromium, runs
-ordered fixture steps, saves a screenshot and emits a JSON report. `--desktop`
-chooses a wider viewport; `--headed` opens the automation browser visibly.
-These commands are source-checkout paths. From the extracted release use
-`node /path/to/private-tools/bin/tendril-preview.mjs` instead.
+The returned localhost URL serves the authored files. Opening its canonical URL
+captures current edits as a new content addressed graph. Existing publication
+URLs keep their exact old bytes, including nested relative assets. Symlinks and
+paths outside the authored directory are refused. Preview keeps at most 64 graph
+revisions; restart it to reset that local inspection history.
 
-Install Playwright (or `@playwright/test`) and its matching Chromium revision:
-`npm i -D playwright` and `npx playwright install chromium` in the project that
-owns that module. `--playwright-path` resolves an explicit local module/directory
-instead of relying on package resolution from the current working directory.
-On Chromium launch failure the JSON report includes `expected_chromium`, the
-path requested by the selected Playwright version. Supplying an independently
-installed Chromium via `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` remains an advanced
-option and must be compatible with that module.
+## Install the application's owned session
 
-Page files and the runtime are recorded in an immutable local publication.
-Opening the canonical page URL selects current authored bytes; an already-loaded
-publication retains its own files, including lazy modules. Nested HTML receives
-a publication base relative to its directory, so `../shared.js` and local styles
-resolve as authored. Symlinks are rejected consistently with publication packing.
-Generated screenshots use a dot-prefixed default path and are not page assets.
+A live application supplies an authored browser module:
 
-## Explicit fixtures
+```sh
+tendril-preview ./page --bootstrap deployment/preview.mjs
+```
 
-```json
-{
-  "role": "owner",
-  "state": {"reading": null},
-  "service": {"workflows": []},
-  "permissions": [],
-  "denied": ["camera"],
-  "reply": "A simulated response",
-  "streams": [{"name": "measurements", "durability": "durable", "records": []}],
-  "steps": [
-    {"click": "#send"},
-    {"expect_event": {"kind": "sample"}},
-    {"offline": true, "expect_connected": false},
-    {"offline": false, "expect_connected": true}
-  ]
+That module exports `openPreview({ configuration })` and returns
+`{ application, signals?, close }`. `application` is the common Tendriller backend
+made with `createApplicationBackend` from `@chronolog/peer-session/tendriller`.
+`signals` is that session's live-signal surface. `close` closes the owned session
+and any resources created by the deployment. The preview calls
+`startRuntime(configuration, { application, signals })` with the selected backend
+identity and exposes its promise as `globalThis.tendrilReady`.
+
+The bootstrap owns real device creation or resume, verified enrollment inputs,
+worker/storage lifetime and peer transports. Bundle or supply all of its public
+runtime assets in the authored graph. A browser can use the public Worker session
+facade while keeping the signer and durable store out of the page:
+
+```js
+import { createApplicationBackend } from './chronolog/tendriller.mjs';
+import { connectApplicationWorker } from './chronolog/browser.mjs';
+
+export async function openPreview() {
+  const worker = new Worker(new URL('./application-worker.mjs', import.meta.url), { type: 'module' });
+  const session = await connectApplicationWorker(worker);
+  return {
+    application: createApplicationBackend({ id: session.applicationId, session }),
+    signals: session.signals,
+    async close() { await session.close(); worker.terminate(); },
+  };
 }
 ```
 
-`service.workflows` declares **simulated service availability**, separately from
-browser capability observation. Its default is empty. Listing an extension does
-not implement it: its HTTP operations require explicit fixtures. The contract
-must match the bundled runtime. The page directory has no authority to declare a
-service capability. A missing-capability case is part of an honest page check.
+The worker module opens the actual application and calls the public
+`serveApplicationWorker` from `@chronolog/peer-session/worker`. Opening the session
+starts its lightweight protocol participant. Database code and OPFS stay deferred
+until the authored page actually uses durable data; signaling and control do not
+wait for a database. Keep SQL/WASM imports inside `openSqlApplication`'s
+`createEngine` factory, or inside a custom `createMaterializer` factory. Its
+enrollment and connection configuration are part
+of the complete deployment, not hidden preview fixtures. Production and preview
+use the same commands, queries, journal and recovery behavior. Missing setup is
+an explicit error; the preview does not substitute an in-memory data model.
 
-Permission and hardware fixtures are explicit browser inputs. `denied` can block
-camera, microphone, location or motion; `hardware` can supply selected hardware
-records. Capability presence is still derived by the production browser code.
-These inputs establish behavior under the simulated conditions, not real-device
-availability, accuracy or background operation. Permissions default to none.
+## Run browser checks
 
-State operations, stream history, scope matching and generation capture consume
-public pure support algorithms from the runtime artifact. The production browser
-owns its socket, durable outbox, captures, subscriptions and publication lifecycle.
-The fixture adapter intentionally has no private application records or trusted
-transaction implementation.
-
-Captures exercise the production immutable upload protocol: reserve a session,
-PUT exact bytes, then complete it before the durable capture command is accepted.
-The adapter checks the registered device identity, digest and size; repeated
-upload CIDs retain their original session and blob. Completion retries do not
-resend received bytes. Blob reads, byte ranges and guarded owner pin operations
-use the same public response shapes as the service. Uploaded fixture bytes stay
-in memory for the lifetime of the preview server; they are separate from authored
-publication files and are never added to that file set.
-
-## HTTP fixtures and unsupported operations
-
-```json
-{
-  "service": {"workflows": [{"id":"review","interface_version":"1","schema_version":"1"}]},
-  "http": [{
-    "method": "POST",
-    "path": "/_tendril/workflows/review/respond",
-    "expect_body": {"data": {"version": 3, "choice": "revise"}},
-    "json": {"accepted": true}
-  }]
-}
+```sh
+tendril-preview ./page --bootstrap deployment/preview.mjs --headless \
+  --steps actions.json --out preview.png
 ```
 
-Request body assertions compare JSON values, including nested objects. A mismatch
-returns `fixture_mismatch`. `once`, `update` and `broadcast` allow explicit
-scenario transitions. `mocked_http` in the report records what was simulated.
-For a query route, declare an exact `query` object, such as
-`{"path":"reports/latest.json"}` for `/_tendril/file-refs`. Its values are decoded
-strings; undeclared query values do not match. Shared-file snapshots, history and
-changes require explicit HTTP fixtures. Preview does not infer them from local
-files or claim to implement trusted shared-file transactions.
-Undeclared service operations return `501 preview_unsupported`; missing page or
-runtime assets return 404. The report fails when page errors or console errors
-occur, including a missing script. No success fixture implies authorization,
-quota safety, transaction atomicity or external exactly-once effects.
+The optional JSON steps contain DOM actions such as
+`{"action":"fill","selector":"#title","value":"Review"}`,
+`{"action":"click","selector":"#submit"}` and
+`{"action":"wait","selector":"#result","state":"visible"}`.
+They drive authored controls. They cannot directly change state, inject a receipt
+or impersonate a host message. Screenshots and browser errors describe the actual
+local execution and supplied bootstrap.
 
-Other ordered steps can set `role`, `scopes`, `presence`, `state_ops` or `streams`,
-fill a selector, reload, supply a reply, and assert visible text or accepted events.
-`$event.seq` and `$device.id` resolve actual fixture identities instead of invented
-IDs. Steps preserve order and failures are included in `fixture_trace`.
+Install Playwright in the project or supply `--playwright-path MODULE`.
+`--desktop` selects a wider viewport, `--headed` opens the browser visibly, and
+`--wait-ms` adds a bounded observation interval. The harness awaits the supplied
+session's close before ending the browser and local server.
 
-Use the real service suites for privacy, permissions, transactional rollback,
-retention and host delivery. Use actual devices for consent and sensor behavior.
-The preview is a development tool, not a second implementation of those guarantees.
+A local preview is not evidence of deployed login, permissions, Internet
+connectivity, device durability or billing. Use the independent packed artifact
+gates and real deployment qualification for those boundaries.

@@ -2,7 +2,7 @@ import runtimeRelease from "../src/runtime-release.json";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { route } from "../src/router";
-import { api, apiJson, BASE, create, PageClient, req } from "./helpers";
+import { api, apiJson, BASE, create, req } from "./helpers";
 
 describe("public routes", () => {
   it("serves health, landing page and 404s", async () => {
@@ -109,7 +109,7 @@ describe("page URLs", () => {
   it("serves info, manifest and a generated icon", async () => {
     const h = await create({ name: "Pantry" });
     const info = await (await req(h.page_url + "_tendril/info")).json<any>();
-    expect(info).toMatchObject({ id: h.id, version: 0, files: [], features: { push: false } });
+    expect(info).toMatchObject({ id: h.id, version: 0, files: [], application: h.application });
     const man = await (await req(h.page_url + "_tendril/manifest.webmanifest")).json<any>();
     const base = new URL(h.page_url).pathname;
     expect(man).toMatchObject({ name: "Pantry", start_url: base, scope: base });

@@ -77,13 +77,13 @@ export async function adminPage(req: Request, env: Env, url: URL): Promise<Respo
     const stub = env.TENDRIL.get(env.TENDRIL.idFromName(id));
     const preview = await stub.fetch("https://tendril.internal/abuse/preview");
     if (!preview.ok) return errorResponse(502, "preview_failed");
-    const data = await preview.json() as { name: string; versions: { version: number; status: string; risk_score: number; risk_flags: string }[];
+    const data = await preview.json() as { name: string; versions: { version: number; risk_score: number; risk_flags: string }[];
       files: { version: number; path: string; type: string; size: number }[]; activity: { ts: number; kind: string; summary: string }[] };
     const reports = await env.ACCOUNTS.prepare("SELECT source, reason, created_at FROM reports WHERE tendril_id = ? ORDER BY created_at DESC LIMIT 50")
       .bind(id).all<{ source: string; reason: string; created_at: number }>();
     return page(`<p><a href="/admin">Back to queue</a></p><h1>${escape(data.name)}</h1>
       <p>ID ${escape(id)} · ${escape(index.state)} · owner ${escape(index.owner_account ?? "none")}</p>
-      <h2>Version screening</h2><ul>${data.versions.map(v => `<li>Version ${v.version}: ${escape(v.status)}, score ${v.risk_score}, flags ${escape(v.risk_flags)}</li>`).join("")}</ul>
+      <h2>Version screening</h2><ul>${data.versions.map(v => `<li>Version ${v.version}: score ${v.risk_score}, flags ${escape(v.risk_flags)}</li>`).join("")}</ul>
       <h2>Static file listing</h2><ul>${data.files.map(f => `<li>Version ${f.version}: ${escape(f.path)} (${escape(f.type)}, ${f.size} bytes)</li>`).join("")}</ul>
       <h2>Reports</h2><ul>${reports.results.map(r => `<li>${escape(r.source)}: ${escape(r.reason)}</li>`).join("")}</ul>
       <h2>Activity</h2><ul>${data.activity.map(a => `<li>${escape(a.kind)}: ${escape(a.summary)}</li>`).join("")}</ul>`);

@@ -1,4 +1,4 @@
-// Shared test helpers: API client, page WebSocket client, clock control.
+// Shared test helpers: authenticated host requests and clock control.
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { Tendril } from "../src/tendril";
@@ -27,11 +27,12 @@ export interface Handle {
   api: string;
   token: string;
   agent_md: string;
+  application: { id: string };
   lifetime: string;
   expires_at: number | null;
 }
 
-/** Owner page-session cookies by tendril id, filled by `create` and used by `PageClient`. */
+/** Owner page-session cookies by tendril id, filled by `create`. */
 const ownerCookies = new Map<string, string>();
 
 function randomTestIp(): string {
@@ -43,10 +44,10 @@ function randomTestIp(): string {
 /**
  * Creates a tendril the way the public service does: for an owner email, from a creator IP.
  * Unless `claim: false` is passed, it then signs in as that owner and keeps the page-session
- * cookie, so `PageClient.connect(h.page_url)` connects as the owner without further setup.
+ * cookie, so ordinary page requests carry its account session.
  */
 export async function create(body: Record<string, unknown> & { claim?: boolean; listener?: boolean } = {}): Promise<Handle> {
-  const { claim = true, listener = true, ...rest } = body;
+  const { claim = true, listener: _listener, ...rest } = body;
   const email = typeof rest.owner === "string" ? rest.owner : `owner-${crypto.randomUUID()}@example.com`;
   const account = crypto.randomUUID();
   const db = env.ACCOUNTS!;
@@ -58,11 +59,6 @@ export async function create(body: Record<string, unknown> & { claim?: boolean; 
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
   const h = (await res.json()) as Handle;
   if (claim) ownerCookies.set(h.id, await signInAsOwner(h, account, email));
-  // Publishing needs a wake path; a webhook receiver is the lightest one to fake.
-  if (listener) {
-    const wake = await api(h, "PUT", "wake", { webhook: { url: "https://example.org/tendriller-test" } });
-    if (!wake.ok) throw new Error(`wake setup failed: ${wake.status} ${await wake.text()}`);
-  }
   return h;
 }
 
@@ -145,214 +141,4 @@ export function rb32(n: number): string {
   let s = "";
   for (let i = 0; i < n; i++) s += B32[Math.floor(Math.random() * 32)];
   return s;
-}
-
-/** A page speaking the WebSocket protocol directly. */
-export class PageClient {
-  ws!: WebSocket;
-  messages: any[] = [];
-  private waiters: { pred: (m: any) => boolean; resolve: (m: any) => void }[] = [];
-  closed: { code: number; reason: string } | null = null;
-  welcome: any;
-  /** Auto-answer eval messages with this function. */
-  onEval: ((code: string, msg: any) => any) | null = null;
-  headers: Record<string, string> = {};
-
-  constructor(
-    public pageUrl: string,
-    public deviceId = "d_" + rb32(16),
-    public secret = rb32(32),
-  ) {}
-
-  static async connect(pageUrl: string, opts: { deviceId?: string; secret?: string; name?: string; version?: number; rev?: number; headers?: Record<string, string> } = {}): Promise<PageClient> {
-    const c = new PageClient(pageUrl, opts.deviceId, opts.secret);
-    c.headers = opts.headers ?? ownerHeaders(pageUrl);
-    await c.open();
-    c.welcome = await c.hello(opts);
-    return c;
-  }
-
-  async open(): Promise<void> {
-    const res = await req(this.pageUrl + "_tendril/ws", { headers: { Upgrade: "websocket", ...this.headers } });
-    if (res.status !== 101 || !res.webSocket) throw new Error(`ws upgrade failed: ${res.status} ${await res.text()}`);
-    this.ws = res.webSocket;
-    this.ws.accept();
-    this.ws.addEventListener("message", (e) => {
-      const m = JSON.parse(e.data as string);
-      if (m.t === "eval" && this.onEval) {
-        Promise.resolve()
-          .then(() => this.onEval!(m.code, m))
-          .then(
-            (value) => this.send({ t: "eval_result", call_id: m.call_id, ok: true, value }),
-            (err) => this.send({ t: "eval_result", call_id: m.call_id, ok: false, error: String(err?.message ?? err) }),
-          );
-      }
-      const i = this.waiters.findIndex((w) => w.pred(m));
-      if (i >= 0) {
-        const [w] = this.waiters.splice(i, 1);
-        w.resolve(m);
-      } else this.messages.push(m);
-    });
-    this.ws.addEventListener("close", (e) => {
-      this.closed = { code: e.code, reason: e.reason };
-    });
-  }
-
-  hello(opts: { name?: string; version?: number; rev?: number } = {}): Promise<any> {
-    this.send({ t: "hello", device_id: this.deviceId, device_secret: this.secret, name: opts.name ?? "Test device", ua: "vitest", version: opts.version ?? 0, rev: opts.rev ?? 0, caps: {} });
-    return this.next((m) => m.t === "welcome" || m.t === "error");
-  }
-
-  send(m: unknown): void {
-    this.ws.send(JSON.stringify(m));
-  }
-
-  /** Resolves with the next message (already queued or future) matching `pred` (a type string or predicate). */
-  next(pred: string | ((m: any) => boolean), timeoutMs = 3000): Promise<any> {
-    const p = typeof pred === "string" ? (m: any) => m.t === pred : pred;
-    const i = this.messages.findIndex(p);
-    if (i >= 0) return Promise.resolve(this.messages.splice(i, 1)[0]);
-    return new Promise((resolve, reject) => {
-      const w = { pred: p, resolve };
-      this.waiters.push(w);
-      setTimeout(() => {
-        const j = this.waiters.indexOf(w);
-        if (j >= 0) {
-          this.waiters.splice(j, 1);
-          reject(new Error(`timed out waiting for message (${typeof pred === "string" ? pred : "predicate"}); have: ${JSON.stringify(this.messages.map((m) => m.t))}`));
-        }
-      }, timeoutMs);
-    });
-  }
-
-  /** Sends a request with a cid and waits for the reply carrying that cid. */
-  async request(m: Record<string, unknown>, timeoutMs = 3000): Promise<any> {
-    const cid = typeof m.cid === 'string' ? m.cid : "c" + rb32(10);
-    this.send({ ...m, cid });
-    return this.next((x) => x.cid === cid && x.t !== 'instruction_echo', timeoutMs);
-  }
-
-  /** Page HTTP operations carry the device proof established by this socket. */
-  http(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
-    const allHeaders = new Headers({ ...this.headers, "X-Tendril-Device": this.deviceId, "X-Tendril-Device-Secret": this.secret, ...headers });
-    let content: BodyInit | undefined;
-    if (body !== undefined) {
-      if (typeof body === "string" || body instanceof ArrayBuffer || body instanceof Uint8Array) content = body as BodyInit;
-      else { content = JSON.stringify(body); allHeaders.set("Content-Type", "application/json"); }
-    }
-    return req(this.pageUrl + "_tendril/" + path, { method, headers: allHeaders, ...(content === undefined ? {} : { body: content }), anonymous: true });
-  }
-
-  drain(): any[] {
-    const m = this.messages;
-    this.messages = [];
-    return m;
-  }
-
-  close(): void {
-    try {
-      this.ws.close(1000, "done");
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-export type FixtureBytes = string | Uint8Array | ArrayBuffer;
-export interface UploadFixtureOptions {
-  cid?: string;
-  type?: string;
-  name?: string;
-  token?: string;
-  page?: PageClient;
-}
-
-/** Exercise the staged byte API; return the actual failing phase or completion response. */
-export async function uploadBlob(h: Handle, input: FixtureBytes, options: UploadFixtureOptions = {}): Promise<Response> {
-  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input instanceof Uint8Array ? input : new Uint8Array(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
-  const send = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => options.page
-    ? options.page.http(method, path, body, headers)
-    : api(h, method, path, body, headers, options.token ?? h.token);
-  const started = await send("POST", "uploads", {
-    cid: options.cid ?? crypto.randomUUID(), sha256, size: bytes.byteLength,
-    type: options.type ?? "application/octet-stream", ...(options.name === undefined ? {} : { name: options.name }),
-  });
-  if (!started.ok) return started;
-  const session = await started.json<any>();
-  if (session.upload_required && !["received", "completed"].includes(session.phase)) {
-    const content = await send("PUT", `uploads/${session.id}/content`, bytes, { "Content-Type": "application/octet-stream" });
-    if (!content.ok) return content;
-    await content.arrayBuffer();
-  }
-  return send("POST", `uploads/${session.id}/complete`, {});
-}
-
-export async function uploadBlobJson(h: Handle, input: FixtureBytes, options: UploadFixtureOptions = {}): Promise<any> {
-  const response = await uploadBlob(h, input, options), body = await response.json<any>();
-  if (!response.ok) throw Error(`Fixture upload failed (${response.status}): ${JSON.stringify(body)}`);
-  return body.blob;
-}
-
-export type FixtureFile = FixtureBytes | { bytes: FixtureBytes; type: string };
-export interface PublicationFixtureOptions {
-  cid?: string;
-  entry?: string;
-  replace?: boolean;
-  expected_head_revision?: number;
-  expected_generations?: Record<string, string>;
-  scope?: string;
-  token?: string;
-}
-
-const fixtureType = (path: string) => path.endsWith(".html") ? "text/html"
-  : path.endsWith(".js") || path.endsWith(".mjs") ? "text/javascript"
-  : path.endsWith(".css") ? "text/css" : path.endsWith(".json") ? "application/json"
-  : path.endsWith(".txt") ? "text/plain" : "application/octet-stream";
-
-/** Author explicit bytes, then commit one complete manifest against the captured head. */
-export async function publishFiles(h: Handle, files: Record<string, FixtureFile>, options: PublicationFixtureOptions = {}): Promise<Response> {
-  const cid = options.cid ?? crypto.randomUUID(), token = options.token ?? h.token;
-  const headResponse = await api(h, "GET", "publications", undefined, {}, token);
-  if (!headResponse.ok) return headResponse;
-  const head = await headResponse.json<any>();
-  let previous: any = null;
-  if (!options.replace && head.current) {
-    const response = await api(h, "GET", `publications/${head.current}`, undefined, {}, token);
-    if (!response.ok) return response;
-    previous = await response.json<any>();
-  }
-  const manifest = new Map<string, { path: string; blob_id: string; type: string }>();
-  for (const file of previous?.files ?? []) manifest.set(file.path, { path: file.path, blob_id: file.blob_id, type: file.type });
-  for (const [path, value] of Object.entries(files)) {
-    const explicit = typeof value === "object" && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && "bytes" in value;
-    const type = explicit ? value.type : fixtureType(path), bytes = explicit ? value.bytes : value as FixtureBytes;
-    const response = await uploadBlob(h, bytes, { name: path, type, token });
-    if (!response.ok) return response;
-    const { blob } = await response.json<any>();
-    manifest.set(path, { path, blob_id: blob.id, type });
-  }
-  return api(h, "POST", "publications", {
-    cid, expected_generations: options.expected_generations ?? {},
-    ...(options.scope ? { scope: options.scope } : {}),
-    expected_head_revision: options.expected_head_revision ?? head.head_revision,
-    entry: options.entry ?? previous?.entry ?? "index.html",
-    files: [...manifest.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-  }, {}, token);
-}
-
-export async function publishFilesJson(h: Handle, files: Record<string, FixtureFile>, options: PublicationFixtureOptions = {}): Promise<any> {
-  const response = await publishFiles(h, files, options), body = await response.json<any>();
-  if (!response.ok) throw Error(`Fixture publication failed (${response.status}): ${JSON.stringify(body)}`);
-  return body;
-}
-
-/** Resolve the current complete manifest before requesting its immutable bytes. */
-export async function publishedFile(h: Handle, path: string): Promise<Response> {
-  const head = await apiJson(h, "GET", "publications");
-  const manifest = await apiJson(h, "GET", `publications/${head.current}`);
-  const file = manifest.files.find((entry: any) => entry.path === path);
-  if (!file) throw Error(`No authored file ${path} in publication ${head.current}`);
-  return api(h, "GET", `blobs/${file.blob_id}`);
 }

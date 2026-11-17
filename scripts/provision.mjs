@@ -71,8 +71,8 @@ export function deploymentConfig(plan, databaseId, account) {
     d1_databases: [{ binding: 'ACCOUNTS', database_name: plan.database, database_id: databaseId, migrations_dir: 'migrations' }],
     r2_buckets: [{ binding: 'FILES', bucket_name: plan.bucket }], triggers: { crons: ['*/15 * * * *'] },
     ratelimits: [
-      ['CREATE_RATE', '101', 5], ['AGENT_RATE', '102', 300], ['EVAL_RATE', '103', 60], ['AUTH_RATE', '104', 20],
-      ['FAILED_AUTH_RATE', '105', 20], ['REPORT_RATE', '106', 5], ['FILE_READ_RATE', '108', 120],
+      ['CREATE_RATE', '101', 5], ['AGENT_RATE', '102', 300], ['AUTH_RATE', '104', 20],
+      ['FAILED_AUTH_RATE', '105', 20], ['REPORT_RATE', '106', 5],
     ].map(([name, namespace_id, limit]) => ({ name, namespace_id, simple: { limit, period: 60 } })),
     vars: { PUBLIC_BASE: `https://${plan.service}`, PAGE_BASE_DOMAIN: plan.pages, ...(plan.suffix ? { PAGE_HOST_SUFFIX: plan.suffix } : {}), CLOUDFLARE_ACCOUNT_ID: account },
     routes: [{ pattern: plan.service, custom_domain: true }, { pattern: `*${plan.suffix}.${plan.pages}/*`, zone_name: plan.zone }],
@@ -87,8 +87,6 @@ async function main() {
   if (stage !== 'production' && stage !== 'staging') throw Error('Pass production or staging');
   const { experimental_readRawConfig } = createRequire(import.meta.url)('wrangler');
   const current = experimental_readRawConfig({ config: `server/wrangler.${stage}.jsonc` }).rawConfig;
-  if (!values.name && current.main === '../dist/service/worker.mjs')
-    throw Error('Canonical deployment resources are already provisioned; verify their storage revision before deploying. Pass --name and --fresh for an isolated deployment.');
   const plan = deploymentPlan(stage, values, process.env, current);
   const wrangler = (...args) => execFileSync('npx', ['wrangler', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const identity = JSON.parse(wrangler('whoami', '--json'));

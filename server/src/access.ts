@@ -1,40 +1,26 @@
 // Authentication resolves identity. Authorization and activity recording are explicit.
-import type { Role, StreamInfo } from "../../contract/index.mjs";
-import type { Att, Link, Tendril } from "./tendril";
+import type { Role } from "../../contract/index.mjs";
+import type { Link, Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { safeEqual, sha256Hex } from "./ids";
 
 export interface AgentPrincipal { kind: "agent"; name: string; credentialHash: string }
-export interface ProducerPrincipal { kind: "producer"; name: string; credentialHash: string; streams: string[] }
 export interface PagePrincipal {
   kind: "page"; name: string; role: Role; accountId: string | null; linkId: string;
-  sessionHash: string | null; deviceId: string | null;
+  sessionHash: string | null;
 }
-export type Principal = AgentPrincipal | ProducerPrincipal | PagePrincipal;
-/** Small reader identity also used by trusted in-process stream adapters. */
-export interface StreamActor { kind: "agent" | "page"; name: string; role?: Role }
+export type Principal = AgentPrincipal | PagePrincipal;
 export interface PageSession { account_id: string; role: Role; hash: string }
-export type AccessAction = "agent.manage" | "page.owner" | "page.write" | "stream.read" | "stream.append";
-type StreamResource = Pick<StreamInfo, "name" | "readers" | "builtin">;
-
-export function canReadStream(info: Pick<StreamInfo, "readers">, actor: StreamActor): boolean {
-  return actor.kind === "agent" || info.readers === "page" || info.readers === "owner" && actor.role === "owner";
-}
-
-export function allows(principal: Principal, action: AccessAction, stream?: StreamResource): boolean {
+export type AccessAction = 'agent.manage' | 'page.owner' | 'page.write';
+export function allows(principal: Principal, action: AccessAction): boolean {
   switch (action) {
-    case "agent.manage": return principal.kind === "agent";
-    case "page.owner": return principal.kind === "page" && principal.role === "owner";
-    case "page.write": return principal.kind === "page" && principal.role !== "display";
-    case "stream.read": return !!stream && principal.kind !== "producer" && canReadStream(stream, principal);
-    case "stream.append": return !!stream && !stream.builtin && (principal.kind === "agent"
-      || principal.kind === "page" && principal.role === "owner"
-      || principal.kind === "producer" && producerMayAppend(principal, stream.name));
+    case 'agent.manage': return principal.kind === 'agent';
+    case 'page.owner': return principal.kind === 'page' && principal.role === 'owner';
+    case 'page.write': return principal.kind === 'page' && principal.role !== 'display';
   }
 }
-
-export function requireAccess(principal: Principal, action: AccessAction, stream?: StreamResource): void {
-  if (!allows(principal, action, stream)) throw new HttpError(403, "forbidden", "This identity is not allowed to perform this operation");
+export function requireAccess(principal: Principal, action: AccessAction): void {
+  if (!allows(principal, action)) throw new HttpError(403, 'forbidden');
 }
 
 export async function authenticateAgentToken(t: Tendril, token: string): Promise<AgentPrincipal> {
@@ -50,28 +36,7 @@ export async function authenticateAgent(t: Tendril, req: Request): Promise<Agent
   return authenticateAgentToken(t, token);
 }
 
-export async function authenticateProducer(t: Tendril, req: Request): Promise<ProducerPrincipal> {
-  const token = /^Bearer\s+(tp_[a-z2-7]{40})\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
-  if (!token) throw new HttpError(401, "unauthorized", "Invalid producer credential");
-  const hash = await sha256Hex(token);
-  const row = t.db.one<{ name: string; streams: string }>("SELECT name,streams FROM stream_producers WHERE hash=?", hash);
-  if (!row) throw new HttpError(401, "unauthorized", "Invalid or revoked producer credential");
-  return { kind: "producer", name: row.name, credentialHash: hash, streams: JSON.parse(row.streams) };
-}
-
-export function producerStillValid(t: Tendril, principal: ProducerPrincipal): boolean {
-  return !!t.db.one("SELECT name FROM stream_producers WHERE hash=?", principal.credentialHash);
-}
-export function producerMayAppend(principal: ProducerPrincipal, stream: string): boolean {
-  return !stream.startsWith("system.") && principal.streams.includes(stream);
-}
-export function recordProducerActivity(t: Tendril, principal: ProducerPrincipal): void {
-  t.db.run("UPDATE stream_producers SET last_seen=? WHERE hash=?", t.now(), principal.credentialHash);
-  t.db.set("last_producer_seen", t.now());
-  t.scheduleAlarm();
-}
-
-/** One account/page policy for HTTP, socket requests, and ongoing stream delivery. */
+/** One account/page policy for host requests and peer introductions. */
 export async function pageAccessAllowed(t: Tendril): Promise<boolean> {
   if (t.db.get("disabled", false)) return false;
   const status = await t.env.ACCOUNTS.prepare(`SELECT t.state,t.owner_account,a.id AS owner_id,a.suspended_at,a.deleting_at
@@ -113,33 +78,17 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
   return { kind: "page", name: identity.accountId ?? identity.linkId, ...identity };
 }
 
+/** Recheck local revocation at a synchronous commit after asynchronous preparation. */
+export function currentPrincipal(t: Tendril, principal: Principal): Principal | null {
+  if (t.db.get("disabled", false)) return null;
+  if (principal.kind === "page") return localPagePrincipal(t, principal);
+  return t.db.one("SELECT 1 FROM tokens WHERE hash=? AND name=?", principal.credentialHash, principal.name) ? principal : null;
+}
+
 export async function authenticatePage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
   const session = await readPageSession(t, req);
   const principal = localPagePrincipal(t, { role: link.role, accountId: session?.account_id ?? null,
-    linkId: link.id, sessionHash: session?.hash ?? null, deviceId: null });
+    linkId: link.id, sessionHash: session?.hash ?? null });
   if (!principal) throw new HttpError(401, "unauthorized", "Page sign-in required");
   return { principal, session };
-}
-
-interface SocketAccessOptions { fresh?: boolean; beforeHello?: boolean }
-
-export function socketPrincipal(t: Tendril, ws: WebSocket, options: SocketAccessOptions = {}): PagePrincipal | null {
-  const att = t.att(ws);
-  if (!att?.sessionRole || !options.beforeHello && !att.deviceId || att.deviceId && !t.device(att.deviceId)) return null;
-  return localPagePrincipal(t, { role: att.sessionRole, accountId: att.accountId ?? null, linkId: att.linkId,
-    sessionHash: att.sessionHash ?? null, deviceId: att.deviceId });
-}
-
-export async function authorizeSocket(t: Tendril, ws: WebSocket, options: SocketAccessOptions = {}): Promise<PagePrincipal | null> {
-  let principal = socketPrincipal(t, ws, options);
-  const att = t.att(ws);
-  if (!principal || !att) return null;
-  if (options.fresh || !att.checkedAt || t.now() - att.checkedAt > 1000) {
-    if (!await pageAccessAllowed(t) || principal.accountId && !await accountActive(t, principal.accountId)) return null;
-    // Preserve stream cursors advanced during asynchronous account checks.
-    principal = socketPrincipal(t, ws, options);
-    if (!principal) return null;
-    ws.serializeAttachment({ ...t.att(ws)!, checkedAt: t.now() } satisfies Att);
-  }
-  return principal;
 }

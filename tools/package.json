@@ -2,16 +2,16 @@
   "name": "@tendriller/tools-source",
   "private": true,
   "type": "module",
-  "description": "Optional operational tools for the Tendriller public contract",
+  "description": "Authored-page preview and native tools for the common application session",
   "scripts": {
-    "test": "node --test cli/test/*.test.mjs collector/test/*.test.mjs bridges/test/*.test.mjs preview/test/*.test.mjs test/*.test.mjs",
+    "test": "node --test cli/test/*.test.mjs preview/test/*.test.mjs test/*.test.mjs",
     "test:browser": "playwright test --config preview/test/preview.playwright.config.ts"
   },
-  "engines": { "node": ">=22.15.0" },
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "dependencies": {
     "@tendriller/core": "file:../dist/sdk",
-    "@tendriller/runtime": "file:../dist/runtime",
-    "@modelcontextprotocol/sdk": "1.32.2",
-    "ws": "8.21.0"
+    "@tendriller/runtime": "file:../dist/runtime"
   }
 }

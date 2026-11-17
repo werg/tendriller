@@ -4,8 +4,7 @@ import { errorResponse, readBody } from "../http";
 import { publicBase } from "../urls";
 
 type FileRow = { hash: string; size: number };
-type BlobRow = { id: string; size: number };
-type TendrilExport = { id: string; stored_files: FileRow[]; blobs: BlobRow[]; [key: string]: unknown };
+type TendrilExport = { id: string; stored_files: FileRow[]; [key: string]: unknown };
 
 function base64(bytes: Uint8Array): string {
   let binary = "";
@@ -36,10 +35,10 @@ export async function accountData(req: Request, env: Env, url: URL): Promise<Res
             const response = await stub(env, row.id).fetch(accountRequest(account, "export"));
             if (!response.ok) throw new Error(`Could not export tendril ${row.id}`);
             const data = await response.json() as TendrilExport;
-            const { stored_files, blobs, ...meta } = data;
+            const { stored_files, ...meta } = data;
             if (!first) put(",");
             first = false;
-            put(`${JSON.stringify({ ...row, ...meta, blobs }).slice(0, -1)},"files":[`);
+            put(`${JSON.stringify({ ...row, ...meta }).slice(0, -1)},"files":[`);
             let firstFile = true;
             for (const file of stored_files) {
               const object = await env.FILES.get(`t/${row.id}/files/${file.hash}`);

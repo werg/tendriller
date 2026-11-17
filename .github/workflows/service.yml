@@ -43,6 +43,37 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  artifacts:
+    name: Public package artifacts
+    # Retain independently checked package inputs promptly for paired consumers.
+    # A newer PR commit may cancel the longer browser matrix; these are CI
+    # artifacts, while every deployment still requires the full check job.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Consumers pin a source commit, not GitHub's temporary PR merge ref.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:artifacts
+      - run: npm run test:consumer
+      - run: npm run release:artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-packages
+          if-no-files-found: error
+          path: |
+            dist/tendriller-*.tgz
+            dist/manifest.json
+            dist/provenance.json
+            dist/SHA256SUMS
+
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
     needs: [check]
@@ -73,22 +104,11 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
-        id: cutover
-        run: node scripts/check-contract5-cutover.mjs server/wrangler.staging.jsonc
-      - if: steps.current.outputs.current == 'true'
         run: node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
-      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
-        run: node scripts/build-cutover-step.mjs server/wrangler.staging.jsonc
-      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
-        run: npx wrangler deploy --config server/.wrangler.staging.cutover.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler deploy --config server/wrangler.staging.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
         run: node scripts/check-deployment.mjs https://staging.tendriller.dev
-      - if: steps.current.outputs.current == 'true'
-        run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.staging.jsonc --file scripts/open-contract5-cutover.sql
-      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
-        run: node scripts/check-service-open.mjs https://staging.tendriller.dev
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
@@ -120,19 +140,8 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
-        id: cutover
-        run: node scripts/check-contract5-cutover.mjs server/wrangler.production.jsonc
-      - if: steps.current.outputs.current == 'true'
         run: node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
-      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
-        run: node scripts/build-cutover-step.mjs server/wrangler.production.jsonc
-      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
-        run: npx wrangler deploy --config server/.wrangler.production.cutover.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler deploy --config server/wrangler.production.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
         run: node scripts/check-deployment.mjs https://tendriller.dev
-      - if: steps.current.outputs.current == 'true'
-        run: npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.production.jsonc --file scripts/open-contract5-cutover.sql
-      - if: steps.current.outputs.current == 'true' && steps.cutover.outputs.needed == 'true'
-        run: node scripts/check-service-open.mjs https://tendriller.dev

@@ -43,7 +43,7 @@ function network(first) {
     },
   };
 }
-async function worker(net, stores = new Map(), clients = new Map(), { beforePut } = {}) {
+async function worker(net, stores = new Map(), clients = new Map(), { beforePut, timers = { setTimeout, clearTimeout } } = {}) {
   const listeners = new Map(), sent = [], background = [];
   const key = request => typeof request === "string" ? request : request.url;
   const caches = {
@@ -60,7 +60,7 @@ async function worker(net, stores = new Map(), clients = new Map(), { beforePut 
     async keys() { return [...stores.keys()]; },
     async delete(name) { return stores.delete(name); },
   };
-  runInNewContext(built.outputFiles[0].text, { URL, Response, Request, Headers, crypto: webcrypto, caches, fetch: net.fetch, setTimeout, clearTimeout,
+  runInNewContext(built.outputFiles[0].text, { URL, Response, Request, Headers, crypto: webcrypto, caches, fetch: net.fetch, ...timers,
     self: { registration: { scope }, skipWaiting() {}, addEventListener(type, fn) { listeners.set(type, fn); },
       clients: { async claim() {}, async matchAll() { return [...clients].map(([id, url]) => ({ id, url, postMessage(data) { sent.push({ id, data }); } })); } } },
   });
@@ -164,6 +164,90 @@ test("reloading pinned A online cannot rewind the latest publication for a new o
   assert.match(await (await sw.request(a.publication.base + "index.html", "a", true)).text(), /<h1>1<\/h1>/);
 });
 
+test("a successful navigation refreshes resident introductions for the next offline launch of the same publication", async () => {
+  const a = release("1"), documentPath = "index.html", url = a.publication.base + documentPath;
+  const page = endpoint => `<!doctype html><script>window.__TENDRIL__=${JSON.stringify({
+    publication: a.publication, documentPath, application: { id: "peer-history" },
+    peerBootstrap: { version: 2, endpoints: [{ url: endpoint }] },
+  })};</script><h1>Peer application</h1>`;
+  let html = page("https://original.example/introduce");
+  const headers = { "X-Tendril-Publication": "1", "Cache-Control": "private, no-cache", "Content-Type": "text/html" };
+  a.resources.set(url, () => new Response(html, { headers }));
+  const net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce("a", a.publication);
+  const cache = await sw.caches.open(cacheName("1"));
+  assert.equal(await (await cache.match(url)).text(), html);
+  html = page("https://replacement.example/introduce");
+  const before = net.calls.length;
+  assert.equal(await (await sw.request(url, "a", true)).text(), html);
+  assert.deepEqual(net.calls.slice(before), [url], "refresh reuses navigation without discovery or asset fetches");
+  assert.equal(await (await cache.match(url)).text(), html);
+
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  assert.equal(await (await restarted.request("", "a", true)).text(), html);
+  assert.equal(await (await restarted.request(url, "a", true)).text(), html);
+  assert.equal(await (await restarted.request(a.publication.base + "app.js", "a")).text(), "app-1");
+});
+
+test("navigation refresh requires a matching publication and declared document and respects no-store", async () => {
+  const a = release("1"), net = network(a), sw = await worker(net), url = a.publication.base + "index.html";
+  await sw.install(); await sw.announce("a", a.publication);
+  const cache = await sw.caches.open(cacheName("1")), saved = await (await cache.match(url)).text();
+  for (const [documentPath, publicationId, cacheControl] of [
+    ["index.html", "2", "private, no-cache"],
+    ["app.js", "1", "private, no-cache"],
+    ["missing.html", "1", "private, no-cache"],
+    ["index.html", "1", "private, no-store"],
+  ]) {
+    const html = `<script>window.__TENDRIL__=${JSON.stringify({ publication: a.publication, documentPath })};</script>Unsaved`;
+    net.resources.set(url, () => new Response(html, { headers: { "X-Tendril-Publication": publicationId, "Cache-Control": cacheControl } }));
+    assert.equal(await (await sw.request(url, "a", true)).text(), html);
+    assert.equal(await (await cache.match(url)).text(), saved);
+    assert.equal(await (await cache.match(a.publication.base + "app.js")).text(), "app-1");
+    assert.equal(await cache.match(a.publication.base + "missing.html"), undefined);
+  }
+});
+
+test("a late network publication cannot rebind or evict a tab already given its offline publication", { timeout: 5000 }, async () => {
+  const a = release("1"), b = release("2"), net = network(a), fetch = net.fetch;
+  const requested = Promise.withResolvers(), arrived = Promise.withResolvers(), boundOffline = Promise.withResolvers();
+  let delayed = false, deadline;
+  net.fetch = async request => {
+    const response = await fetch(request);
+    if (delayed && (typeof request === "string" ? request : request.url) === scope) {
+      requested.resolve(); await arrived.promise;
+    }
+    return response;
+  };
+  const sw = await worker(net, new Map(), new Map(), {
+    timers: { setTimeout(callback) { deadline = callback; return 1; }, clearTimeout() {} },
+    async beforePut(name, url, response) {
+      if (delayed && name === "tendril-v2-metadata" && (await response.json()).clients.a === "1") boundOffline.resolve();
+    },
+  });
+  await sw.install(); await sw.announce("a", a.publication);
+  net.current = b; delayed = true;
+  const navigation = sw.request("", "a", true);
+  await requested.promise;
+  deadline();
+  await boundOffline.promise;
+  arrived.resolve();
+  assert.match(await (await navigation).text(), /<h1>1<\/h1>/);
+
+  // The background response can save B for a future launch, while A remains
+  // retained for the document that this navigation actually delivered.
+  delayed = false;
+  await sw.install();
+  assert.equal(sw.stores.has(cacheName("1")), true);
+  assert.equal(sw.stores.has(cacheName("2")), true);
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  assert.match(await (await restarted.request("", "a", true)).text(), /<h1>1<\/h1>/);
+  assert.match(await (await restarted.request("", "fresh", true)).text(), /<h1>2<\/h1>/);
+  assert.equal(await (await restarted.request(a.publication.base + "lazy.js", "a")).text(), "lazy-1");
+});
+
 test("cleanup removes a publication only after all its clients leave", async () => {
   const a = release("1"), b = release("2"), net = network(a), sw = await worker(net);
   await sw.install(); await sw.announce("a", a.publication);
@@ -196,11 +280,12 @@ test("unannounced active clients prevent cleanup until their publication is know
 test("live API responses and undeclared resources never gain offline cache access", async () => {
   const a = release("1"), net = network(a), sw = await worker(net);
   await sw.install(); await sw.announce("a", a.publication);
-  const paths = ["_tendril/devices", "_tendril/workflows/sessions/responses", "%5Ftendril/session", "_tendril/future-api", "api/private", "app.js", a.publication.base + "not-declared.js", a.publication.base + "app.js?mutable=1"];
+  const paths = ["_tendril/info", "_tendril/peers/participant", "%5Ftendril/session", "_tendril/future-api", "api/private", "app.js", a.publication.base + "not-declared.js", a.publication.base + "app.js?mutable=1"];
   for (const path of paths) {
-    const first = await (await sw.request(path)).json();
-    const second = await (await sw.request(path)).json();
-    assert.notEqual(first.live, second.live);
+    const before = net.calls.length;
+    await sw.request(path);
+    await sw.request(path);
+    assert.equal(net.calls.length, before + 2, `${path} must reach the network on every read`);
   }
   net.online = false;
   for (const path of paths) await assert.rejects(sw.request(path), /offline/);

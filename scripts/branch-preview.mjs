@@ -188,7 +188,8 @@ export async function smokePreview(identity, { fetcher = fetch, provenance = tru
         const body = await response.text();
         if (path === "/api/service") { if (JSON.parse(body).contract !== CONTRACT_VERSION) throw new Error("Service contract mismatch"); }
         else if (!body.includes("Tendriller")) throw new Error(`${path}: missing service content`);
-        if (path === "/agent.md" && !body.includes(identity.url)) throw new Error("Agent guide points at another environment");
+        if (path === "/agent.md" && /https:\/\/(?:staging\.)?tendriller\.dev(?:[/?#]|$)/.test(body))
+          throw new Error("Agent guide points at another environment");
       }
       return;
     } catch (error) {

@@ -17,7 +17,7 @@
     "contract:check": "node scripts/contract.mjs",
     "test:contract": "node --test contract/test/*.test.mjs",
     "test:browser": "npm run build && node scripts/test-browser.mjs",
-    "check": "npm run contract:check && npm run typecheck && npm run build && npm run build:tools && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:push && npm run test:server && npm run test:consumer && npm run test:tools",
+    "check": "npm run contract:check && npm run typecheck && npm run build && npm run build:tools && npm run check:boundaries && npm run test:ci && npm run test:contract && npm run test:runtime-unit && npm run test:server && npm run test:consumer && npm run test:tools",
     "test:ci": "node --test scripts/test/*.test.mjs",
     "check:release": "npm run check && npm run test:browser",
     "test:runtime-unit": "node --test --test-concurrency=1 runtime/test/*.test.mjs",
@@ -28,27 +28,23 @@
     "test:tools": "npm --prefix tools test",
     "test:tools:browser": "npm --prefix tools run test:browser",
     "release:artifacts": "node scripts/release.mjs",
-    "check:boundaries": "node scripts/check-boundaries.mjs",
-    "test:push": "node scripts/test-push.mjs"
+    "check:boundaries": "node scripts/check-boundaries.mjs"
   },
   "devDependencies": {
+    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-061c8029.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
-    "@modelcontextprotocol/sdk": "1.32.2",
     "@playwright/test": "^1.65.0",
-    "axe-core": "4.10.3",
     "esbuild": "^0.28.2",
-    "qrcode-generator": "^2.0.4",
     "typescript": "^7.0.2",
     "vitest": "4.1",
-    "wrangler": "^4.161.0",
-    "ws": "^8.21.0"
+    "wrangler": "^4.161.0"
   },
   "dependencies": {
     "ipaddr.js": "^2.5.0",
     "phonon-tts": "0.7.1"
   },
-  "version": "0.3.0-rc.9",
+  "version": "0.3.0-rc.10",
   "engines": {
     "node": ">=22.15.0"
   }

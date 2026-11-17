@@ -1,4 +1,8 @@
 import type { RuntimeApi, RuntimeConfiguration } from "@tendriller/core/contract";
 export type { RuntimeConfiguration } from "@tendriller/core/contract";
-/** Starts protocol support and observation. It mounts no UI and requests no permissions. */
-export function startRuntime(configuration: RuntimeConfiguration): RuntimeApi;
+/** One installed application backend and its live signals. Starts no transport or permissions. */
+export interface RuntimeOptions {
+  application?: import("@tendriller/core/application").ApplicationBackend;
+  signals?: import("@tendriller/core/signals").Signals;
+}
+export function startRuntime(configuration: RuntimeConfiguration, options?: RuntimeOptions): RuntimeApi;

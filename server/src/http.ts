@@ -48,26 +48,52 @@ export function withCors(res: Response): Response {
   return out;
 }
 
-/** Reads the body up to `max` bytes; throws 413 beyond that. */
-export async function readBody(req: Request, max: number): Promise<ArrayBuffer> {
+/** Bounds total read time as well as bytes, including a client that stops mid-body. */
+export async function readBody(req: Request, max: number, timeoutMs = 120_000): Promise<ArrayBuffer> {
+  if (!Number.isSafeInteger(max) || max < 0) throw new TypeError("Invalid body byte limit");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new TypeError("Invalid body read deadline");
   const len = Number(req.headers.get("Content-Length") ?? "NaN");
   if (Number.isFinite(len) && len > max) throw new HttpError(413, "too_large", `Body exceeds ${max} bytes`);
   if (!req.body) return new ArrayBuffer(0);
   const reader = req.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let fragments = 0;
+  let timer: ReturnType<typeof setTimeout>;
+  let abort!: () => void;
+  const deadline = new Promise<never>((_, reject) => {
+    const stop = (error: unknown) => {
+      // Reject before cancellation can resolve an unfinished read with done=true.
+      reject(error);
+      void reader.cancel(error).catch(() => {});
+    };
+    timer = setTimeout(() => stop(new HttpError(408, "request_timeout", "Request body exceeded its read deadline")), timeoutMs);
+    abort = () => stop(req.signal.reason ?? new HttpError(408, "request_aborted", "Request body was cancelled"));
+    req.signal.addEventListener("abort", abort, { once: true });
+    if (req.signal.aborted) abort();
+  });
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await Promise.race([deadline, reader.read()]);
       if (done) break;
+      // Count empty chunks too: a synchronously producing stream can otherwise
+      // exhaust memory or starve the timer without consuming its byte budget.
+      if (++fragments > 65_536) {
+        void reader.cancel().catch(() => {});
+        throw new HttpError(413, "too_fragmented", "Request body exceeds its fragment limit");
+      }
       size += value.byteLength;
       if (size > max) {
-        await reader.cancel();
+        void reader.cancel().catch(() => {});
         throw new HttpError(413, "too_large", `Body exceeds ${max} bytes`);
       }
-      chunks.push(value);
+      if (value.byteLength) chunks.push(value);
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    clearTimeout(timer!);
+    req.signal.removeEventListener("abort", abort);
+    reader.releaseLock();
+  }
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
@@ -75,7 +101,7 @@ export async function readBody(req: Request, max: number): Promise<ArrayBuffer> 
 }
 
 export async function readJson<T = any>(req: Request, max = 1_000_000): Promise<T> {
-  const buf = await readBody(req, max);
+  const buf = await readBody(req, max, 30_000);
   if (buf.byteLength === 0) return {} as T;
   try {
     return JSON.parse(new TextDecoder().decode(buf)) as T;

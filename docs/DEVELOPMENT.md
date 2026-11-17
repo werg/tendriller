@@ -1,128 +1,48 @@
 # Develop and verify Tendriller
 
-Use Node 22.15 or newer and install the locked dependencies with `npm ci`.
-Core builds and tests without a contrib checkout. Its default Worker has an
-empty trusted-extension registry; a cookbook never installs server code.
-
-## Build and run
+Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. There is one application contract and one fresh host storage baseline.
 
 | Command | Result |
 | --- | --- |
-| `npm run build` | Build the headless browser runtime, optional runtime adapters, public SDK, and generic Worker; package SDK, runtime, and engine archives in `dist/`. |
-| `npm run build:tools` | Install the isolated tools package against the built public SDK/runtime, then package its CLI, preview, collectors, and host bridges. Run after `build`. |
-| `npm run build:artifacts` | Build all four public archives, including the optional tools. |
-| `npm run dev` | Build assets, initialize the local account database, and supervise the asset watcher and local Wrangler Worker. |
-| `npm run check` | Validate the contract, types, build boundaries, unit/Worker tests, clean public-package consumers, and operational tools. |
-| `npm run check:release` | Run `check` and the browser suites required for a release. |
+| `npm run build` | Build and package SDK, runtime and generic participant engine |
+| `npm run build:tools` | Package the session CLI, authored-file packer and explicit preview against built public artifacts |
+| `npm run build:artifacts` | Build all four public archives |
+| `npm run dev` | Build assets and run the local account/page host |
+| `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
+| `npm run check:release` | Core checks plus browser qualification |
 
-The SDK publishes the browser, agent-client, and trusted-host contracts. The
-runtime archive contains the exact browser assets and manifest plus public
-preview support. The engine archive exposes the Worker, `Tendril` and `Admission`
-classes, account schema, and an explicit test fixture. The tools archive is a
-self-contained Node distribution: extracting it does not require an npm install
-or a source checkout. See [operational artifact details](tools/ARTIFACTS.md).
+## Boundaries
 
-`npm run contract:generate` refreshes `contract/wire.d.mts` and `contract/v3.json`
-from the executable schemas. `npm run contract:check` rejects stale generated
-files. This repository defines one target contract and storage baseline. Tests
-create their own accounts, pages, commands, captures, and records under that
-baseline.
+Chronolog owns application execution, signing identity, local bytes, command attempts and replication. The Worker embeds only portable participant/control verification. It has no application extension registry, SQL executor or second data model. Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
 
-## Boundaries and deliberate trusted extensions
+The browser Chronolog participant is independent of database activation. Its protocol
+identity and verified control metadata use small browser-native storage; OPFS, database
+ownership, history and materialization load on first durable use inside that same
+participant. The public `/browser` import contains the page facade; `/worker` contains
+the protocol owner and reaches durable code through a dynamic import. Keep optional
+SQL engine imports inside `createEngine` (or a custom `createMaterializer`), never
+in a page's eager import graph.
 
-The deployed Worker does not include Node tools or cookbook implementation code.
-The browser kernel does not import conversation UI, speech, or domain rule policy.
-The hosted entry adds a small recovery and device-use utility; authored pages use
-the public browser API to choose their own interaction design. Optional speech
-requires an explicit adapter and user interaction.
+`@tendriller/core` publishes host/participant and browser contracts. The runtime archive contains exact code/assets plus kernel and voice declarations. The engine exports the generic Worker, `Tendril`, `Admission`, account schema and public test fixture. Tools are a separate self-contained Node archive with `tendril` and `tendril-preview` executables and preview/pack/session exports.
 
-A deployment that needs extra enforcement selects a reviewed `WorkflowModule`
-through the public engine export. For example, an application entry can import
-its own module and retain the engine's platform handlers:
+Run `contract:generate` after executable metadata-schema edits. `contract:check` rejects stale generated files. `check:boundaries` examines source imports and built dependency graphs. `test:consumer` installs only public archives in an independent directory and checks runtime imports and strict declarations.
 
-```ts
-import worker, {
-  Admission, Tendril, configureWorkflows,
-} from '@tendriller/engine';
-import type { WorkflowModule } from '@tendriller/core/host';
-import { reviewedCapability } from './reviewed-capability.js';
+## Verification
 
-const selected: readonly WorkflowModule[] = [reviewedCapability];
-configureWorkflows(selected);
-export { Admission, Tendril };
-export default worker;
-```
+Use `test:contract` for wire filters and SDK semantics; `test:runtime-unit` for inert composition, capability/sensor lifecycle and immutable publication caching; `test:server` for real workerd authorization, controls, signed releases, storage CAS and restart. `test:tools` exercises public-session tooling and extracted artifacts. Browser tests cover actual runtime behavior, owner claim/origin boundaries, signed code serving and explicit speech use.
 
-This is a deliberate source-level deployment decision. Page files and catalog
-metadata cannot change that registry. The ordinary core entry selects no module.
-Exercise authorization, private-record access, scope invalidation, and atomic
-updates in the actual Worker host, using fresh records. HTTP fixtures are useful
-for UI behavior but do not establish those service guarantees.
+The application session's command/query/replication implementation is qualified in Chronolog and by independent contrib consumers. A static browser fixture does not establish RTC, recovery or database guarantees. The public host fixture permits combining those real boundaries without private imports.
 
-`npm run check:boundaries` examines source imports and built input graphs.
-`npm run test:consumer` checks the packed public packages from an independent
-consumer. Tools likewise use the built public SDK and runtime instead of private
-server or runtime source imports.
+## Public Worker fixture
 
-## Choose the smallest meaningful verification
+`@tendriller/engine/testing` initializes fresh synthetic accounts and pages inside the Cloudflare Vitest pool. `createTestPage({application:{id}})` exposes authenticated `api`, `ownerApi`, `exchange`, `ownerExchange`, `asset(path)`, participant access, invitation/rendezvous sockets, clock advance and actual Durable Object restart.
 
-Use `npm run test:contract` for the executable wire contract,
-`npm run test:runtime-unit` for headless durability and lifecycle behavior,
-`npm run test:server` for actual Worker authorization and transactions, and
-`npm run test:tools` for publishing, preview, collector, bridge, and installed
-archive behavior. Run `npm run test:browser` for browser integration and
-`npm run test:tools:browser` for the operational preview fixtures. The
-[browser testing guide](E2E_TESTING.md) explains the local service, pinned speech
-test, and physical-device limits.
+`hostTraffic` counts HTTP/body bytes and separate invitation/SDP upgrade/frame bytes, excluding synthetic setup. Snapshot it around ordinary application operations to test host independence. `asset` lets consumers verify actual served HTML/JavaScript and historical immutable URLs after signed publication and restart.
 
-Contrib owns cookbook prose, snippets, adapted examples, and their focused checks.
-Those checks may pin exact core artifacts for reproducibility. Core's build does
-not fetch contrib, and a cookbook edit does not require a synchronized platform
-release. Content review should check the stated assumptions, alternatives,
-provenance, and relevant behavior rather than require upstream snippet equality.
+## Checkpoints and releases
 
-## Improve core from application feedback
+Every build writes exact source commit/tree, clean/dirty state and archive SHA-256 values to `dist/provenance.json`. The engine embeds portable Chronolog provenance and hashes. Independent qualification copies clean artifacts and verifies their hashes before installing; a branch name does not identify tested bytes.
 
-Repeated application workarounds are API design feedback. When cookbook adaptations
-need the same correctness machinery for retries, competing edits, cancellation,
-or resource cleanup, improve the core abstraction and its public contract. Put
-the guarantee at the boundary that can enforce it, exercise the failure with a
-regression test, and simplify the cookbook to use the resulting operation.
+Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree. Release publication is separate from deployment. Use `check:release` and the repository's release workflow for a deliberately selected release ref.
 
-This system is unreleased. Prefer a coherent target model and update its callers,
-schemas, types, documentation, and fixtures together. Existing implementation
-boundaries are design choices to reconsider when they impede good developer
-experience; preserving them is not a reason to add another application workaround
-or an unnecessary compatibility layer.
-
-## Release artifacts
-
-Run `npm run check:release`, then `npm run release:artifacts`. The release manifest
-records the source commit, contract, runtime identity, and hashes of the SDK,
-runtime, engine, and tools archives. The normal service deploy uses the generic
-engine and the same runtime assets; installing the tools is optional.
-
-Create `release/v<package-version>` at the exact tested source commit to request
-release-candidate publication. Branch creation and later pushes run the release
-gate. Matching version tags and published-release events also run the gate.
-Manual workflow dispatch builds and verifies any selected ref; publication is
-limited to a matching release branch or version tag.
-
-The publisher requires the package, manifest, selected ref, and workflow source
-to agree. Existing tags must identify the same commit, and existing release
-assets must have the same bytes. Use a new version for different artifacts.
-These checks identify the current publication; they do not introduce runtime
-selection, compatibility readers, or a coupled contrib release.
-
-## Deployment and branch previews
-
-Initialize empty account storage with `server/migrations/0001_accounts.sql` and
-fresh Durable Object namespaces for `Tendril` and `Admission`. The current
-Durable Object schema revision is reported by `node scripts/storage-schema.mjs`.
-The service starts with page creation paused until its identity and isolation
-checks pass. See [operations](OPERATIONS.md) for provisioning and activation.
-
-The branch-preview controller selects an exact passing commit and verifies that
-it is still the branch head before deploying isolated resources. It builds the
-same generic engine and publishes the same immutable runtime as staging.
-Preview cleanup removes only that branch's resources.
+Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).

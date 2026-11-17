@@ -41,7 +41,7 @@ function recordNotices(files) {
 
 const embeddedRuntime = { name: 'target-preview-runtime', setup(builder) {
   builder.onLoad({ filter: /[/\\]preview-bundle\.mjs$/ }, () => ({ loader: 'js', resolveDir: join(root, 'tools'),
-    contents: `import * as support from '@tendriller/runtime/preview-support'; export const implementation=support; export const manifest=${JSON.stringify(runtimeManifest)}; export const assets=${JSON.stringify(assets)};`,
+    contents: `export const manifest=${JSON.stringify(runtimeManifest)}; export const assets=${JSON.stringify(assets)};`,
   }));
 } };
 const previewLibrary = { name: 'shared-preview-library', setup(builder) {
@@ -59,21 +59,9 @@ async function bundle(source, target, plugins = []) {
 }
 
 await bundle('tools/preview/lib/preview.mjs', 'lib/preview.mjs');
-await bundle('tools/collector/lib/stream-collector.mjs', 'lib/collector.mjs');
-await bundle('tools/bridges/lib/pending-events.mjs', 'lib/events.mjs');
 await bundle('tools/cli/lib/pack.mjs', 'lib/pack.mjs');
-const entries = {
-  tendril: 'cli/bin/tendril.mjs',
-  'tendril-stream': 'collector/bin/tendril-stream.mjs',
-  'tendril-preview': 'preview/bin/tendril-preview.mjs',
-  'tendril-events': 'bridges/bin/tendril-events.mjs',
-  'tendril-wait': 'bridges/bin/tendril-wait.mjs',
-  'tendril-watch': 'bridges/bin/tendril-watch.mjs',
-  'codex-bridge': 'bridges/bin/codex-bridge.mjs',
-  'claude-channel': 'bridges/bin/claude-channel.mjs',
-  'hermes-bridge': 'bridges/bin/hermes-bridge.mjs',
-  'openclaw-bridge': 'bridges/bin/openclaw-bridge.mjs',
-};
+await bundle('tools/cli/lib/session.mjs', 'lib/session.mjs');
+const entries = { tendril: 'cli/bin/tendril.mjs', 'tendril-preview': 'preview/bin/tendril-preview.mjs' };
 for (const [name, source] of Object.entries(entries)) await bundle('tools/' + source, 'bin/' + name + '.mjs', [previewLibrary]);
 writeFileSync(join(out, 'README.md'), readFileSync(join(root, 'tools/README.md'), 'utf8').replaceAll('../docs/tools/', 'docs/'));
 mkdirSync(join(out, 'docs'), { recursive: true });
@@ -81,9 +69,9 @@ for (const name of readdirSync(join(root, 'docs/tools')).filter(name => name.end
   copyFileSync(join(root, 'docs/tools', name), join(out, 'docs', name));
 writeFileSync(join(out, 'THIRD_PARTY_NOTICES.txt'), [...notices].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text).join('\n\n') + '\n');
 writeJson(join(out, 'package.json'), { name: '@tendriller/tools', version: pkg.version, type: 'module',
-  description: 'Optional publication, preview, delivery and telemetry tools for Tendriller', engines: pkg.engines,
+  description: 'Application session, signed publication and browser preview tools for Tendriller', engines: pkg.engines,
   bin: Object.fromEntries(Object.keys(entries).map(name => [name, `bin/${name}.mjs`])),
-  exports: { './preview': './lib/preview.mjs', './collector': './lib/collector.mjs', './events': './lib/events.mjs', './pack': './lib/pack.mjs' },
+  exports: { './preview': './lib/preview.mjs', './session': './lib/session.mjs', './pack': './lib/pack.mjs' },
   tendriller: { contract: runtimeManifest.contract, runtime: runtimeManifest.id },
 });
 writeJson(join(dist, 'tools-inputs.json'), [...inputs].sort());

@@ -6,7 +6,6 @@ export interface VoiceOptions {
   consent(request: { purpose: "output" | "transcription" | "wake"; engine: string; description: string }): boolean | Promise<boolean>;
   transcript(text: string): void;
   status?(status: { kind: "output" | "capture" | "wake"; state: string; message?: string }): void;
-  speakReplies?: boolean;
 }
 export interface VoiceOutputStatus {
   engine: "browser" | "neural"; state: SpeechStatus["state"]; message: string;

@@ -5,8 +5,6 @@ export interface Env {
   ACCOUNTS: D1Database;
   CREATE_RATE?: RateLimit;
   AGENT_RATE?: RateLimit;
-  EVAL_RATE?: RateLimit;
-  FILE_READ_RATE?: RateLimit;
   AUTH_RATE?: RateLimit;
   FAILED_AUTH_RATE?: RateLimit;
   REPORT_RATE?: RateLimit;
@@ -31,7 +29,4 @@ export interface Env {
   BUDGET_WEBHOOK_SECRET?: string;
   BUDGET_PAUSE_POLICY_ID?: string;
   BUDGET_READ_ONLY_POLICY_ID?: string;
-  VAPID_PUBLIC_KEY?: string;
-  VAPID_PRIVATE_KEY?: string;
-  VAPID_SUBJECT?: string;
 }

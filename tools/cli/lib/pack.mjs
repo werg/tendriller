@@ -48,11 +48,12 @@ function canonicalPath(path) {
   return path;
 }
 
-// A merged publication keeps its current entry unless an explicit entry is given.
-export function pack(target, { as, entry, merge = false, message, maxBytes = 5 * 1024 * 1024 } = {}) {
+/** A publication names the complete immutable graph; there is no merge overlay. */
+export function pack(target, { as, entry, maxBytes = 8 * 1024 * 1024 } = {}) {
   const st = lstatSync(target);
   if (st.isSymbolicLink()) throw new Error("Refusing publication source symlink");
   const files = [];
+  let total = 0;
   const add = (path, source) => {
     path = canonicalPath(path);
     const info = lstatSync(source);
@@ -60,6 +61,8 @@ export function pack(target, { as, entry, merge = false, message, maxBytes = 5 *
     if (info.size > maxBytes) throw new Error(`Publication file exceeds the effective upload limit: ${path}`);
     const bytes = readFileSync(source);
     if (bytes.length > maxBytes) throw new Error(`Publication file exceeds the effective upload limit: ${path}`);
+    total += bytes.length;
+    if (total > maxBytes || files.length >= 128) throw new Error('Publication exceeds its total byte or file limit');
     files.push({ path, type: guessType(path), size: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"), bytes });
   };
@@ -67,18 +70,18 @@ export function pack(target, { as, entry, merge = false, message, maxBytes = 5 *
     const paths = listFiles(target);
     if (paths.length === 0) throw new Error(`nothing to upload in ${target}`);
     for (const path of paths) add(path, join(target, path));
-    entry ??= merge ? undefined : "index.html";
+    entry ??= "index.html";
   } else if (st.isFile()) {
     let name = as || basename(target);
     if (!as && /\.html?$/i.test(name)) name = "index.html";
     add(name, target);
-    entry ??= merge ? undefined : name;
+    entry ??= name;
   } else throw new Error("Publication source must be a regular file or directory");
   if (entry !== undefined) {
     entry = canonicalPath(entry);
     if (guessType(entry) !== "text/html") throw new Error("Publication entry must be an HTML path");
-    if (!merge && !files.some(file => file.path === entry))
-      throw new Error(`${target} has no ${entry}; choose --entry or use --no-replace with an existing publication`);
+    if (!files.some(file => file.path === entry))
+      throw new Error(`${target} has no ${entry}; choose an entry from the complete authored graph`);
   }
-  return { files, merge, ...(entry === undefined ? {} : { entry }), ...(message === undefined ? {} : { message }) };
+  return { files, entry };
 }

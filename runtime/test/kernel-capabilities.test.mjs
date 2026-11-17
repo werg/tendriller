@@ -8,10 +8,9 @@ import { build } from 'esbuild';
 const compiled = await build({ entryPoints: [new URL('../src/kernel.ts', import.meta.url).pathname],
   bundle: true, format: 'iife', globalName: 'Kernel', platform: 'browser', write: false,
   plugins: [{ name: 'kernel-fixtures', setup(build) {
-    build.onLoad({ filter: /\/runtime\/src\/(core|push|sensors)\.ts$/ }, ({ path }) => ({ loader: 'js', contents:
+    build.onLoad({ filter: /\/runtime\/src\/(core|sensors)\.ts$/ }, ({ path }) => ({ loader: 'js', contents:
       path.endsWith('/core.ts') ? 'export const createCore = () => globalThis.fixture.core;'
-        : path.endsWith('/push.ts') ? 'export const setupPush = () => ({});'
-          : 'export const installSensorWrappers = () => globalThis.fixture.tracker;' }));
+        : 'export const installSensorWrappers = () => globalThis.fixture.tracker;' }));
   } }],
 });
 const settle = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
@@ -28,7 +27,7 @@ async function environment() {
   const window = Object.assign(new EventTarget(), { isSecureContext: true });
   const mediaDevices = Object.assign(new EventTarget(), { getUserMedia() { throw Error('must not request media'); } });
   const status = () => Object.assign(new EventTarget(), { state: 'granted' });
-  const context = { URL, window, document: {}, screen: {}, location: new URL('https://fixture.test/page/'),
+  const context = { URL, AbortController, AbortSignal, window, document: {}, screen: {}, location: new URL('https://fixture.test/page/'),
     navigator: { userAgent: 'Fixture', mediaDevices, permissions: { query({ name }) {
       if (name === 'camera' && pendingCamera) { const reply = pendingCamera; pendingCamera = undefined; return reply; }
       return Promise.resolve(status());
@@ -39,7 +38,8 @@ async function environment() {
     } },
   };
   runInNewContext(compiled.outputFiles[0].text, context);
-  const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null });
+  const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null,
+    application: { id: '12'.repeat(32) } });
   await settle();
   const flushTimers = () => { for (const [id, fn] of timers) { timers.delete(id); fn(); } };
   return { reports, sensorReports, sensorUsage, runtime,
@@ -83,7 +83,15 @@ test('pending sensor snapshots reach subscribers without claiming active capture
   env.pending(['camera']);
   assert.deepEqual(env.runtime.sensors.status(), { active: [], pending: ['camera'] });
   assert.deepEqual(env.sensorReports, [{ active: [], pending: ['camera'] }]);
-  assert.deepEqual(env.sensorUsage.map(frame => [...frame.active]), [[]]);
+  assert.deepEqual(env.sensorUsage, []);
   env.flushTimers(); await settle();
   assert.deepEqual(env.reports, [false]);
+});
+
+test('sensor changes remain local while capability observations stay available', async () => {
+  const env = await environment();
+  env.sensors(['camera']); env.flushTimers(); await settle();
+  assert.deepEqual(env.sensorReports, [{ active: ['camera'], pending: [] }]);
+  assert.deepEqual(env.reports, [true]);
+  assert.deepEqual(env.sensorUsage, []);
 });

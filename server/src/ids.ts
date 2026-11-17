@@ -14,11 +14,7 @@ export function randomB32(n: number): string {
 export const newTendrilId = () => randomB32(12);
 export const newPageKey = () => randomB32(26);
 export const newToken = () => "tk_" + randomB32(32);
-export const newBlobId = () => "b_" + randomB32(20);
 export const newLinkId = () => "l_" + randomB32(10);
-export const newCallId = () => "c_" + randomB32(12);
-/** Short-lived, single-use, listen-only credential for opening the agent wake socket. */
-export const newSocketTicket = () => "lt_" + randomB32(32);
 
 /** Six decimal digits, uniformly distributed. */
 export function sixDigits(): string {
@@ -32,11 +28,7 @@ export function sixDigits(): string {
 
 export const TENDRIL_ID_RE = /^[a-z2-7]{12}$/;
 export const PAGE_KEY_RE = /^[a-z2-7]{26}$/;
-export const DEVICE_ID_RE = /^d_[a-z2-7]{16}$/;
-export const DEVICE_SECRET_RE = /^[a-z2-7]{32}$/;
-export const BLOB_ID_RE = /^b_[a-z2-7]{20}$/;
 export const AGENT_TOKEN_RE = /^tk_[a-z2-7]{32}$/;
-export const SOCKET_TICKET_RE = /^lt_[a-z2-7]{32}$/;
 
 export async function sha256Hex(data: string | ArrayBuffer | ArrayBufferView): Promise<string> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
@@ -56,19 +48,4 @@ export function safeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
-}
-
-export function toBase64(buf: ArrayBuffer | Uint8Array): string {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  return btoa(bin);
-}
-
-export function fromBase64(s: string): Uint8Array {
-  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/").replace(/\s+/g, ""));
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }

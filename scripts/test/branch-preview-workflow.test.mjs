@@ -245,3 +245,30 @@ test('cleanup marks only this controller and branch deployments inactive', async
   assert.equal(f.calls.find(call => call[0] === 'status')[1].state, 'inactive');
   assert.equal(f.calls.find(call => call[0] === 'paginate')[1].environment, 'preview/abc123');
 });
+
+test('rotation removes only prior controller previews before marking them inactive', async () => {
+  const f = fixture();
+  const old = 'preview/older';
+  f.github.deployments = [
+    { id: 1, environment: `preview/${preview.branchKey(old)}`, payload: { controller: 'live-branch-previews', branch: old } },
+    { id: 2, environment: `preview/${preview.branchKey(old)}`, payload: { controller: 'live-branch-previews', branch: old } },
+    { id: 3, environment: `preview/${preview.branchKey(branch)}`, payload: { controller: 'live-branch-previews', branch } },
+    { id: 4, environment: 'preview/other', payload: { controller: 'other-controller', branch: 'preview/other' } },
+  ];
+  const removed = [];
+  await preview.rotatePreviews({ ...f, branch, remove: async name => removed.push(name) });
+  assert.deepEqual(removed, [old]);
+  assert.deepEqual(f.calls.filter(call => call[0] === 'status').map(call => call[1].deployment_id), [1, 2]);
+  assert.equal(f.calls.find(call => call[0] === 'paginate')[1].task, 'deploy:preview');
+});
+
+test('failed rotation preserves the old deployment record and aborts', async () => {
+  const f = fixture();
+  const old = 'preview/older';
+  f.github.deployments = [{ id: 1, environment: `preview/${preview.branchKey(old)}`,
+    payload: { controller: 'live-branch-previews', branch: old } }];
+  await assert.rejects(preview.rotatePreviews({ ...f, branch, remove: async () => { throw new Error('cleanup failed'); } }), /cleanup failed/);
+  assert.equal(f.calls.some(call => call[0] === 'status'), false);
+  f.github.deployments[0].environment = 'preview/not-owned';
+  await assert.rejects(preview.rotatePreviews({ ...f, branch, remove: async () => {} }), /unexpected environment/);
+});

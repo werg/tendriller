@@ -19,19 +19,20 @@ it('initializes a fresh schema and reopens matching storage without changing its
     const db = new Db(storage);
     db.init();
     expect(db.all('SELECT id,revision FROM storage_schema')).toEqual([{ id: 1, revision: STORAGE_SCHEMA_REVISION }]);
-    expect(db.one('SELECT count,bytes FROM command_usage')).toEqual({ count: 0, bytes: 0 });
+    expect(db.all('SELECT * FROM participant_records')).toEqual([]);
+    expect(db.all("SELECT name FROM sqlite_schema WHERE name IN ('command_usage','record_log','record_log_entries','application_changes','devices','events')")).toEqual([]);
     db.set('saved_work', { text: 'Keep this data' });
-    db.run('UPDATE command_usage SET count=7,bytes=1024 WHERE id=1');
+    db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', 'control', new Uint8Array([1,2,3]).buffer);
     const before = objects(storage);
     const reopened = new Db(storage);
     reopened.init();
     expect(objects(storage)).toEqual(before);
     expect(reopened.get('saved_work', null)).toEqual({ text: 'Keep this data' });
-    expect(reopened.one('SELECT count,bytes FROM command_usage')).toEqual({ count: 7, bytes: 1024 });
+    expect(new Uint8Array(reopened.one<{ value: ArrayBuffer }>("SELECT value FROM participant_records WHERE key='control'")!.value)).toEqual(new Uint8Array([1,2,3]));
   });
 });
 
-it.each(['missing identity', 'different revision', 'empty identity', 'malformed identity'])(
+it.each(['missing identity', 'revision-5 identity', 'empty identity', 'malformed identity'])(
   'rejects existing storage with %s before schema or data mutation', async scenario => {
     await isolatedDatabase(storage => {
       storage.sql.exec('CREATE TABLE existing_work (id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
@@ -39,12 +40,13 @@ it.each(['missing identity', 'different revision', 'empty identity', 'malformed 
       if (scenario === 'malformed identity') storage.sql.exec('CREATE TABLE storage_schema (unexpected TEXT)');
       else if (scenario !== 'missing identity') {
         storage.sql.exec('CREATE TABLE storage_schema (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)');
-        if (scenario === 'different revision') storage.sql.exec('INSERT INTO storage_schema(id,revision) VALUES(1,?)', STORAGE_SCHEMA_REVISION - 1);
+        if (scenario === 'revision-5 identity') storage.sql.exec('INSERT INTO storage_schema(id,revision) VALUES(1,5)');
       }
       const before = objects(storage);
       expect(() => new Db(storage).init()).toThrow(StorageSchemaError);
       expect(() => new Db(storage).init()).toThrow('fresh Durable Object namespace');
       expect(objects(storage)).toEqual(before);
+      expect(objects(storage).some(object => object.name === 'record_log' || object.name === 'record_log_entries')).toBe(false);
       expect(storage.sql.exec('SELECT * FROM existing_work').toArray()).toEqual([{ id: 1, value: 'Preserve the original work' }]);
     });
   },
