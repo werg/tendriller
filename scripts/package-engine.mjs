@@ -35,6 +35,11 @@ copyFileSync(join(peerControl, 'provenance.json'), join(engine, 'peer-generation
 writeFileSync(join(engine, 'index.d.mts'), readFileSync(join(root, 'contract/engine.d.mts'), 'utf8'));
 mkdirSync(join(engine, 'migrations'), { recursive: true });
 copyFileSync(join(root, 'server/migrations/0001_accounts.sql'), join(engine, 'migrations/0001_accounts.sql'));
+// Independent workerd consumers must create the same host traffic bindings.
+const testRateLimits = JSON.parse(readFileSync(join(root, 'server/wrangler.public-test.jsonc'), 'utf8')).ratelimits;
+if (!Array.isArray(testRateLimits) || !['PAGE_RATE', 'ACCOUNT_RATE'].every(name => testRateLimits.some(limit => limit.name === name)))
+  throw Error('The public host test configuration is missing required traffic bindings');
+writeFileSync(join(engine, 'testing-ratelimits.json'), JSON.stringify({ ratelimits: testRateLimits }, null, 2) + '\n');
 await build({ entryPoints: [join(root, 'server/test/public-fixture.ts')], outfile: join(engine, 'testing.mjs'), bundle: true,
   platform: 'neutral', format: 'esm', target: 'es2022', external: ['cloudflare:workers', 'cloudflare:test'], logLevel: 'warning' });
 copyFileSync(join(root, 'contract/testing.d.mts'), join(engine, 'testing.d.mts'));
@@ -42,13 +47,13 @@ writeFileSync(join(engine, 'package.json'), JSON.stringify({
   name: '@tendriller/engine', version: CORE_RELEASE, type: 'module',
   description: 'Tendriller page host and filtered Chronolog participant',
   exports: { '.': { types: './index.d.mts', import: './worker.mjs' }, './accounts-schema': './migrations/0001_accounts.sql',
-    './testing': { types: './testing.d.mts', import: './testing.mjs' }, './provenance': './provenance.json',
+    './testing': { types: './testing.d.mts', import: './testing.mjs' }, './testing-ratelimits': './testing-ratelimits.json', './provenance': './provenance.json',
     './peer-generation-provenance': './peer-generation-provenance.json' },
-  files: ['worker.mjs', 'index.d.mts', 'migrations', 'testing.mjs', 'testing.d.mts', 'provenance.json', 'peer-generation-provenance.json'], peerDependencies: { '@tendriller/core': CORE_RELEASE },
+  files: ['worker.mjs', 'index.d.mts', 'migrations', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'provenance.json', 'peer-generation-provenance.json'], peerDependencies: { '@tendriller/core': CORE_RELEASE },
   dependencies: { '@cloudflare/workers-types': workersTypes },
   tendriller: { contract: CONTRACT_VERSION },
 }, null, 2) + '\n');
-const files = ['worker.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'migrations/0001_accounts.sql',
+const files = ['worker.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'migrations/0001_accounts.sql',
   'package.json', 'peer-generation-provenance.json'];
 writeFileSync(join(engine, 'provenance.json'), JSON.stringify({ ...identity, storageSchemaRevision,
   files: Object.fromEntries(files.map(name => [name, sha256(join(engine, name))])) }, null, 2) + '\n');
