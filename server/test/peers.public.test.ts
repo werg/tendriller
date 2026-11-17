@@ -2,10 +2,36 @@ import { expect, it } from 'vitest';
 import { advance, api, apiJson, create, inDO, publishFilesJson, req, runAlarm, type Handle } from './helpers';
 import { createPeerRendezvous, PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
 import { closePeer } from '../src/peers';
+import { createTestPage } from './public-fixture';
 
 const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL };
 const offer = { type: 'offer' as const, sdp: 'v=0\r\no=offer\r\n' };
 const answer = { type: 'answer' as const, sdp: 'v=0\r\no=answer\r\n' };
+
+it('exposes real authenticated rendezvous and observed host traffic to independent public consumers', async () => {
+  const page = await createTestPage({ application: { kind: 'peer', id: 'public-fixture' } });
+  const guest = await page.participant();
+  expect(page.hostTraffic).toEqual({ httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0 });
+  const bootstrap = { version: 2, endpoints: [] };
+  expect((await page.ownerApi('PUT', 'peers/bootstrap', bootstrap)).status).toBe(200);
+  const a = createPeerRendezvous(page.rendezvousSocket('public-pair', 'agent'));
+  const b = createPeerRendezvous(guest.rendezvousSocket('public-pair', 'guest'));
+  try {
+    const [ready] = await Promise.all([a.ready, b.ready]);
+    const offerer = ready.role === 'offerer' ? a : b, answerer = offerer === a ? b : a;
+    const first = offerer.messages[Symbol.asyncIterator](), second = answerer.messages[Symbol.asyncIterator]();
+    await offerer.send(offer); expect((await second.next()).value).toEqual(offer);
+    await answerer.send(answer); expect((await first.next()).value).toEqual(answer);
+    expect((await first.next()).done).toBe(true); expect((await second.next()).done).toBe(true);
+    const traffic = page.hostTraffic;
+    expect(traffic.httpRequests).toBe(3);
+    expect(traffic.requestBodyBytes).toBe(new TextEncoder().encode(JSON.stringify(bootstrap)).byteLength);
+    expect(traffic.rendezvousUpgrades).toBe(2);
+    expect(traffic.rendezvousSentBytes).toBe(a.stats.sentBytes + b.stats.sentBytes);
+    expect(traffic.rendezvousReceivedBytes).toBe(a.stats.receivedBytes + b.stats.receivedBytes);
+    expect(traffic.rendezvousReceivedBytes).toBeGreaterThan(traffic.rendezvousSentBytes);
+  } finally { a.close(); b.close(); }
+});
 async function open(h: Handle, channel: string, peerId: string, page = false) {
   const path = `peers/rendezvous?${new URLSearchParams({ channel, peerId })}`;
   const response = page ? await req(`${h.page_url}_tendril/${path}`, { headers }) : await api(h, 'GET', path, undefined, headers);

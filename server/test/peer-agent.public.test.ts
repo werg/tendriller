@@ -45,13 +45,18 @@ it("guides peer agents to their selected backend and exposes only host tools", a
   const initial = (await rpc("initialize")).result;
   expect(initial.capabilities).toEqual({ tools: {} });
   expect(initial.instructions).toContain("client.signals");
-  expect(initial.instructions).toContain("applied outcome can become abandoned");
-  expect(initial.instructions).toContain("local session");
+  expect(initial.instructions).toMatch(/Chronolog.*local and final views/);
+  expect(initial.instructions).toMatch(/local\(\).*final\(\).*accepted or rejected outcomes/);
+  expect(initial.instructions).toContain("select local previews explicitly");
+  expect(initial.instructions).toMatch(/application\.changes.*coherent readView.*release/);
+  expect(initial.instructions).toContain("agent's own application session");
+  expect(initial.instructions).toContain("this host has no application event queue or wake subscription");
   expect(initial.instructions).not.toContain("Read stored events immediately with read_events");
   const names = (await rpc("tools/list")).result.tools.map((tool: { name: string }) => tool.name);
   expect(names).toContain("publish_publication"); expect(names).toContain("tendril_info");
   expect(names).toContain("discover_peers"); expect(names).toContain("peer_application");
   expect(names).toContain("select_peer_generation");
+  expect(names).toContain("administer_peer_generation");
   for (const name of ["read_events", "say", "get_state", "create_timer", "append_stream", "claim_event_consumer", "probe_delivery", "write_shared_file", "delete_shared_file"])
     expect(names).not.toContain(name);
   expect((await rpc("tools/call", { name: "read_events" })).error.code).toBe(-32602);

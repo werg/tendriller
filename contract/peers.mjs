@@ -1,7 +1,7 @@
 import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeerDirectory, validatePeerId, validatePeerTtl } from './discovery.mjs';
 export * from './discovery.mjs';
 import { createPeerControlsClient } from './peer-controls.mjs';
-export { createPeerControlsClient } from './peer-controls.mjs';
+export { createPeerControlsClient, peerAccountBindingsContext } from './peer-controls.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
 const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {

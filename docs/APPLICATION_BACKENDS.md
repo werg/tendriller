@@ -435,9 +435,10 @@ final-intent worker: an application choosing this profile must define its own
 policy for external actions and recovery.
 
 The package includes native persistence/reopen tests, deterministic SQL recovery
-tests and an in-process `connectApplications` connector for embedded peers and
-independent-store tests. Its browser entry requires an owning Worker and browser
-storage capabilities. These surfaces do not establish browser/native Internet
+tests and an in-process `connectApplications` connector for embedded peers.
+`connectApplicationTransport` and RTC wrappers provide authenticated framed peer
+connections with an independent live lane. Its browser entry requires an owning
+Worker and browser storage capabilities. These surfaces do not establish browser/native Internet
 connectivity, a deployed control service, a global recovery-loss bound, or a
 Tendriller generation binding. Consult the package's qualification evidence for
 the tested scope; live-profile WebRTC evidence does not qualify a different

@@ -1,15 +1,15 @@
 {
   "repository": "werg/chronolog-db",
-  "source": "4efa3546f930734328879bdca3984282bd19156b",
+  "source": "6159e7e46a5057d615cf323202b773b5949b34a5",
   "profile": "peer-generation-v1",
   "dirty": false,
   "inputs": [
-    "packages/canonical/node_modules/@noble/hashes/esm/_md.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/_u64.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/crypto.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/sha2.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/sha256.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/utils.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_u64.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js",
     "packages/canonical/src/bytes.ts",
     "packages/canonical/src/cbor.ts",
     "packages/canonical/src/errors.ts",
@@ -21,6 +21,9 @@
     "packages/peer-generation/src/codec.ts",
     "packages/peer-generation/src/control-types.ts",
     "packages/peer-generation/src/control.ts",
+    "packages/peer-generation/src/definition.ts",
+    "packages/peer-generation/src/schema.ts",
+    "packages/protocol/src/author-clock.ts",
     "packages/protocol/src/bytes.ts",
     "packages/protocol/src/cbor.ts",
     "packages/protocol/src/errors.ts",
@@ -37,7 +40,7 @@
     "packages/protocol/src/views.ts"
   ],
   "sha256": {
-    "control.mjs": "7efb50aa799613dba968ff51afb01c2871125b1596a859b5f54ac79d1c2b7cc5",
-    "control.d.ts": "1cb53d8951d569ab76f648f60eeeee6a8212bb1a78fa881c29c6b4beeb183b17"
+    "control.mjs": "deb4891fd9fc82a2b4fbc4d184f8ece427d3942ac45d072f8cbf842c9b575a56",
+    "control.d.ts": "ea47ba1429c6b3187a463ea8da528162b169d2009cb4bf65ca60c16f0c6ccb56"
   }
 }

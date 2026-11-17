@@ -35,7 +35,16 @@ Publish the immutable descriptor and initial device grants through
 `host.peers.application()` evidence and `host.peers.discover()` routing hints.
 Control configuration retains the owned host publication automatically; this is
 persistent control metadata, not a continuously running application process.
+Initial members use `{grant, accountId?}` with all device rights explicit,
+including coordinator, recovery and `dataRole`. Control administration and application data administration
+are separate. If a creator device key is lost, the owner can use
+`host.peers.administerGeneration(...)` with a surviving real peer's complete
+prefix. The host signs through its declared control-only role and cannot read,
+write or coordinate application data.
 See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
+Device-signed transitions commit the complete control policy and host account
+additions before submission; owner-created transitions use the host's explicit
+control-only authority. A host login does not replace another device's signature.
 
 Use the standalone session's captured applied views and revision-scoped outcomes.
 A valid recovery may abandon a recent suffix, and deliberate reapplication creates
@@ -154,7 +163,8 @@ before starting a collector that could fill the unclaimed stream budget.
 On hosted Cloudflare pages, Web Push can notify the owner even when the page is closed. Configure it on the service and have each owner device explicitly opt in through page-authored controls using `tendril.notifications`. Use authenticated `GET A/notify` to inspect readiness and quota, then `POST A/notify` with `title`, optional `body`, `device`, `url`, and `tag`. The MCP tools are `notification_status` and `notify`. See [Web Push setup and usage](docs/PUSH_NOTIFICATIONS.md). Push notifications are distinct from the agent wake listener: delivering a notification does not resume an agent conversation.
 
 Peer publication has no host-listener prerequisite. The agent session or owning
-Worker consumes the selected replica's final events and operation status. Its
+Worker consumes the selected profile's events and operation status; only an
+explicitly finalized profile can feed a final-intent effect worker. Its
 live signals and peer connections use the independently installed services.
 
 ### Cloudflare conversational delivery

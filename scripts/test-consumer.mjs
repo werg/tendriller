@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CORE_RELEASE } from '../contract/index.mjs';
+import { createHash } from 'node:crypto';
 const root = resolve(import.meta.dirname, '..');
 // A sibling of the source tree cannot silently resolve undeclared dependencies
 // through the checkout's node_modules. All consumer inputs are packed artifacts.
@@ -26,6 +27,17 @@ try {
   assert.equal(core.dependencies, undefined); assert.equal(runtime.dependencies, undefined);
   assert.deepEqual(engine.dependencies, { '@cloudflare/workers-types': workersTypes.version });
   assert.deepEqual(engine.peerDependencies, { '@tendriller/core': CORE_RELEASE });
+  const hostProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/provenance.json')));
+  const packagesProof = JSON.parse(readFileSync(join(root, 'dist/provenance.json')));
+  assert.equal(hostProof.repository, 'werg/tendriller');
+  assert.match(hostProof.source, /^[a-f0-9]{40}$/); assert.match(hostProof.sourceTree, /^[a-f0-9]{40}$/);
+  assert.equal(typeof hostProof.dirty, 'boolean');
+  for (const key of ['repository', 'source', 'sourceTree', 'dirty']) assert.equal(packagesProof[key], hostProof[key]);
+  for (const [file, hash] of Object.entries(hostProof.files))
+    assert.equal(createHash('sha256').update(readFileSync(join(directory, 'node_modules/@tendriller/engine', file))).digest('hex'), hash);
+  assert.deepEqual(packagesProof.artifacts.map(item => item.name), ['@tendriller/core', '@tendriller/runtime', '@tendriller/engine']);
+  for (const artifact of packagesProof.artifacts)
+    assert.equal(createHash('sha256').update(readFileSync(join(root, 'dist', artifact.file))).digest('hex'), artifact.sha256);
   const membershipProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/membership-provenance.json')));
   assert.deepEqual(membershipProof, JSON.parse(readFileSync(join(root, 'node_modules/@chronolog/membership/provenance.json'))));
   assert.equal(membershipProof.dirty, false); assert.match(membershipProof.source, /^[a-f0-9]{40}$/);
@@ -45,6 +57,7 @@ import { createApplicationBinding, validateCloudflareProgram } from '@tendriller
 import { createSignalBinding, connectHostedSignals, SIGNAL_LIMITS } from '@tendriller/core/signals';
 import { createMembersClient } from '@tendriller/core/members';
 import membershipProvenance from '@tendriller/engine/membership-provenance' with {type: 'json'};
+import hostProvenance from '@tendriller/engine/provenance' with {type: 'json'};
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 import {applyOps, validateOps, validateStateChecks, checkState, historyPage} from '@tendriller/runtime/preview-support';
@@ -82,6 +95,7 @@ assert.equal(typeof client.peers.selectGeneration, 'function');
 assert.equal(typeof client.members.approve, 'function');
 assert.equal(typeof createMembersClient({base:'https://example.test'}).history, 'function');
 assert.equal(membershipProvenance.dirty, false);
+assert.match(hostProvenance.sourceTree, /^[a-f0-9]{40}$/);
 assert.match(membershipProvenance.sha256['index.mjs'], /^[a-f0-9]{64}$/);
 assert.match(membershipProvenance.sha256['index.d.ts'], /^[a-f0-9]{64}$/);
 assert.equal(typeof client.records.read, 'function');

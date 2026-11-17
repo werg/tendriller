@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@chronolog/membership": "file:test/artifacts/chronolog-membership-0a650f2c.tgz",
-    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-4efa3546.tgz",
+    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-6159e7e4.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@modelcontextprotocol/sdk": "1.32.2",

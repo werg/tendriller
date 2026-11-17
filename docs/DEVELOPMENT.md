@@ -97,6 +97,13 @@ or an unnecessary compatibility layer.
 
 ## Release artifacts
 
+Every `npm run build` writes `dist/provenance.json`, identifying the exact source
+commit, source tree, dirty state and SHA-256 of the public SDK, runtime and engine
+archives. `@tendriller/engine/provenance` carries the same source identity and
+hashes of its executable modules, declarations and embedded verifier provenance.
+Independent qualification must reject dirty artifacts and check the archive
+hashes before installation. A branch name alone does not identify tested bytes.
+
 Run `npm run check:release`, then `npm run release:artifacts`. The release manifest
 records the source commit, contract, runtime identity, and hashes of the SDK,
 runtime, engine, and tools archives. The normal service deploy uses the generic
@@ -113,6 +120,25 @@ to agree. Existing tags must identify the same commit, and existing release
 assets must have the same bytes. Use a new version for different artifacts.
 These checks identify the current publication; they do not introduce runtime
 selection, compatibility readers, or a coupled contrib release.
+
+## Public Worker qualification fixture
+
+The packed `@tendriller/engine/testing` entry initializes fresh synthetic accounts
+and pages inside the Cloudflare Vitest pool. Its `api`, `ownerApi` and participant
+API methods execute the real authenticated Worker HTTP routes. The returned
+`rendezvousSocket(channel, peerId)`, `ownerRendezvousSocket` and participant socket
+factory implement the SDK's `PeerSocket` port through real WebSocket upgrades.
+Pass those sockets to `createPeerRendezvous` from `@tendriller/core/peers`; no server
+source imports or private handles are needed.
+
+`hostTraffic` is a frozen snapshot of HTTP requests, request body bytes,
+rendezvous upgrades and sent/received rendezvous frame bytes. It excludes the
+fixture's synthetic identity/page setup. It counts measured transport activity;
+it does not classify encrypted application bytes or infer a direct RTC route.
+Qualification can snapshot it around ordinary commands, queries, signals and
+replication to prove those operations did not contact the host. Native peers may
+bridge test-control messages to the Worker fixture separately, reporting that
+test infrastructure independently of product traffic.
 
 ## Deployment and branch previews
 

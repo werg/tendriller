@@ -13,7 +13,8 @@ signed-author timestamp ordering is the shared ordering rule.
 - An offline durable intent retains its exact authored identity and reviewed
   guards. Queued does not mean accepted. A first inclusion behind closed author
   time is a visible rejection; a new attempt requires deliberate review and a
-  new identity. An exact retry of included work recovers its original result.
+  new identity. An exact retry recovers the original signed intent and its
+  current observation; an established final decision remains immutable.
 - Every live collaboration replica has one immutable final prefix and one replaceable local suffix.
   Rollback and redo rebuild local state; they never repeat network effects.
 - The host, membership administrator, finality signers, schema administrator,
@@ -25,11 +26,19 @@ signed-author timestamp ordering is the shared ordering rule.
 
 ## Durable history
 
-Live collaboration is the default Tendriller interpretation. A future async
-branch/merge interpretation has no finality at all: no final frontier, final view,
-final/provisional outcomes or final-intent consumer. Signed operations, timestamp
-ordering and deterministic replay are shared primitives; finality belongs only
-to the live policy. This refactor does not implement a speculative branch API.
+Live collaboration is the default interpretation of Tendriller's Chronolog
+integration. An asynchronous branch/merge interpretation has no finality at all:
+no final frontier, final view, final/provisional outcomes or final-intent
+consumer. Signed operations, timestamp ordering and deterministic replay are
+shared primitives; finality belongs only to the live policy.
+
+The applied runtime now implements the independent replay and captured-view
+contract. The generation/session composition selects authenticated receipt
+ancestry and supports explicit recovery to a retained prefix. Receipt position
+does not replace the timestamp comparator. An applied result identifies the
+revision at which it was observed and can change after earlier input or recovery.
+This bounded implementation does not claim general branch merging, and selecting
+hosted generation controls does not install a Tendriller application adapter.
 
 Chronolog orders accepted proposals by signed author time, signing key and stable
 proposal identity. Arrival order and relay choice do not change that order.
@@ -41,7 +50,7 @@ admission of arbitrarily late old proposals cannot all be promised together.
 Keep the first two explicit. Separate retry from newly authored intent, and keep
 observation time as application data when a new attempt must refer to older work.
 
-The architectural target is one execution/replay pipeline fed by verified
+The execution/replay pipeline is fed by verified
 admission decisions, closed author time, governance activation and completeness
 dependencies. Validator and signed-inclusion proof mechanisms have different
 trust and availability assumptions; their adapters own those differences.
@@ -72,17 +81,23 @@ messages. Live P2P frames have a transport lane independent of bulk replication.
 
 ## Effects and user actions
 
-Only final accepted intent starts an effect that requires a durable decision.
+In the live profile, only final accepted intent starts an effect that requires a durable decision.
 Effect workers retain processed progress and use provider idempotency or
 reconciliation. Finality cannot make an external API call exactly once.
 User Undo and Redo author new conditional programs; they do not rewrite history.
 Live previews may accompany those operations but cannot establish their outcome.
+The applied profile exposes no final-intent worker or irreversible-effect promise.
+Its `observedRevision` records selected ancestry; program preconditions guard
+application state. Applied event cursors belong to one captured revision.
 
 ## Implementation checkpoints
 
 - [x] Review actual offline, agent, live-message and authority requirements.
 - [x] Preserve timestamp ordering as the architectural review baseline.
-- [ ] Unify timestamp finality inputs and execution/replay boundaries.
+- [x] Unify timestamp finality inputs and execution/replay boundaries.
+- [x] Separate the applied replay contract from live finality without changing
+  the shared timestamp comparator.
+- [x] Bind applied outcomes and pagination to coherent observed revisions.
 - [x] Give peer live messages an independent bounded transport lane.
 - [x] Supply the common hosted live-message adapter and author guidance.
 - [ ] Exercise offline inclusion, revocation, replay, restart, final effects,

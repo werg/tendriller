@@ -69,6 +69,7 @@ jobs:
           path: |
             dist/tendriller-*.tgz
             dist/manifest.json
+            dist/provenance.json
             dist/SHA256SUMS
 
   staging:
