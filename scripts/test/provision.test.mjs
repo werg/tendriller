@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import { deploymentPlan, deploymentConfig, provisionResources } from '../provision.mjs';
 import { requiredStorageSchema } from '../storage-schema.mjs';
 
@@ -7,6 +8,14 @@ const current = { name:'tendriller-staging', vars:{PUBLIC_BASE:'https://staging.
   d1_databases:[{database_name:'tendriller-staging-accounts'}],r2_buckets:[{bucket_name:'tendriller-staging-files'}] };
 const environment = {STAGING_PUBLIC_BASE:'https://candidate.tendriller.dev',STAGING_PAGE_HOST_SUFFIX:'--p-aaaaaaaaaaaa'};
 const fresh = () => deploymentPlan('staging',{name:'tendriller-candidate',fresh:true},environment,current);
+
+test('public fixture and deployed Workers use the same traffic binding definitions', () => {
+  const config = file => JSON.parse(readFileSync(new URL(`../../server/${file}`, import.meta.url), 'utf8')).ratelimits;
+  const expected = config('wrangler.public-test.jsonc');
+  for (const file of ['wrangler.staging.jsonc', 'wrangler.production.jsonc'])
+    assert.deepEqual(config(file), expected, `${file} differs from the public fixture`);
+  assert.deepEqual(deploymentConfig(fresh(), 'fresh-database-id', 'account').ratelimits, expected);
+});
 const absent = code => Object.assign(new Error('Resource does not exist'), {stderr:`[code: ${code}]`});
 
 test('fresh deployment uses distinct Worker, storage, service and page identities', () => {

@@ -35,6 +35,9 @@ try {
   for (const key of ['repository', 'source', 'sourceTree', 'dirty']) assert.equal(packagesProof[key], hostProof[key]);
   for (const [file, hash] of Object.entries(hostProof.files))
     assert.equal(createHash('sha256').update(readFileSync(join(directory, 'node_modules/@tendriller/engine', file))).digest('hex'), hash);
+  const testBindings = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/testing-ratelimits.json'))).ratelimits;
+  assert.deepEqual(testBindings.filter(binding => ['PAGE_RATE', 'ACCOUNT_RATE'].includes(binding.name)).map(binding => binding.name),
+    ['PAGE_RATE', 'ACCOUNT_RATE']);
   assert.deepEqual(packagesProof.artifacts.map(item => item.name), ['@tendriller/core', '@tendriller/runtime', '@tendriller/engine']);
   for (const artifact of packagesProof.artifacts)
     assert.equal(createHash('sha256').update(readFileSync(join(root, 'dist', artifact.file))).digest('hex'), artifact.sha256);

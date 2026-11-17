@@ -39,6 +39,8 @@ The application session's command/query/replication implementation is qualified 
 
 `hostTraffic` counts HTTP/body bytes and separate invitation/SDP upgrade/frame bytes, excluding synthetic setup. Snapshot it around ordinary application operations to test host independence. `asset` lets consumers verify actual served HTML/JavaScript and historical immutable URLs after signed publication and restart.
 
+An independently packaged workerd fixture can read `@tendriller/engine/testing-ratelimits` when constructing its Wrangler configuration. The engine archive pins these bindings in its provenance, so external tests use the host's current page/account traffic limits without copying their values.
+
 ## Checkpoints and releases
 
 Every build writes exact source commit/tree, clean/dirty state and archive SHA-256 values to `dist/provenance.json`. The engine embeds portable Chronolog provenance and hashes. Independent qualification copies clean artifacts and verifies their hashes before installing; a branch name does not identify tested bytes.
@@ -46,3 +48,5 @@ Every build writes exact source commit/tree, clean/dirty state and archive SHA-2
 Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree. Release publication is separate from deployment. Use `check:release` and the repository's release workflow for a deliberately selected release ref.
 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
+
+For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md). The [branch inventory](BRANCH_ARCHIVE.md) records preserved unmerged heads separately from the shipped default branches.
