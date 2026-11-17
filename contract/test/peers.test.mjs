@@ -27,3 +27,9 @@ test('the host package exports introductions without a second application framin
   for (const name of ['createPeerConnection','connectPeer','encodePeerFrame','decodePeerFrame','PEER_LIMITS']) assert.equal(peers[name], undefined);
   assert.equal(typeof peers.createPeerRendezvous, 'function');
 });
+
+test('portable peer admission includes database opening without granting it to the host', () => {
+  const request = { facet: 'database', action: 'open' };
+  assert.equal(peers.participantAccepts(peers.PEER_PARTICIPANT_POLICY, request), true);
+  assert.equal(peers.participantAccepts(peers.CONTROL_PARTICIPANT_POLICY, request), false);
+});
