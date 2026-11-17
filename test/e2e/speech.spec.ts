@@ -2,7 +2,7 @@ import { voicePage } from "./authored-pages";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { test, expect } from "@playwright/test";
-import { agent, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
+import { claim, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -60,8 +60,9 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
         }
       };
     });
-    await publish(h, voicePage);
     await signInFixture(context);
+    await claim(context, h);
+    await publish(h, voicePage);
     await openClaimed(page, h);
     await page.waitForFunction(() => !!(window as any).voice);
     const warnings: string[] = [];
@@ -72,7 +73,7 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
     await expect(mic).toHaveAttribute("aria-pressed", "true");
     await mic.click();
     await expect.poll(async () => (await page.evaluate(() => (window as any).__speechE2E)).transcribes).toBe(1);
-    await expect.poll(async () => (await agent(h, "/events")).data.events.some((e: any) => JSON.stringify(e.data).includes("recognized voice"))).toBe(true);
+    await expect(page.locator("#draft")).toHaveValue("recognized voice");
     expect(await page.evaluate(() => (window as any).__speechE2E.decoderCalls)).toBe(1);
     expect(warnings.join(" ")).not.toMatch(/AudioContext was prevented|autoplay/i);
   } finally { await deletePage(h); }

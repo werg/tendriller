@@ -1,9 +1,9 @@
 import { voicePage } from "./authored-pages";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
-import { agent, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
+import { claim, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
 
 // The upstream runtime/test/tts suite covers the speech module's edge cases.
-// These tests cover the agent API -> Worker -> owner page -> speech module path.
+// These tests cover explicit page callbacks and speech ownership on a real signed page.
 // The module below is a deterministic substitute. Publication-integrity behavior
 // is tested separately; a service worker must never cache these substitute bytes.
 test.use({ serviceWorkers: "block" });
@@ -56,18 +56,18 @@ async function setUpVoice(context: BrowserContext, page: Page, withInput = false
   }, withInput);
 }
 
-test("agent reply is displayed and played by neural voice on the owner page", async ({ page, context }) => {
+test("an explicit page action displays and plays neural speech", async ({ page, context }) => {
   const h = await createPage();
   try {
+    await signInFixture(context);
+    await claim(context, h);
     await publish(h, voicePage);
     await setUpVoice(context, page);
-    await signInFixture(context);
     await openClaimed(page, h);
     await page.waitForFunction(() => !!(window as any).voice);
     await page.locator("#enable-speech").click();
     await expect.poll(() => page.evaluate(() => (window as any).voice.outputStatus.state)).toBe("ready");
-    const reply = await agent(h, "/say", "POST", { text: "Hello from the agent", speak: true });
-    expect(reply.status).toBe(200);
+    await page.evaluate(() => (window as any).speakReviewed("Hello from the agent"));
     await expect(page.locator("body")).toContainText("Hello from the agent");
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.completed)).toEqual(["Hello from the agent"]);
     expect(await page.evaluate(() => (window as any).__ttsE2E.starts)).toBeGreaterThan(0);
@@ -75,26 +75,26 @@ test("agent reply is displayed and played by neural voice on the owner page", as
   } finally { await deletePage(h); }
 });
 
-test("voice input interrupts an agent reply, reaches the event queue, and later speech recovers", async ({ page, context }) => {
+test("voice input interrupts speech, reaches the page callback, and later output recovers", async ({ page, context }) => {
   const h = await createPage();
   try {
+    await signInFixture(context);
+    await claim(context, h);
     await publish(h, voicePage);
     await setUpVoice(context, page, true);
-    await signInFixture(context);
     await openClaimed(page, h);
     await page.waitForFunction(() => !!(window as any).voice);
     await page.locator("#enable-speech").click();
     await expect.poll(() => page.evaluate(() => (window as any).voice.outputStatus.state)).toBe("ready");
-    const cursor = (await agent(h, "/events")).data.cursor;
-    expect((await agent(h, "/say", "POST", { text: "long reply", speak: true })).status).toBe(200);
+    await page.evaluate(() => (window as any).speakReviewed("long reply"));
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.spoken)).toEqual(["long reply"]);
     const mic = page.locator("#record");
     await mic.click();
     await expect(mic).toHaveAttribute("aria-pressed", "true");
     await mic.click();
-    await expect.poll(async () => (await agent(h, `/events?after=${cursor}`)).data.events.some((e: any) => e.type === "instruction" && JSON.stringify(e.data).includes("voice follow up"))).toBe(true);
+    await expect(page.locator("#draft")).toHaveValue("voice follow up");
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.aborted)).toContain("long reply");
-    expect((await agent(h, "/say", "POST", { text: "recovered", speak: true })).status).toBe(200);
+    await page.evaluate(() => (window as any).speakReviewed("recovered"));
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.completed)).toContain("recovered");
     await expect(page.locator("body")).toContainText("recovered");
   } finally { await deletePage(h); }
