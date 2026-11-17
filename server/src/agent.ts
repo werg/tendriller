@@ -109,6 +109,11 @@ async function tendrilInfo(t: Tendril) {
 }
 
 function deliveryFeedback(t: Tendril) {
+  const application = selectedApplication(t);
+  if (application.kind === "peer") return {
+    mode: "peer", backend: application.id, live_listener: false,
+    reminder: "Observe operations and final events through the selected peer backend. Transient application messages use its live signals channel.",
+  };
   const facts = t.presenceFacts();
   const mode = facts.agentSocket ? "live_socket" : facts.webhook ? "wake_configured" : "none";
   return {

@@ -39,7 +39,7 @@ import { createClient, requireService } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid, STREAM_LIMITS } from '@tendriller/core/contract';
 import { RECORD_LOG_FORMAT, recordAppendCondition, recordGenesisRoot, recordEntryRoot, recordId, encodeRecord, verifyRecordEntry } from '@tendriller/core/records';
 import { createApplicationBinding, validateCloudflareProgram } from '@tendriller/core/application';
-import { encodePeerFrame, decodePeerFrame } from '@tendriller/core/peers';
+import { createSignalBinding } from '@tendriller/core/signals';
 import { createMembersClient } from '@tendriller/core/members';
 import membershipProvenance from '@tendriller/engine/membership-provenance' with {type: 'json'};
 import schema from '@tendriller/core/schema' with {type: 'json'};
@@ -65,7 +65,9 @@ assert.equal(client.createDecision, undefined);
 const selection = createApplicationBinding({ kind:'peer', id:'history' });
 assert.throws(() => selection.backend, {code:'backend_unavailable'});
 assert.equal(validateCloudflareProgram({version:1,expected_generations:{},steps:[{kind:'emit',topic:'conversation',payload:{text:'hello'}}]}).steps[0].kind, 'emit');
-assert.equal(decodePeerFrame(encodePeerFrame({domain:'signals',payload:new Uint8Array([7])})).domain, 'signals');
+const signals = createSignalBinding();
+assert.equal(signals.available, false);
+await assert.rejects(signals.send('typing', null), {code:'signal_unavailable'});
 assert.equal(typeof client.application, 'function');
 assert.equal(typeof client.peers.rendezvous, 'function');
 assert.equal(typeof client.members.approve, 'function');
@@ -89,7 +91,9 @@ import {type RuntimeApi, type SendResult, type WireContracts, type SensorStatus}
 import {type WorkflowModule} from '@tendriller/core/host';
 import {type RecordLogClient, type RecordLogHead, type RecordLogAppendCondition} from '@tendriller/core/records';
 import {type ApplicationBackend, type ApplicationOperation, type CloudflareApplicationProgram, createApplicationBinding, publishConversation} from '@tendriller/core/application';
-import {type PeerRendezvous, createPeerConnection, type PeerSocket} from '@tendriller/core/peers';
+import {type PeerRendezvous} from '@tendriller/core/peers';
+import {type Signals, type EphemeralSignal} from '@tendriller/core/signals';
+import {startRuntime} from '@tendriller/runtime/kernel';
 import {type MembershipConfiguration, type MembersClient} from '@tendriller/core/members';
 import {createFixtureTransport} from '@tendriller/runtime/preview';
 import type {} from '@tendriller/core/browser';
@@ -100,6 +104,15 @@ void client.updateState({...command,conditions:[{path:['job'],exists:false}],exp
 // @ts-expect-error all commands need explicit stable IDs and preconditions
 void client.updateState({ops:[]});
 declare const page: RuntimeApi<{count:number}>;
+declare const signals: Signals;
+page.signals.install(signals);
+const live: EphemeralSignal = await page.signals.send('typing', {active:true}, {ttlMs:1000});
+for await (const value of page.signals.subscribe({topics:['typing'],mode:'latest'})) { const author:string = value.authorId; void author; }
+// @ts-expect-error signal payloads are JSON, not binary or class instances
+void page.signals.send('typing', new Uint8Array());
+// @ts-expect-error durable replay cursors do not apply to live signals
+page.signals.subscribe({cursor:'saved'});
+void [live,startRuntime];
 const log: RecordLogClient = page.records;
 const members: MembersClient = page.members;
 declare const configuration: MembershipConfiguration;
@@ -120,9 +133,7 @@ const noGuards: CloudflareApplicationProgram = {version:1,steps:[{kind:'emit',to
 backend.operations.subscribe({});
 const binding = createApplicationBinding({kind:'peer',id:'history'}, backend);
 const peer: PeerRendezvous = page.peers.rendezvous('session', 'browser');
-declare const socket: PeerSocket;
-const adapted = createPeerConnection(socket,{route:'direct'});
-void [operation,continuation,cfProgram,noGuards,binding,peer,adapted];
+void [operation,continuation,cfProgram,noGuards,binding,peer];
 declare const recordHead: RecordLogHead;
 void log.read({historyId:recordHead.historyId,after:recordHead.position,previous:recordHead});
 const expectedHead: RecordLogAppendCondition = {position:recordHead.position,root:recordHead.root};

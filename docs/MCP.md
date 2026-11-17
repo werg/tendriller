@@ -13,6 +13,18 @@ Invalid arguments produce JSON-RPC error `-32602`. A service operation failure
 produces an MCP tool result with `isError: true` and a descriptive text result.
 Successful JSON objects are also returned as `structuredContent`.
 
+Discovery follows the page's immutable application selection. Peer pages expose
+explicit host operations such as publications, blobs, host metadata and
+notifications. Their initialization instructions direct agents to the selected
+peer client for application work. Hosted state, shared-file references, events, conversation, streams,
+timers, workflow and consumer tools are absent; calling them returns unknown-tool
+error `-32602`. Peer pages advertise no MCP application wake capability,
+`events/list` is empty, and a subscription request is rejected. `tendril_info`
+reports `agent_delivery.mode:'peer'` and the selected backend identity. Its
+application messages belong to `client.signals` or durable final event readers.
+
+The hosted event and wake procedures below apply to the Cloudflare backend.
+
 `read_events` reads available events immediately and accepts an optional `after`
 cursor. Its former `wait` argument is removed. Subscribe to `tendril.events_waiting`
 through MCP Events for asynchronous count-only wake notifications; a receiver

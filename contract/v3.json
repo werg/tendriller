@@ -769,7 +769,6 @@
         }
       },
       "required": [
-        "id",
         "type",
         "data"
       ],
@@ -905,7 +904,6 @@
               }
             },
             "required": [
-              "id",
               "type",
               "data"
             ],

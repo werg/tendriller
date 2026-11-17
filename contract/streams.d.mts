@@ -3,6 +3,7 @@ export const STREAM_RECORD_BYTES: 65536;
 export const STREAM_SNAPSHOT_RECORD_BYTES: 196608;
 export type StreamInfo = WireContracts["streamInfo"];
 export type StreamCreate = WireContracts["streamCreate"];
+/** id is required by durable streams; live ephemeral records may omit it. */
 export type StreamInput = WireContracts["streamInput"];
 export type StreamAppend = WireContracts["streamAppend"];
 export type StreamRecord = WireContracts["streamRecord"];

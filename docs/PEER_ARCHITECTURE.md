@@ -4,8 +4,11 @@
 
 A peer page has one application owner: its Chronolog replica. Chronolog owns
 signed operations, durable retry identity, authenticated history, deterministic
-execution, inclusion finality, governance, detached bodies and ephemeral
-application signals. Changing the network route must not change those rules.
+execution, inclusion finality, governance and detached bodies. Live application
+signals use a separate `send`/`subscribe` port; the default Chronolog composition
+authorizes them with current topic rights without submitting them to the log.
+The standalone signal channel can also run without a database. Changing the
+network route must not change the selected authorization or durability rules.
 
 Tendriller serves immutable page assets, authenticates accounts, administers
 participant changes and provides short-lived rendezvous. These responsibilities
@@ -73,6 +76,11 @@ membership and publication requests remain host operations. Hosted pages retain
 their separate hosted runtime and its existing behavior.
 
 ## Membership and finality
+
+Membership administration, finality signing, schema administration, row ownership
+and agent execution are independent roles. The resident process may compose some
+of them, but no role implicitly receives the others' powers. See the
+[role and finality contract](APPLICATION_BACKENDS.md#finality-and-authority).
 
 The host administrator is activated by participant operations, not by each
 application proposal or peer frame. It verifies a complete compact control

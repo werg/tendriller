@@ -10,6 +10,7 @@ import { runtimeAsset } from "./assets";
 import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi } from "../../contract/index.mjs";
+import { createSignalBinding } from "../../contract/signals.mjs";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<void> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;
@@ -26,7 +27,10 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
   } catch (error) { console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error); }
 }
 
-export function startRuntime(cfg: TendrilConfig, options: { application?: import("../../contract/application.mjs").ApplicationBackend } = {}): RuntimeApi {
+export function startRuntime(cfg: TendrilConfig, options: {
+  application?: import("../../contract/application.mjs").ApplicationBackend;
+  signals?: import("../../contract/signals.mjs").Signals;
+} = {}): RuntimeApi {
   validateDocumentContext(cfg);
   if (cfg.publication && cfg.version > 0) {
     const pinned = documentUrl(cfg, new URL(cfg.publication.base, location.href));
@@ -65,6 +69,7 @@ export function startRuntime(cfg: TendrilConfig, options: { application?: import
   });
   const api: RuntimeApi = {
     application: core.application, peers: core.peers, members: core.members,
+    signals: createSignalBinding(options.signals),
     send: (data, options) => core.send(data, options),
     request: (path, options) => core.request(path, options),
     state: core.state, scopes: core.scopes, timers: core.timers,

@@ -12,7 +12,12 @@ Custom stream creation declares a name, durability, reader audience and (for dur
 {"name":"telemetry.samples","durability":"durable","readers":"page","max_records":500,"max_age_seconds":3600}
 ```
 
-Record envelopes preserve `stream`, `seq`, producer identity, producer-supplied `id`, timestamp, received timestamp, type and opaque JSON `data`. A producer retry with the same ID is deduplicated under its authenticated producer identity. Sequence numbers never rewind after trim or retention cleanup.
+Record envelopes preserve `stream`, `seq`, producer identity, producer-supplied `id`, timestamp, received timestamp, type and opaque JSON `data`. Durable inputs require a stable `id`; a retry is deduplicated under its authenticated producer identity while the record is retained. Ephemeral inputs may omit `id` (the delivered envelope uses `null`), and repeated sends are distinct live observations with no deduplication or delivery acknowledgement. Sequence numbers never rewind after trim or retention cleanup.
+
+These are hosted streams. Peer pages use the independent
+[`tendril.signals` API](APPLICATION_SIGNALS.md) for transient application traffic
+and their selected backend's durable events for replay. Neither transient path
+needs a Chronolog transaction or finality operation.
 
 ## HTTP and browser operations
 

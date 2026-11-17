@@ -17,7 +17,7 @@ const jsonValue = { anyOf: [
   { type: "array", items: json }, { type: "object", additionalProperties: json },
 ] };
 const input = object({ id: { type: "string", minLength: 1, maxLength: 128 }, ts: integer,
-  type: { type: "string", minLength: 1, maxLength: 80 }, data: json }, ["id", "type", "data"]);
+  type: { type: "string", minLength: 1, maxLength: 80 }, data: json }, ["type", "data"]);
 const record = object({ stream: name, seq: integer, ts: { type: "number" }, received_at: { type: "number" },
   type: { type: "string", minLength: 1, maxLength: 80 }, data: json,
   producer: { type: "string", minLength: 1, maxLength: 200 }, id: { anyOf: [input.properties.id, { type: "null" }] },

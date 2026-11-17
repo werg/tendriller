@@ -129,6 +129,25 @@ test('a peer runtime operates with no host connection, host outbox, background f
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
 });
 
+test('signals work before any durable backend is installed and never open a host connection or outbox', async () => {
+  const env = environment(), sent = [];
+  assert.equal(env.api.signals.available, false);
+  await assert.rejects(env.api.signals.send('typing', { active: true }), { code: 'signal_unavailable' });
+  const signal = { scope: 'room', authorId: 'a'.repeat(64), sessionId: 'b'.repeat(64), sequence: 1,
+    topic: 'typing', payload: { active: true }, issuedAtMs: 100, expiresAtMs: 1100 };
+  env.api.signals.install({ async send(topic, payload, options) { sent.push({ topic, payload, options }); return signal; },
+    async *subscribe() { yield signal; } });
+  assert.equal(env.api.signals.available, true);
+  assert.equal(env.api.connected, false, 'live messaging does not install a durable application backend');
+  assert.throws(() => env.api.application.backend, { code: 'backend_unavailable' });
+  assert.equal(await env.api.signals.send('typing', signal.payload, { ttlMs: 1000 }), signal);
+  assert.equal((await env.api.signals.subscribe({ mode: 'latest' })[Symbol.asyncIterator]().next()).value, signal);
+  assert.equal(sent.length, 1);
+  for (let i = 0; i < 3; i++) await env.advance();
+  assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
+  assert.deepEqual(plain(env.api.pendingWork()), { events: 0, state: 0, captures: 0, timers: 0 });
+});
+
 test('the served bootstrap mounts working management and sensor controls without touching hosted application services', async () => {
   const env = environment({ defaultEntry: true });
   assert.equal(env.window.tendril, env.api);

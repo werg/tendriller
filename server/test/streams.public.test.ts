@@ -99,6 +99,23 @@ it("keeps ephemeral payloads out of every SQLite payload store while delivering 
   expect((await publish(h, credential.token, [record("three")], "live")).cursor).toBe(3);
 });
 
+it("accepts live records without command IDs and still requires identities for every durable record", async () => {
+  const h = await create({ listener: false });
+  await stream(h, "live", { durability: "ephemeral" }); await stream(h);
+  const page = await connect(h);
+  await page.request({ t: "stream_subscribe", stream: "live" });
+  const input = { type: "pointer", data: { x: 10, y: 20 } };
+  const receipt = await apiJson(h, "POST", "streams/live/records", { records: [input] });
+  expect(receipt.records[0]).toMatchObject({ ...input, id: null, seq: 1 });
+  assertValid("streamAppendResult", receipt);
+  expect((await page.next("stream_record")).record).toEqual(receipt.records[0]);
+  const response = await api(h, "POST", "streams/training/records", { records: [record("identified"), input] });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: "id_required" } });
+  expect((await apiJson(h, "GET", "streams/training/records?after=0")).records).toEqual([]);
+  expect(await inDO(h.id, t => t.db.all("SELECT * FROM stream_records"))).toEqual([]);
+});
+
 it("reports count and age retention gaps with stable high-water marks", async () => {
   const h = await create({ listener: false }); await stream(h, "training", { max_records: 2, max_age_seconds: 1 });
   await apiJson(h, "POST", "streams/training/records", { records: [record("one"), record("two"), record("three")] });
@@ -187,8 +204,9 @@ it("denies display replay immediately when owner account deletion begins", async
   const account = await inDO(h.id, t => t.db.get<string>("owner_account", ""));
   await env.ACCOUNTS.prepare("UPDATE accounts SET deleting_at=? WHERE id=?").bind(Date.now(), account).run();
   page.drain(); page.send({ t: "stream_subscribe", stream: "shared", after: 0, cid: "revoked-replay" });
-  await sleep(40);
-  expect(page.closed?.code).toBe(4003);
+  // Observe the response to this frame instead of assuming Worker scheduling
+  // and WebSocket close delivery both finish within an arbitrary 40 ms.
+  await expect.poll(() => page.closed?.code).toBe(4003);
   expect(page.drain().some(message => message.cid === "revoked-replay" || message.t === "stream_record")).toBe(false);
 });
 

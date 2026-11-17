@@ -47,13 +47,15 @@ async function fireFailing(h: Handle) {
 // Simulate process loss immediately after the run transaction commits, before
 // the first attempt can start. This is the crash gap the outbox closes.
 async function crashAfterRun(h: Handle) {
-  await advance(h.id, 2000);
   await inDO(h.id, async t => {
     const schedule = t.scheduleAlarm;
     t.scheduleAlarm = () => {
       if (t.db.one("SELECT run_id FROM timer_notifications WHERE state='pending'")) throw Error("simulated worker termination after commit");
       schedule.call(t);
     };
+    // Install the fault before making the timer due in the same object turn;
+    // a real alarm must not consume the due run between two test requests.
+    t.skew += 2000;
     try { await expect(runTimers(t)).rejects.toThrow("simulated worker termination"); } finally { t.scheduleAlarm = schedule; }
   });
 }

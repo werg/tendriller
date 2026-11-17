@@ -3,6 +3,7 @@ import type { RuntimeApi, StreamBatch, StreamLatest, StreamTrimResult, StreamRec
 const client = createClient({ api: "https://example.test/api/t/id", token: "tp_example" });
 void client.streams.create({ name: "training.loss", durability: "durable", max_records: 1000 });
 void client.streams.append("training.loss", { records: [{ id: "run:1", type: "metric", data: { loss: 0.4 } }] });
+void client.streams.append("live.pointer", { records: [{ type: "pointer", data: { x: 10, y: 20 } }] });
 const batch: Promise<StreamBatch> = client.streams.read("training.loss", { after: 0 });
 void batch;
 const latest: Promise<StreamLatest> = client.streams.latest("training.loss");

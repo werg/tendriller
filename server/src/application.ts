@@ -17,7 +17,7 @@ export function requireCloudflareApplication(t: Tendril): void {
   if (selectedApplication(t).kind !== 'cloudflare') throw new HttpError(409, 'application_backend', 'This page stores application data in its selected peer backend');
 }
 export function isApplicationPath(path: string): boolean {
-  return /^(?:state|events|say|streams|producers|consumers|timers|session|scopes|workflows|files|bundle|remix)(?:\/|$)/.test(path)
+  return /^(?:state|events|say|streams|producers|consumers|timers|session|scopes|workflows|files|file-refs|bundle|remix)(?:\/|$)/.test(path)
     && !/^events\/socket(?:\/|$)/.test(path);
 }
 const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(',')}]`

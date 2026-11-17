@@ -5,9 +5,10 @@ account sessions, publication recovery, explicit blob facilities, connection hin
 and short-lived WebRTC rendezvous. The selected backend owns application persistence, authored operations,
 retry identity, execution, event replay, and finality.
 
-For a resident native agent deployment, select a Chronolog peer backend. Run the
-replica, authority, timers, and effect workers in the resident agent service. The
-browser keeps its own replica. A Cloudflare JSON backend remains available for
+For a resident native agent deployment, select a Chronolog peer backend. Run a
+replica, timers and effect workers in the resident agent service. A finality
+service can run there or on another configured participant; an agent is not
+inherently a finality authority. The browser keeps its own replica. A Cloudflare JSON backend remains available for
 applications that deliberately choose the hosted state authority.
 
 ```js
@@ -51,13 +52,13 @@ const application = await tendril.application.ready();
 
 `application.backend` returns the installed backend or throws
 `backend_unavailable`. Installing a different identity or a second backend fails.
-Headless compositions can pass `{application: backend}` to
+Custom browser bootstraps can pass `{application: backend}` to
 `startRuntime(configuration, options)`. A hosted page uses its existing
 `window.tendril` and must not start another runtime.
 
 Peer pages run a separate quiet runtime. They open no host socket or IndexedDB
 outbox and send no background health reports, logs, heartbeats or sensor reports.
-State, input, conversation, timers, streams, scopes, captures, hosted uploads and
+State, input, conversation, timers, streams, shared-file references, scopes, captures, hosted uploads and
 retained-record APIs return `application_backend`. Application work and binary
 payload exchange belong to the replica. Explicit HTTP requests, membership,
 rendezvous, publication saving and existing blob URLs remain available.
@@ -148,10 +149,49 @@ invoke the agent, perform speech, declare a human read receipt, or grant the aut
 permission to impersonate an owner or system role. Use recorded author/grant
 provenance and application policy when presenting a message.
 
-Presence, typing, token chunks, and replaceable progress use the separate
-[peer signal domain](PEER_CONNECTIONS.md). End a generated response with a durable
+Presence, typing, token chunks, and replaceable progress use
+[`tendril.signals`](APPLICATION_SIGNALS.md), installed independently with
+`tendril.signals.install(client.signals)`. Use `send` and `subscribe`; choose
+`mode:'latest'` only for replaceable values. Default FIFO preserves pending
+discrete events within explicit bounds. Signals require no program, SQL engine,
+outbox or finality service. End a generated response with a durable
 result event. Only a consumer of accepted final intent dispatches external work;
 reducers and SQL callbacks never send messages or perform tools during replay.
+
+## Finality and authority
+
+Keep three decisions separate: who may connect or author, how valid programs are
+ordered and executed, and when an applied result becomes final. The signed
+Chronolog configuration selects its finality policy and timing rules. Peers verify
+the same author-time order; a receipt or an RTC send does not establish finality.
+Finality closes an applied prefix. A provisional accepted **or rejected** result
+can change when earlier work arrives and the suffix replays.
+
+| Role | Responsibility | Does not grant |
+| --- | --- | --- |
+| Page host / introduction service | Assets, accounts, bounded connection setup | Database read/write permission |
+| Membership administrator | Signed grants, revocations and reader key delivery | SQL row ownership or finality signing |
+| Finality service / validator set | Inclusion evidence and a closed author-time frontier | Permission to author successful application changes |
+| Schema administrator / row owner | DDL policy / rights over owned rows | Membership administration or transport admission |
+| Resident agent / effect worker | Consume final intent and record outcomes | Any of the other roles merely by running a process |
+
+Co-locating roles is a deployment choice; permissions come from explicit keys and
+grants. A signal-only sender can have signal-topic rights without SQL or durable
+event rights. Reader authorization and historical decryption keys are separate
+from authoring rights.
+
+An offline draft keeps its original signed time and identity. If first inclusion
+arrives behind a closed frontier, Chronolog rejects that original proposal. Show
+the retained draft and let the application deliberately author a new operation
+after review. Do not silently retimestamp a retry. An exact retry of an already
+included operation recovers its original outcome.
+
+Internal rollback/redo replays the provisional suffix from a valid checkpoint;
+it is not user Undo. User Undo or Redo is a new durable program with a new
+operation ID and conditions against the state the person reviewed. Final history
+is never rewritten to simulate Undo. Final effect consumers also need durable
+processed checkpoints and provider idempotency/reconciliation: finality does not
+make an external API call exactly once.
 
 ## Cloudflare implementation
 

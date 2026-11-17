@@ -49,6 +49,22 @@ report, diagnostic forwarding, background poll or automatic service worker start
 On a peer page `connected` means its selected backend is installed; use replica
 progress for application/network readiness.
 
+## Live application signals
+
+`tendril.signals` is an independent, initially uninstalled messaging port. Install
+the public peer client's implementation with
+`tendril.signals.install(client.signals)`, or pass `{signals}` to `startRuntime`.
+Its `available` flag reports installation; `ready()` explicitly waits for it.
+Sending or subscribing before installation fails immediately with
+`signal_unavailable` and queues nothing.
+
+Use `send(topic, json, {ttlMs?,signal?})` and
+`subscribe({topics?,mode?:'all'|'latest',signal?})`. Default `all` preserves pending
+messages within a bounded FIFO; `latest` coalesces replaceable values. This port
+works without a durable application backend. It creates no host connection,
+outbox, SQL transaction or finality request. See [live signals](APPLICATION_SIGNALS.md)
+for envelopes, error handling, authorization and expiring views.
+
 ## Conversation and durable outcomes
 
 `conversation.send(text, {via?: "text" | "voice"})` returns a result with a stable

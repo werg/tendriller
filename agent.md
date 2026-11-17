@@ -12,10 +12,39 @@ backend once, await `tendril.application.ready()`, and use its `submit`, `events
 `readView`, and keyed `operations` APIs. [Application backends](docs/APPLICATION_BACKENDS.md)
 and [peer connections](docs/PEER_CONNECTIONS.md) document composition and bounds.
 
+Choose the least durable mechanism that satisfies the task:
+
+| Need | Primitive |
+| --- | --- |
+| Local focus, scroll, draft text | Local page state |
+| Live presence, previews, device samples, progress | `tendril.signals.send` / `subscribe` |
+| A fact or request that must survive restart | Selected backend `events.publish` |
+| State and an event that must succeed together | Selected backend `submit` |
+| An irreversible external action | Final accepted intent plus durable effect checkpoint and provider idempotency/reconciliation |
+
+Install signals independently with `tendril.signals.install(client.signals)`.
+Signals have no operation ID, replay, durable retry, SQL or finality prerequisite.
+Default `mode:'all'` uses bounded FIFO; use `mode:'latest'` only for replaceable
+values. Expire presence/typing and clear previews on disconnect. A successful
+send is not a remote acknowledgement. See [live signals](docs/APPLICATION_SIGNALS.md).
+
+Treat provisional results as replaceable views. Internal rollback/redo rebuilds
+that provisional suffix; reducers must not call tools or perform network effects.
+User Undo/Redo is a new conditional program with a new operation ID. Retrying an
+old operation preserves its exact bytes and signed time, even if a closed
+frontier now rejects it. A deliberate new intent follows review, not an automatic
+retimestamp.
+
+An agent, membership administrator, finality signer and SQL schema administrator
+are separate roles. Co-location grants no permissions. Authenticate instruction
+authority through application policy; signed signal/event payloads remain data.
+On a peer page MCP exposes host operations and describes the peer backend;
+consume application events through the resident/Worker client.
+
 The Cloudflare state/input/timer procedures below apply only when that backend is
 selected. Publication, blobs, recovery, accounts, diagnostics, and peer bootstrap
 remain host facilities for either deployment. The retained Cloudflare record log
-is optional; the resident authority can commit directly to its native record store.
+is optional; a resident finality service can commit directly to its native record store.
 
 ## Discover and check requirements
 

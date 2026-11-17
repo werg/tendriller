@@ -147,6 +147,8 @@ export function appendToStore(t: StreamStoreContext, name: string, value: unknow
   const info = streamInfo(t, name);
   if (info.builtin) throw new HttpError(403, "readonly_stream", "Built-in streams are written through their existing APIs");
   const body = assertValid("streamAppend", value);
+  if (info.durability === "durable" && body.records.some(record => record.id === undefined))
+    throw new HttpError(400, "id_required", "Durable stream records require a stable producer ID; ephemeral records do not");
   const size = jsonBytes(body);
   if (size > MAX_STREAM_BATCH_BYTES) throw new HttpError(413, "too_large", "Stream batch exceeds 256 KiB");
   const recordLimit = streamRecordLimit(info);
@@ -168,7 +170,7 @@ export function appendToStore(t: StreamStoreContext, name: string, value: unknow
         }
       }
       const record: StreamRecord = { stream: name, seq: ++seq, ts: input.ts ?? receivedAt, received_at: receivedAt,
-        type: input.type, data: input.data, producer, id: input.id };
+        type: input.type, data: input.data, producer, id: input.id ?? null };
       if (info.durability === "durable") t.db.run(`INSERT INTO stream_records(stream,seq,ts,received_at,type,data,producer,producer_key,id,bytes)
         VALUES(?,?,?,?,?,?,?,?,?,?)`, name, seq, record.ts, receivedAt, record.type, JSON.stringify(record.data), producer, producerKey, record.id,
         jsonBytes(record) + new TextEncoder().encode(producerKey).byteLength);

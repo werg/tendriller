@@ -22,6 +22,7 @@ test("stream policies reject ambiguous retention, reserved streams, and malforme
     { name: "metrics", durability: "durable", readers: "agent" },
   ]) assert.ok(validate("streamCreate", body).length, JSON.stringify(body));
   assertValid("streamAppend", append);
+  assertValid("streamAppend", { records: [{ type: "pointer", data: { x: 10, y: 20 } }] });
   assertValid("streamAppend", { records: [{ id: "null", type: "data", data: [null, true, "text", { n: 4 }] }] });
   for (const data of [undefined, NaN, Infinity, { nested: undefined }, { nested: NaN }, 1n, () => 1]) {
     assert.ok(validate("streamAppend", { records: [{ id: "bad", type: "data", data }] }).length);

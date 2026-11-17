@@ -74,7 +74,7 @@ measure RTC bytes, TLS overhead or provider billing. Binary application frames,
 wrong roles, duplicate descriptions and stale sessions fail closed. There is no
 hosted `peers/socket` relay or protocol compatibility alias.
 
-## Bootstrap hints and explicit WebSocket transport
+## Bootstrap hints and transport ownership
 
 `peers.setBootstrap({version:2,endpoints:[{url}]})` stores up to eight distinct
 resident HTTPS introduction addresses. HTTPS is required except for loopback
@@ -95,22 +95,12 @@ Authored assets retain immutable publication caching. Peer HTML is revalidated
 on reload because its injected addresses may change independently of the
 publication. There is no background configuration refresh or discovery poll.
 
-An explicitly selected external native WebSocket can use the public generic
-`connectPeer({route:'direct',url})` and `createPeerConnection(socket,{route,
-queueBytes?})` helpers. These utilities are independent of the host's rendezvous.
-They expose `ready`, `frames`, ordered bounded `send`, idempotent `close`, and
-`stats` for encoded bytes, local queued bytes and opening time. Their optional
-route label is supplied by the deployment; it is not a measured ICE result.
-These explicit WebSocket endpoints are separate from the resident introduction
-configuration and are never selected as an automatic fallback.
+Application framing belongs to the selected peer transport. Tendriller exports
+no binary application connection, record/signal multiplexing, fragmentation or
+relay protocol. Use Chronolog's native framing or
+`@chronolog/transport-webrtc` directly. This keeps all application bounds,
+reader authentication and reconnection behavior in one implementation.
 
-The native WebSocket envelope is magic `0x54`, version `1`, domain index
-`0` records / `1` signals / `2` control, then a nonempty opaque payload. Record and
-control payloads are bounded to 256 KiB, ephemeral signals to 16 KiB, and local
-send/receive queues to 4 MiB each. Overflow closes the session; synchronization
-resumes from verified durable progress. The retired host ready/credit protocol
-is removed. Chronolog's WebRTC framing has its own bounded fragmentation and
-receiver-credit protocol.
 
 ## Runtime and route policy
 

@@ -10,6 +10,7 @@ Start with authored HTML, JavaScript and assets. There is no starter, component 
 - [Browser API](docs/BROWSER_API.md): transport, conversation, coherent state snapshots, conditional writes, durable timers, streams, captures and explicit device features.
 - [Protocol](docs/PROTOCOL.md): identity, authorization, commands, transactions and publication guarantees.
 - [Application backends](docs/APPLICATION_BACKENDS.md): one selected history, atomic programs, operation status and coherent event/query views.
+- [Live application signals](docs/APPLICATION_SIGNALS.md): independent send/subscribe, FIFO or latest delivery, expiration and durable completion.
 - [Peer architecture](docs/PEER_ARCHITECTURE.md): quiet hosting, reachable resident introductions, Worker ownership and authenticated WebRTC exchange.
 - [Peer connections](docs/PEER_CONNECTIONS.md): bounded SDP rendezvous, optional endpoint hints and explicit transport configuration.
 - [Membership](docs/MEMBERSHIP.md): the default portable administrator, account-bound device enrollment, certified bootstrap and native authority separation.
