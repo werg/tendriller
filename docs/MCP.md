@@ -29,6 +29,14 @@ application instruction policy. A payload's claimed author or role is not proof.
 
 The hosted event and wake procedures below apply to the Cloudflare backend.
 
+Both hosted and peer agents use the independent [signals interface](APPLICATION_SIGNALS.md)
+for disposable application messages such as typing, progress and response chunks.
+Hosted pages already expose `tendril.signals`; a resident agent opens the public
+SDK's `connectSignals` explicitly. A live signal does not enter the MCP event
+queue or wake an absent agent. Named streams serve external producers that need
+scoped ingestion credentials and a declared audience or retention policy. They
+are not a prerequisite for application signals.
+
 `read_events` reads available events immediately and accepts an optional `after`
 cursor. Its former `wait` argument is removed. Subscribe to `tendril.events_waiting`
 through MCP Events for asynchronous count-only wake notifications; a receiver

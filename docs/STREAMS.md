@@ -14,10 +14,13 @@ Custom stream creation declares a name, durability, reader audience and (for dur
 
 Record envelopes preserve `stream`, `seq`, producer identity, producer-supplied `id`, timestamp, received timestamp, type and opaque JSON `data`. Durable inputs require a stable `id`; a retry is deduplicated under its authenticated producer identity while the record is retained. Ephemeral inputs may omit `id` (the delivered envelope uses `null`), and repeated sends are distinct live observations with no deduplication or delivery acknowledgement. Sequence numbers never rewind after trim or retention cleanup.
 
-These are hosted streams. Peer pages use the independent
-[`tendril.signals` API](APPLICATION_SIGNALS.md) for transient application traffic
-and their selected backend's durable events for replay. Neither transient path
-needs a Chronolog transaction or finality operation.
+Choose these hosted streams when an external producer needs scoped ingestion
+credentials and a declared audience or retention policy. Both hosted and peer
+pages use the independent [`tendril.signals` API](APPLICATION_SIGNALS.md) for
+transient application traffic. Hosted pages receive that port automatically;
+peer pages install their chosen implementation. Use the selected application
+backend's durable events when a message must recover through its history.
+Neither transient path needs a Chronolog transaction or finality operation.
 
 ## HTTP and browser operations
 
