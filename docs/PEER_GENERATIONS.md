@@ -167,11 +167,14 @@ The host need not see SQL or encrypted command bodies to enforce selected ancest
 
 ## Session behavior and qualification boundaries
 
-The session implements the command and recovery contract below. Its independent
-packed preview exercises native/events behavior through the maintained in-process
-link. Maintained network/RTC transport now exists; its packed consumer, HTTP
-control integration and actual browser/deployment behavior need their own evidence. Discovery and host MCP calls do not themselves open or
-connect a session.
+The [published qualification record](https://github.com/werg/tendriller-contrib/blob/407cc60ac19d52b56201e1a54a5dcb55c24d399e/cookbooks/run-a-peer-application/notes/peer-generation-qualification.md)
+preserves two distinct clean artifact pairings: actual Tendriller workerd HTTP and
+sockets with native RTC peers, and Chromium with an owning Worker, OPFS and a
+portable control service. Both exercise host-blocked commands and selected-prefix
+recovery. Their exact sources, archive hashes, observations and limitations remain
+in that record. SQL, deployed Internet/TURN routes, provider costs, quota/eviction
+behavior and the five-minute freshness objective require their own evidence.
+Discovery and host MCP calls do not themselves open or connect a session.
 
 Use `peers.discover()` and coalesced `peers.advertise()` on join, reconnect or
 availability changes. Directory eligibility and coverage are hints; they cannot
