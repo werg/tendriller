@@ -2,7 +2,8 @@
 import { assertFilePath, assertPublicationEntries, assertValid, RESOURCE_LIMITS } from "../../contract/index.mjs";
 import type { Tendril } from "./tendril";
 import { blobReference } from "./blob-retention";
-import { createVersion, listVersions, pointers, rollback, servedVersion, storeContent, type VersionFile } from "./files";
+import { createVersion, listVersions, pointers, rollback, servedVersion, type VersionFile } from "./files";
+import { storeContent } from "./content";
 import { HttpError, intParam, json, readBody, readJson } from "./http";
 import { newBlobId, randomB32, sha256Hex } from "./ids";
 import { mutate, replay } from "./scopes";

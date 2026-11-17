@@ -5,7 +5,7 @@ import { sha256Hex } from "../src/ids";
 import { deleteTimer, nextDaily, runTimers, saveTimer } from "../src/timers";
 import { addEvent } from "../src/events";
 import { exportBundle } from "../src/portability";
-import { fileKey } from "../src/files";
+import { fileKey } from "../src/content";
 import { KEEP_VERSIONS } from "../src/limits";
 import { api, apiJson, advance, inDO, PageClient, publishedFile, publishFilesJson, req, uploadBlobJson, type Handle } from "./helpers";
 

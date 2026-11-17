@@ -22,7 +22,7 @@ import { speechTarget, type DevicePurpose } from "./device-roles";
 import { nextTimerDeadline, runTimers } from "./timers";
 import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
 import { pageStreak, pruneEvents, runWebhook, type WebhookJob } from "./events";
-import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
+import { deleteUnreferencedContent, fileKey, storeContent } from "./content";
 import { pruneFileHistory } from "./storage";
 import { HttpError, json, readJson, toErrorResponse } from "./http";
 import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";

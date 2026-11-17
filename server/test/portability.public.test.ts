@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { api, apiJson, advance, create, inDO, publishFilesJson, req, uploadBlobJson, type Handle } from "./helpers";
-import { fileKey } from "../src/files";
+import { fileKey } from "../src/content";
 
 const command = (extra: Record<string, unknown> = {}) => ({ cid: crypto.randomUUID(), expected_generations: {}, ...extra });
 const sourceId = "b_" + "a".repeat(20);

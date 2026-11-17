@@ -1,7 +1,8 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { apiJson, api, create, req, inDO, PageClient, publishFilesJson, uploadBlobJson } from './helpers';
-import { createVersion, deleteUnreferencedContent, fileKey, publicationManifest, storeContent } from '../src/files';
+import { createVersion, publicationManifest } from '../src/files';
+import { deleteUnreferencedContent, fileKey, storeContent } from '../src/content';
 import runtimeRelease from '../src/runtime-release.json';
 import { sha256Hex } from '../src/ids';
 

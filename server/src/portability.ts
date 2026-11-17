@@ -1,7 +1,8 @@
 import type { Tendril } from "./tendril";
 import { checkGenerations, preconditions, mutate, replay, type Preconditions } from "./scopes";
 import { addActivity } from "./activity";
-import { assertStoredContent, createVersion, deleteUnreferencedContent, fileKey, servedVersion, storeContent, versionFiles, type VersionFile } from "./files";
+import { createVersion, servedVersion, versionFiles, type VersionFile } from "./files";
+import { assertStoredContent, deleteUnreferencedContent, fileKey, storeContent } from "./content";
 import { HttpError, isPlainObject, json } from "./http";
 import { fromBase64, sha256Hex, toBase64 } from "./ids";
 import { MAX_STATE } from "./limits";
