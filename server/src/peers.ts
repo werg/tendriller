@@ -4,8 +4,9 @@ import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
 import { handleDiscovery } from './discovery';
+import { handlePeerGenerations } from './peer-generations';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|directory)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|directory|application|generations)$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -47,6 +48,7 @@ export function expirePeers(t: Tendril): void { peers(t); }
 
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
   if (!authorized(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
+  if (path === 'peers/application' || path === 'peers/generations') return handlePeerGenerations(t, req, path, principal);
   if (path === 'peers/directory') return handleDiscovery(t, req, principal);
   if (path === 'peers/bootstrap') {
     if (req.method === 'GET') return json(peerBootstrap(t));

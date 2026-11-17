@@ -4,20 +4,31 @@ Tendriller connects an authenticated page to an agent through shared state, even
 
 ## Select the application history first
 
-For an always-running native agent, create the page with
-`application:{kind:'peer',id:'your-stable-history-id'}` and use the public Chronolog
-adapter. State, events, conversation, timers, and effects belong to that replica;
-the host does not queue a second copy or become a fallback authority. Install the
-backend once, await `tendril.application.ready()`, and use its `submit`, `events`,
-`changes`, `readView`, and keyed `operations` APIs. [Application backends](docs/APPLICATION_BACKENDS.md)
-and [peer connections](docs/PEER_CONNECTIONS.md) document composition and bounds.
+For an ordinary browser or agent peer application, create the page with
+`application:{kind:'peer',id:'<64 lowercase hex characters>'}` and use the public
+Chronolog `peer-generation-v1` session. A replaceable coordinating peer orders
+commands; the host selects a generation only at creation or a handover. No native
+resident process is required. The session owns signed attempts, history,
+execution, peer connections, replication and recovery.
 
-The Chronolog integration uses live collaboration by default: signed author
-timestamps order proposals, local results can change through replay, and a
-verified closed-time prefix gives final accepted or rejected results. Signing,
-timestamp ordering and replay could also support a future async branch/merge
-interpretation with no finality at all. That would have its own inclusion and
-effect policy; the live operation and worker APIs below do not implement it.
+Publish the immutable descriptor and initial device grants through
+`host.peers.configureApplication(...)`, then bootstrap the session from verified
+`host.peers.application()` evidence and `host.peers.discover()` routing hints.
+Control configuration retains the owned host publication automatically; this is
+persistent control metadata, not a continuously running application process.
+See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
+
+Install the session's public Tendriller backend once. `tendril.application.ready()`
+and `available` describe installation; the session reports actual readiness.
+Use applied coherent views and generation-scoped outcomes. A valid recovery may
+abandon a recent suffix, and deliberate reapplication creates a new signed attempt
+with current guards. Several minutes of recovery freshness is a measured target,
+not a guarantee when peers or their data disappear.
+
+Current-generation commands, queries, live signals and replication continue with
+the host unavailable. If the coordinator also disappears, keep local signed work
+while a new selected generation waits for host control availability. There is no
+fallback to another backend and no automatic old-branch merge.
 
 Choose the least durable mechanism that satisfies the task:
 
@@ -25,9 +36,9 @@ Choose the least durable mechanism that satisfies the task:
 | --- | --- |
 | Local focus, scroll, draft text | Local page state |
 | Live presence, previews, device samples, progress | `tendril.signals.send` / `subscribe` |
-| A fact or request that must survive restart | Selected backend `events.publish` |
+| A retained fact or request, with the selected profile's recovery guarantee | Selected backend `events.publish` |
 | State and an event that must succeed together | Selected backend `submit` |
-| An irreversible external action | Final accepted intent plus durable effect checkpoint and provider idempotency/reconciliation |
+| An irreversible external action | Explicit protected action or stronger finality profile, with provider idempotency/reconciliation |
 
 Hosted owner pages already have an authenticated `tendril.signals` port. A hosted
 agent explicitly opens `await host.connectSignals({signal})` and closes that
@@ -43,24 +54,18 @@ iterator or abort its signal when finished. Expire presence/typing and clear
 previews on disconnect. A successful
 send is not a remote acknowledgement. See [live signals](docs/APPLICATION_SIGNALS.md).
 
-Treat provisional results as replaceable views. Internal rollback/redo rebuilds
-that provisional suffix; reducers must not call tools or perform network effects.
-User Undo/Redo is a new conditional program with a new operation ID. Retrying an
-old operation preserves its exact bytes and signed time, even if a closed
-frontier now rejects it. A deliberate new intent follows review, not an automatic
-retimestamp.
+An applied result identifies its generation, sequence and accepted/rejected outcome.
+Exact retries preserve the original signed attempt and admission generation.
+Cancellation or timeout stops a waiter; it does not reject or cancel the command.
+An adopted operation retains its identity and result. An excluded operation becomes
+`abandoned` or `needsReapply`; inspect it, reread the current state, and deliberately
+create a new guarded attempt when reapplication is appropriate.
 
-For the UI, observe `application.changes({view:'local',signal})`, capture a
-`readView({view:'local'})` on each invalidation, read related projections from that
-one view, and release it. The stream starts with the current revision and may
-coalesce obsolete revisions. It observes state-only changes and rollback, even
-when no durable event was emitted. Use `events.subscribe` for a consumer that
-must process every accepted final event and save a processed cursor.
-
-An operation's `status` answers whether it is `queued`, `provisional`, or `final`.
-Its `outcome` answers whether it was `accepted` or `rejected`. Check both before
-claiming success or dispatching an effect. Preserve rejected drafts; a retry uses
-the same operation identity, and a reviewed replacement is a new operation.
+Observe `application.changes({view:'applied',signal})`, capture an applied
+`readView()` for related SQL/events/outcomes, and release it. Recovery publishes a
+coherent reset with known abandoned work and an explicit unknown-loss flag.
+The default profile has no final revision and cannot feed automatic irreversible
+effect workers. Reducers and projections remain free of external effects.
 
 An agent, membership administrator, finality signer and SQL schema administrator
 are separate roles. Co-location grants no permissions. Authenticate instruction
@@ -72,12 +77,12 @@ publication rights; application policy still decides which requests may invoke
 which tools. Keep that origin with the intent through any worker checkpoint and
 recovery. Tool credentials belong to the configured worker, never the payload.
 On a peer page MCP exposes host operations and describes the peer backend;
-consume application events through the resident/Worker client.
+use the agent's own application session for queries, commands, operation waits, changes and recovery inspection.
 
 The Cloudflare state/input/timer procedures below apply only when that backend is
 selected. Publication, blobs, recovery, accounts, diagnostics, and peer bootstrap
 remain host facilities for either deployment. The retained Cloudflare record log
-is optional; a resident finality service can commit directly to its native record store.
+is optional. Existing chronological and stronger-finality profiles retain their own explicit contracts.
 
 ## Discover and check requirements
 
@@ -111,7 +116,7 @@ before starting a collector that could fill the unclaimed stream budget.
 
 On hosted Cloudflare pages, Web Push can notify the owner even when the page is closed. Configure it on the service and have each owner device explicitly opt in through page-authored controls using `tendril.notifications`. Use authenticated `GET A/notify` to inspect readiness and quota, then `POST A/notify` with `title`, optional `body`, `device`, `url`, and `tag`. The MCP tools are `notification_status` and `notify`. See [Web Push setup and usage](docs/PUSH_NOTIFICATIONS.md). Push notifications are distinct from the agent wake listener: delivering a notification does not resume an agent conversation.
 
-Peer publication has no host-listener prerequisite. The resident agent or owning
+Peer publication has no host-listener prerequisite. The agent session or owning
 Worker consumes the selected replica's final events and operation status. Its
 live signals and peer connections use the independently installed services.
 
@@ -157,7 +162,7 @@ For the hosted Cloudflare runtime, a page's health report determines whether the
 Peer pages use the quiet runtime, which sends no automatic host health report.
 Application readiness and synchronization come from the selected backend.
 `tendril.application.ready()` waits for its installation; replica progress reports
-whether remote records, finality evidence and keys have been applied.
+whether the selected generation, complete history and keys are ready. An installed adapter or RTC link alone is not synchronized state.
 
 ## Author the interaction
 
