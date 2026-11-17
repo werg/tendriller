@@ -4,7 +4,7 @@ import {
   validateApplicationDescription, applicationDescriptionDigest, verifyApplicationSchema,
   peerDigest, encodePeerValue, decodePeerValue, verifyAuthorityBundle,
   PEER_GENERATION_PROFILE, PEER_GENERATION_POLICY,
-  type AuthorityBundle, type GenerationRegistry, type PeerIdentity, type PeerStore, type PeerGrant,
+  type AuthorityBundle, type GenerationRegistry, type PeerIdentity, type BytesStore, type PeerGrant,
   type SignedApplicationDescriptor, type SignedControlRevision, type SignedTransitionRequest, type TransitionRequest,
   type ApplicationDescription, type SignedApplicationSchema,
   type PeerAuthority,
@@ -24,7 +24,7 @@ interface Configuration {
 }
 interface AccountBinding { publicKey: string; accountId: string }
 interface HostState {
-  pending: Promise<unknown>; store: PeerStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
+  pending: Promise<unknown>; store: BytesStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
   registry?: GenerationRegistry; signer?: PeerIdentity;
 }
 const hosts = new WeakMap<Tendril, HostState>();
