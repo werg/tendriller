@@ -29,12 +29,16 @@ const peerProof = JSON.parse(readFileSync(join(peerControl, 'provenance.json'), 
 if (peerProof.dirty || peerProof.profile !== 'peer-generation-v1' || !/^[0-9a-f]{40}$/.test(peerProof.source) ||
     !Array.isArray(peerProof.inputs) || peerProof.inputs.some(input => /(?:materializer|peer-session|transport-ssb|node-core\/src\/node\.ts|node:)/.test(input)))
   throw Error('Peer generation controls must identify a clean portable source checkpoint');
-for (const name of ['control.mjs', 'control.d.ts']) {
+for (const name of ['control.mjs', 'control.d.ts', 'participant.mjs', 'participant.d.ts']) {
   if (createHash('sha256').update(readFileSync(join(peerControl, name))).digest('hex') !== peerProof.sha256[name])
     throw Error(`Peer generation control digest mismatch for ${name}`);
 }
 if (createHash('sha256').update(readFileSync(join(root, 'contract/peer-authority.d.mts'))).digest('hex') !== peerProof.sha256['control.d.ts'])
   throw Error('The public peer authority declarations must match the embedded control artifact');
+for (const [embedded, source] of [['participant.mjs', 'participant.mjs'], ['participant.d.mts', 'participant.d.ts']]) {
+  if (sha256(join(root, 'contract', embedded)) !== peerProof.sha256[source])
+    throw Error(`The SDK participant transport must match its portable artifact: ${embedded}`);
+}
 copyFileSync(join(peerControl, 'provenance.json'), join(engine, 'peer-generation-provenance.json'));
 writeFileSync(join(engine, 'index.d.mts'), readFileSync(join(root, 'contract/engine.d.mts'), 'utf8').replace("'./host.d.mts'", "'@tendriller/core/host'"));
 mkdirSync(join(engine, 'migrations'), { recursive: true });

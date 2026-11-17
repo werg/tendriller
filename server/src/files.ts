@@ -134,7 +134,7 @@ export function versionStatus(t: Tendril, version: number): VersionStatus | null
 
 /** Creates version latest+1 from a full file map; makes it current; reloads pages. */
 export async function createVersion(t: Tendril, files: Map<string, VersionFile>, message: string | null, by: string | null,
-  options: { entry?: string; expectedHeadRevision?: number; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
+  options: { entry?: string; expectedHeadRevision?: number; beforeCommit?: () => Promise<void>; commit?: (version: number) => void; beforeReload?: () => void } = {}): Promise<number> {
   const entry = options.entry ?? "index.html";
   if (!files.has(entry) || !isHtmlType(files.get(entry)!.type)) throw new HttpError(400, "bad_publication", "The publication requires its declared HTML entry");
   if (files.size > MAX_FILES_PER_VERSION) throw new HttpError(413, "too_many_files", `At most ${MAX_FILES_PER_VERSION} files per version`);
@@ -155,6 +155,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   if (shouldHold) {
     await t.hold("High static screening score on young account");
   }
+  await options.beforeCommit?.();
   const n = t.transaction(() => {
     assertStoredContent(t, files.values());
     if (options.expectedHeadRevision !== undefined && t.db.get<number>("publication_head_revision", 0) !== options.expectedHeadRevision)
@@ -194,6 +195,8 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
 /** Serving rule: current unless failed, then healthy; else current; 0 = nothing uploaded. */
 export function servedVersion(t: Tendril): number {
   const current = t.db.get<number>("current", 0);
+  // Health observations cannot select code outside the signed publication chain.
+  if (t.db.get('peer_generation_configuration', null)) return current;
   if (current > 0 && versionStatus(t, current) !== "failed") return current;
   const healthy = t.db.get<number>("healthy", 0);
   if (healthy > 0) return healthy;
@@ -216,7 +219,7 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
   t.db.run("UPDATE versions SET status = 'failed', errors = ? WHERE version = ?", JSON.stringify(errs), version);
   let rolledBackTo: number | null = null;
   const healthy = t.db.get<number>("healthy", 0);
-  if (t.db.get<number>("current", 0) === version && healthy > 0) {
+  if (!t.db.get('peer_generation_configuration', null) && t.db.get<number>("current", 0) === version && healthy > 0) {
     t.db.set("current", healthy);
     t.db.set("publication_head_revision", t.db.get<number>("publication_head_revision", 0) + 1);
     rolledBackTo = healthy;
@@ -235,6 +238,8 @@ export function failVersion(t: Tendril, version: number, errors: unknown[]): voi
 
 /** Makes `target` (or the newest healthy version older than current) current. */
 export function rollback(t: Tendril, target: number | null | undefined, by: string | null, device: string | null): number {
+  if (t.db.get('peer_generation_configuration', null))
+    throw new HttpError(409, 'peer_publication_required', 'Restore previous code by signing a new publication revision');
   const current = t.db.get<number>("current", 0);
   let v: number;
   if (target !== undefined && target !== null) {

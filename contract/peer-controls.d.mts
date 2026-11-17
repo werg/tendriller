@@ -1,5 +1,6 @@
 import type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, SignedTransitionRequest, TransitionRequest,
-  ApplicationDescription, SignedApplicationDescriptor, SignedApplicationSchema } from './peer-authority.mjs';
+  ApplicationDescription, SignedApplicationDescriptor, SignedApplicationSchema, SignedPublication } from './peer-authority.mjs';
+import type { PeerParticipantClient } from './peer-participant.mjs';
 export type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, SignedTransitionRequest,
   ApplicationDescription, ApplicationInputSchema, SignedApplicationDescriptor, SignedApplicationSchema } from './peer-authority.mjs';
 export interface PeerAccountBinding { readonly publicKey: string; readonly accountId: string }
@@ -45,5 +46,11 @@ export interface PeerControlsClient {
   selectGeneration(request: SignedTransitionRequest, options?: { readonly control?: PeerControlUpdate }): Promise<SignedGeneration>;
   /** Owner account recovery without a creator device key. Candidate data and complete prefix come from a real peer. */
   administerGeneration(transition: PeerOwnerTransition, options?: { readonly control?: PeerControlUpdate }): Promise<SignedGeneration>;
+  /** Current signed page-code release. Its revision is independent of lossy application history. */
+  publication(id?: string): Promise<PeerPublicationReceipt | null>;
+  /** Publish a complete signed page-code graph with exact operation retry and release-head CAS. */
+  publish(publication: SignedPublication, assets: readonly PeerPublicationAsset[]): Promise<PeerPublicationReceipt>;
 }
-export declare function createPeerControlsClient(request: (path: string, options?: { method?: 'PUT' | 'POST'; body?: unknown }) => Promise<unknown>): PeerControlsClient;
+export interface PeerPublicationAsset { readonly hash: string; readonly bytes: string }
+export interface PeerPublicationReceipt { readonly publication: SignedPublication; readonly version: number }
+export declare function createPeerControlsClient(participant: PeerParticipantClient): PeerControlsClient;

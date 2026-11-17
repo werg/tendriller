@@ -4,6 +4,7 @@ import { applyD1Migrations } from 'cloudflare:test';
 import { api, create, inDO, ownerHeaders, req } from './helpers';
 import { sha256Hex } from '../src/ids';
 import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
+import { participantMessage, participantPayload } from './peer-exchange';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 
 export async function initializeTestService(migrations: Parameters<typeof applyD1Migrations>[1]): Promise<void> {
@@ -35,6 +36,8 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
   const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown) => request(
     `${url}_tendril/${path}`, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const exchange = (send: (method: string, path: string, body?: unknown) => Promise<Response>) => async (operation: string, payload: unknown = {}) =>
+    participantPayload(await send('POST', 'peers/participant', participantMessage(options.application?.id ?? '00'.repeat(32), operation, payload)));
   const workflow = (url: string, headers: Record<string, string>) =>
     (module: string, operation: string, data: unknown = {}, guards: Record<string, string> = {}, cid = crypto.randomUUID()) => request(
       `${url}workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, {
@@ -66,6 +69,12 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
     ownerInvitationSocket: invitations(handle.page_url + '_tendril/', ownerHeaders(handle.page_url)),
     ownerApi: pageApi(handle.page_url, ownerHeaders(handle.page_url)),
     api: agentApi,
+    exchange: exchange(agentApi),
+    ownerExchange: exchange(pageApi(handle.page_url, ownerHeaders(handle.page_url))),
+    asset(path = '') {
+      if (path.startsWith('/') || /^[a-z]+:/i.test(path) || path.split('/').includes('..') || /[?#\\]/.test(path)) throw new TypeError('Expected a relative asset path');
+      return request(new URL(path, handle.page_url).href, { method: 'GET', headers: ownerHeaders(handle.page_url) });
+    },
     async participant() {
       const account = crypto.randomUUID(), secret = crypto.randomUUID();
       await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, Date.now(), `${account}@example.test`).run();
@@ -76,7 +85,7 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
         return t.renderLink(invitation);
       });
       const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
-      return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers),
+      return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers), exchange: exchange(pageApi(link.url, headers)),
         rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers) };
     },
     async display() {

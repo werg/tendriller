@@ -2,6 +2,8 @@ import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeer
 export * from './discovery.mjs';
 import { createPeerControlsClient } from './peer-controls.mjs';
 export { createPeerControlsClient } from './peer-controls.mjs';
+import { createPeerParticipantClient } from './peer-participant.mjs';
+export * from './peer-participant.mjs';
 import { createPeerInvitationListener, validatePeerInvitation, PEER_INVITATION_PROTOCOL } from './invitations.mjs';
 export * from './invitations.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
@@ -126,8 +128,9 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
 }
 
 /** Shared browser/agent host client. Construction performs no network work. */
-export function createPeersClient({ base, request, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
+export function createPeersClient({ base, request, applicationId, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
   const prefix = base.replace(/\/+$/, '');
+  const participant = createPeerParticipantClient({ applicationId, request });
   const socketUrl = (path, code) => {
     const url = new URL(prefix + '/' + path);
     if (!['https:', 'http:'].includes(url.protocol) || url.search) fail(code, 'Expected an HTTP service base without query parameters');
@@ -137,18 +140,19 @@ export function createPeersClient({ base, request, initialBootstrap, protocols =
     return url;
   };
   return Object.freeze({
-    ...createPeerControlsClient(request),
+    ...createPeerControlsClient(participant),
+    exchange: participant.exchange,
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
-    async discover() { return validatePeerDirectory(await request('peers/directory')); },
+    async discover() { return validatePeerDirectory(await participant.request('discovery', 'read', {})); },
     async advertise(value, options = {}) {
-      return validatePeerAdvertisementLease(await request('peers/directory', { method: 'PUT',
-        body: { advertisement: validatePeerAdvertisement(value), ttlMs: validatePeerTtl(options.ttlMs) } }));
+      return validatePeerAdvertisementLease(await participant.request('discovery', 'advertise',
+        { advertisement: validatePeerAdvertisement(value), ttlMs: validatePeerTtl(options.ttlMs) }));
     },
     async withdraw(peerId) {
       peerId = validatePeerId(peerId);
-      const result = await request('peers/directory', { method: 'DELETE', body: { peerId } });
+      const result = await participant.request('discovery', 'withdraw', { peerId });
       if (!result || result.withdrawn !== peerId) fail('invalid_response', 'Invalid withdrawal response');
     },
     listenInvitations(peerId, options = {}) {
@@ -162,7 +166,7 @@ export function createPeersClient({ base, request, initialBootstrap, protocols =
     },
     async invite(peerId, input) {
       peerId = validatePeerId(peerId); const invitation = validatePeerInvitation(input);
-      const result = await request('peers/invitations', { method: 'POST', body: { peerId, ...invitation } });
+      const result = await participant.request('ephemeral', 'invite', { peerId, ...invitation });
       if (!result || result.invited !== peerId || result.channel !== invitation.channel) fail('invalid_response', 'Invalid invitation response');
     },
     rendezvous(channel, peerId, options = {}) {

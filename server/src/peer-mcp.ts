@@ -1,23 +1,36 @@
+import { createParticipantRequest } from '../../contract/participant.mjs';
+import type { ParticipantFacet } from '../../contract/participant.mjs';
 import type { Tool } from './mcp';
 
-/** Lifecycle controls only. Application commands execute in the agent's own Chronolog session. */
+const applicationId = { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'The selected peer application identity from tendril_info.' };
+const schema = (properties: Record<string, unknown> = {}, required: string[] = []) => ({
+  type: 'object', properties: { applicationId, ...properties }, required: ['applicationId', ...required], additionalProperties: false,
+});
+const call = (facet: ParticipantFacet, action: string, payload: (args: any) => unknown = () => ({})) => (args: any) => ({
+  method: 'POST', rest: 'peers/participant',
+  body: createParticipantRequest({ applicationId: args.applicationId, facet, action, payload: payload(args) }),
+});
+
+/** Lifecycle controls use the same filtered participant transport as browser and native peers. */
 export const PEER_CONTROL_TOOLS: Tool[] = [
-  { name: 'peer_application', description: 'Read the signed peer-generation application descriptor and selected control history. The local Chronolog session must verify this evidence against its pinned descriptor.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    call: () => ({ method: 'GET', rest: 'peers/application' }) },
-  { name: 'peer_definition', description: 'Read immutable public command/query schemas, their signed descriptor and the signed initial schema envelope. Verify the descriptor, definition digest and schema signature through Chronolog before opening a session or constructing local tools; this metadata grants no command execution authority.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    call: () => ({ method: 'GET', rest: 'peers/definition' }) },
-  { name: 'discover_peers', description: 'Look up bounded unexpired peer routing hints on join or reconnect. Hints confer no permissions and do not prove data retention. Healthy sessions do not poll this tool.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    call: () => ({ method: 'GET', rest: 'peers/directory' }) },
-  { name: 'configure_peer_application', description: 'Publish the immutable peer-generation-v1 descriptor and initial enrolled device grants for a new peer history. Creates durable host control state without any permanent native coordinator.',
-    inputSchema: { type: 'object', properties: { configuration: { type: 'object' } }, required: ['configuration'], additionalProperties: false },
-    call: args => ({ method: 'PUT', rest: 'peers/application', body: args.configuration }) },
-  { name: 'select_peer_generation', description: 'Submit an exact signed Chronolog transition at creation, handover, takeover or restrictive control change. Preserve transition identity on lost replies. Never use this for ordinary commands; requester recovery and coordinator rights are verified separately.',
-    inputSchema: { type: 'object', properties: { request: { type: 'object' }, control: { type: 'object' } }, required: ['request'], additionalProperties: false },
-    call: args => ({ method: 'POST', rest: 'peers/generations', body: { request: args.request, ...(args.control === undefined ? {} : { control: args.control }) } }) },
-  { name: 'administer_peer_generation', description: 'Owner-account administration through the explicit hosted control-only participant, including recovery after device-key loss. Supply a real peer coordinator and complete prefix proof. The host cannot read, write or coordinate application data. Preserve the exact transition on retry.',
-    inputSchema: { type: 'object', properties: { transition: { type: 'object' }, control: { type: 'object' } }, required: ['transition'], additionalProperties: false },
-    call: args => ({ method: 'POST', rest: 'peers/administration', body: { transition: args.transition, ...(args.control === undefined ? {} : { control: args.control }) } }) },
+  { name: 'peer_application', description: 'Read signed peer authority through the Chronolog control participant. Verify returned evidence against the pinned descriptor in the local application session.',
+    inputSchema: schema(), call: call('control', 'read') },
+  { name: 'peer_definition', description: 'Read immutable public command/query schemas and signed genesis metadata. Verify their descriptor commitments in the local Chronolog session before use.',
+    inputSchema: schema(), call: call('publication', 'definition') },
+  { name: 'discover_peers', description: 'Read bounded expiring routing hints on join or reconnect. Hints grant no authority or retention guarantee; healthy sessions do not poll.',
+    inputSchema: schema(), call: call('discovery', 'read') },
+  { name: 'configure_peer_application', description: 'Publish the initial peer-generation-v1 descriptor and enrolled device grants. The hosted control participant stores no application commands and creates no permanent peer role.',
+    inputSchema: schema({ configuration: { type: 'object' } }, ['configuration']), call: call('control', 'configure', args => args.configuration) },
+  { name: 'select_peer_generation', description: 'Submit an exact signed Chronolog transition at creation, handover, takeover or restrictive control change. Preserve the signed transition on lost replies; ordinary application commands stay in the local peer session.',
+    inputSchema: schema({ request: { type: 'object' }, control: { type: 'object' } }, ['request']),
+    call: call('control', 'select', args => ({ request: args.request, ...(args.control === undefined ? {} : { control: args.control }) })) },
+  { name: 'administer_peer_generation', description: 'Owner-account recovery through the explicit hosted control-only participant. Supply a real peer coordinator and complete prefix proof. The host cannot read, write or coordinate application data.',
+    inputSchema: schema({ transition: { type: 'object' }, control: { type: 'object' } }, ['transition']),
+    call: call('control', 'administer', args => ({ transition: args.transition, ...(args.control === undefined ? {} : { control: args.control }) })) },
+  { name: 'peer_publication', description: 'Read the current or an exact retained signed page-code publication. Verify its signature and release ancestry in Chronolog; code release revisions remain independent of lossy application recovery.',
+    inputSchema: schema({ id: { type: 'string', pattern: '^[0-9a-f]{64}$' } }), call: call('publication', 'read', args => args.id === undefined ? {} : { id: args.id }) },
+  { name: 'publish_peer_publication', description: 'Publish a complete signed page-code graph prepared by an authorized Chronolog device. Assets carry canonical base64 bytes and their signed hashes. Exact retries return the retained receipt; stale release heads fail.',
+    inputSchema: schema({ publication: { type: 'object' }, assets: { type: 'array', maxItems: 128, items: { type: 'object',
+      properties: { hash: { type: 'string', pattern: '^[0-9a-f]{64}$' }, bytes: { type: 'string' } }, required: ['hash', 'bytes'], additionalProperties: false } } }, ['publication', 'assets']),
+    call: call('publication', 'publish', args => ({ publication: args.publication, assets: args.assets })) },
 ];

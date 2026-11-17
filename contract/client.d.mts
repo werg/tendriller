@@ -8,7 +8,7 @@ import type { CreateRequest, PublicEvent, DeliveryProbe, SayRequest, StateOperat
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
   expires_at?: number | null; next_step?: string;
   unclaimed_limits?: { request_body_bytes: number; stream_retained_bytes: number } }
-export interface ClientOptions { fetch?: typeof globalThis.fetch; recordLogHints?: RecordLogClientOptions["subscribeHints"] }
+export interface ClientOptions { fetch?: typeof globalThis.fetch; recordLogHints?: RecordLogClientOptions["subscribeHints"]; applicationId?: string }
 export interface EventBatch { events: PublicEvent[]; cursor: number; withheld: number; [key: string]: unknown }
 export interface NotificationRequest { title: string; body?: string; url?: string; device?: string; tag?: string }
 export interface NotificationStatus { available: boolean; subscribed_devices: { id: string; name: string | null }[];

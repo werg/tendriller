@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPeersClient, validatePeerAdvertisement, PEER_DIRECTORY_LIMITS } from '../peers.mjs';
+import { createPeersClient, validatePeerAdvertisement, PEER_DIRECTORY_LIMITS, createParticipantResponse } from '../peers.mjs';
 const advertisement = () => ({ peerId: 'peer-a', storageId: 'device-a', profiles: ['peer-generation-v1'],
   routes: [{ kind: 'rendezvous', channel: 'introductions-a' }], coordinatorEligible: true,
   recovery: { generation: 'g1', sequence: 18, root: 'ab'.repeat(32), controlRevision: 0, retainedAt: 10 } });
@@ -20,17 +20,18 @@ test('discovery hints are bounded, copied, immutable, and contain no credential 
 test('directory SDK performs only explicit requests and validates server hints', async () => {
   const calls = [], ad = advertisement();
   const lease = { advertisement: ad, expiresAt: 120000, refreshAfter: 60000 };
-  const client = createPeersClient({ base: 'https://host.test/api', request: async (path, options) => {
+  const client = createPeersClient({ base: 'https://host.test/api', applicationId: 'ab'.repeat(32), request: async (path, options) => {
     calls.push({ path, options });
-    return options?.method === 'PUT' ? lease : options?.method === 'DELETE' ? { withdrawn: 'peer-a' } : { applicationId: 'app', peers: [lease] };
+    const action = options.body.action;
+    return createParticipantResponse(options.body, action === 'advertise' ? lease : action === 'withdraw' ? { withdrawn: 'peer-a' } : { applicationId: 'ab'.repeat(32), peers: [lease] });
   } });
   assert.equal(calls.length, 0);
   assert.deepEqual(await client.advertise(ad), lease);
-  assert.deepEqual(calls[0].options.body, { advertisement: ad, ttlMs: PEER_DIRECTORY_LIMITS.defaultTtlMs });
+  assert.deepEqual(calls[0].options.body.payload, { advertisement: ad, ttlMs: PEER_DIRECTORY_LIMITS.defaultTtlMs });
   assert.deepEqual((await client.discover()).peers, [lease]);
   await client.withdraw('peer-a');
-  assert.deepEqual(calls.map(call => [call.path, call.options?.method]), [
-    ['peers/directory', 'PUT'], ['peers/directory', undefined], ['peers/directory', 'DELETE'],
+  assert.deepEqual(calls.map(call => [call.path, call.options.body.facet, call.options.body.action]), [
+    ['peers/participant', 'discovery', 'advertise'], ['peers/participant', 'discovery', 'read'], ['peers/participant', 'discovery', 'withdraw'],
   ]);
   await assert.rejects(client.advertise(ad, { ttlMs: 1 }), { code: 'invalid_advertisement' });
   assert.equal(calls.length, 3);
@@ -43,7 +44,7 @@ test('rejects routes exceeding the URL bound after normalization before advertis
   assert.ok(new TextEncoder().encode(JSON.stringify({ advertisement: input })).byteLength < PEER_DIRECTORY_LIMITS.advertisementBytes);
   assert.throws(() => validatePeerAdvertisement(input), { code: 'invalid_advertisement' });
   let requests = 0;
-  const client = createPeersClient({ base: 'https://host.test/api', request: async () => { requests++; } });
+  const client = createPeersClient({ base: 'https://host.test/api', applicationId: 'ab'.repeat(32), request: async () => { requests++; } });
   await assert.rejects(client.advertise(input), { code: 'invalid_advertisement' });
   assert.equal(requests, 0);
 });

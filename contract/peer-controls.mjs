@@ -1,5 +1,5 @@
 /** Thin control transport. Chronolog verifies all returned signed authority evidence. */
-export function createPeerControlsClient(request) {
+export function createPeerControlsClient(participant) {
   const authority = value => {
     if (!value || typeof value !== 'object' || !value.descriptor?.payload || value.descriptor.payload.profile !== 'peer-generation-v1' ||
         !Array.isArray(value.controls) || !Array.isArray(value.generations))
@@ -22,16 +22,18 @@ export function createPeerControlsClient(request) {
     return value;
   };
   return Object.freeze({
-    async application() { return authority(await request('peers/application')); },
-    async definition() { return definition(await request('peers/definition')); },
-    async configureApplication(configuration) { return authority(await request('peers/application', { method: 'PUT', body: configuration })); },
+    async application() { return authority(await participant.request('control', 'read', {})); },
+    async definition() { return definition(await participant.request('publication', 'definition', {})); },
+    async configureApplication(configuration) { return authority(await participant.request('control', 'configure', configuration)); },
     async selectGeneration(signedRequest, options = {}) {
-      return generation(await request('peers/generations', { method: 'POST', body: { request: signedRequest,
-        ...(options.control === undefined ? {} : { control: options.control }) } }));
+      return generation(await participant.request('control', 'select', { request: signedRequest,
+        ...(options.control === undefined ? {} : { control: options.control }) }));
     },
     async administerGeneration(transition, options = {}) {
-      return generation(await request('peers/administration', { method: 'POST', body: { transition,
-        ...(options.control === undefined ? {} : { control: options.control }) } }));
+      return generation(await participant.request('control', 'administer', { transition,
+        ...(options.control === undefined ? {} : { control: options.control }) }));
     },
+    async publication(id) { return participant.request('publication', 'read', id === undefined ? {} : { id }); },
+    async publish(publication, assets) { return participant.request('publication', 'publish', { publication, assets }); },
   });
 }

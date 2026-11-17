@@ -26,6 +26,8 @@ export interface PeerRendezvous {
   close(): void;
 }
 export interface PeersClient extends PeerControlsClient {
+  /** Closed Chronolog facet transport; unwanted application data is refused before HTTP. */
+  exchange(request: import('./participant.mjs').ParticipantRequest, options?: import('./participant.mjs').ParticipantExchangeOptions): Promise<import('./participant.mjs').ParticipantResponse>;
   /** Immutable initial-page snapshot; reading it performs no host request. Null for clients without an injected snapshot. */
   readonly initialBootstrap: PeerBootstrap | null;
   /** Explicitly fetch current host configuration. Ordinary peer connection/recovery uses initialBootstrap. */
@@ -48,8 +50,9 @@ export declare function validatePeerDescription(value: unknown): PeerDescription
 export declare function createPeerRendezvous(socket: PeerSocket, options?: PeerRendezvousOptions): PeerRendezvous;
 export declare function createPeersClient(options: {
   readonly base: string;
+  readonly applicationId?: string | (() => Promise<string>);
   readonly initialBootstrap?: PeerBootstrap;
-  readonly request: (path: string, options?: { method?: 'PUT' | 'DELETE' | 'POST'; body?: unknown }) => Promise<unknown>;
+  readonly request: (path: string, options?: { method?: 'PUT' | 'DELETE' | 'POST'; body?: unknown; signal?: AbortSignal }) => Promise<unknown>;
   readonly protocols?: readonly string[];
   readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
 }): PeersClient;
@@ -57,5 +60,6 @@ import type { PeerAdvertisement, PeerAdvertisementLease, PeerDirectory } from '.
 export * from './discovery.mjs';
 import type { PeerControlsClient } from './peer-controls.mjs';
 export * from './peer-controls.mjs';
+export * from './peer-participant.mjs';
 import type { PeerInvitation, PeerInvitationOptions, PeerInvitationListener } from './invitations.mjs';
 export * from './invitations.mjs';

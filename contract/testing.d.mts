@@ -24,6 +24,9 @@ export declare function createTestPage(options?: { application?: { kind: 'cloudf
   agent: TestWorkflowCall;
   api(method: string, path: string, body?: unknown): Promise<Response>;
   ownerApi(method: string, path: string, body?: unknown): Promise<Response>;
+  exchange(operation: string, payload?: unknown): Promise<Response>;
+  ownerExchange(operation: string, payload?: unknown): Promise<Response>;
+  asset(path?: string): Promise<Response>;
   /** Real Worker HTTP and SDP frame traffic through this fixture; excludes synthetic setup. */
   readonly hostTraffic: TestHostTraffic;
   rendezvousSocket(channel: string, peerId: string): TestPeerSocket;
@@ -31,6 +34,7 @@ export declare function createTestPage(options?: { application?: { kind: 'cloudf
   invitationSocket(peerId: string): TestPeerSocket;
   ownerInvitationSocket(peerId: string): TestPeerSocket;
   participant(): Promise<{ account: string; call: TestWorkflowCall; api(method: string, path: string, body?: unknown): Promise<Response>;
+    exchange(operation: string, payload?: unknown): Promise<Response>;
     rendezvousSocket(channel: string, peerId: string): TestPeerSocket; invitationSocket(peerId: string): TestPeerSocket }>;
   display(): Promise<TestWorkflowCall>;
   advance(milliseconds: number): Promise<void>;

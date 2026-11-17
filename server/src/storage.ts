@@ -133,6 +133,8 @@ export function commitImportedFiles(t: Tendril, files: Array<{ path: string; blo
 export async function handleStorage(t: Tendril, req: Request, url: URL, actor: string, rest: string,
   source: "agent" | "page" = "agent", device: string | null = null): Promise<Response> {
   const method = req.method === "HEAD" ? "GET" : req.method;
+  if (rest.startsWith('publications') && method !== 'GET' && t.db.get('peer_generation_configuration', null))
+    throw new HttpError(409, 'peer_publication_required', 'Publish signed page code through the Chronolog participant transport');
   if (rest === "uploads" && method === "POST") {
     const input = assertValid("uploadStart", await readJson(req, 4096));
     if (input.size > t.blobLimit()) throw new HttpError(413, "too_large", "Upload exceeds this page's effective transfer limit", { limit: t.blobLimit() });

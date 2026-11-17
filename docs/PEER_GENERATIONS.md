@@ -10,10 +10,10 @@ The [paired qualification record](https://github.com/werg/tendriller-contrib/blo
 cleanliness and the distinct actual-host/browser/deployed gates. Configuration
 alone does not install or connect a session.
 
-The current peer-session execution wait is `applied()`. The unified target names
-local/final results with an explicit selected-history recovery exception; those
-names are not compatibility aliases. Historical chronological semantics retain
-their original immutable-prefix guarantee and separate evidence.
+The application session exposes `applied()` outcomes, `shared()` retained
+coverage, coherent views and explicit recovery. An applied suffix may be
+abandoned at an authorized recovery boundary. No alternative method name turns
+that outcome into irreversible settlement.
 
 The adopted target peer profile is Chronolog's authenticated `peer-generation-v1`
 policy. Its preview session lets a replaceable peer order ordinary commands.
@@ -110,7 +110,7 @@ these records before using them. The transport client does not treat a received
 signature or route as verified authority.
 
 `peers.definition()` reads `{ descriptor, definition, schema }` from the authenticated
-immutable `GET peers/definition` route. The host verifies the signed descriptor,
+`publication/definition` participant exchange. The host verifies the signed descriptor,
 retained description digest and any genesis envelope, then rechecks account/page
 access before responding.
 Clients verify the descriptor against their pinned trust root and call Chronolog's
@@ -138,10 +138,11 @@ does not discard control history.
 
 At most four control requests may be admitted at once, including bodies still
 arriving and operations waiting to commit. Excess requests receive
-`peer_control_busy` before their bodies are read. A stalled body does not block
+`peer_participant_busy` before their bodies are read. A stalled body does not block
 complete requests while capacity remains, and every completion or failure frees
-its slot. Configuration bodies are limited to 512 KiB and transition bodies to
-4 MiB; these endpoints install no background polling.
+its slot. The portable facet policy bounds control envelopes to 16 MiB, publication
+envelopes to 12 MiB, directory messages to 256 KiB and ephemeral invitations to
+64 KiB. Action payloads have their own tighter semantic limits. No polling is installed.
 
 A `control` update supplies `{ epoch, keyDigest, grants, recoveryFloor, accounts? }`.
 It activates together with a generation boundary. Reader revocation requires key
@@ -173,8 +174,8 @@ creator's private key. It preserves the original trust root and does not require
 a surviving device administrator signature. It cannot impersonate a coordinator
 handover, choose the host as coordinator, or bypass a protected recovery floor.
 Exact retries retain the original transition identity, including after a restart.
-The HTTP endpoint is `POST peers/administration`; the signed-device endpoint
-remains `POST peers/generations`.
+Both use `POST peers/participant`: `control/administer` signs the declared host
+role, while `control/select` preserves the original device-signed transition.
 
 The host verifies order receipts and ancestry proofs but does not attest that a
 candidate actually has all bodies or has replayed SQL correctly. The Chronolog
@@ -212,31 +213,66 @@ irreversibility. Generation sessions expose `applied()` and retained coverage
 through `shared()`; `final()` is reserved for a separately selected profile that
 can provide that stronger guarantee.
 
-The host is a Chronolog participant with a deliberately small control role. Its
-HTTP and hibernatable invitation transports do not determine its authority or
-subscribe it to ordinary application edits. Future publication facets can bind
-page/code manifests to content and explicit activation boundaries; the current
-publication and metadata APIs keep those concerns separate from command order.
+## One filtered participant transport
 
-## The host as a constrained participant
+All lifecycle requests use `POST peers/participant` with Chronolog's portable
+`chronolog-participant-v1` envelope: `applicationId`, `requestId`, `facet`,
+`action` and `payload`. Responses bind the same scope, request and action. The
+SDK exposes `peers.exchange()`; convenience methods use that same exchange.
+Request identifiers correlate delivery. Signed transition and publication
+operation identities preserve durable exact retries.
 
-The host participates through a portable control verifier and a transport adapter
-for authenticated HTTP lifecycle calls. Its signed grant is independent of that
-transport: reader, writer and coordinator stay false, even if the same device
-identity connects by another route. Routing filters reduce unnecessary exchange;
-the verified authority determines which updates a participant may accept.
+The same portable policy filters outgoing client messages before HTTP and
+incoming host messages before dispatch. The host accepts these exact interests:
 
-| Exchange | Host responsibility |
-| --- | --- |
-| Descriptors, public definitions and signed initializers | Retain and serve the pinned application contract |
-| Membership controls and generation transitions | Verify, serialize and durably select the authoritative successor |
-| Discovery and rendezvous | Supply bounded routing hints and introduction messages |
-| Commands, SQL results and live application signals | No subscription, execution or retention |
-| Published page assets | Serve the existing immutable publication independently of application rollback |
+| Facet | Actions | Retained state |
+| --- | --- | --- |
+| `control` | `read`, `configure`, `select`, `administer` | Signed authority and monotonic controls |
+| `publication` | `definition`, `read`, `publish` | Public schemas and signed page-code releases |
+| `discovery` | `read`, `advertise`, `withdraw` | Bounded expiring route hints |
+| `ephemeral` | `invite` | Bounded delivery hints only |
 
-Content-addressed code bundles and signed release records could share Chronolog's
-content and control mechanisms. Release authority and activation would still need
-their own policy: adopting an older application-data prefix cannot reinstall an
-older release or restore a revoked publisher. The current publication service
-remains responsible for initial page loading and recovery until that release
-policy is explicitly implemented and qualified.
+The host refuses database submissions, history/body replication, generic content
+chunks and live UI signals. Those use peer transports. Socket invitations and
+SDP introductions remain bounded transport mechanisms, not an application data
+channel. Routing interests reduce traffic; authenticated grants separately decide
+authority. No command is proxied to a hosted application executor.
+
+Construction performs no I/O. Browser scope comes from its bootstrap;
+`createClient` accepts an optional `applicationId`, or discovers the immutable
+selection once when an explicit convenience call needs it. A raw exchange already
+carries its scope. None of these operations install a polling loop.
+
+## Signed page-code publication
+
+A code release is a Chronolog `SignedPublication`. Its manifest binds the
+application, history, execution and definition digests, publisher, control
+revision, stable operation ID, monotonic release revision, predecessor ID,
+HTML entry and sorted content-addressed files. Presentation code may evolve;
+this mechanism cannot quietly replace descriptor-bound execution semantics.
+
+The publisher must have a verified current administrative grant and belong to
+the authenticated account. The host verifies the original signature and every
+asset's hash and size, then atomically selects the served immutable page version
+and retains its signed release/receipt. It checks account authorization again
+after asynchronous uploads and immediately before selection.
+
+`peers.publish(publication, assets)` sends `{ publication, assets }`, where each
+asset is `{ hash, bytes }` and `bytes` is canonical base64. Only hashes referenced
+by the signed manifest are accepted. Already retained content can be omitted.
+A complete code graph has at most 128 files and 8 MiB of content; the signed
+manifest is limited to 256 KiB. The release history is bounded to 256 revisions
+and 16 MiB of signed metadata.
+
+`peers.publication()` returns the current `{ publication, version }`, or null
+before the first release. `peers.publication(id)` reads an exact retained release
+for ancestry verification. `version` is the numeric immutable served asset
+version. Exact publication retries return the original receipt after restart or
+later code releases. Changed intent under an existing operation ID and competing
+predecessors fail explicitly.
+
+Code selection is independent of lossy application recovery. Health observations
+cannot silently roll back signed code; restoring previous content requires a new
+signed release at the current head. Unsigned publication mutation routes cannot
+bypass a configured control authority. The host retains page assets for loading
+without receiving application database bodies or adding an application outbox.

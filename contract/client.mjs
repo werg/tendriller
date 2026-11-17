@@ -27,7 +27,7 @@ function checked(schema, value, status) {
 }
 
 /** A small fetch client. No global state, framework or automatic event consumption. */
-export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, recordLogHints } = {}) {
+export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, recordLogHints, applicationId } = {}) {
   const base = api.replace(/\/+$/, "");
   const id = value => encodeURIComponent(String(value));
   async function request(path, { method = "GET", body, signal, headers = {} } = {}, responseSchema) {
@@ -60,7 +60,7 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
       if (selection.kind !== "cloudflare") throw new ApiError(409, { code: "application_backend", message: "Connect to this page's selected peer backend" });
       return createCloudflareApplicationBackend({ id: selection.id, request: (path, options) => request("/" + path, options) });
     },
-    peers: createPeersClient({ base, request: (path, options) => request('/' + path, options), protocols: [PEER_RENDEZVOUS_PROTOCOL, token] }),
+    peers: createPeersClient({ base, applicationId, request: (path, options) => request('/' + path, options), protocols: [PEER_RENDEZVOUS_PROTOCOL, token] }),
     records: createRecordLogClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher, subscribeHints: recordLogHints }),
     members: createMembersClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher }),
     ...createBlobClient(request, raw),

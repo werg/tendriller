@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPeerInvitationListener, createPeersClient, PEER_INVITATION_LIMITS, PEER_INVITATION_PROTOCOL, validatePeerAdvertisement } from '../peers.mjs';
+import { createPeerInvitationListener, createPeersClient, PEER_INVITATION_LIMITS, PEER_INVITATION_PROTOCOL, validatePeerAdvertisement, createParticipantResponse } from '../peers.mjs';
 
 class Socket extends EventTarget {
   readyState = 1; sent = []; closed;
@@ -40,8 +40,8 @@ test('invitation queues, cancellation, malformed frames and opening deadlines re
 
 test('the public client preserves private protocol credentials and only posts on demand', async () => {
   const calls = [], sockets = [];
-  const client = createPeersClient({ base: 'https://host.test/api/app', protocols: ['tendriller.rendezvous.v1', 'private-token'],
-    request: async (path, options) => { calls.push({ path, options }); return { invited: options.body.peerId, channel: options.body.channel }; },
+  const client = createPeersClient({ base: 'https://host.test/api/app', applicationId: 'ab'.repeat(32), protocols: ['tendriller.rendezvous.v1', 'private-token'],
+    request: async (path, options) => { calls.push({ path, options }); return createParticipantResponse(options.body, { invited: options.body.payload.peerId, channel: options.body.payload.channel }); },
     socket: (url, protocols) => { const socket = new Socket(); sockets.push({ url, protocols, socket }); return socket; } });
   assert.equal(calls.length + sockets.length, 0);
   assert.throws(() => client.listenInvitations('target', { timeoutMs: 0 }), { code: 'invalid_invitation' });
@@ -51,7 +51,9 @@ test('the public client preserves private protocol credentials and only posts on
   assert.deepEqual(sockets[0].protocols, [PEER_INVITATION_PROTOCOL, 'private-token']);
   sockets[0].socket.receive({ t: 'ready', version: 1, peerId: 'target' }); await listener.ready;
   await client.invite('target', { channel: 'fresh', requesterPeerId: 'source' });
-  assert.deepEqual(calls, [{ path: 'peers/invitations', options: { method: 'POST', body: { peerId: 'target', channel: 'fresh', requesterPeerId: 'source' } } }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, 'peers/participant');
+  assert.deepEqual([calls[0].options.body.facet, calls[0].options.body.action, calls[0].options.body.payload], ['ephemeral', 'invite', { peerId: 'target', channel: 'fresh', requesterPeerId: 'source' }]);
   const advertisement = validatePeerAdvertisement({ peerId: 'target', storageId: 'disk', profiles: ['peer-generation-v1'],
     routes: [{ kind: 'invitation', peerId: 'target' }], coordinatorEligible: true });
   assert.deepEqual(advertisement.routes, [{ kind: 'invitation', peerId: 'target' }]);

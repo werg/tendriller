@@ -29,9 +29,13 @@ coherent views. Authoring, sequencing, recovery and administration are separate
 rights checked by one portable verifier. Signed original attempts remain bound
 to their admission generation and permissions.
 
-Tendriller owns publication, account integration, enrollment bindings, bounded
+Tendriller projects signed Chronolog page-code publications to immutable hosted
+assets. It owns account integration, enrollment bindings, bounded
 routing hints, SDP introductions and a small durable generation/control registry.
-It embeds Chronolog's portable verifier. The control trust root is retained
+It embeds Chronolog's portable verifier and closed participant transport policy.
+One `peers/participant` exchange carries controls, signed code publication,
+discovery and bounded connection invitations. The same policy rejects ordinary
+database, content and live UI messages before client HTTP or server dispatch. The control trust root is retained
 independently of any coordinating device or page publication. It never executes
 application SQL or accepts commands in the generation registry.
 
