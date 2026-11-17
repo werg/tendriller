@@ -1,17 +1,14 @@
 import { documentUrl, validateDocumentContext } from "./document";
 // Importing this module mounts nothing and requests no device permissions.
-// Hosted applications own one page connection. Peer applications use only their
-// selected backend and explicit host operations. A page owns all application UI.
+// One application session owns data. A page owns all application UI.
 import { createCore } from "./core";
-import { setupPush } from "./push";
 import { describeCapabilities, observeCapabilities } from "./capabilities";
 import { installSensorWrappers } from "./sensors";
 import { runtimeAsset } from "./assets";
 import { savePublicationOffline } from "./publication";
 import type { TendrilConfig } from "./types";
-import type { RuntimeApi, RuntimeServices, RuntimeEventMap, PeerRuntimeApi, HostedRuntimeApi } from "../../contract/index.mjs";
+import type { RuntimeApi, RuntimeServices } from "../../contract/index.mjs";
 import { createSignalBinding } from "../../contract/signals.mjs";
-import { createHostedSignals } from "./signals";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<void> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return;
@@ -21,7 +18,6 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
     // Blocked or unavailable support must not leave callbacks holding no registration.
     if (!registration) return;
     const announce = () => (registration.active || registration.waiting || registration.installing)?.postMessage({ t: "publication", page: cfg.id, publication: cfg.publication });
-    core.bus.on("welcome", announce);
     navigator.serviceWorker.addEventListener("controllerchange", announce);
     navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") announce(); });
     announce();
@@ -32,9 +28,6 @@ export interface RuntimeOptions {
   application?: import("../../contract/application.mjs").ApplicationBackend;
   signals?: import("../../contract/signals.mjs").Signals;
 }
-export function startRuntime(cfg: TendrilConfig & { application: { kind: "peer"; id: string } }, options?: RuntimeOptions): PeerRuntimeApi;
-export function startRuntime(cfg: TendrilConfig & { application?: { kind: "cloudflare"; id: string } }, options?: RuntimeOptions): HostedRuntimeApi;
-export function startRuntime(cfg: TendrilConfig, options?: RuntimeOptions): RuntimeApi;
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
   if (cfg.publication && cfg.version > 0) {
@@ -53,11 +46,9 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   const sensorChanged = () => {
     const status = tracker.status();
     core.bus.emit("sensors", status);
-    if (core.kind === "cloudflare") core.raw({ t: "sensor_usage", active: status.active });
     capabilityObserver?.refresh();
   };
   let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
-  core.bus.on("connect", sensorChanged);
   // BFCache restores the same JavaScript realm without running startRuntime again.
   // Suspend observation while away, then reattach and resynchronize the utility.
   window.addEventListener("pagehide", () => {
@@ -72,7 +63,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   });
   const shared: RuntimeServices = {
     host: core.host, application: core.application,
-    signals: createSignalBinding(options.signals ?? (core.kind === "cloudflare" ? createHostedSignals(core) : undefined)),
+    signals: createSignalBinding(options.signals),
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),
     capabilities: () => describeCapabilities(tracker.status().active),
@@ -95,29 +86,5 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
       },
     },
   };
-  // Peer publication saving is explicit. There is no hosted data port, outbox,
-  // fake connection status, notification service or throw-only compatibility API.
-  if (core.kind === "peer") return Object.freeze({ ...shared, kind: "peer" });
-
-  const hosted: HostedRuntimeApi = {
-    ...shared, kind: "cloudflare",
-    send: (data, options) => core.send(data, options),
-    state: core.state, scopes: core.scopes, timers: core.timers,
-    get service() { return core.service; },
-    conversation: core.conversation, streams: core.streams, records: core.records,
-    on<K extends keyof RuntimeEventMap & string>(type: K, listener: (payload: RuntimeEventMap[K]) => void) { return core.bus.on(type, listener); },
-    upload: (blob, options) => core.upload(blob, options),
-    uploadEvent: (blob, options) => core.uploadEvent(blob, options),
-    captures: () => core.captures(), pendingWork: () => core.pendingWork(),
-    retryCapture: id => core.retryCapture(id), discardCapture: id => core.discardCapture(id),
-    setBlobRetention: (id, options) => core.setBlobRetention(id, options),
-    ready: Object.assign(() => core.ready(), { manual: () => core.readyManual() }),
-    get device() { return Object.freeze({ ...core.device }); },
-    get connected() { return core.connected; },
-    get presence() { return core.presence ? { ...core.presence } : null; },
-    notifications: setupPush(core),
-  };
-  if (document.readyState === "complete") setTimeout(registerOffline, 0);
-  else window.addEventListener("load", registerOffline, { once: true });
-  return Object.freeze(hosted);
+  return Object.freeze(shared);
 }

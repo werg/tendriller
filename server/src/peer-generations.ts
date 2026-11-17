@@ -30,11 +30,10 @@ interface HostState {
 const hosts = new WeakMap<Tendril, HostState>();
 function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
   const current = currentPrincipal(t, principal), owner = t.db.get<string | null>('owner_account', null);
-  if (!owner || !current || current.kind === 'producer' || current.kind === 'page' && (current.role === 'display' || !current.accountId))
+  if (!owner || !current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
     throw new HttpError(403, 'forbidden', 'Peer controls require an authenticated account');
   const account = current.kind === 'agent' ? owner : current.accountId!;
   if (ownerOnly && account !== owner) throw new HttpError(403, 'forbidden', 'Only the application owner can administer hosted control authority');
-  if (selectedApplication(t).kind !== 'peer') throw new HttpError(409, 'application_backend', 'Generation controls belong to a peer application');
   return account;
 }
 async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
@@ -47,7 +46,7 @@ function host(t: Tendril): HostState {
   if (state) return state;
   state = { pending: Promise.resolve(), store: {
     async get(key) {
-      const row = t.db.one<{ value: ArrayBuffer }>('SELECT value FROM membership_records WHERE key=?', key);
+      const row = t.db.one<{ value: ArrayBuffer }>('SELECT value FROM participant_records WHERE key=?', key);
       return row ? new Uint8Array(row.value).slice() : null;
     },
     async put(key, value) {
@@ -57,7 +56,7 @@ function host(t: Tendril): HostState {
       await state!.check?.();
       t.transaction(() => {
         state!.guard?.();
-        t.db.run('INSERT INTO membership_records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, bytes.buffer);
+        t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, bytes.buffer);
         if (state!.pendingAccounts) t.db.set(ACCOUNTS, state!.pendingAccounts);
         if (state!.pendingFingerprint) t.db.set(state!.pendingFingerprint.key, state!.pendingFingerprint.value);
       });
@@ -193,7 +192,6 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           if (configured.fingerprint !== fingerprint) throw new HttpError(409, 'peer_application_immutable', 'The application descriptor and initial policy are immutable');
           const bundle = await (await registry(t, state)).read(); await freshAccess(t, principal); identity(t, principal, true); return bundle;
         }
-        if (t.db.get('membership_configuration', null)) throw new HttpError(409, 'peer_profile_conflict', 'This application already selected a different authenticated history profile');
         const applicationId = selectedApplication(t).id;
         if (!/^[0-9a-f]{64}$/.test(applicationId)) throw new HttpError(400, 'peer_application_identity', 'peer-generation-v1 applications use a 32-byte lowercase hex identity');
         if (!Array.isArray(value.members) || !value.members.length || value.members.length > 1023)
@@ -229,8 +227,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           checkAccountAdmission(t, bindings);
           if (!hasResidentStorage(t)) throw new HttpError(409, 'peer_control_storage_unavailable');
           if (t.db.get(CONFIG, null)) throw new HttpError(409, 'peer_application_conflict');
-          if (t.db.get('membership_configuration', null)) throw new HttpError(409, 'peer_profile_conflict');
-          for (const [key, bytes] of staged) t.db.run('INSERT INTO membership_records(key,value) VALUES(?,?)', key, bytes.buffer);
+          for (const [key, bytes] of staged) t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', key, bytes.buffer);
           t.db.set(CONFIG, { descriptor, control, fingerprint, definition: published.definition, schema: published.schema }); t.db.set(ACCOUNTS, bindings);
         });
         return bundle;

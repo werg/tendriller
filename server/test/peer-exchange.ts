@@ -13,7 +13,7 @@ export async function participantPayload(response: Response): Promise<Response> 
 }
 export async function peerApi(handle: Handle, operation: string, payload: unknown = {}): Promise<Response> {
   const application = await inDO(handle.id, t => selectedApplication(t));
-  const applicationId = application.kind === 'peer' ? application.id : '00'.repeat(32);
+  const applicationId = application.id;
   return participantPayload(await api(handle, 'POST', 'peers/participant', participantMessage(applicationId, operation, payload)));
 }
 export async function peerApiJson<T = any>(handle: Handle, operation: string, payload: unknown = {}): Promise<T> {

@@ -1,21 +1,9 @@
-import { CONTRACT_VERSION, CORE_RELEASE, RESOURCE_LIMITS, STREAM_LIMITS } from '../../contract/index.mjs';
+import { CONTRACT_VERSION, CORE_RELEASE, RESOURCE_LIMITS } from '../../contract/index.mjs';
+import { PARTICIPANT_LIMITS } from '../../contract/participant.mjs';
 import type { Tendril } from './tendril';
-import { workflowDescriptors } from './workflows';
-import { effectiveStreamLimits } from './streams/limits';
-
-/** Deployment capabilities plus the actual allowance of a requested page. */
+/** Limits of the page host and its filtered participant transport. */
 export function serviceDescriptor(t?: Tendril) {
-  return {
-    contract: CONTRACT_VERSION,
-    core_release: CORE_RELEASE,
-    workflows: workflowDescriptors(),
-    limits: {
-      resources: RESOURCE_LIMITS,
-      streams: STREAM_LIMITS,
-      ...(t ? { effective: {
-        resources: { ...RESOURCE_LIMITS, file_bytes: t.fileLimit(), blob_bytes: t.blobLimit() },
-        streams: effectiveStreamLimits(t),
-      } } : {}),
-    },
-  };
+  return { contract: CONTRACT_VERSION, core_release: CORE_RELEASE,
+    limits: { participant: PARTICIPANT_LIMITS, resources: RESOURCE_LIMITS,
+      ...(t ? { effective: { resources: { ...RESOURCE_LIMITS, file_bytes: t.fileLimit() } } } : {}) } };
 }

@@ -8,7 +8,7 @@ import { api, create, inDO } from './helpers';
 import { peerApi, peerApiJson, participantMessage } from './peer-exchange';
 import { authenticateAgentToken } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
-import { failVersion, servedVersion, rollback } from '../src/files';
+import { servedVersion } from '../src/files';
 
 const definition = { id: 'code-release', version: '1', schema: null, commands: [], queries: [] } as const;
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
@@ -36,7 +36,7 @@ async function release(authority: AuthorityBundle, author: PeerIdentity, operati
 
 it('projects signed page code atomically, retains exact old releases, and resumes after host restart', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
-  const page = await createTestPage({ application: { kind: 'peer', id: applicationId() } });
+  const page = await createTestPage({ application: { id: applicationId() } });
   const authority = await (await page.exchange('control/configure', configuration(a, b))).json() as AuthorityBundle;
   expect(await (await page.exchange('publication/read')).json()).toBeNull();
   const first = await release(authority, a, 'release-one');
@@ -57,7 +57,7 @@ it('projects signed page code atomically, retains exact old releases, and resume
 
 it('rejects unauthorized publishers, changed retry identity, wrong bytes and stale release heads', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
-  const page = await createTestPage({ application: { kind: 'peer', id: applicationId() } });
+  const page = await createTestPage({ application: { id: applicationId() } });
   const authority = await (await page.exchange('control/configure', configuration(a, b))).json() as AuthorityBundle;
   expect((await page.exchange('publication/publish', await release(authority, b, 'non-admin'))).status).toBe(403);
   const first = await release(authority, a, 'release');
@@ -69,12 +69,12 @@ it('rejects unauthorized publishers, changed retry identity, wrong bytes and sta
   expect((await page.exchange('publication/publish', await release(authority, a, 'competing-first', null, 'stale'))).status).toBe(409);
   const guest = await page.participant();
   expect((await guest.exchange('publication/publish', await release(authority, a, 'foreign-account', first.publication))).status).toBe(403);
-  expect((await page.api('POST', 'publications', {})).status).toBe(409);
-  expect((await page.api('POST', 'publications/rollback', {})).status).toBe(409);
+  expect((await page.api('POST', 'publications', {})).status).toBe(404);
+  expect((await page.api('POST', 'publications/rollback', {})).status).toBe(404);
 });
 
 it('rejects all hosted data facets before control state or page content changes', async () => {
-  const id = applicationId(), page = await createTestPage({ application: { kind: 'peer', id } });
+  const id = applicationId(), page = await createTestPage({ application: { id } });
   for (const [facet, action] of [['database', 'submit'], ['content', 'chunk'], ['ephemeral', 'signal']]) {
     const response = await page.api('POST', 'peers/participant', { protocol: 'chronolog-participant-v1', applicationId: id,
       requestId: 'blocked', facet, action, payload: { forbidden: 'ordinary application bytes' } });
@@ -87,7 +87,7 @@ it('rejects all hosted data facets before control state or page content changes'
 
 it('rechecks account authorization after code upload before selecting a release', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity(), id = applicationId();
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id } });
+  const h = await create({ mode: 'dashboard', listener: false, application: { id } });
   const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration(a, b));
   const publication = await release(authority, a, 'revoked-during-upload');
   await inDO(h.id, async t => {
@@ -108,19 +108,19 @@ it('rechecks account authorization after code upload before selecting a release'
   });
 });
 
-it('health failure cannot switch code outside the signed release chain', async () => {
+it('cleanup retains selected and historical signed releases and unsigned recovery is unavailable', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: applicationId() } });
+  const h = await create({ mode: 'dashboard', listener: false, application: { id: applicationId() } });
   const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration(a, b));
   const first = await release(authority, a, 'stable');
   await peerApiJson(h, 'publication/publish', first);
   const next = await release(authority, a, 'next', first.publication, 'new code');
   await peerApiJson(h, 'publication/publish', next);
   await inDO(h.id, t => {
-    t.db.set('healthy', 1); t.db.run("UPDATE versions SET status='healthy' WHERE version=1");
-    failVersion(t, 2, ['diagnostic failure']);
     expect(t.db.get('current', 0)).toBe(2); expect(servedVersion(t)).toBe(2);
-    expect(() => rollback(t, 1, 'unsigned owner', null)).toThrow();
+    t.skew += 31 * 86400_000;
+    return t.cleanup();
   });
-  expect((await peerApiJson(h, 'publication/read')).publication.id).toBe(next.publication.id);
+  expect(await inDO(h.id, t => ({ current: servedVersion(t), versions: t.db.all('SELECT version FROM versions ORDER BY version'),
+    files: t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM version_files')!.n }))).toEqual({ current: 2, versions: [{ version: 1 }, { version: 2 }], files: 4 });
 });

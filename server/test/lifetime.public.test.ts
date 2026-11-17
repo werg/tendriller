@@ -3,17 +3,10 @@ import { env } from 'cloudflare:workers';
 import type { Tendril } from '../src/tendril';
 import { authenticateAgentToken } from '../src/access';
 import { changeLifetime, lifetimeChangePending } from '../src/lifetime';
-import { handleMembership } from '../src/membership';
-import { getRecordLog, provisionRecordLog } from '../src/records';
 import { api, apiJson, create, inDO, runAlarm } from './helpers';
 
-const bytes = (value: number) => btoa(String.fromCharCode(...new Uint8Array(32).fill(value))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-const configuration = {
-  executionManifestDigest: bytes(1), schemaAdministratorPublicKey: bytes(2),
-  nativeAuthority: { url: 'https://authority.example.test/_chronolog/membership', historyId: 'h_' + 'a'.repeat(32), publicKey: bytes(3) },
-};
 async function resident() {
-  const page = await create({ listener: false, application: { kind: 'peer', id: 'lifetime' } });
+  const page = await create({ listener: false, application: { id: '45'.repeat(32) } });
   await apiJson(page, 'PATCH', '', { lifetime: 'resident' });
   return page;
 }
@@ -27,58 +20,6 @@ function interceptAccountWrite(t: Tendril, run: (statement: D1PreparedStatement)
   return () => { t.env.ACCOUNTS = original; };
 }
 
-it('a pending downgrade prevents both new resident resources before the account update completes', async () => {
-  const page = await resident();
-  await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token);
-    let entered!: () => void, release!: () => void;
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const restore = interceptAccountWrite(t, async statement => { entered(); await gate; return statement.run(); });
-    const changing = changeLifetime(t, 'ad_hoc');
-    try {
-      await started;
-      expect(t.db.get('lifetime', '')).toBe('resident');
-      await expect(provisionRecordLog(t)).rejects.toMatchObject({ status: 409, code: 'resident_required' });
-      const url = new URL('https://page.example/_tendril/members');
-      const req = new Request(url, { method: 'PUT', body: JSON.stringify(configuration) });
-      await expect(handleMembership(t, req, url, 'members', principal)).rejects.toMatchObject({ status: 409, code: 'resident_required' });
-      expect(t.db.one('SELECT id FROM record_log WHERE id=1')).toBeNull();
-      expect(t.db.get('membership_configuration', null)).toBeNull();
-    } finally { release(); await changing; restore(); }
-    expect(t.db.get('lifetime', '')).toBe('ad_hoc');
-    expect(lifetimeChangePending(t)).toBe(false);
-  });
-  expect(await env.ACCOUNTS.prepare('SELECT lifetime FROM tendrils WHERE id=?').bind(page.id).first('lifetime')).toBe('ad_hoc');
-});
-
-it('record provisioning rechecks a downgrade begun while its genesis hash was being prepared', async () => {
-  const page = await resident();
-  await inDO(page.id, async t => {
-    const provisioning = provisionRecordLog(t);
-    const changing = changeLifetime(t, 'ad_hoc');
-    await expect(provisioning).rejects.toMatchObject({ status: 409, code: 'resident_required' });
-    await changing;
-    expect(t.db.one('SELECT id FROM record_log WHERE id=1')).toBeNull();
-    expect(t.db.get('lifetime', '')).toBe('ad_hoc');
-  });
-});
-
-it('an already committed record log or membership administrator prevents a downgrade before account I/O', async () => {
-  for (const resource of ['records', 'members']) {
-    const page = await resident();
-    await apiJson(page, resource === 'records' ? 'POST' : 'PUT', resource, resource === 'records' ? {} : configuration);
-    const response = await api(page, 'PATCH', '', { lifetime: 'ad_hoc' });
-    expect(response.status).toBe(409);
-    expect(await env.ACCOUNTS.prepare('SELECT lifetime FROM tendrils WHERE id=?').bind(page.id).first('lifetime')).toBe('resident');
-    await inDO(page.id, t => {
-      expect(lifetimeChangePending(t)).toBe(false);
-      expect(t.db.get('lifetime', '')).toBe('resident');
-      if (resource === 'records') expect(getRecordLog(t).head.position).toBe(0);
-    });
-  }
-});
-
 it('recovers a failed or lost account update response through an alarm or a request after real restart', async () => {
   for (const afterCommit of [false, true]) {
     const page = await resident();
@@ -91,7 +32,6 @@ it('recovers a failed or lost account update response through an alarm or a requ
       finally { restore(); }
       expect(lifetimeChangePending(t)).toBe(true);
       expect(t.db.get('lifetime', '')).toBe('resident');
-      await expect(provisionRecordLog(t)).rejects.toMatchObject({ code: 'resident_required' });
     });
     expect(await env.ACCOUNTS.prepare('SELECT lifetime FROM tendrils WHERE id=?').bind(page.id).first('lifetime')).toBe(afterCommit ? 'ad_hoc' : 'resident');
     if (afterCommit) {

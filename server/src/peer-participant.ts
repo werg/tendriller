@@ -15,7 +15,6 @@ const pending = new WeakMap<Tendril, number>();
 export async function handlePeerParticipant(t: Tendril, req: Request, principal: Principal): Promise<Response> {
   if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
   const selection = selectedApplication(t);
-  if (selection.kind !== 'peer') throw new HttpError(409, 'application_backend');
   const admitted = pending.get(t) ?? 0;
   if (admitted >= PARTICIPANT_LIMITS.pending) throw new HttpError(429, 'peer_participant_busy');
   pending.set(t, admitted + 1);

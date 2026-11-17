@@ -9,9 +9,8 @@ interface StoredAdvertisement extends PeerAdvertisementLease { owner: string; pr
 const key = 'peer_directory';
 function identity(t: Tendril, principal: Principal): string {
   const current = currentPrincipal(t, principal);
-  if (!current || current.kind === 'producer' || current.kind === 'page' && (current.role === 'display' || !current.accountId))
+  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
     throw new HttpError(403, 'forbidden', 'Peer discovery requires an authenticated participant');
-  if (selectedApplication(t).kind !== 'peer') throw new HttpError(409, 'application_backend', 'Discovery belongs to a peer application');
   return current.kind === 'agent' ? `agent:${current.credentialHash}` : `account:${current.accountId}`;
 }
 function active(t: Tendril): StoredAdvertisement[] {

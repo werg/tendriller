@@ -1,49 +1,19 @@
-import type { ApplicationOperation, AppliedApplicationReadView, PeerGenerationApplicationBackend } from '../application.mjs';
-import type { ApplicationDescription, PeerApplicationMember, PeerControlsClient, PeerApplicationConfiguration } from '../peer-controls.mjs';
-const applied: ApplicationOperation = { status: 'applied', operationId: 'edit', attemptId: 'signed-attempt', author: 'device',
-  generation: 'generation', sequence: 1, outcome: 'accepted', rejectionCode: null };
-const abandoned: ApplicationOperation = { status: 'abandoned', operationId: 'edit', attemptId: 'signed-attempt',
-  generation: 'generation', selectedGeneration: 'successor', previous: applied };
-// @ts-expect-error Generation attempts have their own authenticated identity, not a fake proposal reference.
-const missingAttempt: ApplicationOperation = { status: 'saved', operationId: 'edit', proposalId: 'fake', generation: 'generation' };
-// @ts-expect-error An applied result must identify its generation and sequence.
-const missingGeneration: ApplicationOperation = { status: 'applied', operationId: 'edit', attemptId: 'attempt', outcome: 'accepted' };
-declare const view: AppliedApplicationReadView;
-const generation: string = view.generation;
-// @ts-expect-error A generation-scoped view has no final revision.
-const finalRevision: string = view.finalRevision;
-declare const backend: PeerGenerationApplicationBackend;
-const profile: 'peer-generation-v1' = backend.profile;
-const phase: 'ready' | 'waiting' | 'recovering' | 'awaiting-keys' | 'closed' = backend.status.phase;
-const unsubscribe = backend.onStatus(status => { const connections: number = status.connectedPeers; void connections; });
-for (const notice of await backend.inspectRecovery()) { const lost: boolean = notice.unknownLoss; void lost; }
-void [applied, abandoned, missingAttempt, missingGeneration, generation, finalRevision, profile, phase, unsubscribe];
-const member: PeerApplicationMember = { publicKey: 'device', dataRole: 'member' };
-// @ts-expect-error Explicit grants include data authority instead of inventing a compatibility default.
-const incompleteGrant: PeerApplicationMember = { grant: { publicKey: 'device', reader: true, writer: true, coordinator: true, recovery: true, administrator: false } };
-declare const controls: PeerControlsClient;
-const configuration: PeerApplicationConfiguration = { historyId: 'history', executionManifestDigest: 'execution',
-  definition: { id: 'application', version: '1', schema: null, commands: [], queries: [] },
-  schemaAdministrator: 'schema-owner', epoch: 0, keyDigest: 'key', members: [member] };
-void controls.configureApplication(configuration);
-// @ts-expect-error Descriptor digests are derived from the published definition and cannot be supplied independently.
-void controls.configureApplication({ ...configuration, definitionDigest: 'redundant' });
-// @ts-expect-error The signed schema envelope determines its descriptor digest.
-void controls.configureApplication({ ...configuration, schemaDigest: null });
-void controls.administerGeneration({ transitionId: 'owner-recovery', expectedGeneration: 'current', coordinator: 'real-peer',
-  controlRevision: 1, reason: 'takeover', base: { point: { generation: 'current', sequence: 0, root: 'root' }, receipt: null, bridge: [] } });
-void [member, incompleteGrant];
-const definitionId: string = configuration.definition.id;
-// @ts-expect-error The host derives the descriptor commitment from the published definition.
-const digest: string = configuration.definitionDigest;
-void [definitionId, digest];
-
-void controls.definition().then(result => {
-  const metadata: ApplicationDescription = result.definition;
-  const digest: string = result.descriptor.payload.definitionDigest;
-  void [metadata, digest];
-});
-// @ts-expect-error Configuration requires the canonical public definition.
-const missingDefinition: PeerApplicationConfiguration = { historyId: 'history', executionManifestDigest: 'execution',
-  schemaAdministrator: 'administrator', epoch: 0, keyDigest: 'key', members: [member] };
-void missingDefinition;
+import type { ApplicationBackend, ApplicationOperation, ApplicationReadView } from '../application.mjs';
+declare const application: ApplicationBackend;
+const status = application.status;
+application.onRecovery(notice => { const loss: boolean = notice.unknownLoss; void loss; });
+application.onStatus(value => { const phase: string = value.phase; void phase; });
+void application.inspectRecovery();
+async function inspect() {
+  const view: ApplicationReadView = await application.readView();
+  const label: 'applied' = view.view;
+  await view.query('items'); await view.readEvents(); await view.release();
+  const operation: ApplicationOperation = await application.submit({}, { operationId: 'edit' });
+  if (operation.status === 'applied') { const outcome: 'accepted' | 'rejected' = operation.outcome; void outcome; }
+  // @ts-expect-error Finality is not an application outcome.
+  if (operation.status === 'final') {}
+  // @ts-expect-error Application reads capture one coherent applied revision.
+  await application.readView({ view: 'final' });
+  void label;
+}
+void status; void inspect;

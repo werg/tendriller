@@ -61,6 +61,7 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
       await checkAccess(); authorizeAuthor(publication.payload.author); return retained;
     }
     await authorizePublication(publication, authority, previous?.publication ?? null);
+    if (publication.payload.revision >= PUBLICATION_LIMITS.revisions) throw new HttpError(413, 'peer_publication_history_limit');
     const historyBytes = t.db.get<number>('peer_publication_bytes', 0) + encodePeerValue(publication).byteLength;
     if (historyBytes > PUBLICATION_LIMITS.historyBytes) throw new HttpError(413, 'peer_publication_history_limit');
     try {
@@ -76,6 +77,7 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
 
     const files = new Map<string, VersionFile>(), required = new Map<string, PublicationFile>();
     for (const file of publication.payload.files) {
+      if (file.size > t.fileLimit()) throw new HttpError(413, 'peer_publication_file_too_large');
       files.set(file.path, { path: file.path, hash: file.hash, size: file.size, type: file.type });
       const duplicate = required.get(file.hash);
       if (duplicate && duplicate.size !== file.size) throw new HttpError(400, 'peer_publication_assets_invalid');

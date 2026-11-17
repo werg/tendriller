@@ -1,42 +1,9 @@
-// Limits and timing constants (PROTOCOL sections 3.1, 4, 8).
 import { RESOURCE_LIMITS } from "../../contract/limits.mjs";
-
 export const MB = 1024 * 1024;
-export const MAX_FILE = RESOURCE_LIMITS.file_bytes;
-export const MAX_BLOB = RESOURCE_LIMITS.blob_bytes;
-export const MAX_EVENT_DATA = RESOURCE_LIMITS.event_bytes;
-export const MAX_STATE = RESOURCE_LIMITS.state_bytes;
-export const MAX_EVAL_CODE = 256 * 1024;
-export const MAX_LOGS = 2000;
-export const MAX_EVENTS = 10_000;
-export const MAX_PATH_LEN = RESOURCE_LIMITS.path_characters;
 export const MAX_FILES_PER_VERSION = RESOURCE_LIMITS.files_per_publication;
-export const MAX_TRANSCRIPT = 100;
-
-export const SECOND = 1000;
-export const MINUTE = 60 * SECOND;
-export const HOUR = 60 * MINUTE;
+export const HOUR = 60 * 60 * 1000;
 export const DAY = 24 * HOUR;
-
-export const EVENT_RETENTION = 30 * DAY;
 export const ACTIVITY_RETENTION = 30 * DAY;
-export const DEDUPE_RETENTION = DAY;
 export const AD_HOC_IDLE = DAY;
-
-export const WAKE_MERGE_WINDOW = 3 * SECOND;
-export const WEBHOOK_DEBOUNCE = 2 * SECOND;
-export const WEBHOOK_TIMEOUT = 10 * SECOND;
-export const WEBHOOK_BACKOFF = [30 * SECOND, 2 * MINUTE, 10 * MINUTE];
-export const PRESENCE_TICK = 30 * SECOND;
-export const STATUS_OVERRIDE_TTL = 10 * MINUTE;
-export const ADOPT_CODE_TTL = 10 * MINUTE;
 export const ADOPT_MAX_ATTEMPTS = 10;
-export const DEFAULT_GRACE_S = 120;
-/** Consecutive page-started wakes allowed without human input in between. */
-export const DEFAULT_PAGE_STREAK = 6;
-export const EVAL_DEFAULT_TIMEOUT = 10 * SECOND;
-export const EVAL_MAX_TIMEOUT = 120 * SECOND;
-export const CHECK_TIMEOUT = 30 * SECOND;
-export const CLEANUP_INTERVAL = HOUR;
-/** Versions kept (besides current/healthy/latest); older ones and their unreferenced files are pruned daily. */
-export const KEEP_VERSIONS = 50;
+export const ADOPT_CODE_TTL = 10 * 60 * 1000;

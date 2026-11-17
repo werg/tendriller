@@ -18,9 +18,8 @@ const attachment = (ws: WebSocket): Attachment | null => {
 export const isInvitationSocket = (ws: WebSocket): boolean => attachment(ws) !== null;
 function identity(t: Tendril, principal: Principal): string {
   const current = currentPrincipal(t, principal);
-  if (!current || current.kind === 'producer' || current.kind === 'page' && (current.role === 'display' || !current.accountId))
+  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
     throw new HttpError(403, 'forbidden', 'Peer invitations require an authenticated participant');
-  if (selectedApplication(t).kind !== 'peer') throw new HttpError(409, 'application_backend', 'Invitations belong to a peer application');
   return current.kind === 'agent' ? `agent:${current.credentialHash}` : `account:${current.accountId}`;
 }
 async function fresh(t: Tendril, principal: Principal): Promise<void> {

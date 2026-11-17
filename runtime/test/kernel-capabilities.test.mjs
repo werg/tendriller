@@ -8,15 +8,14 @@ import { build } from 'esbuild';
 const compiled = await build({ entryPoints: [new URL('../src/kernel.ts', import.meta.url).pathname],
   bundle: true, format: 'iife', globalName: 'Kernel', platform: 'browser', write: false,
   plugins: [{ name: 'kernel-fixtures', setup(build) {
-    build.onLoad({ filter: /\/runtime\/src\/(core|push|sensors)\.ts$/ }, ({ path }) => ({ loader: 'js', contents:
+    build.onLoad({ filter: /\/runtime\/src\/(core|sensors)\.ts$/ }, ({ path }) => ({ loader: 'js', contents:
       path.endsWith('/core.ts') ? 'export const createCore = () => globalThis.fixture.core;'
-        : path.endsWith('/push.ts') ? 'export const setupPush = () => ({});'
-          : 'export const installSensorWrappers = () => globalThis.fixture.tracker;' }));
+        : 'export const installSensorWrappers = () => globalThis.fixture.tracker;' }));
   } }],
 });
 const settle = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
 
-async function environment({ peer = false } = {}) {
+async function environment() {
   const listeners = new Map(), sensorListeners = new Set(), reports = [], sensorReports = [], sensorUsage = [], timers = new Map();
   let active = [], pending = [], timerId = 0, pendingCamera;
   const bus = {
@@ -34,13 +33,13 @@ async function environment({ peer = false } = {}) {
       return Promise.resolve(status());
     } } },
     setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
-    fixture: { core: { kind: peer ? 'peer' : 'cloudflare', bus, raw(frame) { sensorUsage.push(frame); } }, tracker: {
+    fixture: { core: { bus, raw(frame) { sensorUsage.push(frame); } }, tracker: {
       status: () => ({ active: [...active], pending: [...pending] }), onChange(fn) { sensorListeners.add(fn); return () => sensorListeners.delete(fn); },
     } },
   };
   runInNewContext(compiled.outputFiles[0].text, context);
   const runtime = context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0, documentPath: null,
-    ...(peer ? { application: { kind: 'peer', id: 'history' } } : {}) });
+    application: { id: '12'.repeat(32) } });
   await settle();
   const flushTimers = () => { for (const [id, fn] of timers) { timers.delete(id); fn(); } };
   return { reports, sensorReports, sensorUsage, runtime,
@@ -84,13 +83,13 @@ test('pending sensor snapshots reach subscribers without claiming active capture
   env.pending(['camera']);
   assert.deepEqual(env.runtime.sensors.status(), { active: [], pending: ['camera'] });
   assert.deepEqual(env.sensorReports, [{ active: [], pending: ['camera'] }]);
-  assert.deepEqual(env.sensorUsage.map(frame => [...frame.active]), [[]]);
+  assert.deepEqual(env.sensorUsage, []);
   env.flushTimers(); await settle();
   assert.deepEqual(env.reports, [false]);
 });
 
-test('peer sensor changes remain local while capability observations stay available', async () => {
-  const env = await environment({ peer: true });
+test('sensor changes remain local while capability observations stay available', async () => {
+  const env = await environment();
   env.sensors(['camera']); env.flushTimers(); await settle();
   assert.deepEqual(env.sensorReports, [{ active: ['camera'], pending: [] }]);
   assert.deepEqual(env.reports, [true]);

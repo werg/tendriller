@@ -55,7 +55,7 @@ test('immutable scope is discovered once for explicit convenience calls and the 
   const calls = [], receipt = { publication: { id: 'code-release' }, version: 4 };
   const client = createPeersClient({ base: 'https://host.test', request: async (path, options) => {
     calls.push(path);
-    if (path === 'application') return { selection: { kind: 'peer', id: applicationId } };
+    if (path === 'application') return { selection: { id: applicationId } };
     return createParticipantResponse(options.body, options.body.facet === 'publication' ? receipt : bundle);
   } });
   assert.deepEqual(calls, []);

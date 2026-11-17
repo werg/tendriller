@@ -19,17 +19,16 @@ it('initializes a fresh schema and reopens matching storage without changing its
     const db = new Db(storage);
     db.init();
     expect(db.all('SELECT id,revision FROM storage_schema')).toEqual([{ id: 1, revision: STORAGE_SCHEMA_REVISION }]);
-    expect(db.one('SELECT count,bytes FROM command_usage')).toEqual({ count: 0, bytes: 0 });
-    expect(db.all('SELECT * FROM record_log')).toEqual([]);
-    expect(db.all('SELECT * FROM record_log_entries')).toEqual([]);
+    expect(db.all('SELECT * FROM participant_records')).toEqual([]);
+    expect(db.all("SELECT name FROM sqlite_schema WHERE name IN ('command_usage','record_log','record_log_entries','application_changes','devices','events')")).toEqual([]);
     db.set('saved_work', { text: 'Keep this data' });
-    db.run('UPDATE command_usage SET count=7,bytes=1024 WHERE id=1');
+    db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', 'control', new Uint8Array([1,2,3]).buffer);
     const before = objects(storage);
     const reopened = new Db(storage);
     reopened.init();
     expect(objects(storage)).toEqual(before);
     expect(reopened.get('saved_work', null)).toEqual({ text: 'Keep this data' });
-    expect(reopened.one('SELECT count,bytes FROM command_usage')).toEqual({ count: 7, bytes: 1024 });
+    expect(new Uint8Array(reopened.one<{ value: ArrayBuffer }>("SELECT value FROM participant_records WHERE key='control'")!.value)).toEqual(new Uint8Array([1,2,3]));
   });
 });
 

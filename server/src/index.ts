@@ -5,9 +5,6 @@ import { reconcileSuspensions } from "./abuse/reconcile";
 
 import { Tendril } from "./tendril";
 export { Tendril };
-// Explicit trusted deployment entry points may select modules before serving.
-// The ordinary service never installs an application workflow.
-export { configureWorkflows } from "./workflows";
 export { Admission } from "./admission";
 
 export default {

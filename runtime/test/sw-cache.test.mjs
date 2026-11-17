@@ -167,7 +167,7 @@ test("reloading pinned A online cannot rewind the latest publication for a new o
 test("a successful navigation refreshes resident introductions for the next offline launch of the same publication", async () => {
   const a = release("1"), documentPath = "index.html", url = a.publication.base + documentPath;
   const page = endpoint => `<!doctype html><script>window.__TENDRIL__=${JSON.stringify({
-    publication: a.publication, documentPath, application: { kind: "peer", id: "peer-history" },
+    publication: a.publication, documentPath, application: { id: "peer-history" },
     peerBootstrap: { version: 2, endpoints: [{ url: endpoint }] },
   })};</script><h1>Peer application</h1>`;
   let html = page("https://original.example/introduce");

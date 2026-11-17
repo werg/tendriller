@@ -1,5 +1,5 @@
 // Push-to-talk recording and in-browser Cactus Whistle transcription.
-import type { Features } from "../types";
+import type { RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 
 export type CaptureMode = "local" | null;
 export interface CaptureHandlers {
@@ -28,7 +28,7 @@ export class SpeechCapture {
   private disposed = false;
 
   constructor(private h: CaptureHandlers, private lang: () => string,
-    private base: string, private speech: Features["speech"]) {
+    private base: string, private speech: RuntimeArtifactFeatures["speech"]) {
     this.mode = !!speech && typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!window.OfflineAudioContext && !!window.Worker ? "local" : null;
   }
 

@@ -1,37 +1,14 @@
 import { PEER_ROUTE, handlePeers } from "./peers";
-import { openSignalSocket } from './signals';
-import { MEMBERSHIP_ROUTE, handleMembership } from "./membership";
-import { APPLICATION_ROUTE, handleApplication, isApplicationPath, requireCloudflareApplication, selectedApplication } from "./application";
+import { handleApplication, selectedApplication } from "./application";
 // Page routes under P (PROTOCOL section 2.1), executed inside the Tendril Durable Object.
 import type { Tendril } from "./tendril";
-import { addActivity } from "./activity";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles, publicationManifest } from "./files";
 import { HttpError, json, readBody, readJson } from "./http";
-import { BLOB_ID_RE, DEVICE_ID_RE, DEVICE_SECRET_RE, safeEqual, sha256Hex } from "./ids";
-import type { DeviceRow } from "./tendril";
 import { iconSvg } from "./inject";
-import { EXPERIENCE_ROUTE, handleExperience } from "./experience-routes";
-import { handleScopes, handleWorkflows } from "./workflows";
 import { serviceDescriptor } from "./descriptor";
-import { STREAM_ROUTE, handleStreams } from "./streams";
 import { allows, authenticatePage } from "./access";
 import { handleManagement } from "./management";
-import { handleStorage, STORAGE_ROUTE } from "./storage";
-import { RECORD_LOG_ROUTE, handleRecordLog } from "./records";
-
-/**
- * The device making an HTTP request from the page, verified by its device secret
- * (`X-Tendril-Device` + `X-Tendril-Device-Secret`, PROTOCOL 2.1). Null if absent or wrong.
- */
-async function verifiedDevice(t: Tendril, req: Request): Promise<DeviceRow | null> {
-  const id = req.headers.get("X-Tendril-Device");
-  const secret = req.headers.get("X-Tendril-Device-Secret");
-  if (!id || !secret || !DEVICE_ID_RE.test(id) || !DEVICE_SECRET_RE.test(secret)) return null;
-  const dev = t.device(id);
-  if (!dev) return null;
-  return safeEqual(dev.secret_hash, await sha256Hex(secret)) ? dev : null;
-}
 
 export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Response> {
   const key = req.headers.get("x-tendril-key") ?? "";
@@ -59,23 +36,9 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
   if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
-  if (sub === 'signals/socket') return openSignalSocket(t, req, principal);
-  if (MEMBERSHIP_ROUTE.test(sub)) return handleMembership(t, req, url, sub, principal);
-  if (APPLICATION_ROUTE.test(sub)) return handleApplication(t, req, url, sub, principal);
-  if (isApplicationPath(sub)) requireCloudflareApplication(t);
-  if (RECORD_LOG_ROUTE.test(sub)) return handleRecordLog(t, req, url, sub, principal);
+  if (sub === "application") return handleApplication(t, req, principal);
   if (sub === 'manage') return handleManagement(t, req, base, principal);
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t));
-  if (sub.startsWith("streams") && STREAM_ROUTE.test(sub))
-    return handleStreams(t, req, url, sub, principal);
-  if (/^workflows(?:\/|$)/.test(sub)) return handleWorkflows(t, req, sub, principal);
-  if (/^scopes(?:\/|$)/.test(sub)) return handleScopes(t, req, sub, principal);
-  const experiencePath = sub;
-  if (EXPERIENCE_ROUTE.test(experiencePath) || sub === "devices") {
-    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden", "Only the owner can manage saved work, devices, and timers");
-    return handleExperience(t, req, url, principal, experiencePath);
-  }
-
   if (sub === "trust-version" && m === "POST") {
     if (!allows(principal, "page.owner") || !session?.account_id) throw new HttpError(403, "forbidden");
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
@@ -106,8 +69,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "agents" && m === "GET") {
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
-    return json({ agents: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at") ,
-      webhook: t.renderWake().webhook });
+    return json({ agents: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at") });
   }
   const disconnect = /^agents\/([A-Za-z0-9_.@-]{1,64})\/disconnect$/.exec(sub);
   if (disconnect && m === "POST") {
@@ -141,41 +103,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ ok: true });
   }
 
-  if (sub === "ws") {
-    requireCloudflareApplication(t);
-    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required", "Expected a WebSocket upgrade");
-    const pair = new WebSocketPair();
-    const [client, server] = [pair[0], pair[1]];
-    t.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ linkId: link.id, deviceId: null, version: 0, at: t.now(),
-      accountId: principal.accountId, sessionRole: principal.role, sessionHash: principal.sessionHash });
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
     return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
-
-  if (STORAGE_ROUTE.test(sub)) {
-    if (sub.startsWith("publications")) throw new HttpError(403, "forbidden", "Only an agent can publish page code");
-    if ((sub === "blobs" || /^blobs\/[^/]+\/info$/.test(sub)) && !allows(principal, "page.owner"))
-      throw new HttpError(403, "forbidden", "Only the owner can enumerate capture metadata");
-    if (m !== "GET" && m !== "HEAD" && !allows(principal, "page.write")) throw new HttpError(403, "forbidden", "Display links are read-only");
-    if (/^blobs\/[^/]+\/pin$/.test(sub) && !allows(principal, "page.owner"))
-      throw new HttpError(403, "forbidden", "Only the owner can keep captures");
-    const device = await verifiedDevice(t, req);
-    if (/^uploads(?:\/|$)/.test(sub) && !device) throw new HttpError(401, "device_required", "Register this device before uploading");
-    const completion = /^uploads\/(u_[a-z2-7]{20})\/complete$/.exec(sub);
-    const wasCompleted = completion && t.db.one<{ phase: string }>("SELECT phase FROM upload_sessions WHERE id=?", completion[1])?.phase === "completed";
-    const response = await handleStorage(t, req, url, `page:${device?.id ?? principal.name}`, sub, "page", device?.id ?? null);
-    if (completion && !wasCompleted && response.ok && device) {
-      const receipt = await response.clone().json() as { blob?: { id: string; size: number; type: string; name?: string } };
-      if (receipt.blob) addActivity(t, { kind: "blob", summary: `${blobLabel(receipt.blob.type)} sent${receipt.blob.name ? ` (${receipt.blob.name.slice(0, 80)})` : ""}, ${formatSize(receipt.blob.size)}`, blob: receipt.blob.id, device: device.id });
-    }
-    return response;
-  }
-
 
   if (sub === "manifest.webmanifest" && m === "GET") {
     const meta = tendrilMeta(t);
@@ -199,7 +130,6 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "icon" && m === "GET") {
     const icon = t.db.get<string | null>("icon", null);
-    if (icon && BLOB_ID_RE.test(icon) && t.db.one("SELECT 1 AS x FROM blobs WHERE id = ?", icon)) return t.getBlob(icon);
     if (icon && /^https:\/\//.test(icon)) return Response.redirect(icon, 302);
     const svg = iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? "#2d6a4f");
     return new Response(svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache" } });
@@ -209,21 +139,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 }
 
 function iconType(t: Tendril, icon: string | null): string {
-  if (icon && BLOB_ID_RE.test(icon)) return t.db.one<{ type: string }>("SELECT type FROM blobs WHERE id = ?", icon)?.type ?? "image/png";
   if (icon && /\.png(\?|$)/i.test(icon)) return "image/png";
   if (icon) return "image/png";
   return "image/svg+xml";
-}
-
-function blobLabel(type: string): string {
-  if (type.startsWith("image/")) return "Photo";
-  if (type.startsWith("video/")) return "Video clip";
-  if (type.startsWith("audio/")) return "Audio clip";
-  return "File";
-}
-
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }

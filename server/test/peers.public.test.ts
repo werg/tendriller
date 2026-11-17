@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { advance, api, apiJson, create, inDO, publishFilesJson, req, runAlarm, type Handle } from './helpers';
+import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
 import { createPeerRendezvous, PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
 import { closePeer } from '../src/peers';
 import { createTestPage } from './public-fixture';
@@ -9,7 +9,7 @@ const offer = { type: 'offer' as const, sdp: 'v=0\r\no=offer\r\n' };
 const answer = { type: 'answer' as const, sdp: 'v=0\r\no=answer\r\n' };
 
 it('exposes real authenticated rendezvous and observed host traffic to independent public consumers', async () => {
-  const page = await createTestPage({ application: { kind: 'peer', id: 'public-fixture' } });
+  const page = await createTestPage({ application: { id: '26717ae4369d005dc210693d1d9256de56b5689078ed07922317ea56020a6486' } });
   const guest = await page.participant();
   expect(page.hostTraffic).toEqual({ httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0,
     invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0 });
@@ -45,7 +45,7 @@ async function open(h: Handle, channel: string, peerId: string, page = false) {
 }
 
 it('introduces authorized peers, exchanges exactly two descriptions, and retires the host sockets', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'peer-history' } });
+  const h = await create({ mode: 'dashboard', listener: false, application: { id: 'e914219948c672f1d1e1260b4752e95e67396b08c94126c0213ff195eb932532' } });
   const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
   expect(await apiJson(h, 'PUT', 'peers/bootstrap', hints)).toEqual(hints);
   expect(await apiJson(h, 'GET', 'peers/bootstrap')).toEqual(hints);
@@ -62,9 +62,9 @@ it('introduces authorized peers, exchanges exactly two descriptions, and retires
   expect((await pageReader.next()).done).toBe(true); expect((await agentReader.next()).done).toBe(true);
   expect((await agent.closed).code).toBe(1000); expect((await page.closed).code).toBe(1000);
   expect(agent.connection.stats.sentDescriptions + page.connection.stats.sentDescriptions).toBe(2);
-  expect(await inDO(h.id, t => ({ log: t.db.one('SELECT COUNT(*) AS n FROM record_log_entries'),
-    application: t.db.one('SELECT COUNT(*) AS n FROM application_changes'), oldEvents: t.db.one('SELECT COUNT(*) AS n FROM events'),
-    devices: t.db.one('SELECT COUNT(*) AS n FROM devices') })))
+  expect(await inDO(h.id, t => ({ log: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='record_log_entries'"),
+    application: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='application_changes'"), oldEvents: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='events'"),
+    devices: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='devices'") })))
     .toEqual({ log: { n: 0 }, application: { n: 0 }, oldEvents: { n: 0 }, devices: { n: 0 } });
 });
 
@@ -77,31 +77,29 @@ it('has no hosted binary peer relay endpoint or protocol', async () => {
 });
 
 it('serves current resident introductions in peer HTML without exposing them to display links', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'initial-introductions' } });
-  await publishFilesJson(h, { 'index.html': '<head></head>Peer application', 'app.js': 'export const peer = true;' });
+  const h = await create({ mode: 'dashboard', listener: false, application: { id: 'b38af2e285ec262a9cfb515291202bac44f6e637403aab77104c5dfac219c722' } });
+
   const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
   await apiJson(h, 'PUT', 'peers/bootstrap', hints);
-  const response = await req(h.page_url + '_publications/1/index.html');
-  expect(response.headers.get('Cache-Control')).toBe('private, no-cache');
+  const response = await req(h.page_url);
+  expect(response.headers.get('Cache-Control')).toBe('no-store');
   const config = (html: string) => JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
   expect(config(await response.text()).peerBootstrap).toEqual(hints);
   const next = { version: 2, endpoints: [{ url: 'https://replacement.example/introduce' }] };
   await apiJson(h, 'PUT', 'peers/bootstrap', next);
-  expect(config(await (await req(h.page_url + '_publications/1/index.html')).text()).peerBootstrap).toEqual(next);
-  expect((await req(h.page_url + '_publications/1/app.js')).headers.get('Cache-Control')).toContain('immutable');
+  expect(config(await (await req(h.page_url)).text()).peerBootstrap).toEqual(next);
   const display = await inDO(h.id, async t => t.renderLink(await t.createLink('display', null, null)));
   expect(config(await (await req(display.url, { anonymous: true })).text()).peerBootstrap).toBeUndefined();
   expect((await req(display.url + '_tendril/peers/bootstrap', { anonymous: true })).status).toBe(403);
-  expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length, devices: t.db.one('SELECT COUNT(*) AS n FROM devices') })))
+  expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length, devices: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='devices'") })))
     .toEqual({ sockets: 0, devices: { n: 0 } });
 });
 
 it('does not register hosted application devices or sockets for a peer page', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'quiet-history' } });
+  const h = await create({ mode: 'dashboard', listener: false, application: { id: '640f9dd29023c050bdf38a63589f9f26c63a61f91d58afb59f12f96d12756e84' } });
   const response = await req(`${h.page_url}_tendril/ws`, { headers: { Upgrade: 'websocket' } });
-  expect(response.status).toBe(409);
-  expect(await response.json()).toMatchObject({ error: { code: 'application_backend' } });
-  expect(await inDO(h.id, t => ({ devices: t.db.one('SELECT COUNT(*) AS n FROM devices'), sockets: t.ctx.getWebSockets().length })))
+  expect(response.status).toBe(404);
+  expect(await inDO(h.id, t => ({ devices: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='devices'"), sockets: t.ctx.getWebSockets().length })))
     .toEqual({ devices: { n: 0 }, sockets: 0 });
 });
 
@@ -126,7 +124,7 @@ it('rejects binary frames, oversized SDP and foreign sessions without retaining 
     expect((await first.closed).code).toBe(invalid instanceof Uint8Array || invalid.length > LIMITS.messageBytes ? 1009 : 1008);
     expect(second.connection.stats.receivedDescriptions).toBe(0);
     second.connection.close();
-    expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM record_log_entries'))).toEqual({ n: 0 });
+    expect(await inDO(h.id, t => t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='record_log_entries'"))).toEqual({ n: 0 });
   }
 });
 
@@ -147,7 +145,7 @@ it('refuses role confusion, premature answers and repeated descriptions', async 
 });
 
 it('rechecks the recipient host credential before forwarding an introduction', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { kind: 'peer', id: 'private-group' } });
+  const h = await create({ mode: 'dashboard', listener: false, application: { id: '5e877599b096097b35ad02ff3f399ef0fa00c01d7205c07126d441eb1bd0626f' } });
   const page = await open(h, 'access', 'page', true), agent = await open(h, 'access', 'agent');
   await Promise.all([agent.connection.ready, page.connection.ready]);
   await inDO(h.id, t => { t.db.run('DELETE FROM tokens'); });

@@ -2,7 +2,6 @@ import { encodePublicationPath, validPublicationPath } from "./paths";
 // A publication owns an immutable page/runtime asset graph. Live APIs are never
 // cached. Client-to-publication bindings survive worker restarts, so a deferred
 // reload cannot mix an old executing page with a new component or runtime.
-import { registerPushHandlers } from "./sw-push";
 import type { PublicationManifest, PublicationAsset } from "../../contract/index.mjs";
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -292,5 +291,3 @@ sw.addEventListener("fetch", event => {
   if (request.mode === "navigate" && url.href.startsWith(SCOPE)) event.respondWith(navigate(event));
   else if (!url.search && !url.hash && (/\/_publications\/[A-Za-z0-9_-]+\//.test(url.pathname) || /\/_tendril\/(runtime|assets)\/[a-f0-9]{64}\//.test(url.pathname))) event.respondWith(staticAsset(event));
 });
-
-registerPushHandlers(sw);

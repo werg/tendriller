@@ -20,12 +20,14 @@ function backend() {
   const operations = new Map();
   const submit = async (program, { operationId }) => {
     if (!operations.has(operationId)) operations.set(operationId, { operationId, proposalId: `proposal:${operationId}`,
-      status: 'final', outcome: 'accepted', program: structuredClone(program) });
+      status: 'applied', outcome: 'accepted', program: structuredClone(program) });
     return operations.get(operationId);
   };
-  return { id: 'history-one', capabilities: ['events'], submit,
-    async *changes() { yield { view: 'final', revision: 'one', finalRevision: 'one' }; },
-    readView: () => ({ view: 'final', revision: 'one', finalRevision: 'one', query: () => [...operations.keys()], readEvents: async () => ({}), release() {} }),
+  return { id: '12'.repeat(32), capabilities: ['events'], submit,
+    status: { phase: 'ready', role: 'coordinator', generation: 'g', coordinator: 'a', connectedPeers: 0 },
+    onStatus() { return () => {}; }, onRecovery() { return () => {}; }, async inspectRecovery() { return []; },
+    async *changes() { yield { view: 'applied', revision: 'one', generation: 'g' }; },
+    readView: () => ({ view: 'applied', revision: 'one', generation: 'g', query: () => [...operations.keys()], readEvents: async () => ({}), release() {} }),
     events: { publish: (topic, payload, options) => submit({ topic, payload }, options), read: async () => ({}), async *subscribe() {} },
     operations: { get: id => operations.get(id), async *subscribe({ operationId }) { yield operations.get(operationId); } },
   };
@@ -83,9 +85,9 @@ function environment({ defaultEntry = false } = {}) {
     },
   };
   const configuration = { id: 'page', base: '/page/', version: 1, documentPath: 'app.html', publication,
-    ws: '/page/_tendril/ws', application: { kind: 'peer', id: 'history-one' },
+    application: { id: '12'.repeat(32) },
     peerBootstrap: { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] },
-    features: { push: true, vapid: 'AAAA', shared_by: 'Fixture', speech: null } };
+    features: { shared_by: 'Fixture', speech: null } };
   let api;
   if (defaultEntry) {
     window.__TENDRIL__ = configuration;
@@ -104,11 +106,11 @@ function environment({ defaultEntry = false } = {}) {
   };
 }
 
-test('a peer runtime operates with no host connection, host outbox, background fetch or diagnostics', async () => {
+test('the application runtime operates with no host connection, host outbox, background fetch or diagnostics', async () => {
   const env = environment();
   assert.deepEqual(plain(env.api.host.peers.initialBootstrap), { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] });
   assert.throws(() => { env.api.host.peers.initialBootstrap.endpoints[0].url = 'https://elsewhere.example/'; }, TypeError);
-  assert.equal(env.api.kind, 'peer');
+  assert.equal('kind' in env.api, false);
   const installed = backend(); env.api.application.install(installed);
   assert.equal(await env.api.application.ready(), installed); await flush();
   assert.equal('connected' in env.api, false, 'connection state belongs to the selected session');
@@ -117,7 +119,7 @@ test('a peer runtime operates with no host connection, host outbox, background f
   assert.equal(await installed.submit({ value: 'original' }, { operationId: 'edit' }), first);
   await installed.events.publish('messages', 'offline-host', { operationId: 'message' });
   assert.deepEqual(installed.readView().query(), ['edit', 'message']);
-  assert.equal(installed.operations.get('edit').status, 'final');
+  assert.equal(installed.operations.get('edit').status, 'applied');
   env.api.ready();
   env.context.console.error('application-local diagnostic');
   for (const type of ['load', 'online', 'offline', 'pagehide']) env.window.dispatchEvent(new Event(type));
@@ -185,11 +187,11 @@ test('the served bootstrap mounts working management and sensor controls without
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
 });
 
-test('peer host operations remain explicit and publication saving registers offline support on demand', async () => {
+test('host operations remain explicit and publication saving registers offline support on demand', async () => {
   const env = environment(); await flush();
-  assert.deepEqual(plain(await env.api.host.request('members')), { explicit: true });
+  assert.deepEqual(plain(await env.api.host.request('info')), { explicit: true });
   assert.equal(env.calls.fetch.length, 1);
-  assert.equal(env.calls.fetch[0].url, '/page/_tendril/members');
+  assert.equal(env.calls.fetch[0].url, '/page/_tendril/info');
   assert.equal(env.calls.fetch[0].options.credentials, 'same-origin');
   assert.equal(env.calls.registrations, 0);
   assert.deepEqual(plain(await env.api.publication.saveOffline()), { id: '1', status: 'ready' });
@@ -198,14 +200,14 @@ test('peer host operations remain explicit and publication saving registers offl
   assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);
 });
 
-test('peer runtime exposes only supported services and leaves authority to the application session', async () => {
+test('application runtime exposes only supported services and leaves authority to the application session', async () => {
   const env = environment();
   for (const name of ['send', 'state', 'scopes', 'conversation', 'timers', 'streams', 'records', 'upload', 'uploadEvent',
     'setBlobRetention', 'retryCapture', 'discardCapture', 'captures', 'pendingWork', 'connected', 'presence', 'service', 'notifications',
     'peers', 'members', 'request', 'blobUrl', 'deviceHeaders']) assert.equal(name in env.api, false, name);
   assert.deepEqual(Object.keys(env.api.device).sort(), ['id', 'name']);
   assert.equal('manual' in env.api.ready, false);
-  for (const name of ['peers', 'members', 'request', 'blobUrl', 'deviceHeaders']) assert.ok(env.api.host[name], name);
+  for (const name of ['peers', 'request', 'deviceHeaders']) assert.ok(env.api.host[name], name);
   assert.equal(Object.isFrozen(env.api), true); assert.equal(Object.isFrozen(env.api.host), true);
   await env.advance();
   assert.equal(env.calls.fetch.length, 0); assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);

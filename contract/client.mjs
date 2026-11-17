@@ -1,13 +1,5 @@
-import { createCloudflareApplicationBackend, applicationSelection } from "./application.mjs";
-import { createPeersClient, PEER_RENDEZVOUS_PROTOCOL } from "./peers.mjs";
-import { assertValid, validate, CONTRACT_VERSION } from "./index.mjs";
-import { createDurabilityClient } from "./durability-client.mjs";
-import { createStreamsClient } from "./streams-client.mjs";
-import { createBlobClient } from "./blobs-client.mjs";
-import { createRecordLogClient } from "./records.mjs";
-import { createMembersClient } from "./members.mjs";
-import { connectHostedSignals, HOSTED_SIGNAL_PROTOCOL } from "./hosted-signals.mjs";
-
+import { assertValid, CONTRACT_VERSION, validate } from './index.mjs';
+import { createPeersClient, PEER_RENDEZVOUS_PROTOCOL } from './peers.mjs';
 export class ApiError extends Error {
   constructor(status, error) {
     super(error?.message || `HTTP ${status}`);
@@ -26,10 +18,9 @@ function checked(schema, value, status) {
   return value;
 }
 
-/** A small fetch client. No global state, framework or automatic event consumption. */
-export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, recordLogHints, applicationId } = {}) {
-  const base = api.replace(/\/+$/, "");
-  const id = value => encodeURIComponent(String(value));
+/** Explicit host lifecycle and participant operations. Application execution belongs to Chronolog. */
+export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, applicationId } = {}) {
+  const base = api.replace(/\/+$/, '');
   async function request(path, { method = "GET", body, signal, headers = {} } = {}, responseSchema) {
     const response = await fetcher(base + path, {
       method, signal, headers: { ...headers, Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
@@ -42,71 +33,12 @@ export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch
     if (!response.ok) throw new ApiError(response.status, result?.error);
     return responseSchema ? checked(responseSchema, result, response.status) : result;
   }
-  async function raw(path, { method = "GET", body, signal, headers = {} } = {}) {
-    const response = await fetcher(base + path, { method, signal,
-      headers: { ...headers, Authorization: `Bearer ${token}` }, body,
-    });
-    if (!response.ok) {
-      let parsed;
-      try { parsed = await response.json(); } catch { /* Binary errors are not JSON. */ }
-      throw new ApiError(response.status, parsed?.error || { code: "http_error", message: `HTTP ${response.status}` });
-    }
-    return response;
-  }
-  return {
-    connectSignals: options => connectHostedSignals({ ...options, base, protocols: [HOSTED_SIGNAL_PROTOCOL, token] }),
-    async application() {
-      const selection = applicationSelection((await request("/application")).selection);
-      if (selection.kind !== "cloudflare") throw new ApiError(409, { code: "application_backend", message: "Connect to this page's selected peer backend" });
-      return createCloudflareApplicationBackend({ id: selection.id, request: (path, options) => request("/" + path, options) });
-    },
+  return Object.freeze({
     peers: createPeersClient({ base, applicationId, request: (path, options) => request('/' + path, options), protocols: [PEER_RENDEZVOUS_PROTOCOL, token] }),
-    records: createRecordLogClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher, subscribeHints: recordLogHints }),
-    members: createMembersClient({ base, headers: () => ({ Authorization: `Bearer ${token}` }), fetch: fetcher }),
-    ...createBlobClient(request, raw),
-    ...createDurabilityClient(request),
-    ...createStreamsClient(request),
     request,
-    info: () => request("", undefined, "objectResponse"),
-    probeDelivery: () => request("/wake/probe", { method: "POST" }, "deliveryProbe"),
-    checkDeliveryProbe: nonce => request(nonce === undefined ? "/wake/probe" : `/wake/probe/${assertValid("probeNonce", nonce)}`, undefined, "deliveryProbe"),
-    acknowledgeDeliveryProbe: nonce => request(`/wake/probe/${assertValid("probeNonce", nonce)}/ack`, { method: "POST" }, "deliveryProbe"),
-    say: body => request("/say", { method: "POST", body: assertValid("say", body) }, "sayResult"),
-    // Push works without a browser tab. Consent and server registrations are
-    // managed by the authored page, never by this agent token.
-    notificationStatus: () => request("/notify"),
-    notify: body => request("/notify", { method: "POST", body }),
-    state: () => request("/state", undefined, "stateSnapshot"),
-    updateState: body => request("/state", { method: "PATCH", body: assertValid("stateUpdate", body) }, "stateRevision"),
-    devices: () => request("/devices", undefined, "deviceConfiguration"),
-    updateDevice: (device, body) => request(`/devices/${id(device)}`, { method: "PATCH", body: assertValid("deviceUpdate", body) }, "deviceInfo"),
-    focus: body => request("/focus", { method: "POST", body: assertValid("focusRequest", body) }, "deviceConfiguration"),
-    timers: () => request("/timers", undefined, "timerList"),
-    createTimer: body => request("/timers", { method: "POST", body: assertValid("timerCreate", body) }, "timer"),
-    updateTimer: (timer, body) => request(`/timers/${id(timer)}`, { method: "PATCH", body: assertValid("timerWrite", body) }, "timer"),
-    deleteTimer: (timer, body) => request(`/timers/${id(timer)}`, { method: "DELETE", body: assertValid("timerDelete", body) }, "timerDeleted"),
-    timerHistory: () => request("/timers/history", undefined, "timerHistory"),
-    session: () => request("/session", undefined, "sessionSummary"),
-    updateSession: body => request("/session", { method: "PUT", body: assertValid("sessionWrite", body) }, "sessionResult"),
-    exportBundle: ({ includeData = false } = {}) => request(`/bundle?include_data=${includeData}`, undefined, "bundle"),
-    stageBundle: body => request("/bundle", { method: "PUT", body: assertValid("bundle", body) }, "bundleStage"),
-    publishBundle: body => request("/bundle/publish", { method: "POST", body: assertValid("bundlePublish", body) }, "bundleReceipt"),
-    discardBundle: () => request("/bundle", { method: "DELETE" }),
-    remix: body => request("/remix", { method: "POST", body: assertValid("remix", body) }, "remixResult"),
-    service: () => request("/service", undefined, "serviceDescriptor"),
-    scopes: () => request("/scopes", undefined, "scopeList"),
-    putScope: (scope, body) => request(`/scopes/${id(scope)}`, { method: "PUT", body: assertValid("scopeWrite", body) }, "scopeDescriptor"),
-    rotateScope: (scope, body) => request(`/scopes/${id(scope)}/rotate`, { method: "POST", body }),
-    retireScope: (scope, body) => request(`/scopes/${id(scope)}`, { method: "DELETE", body }),
-    send: body => request("/events", { method: "POST", body: assertValid("command", body) }),
-    workflow: (module, operation, body) => request(`/workflows/${id(module)}/${id(operation)}`, { method: "POST", body: assertValid("command", body) }),
-    readEvents: ({ after, signal, ...unsupported }) => {
-      if (!Number.isSafeInteger(after) || after < 0) throw new TypeError("readEvents requires an explicit nonnegative after cursor");
-      if (Object.hasOwn(unsupported, "wait")) throw new TypeError("Long polling is no longer supported; use a socket or MCP Events subscription for wake notifications");
-      const query = new URLSearchParams({ after: String(after) });
-      return request(`/events?${query}`, { signal }, "eventBatch");
-    },
-  };
+    info: () => request('', undefined, 'objectResponse'),
+    service: () => request('/service', undefined, 'serviceDescriptor'),
+  });
 }
 
 export async function createPage(service, body, { fetch: fetcher = globalThis.fetch } = {}) {
@@ -129,12 +61,7 @@ export async function describeService(service, { fetch: fetcher = globalThis.fet
   return checked("serviceDescriptor", result, response.status);
 }
 
-export function requireService(descriptor, { contract = CONTRACT_VERSION, workflows = {} } = {}) {
-  if (descriptor.contract !== contract) throw new ApiError(409, { code: "contract_mismatch", message: `Core contract ${contract} required; service has ${descriptor.contract}` });
-  for (const [id, required] of Object.entries(workflows)) {
-    const installed = descriptor.workflows.find(module => module.id === id);
-    if (!installed || installed.interface_version !== required.interface_version || installed.schema_version !== required.schema_version)
-      throw new ApiError(409, { code: "workflow_mismatch", message: `Required workflow interface/schema is unavailable: ${id}` });
-  }
+export function requireService(descriptor, { contract = CONTRACT_VERSION } = {}) {
+  if (descriptor.contract !== contract) throw new ApiError(409, { code: 'contract_mismatch', message: `Core contract ${contract} required; service has ${descriptor.contract}` });
   return descriptor;
 }

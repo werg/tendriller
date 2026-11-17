@@ -10,12 +10,11 @@ const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelco
 // Governance is a host responsibility. Only these self-contained public control
 // artifacts may enter the Worker; application execution and peer sessions cannot.
 const controlImports = new Map([
-  ['server/src/membership.ts', '@chronolog/membership'],
   ['server/src/peer-generations.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-participant.ts', '@chronolog/peer-generation/participant'],
 ]);
-const controlArtifacts = new Set(['node_modules/@chronolog/membership/index.mjs', 'node_modules/@chronolog/peer-generation/control.mjs', 'node_modules/@chronolog/peer-generation/participant.mjs']);
+const controlArtifacts = new Set(['node_modules/@chronolog/peer-generation/control.mjs', 'node_modules/@chronolog/peer-generation/participant.mjs']);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
   if (!/\.(ts|mjs|mts)$/.test(path)) continue;
   for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g))

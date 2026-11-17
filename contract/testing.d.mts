@@ -1,5 +1,4 @@
 export interface TestMigration { name: string; queries: string[] }
-export type TestWorkflowCall = (module: string, operation: string, data?: unknown, guards?: Record<string, string>, cid?: string) => Promise<Response>;
 export interface TestPeerSocket {
   readonly readyState: number;
   addEventListener(type: string, listener: (event: any) => void): void;
@@ -19,9 +18,7 @@ export interface TestHostTraffic {
 }
 /** Initialize fresh test storage in the Cloudflare Vitest pool. Never a production API. */
 export declare function initializeTestService(migrations: TestMigration[]): Promise<void>;
-export declare function createTestPage(options?: { application?: { kind: 'cloudflare' | 'peer'; id: string }; lifetime?: 'ad_hoc' | 'resident' }): Promise<{
-  owner: TestWorkflowCall;
-  agent: TestWorkflowCall;
+export declare function createTestPage(options?: { application?: { id: string }; lifetime?: 'ad_hoc' | 'resident' }): Promise<{
   api(method: string, path: string, body?: unknown): Promise<Response>;
   ownerApi(method: string, path: string, body?: unknown): Promise<Response>;
   exchange(operation: string, payload?: unknown): Promise<Response>;
@@ -33,10 +30,9 @@ export declare function createTestPage(options?: { application?: { kind: 'cloudf
   ownerRendezvousSocket(channel: string, peerId: string): TestPeerSocket;
   invitationSocket(peerId: string): TestPeerSocket;
   ownerInvitationSocket(peerId: string): TestPeerSocket;
-  participant(): Promise<{ account: string; call: TestWorkflowCall; api(method: string, path: string, body?: unknown): Promise<Response>;
+  participant(): Promise<{ account: string; api(method: string, path: string, body?: unknown): Promise<Response>;
     exchange(operation: string, payload?: unknown): Promise<Response>;
     rendezvousSocket(channel: string, peerId: string): TestPeerSocket; invitationSocket(peerId: string): TestPeerSocket }>;
-  display(): Promise<TestWorkflowCall>;
   advance(milliseconds: number): Promise<void>;
   /** Restarts the real Durable Object after a forced abort, retaining its persistent store. */
   restart(): Promise<void>;

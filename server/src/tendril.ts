@@ -1,107 +1,29 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
-import { isSignalSocket, handleSignalMessage } from './signals';
-import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
+import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
-import { applicationSelection } from "../../contract/application.mjs";
-import { selectedApplication } from "./application";
-import runtimeRelease from "./runtime-release.json";
-import { RESOURCE_LIMITS, STREAM_LIMITS } from "../../contract/limits.mjs";
-// The Tendril Durable Object: owns all per-tendril state and logic.
-import { DurableObject } from "cloudflare:workers";
-import type { Env } from "./env";
-import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from "./abuse/notices";
-import { requireWritesOpen } from "./service-state";
-import { addActivity, preview, pruneActivity } from "./activity";
-import { handleAgent } from "./agent";
-import { synchronizeWorkflows } from "./workflows";
-import { handleMcp } from "./mcp";
-import { mcpJobDue, mcpSubs, pruneMcpSubs, runMcpEvents } from "./mcpEvents";
-import { Db } from "./db";
-import { Transactions, type CommitEffect } from "./transactions";
-import { speechTarget, type DevicePurpose } from "./device-roles";
-import { nextTimerDeadline, runTimers } from "./timers";
-import { cancelTimerNotifications, nextNotificationDeadline, pruneTimerHistory, runTimerNotifications } from "./timer-notifications";
-import { pageStreak, pruneEvents, runWebhook, type WebhookJob } from "./events";
-import { deleteUnreferencedContent, fileKey, storeContent } from "./files";
-import { pruneFileHistory } from "./storage";
-import { HttpError, json, readJson, toErrorResponse } from "./http";
-import { newBlobId, newCallId, newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from "./ids";
-import type { Features } from "./inject";
-import {
-  ACTIVITY_RETENTION, KEEP_VERSIONS,
-  AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, DEDUPE_RETENTION, DEFAULT_GRACE_S, DEFAULT_PAGE_STREAK,
-  MAX_STATE, MAX_TRANSCRIPT, PRESENCE_TICK, MB, HOUR,
-} from "./limits";
-import { handlePage } from "./page";
-import { computePresence, nextPresenceChange, type Presence, type PresenceFacts } from "./presence";
-import { pushAvailable, sendWebPush, vapidPublicKey, type NotifyDeliveryOptions, type NotifyDeliveryResult } from "./push";
-import { applyCheckedOps, checkState, validateOps, validateStateChecks, statePaths, type StateOp } from "./state";
-import { checkGenerations, scopes, type Preconditions } from "./scopes";
-import { blobReference } from "./blob-retention";
-import { apiUrl, pageUrl, publicBase } from "./urls";
-import { handleWsClose, handleWsMessage } from "./ws";
-import { emitBuiltinRecord, emitBuiltinSignal, pruneStreams } from "./streams";
-import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession, socketPrincipal } from "./access";
-
-import type { Role, DeviceInfo, StateChecks } from "../../contract/index.mjs";
-export type { Role } from "../../contract/index.mjs";
-
-/** Per-socket attachment (survives hibernation). */
-export interface Att {
-  linkId: string;
-  deviceId: string | null;
-  version: number;
-  at: number;
-  accountId?: string | null;
-  sessionRole?: Role | null;
-  checkedAt?: number;
-  sessionHash?: string | null;
-  /** Per-stream live cursor; retained in the hibernating socket attachment. */
-  streams?: Record<string, number>;
-  live?: import('./signals').SignalSession;
-}
-
-export interface DeviceRow {
-  id: string;
-  secret_hash: string;
-  name: string | null;
-  role: Role;
-  purpose: DevicePurpose;
-  pending: number;
-  pair_code: string | null;
-  link: string | null;
-  ua: string | null;
-  caps: string | null;
-  created_at: number;
-  last_seen: number | null;
-  last_active: number | null;
-}
-
-export interface CallResult {
-  ok: boolean;
-  value?: unknown;
-  error?: string;
-  timeout?: boolean;
-}
-
-interface PendingCall {
-  deviceId: string;
-  resolve: (r: CallResult) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-export interface WakeConfig {
-  webhook: { url: string; token: string | null; auth?: "bearer" | "standard_webhooks" | "timestamp_hmac_sha256" } | null;
-  schedule_minutes: number | null;
-  budget: { page_streak: number };
-  grace_seconds: number;
-}
-
-export interface StatusOverride {
-  state: "working" | "idle" | "done";
-  text: string | null;
-  at: number;
-}
+import { applicationSelection } from '../../contract/application.mjs';
+import { selectedApplication } from './application';
+import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
+import runtimeRelease from './runtime-release.json';
+import { DurableObject } from 'cloudflare:workers';
+import type { Env } from './env';
+import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from './abuse/notices';
+import { requireWritesOpen } from './service-state';
+import { addActivity, pruneActivity } from './activity';
+import { handleAgent } from './agent';
+import { handleMcp } from './mcp';
+import { Db } from './db';
+import { Transactions, type CommitEffect } from './transactions';
+import { deleteUnreferencedContent } from './files';
+import { HttpError, json, readJson, toErrorResponse } from './http';
+import { newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from './ids';
+import type { Features } from './inject';
+import { AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR } from './limits';
+import { handlePage } from './page';
+import { apiUrl, pageUrl, publicBase } from './urls';
+import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession } from './access';
+import type { Role } from '../../contract/index.mjs';
+export type { Role } from '../../contract/index.mjs';
 
 export interface Link {
   id: string;
@@ -113,23 +35,14 @@ export interface Link {
   created_by_agent?: number;
 }
 
-export const DEFAULT_WAKE: WakeConfig = {
-  webhook: null,
-  schedule_minutes: null,
-  budget: { page_streak: DEFAULT_PAGE_STREAK },
-  grace_seconds: DEFAULT_GRACE_S,
-};
-
 export class Tendril extends DurableObject<Env> {
   declare public env: Env;
   declare public ctx: DurableObjectState<{}>;
   db: Db;
   private transactions: Transactions;
-  calls = new Map<string, PendingCall>();
   contentOperations = new Map<string, Promise<unknown>>();
   /** Test hook: milliseconds added to the clock. */
   skew = 0;
-  private lastPresence: string | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -171,7 +84,6 @@ export class Tendril extends DurableObject<Env> {
           if (!await pageAccessAllowed(this)) {
             this.db.set("disabled", true);
             this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
-            cancelTimerNotifications(this, null, "Delivery stopped because the page or owner account is unavailable.");
             this.scheduleAlarm();
             throw new HttpError(403, "disabled", "This tendril is unavailable");
           }
@@ -180,7 +92,7 @@ export class Tendril extends DurableObject<Env> {
       if (this.db.get<boolean>("disabled", false) && (kind === "agent" || kind === "page")) {
         throw new HttpError(403, "disabled", "This tendril is unavailable");
       }
-      if (applicationSelection(this.db.get("application", undefined)).kind === "cloudflare") synchronizeWorkflows(this);
+      if (kind === "agent" || kind === "page") this.db.set("last_access", this.now());
       if (kind === "claim") return await this.handleClaim(req, url);
       if (kind === "abuse" && url.pathname === "/abuse/report" && req.method === "POST") {
         const body = await readJson(req, 4096);
@@ -196,14 +108,13 @@ export class Tendril extends DurableObject<Env> {
         this.db.set("disabled", body.disabled);
         if (body.disabled) this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
         else this.db.del("disabled_at");
-        if (body.disabled) cancelTimerNotifications(this, null, "Delivery stopped because this page was held.");
         if (body.disabled) for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
         this.scheduleAlarm();
         return json({ ok: true });
       }
       if (kind === "abuse" && url.pathname === "/abuse/preview" && req.method === "GET") {
         return json({ id: this.tid, name: this.db.get("name", "Tendril"),
-          versions: this.db.all("SELECT version, created_at, status, risk_score, risk_flags FROM versions ORDER BY version DESC LIMIT 20"),
+          versions: this.db.all("SELECT version, created_at, risk_score, risk_flags FROM versions ORDER BY version DESC LIMIT 20"),
           files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
@@ -217,17 +128,12 @@ export class Tendril extends DurableObject<Env> {
           last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
         });
         if (url.pathname === "/account/sensors" && req.method === "GET") return json({
-          devices: this.listDevices(),
           events: this.db.all("SELECT ts, device, summary FROM activity WHERE kind = 'sensor' ORDER BY seq DESC LIMIT 200"),
         });
         if (url.pathname === "/account/export" && req.method === "GET") return json({
           id: this.tid, name: this.db.get("name", "Tendril"), lifetime: this.db.get("lifetime", "ad_hoc"),
-          state: this.db.get("state", {}),
-          versions: this.db.all("SELECT version, created_at, status, message FROM versions ORDER BY version"),
+          versions: this.db.all("SELECT version, created_at, message FROM versions ORDER BY version"),
           version_files: this.db.all("SELECT version, path, hash, type, size FROM version_files ORDER BY version, path"),
-          blobs: this.db.all("SELECT id, sha256, type, size, name, ts FROM blobs ORDER BY ts"),
-          file_refs: this.db.all("SELECT * FROM file_refs ORDER BY path"),
-          publication_blobs: this.db.all("SELECT * FROM publication_blobs ORDER BY version,path"),
           stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
         });
         if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
@@ -250,41 +156,16 @@ export class Tendril extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
-    if (isSignalSocket(ws)) { await handleSignalMessage(this, ws, message); return; }
     if (isPeerSocket(ws)) { await handlePeerMessage(this, ws, message); return; }
-    if (this.isAgentSocket(ws)) {
-      // Normally answered by Durable Object's hibernation auto-response; also handle
-      // a forwarded heartbeat without treating a keepalive as an application write.
-      if (message === '{"t":"ping"}') { this.send(ws, { t: "pong" }); return; }
-      ws.close(1008, "Agent socket is receive-only"); return;
-    }
-    await handleWsMessage(this, ws, message);
+    ws.close(1008, "Unsupported participant transport");
   }
-
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    try {
-      ws.close(code === 1005 || code === 1006 ? 1000 : code, reason);
-    } catch {
-      /* already closed */
-    }
-    if (isSignalSocket(ws) || isInvitationSocket(ws)) return;
-    if (isPeerSocket(ws)) { closePeer(this, ws); return; }
-    if (this.isAgentSocket(ws)) {
-      const att = ws.deserializeAttachment() as { connectedAt?: number } | null;
-      const elapsed = typeof att?.connectedAt === "number" && Number.isFinite(att.connectedAt)
-        ? `, connected for ${Math.max(0, Math.round((this.now() - att.connectedAt) / 1000))}s` : "";
-      const detail = reason ? `, reason ${JSON.stringify(reason.slice(0, 100))}` : "";
-      addActivity(this, { kind: "agent_socket", summary: `Agent receiver socket closed (code ${code}${detail}${elapsed})` });
-      this.refreshPresence(); this.scheduleAlarm();
-    } else handleWsClose(this, ws);
+    try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch {}
+    if (isPeerSocket(ws)) closePeer(this, ws);
   }
-
   async webSocketError(ws: WebSocket): Promise<void> {
-    if (isInvitationSocket(ws)) { try { ws.close(1011, 'Invitation transport failed'); } catch {} return; }
-    if (isSignalSocket(ws)) return;
-    if (isPeerSocket(ws)) { closePeer(this, ws); return; }
-    if (this.isAgentSocket(ws)) { this.refreshPresence(); this.scheduleAlarm(); }
-    else handleWsClose(this, ws);
+    if (isPeerSocket(ws)) closePeer(this, ws);
+    else try { ws.close(1011, "Participant transport failed"); } catch {}
   }
 
   // ---------------------------------------------------------------- create / adopt
@@ -307,10 +188,8 @@ export class Tendril extends DurableObject<Env> {
     if (owner) this.db.set("intended_owner", owner);
     this.db.set("lifetime", lifetime);
     this.db.set("mode", mode);
-    this.db.set("application", applicationSelection(body.application, `cf:${id}`));
+    this.db.set("application", applicationSelection(body.application ?? { id: Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("") }));
     this.db.set("created_at", now);
-    this.db.set("rev", 0);
-    this.db.set("state", {});
     this.db.set("next_cleanup", now + DAY);
     const token = await this.addToken("main");
     const key = newPageKey();
@@ -343,9 +222,7 @@ export class Tendril extends DurableObject<Env> {
     const token = await this.addToken("main");
     this.db.del("last_checkin");
     this.db.del("wake_pending_since");
-    this.db.del("status_override");
     addActivity(this, { kind: "adopted", summary: "A new agent session adopted this tendril; earlier agent tokens were revoked" });
-    this.refreshPresence();
     this.scheduleAlarm();
     return json(this.handle(token));
   }
@@ -368,18 +245,12 @@ export class Tendril extends DurableObject<Env> {
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
-      unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes,
-        stream_retained_bytes: STREAM_LIMITS.unclaimed_retained_bytes },
-      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Before claim, stream retention and request bodies are each limited to 1 MiB: claim the page before starting a collector or uploading a large backlog. Publication health stays pending until a visible tab loads the new version. Once claimed, set lifetime to resident for a long-lived page.",
-      agent_setup: application.kind === "peer" ? {
-        event_delivery: "peer",
-        backend: application.id,
-        next_step: "Use the public Chronolog client in your own application session or owning browser Worker. Observe applied operations, coherent views and recovery there, and use client.signals for live messages. Use this host for publication, enrollment, peer discovery and rare generation transitions; no permanent native resident is required.",
-      } : {
-        event_delivery: "not_configured",
-        next_step: this.db.get<string>("mode", "interactive") === "dashboard"
-          ? "This dashboard may publish without an agent listener. Configure scoped producers and stream subscriptions; producer activity does not establish conversational agent delivery."
-          : `Attach this agent conversation to a wake path: the bundled host bridge using a hibernating WebSocket at ${apiUrl(this.env, this.tid)}/events/socket, a verified webhook at ${apiUrl(this.env, this.tid)}/wake, or an MCP Events subscription that reaches this host. Store the event cursor and run two POST A/wake/probe diagnostics before promising live replies. A token or background receiver alone does not wake a conversation.`,
+      unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes },
+      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Configure Chronolog authority after claiming the page, then publish signed page code. Once claimed, set lifetime to resident for a long-lived page.",
+      application,
+      agent_setup: {
+        application: application.id,
+        next_step: "Open the public Chronolog application session. Commands, queries, durable events and ephemeral signals use that session. Connect this host as the filtered control participant for membership, discovery, recovery and signed page-code publication.",
       },
     };
   }
@@ -437,7 +308,6 @@ export class Tendril extends DurableObject<Env> {
     ]);
     this.db.set("disabled", true);
     this.db.set("disabled_at", now);
-    cancelTimerNotifications(this, null, "Delivery stopped because this page was held.");
     for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
     this.scheduleAlarm();
     addActivity(this, { kind: "disabled", summary: `Page held: ${reason}` });
@@ -538,9 +408,6 @@ export class Tendril extends DurableObject<Env> {
           throw err;
         }
         if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
-        // Defense in depth for pages released by older deployments, before
-        // release cleared old push credentials. A new claim never inherits them.
-        this.db.run("DELETE FROM push_subs");
         this.db.set("owner_account", b.account_id);
         this.db.set("claimed_at", this.now());
         const label = (b.identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
@@ -583,9 +450,7 @@ export class Tendril extends DurableObject<Env> {
       return this.db.get<number>("unclaimed_since", this.db.get<number>("created_at", 0)) + DAY;
     }
     if (this.db.get<string>("lifetime", "ad_hoc") === "resident") return null;
-    const alive = this.connectedSockets().length > 0 || this.agentSockets().length > 0 ? this.now() : 0;
-    const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_checkin", 0), this.db.get<number>("last_device_seen", 0),
-      this.db.get<string>("mode", "interactive") === "dashboard" ? this.db.get<number>("last_producer_seen", 0) : 0, alive);
+    const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_access", 0));
     return last + AD_HOC_IDLE;
   }
 
@@ -601,340 +466,15 @@ export class Tendril extends DurableObject<Env> {
     return (await authenticateAgentToken(this, token)).name;
   }
 
-  checkin(tokenName: string): void {
-    this.transaction(() => {
-      const now = this.now();
-      this.db.set("last_checkin", now);
-      this.db.run("UPDATE tokens SET last_used = ? WHERE name = ?", now, tokenName);
-      this.db.del("wake_pending_since");
-      this.refreshPresence();
-      this.scheduleAlarm();
-    });
-  }
-
-  // ---------------------------------------------------------------- configuration
-
   features(): Features {
-    return { push: pushAvailable(this.env), vapid: vapidPublicKey(this.env),
-      shared_by: this.db.get<string>("owner_label", "Tendriller user"),
-      ...runtimeRelease.features };
-  }
-
-  wakeConfig(): WakeConfig {
-    const w = this.db.get<Partial<WakeConfig>>("wake", {});
-    const budget = { page_streak: typeof w.budget?.page_streak === "number" ? w.budget.page_streak : DEFAULT_PAGE_STREAK };
-    return { ...DEFAULT_WAKE, ...w, budget };
-  }
-
-  renderWake() {
-    const w = this.wakeConfig();
-    return {
-      webhook: w.webhook ? { url: w.webhook.url, has_token: !!w.webhook.token, auth: w.webhook.auth ?? "bearer" } : null,
-      schedule_minutes: w.schedule_minutes,
-      budget: w.budget,
-      grace_seconds: w.grace_seconds,
-      withheld: this.db.get<number>("withheld", 0),
-      page_streak: pageStreak(this),
-    };
-  }
-
-  // ---------------------------------------------------------------- presence
-
-  presenceFacts(): PresenceFacts {
-    const w = this.wakeConfig();
-    const withheld = this.db.get<number>("withheld", 0);
-    return {
-      now: this.now(),
-      tokens: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")!.n,
-      lastCheckin: this.db.get<number | null>("last_checkin", null),
-      agentSocket: this.agentSockets().length > 0,
-      webhook: !!w.webhook || mcpSubs(this).length > 0,
-      scheduleMinutes: w.schedule_minutes,
-      wakePendingSince: this.db.get<number | null>("wake_pending_since", null),
-      graceSeconds: w.grace_seconds,
-      status: this.db.get<StatusOverride | null>("status_override", null),
-      withheld,
-    };
-  }
-
-  presence(): Presence {
-    return computePresence(this.presenceFacts());
-  }
-
-  /**
-   * Recomputes presence and broadcasts it to pages if it changed. A moving `last_seen` alone
-   * (every check-in moves it) only triggers a broadcast when it crosses into a new minute.
-   */
-  refreshPresence(): Presence {
-    const p = this.presence();
-    this.afterCommit(() => {
-      // Presence includes transactional metadata and live connection facts. Only
-      // publish its committed value; several changes may coalesce into one signal.
-      const current = this.presence();
-      const key = JSON.stringify({ ...current, last_seen: current.last_seen === null ? null : Math.floor(current.last_seen / 60_000) });
-      if (key === this.lastPresence) return;
-      this.transaction(() => {
-        this.broadcast({ t: "presence", ...current });
-        emitBuiltinSignal(this, "system.presence", "presence", current);
-        this.afterCommit(() => { this.lastPresence = key; });
-      });
-    });
-    return p;
-  }
-
-  // ---------------------------------------------------------------- sockets
-
-  isAgentSocket(ws: WebSocket): boolean {
-    return (ws.deserializeAttachment() as { kind?: string } | null)?.kind === "agent";
-  }
-
-  agentSockets(): WebSocket[] {
-    return this.ctx.getWebSockets("agent").filter((ws) => {
-      if (ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
-      const att = ws.deserializeAttachment() as { tokenHash?: string } | null;
-      const valid = !!att?.tokenHash && !!this.db.one("SELECT 1 AS x FROM tokens WHERE hash = ?", att.tokenHash);
-      if (!valid) { this.afterCommit(() => ws.close(4003, "Agent token revoked")); return false; }
-      return true;
-    });
-  }
-
-  notifyAgentSockets(seq: number): boolean {
-    const sockets = this.agentSockets();
-    for (const ws of sockets) this.send(ws, { t: "wake", seq });
-    return sockets.length > 0;
-  }
-
-  att(ws: WebSocket): Att | null {
-    try {
-      return (ws.deserializeAttachment() as Att | null) ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Sockets that completed `hello` and still have local page access. */
-  connectedSockets(except?: WebSocket): { ws: WebSocket; att: Att & { deviceId: string } }[] {
-    const out: { ws: WebSocket; att: Att & { deviceId: string } }[] = [];
-    for (const ws of this.ctx.getWebSockets()) {
-      if (ws === except || ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
-      const att = this.att(ws);
-      if (!att?.deviceId) continue;
-      if (!socketPrincipal(this, ws)) {
-        this.afterCommit(() => ws.close(4003, "Page access revoked"));
-        continue;
-      }
-      out.push({ ws, att: att as Att & { deviceId: string } });
-    }
-    return out;
-  }
-
-  /** One socket per connected device: the most recently connected one. */
-  deviceSockets(except?: WebSocket): Map<string, WebSocket> {
-    const best = new Map<string, { ws: WebSocket; at: number }>();
-    for (const { ws, att } of this.connectedSockets(except)) {
-      const cur = best.get(att.deviceId);
-      if (!cur || att.at >= cur.at) best.set(att.deviceId, { ws, at: att.at });
-    }
-    return new Map([...best].map(([k, v]) => [k, v.ws]));
-  }
-
-  send(ws: WebSocket, msg: unknown): void {
-    const serialized = JSON.stringify(msg);
-    this.afterCommit(() => {
-      try {
-        if (this.att(ws)?.deviceId && !socketPrincipal(this, ws)) { ws.close(4003, "Page access revoked"); return; }
-        ws.send(serialized);
-      } catch { /* socket gone */ }
-    });
-  }
-
-  /** Sends to every connected device socket, optionally filtered by device row. */
-  broadcast(msg: unknown, filter?: (dev: DeviceRow) => boolean, except?: WebSocket): void {
-    const s = JSON.stringify(msg);
-    this.afterCommit(() => {
-      const devCache = new Map<string, DeviceRow | null>();
-      for (const { ws, att } of this.connectedSockets(except)) {
-        if (filter) {
-          if (!devCache.has(att.deviceId)) devCache.set(att.deviceId, this.device(att.deviceId));
-          const stored = devCache.get(att.deviceId);
-          if (!stored) continue;
-          const dev = att.sessionRole ? { ...stored, role: att.sessionRole, pending: 0 } : stored;
-          if (!filter(dev)) continue;
-        }
-        try { ws.send(s); } catch { /* socket gone */ }
-      }
-    });
-  }
-
-  broadcastOwners(msg: unknown, except?: WebSocket): void {
-    this.broadcast(msg, (d) => d.role === "owner" && !d.pending, except);
-  }
-
-  // ---------------------------------------------------------------- devices
-
-  device(id: string): DeviceRow | null {
-    return this.db.one<DeviceRow>("SELECT * FROM devices WHERE id = ?", id);
-  }
-
-  primaryDevice(): string | null {
-    const ids = [...this.deviceSockets().keys()];
-    if (ids.length === 0) return null;
-    const rows = ids.map((id) => this.device(id)).filter((d): d is DeviceRow => !!d);
-    const score = (d: DeviceRow) => d.last_active ?? d.last_seen ?? 0;
-    rows.sort((a, b) => score(b) - score(a));
-    const owner = rows.find((d) => d.role === "owner" && !d.pending);
-    return (owner ?? rows[0])?.id ?? null;
-  }
-
-  renderDevice(d: DeviceRow, connected: Set<string>, primary: string | null): DeviceInfo {
-    return {
-      id: d.id,
-      name: d.name ?? null,
-      role: d.role,
-      purpose: d.purpose ?? "general",
-      pending: !!d.pending,
-      connected: connected.has(d.id),
-      primary: d.id === primary,
-      last_seen: connected.has(d.id) ? this.now() : d.last_seen,
-      ua: d.ua ?? null,
-      link: d.link ?? null,
-    };
-  }
-
-  listDevices(): DeviceInfo[] {
-    const sockets = this.deviceSockets();
-    const connected = new Set(sockets.keys());
-    const primary = this.primaryDevice();
-    return this.db.all<DeviceRow>("SELECT * FROM devices ORDER BY created_at ASC").map((d) => {
-      const socket = sockets.get(d.id), sessionRole = socket ? this.att(socket)?.sessionRole : null;
-      return this.renderDevice(sessionRole ? { ...d, role: sessionRole, pending: 0 } : d, connected, primary);
-    });
-  }
-
-  forgetDevice(id: string): void {
-    for (const { ws, att } of this.connectedSockets()) {
-      if (att.deviceId === id) {
-        try {
-          ws.close(4003, "device removed");
-        } catch {
-          /* gone */
-        }
-      }
-    }
-    this.db.run("DELETE FROM devices WHERE id = ?", id);
-    this.db.run("DELETE FROM push_subs WHERE device = ?", id);
-  }
-
-  lastDeviceSeen(): number | null {
-    const row = this.db.one<{ m: number | null }>("SELECT MAX(last_seen) AS m FROM devices");
-    return row?.m ?? null;
-  }
-
-  // ---------------------------------------------------------------- calls into the page
-
-  /** Sends a call message to one device socket and resolves with its eval_result. */
-  callDevice(deviceId: string, ws: WebSocket, build: (callId: string) => object, timeoutMs: number): Promise<CallResult> {
-    return new Promise((resolve) => {
-      const callId = newCallId();
-      const timer = setTimeout(() => {
-        this.calls.delete(callId);
-        resolve({ ok: false, error: "timeout", timeout: true });
-      }, timeoutMs);
-      this.calls.set(callId, { deviceId, resolve, timer });
-      this.send(ws, build(callId));
-    });
-  }
-
-  resolveCall(callId: string, deviceId: string, r: CallResult): void {
-    const c = this.calls.get(callId);
-    if (!c || c.deviceId !== deviceId) return;
-    this.calls.delete(callId);
-    clearTimeout(c.timer);
-    c.resolve(r);
-  }
-
-  failCallsFor(deviceId: string): void {
-    for (const [id, c] of this.calls) {
-      if (c.deviceId !== deviceId) continue;
-      this.calls.delete(id);
-      clearTimeout(c.timer);
-      c.resolve({ ok: false, error: "device disconnected" });
-    }
-  }
-
-  /** Resolves an eval/check target to device sockets, or throws offline/not_found. */
-  targets(target: string): [string, WebSocket][] {
-    const socks = this.deviceSockets();
-    if (target === "all") {
-      if (socks.size === 0) this.throwOffline();
-      return [...socks];
-    }
-    if (target === "primary") {
-      const p = this.primaryDevice();
-      if (!p) this.throwOffline();
-      return [[p!, socks.get(p!)!]];
-    }
-    const ws = socks.get(target);
-    if (ws) return [[target, ws]];
-    const d = this.device(target);
-    if (!d) throw new HttpError(404, "not_found", `No device ${target}`);
-    throw new HttpError(409, "offline", `Device ${target} is not connected${d.last_seen ? `; last seen at ${new Date(d.last_seen).toISOString()}` : ""}`, {
-      last_seen: d.last_seen ?? null,
-    });
-  }
-
-  private throwOffline(): never {
-    const last = this.lastDeviceSeen();
-    throw new HttpError(409, "offline", last ? `No device connected; last seen at ${new Date(last).toISOString()}` : "No device has opened the page yet", { last_seen: last });
-  }
-
-  // ---------------------------------------------------------------- state
-
-  getState() {
-    return { rev: this.db.get<number>("rev", 0), state: this.db.get<Record<string, unknown>>("state", {}), scopes: scopes(this) };
-  }
-
-  /** Checks the authoritative pre-mutation snapshot and applies the whole batch. */
-  applyState(ops: StateOp[], by: string, except?: WebSocket, guards: Pick<Preconditions, "scope" | "expected_generations"> & StateChecks = { expected_generations: {} }): number {
-    const checked = validateOps(ops), checks = validateStateChecks(guards);
-    return this.transaction(() => {
-      checkGenerations(this, guards, { paths: statePaths(checked, checks), operations: ["state"] });
-      const { state, rev } = this.getState();
-      checkState(state, rev, checks);
-      return this.applyStateTransaction(checked, by, except);
-    });
-  }
-
-  private applyStateTransaction(ops: StateOp[], by: string, except?: WebSocket): number {
-    const { rev, state } = this.getState();
-    if (ops.length === 0) return rev;
-    const next = applyCheckedOps(state, rev, ops);
-    const serialized = JSON.stringify(next);
-    if (new TextEncoder().encode(serialized).byteLength > MAX_STATE) throw new HttpError(413, "too_large", "State would exceed 1 MB");
-    const nrev = rev + 1;
-    this.db.set("state", next);
-    this.db.set("rev", nrev);
-    this.broadcast({ t: "state", ops, rev: nrev, by, scopes: scopes(this) }, undefined, except);
-    emitBuiltinSignal(this, "system.state", "state", { ops, rev: nrev, by }, by);
-    addActivity(this, { kind: "state", summary: `Shared state revision ${nrev} applied (${ops.length} changes)`, by });
-    return nrev;
-  }
-
-  // ---------------------------------------------------------------- blobs
-
-  blobKey(id: string): string {
-    const row = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id);
-    if (!row) throw new HttpError(404, "not_found", "No such blob");
-    return fileKey(this, row.sha256);
+    return { shared_by: this.db.get<string>('owner_label', 'Tendriller user'), ...runtimeRelease.features };
   }
 
   fileLimit(): number {
-    return this.db.get<string | null>("owner_account", null) ? 5 * MB : MB;
+    return this.db.get<string | null>("owner_account", null) ? RESOURCE_LIMITS.file_bytes : RESOURCE_LIMITS.unclaimed_file_bytes;
   }
 
-  blobLimit(): number {
-    return this.db.get<string | null>("owner_account", null) ? 5 * MB : MB;
-  }
+
 
   storageUsed(): number {
     return this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0;
@@ -984,149 +524,6 @@ export class Tendril extends DurableObject<Env> {
       .bind(actual, this.tid, actual).run();
   }
 
-  async storeBlob(body: ArrayBuffer, type: string, name: string | null, device: string | null, source: "page" | "agent", keep = false) {
-    const id = newBlobId();
-    await storeContent(this, body, type, hash => {
-      this.db.run("INSERT INTO blobs (id, sha256, type, size, name, ts, device, source, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        id, hash, type, body.byteLength, name, this.now(), device, source, keep ? 1 : 0);
-    });
-    return blobReference(this, id);
-  }
-
-  async getBlob(id: string, rangeHeader?: string | null, head = false, inline = false): Promise<Response> {
-    const row = this.db.one<{ type: string; name: string | null; size: number }>("SELECT type, name, size FROM blobs WHERE id = ?", id);
-    if (!row) throw new HttpError(404, "not_found", "No such blob");
-    let range: { offset: number; length: number } | undefined;
-    if (rangeHeader) {
-      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
-      if (!match || (!match[1] && !match[2])) throw new HttpError(416, "bad_range", "Only one byte range is supported");
-      const start = match[1] ? Number(match[1]) : Math.max(0, row.size - Number(match[2]));
-      const end = match[1] ? (match[2] ? Number(match[2]) : row.size - 1) : row.size - 1;
-      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= row.size)
-        throw new HttpError(416, "bad_range", "Requested byte range is unavailable");
-      range = { offset: start, length: Math.min(end, row.size - 1) - start + 1 };
-    }
-    const obj = await this.env.FILES.get(this.blobKey(id), range ? { range } : undefined);
-    if (!obj || !("body" in obj)) throw new HttpError(404, "not_found", "Blob content missing");
-    const filename = encodeURIComponent(new TextDecoder().decode(new TextEncoder().encode(row.name || id)))
-      .replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-    const headers = new Headers({ "Content-Type": row.type || "application/octet-stream",
-      "Cache-Control": "private, max-age=31536000, immutable", "Accept-Ranges": "bytes",
-      "Content-Length": String(range?.length ?? row.size), "X-Content-Type-Options": "nosniff",
-      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${filename}`,
-      "Content-Security-Policy": "default-src 'none'; sandbox" });
-    if (range) headers.set("Content-Range", `bytes ${range.offset}-${range.offset + range.length - 1}/${row.size}`);
-    return new Response(head ? null : obj.body, { status: range ? 206 : 200, headers });
-  }
-
-  async deleteBlob(id: string): Promise<void> {
-    const hash = this.db.one<{ sha256: string }>("SELECT sha256 FROM blobs WHERE id = ?", id)?.sha256;
-    if (this.db.one("SELECT 1 AS present FROM file_refs WHERE blob_id=? LIMIT 1", id) ||
-        this.db.one("SELECT 1 AS present FROM file_ref_changes WHERE blob_id=? LIMIT 1", id) ||
-        this.db.one("SELECT 1 AS present FROM publication_blobs WHERE blob_id=? LIMIT 1", id)) return;
-    if (this.db.get<{ media: string[] } | null>("staged_bundle", null)?.media.includes(id)) return;
-    this.db.run("DELETE FROM blobs WHERE id = ?", id);
-    if (hash) await deleteUnreferencedContent(this, hash);
-  }
-
-  // ---------------------------------------------------------------- transcript, say, notify
-
-  addTranscript(src: "agent" | "user", text: string, context: { cid?: string; device?: string; in_reply_to?: number | null } = {}) {
-    return this.transaction(() => this.appendTranscript(src, text, context));
-  }
-
-  private appendTranscript(src: "agent" | "user", text: string, context: { cid?: string; device?: string; in_reply_to?: number | null }) {
-    const ts = this.now(), message_id = crypto.randomUUID();
-    const row = this.db.one<{ seq: number }>("INSERT INTO transcript (message_id, ts, src, text, cid, device, in_reply_to) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq",
-      message_id, ts, src, text.slice(0, 4000), context.cid ?? null, context.device ?? null, context.in_reply_to ?? null);
-    this.db.run("DELETE FROM transcript WHERE seq <= (SELECT seq FROM transcript ORDER BY seq DESC LIMIT 1 OFFSET ?)", MAX_TRANSCRIPT);
-    emitBuiltinRecord(this, "system.transcript", row!.seq);
-    return { message_id, ts, from: src, text: text.slice(0, 4000), ...context };
-  }
-
-  transcript() {
-    return this.db
-      .all<{ message_id: string; ts: number; src: string; text: string; cid: string | null; device: string | null; in_reply_to: number | null }>("SELECT * FROM (SELECT * FROM transcript ORDER BY seq DESC LIMIT 50) ORDER BY seq ASC")
-      .map((r) => ({ message_id: r.message_id, ts: r.ts, from: r.src as "agent" | "user", text: r.text,
-        ...(r.cid ? { cid: r.cid } : {}), ...(r.device ? { device: r.device } : {}), ...(r.in_reply_to !== null ? { in_reply_to: r.in_reply_to } : {}) }));
-  }
-
-  say(text: string, speak: boolean, by: string | null, replyTo: number | null = null, routing: { device?: string; speak_on?: string } = {}): string {
-    if (routing.device && routing.device !== "all" && !this.device(routing.device)) throw new HttpError(404, "not_found", "No such destination device");
-    const origin = replyTo ? this.db.one<{ device: string | null }>("SELECT device FROM events WHERE seq=?", replyTo)?.device : null;
-    const speaker = speak ? speechTarget(this, routing.speak_on, routing.device && routing.device !== "all" ? routing.device : origin) : null;
-    const entry = this.addTranscript("agent", text, { in_reply_to: replyTo });
-    const messageId = entry.message_id;
-    const sockets = this.deviceSockets();
-    for (const { ws, att } of this.connectedSockets()) {
-      const present = !routing.device || routing.device === "all" || att.deviceId === routing.device;
-      const play = att.deviceId === speaker && sockets.get(att.deviceId) === ws;
-      if (!present && !play) continue;
-      this.send(ws, { t: "say", text, present, speak: play,
-        ts: entry.ts, message_id: messageId, ...(replyTo !== null ? { in_reply_to: replyTo } : {}), ...(speaker !== null ? { speak_on: speaker } : {}) });
-    }
-    addActivity(this, { kind: "say", summary: `Message ${messageId}${replyTo ? ` in reply to event #${replyTo}` : ""}: ${preview(text)}`, by });
-    return messageId;
-  }
-
-  async notify(n: { title: string; body?: string; url?: string; device?: string; tag?: string }, by: string | null, options: NotifyDeliveryOptions = {}): Promise<NotifyDeliveryResult> {
-    if (!this.db.get<string | null>("owner_account", null)) throw new HttpError(403, "unclaimed", "Unclaimed tendrils cannot send notifications");
-    const hour = Math.floor(this.now() / HOUR);
-    const allowed = this.db.one<{ count: number }>(`INSERT INTO notify_rate (hour, count) VALUES (?, 1)
-      ON CONFLICT(hour) DO UPDATE SET count = count + 1 WHERE count < 20 RETURNING count`, hour);
-    if (!allowed) throw new HttpError(429, "quota", "Notification limit reached", { limit: 20, used: 20 });
-    const payload = { title: n.title, body: n.body ?? "", url: n.url ?? this.mainPageUrl(), tag: n.tag ?? null, tendril: this.tid };
-    const selected = options.devices ? new Set(options.devices) : null;
-    const subs = this.db.all<{ device: string; sub: string }>(
-      "SELECT p.device, p.sub FROM push_subs p JOIN devices d ON d.id = p.device WHERE d.role = 'owner' AND d.pending = 0" + (n.device ? " AND d.id = ?" : ""),
-      ...(n.device ? [n.device] : []),
-    ).filter(sub => !selected || selected.has(sub.device));
-    let sent = 0;
-    let failed = 0;
-    const deliveries: NonNullable<NotifyDeliveryResult["deliveries"]> = [];
-    // Revoked subscriptions and devices that lost owner access cannot receive a
-    // retry, even when they appeared in the previous attempt's target list.
-    if (selected) for (const device of selected) if (!subs.some(sub => sub.device === device)) {
-      failed++; deliveries.push({ device, ok: false, status: 410, gone: true });
-    }
-    for (const s of subs) {
-      let res: { ok: boolean; status: number; gone: boolean };
-      try {
-        res = options.signal?.aborted ? { ok: false, status: 0, gone: false }
-          : await sendWebPush(this.env, JSON.parse(s.sub), payload, { ttl: 86400, urgency: "high", signal: options.signal });
-      } catch {
-        res = { ok: false, status: 0, gone: false };
-      }
-      if (res.ok) sent++;
-      else failed++;
-      deliveries.push({ device: s.device, ...res });
-      if (res.gone) this.db.run("DELETE FROM push_subs WHERE device = ? AND sub = ?", s.device, s.sub);
-    }
-    // The same browser should not receive a system push and a second local
-    // notification when its page happens to be open. Local delivery is only
-    // the fallback for connected owner devices without provider acceptance.
-    if (options.broadcastLocal !== false) {
-      const accepted = new Set(deliveries.filter(delivery => delivery.ok).map(delivery => delivery.device));
-      this.broadcast({ t: "notify_local", title: n.title, body: n.body ?? "" },
-        (d) => d.role === "owner" && !d.pending && (!n.device || d.id === n.device) && !accepted.has(d.id));
-    }
-    addActivity(this, { kind: "notify", summary: `Notification: ${preview(n.title)} (${sent} sent, ${failed} failed)`, by });
-    return { sent, failed, deliveries };
-  }
-
-  // ---------------------------------------------------------------- dedupe
-
-  /** Runs `fn` once per (device, cid) within 24 h; replays the stored result for duplicates. */
-  async dedupe<T>(deviceId: string, cid: unknown, fn: () => T | Promise<T>): Promise<T> {
-    if (typeof cid !== "string" || cid === "" || cid.length > 128) return await fn();
-    const key = `${deviceId}:${cid}`;
-    const row = this.db.one<{ result: string }>("SELECT result FROM dedupe WHERE key = ?", key);
-    if (row) return JSON.parse(row.result) as T;
-    const result = await fn();
-    this.db.run("INSERT OR REPLACE INTO dedupe (key, ts, result) VALUES (?, ?, ?)", key, this.now(), JSON.stringify(result ?? null));
-    return result;
-  }
-
   // ---------------------------------------------------------------- links
 
   async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false): Promise<Link> {
@@ -1153,7 +550,7 @@ export class Tendril extends DurableObject<Env> {
   /** Closes sockets that came in through a link (after delete or rotation). */
   closeLinkSockets(linkId: string): void {
     for (const ws of this.ctx.getWebSockets()) {
-      if (this.att(ws)?.linkId === linkId) {
+      if ((ws.deserializeAttachment() as { principal?: { linkId?: string } } | null)?.principal?.linkId === linkId) {
         try {
           ws.close(4001, "link revoked");
         } catch {
@@ -1179,143 +576,44 @@ export class Tendril extends DurableObject<Env> {
 
   private scheduleCommittedAlarm(): void {
     if (!this.exists()) return;
-    const now = this.now();
-    const times: number[] = [];
-    const peerDue = nextPeerDeadline(this);
+    const now = this.now(), times = [this.db.get<number>('next_cleanup', now + DAY)];
+    const peerDue = nextPeerDeadline(this), expires = this.expiresAt();
     if (peerDue !== null) times.push(peerDue);
+    if (expires !== null) times.push(expires);
     if (lifetimeChangePending(this)) times.push(now + 5000);
-    const job = this.db.get<WebhookJob | null>("webhook_job", null);
-    if (job) times.push(job.due);
-    const mcpDue = mcpJobDue(this);
-    if (mcpDue !== null) times.push(mcpDue);
-    const timerDue = nextTimerDeadline(this);
-    if (timerDue !== null) times.push(timerDue);
-    const notificationDue = nextNotificationDeadline(this);
-    if (notificationDue !== null) times.push(notificationDue);
-    const sockets = this.connectedSockets().length > 0;
-    if (sockets) times.push(now + PRESENCE_TICK);
-    const facts = this.presenceFacts();
-    if (sockets || facts.agentSocket || facts.webhook) {
-      const pc = nextPresenceChange(facts);
-      if (pc !== null) times.push(pc);
-    }
-    if (!sockets) {
-      const exp = this.expiresAt();
-      if (exp !== null) times.push(exp);
-    }
-    times.push(this.db.get<number>("next_cleanup", now + DAY));
-    const next = Math.min(...times);
-    void this.ctx.storage.setAlarm(Math.max(next - this.skew, Date.now() + 1)).catch(() => {});
+    void this.ctx.storage.setAlarm(Math.max(Math.min(...times) - this.skew, Date.now() + 1)).catch(() => {});
   }
 
   async alarm(): Promise<void> {
     if (!this.exists()) return;
     try { await recoverLifetimeChange(this); }
-    catch (error) {
-      // Account storage recovery must not prevent bounded introductions from
-      // expiring or suppress the explicit five-second recovery retry below.
-      console.error('Lifetime recovery remains pending', error);
-    }
-    const now = this.now();
-    await runTimers(this);
+    catch (error) { console.error('Lifetime recovery remains pending', error); }
     expirePeers(this);
-    await runTimerNotifications(this);
-    await runWebhook(this);
-    await runMcpEvents(this);
-
-    // Grace expired after a delivered wake: retry the webhook once.
-    const facts = this.presenceFacts();
-    const w = this.wakeConfig();
-    if (facts.wakePendingSince !== null && now - facts.wakePendingSince >= w.grace_seconds * 1000 && w.webhook) {
-      if (this.db.get<number | null>("grace_retried", null) !== facts.wakePendingSince && !this.db.get("webhook_job", null)) {
-        this.db.set("grace_retried", facts.wakePendingSince);
-        const maxSeq = this.db.one<{ m: number | null }>("SELECT MAX(seq) AS m FROM events")?.m ?? 0;
-        this.db.set("webhook_job", { due: now, attempt: 0, seq: maxSeq } satisfies WebhookJob);
-        await runWebhook(this);
-      }
-    }
-
-    if (this.db.get<number>("next_cleanup", 0) <= now) await this.cleanup();
-
-    const sockets = this.connectedSockets().length > 0;
-    if (sockets) this.db.set("last_device_seen", now);
-    else {
-      const exp = this.expiresAt();
-      if (exp !== null && exp <= now) {
-        await this.destroy();
-        return;
-      }
-    }
-    this.refreshPresence();
+    if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
+    const expires = this.expiresAt();
+    if (expires !== null && expires <= this.now()) { await this.destroy(); return; }
     this.scheduleAlarm();
   }
 
   async cleanup(): Promise<void> {
     const now = this.now();
-    pruneEvents(this);
-    pruneStreams(this);
     pruneActivity(this);
-    pruneMcpSubs(this);
-    pruneTimerHistory(this);
-    this.transaction(() => pruneFileHistory(this));
-    await this.pruneVersions();
-    await this.pruneBlobs(now);
+    // Signed publication metadata and code are retained together. Their bounded
+    // protocol history is never pruned by application recovery or page health.
     await this.pruneOrphanFiles(now);
     await this.reconcileStorage();
-    this.db.run("DELETE FROM dedupe WHERE ts < ?", now - DEDUPE_RETENTION);
-    this.db.run("DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at < ?", now);
-    this.db.run("DELETE FROM guest_accounts WHERE link_id NOT IN (SELECT id FROM links)");
-    this.db.run("DELETE FROM ws_rate WHERE second < ?", Math.floor(now / 1000) - 60);
-    this.db.run("DELETE FROM notify_rate WHERE hour < ?", Math.floor(now / HOUR) - 24);
-    const a = this.db.get<{ expires_at: number } | null>("adopt", null);
-    if (a && a.expires_at < now) this.db.del("adopt");
-    this.db.set("next_cleanup", now + DAY);
-  }
-
-  /**
-   * Unreferenced uploads expire after 30 days. Pins, the install icon, retained file
-   * history and publication references retain their bytes until those roots are removed.
-   */
-  async pruneBlobs(now: number): Promise<void> {
-    const icon = this.db.get<string | null>("icon", null);
-    const old = this.db.all<{ id: string }>("SELECT id FROM blobs WHERE pinned = 0 AND ts < ? AND id IS NOT ?", now - ACTIVITY_RETENTION, icon);
-    for (const { id } of old) await this.deleteBlob(id);
-  }
-
-  /**
-   * Keeps the newest KEEP_VERSIONS versions plus the current and healthy ones, then deletes file
-   * bodies in R2 that no remaining version references.
-   */
-  async pruneVersions(): Promise<void> {
-    const keep = new Set<number>(this.db.all<{ version: number }>("SELECT version FROM versions ORDER BY version DESC LIMIT ?", KEEP_VERSIONS).map((r) => r.version));
-    for (const k of ["current", "healthy", "latest"]) keep.add(this.db.get<number>(k, 0));
-    this.db.run("DELETE FROM publication_leases WHERE expires_at < ?", this.now());
-    for (const lease of this.db.all<{ version: number }>("SELECT DISTINCT version FROM publication_leases")) keep.add(lease.version);
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as {version?: number} | null;
-      if (attachment?.version) keep.add(attachment.version);
-    }
-    const drop = this.db.all<{ version: number }>("SELECT version FROM versions").map((r) => r.version).filter((v) => !keep.has(v));
-    if (drop.length === 0) return;
-    const before = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
-    for (const v of drop) {
-      this.db.run("DELETE FROM version_files WHERE version = ?", v);
-      this.db.run("DELETE FROM versions WHERE version = ?", v);
-      this.db.run("DELETE FROM publication_leases WHERE version = ?", v);
-      this.db.run("DELETE FROM publication_blobs WHERE version = ?", v);
-    }
-    const after = new Set(this.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files").map((r) => r.hash));
-    const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);
-    const gone = [...before].filter((h) => !after.has(h) && !prepared.has(h));
-    for (const hash of gone) await deleteUnreferencedContent(this, hash);
+    this.db.run('DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at < ?', now);
+    this.db.run('DELETE FROM guest_accounts WHERE link_id NOT IN (SELECT id FROM links)');
+    this.db.run('DELETE FROM page_sessions WHERE expires_at < ?', now);
+    const adoption = this.db.get<{ expires_at: number } | null>('adopt', null);
+    if (adoption && adoption.expires_at < now) this.db.del('adopt');
+    this.db.set('next_cleanup', now + DAY);
   }
 
   async pruneOrphanFiles(now: number): Promise<void> {
-    const prepared = new Set(this.db.get<{ files: { hash: string }[] } | null>("staged_bundle", null)?.files.map(f => f.hash) ?? []);
     const rows = this.db.all<{ hash: string }>(`SELECT s.hash FROM stored_files s
       WHERE s.created_at < ? AND NOT EXISTS (SELECT 1 FROM version_files v WHERE v.hash = s.hash)`, now - HOUR);
     for (const { hash } of rows) {
-      if (prepared.has(hash)) continue;
       await deleteUnreferencedContent(this, hash, now - HOUR);
     }
   }
@@ -1332,11 +630,6 @@ export class Tendril extends DurableObject<Env> {
         /* gone */
       }
     }
-    for (const [, c] of this.calls) {
-      clearTimeout(c.timer);
-      c.resolve({ ok: false, error: "tendril deleted" });
-    }
-    this.calls.clear();
     if (id) {
       let cursor: string | undefined;
       do {
@@ -1357,7 +650,6 @@ export class Tendril extends DurableObject<Env> {
     await this.ctx.storage.deleteAll();
     this.db.clearCache();
     this.db.init();
-    this.lastPresence = null;
   }
 }
 
@@ -1388,4 +680,3 @@ function ownerMatches(owner: string, identities: unknown[]): boolean {
     return emails.includes(owner);
   });
 }
-

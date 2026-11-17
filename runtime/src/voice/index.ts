@@ -11,8 +11,6 @@ export interface VoiceOptions {
   consent(request: { purpose: "output" | "transcription" | "wake"; engine: string; description: string }): boolean | Promise<boolean>;
   transcript(text: string): void;
   status?(status: { kind: "output" | "capture" | "wake"; state: string; message?: string }): void;
-  /** Explicitly route suitable owner replies to speech after enableOutput. */
-  speakReplies?: boolean;
 }
 export { matchWakePhrase } from "./wakeword";
 export type { WakeMode, WakeState } from "./wakeword";
@@ -71,10 +69,6 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
     preparing = task;
     try { return await task; } finally { if (preparing === task) preparing = null; }
   };
-  const offReply = runtime.kind === "cloudflare" ? runtime.on("reply", message => {
-    if (options.speakReplies && runtime.device.role === "owner" && !runtime.device.pending && message.speak !== false) output.speak(message.text);
-  }) : () => {};
-  const offRole = runtime.kind === "cloudflare" ? runtime.on("role", () => { if (runtime.device.role !== "owner" || runtime.device.pending) stop(); }) : () => {};
   const offSensors = runtime.on("sensors_stopped", stop);
   const visibility = () => { if (document.visibilityState !== "visible") stop(); };
   document.addEventListener("visibilitychange", visibility);
@@ -114,7 +108,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
     dispose() {
       if (disposed) return;
       stop(); disposed = true; capture?.dispose(); output.dispose(); preferences.dispose();
-      offReply(); offRole(); offSensors();
+      offSensors();
       document.removeEventListener("visibilitychange", visibility); window.removeEventListener("pagehide", stop);
     },
   };

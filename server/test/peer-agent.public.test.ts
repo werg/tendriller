@@ -1,69 +1,48 @@
-import { expect, it } from "vitest";
-import { api, apiJson, create, inDO, publishFilesJson, req, type Handle } from "./helpers";
+import { expect, it } from 'vitest';
+import { api, apiJson, create, inDO, req } from './helpers';
+import { peerApi } from './peer-exchange';
 
-it.each(["interactive", "dashboard"])("directs the initial %s peer agent to its selected backend", async mode => {
-  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode }) as Handle & {
-    agent_setup: { event_delivery: string; backend: string; next_step: string };
-  };
-  expect(h.agent_setup).toMatchObject({ event_delivery: "peer", backend: "peer-history" });
-  expect(h.agent_setup.next_step).toContain("Chronolog client");
-  expect(h.agent_setup.next_step).toContain("client.signals");
-  for (const hosted of ["events/socket", "wake/probe", "MCP Events", "stream subscriptions", "scoped producers"])
-    expect(h.agent_setup.next_step).not.toContain(hosted);
+it('creates an independent stable application identity and leaves control explicitly unconfigured', async () => {
+  const h = await create();
+  expect(h.application.id).toMatch(/^[0-9a-f]{64}$/); expect(h.application.id).not.toContain(h.id);
+  expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configured: false });
+  expect((await peerApi(h, 'control/read')).status).toBe(409);
+  await inDO(h.id, t => { t.ctx.abort('Stable identity restart'); }).catch(() => {});
+  expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configured: false });
+  const other = await create(); expect(other.application.id).not.toBe(h.application.id);
 });
-
-it("rejects hosted agent wake sockets and tickets for peer pages while retaining explicit host operations", async () => {
-  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "dashboard" });
-  const socket = await api(h, "GET", "events/socket?after=0", undefined, {
-    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}`,
-  });
-  expect(socket.status).toBe(409);
-  expect(await socket.json()).toMatchObject({ error: { code: "application_backend" } });
-  const ticket = await api(h, "POST", "events/socket/ticket?after=0");
-  expect(ticket.status).toBe(409);
-  expect(await ticket.json()).toMatchObject({ error: { code: "application_backend" } });
+it.each(['interactive', 'dashboard'])('uses the same owned application contract for %s pages', async mode => {
+  const application = { id: '12'.repeat(32) }, h = await create({ application, mode });
+  expect(h.application).toEqual(application);
+  const setup = (h as unknown as { agent_setup: { application: string; next_step: string } }).agent_setup;
+  expect(setup.application).toBe(application.id); expect(setup.next_step).toContain('public Chronolog application session');
+  const html = await (await req(h.page_url)).text();
+  const configuration = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
+  expect(configuration.application).toEqual(application); expect(configuration).not.toHaveProperty('ws');
+});
+it('has no hosted application, binary relay, workflow or unsigned code mutation path', async () => {
+  const h = await create();
+  for (const [method, path] of [['GET', 'events'], ['GET', 'events/socket'], ['GET', 'state'], ['POST', 'application/commands'],
+    ['POST', 'streams'], ['POST', 'uploads'], ['GET', 'members'], ['GET', 'records'], ['POST', 'publications'],
+    ['POST', 'publications/rollback'], ['POST', 'workflows/module/command'], ['POST', 'wake/probe']])
+    expect((await api(h, method, path)).status, path).toBe(404);
+  expect((await req(h.page_url + '_tendril/ws', { headers: { Upgrade: 'websocket' } })).status).toBe(404);
   expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length,
-    tickets: t.db.one<{ count: number }>("SELECT COUNT(*) AS count FROM socket_tickets")!.count })))
-    .toEqual({ sockets: 0, tickets: 0 });
-  for (const path of ["publications", "members", "logs", "peers/bootstrap"])
-    expect((await api(h, "GET", path)).status, path).toBe(200);
+    tables: t.db.all("SELECT name FROM sqlite_schema WHERE name IN ('state','events','application_changes','record_log_entries','devices','socket_tickets','stream_records','workflow_receipts')") })))
+    .toEqual({ sockets: 0, tables: [] });
+  expect((await api(h, 'GET', 'peers/bootstrap')).status).toBe(200);
 });
-
-it("publishes an interactive peer page without hosted agent delivery", async () => {
-  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "interactive" });
-  const receipt = await publishFilesJson(h, { "index.html": "<h1>Peer application</h1>" });
-  expect(receipt).toEqual({ version: 1, head_revision: 1 });
-  expect(await (await req(h.page_url)).text()).toContain("<h1>Peer application</h1>");
-  expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length, webhook: t.presenceFacts().webhook,
-    tickets: t.db.one<{ count: number }>("SELECT COUNT(*) AS count FROM socket_tickets")!.count })))
-    .toEqual({ sockets: 0, webhook: false, tickets: 0 });
-});
-
-it("guides peer agents to their selected backend and exposes only host tools", async () => {
-  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "dashboard" });
-  const rpc = (method: string, params: unknown = {}) => apiJson(h, "POST", "mcp", { jsonrpc: "2.0", id: 1, method, params });
-  const initial = (await rpc("initialize")).result;
+it('MCP exposes the same filtered participant and lifecycle contract', async () => {
+  const h = await create();
+  const rpc = async (method: string, params: unknown = {}) => apiJson(h, 'POST', 'mcp', { jsonrpc: '2.0', id: 1, method, params });
+  const initial = (await rpc('initialize')).result;
   expect(initial.capabilities).toEqual({ tools: {} });
-  expect(initial.instructions).toContain("client.signals");
-  expect(initial.instructions).toMatch(/Chronolog.*local and final views/);
-  expect(initial.instructions).toMatch(/local\(\).*final\(\).*accepted or rejected outcomes/);
-  expect(initial.instructions).toContain("select local previews explicitly");
-  expect(initial.instructions).toMatch(/application\.changes.*coherent readView.*release/);
-  expect(initial.instructions).toContain("agent's own application session");
-  expect(initial.instructions).toContain("this host has no application event queue or wake subscription");
-  expect(initial.instructions).not.toContain("Read stored events immediately with read_events");
-  const names = (await rpc("tools/list")).result.tools.map((tool: { name: string }) => tool.name);
-  expect(names).toContain("publish_publication"); expect(names).toContain("tendril_info");
-  expect(names).toContain("discover_peers"); expect(names).toContain("peer_application");
-  expect(names).toContain("peer_definition");
-  expect(names).toContain("select_peer_generation");
-  expect(names).toContain("administer_peer_generation");
-  for (const name of ["read_events", "say", "get_state", "create_timer", "append_stream", "claim_event_consumer", "probe_delivery", "write_shared_file", "delete_shared_file"])
-    expect(names).not.toContain(name);
-  expect((await rpc("tools/call", { name: "read_events" })).error.code).toBe(-32602);
-  expect((await rpc("events/list")).result.events).toEqual([]);
-  expect((await rpc("events/subscribe", { name: "tendril.events_waiting" })).error.code).toBe(-32601);
-  expect((await apiJson(h, "GET", "")).agent_delivery).toMatchObject({ mode: "peer", backend: "peer-history", live_listener: false });
-  expect((await api(h, "GET", "file-refs/snapshot")).status).toBe(409);
-  expect((await api(h, "PUT", "file-refs", {})).status).toBe(409);
+  expect(initial.instructions).toContain('applied()'); expect(initial.instructions).toContain('shared()');
+  expect(initial.instructions).toContain('Explicit recovery');
+  const names = (await rpc('tools/list')).result.tools.map((tool: { name: string }) => tool.name);
+  expect(names).toEqual(expect.arrayContaining(['peer_application', 'peer_definition', 'discover_peers', 'configure_peer_application',
+    'select_peer_generation', 'administer_peer_generation', 'peer_publication', 'publish_peer_publication', 'tendril_info']));
+  for (const old of ['read_events', 'say', 'get_state', 'create_timer', 'append_stream', 'write_shared_file']) expect(names).not.toContain(old);
+  expect((await rpc('tools/call', { name: 'read_events' })).error.code).toBe(-32602);
+  expect((await rpc('events/list')).error.code).toBe(-32601);
 });

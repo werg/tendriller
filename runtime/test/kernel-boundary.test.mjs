@@ -20,8 +20,8 @@ const publication = {
   runtime: { version: 'fixture', base: '/runtime/' },
   assets: ['app.html', 'index.html', 'notes #1?/café 100%/review.html'].map(path => ({ path, type: 'text/html', sha256: 'a'.repeat(64) })),
 };
-const configuration = { id: 'page', base: '/page/', version: 7, ws: '/page/_tendril/ws',
-  features: { push: false, vapid: null, shared_by: 'Fixture', speech: null }, publication, documentPath: 'app.html' };
+const configuration = { id: 'page', base: '/page/', version: 7, application: { id: '12'.repeat(32) },
+  features: { shared_by: 'Fixture', speech: null }, publication, documentPath: 'app.html' };
 test('startup rejects missing or undeclared document context before browser side effects', () => {
   const context = {};
   runInNewContext(compiled.outputFiles[0].text, context);
@@ -71,13 +71,13 @@ test('unavailable registration leaves no welcome or browser callbacks to fail la
     assert.doesNotThrow(() => env.browser.get('controllerchange')?.());
   }
 });
-test('a valid registration can activate later and announce on reconnect or worker requests', async () => {
+test('a valid registration announces after controller activation or an explicit worker request', async () => {
   const messages = [], saved = { active: null, waiting: null, installing: null };
   const env = registrations(async () => saved); await tick();
-  assert.equal(env.protocol.size, 1); assert.equal(env.browser.size, 2); assert.equal(messages.length, 0);
+  assert.equal(env.protocol.size, 0); assert.equal(env.browser.size, 2); assert.equal(messages.length, 0);
   saved.active = { postMessage(message) { messages.push(message); } };
-  env.protocol.get('welcome')(); env.browser.get('controllerchange')();
+  env.browser.get('controllerchange')();
   env.browser.get('message')({ data: { t: 'publication_request' } });
-  assert.equal(messages.length, 3); assert.ok(messages.every(message => message.publication === env.publication));
+  assert.equal(messages.length, 2); assert.ok(messages.every(message => message.publication === env.publication));
   assert.equal(env.reports.length, 0);
 });

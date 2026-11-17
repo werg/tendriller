@@ -13,13 +13,14 @@ export async function initializeTestService(migrations: Parameters<typeof applyD
 }
 
 /** Fresh synthetic identities exercise the real session and module authorization paths. */
-export async function createTestPage(options: { application?: { kind: 'cloudflare' | 'peer'; id: string }; lifetime?: 'ad_hoc' | 'resident' } = {}) {
+export async function createTestPage(options: { application?: { id: string }; lifetime?: 'ad_hoc' | 'resident' } = {}) {
   const { lifetime, ...selection } = options;
   const handle = await create({ mode: 'dashboard', listener: false, ...selection });
   if (lifetime === 'resident') {
     const response = await api(handle, 'PATCH', '', { lifetime });
     if (!response.ok) throw new Error(`Resident test page setup failed: ${response.status} ${await response.text()}`);
   }
+  const applicationId = (await inDO(handle.id, t => t.db.get<{ id: string }>('application', { id: '' }))).id;
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0,
     invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0 };
   const request = (url: string, init: RequestInit) => {
@@ -37,15 +38,7 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
     `${url}_tendril/${path}`, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const exchange = (send: (method: string, path: string, body?: unknown) => Promise<Response>) => async (operation: string, payload: unknown = {}) =>
-    participantPayload(await send('POST', 'peers/participant', participantMessage(options.application?.id ?? '00'.repeat(32), operation, payload)));
-  const workflow = (url: string, headers: Record<string, string>) =>
-    (module: string, operation: string, data: unknown = {}, guards: Record<string, string> = {}, cid = crypto.randomUUID()) => request(
-      `${url}workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cid, expected_generations: guards, data }),
-      },
-    );
-  const owner = workflow(handle.page_url + '_tendril/', ownerHeaders(handle.page_url));
+    participantPayload(await send('POST', 'peers/participant', participantMessage(applicationId, operation, payload)));
   const agentApi = (method: string, path: string, body?: unknown) => {
     const raw = typeof body === 'string' || body instanceof ArrayBuffer || body instanceof Uint8Array;
     return request(`${handle.api}${path ? '/' + path : ''}`, {
@@ -53,14 +46,11 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
       ...(body === undefined ? {} : { body: raw ? body as BodyInit : JSON.stringify(body) }),
     });
   };
-  const agent = (module: string, operation: string, data: unknown = {}, guards: Record<string, string> = {}, cid = crypto.randomUUID()) =>
-    agentApi('POST', `workflows/${encodeURIComponent(module)}/${encodeURIComponent(operation)}`, { cid, expected_generations: guards, data });
   const rendezvous = (base: string, headers: Record<string, string>) => (channel: string, peerId: string) => testPeerSocket(() => request(
     `${base}peers/rendezvous?${new URLSearchParams({ channel, peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } }), traffic, 'rendezvous');
   const invitations = (base: string, headers: Record<string, string>) => (peerId: string) => testPeerSocket(() => request(
     `${base}peers/invitations?${new URLSearchParams({ peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL } }), traffic, 'invitation');
   return {
-    owner, agent,
     /** Exact observed requests/frame bytes, excluding synthetic identity/page setup. */
     get hostTraffic() { return Object.freeze({ ...traffic }); },
     rendezvousSocket: rendezvous(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),
@@ -85,12 +75,8 @@ export async function createTestPage(options: { application?: { kind: 'cloudflar
         return t.renderLink(invitation);
       });
       const headers = { Cookie: `__Host-tendril=${secret}`, Origin: new URL(link.url).origin };
-      return { account, call: workflow(link.url + '_tendril/', headers), api: pageApi(link.url, headers), exchange: exchange(pageApi(link.url, headers)),
+      return { account, api: pageApi(link.url, headers), exchange: exchange(pageApi(link.url, headers)),
         rendezvousSocket: rendezvous(link.url + '_tendril/', headers), invitationSocket: invitations(link.url + '_tendril/', headers) };
-    },
-    async display() {
-      const link = await inDO(handle.id, async t => t.renderLink(await t.createLink('display', 'test display', null)));
-      return workflow(link.url + '_tendril/', { Cookie: '', Origin: new URL(link.url).origin });
     },
     async advance(milliseconds: number) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError('Advance by a finite nonnegative duration');

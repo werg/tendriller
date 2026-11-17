@@ -10,7 +10,7 @@ function environment(consent = () => true) {
   const document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
   class Recognition extends EventTarget { processLocally = false; start() { starts++; this.onstart?.(); } abort() { aborted++; this.onend?.(); } static async available() { return 'available'; } static async install() { installs++; return true; } }
   window.SpeechRecognition = Recognition;
-  const runtime = { kind: 'cloudflare', identity: { page: 'page', base: 'https://test.example/page/' }, device: { role: 'owner', pending: false },
+  const runtime = { identity: { page: 'page', base: 'https://test.example/page/' }, device: { id: 'device', name: 'Device' },
     assetUrl: path => new URL(path, 'https://test.example/runtime/').href,
     on(type, listener) { if (!handlers.has(type)) handlers.set(type, new Set()); handlers.get(type).add(listener); return () => handlers.get(type).delete(listener); } };
   const context = { window, document, navigator: { language: 'en-US' }, location: { href: runtime.identity.base },
@@ -19,7 +19,7 @@ function environment(consent = () => true) {
     fetch: async () => { reads++; throw Error('No resource should be fetched in this test'); } };
   runInNewContext(built.outputFiles[0].text, context);
   const transcripts = [], statuses = [];
-  const voice = context.Voice.createVoice(runtime, { consent, transcript: text => transcripts.push(text), status: value => statuses.push(value), speakReplies: true });
+  const voice = context.Voice.createVoice(runtime, { consent, transcript: text => transcripts.push(text), status: value => statuses.push(value) });
   return { voice, window, document, runtime, spoken, transcripts, statuses, handlers, emit(type, payload) { for (const listener of handlers.get(type) || []) listener(payload); },
     get reads() { return reads; }, get starts() { return starts; }, get aborted() { return aborted; }, get installs() { return installs; } };
 }
