@@ -39,6 +39,8 @@ The application session's command/query/replication implementation is qualified 
 
 `hostTraffic` counts HTTP/body bytes and separate invitation/SDP upgrade/frame bytes, excluding synthetic setup. Snapshot it around ordinary application operations to test host independence. `asset` lets consumers verify actual served HTML/JavaScript and historical immutable URLs after signed publication and restart.
 
+An independently packaged workerd fixture can read `@tendriller/engine/testing-ratelimits` when constructing its Wrangler configuration. The engine archive pins these bindings in its provenance, so external tests use the host's current page/account traffic limits without copying their values.
+
 ## Checkpoints and releases
 
 Every build writes exact source commit/tree, clean/dirty state and archive SHA-256 values to `dist/provenance.json`. The engine embeds portable Chronolog provenance and hashes. Independent qualification copies clean artifacts and verifies their hashes before installing; a branch name does not identify tested bytes.
