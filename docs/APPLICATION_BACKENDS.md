@@ -2,10 +2,17 @@
 
 A page selects one application history at creation. Tendriller hosts the page,
 account sessions, publication recovery, explicit blob facilities, connection hints
-and short-lived WebRTC rendezvous. The selected backend owns application persistence, authored operations,
-retry identity, execution, event replay, and finality.
+and short-lived WebRTC rendezvous. The selected backend owns application persistence,
+authored operations, retry identity, execution, event replay, and its profile's
+recovery and settlement guarantees.
 
-For a resident native agent deployment, select a Chronolog peer backend. Run a
+The shipped Chronolog live adapter and Cloudflare JSON backend provide finality.
+The common types also describe a generation profile with applied and abandoned
+results and no finality. Chronolog implements a separate generation runtime and
+application-session package; Tendriller does not yet ship a binding for it.
+Declaring its interface does not install it or change an existing history.
+
+For a resident native agent deployment, select the Chronolog live peer backend. Run a
 replica, timers and effect workers in the resident agent service. A finality
 service can run there or on another configured participant; an agent is not
 inherently a finality authority. The browser keeps its own replica. A Cloudflare JSON backend remains available for
@@ -25,7 +32,7 @@ The selection is immutable. `id` is an application-owned stable identifier, not 
 host token, decryption key, grant, or authority key. Omitting `application` selects
 `{kind:'cloudflare', id:'cf:<page-id>'}`. Publication rollback changes code without
 changing the selected history. An unavailable authority never triggers failover
-to Cloudflare or to a different finality policy. Chronolog replicas always use
+to Cloudflare or to a different finality policy. Chronolog's live replicas use
 the same signed author-time execution order. A finality provider supplies
 inclusion evidence and closes the author-time frontier; it does not choose that
 execution order.
@@ -51,7 +58,9 @@ const application = await tendril.application.ready();
 ```
 
 `application.backend` returns the installed backend or throws
-`backend_unavailable`. Installing a different identity or a second backend fails.
+`backend_unavailable`. `application.available` reports installation, and `ready()`
+waits for it. Neither reports peer reachability or synchronized data. Installing
+a different identity or a second backend fails.
 Custom browser bootstraps can pass `{application: backend}` to
 `startRuntime(configuration, options)`. A hosted page uses its existing
 `window.tendril` and must not start another runtime.
@@ -64,22 +73,23 @@ payload exchange belong to the replica. Explicit HTTP requests, membership,
 rendezvous, publication saving and existing blob URLs remain available.
 `publication.saveOffline()` explicitly registers offline publication support.
 Automatic hosted publication health is a hosted-runtime facility; peer readiness
-belongs to the application backend. `tendril.connected` on a peer page indicates
-that its selected backend is installed, not that any remote peer is reachable.
+belongs to the application session. `tendril.connected` stays false on a peer page
+because it has no hosted application connection. Use `application.available` for
+installation and the selected peer session's readiness for synchronization.
 
 ## Small public contract
 
 | Member | Meaning |
 | --- | --- |
-| `id`, `capabilities` | Stable selected identity and explicit program/query capabilities |
+| `id`, `profile`, `capabilities` | Stable selected identity, declared profile and explicit program/query capabilities |
 | `submit(program, {operationId})` | Author one atomic program through the selected backend |
 | `events.publish(topic, payload, {operationId})` | Convenience authoring of one event-only program |
-| `events.read({cursor?,topics?,limit?,signal?})` | Bounded whole-transaction final replay |
+| `events.read({cursor?,topics?,limit?,signal?})` | Bounded whole-transaction replay under the selected profile |
 | `events.subscribe(options)` | At-least-once continuation with pull backpressure |
-| `readView({view?:'local'|'final'})` | Captured revision with `query`, `readEvents`, and `release` |
-| `changes({view?:'local'|'final',signal?})` | Current revision, then coalesced invalidations for that view |
+| `readView({view?})` | A supported captured view with `query`, `readEvents`, and `release` |
+| `changes({view?,signal?})` | Current revision, then coalesced invalidations for that supported view |
 | `operations.get(operationId)` | Recover the status of this author's durable operation |
-| `operations.subscribe({operationId,signal?})` | Observe that operation, including finality-only changes |
+| `operations.subscribe({operationId,signal?})` | Observe the operation's profile-specific progress and outcome |
 
 Program and query types remain backend-specific. The generic contract does not
 translate SQL into JSON state operations. Chronolog accepts its versioned
@@ -88,17 +98,34 @@ SQL/platform/emit `ChangeProgram`; the Cloudflare implementation advertises
 program below. The adapter's `sql` option describes the execution profile; it does
 not grant SQL permission or change acceptance rules.
 
-An operation receipt separates lifecycle from acceptance. `status` is `queued`,
+`ApplicationBackend` is the common profile-dependent interface. Concrete live
+adapters expose `FinalityApplicationBackend`, `FinalityApplicationOperation`,
+`FinalityApplicationReadView` and `FinalityApplicationChange`: their views are
+`local` or `final`, and their captured metadata includes `finalRevision`.
+The generation contract instead uses `applied` views with `generation`.
+Generic consumers narrow those variants before reading profile-specific fields.
+
+The live backends reject `view: 'applied'` with `invalid_view`. They also reject
+the profile-specific `observedRevision` submit option and any other unsupported
+option key with `unsupported_option` before queueing or publishing anything.
+`operationId` is their only submit option. Put reviewed business preconditions in their
+programs: Cloudflare conditions and generations, or Chronolog SQL/platform
+assertions. A common option name does not imply that every profile implements it.
+
+## Live operation receipts
+
+A live operation receipt separates lifecycle from acceptance. `status` is `queued`,
 `provisional`, or `final`; `outcome` is `accepted` or `rejected` once execution has
 produced a result. Both provisional outcomes can change during replay. Both final
 outcomes are settled. In particular, `status:'final'` alone does **not** mean that
 the operation succeeded: check `outcome:'accepted'` as well.
 
-The TypeScript contract expresses this as a discriminated union: `queued` has no
-outcome, and both executed states require one. The default public backend returns
-an `ApplicationOperation` from `submit` and `events.publish`, so page code can
-inspect it directly without guessing a backend-specific return type. Exact
-retries can return the original final outcome immediately.
+The TypeScript live contract expresses this as a discriminated union: `queued`
+has no outcome or error details, and both executed states require an outcome.
+The common `ApplicationOperation` includes these live receipts and the separate
+generation result variants. Concrete live adapters narrow `submit`,
+`events.publish`, and `operations` to their live receipts. Exact retries can
+return the original final outcome immediately.
 
 | Status | Outcome | Meaning |
 | --- | --- | --- |
@@ -107,7 +134,7 @@ retries can return the original final outcome immediately.
 | `final` | `accepted` | The accepted result is settled under the configured policy |
 | `final` | `rejected` | The rejection is settled; preserve the reviewed draft for a deliberate new operation |
 
-Receipts always identify `operationId` and `proposalId`. A Cloudflare admission
+Live receipts identify `operationId` and `proposalId`. A Cloudflare admission
 refusal has an empty `proposalId`, `status:'final'`, and `outcome:'rejected'`: the
 draft was refused before a retained proposal was created. Only an exact-identity
 conflict or retained-history quota refusal is classified this way. A lost,
@@ -121,7 +148,11 @@ for the same operation each receive its durable receipt; one caller's timeout
 cannot cancel another caller's wait. Reusing an ID for different contents is a conflict. Do not rewrite an old operation's grant, scope, generation,
 conditions, or message identity to make it pass after a reset.
 
-## Events, views, and consumer checkpoints
+## Live events, views, and consumer checkpoints
+
+The shipped live backends replay accepted events from their final applied prefix.
+The following consumer and checkpoint contract relies on that stable history;
+a generation runtime would need its separate recovery and reset behavior.
 
 Each batch has `transactions`, `scannedThrough`, `hasMore`, and `revision`.
 Transactions contain `proposalId` and complete matching event groups. Each event
@@ -174,7 +205,7 @@ try {
 }
 ```
 
-A held view exposes its own `{view, revision, finalRevision}` and pins both
+A held live view exposes its own `{view, revision, finalRevision}` and pins both
 queries and effective event reads. These fields describe the captured data even
 if the replica advances before rendering finishes. Native Chronolog holds a
 bounded snapshot; remote clients hold a bounded lease that can expire and must be
@@ -184,7 +215,7 @@ ready. Keep focus, scroll, selection, and unfinished typing local.
 
 ## Observe views separately from consuming history
 
-Use `changes` to refresh UI projections, including SQL-only changes, remote
+In the live profile, use `changes` to refresh UI projections, including SQL-only changes, remote
 provisional work, rollback/redo, and finality-only progress. It first yields the
 current `{view,revision,finalRevision}` and then coalesces invalidations while a
 consumer is busy. Its default view is `final`; use `local` deliberately for an
@@ -232,17 +263,20 @@ live port; peer composition installs it independently with
 `mode:'latest'` only for replaceable values. Default FIFO preserves pending
 discrete events within explicit bounds. Signals require no program, SQL engine,
 outbox or finality service. End a generated response with a durable
-result event. Only a consumer of accepted final intent dispatches external work;
-reducers and SQL callbacks never send messages or perform tools during replay.
+result event. In the live profile, a consumer of accepted final intent dispatches
+irreversible external work. A profile without finality needs a separately chosen
+effect policy; an applied result alone is insufficient. Reducers and SQL callbacks
+never send messages or perform tools during replay.
 
 ## Finality and authority
 
 The Chronolog adapter implements live collaboration by default. Signed proposals,
 timestamp ordering and deterministic replay are reusable foundations; finality
-belongs to this live interpretation. A future async branch/merge interpretation
-would have no finality concept, frontier, operation states or final-intent worker
-contract. It would define separate inclusion, merge and effect rules, and is not
-implemented by this live backend API.
+belongs to this live interpretation. The separate generation runtime described
+below has applied and recovery states, but no finality concept, closed author-time
+frontier, final operation states or final-intent worker contract. Future async
+branch/merge semantics likewise need their own inclusion, merge and effect rules
+without acquiring finality. Neither is a mode of this live backend API.
 
 Keep three decisions separate: who may connect or author, how valid programs are
 ordered and executed, and when an applied result becomes final. The signed
@@ -332,22 +366,73 @@ The retained application history allows 100,000 transactions and 64 MiB of
 accounted program/receipt/event bytes. Exhaustion is an explicit `history_quota`
 refusal; earlier exact retries remain available.
 
-## Peer-generation applied results
+## Generation runtime and result contract
 
-`peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that view. Requests for a final view fail explicitly because this profile does not provide irrevocable settlement.
+Chronolog's `@chronolog/peer-generation` implements encrypted signed attempts,
+authenticated inclusion receipts, selected ancestry, deterministic replay and
+explicit recovery to retained history. Its
+[`@chronolog/peer-session` package](https://github.com/werg/chronolog-db/tree/feat/portable-peer-core/packages/peer-session)
+adds defined commands and queries, durable device ownership, captured views,
+operation inspection and recovery notices. This is a separate application runtime;
+Tendriller's host binding and `createChronologApplicationBackend` remain live
+backends and do not install it.
 
-Operations use `operationId` for caller intent and `attemptId` for exact authenticated bytes. Their states are:
+Command and query definitions share input schemas and an explicit semantic
+version across callers. Their digest does not hash the JavaScript `prepare` or
+`read` callbacks and is not an authorization grant. A permitted writer can still
+author a raw program; a command name or version cannot confer private-tool
+rights. Applications check authenticated author provenance and current policy
+before privileged work, independently of payload claims. `observedRevision`
+checks selected ancestry; it does not reserve an execution position or replace
+business preconditions in the program.
+
+The generic Tendriller generation contract declares
+`profile: 'peer-generation-v1'` and `view: 'applied'`, with an opaque coherent
+revision and the selected generation. It has no `finalRevision`. The standalone
+session uses its own `PeerRevision` and `operation.applied()` API; an adapter must
+preserve these distinctions instead of inventing final results or accepting a
+final-view request.
+
+Application execution uses `(signed author timestamp, signing public key, stable
+proposal ID)`. A coordinator's generation and receipt sequence identify the
+authenticated inclusion set and recovery ancestry; they do not choose a second
+execution order. A later receipt can introduce an earlier signed operation and
+revise an existing accepted or rejected outcome even within one generation.
+
+The contract uses `operationId` for caller intent and `attemptId` for exact
+authenticated bytes. Its declared states are:
 
 | State | Meaning |
 | --- | --- |
 | `saved` | The original signed attempt is durable locally. No rejection is inferred from a missing coordinator or lost reply. |
-| `applied` | Accepted or rejected at a specific generation and sequence. The outcome remains stable while its position belongs to selected history. |
+| `applied` | An accepted or rejected result at an observed revision. Generation and sequence identify its inclusion receipt, not immutable settlement. |
 | `abandoned` / `needsReapply` | Recovery excluded the attempt. Original provenance and any previous applied outcome remain inspectable. |
 
-`shared` is separate retained-prefix evidence; it does not promote an applied outcome to finality. A deliberate reapplication uses a new operation identity and current permissions and guards. Ordinary retry preserves original bytes and the admission generation.
+`shared` is separate retained-prefix evidence; it does not promote an applied
+outcome to finality or prove another device is currently reachable. A deliberate
+reapplication uses a new operation identity and current permissions and guards.
+Ordinary retry preserves the signed bytes and admission generation. It recovers
+the current observed execution result, which may differ after replay.
 
-A recovery notice identifies the adopted prefix, selected generation, known abandoned work, and whether additional loss is unknown. Applications receive a coherent recovery change and capture a fresh view. SQL, events and operation outcomes must not be combined across revisions. `PeerGenerationApplicationBackend.onRecovery()` and `inspectRecovery()` expose the same notice to UI and agent consumers.
+A recovery notice identifies the adopted prefix, selected generation, known
+abandoned work, and whether additional loss is unknown. Recovery publishes a
+coherent change so the application can capture a fresh view; SQL, events and
+outcomes must not be combined across revisions. Held views remain observations
+of their original revision. The declared
+`PeerGenerationApplicationBackend.onRecovery()` and `inspectRecovery()` expose
+that notice, while `AppliedApplicationChange` carries generation metadata without
+finality fields. These recovery APIs are not implemented by the host binding or
+by installing a live Chronolog adapter. Applied events are not inputs to a
+final-intent worker: an application choosing this profile must define its own
+policy for external actions and recovery.
 
-The host binding's `available` property means that an application adapter is installed. `ready()` also concerns installation. Neither promises peer reachability or synchronized application state. In peer mode `tendril.connected` stays false because there is no hosted application connection; actual readiness and recovery belong to the Chronolog session. Host requests remain explicit and the host never adds another application outbox.
+The package includes native persistence/reopen tests, deterministic SQL recovery
+tests and an in-process `connectApplications` connector for embedded peers and
+independent-store tests. Its browser entry requires an owning Worker and browser
+storage capabilities. These surfaces do not establish browser/native Internet
+connectivity, a deployed control service, a global recovery-loss bound, or a
+Tendriller generation binding. Consult the package's qualification evidence for
+the tested scope; live-profile WebRTC evidence does not qualify a different
+profile automatically.
 
 Existing chronological profiles and the hosted JSON backend retain their own explicit finality contracts. No old signed history is reinterpreted as a peer-generation history, and no migration or compatibility layer is supplied for this prerelease refactor.

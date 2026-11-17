@@ -2,9 +2,13 @@
 
 ## Ownership
 
-A peer page has one application owner: its Chronolog replica. Chronolog owns
-signed operations, durable retry identity, authenticated history, deterministic
-execution, inclusion finality, governance and detached bodies. Live application
+A peer page using the default live profile has one application owner: its
+Chronolog replica. That profile owns signed operations, durable retry identity,
+authenticated history, deterministic execution, inclusion finality, governance
+and detached bodies. This document describes its Tendriller integration. The
+separate finality-free generation runtime is described under
+[generation results](APPLICATION_BACKENDS.md#generation-runtime-and-result-contract);
+installing the live adapter does not install that runtime. Live application
 signals use a separate `send`/`subscribe` port; the default Chronolog composition
 authorizes them with current topic rights without submitting them to the log.
 The standalone signal channel can also run without a database. Changing the
@@ -34,9 +38,10 @@ application can arrange for both endpoints to participate at the same time:
    validates its role, session, size and current host access before delivery.
 4. After the offer and answer are delivered, rendezvous closes. It is not an
    application channel, an ICE heartbeat service or a persistent presence feed.
-5. Chronolog mutually authenticates the resulting reliable data channel using
-   active reader capabilities, then exchanges its existing signed records,
-   detached bodies, finality evidence and authorized ephemeral signals.
+5. Chronolog mutually authenticates the resulting connection using active reader
+   capabilities. Signed records, detached bodies and finality evidence use the
+   reliable history lane. Authorized ephemeral signals use a separate lossy live
+   lane with bounded queues; they do not wait behind retained-history traffic.
 
 An endpoint ID or authenticated host session is not a database capability.
 Chronolog remains responsible for peer authorization and rechecking governance.
@@ -56,7 +61,8 @@ An established session remains independent of the introduction listener.
 
 ## Transport boundary
 
-`@chronolog/transport-webrtc` owns negotiation and bounded reliable framing. It
+`@chronolog/transport-webrtc` owns negotiation, bounded reliable history framing
+and a separate live lane. It
 accepts a signaling port and a peer-connection implementation, so it does not
 import Tendriller or Cloudflare. Browser and native peers use the same framed
 Chronolog protocol. Keys, storage and materialization remain with the owning
@@ -92,14 +98,14 @@ its checkpoint. Participant synchronization therefore scales with governance
 changes rather than all intervening application writes. See
 [membership proofs and trust](MEMBERSHIP.md).
 
-Inclusion/finality is a Chronolog policy. A resident finality peer may still be
+The live profile's inclusion/finality is a Chronolog policy. A resident finality peer may still be
 needed for final results; removing Cloudflare from application traffic does not
 make that policy unnecessary. Exact retries and deterministic author ordering
 are unchanged by the choice of transport.
 
 ## Qualification
 
-Qualification must exercise real browser/native WebRTC, authenticated Chronolog
+Qualification of this live integration must exercise real browser/native WebRTC, authenticated Chronolog
 traffic and a disconnected signaling service. The evidence must
 distinguish connection-setup bytes from subsequent peer bytes, demonstrate
 continued progress after host disconnection and enforce bounded queues and

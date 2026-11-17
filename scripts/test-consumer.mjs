@@ -136,7 +136,10 @@ const missingOutcome: ApplicationOperation = {operationId:'id',proposalId:'propo
 // @ts-expect-error queued is preparation, not an executed outcome.
 const prematureOutcome: ApplicationOperation = {operationId:'id',proposalId:'proposal',status:'queued',outcome:'accepted'};
 void [missingOutcome,prematureOutcome];
-for await (const status of backend.operations.subscribe({operationId:'stable-operation'})) { const id:string = status.proposalId; void id; }
+for await (const status of backend.operations.subscribe({operationId:'stable-operation'})) {
+  const id:string = 'proposalId' in status ? status.proposalId : status.attemptId;
+  void id;
+}
 const view = await backend.readView({view:'final'});
 const eventBatch = await view.readEvents({topics:['conversation']});
 for (const transaction of eventBatch.transactions) for (const event of transaction.events) {
@@ -146,10 +149,19 @@ for (const transaction of eventBatch.transactions) for (const event of transacti
 const continuation:string = eventBatch.scannedThrough;
 await view.release();
 for await (const change of backend.changes({view:'local'})) {
-  const revision:string = change.revision, finalRevision:string = change.finalRevision;
-  void [revision,finalRevision];
+  const revision:string = change.revision;
+  if (change.view === 'applied') { const generation:string = change.generation; void generation; }
+  else { const finalRevision:string = change.finalRevision; void finalRevision; }
+  void revision;
   break;
 }
+const hostedApplication = await client.application();
+const hostedView = await hostedApplication.readView({view:'final'});
+const hostedFinalRevision:string = hostedView.finalRevision;
+await hostedView.release();
+// @ts-expect-error The concrete hosted backend has no generation-scoped applied view.
+void hostedApplication.readView({view:'applied'});
+void hostedFinalRevision;
 // @ts-expect-error view invalidation has no durable replay cursor.
 backend.changes({cursor:'processed-event-cursor'});
 void publishConversation(backend.events, {messageId:'message-one',text:'Hello'}, {operationId:'send-one'});

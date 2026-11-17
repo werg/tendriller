@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/werg/chronolog-db",
+  "sourceCommit": "0a650f2c8d82733903286bdb9069426a93888a9d",
+  "sourceTree": "be42f96085c821e1feee0f18b3c578a4f2a8b910",
+  "sourceDirty": false,
+  "buildCommand": "node tools/package-membership.mjs",
+  "dependencyInstallCommand": "corepack pnpm install --offline --frozen-lockfile --ignore-scripts",
+  "package": "@chronolog/membership",
+  "version": "0.0.0-0a650f2c",
+  "artifact": "chronolog-membership-0a650f2c.tgz",
+  "bytes": 60578,
+  "sha256": "71bbfb4e5b9f725bb1b0d44d4b38ad3d3324ff49e75679aa25c8e8c12ad1a2ca",
+  "entrySha256": {
+    "index.mjs": "486adb5cf8cedcce2c027a96491739a812ab0ea533e55aaca71aa246d05058ab",
+    "index.d.ts": "b3d3c70d1f811b76d52741bb176e206211561c47ce5939b928fa487b49e48317"
+  },
+  "runtimeInputs": 65,
+  "purpose": "Portable membership revision v2: fixed genesis validators and policies, explicit reader/writer grants, and one signed permission/encryption epoch transition."
+}

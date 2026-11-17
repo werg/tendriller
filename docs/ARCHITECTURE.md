@@ -5,7 +5,7 @@ Tendriller separates dependable platform behavior from application design. Core 
 ## Three independent responsibilities
 
 Each page selects an immutable backend identity at creation. The preferred
-resident-agent deployment uses the Chronolog public adapter for durable state,
+resident-agent deployment uses the Chronolog live adapter for durable state,
 events, conversation, operation status, and captured revision views. Every replica
 derives application order from signed proposal metadata. The configured finality
 policy establishes when those results can no longer change. A resident agent
@@ -19,10 +19,16 @@ outbox. There is no automatic authority fallback. See
 The Chronolog integration uses live collaboration by default. Its shared order
 is `(signed author timestamp, signing public key, stable proposal ID)`; finality
 closes an immutable prefix while local execution can replay the suffix. Signing,
-timestamp ordering and deterministic replay can also support a separate async
-branch/merge interpretation. That interpretation would have no finality concept,
-frontier, operation states or final-intent worker contract. It is not implemented
-by the current live backend API.
+timestamp ordering and deterministic replay also support a separate
+`peer-generation-v1` runtime in Chronolog's
+[`@chronolog/peer-session` package](https://github.com/werg/chronolog-db/tree/feat/portable-peer-core/packages/peer-session).
+It selects retained ancestry and exposes applied and recovery operation states;
+it has no finality concept, closed author-time frontier, final operation states,
+or final-intent worker contract. Its generation and receipt sequence describe
+inclusion and recovery, not application execution order. It is a separate peer
+runtime, not a mode installed by the Tendriller live adapter or hosted binding.
+Future async branch/merge semantics can use the same ordering foundations
+without acquiring a finality API.
 
 Live application messages use an independently installed `signals` service. Its
 `send` and `subscribe` operations require no durable backend, SQL transaction,
@@ -40,7 +46,8 @@ authorization decisions explicitly from authenticated provenance.
 
 The public [peer rendezvous](PEER_CONNECTIONS.md) boundary forwards one bounded
 WebRTC description per endpoint, then closes. Chronolog owns authenticated
-record, signal and control exchange over the resulting data channel. Host account
+record and control exchange over a reliable history lane and signals over a
+separate lossy live lane in the resulting connection. Host account
 authorization remains separate from database grants. Retained record storage is an
 optional adapter, not a mandatory checkpoint on the native commit path.
 
@@ -57,7 +64,7 @@ execution order. Normal application writes do not wait for this host.
 
 | Surface | Owner | Dependency boundary |
 | --- | --- | --- |
-| Durable programs, event history, outcomes and local/final views | Selected application backend | Public application contract |
+| Durable programs, event history, outcomes and profile-specific views | Selected application backend | Public application contract |
 | Live signals, expiry and bounded delivery | Independently installed signal service | Public signals contract |
 | Hosted JSON state, commands, conversation and streams | Cloudflare backend | Public hosted contract |
 | Page accounts, assets, blobs and publication lifecycle | Core host | Public core contract |

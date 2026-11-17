@@ -133,6 +133,8 @@ function validateEventBatch(value, applicationId) {
 export function createCloudflareApplicationBackend({ id, request, submit: enqueue, onChange }) {
   applicationSelection({ kind: 'cloudflare', id });
   const submit = async (program, options) => {
+    if (Object.keys(options ?? {}).some(key => key !== 'operationId'))
+      fail('unsupported_option', 'This live backend supports only operationId; include preconditions in the program');
     const exact = validateCloudflareProgram(program);
     assertApplicationOperationId(options?.operationId);
     return validateApplicationOperation(await (enqueue ? enqueue(exact, options) : request('application/changes', { method: 'POST', body: { program: exact, operationId: options.operationId } })), options.operationId, { terminal: !enqueue });

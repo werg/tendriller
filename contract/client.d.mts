@@ -19,7 +19,7 @@ export interface AgentClient extends DurabilityClient, StreamsClient, BlobTransf
   /** Explicit authenticated live connection; no durable queue or agent wake subscription. */
   connectSignals(options?: import('./hosted-signals.mjs').HostedSignalConnectionOptions): Promise<import('./hosted-signals.mjs').HostedSignals>;
   members: import("./members.mjs").MembersClient;
-  application(): Promise<import("./application.mjs").ApplicationBackend<import("./application.mjs").CloudflareApplicationProgram, import("./application.mjs").CloudflareApplicationSubmission>>;
+  application(): Promise<import("./application.mjs").FinalityApplicationBackend<import("./application.mjs").CloudflareApplicationProgram, import("./application.mjs").CloudflareApplicationSubmission>>;
   peers: import("./peers.mjs").PeersClient;
   records: RecordLogClient;
   request<T = unknown>(path: string, options?: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T>;

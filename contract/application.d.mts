@@ -1,6 +1,10 @@
 /** Host selection is independent of a database's membership and authority keys. */
 export type ApplicationSelection = { readonly kind: 'cloudflare'; readonly id: string } | { readonly kind: 'peer'; readonly id: string };
-export interface ApplicationSubmitOptions { readonly operationId: string; readonly basedOn?: string }
+export interface ApplicationSubmitOptions {
+  readonly operationId: string;
+  /** Profile-specific ancestry observation, not compare-and-swap. Live backends reject it. */
+  readonly observedRevision?: string;
+}
 export interface ApplicationOperationIdentity { readonly operationId: string }
 export interface FinalityOperationIdentity extends ApplicationOperationIdentity {
   readonly proposalId: string;
@@ -18,12 +22,14 @@ export interface PeerOperationIdentity extends ApplicationOperationIdentity {
 }
 export interface AppliedApplicationOperation extends PeerOperationIdentity {
   readonly status: 'applied';
+  /** Opaque captured revision at which this result was observed; later replay may change it. */
+  readonly revision: string;
   readonly author: string;
   readonly sequence: number;
   readonly outcome: 'accepted' | 'rejected';
   readonly rejectionCode: string | null;
 }
-/** Applied outcomes remain conditional on selected ancestry; sharing is separate retention evidence. */
+/** Applied outcomes can change within selected ancestry; sharing is separate retention evidence. */
 export type PeerGenerationApplicationOperation =
   | (PeerOperationIdentity & { readonly status: 'saved' })
   | AppliedApplicationOperation
@@ -55,7 +61,7 @@ export interface ApplicationEvent {
 export interface ApplicationEventTransaction { readonly proposalId: string; readonly events: readonly ApplicationEvent[] }
 export interface ApplicationEventBatch {
   readonly transactions: readonly ApplicationEventTransaction[];
-  /** Delivery progress. The consumer atomically commits its own state and processed cursor. */
+  /** Backend-scoped progress. Live final streams support processed checkpoints; applied-view cursors belong to this exact revision and must be rebuilt after a change. */
   readonly scannedThrough: string;
   readonly hasMore: boolean;
   readonly revision: string;
@@ -81,6 +87,7 @@ export type ApplicationReadView<QueryResult = unknown, Parameter = unknown> = Ap
   readEvents(options?: ApplicationEventReadOptions): ApplicationEventBatch | Promise<ApplicationEventBatch>;
   release(): void | Promise<void>;
 };
+export type FinalityApplicationReadView<QueryResult = unknown, Parameter = unknown> = Extract<ApplicationReadView<QueryResult, Parameter>, { readonly view: 'local' | 'final' }>;
 export type AppliedApplicationReadView<QueryResult = unknown, Parameter = unknown> = Extract<ApplicationReadView<QueryResult, Parameter>, { readonly view: 'applied' }>;
 export interface ApplicationRecoveryNotice {
   readonly previousGeneration: string;
@@ -94,6 +101,8 @@ export type ApplicationChange = ApplicationRevisionState & {
   readonly kind?: 'update' | 'recovery';
   readonly recovery?: ApplicationRecoveryNotice;
 };
+export type FinalityApplicationChange = Extract<ApplicationChange, { readonly view: 'local' | 'final' }>;
+export type AppliedApplicationChange = Extract<ApplicationChange, { readonly view: 'applied' }>;
 export interface ApplicationChangeOptions { readonly view?: ApplicationView; readonly signal?: AbortSignal }
 /**
  * One selected backend owns persistence, operation identity, retries and interpretation.
@@ -111,10 +120,18 @@ export interface ApplicationBackend<Program = unknown, Submission extends Applic
   readonly events: ApplicationEvents<Submission>;
   readonly operations: ApplicationOperations<Submission>;
 }
+/** Live results and captured views with an explicit finality boundary. */
+export interface FinalityApplicationBackend<Program = unknown, Submission extends FinalityApplicationOperation = FinalityApplicationOperation, QueryResult = unknown, Parameter = unknown>
+  extends ApplicationBackend<Program, Submission, QueryResult, Parameter> {
+  changes(options?: { readonly view?: 'local' | 'final'; readonly signal?: AbortSignal }): AsyncIterable<FinalityApplicationChange>;
+  readView(options?: { readonly view?: 'local' | 'final' }): FinalityApplicationReadView<QueryResult, Parameter> | Promise<FinalityApplicationReadView<QueryResult, Parameter>>;
+}
+/** Contract for a generation runtime; the host binding does not implement that runtime. */
 export interface PeerGenerationApplicationBackend<Program = unknown, QueryResult = unknown, Parameter = unknown>
   extends ApplicationBackend<Program, PeerGenerationApplicationOperation, QueryResult, Parameter> {
   readonly profile: 'peer-generation-v1';
   readonly operations: ApplicationOperations<PeerGenerationApplicationOperation>;
+  changes(options?: ApplicationChangeOptions): AsyncIterable<AppliedApplicationChange>;
   readView(options?: { readonly view?: ApplicationView }): AppliedApplicationReadView<QueryResult, Parameter> | Promise<AppliedApplicationReadView<QueryResult, Parameter>>;
   onRecovery(listener: (notice: ApplicationRecoveryNotice) => void): () => void;
   inspectRecovery(): readonly ApplicationRecoveryNotice[];
@@ -156,4 +173,4 @@ export declare function createCloudflareApplicationBackend(options: {
   readonly submit?: (program: CloudflareApplicationProgram, options: ApplicationSubmitOptions) => Promise<CloudflareApplicationSubmission>;
   /** Reuse the browser's existing socket; non-browser callers use bounded revision polling. */
   readonly onChange?: (notify: () => void) => () => void;
-}): ApplicationBackend<CloudflareApplicationProgram, CloudflareApplicationSubmission, unknown, unknown>;
+}): FinalityApplicationBackend<CloudflareApplicationProgram, CloudflareApplicationSubmission, unknown, unknown>;

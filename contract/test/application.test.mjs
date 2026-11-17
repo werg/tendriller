@@ -64,6 +64,31 @@ test('Cloudflare read views validate captured metadata and default to the final 
   }
 });
 
+test('the hosted live backend rejects unsupported options and applied views before starting work', async () => {
+  const program = { version: 1, expected_generations: {}, steps: [{ kind: 'emit', topic: 'tasks', payload: null }] };
+  for (const enqueue of [false, true]) {
+    const calls = [];
+    const backend = createCloudflareApplicationBackend({ id: 'cf:page',
+      request: async (...args) => { calls.push(args); },
+      onChange() { calls.push('subscribe'); return () => {}; },
+      ...(enqueue ? { submit: async (...args) => { calls.push(args); } } : {}),
+    });
+    for (const extra of [
+      { observedRevision: 'reviewed-revision' },
+      { basedOn: 'legacy-guard' },
+      { basedOn: undefined },
+      { unknown: true },
+    ]) {
+      const options = { operationId: 'original', ...extra };
+      await assert.rejects(backend.submit(program, options), { code: 'unsupported_option' });
+      await assert.rejects(backend.events.publish('tasks', null, options), { code: 'unsupported_option' });
+    }
+    await assert.rejects(backend.readView({ view: 'applied' }), { code: 'invalid_view' });
+    await assert.rejects(backend.changes({ view: 'applied' })[Symbol.asyncIterator]().next(), { code: 'invalid_view' });
+    assert.deepEqual(calls, [], 'unsupported options must not enqueue, publish, read or subscribe');
+  }
+});
+
 test('durable subscriptions pull one whole batch at a time and carry empty scan progress', async () => {
   const calls = [], stop = new AbortController();
   const backend = createCloudflareApplicationBackend({ id: 'cf:page', request: async path => {
