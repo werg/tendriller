@@ -23,7 +23,7 @@ export function deploymentPlan(stage, { name, fresh = false } = {}, env = proces
   if (pages !== zone && !pages.endsWith(`.${zone}`)) throw Error(`Page domain must be in ${zone}`);
   if (!pages.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw Error('Invalid page domain');
   if (service === pages) throw Error('Configure separate service and page domains.');
-  if (suffix && !/^--[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(suffix)) throw Error('A page host suffix must start with -- and contain lowercase letters, digits or hyphens.');
+  if (suffix && !/^--p-[a-f0-9]{12}$/.test(suffix)) throw Error('A page host suffix must use --p- followed by twelve lowercase hexadecimal characters.');
   const database = `${worker}-accounts`, bucket = `${worker}-files`;
   if (fresh) {
     if (!name || ['tendriller-staging', 'tendriller-production', current.name].includes(worker)) throw Error('--fresh needs a new explicit --name, distinct from the configured deployment.');
@@ -75,7 +75,11 @@ export function deploymentConfig(plan, databaseId, account) {
       ['FAILED_AUTH_RATE', '105', 20], ['REPORT_RATE', '106', 5],
     ].map(([name, namespace_id, limit]) => ({ name, namespace_id, simple: { limit, period: 60 } })),
     vars: { PUBLIC_BASE: `https://${plan.service}`, PAGE_BASE_DOMAIN: plan.pages, ...(plan.suffix ? { PAGE_HOST_SUFFIX: plan.suffix } : {}), CLOUDFLARE_ACCOUNT_ID: account },
-    routes: [{ pattern: plan.service, custom_domain: true }, { pattern: `*${plan.suffix}.${plan.pages}/*`, zone_name: plan.zone }],
+    routes: [{ pattern: plan.service, custom_domain: true },
+      // A wildcard page route can otherwise intercept the service hostname
+      // before Cloudflare evaluates its Custom Domain.
+      ...(plan.service.endsWith(`.${plan.pages}`) ? [{ pattern: `${plan.service}/*`, zone_name: plan.zone }] : []),
+      { pattern: `*${plan.suffix}.${plan.pages}/*`, zone_name: plan.zone }],
     observability: { enabled: true },
   };
 }
