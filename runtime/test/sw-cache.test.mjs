@@ -280,7 +280,7 @@ test("unannounced active clients prevent cleanup until their publication is know
 test("live API responses and undeclared resources never gain offline cache access", async () => {
   const a = release("1"), net = network(a), sw = await worker(net);
   await sw.install(); await sw.announce("a", a.publication);
-  const paths = ["_tendril/devices", "_tendril/workflows/sessions/responses", "%5Ftendril/session", "_tendril/future-api", "api/private", "app.js", a.publication.base + "not-declared.js", a.publication.base + "app.js?mutable=1"];
+  const paths = ["_tendril/info", "_tendril/peers/participant", "%5Ftendril/session", "_tendril/future-api", "api/private", "app.js", a.publication.base + "not-declared.js", a.publication.base + "app.js?mutable=1"];
   for (const path of paths) {
     const first = await (await sw.request(path)).json();
     const second = await (await sw.request(path)).json();

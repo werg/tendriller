@@ -4,7 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: ".",
   testMatch: ["runtime.spec.ts"],
-  testIgnore: ["**/push/**", "**/tts/**"],
+  testIgnore: ["**/tts/**"],
   timeout: 30_000,
   fullyParallel: false,
   workers: 2,

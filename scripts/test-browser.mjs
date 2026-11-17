@@ -1,5 +1,5 @@
 // Shipping browser suites. The Worker suite covers the current public identity,
-// host delivery, publication coherence and speech flow.
+// signed publication coherence, origin isolation and explicit speech flow.
 import { spawn } from "node:child_process";
 
 const suites = [
