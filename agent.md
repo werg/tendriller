@@ -36,6 +36,12 @@ Publish the immutable descriptor and initial device grants through
 `host.peers.application()` evidence and `host.peers.discover()` routing hints.
 Control configuration retains the owned host publication automatically; this is
 persistent control metadata, not a continuously running application process.
+Ordinary initial members use `{publicKey, accountId?}`. Independent device rights
+are explicit grants; control administration and application data administration
+are separate. If a creator device key is lost, the owner can use
+`host.peers.administerGeneration(...)` with a surviving real peer's complete
+prefix. The host signs through its declared control-only role and cannot read,
+write or coordinate application data.
 See [peer generation controls](docs/PEER_GENERATIONS.md) for exact contracts.
 
 Use the session's public query, command, operation-inspection and view APIs.

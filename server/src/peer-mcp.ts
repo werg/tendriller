@@ -14,4 +14,7 @@ export const PEER_CONTROL_TOOLS: Tool[] = [
   { name: 'select_peer_generation', description: 'Submit an exact signed Chronolog transition at creation, handover, takeover or restrictive control change. Preserve transition identity on lost replies. Never use this for ordinary commands; requester recovery and coordinator rights are verified separately.',
     inputSchema: { type: 'object', properties: { request: { type: 'object' }, control: { type: 'object' } }, required: ['request'], additionalProperties: false },
     call: args => ({ method: 'POST', rest: 'peers/generations', body: { request: args.request, ...(args.control === undefined ? {} : { control: args.control }) } }) },
+  { name: 'administer_peer_generation', description: 'Owner-account administration through the explicit hosted control-only participant, including recovery after device-key loss. Supply a real peer coordinator and complete prefix proof. The host cannot read, write or coordinate application data. Preserve the exact transition on retry.',
+    inputSchema: { type: 'object', properties: { transition: { type: 'object' }, control: { type: 'object' } }, required: ['transition'], additionalProperties: false },
+    call: args => ({ method: 'POST', rest: 'peers/administration', body: { transition: args.transition, ...(args.control === undefined ? {} : { control: args.control }) } }) },
 ];

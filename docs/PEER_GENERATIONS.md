@@ -37,11 +37,18 @@ from the SDK or page runtime. Configuration contains:
 | `epoch`, `keyDigest` | Initial encryption policy; no application body is uploaded |
 | `members` | Explicit device grants plus their authenticated account bindings |
 
-A member is `{ grant, accountId? }`. The portable `PeerGrant` specifies reader,
-writer, coordinator, recovery and administrator rights independently. Omitted
+A member can be `{ publicKey, accountId?, administrator?, dataRole? }`. Chronolog's
+`participantGrant` gives this ordinary participant read, write, coordinator and
+recovery rights, with `dataRole: 'member'` and no control administration by default.
+Set `administrator: true` only for a device that should change control policy.
+Data administration is separate: `dataRole: 'admin'` manages the application's
+shared data collective; becoming coordinator does not grant that role.
+
+Use `{ grant, accountId? }` to specify every portable `PeerGrant` field explicitly:
+reader, writer, coordinator, recovery, administrator and dataRole. Omitted
 `accountId` binds to the authenticated owner's account; additional accounts must
-already be admitted to the page. Host login never replaces a device signature or
-grants application rights by itself.
+already be admitted to the page. Grants are signed application authority; host
+login alone does not confer peer data rights.
 
 The grant also requires `dataRole: 'member' | 'admin' | null` for membership of the
 application's data collective. This is independent of coordinator or control
@@ -53,6 +60,12 @@ with the signed descriptor, initial control and registry. Repeating the exact
 configuration returns the same identity and current authority. A different
 configuration is rejected. A missing retained identity or registry is an explicit
 unavailable condition; the host never silently rekeys or creates empty history.
+
+The initial signed control includes a visible hosted participant created by
+Chronolog's `controlParticipantGrant`: recovery and control administration only,
+with reader, writer and coordinator false and dataRole null. That grant and its
+owner-account binding stay fixed for this hosted policy. The service cannot
+become an application coordinator or issue application commands as this key.
 
 Configuration retains the owned page's lifetime as `resident` and prevents an
 expiration downgrade while signed control state exists. This is an owned durable
@@ -89,6 +102,30 @@ original enrollment account. Grants decide current rights, so retained enrollmen
 provenance does not restore revoked permissions. The selected controls, generation,
 new enrollments and exact transition fingerprint commit atomically.
 
+The host appends its fixed control-only grant when callers provide application
+device grants. Supplying that host grant with different rights is rejected. Old
+device/account bindings remain enrollment provenance, so deactivating an account
+does not prevent the owner from removing its application grant. Admission and
+account activity are checked for new enrollments and every device retaining any
+application or control rights, including dataRole.
+
+### Owner recovery after device-key loss
+
+`peers.administerGeneration(transition, { control? })` is an owner-account-only
+operation. Its transition contains `{ transitionId, expectedGeneration,
+coordinator, controlRevision, reason, base }`. The host pins application scope and
+signs the request as its declared control participant. A real peer supplies the
+candidate key and a complete retained-prefix proof. The same portable verifier
+checks candidate eligibility, exact ancestry and recovery floors.
+
+This path lets an owner rotate devices or recover coordination after losing the
+creator's private key. It preserves the original trust root and does not require
+a surviving device administrator signature. It cannot impersonate a coordinator
+handover, choose the host as coordinator, or bypass a protected recovery floor.
+Exact retries retain the original transition identity, including after a restart.
+The HTTP endpoint is `POST peers/administration`; the signed-device endpoint
+remains `POST peers/generations`.
+
 The host verifies order receipts and ancestry proofs but does not attest that a
 candidate actually has all bodies or has replayed SQL correctly. The Chronolog
 session must validate its complete recovery point before requesting selection.
@@ -113,7 +150,8 @@ Returning excluded work is inspected as an abandoned branch and can only return
 through deliberate new attempts. No old suffix is automatically readopted.
 
 The host MCP offers `peer_application`, `discover_peers`,
-`configure_peer_application` and `select_peer_generation`. Routine application
+`configure_peer_application`, `select_peer_generation` and
+`administer_peer_generation`. Routine application
 commands execute through the agent's own Chronolog session. The host MCP has no
 second operation journal or application command proxy.
 

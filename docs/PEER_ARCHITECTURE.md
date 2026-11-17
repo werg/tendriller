@@ -29,6 +29,12 @@ It embeds Chronolog's portable verifier. The control trust root is retained
 independently of any coordinating device or page publication. It never executes
 application SQL or accepts commands in the generation registry.
 
+The signed controls declare Tendriller's own participant as recovery and control
+administration only. It has no data, authoring or coordination rights. An owner
+can use this explicit role to recover after device-key loss; ordinary participant
+grants come from Chronolog's shared policy helper. Data membership and data
+administration remain independent of the coordinator role.
+
 See [peer generation controls](PEER_GENERATIONS.md) and the normative
 [Chronolog ADR](https://github.com/werg/chronolog-db/blob/feat/portable-peer-core/docs/peer-generation-v1.md).
 
