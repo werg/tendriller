@@ -2,6 +2,9 @@
 
 export declare const PEER_GENERATION_PROFILE: "peer-generation-v1";
 export declare const PEER_GENERATION_POLICY: "eligible-members-v1";
+/** Initial qualified envelope shared by indexed storage, recovery, and transfer. */
+export declare const PEER_MAX_RECORDS = 4096;
+export declare const PEER_MAX_HISTORY_BYTES: number;
 export declare const PEER_GENERATION_CAPABILITIES: Readonly<{
 	readonly ordering: "generation-sequence";
 	readonly applied: true;
@@ -369,6 +372,115 @@ export declare function applicationDescriptionDigest(value: ApplicationDescripti
 export declare function signApplicationSchema(payload: ApplicationSchema, signer: PeerIdentity): Promise<SignedApplicationSchema>;
 /** A trusted schema authority signs genesis state, independently of the control host. */
 export declare function verifyApplicationSchema(schema: SignedApplicationSchema, descriptor: ApplicationDescriptor): Promise<ChangeProgram>;
+/** Delivery interests are separate from signed authority and application history. */
+export declare const PARTICIPANT_PROTOCOL: "chronolog-participant-v1";
+export type ParticipantFacet = "control" | "publication" | "discovery" | "ephemeral" | "database" | "content";
+export interface ParticipantInterest {
+	readonly facet: ParticipantFacet;
+	readonly action: string;
+}
+export interface ParticipantPolicy {
+	readonly role: "control" | "peer";
+	readonly interests: readonly ParticipantInterest[];
+}
+export interface ParticipantRequest extends ParticipantInterest {
+	readonly protocol: typeof PARTICIPANT_PROTOCOL;
+	readonly applicationId: string;
+	readonly requestId: string;
+	readonly payload: unknown;
+}
+export type ParticipantResponse = ParticipantRequest;
+export interface ParticipantExchangeOptions {
+	readonly signal?: AbortSignal;
+}
+export interface ParticipantTransport {
+	readonly applicationId: string;
+	readonly policy: ParticipantPolicy;
+	exchange(request: ParticipantRequest, options?: ParticipantExchangeOptions): Promise<ParticipantResponse>;
+	request<T = unknown>(facet: ParticipantFacet, action: string, payload: unknown, options?: ParticipantExchangeOptions): Promise<T>;
+}
+export declare const PARTICIPANT_LIMITS: Readonly<{
+	pending: 4;
+	depth: 32;
+	bytes: Readonly<{
+		control: number;
+		publication: number;
+		discovery: number;
+		ephemeral: number;
+		database: number;
+		content: number;
+	}>;
+}>;
+/** The host receives lifecycle/control traffic; ordinary data and live UI activity are excluded. */
+export declare const CONTROL_PARTICIPANT_POLICY: ParticipantPolicy;
+export declare const PEER_PARTICIPANT_POLICY: ParticipantPolicy;
+export declare class ParticipantProtocolError extends Error {
+	readonly code: string;
+	constructor(code: string);
+}
+export declare function participantAccepts(policy: ParticipantPolicy, interest: ParticipantInterest): boolean;
+/** Validate before routing or dispatch. A transport policy does not confer author permissions. */
+export declare function validateParticipantRequest(value: unknown, selected?: ParticipantPolicy): ParticipantRequest;
+export declare function createParticipantRequest(input: Omit<ParticipantRequest, "protocol" | "requestId"> & {
+	readonly requestId?: string;
+}, selected?: ParticipantPolicy): ParticipantRequest;
+export declare function createParticipantResponse(request: ParticipantRequest, payload: unknown, selected?: ParticipantPolicy): ParticipantResponse;
+export declare function validateParticipantResponse(value: unknown, request: ParticipantRequest, selected?: ParticipantPolicy): ParticipantResponse;
+/** One bounded request transport. It never polls or substitutes a data-plane fallback. */
+export declare function createParticipantTransport(options: {
+	readonly applicationId: string;
+	readonly policy?: ParticipantPolicy;
+	readonly exchange: (request: ParticipantRequest, options: ParticipantExchangeOptions) => Promise<unknown>;
+}): ParticipantTransport;
+export declare const PUBLICATION_LIMITS: Readonly<{
+	files: 128;
+	bytes: number;
+	manifestBytes: number;
+	revisions: 256;
+	historyBytes: number;
+}>;
+export interface PublicationFile {
+	readonly path: string;
+	readonly hash: string;
+	readonly size: number;
+	readonly type: string;
+}
+/** Presentation can evolve independently; executable application semantics stay descriptor-bound. */
+export interface PublicationManifest {
+	readonly applicationId: string;
+	readonly historyId: string;
+	readonly profile: typeof PEER_GENERATION_PROFILE;
+	readonly controlRevision: number;
+	readonly author: string;
+	readonly operationId: string;
+	readonly revision: number;
+	readonly previous: string | null;
+	readonly definitionDigest: string;
+	readonly executionManifestDigest: string;
+	readonly entry: string;
+	readonly files: readonly PublicationFile[];
+}
+export interface SignedPublication extends Signed<PublicationManifest> {
+	readonly id: string;
+}
+export declare function validatePublicationManifest(input: unknown): PublicationManifest;
+export declare function signPublicationManifest(input: PublicationManifest, signer: PeerIdentity): Promise<SignedPublication>;
+/** Historical validity survives a later administrator change; acceptance uses authorizePublication. */
+export declare function verifyPublicationManifest(input: SignedPublication, authority: PeerAuthority): Promise<void>;
+/** Select a new release only under the current control and exact retained publication head. */
+export declare function authorizePublication(input: SignedPublication, authority: PeerAuthority, previous: SignedPublication | null): Promise<void>;
+/** Publication references authenticate bytes; they never grant access to a provider. */
+export declare function verifyPublicationAsset(file: PublicationFile, input: Uint8Array): Promise<void>;
+export interface PublicationRegistry {
+	read(): Promise<readonly SignedPublication[]>;
+	publish(publication: SignedPublication): Promise<SignedPublication>;
+}
+/** An exclusive control store publishes occasional metadata atomically; asset storage is a transport concern. */
+export declare function createPublicationRegistry(options: {
+	readonly store: PeerStore;
+	readonly authority: () => Promise<AuthorityBundle>;
+	readonly requireExisting?: boolean;
+}): Promise<PublicationRegistry>;
 export declare class PeerGenerationError extends Error {
 	readonly code: string;
 	constructor(code: string);
@@ -386,6 +498,8 @@ export declare function importPeerIdentity(value: {
 	readonly publicKey: string;
 	readonly privateKey: string;
 }): Promise<PeerIdentity>;
+/** Monotonic learned authority: a signed older state or a divergent chain cannot replace it. */
+export declare function assertAuthorityExtension(previous: PeerAuthority, next: PeerAuthority): void;
 export declare function validateHistoryPoint(point: HistoryPoint): void;
 export declare function signApplicationDescriptor(payload: ApplicationDescriptor, signer: PeerIdentity): Promise<SignedApplicationDescriptor>;
 /** The supported shared-application policy; every granted power remains explicit on the wire. */

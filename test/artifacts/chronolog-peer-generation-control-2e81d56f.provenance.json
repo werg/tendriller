@@ -1,15 +1,15 @@
 {
   "repository": "werg/chronolog-db",
-  "source": "dacea5d1d864ad6cca300b956f0a655e58178a2c",
+  "source": "2e81d56f685881f0cb0d7ce118a2797dc4e2c70b",
   "profile": "peer-generation-v1",
   "dirty": false,
   "inputs": [
-    "packages/canonical/node_modules/@noble/hashes/esm/_md.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/_u64.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/crypto.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/sha2.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/sha256.js",
-    "packages/canonical/node_modules/@noble/hashes/esm/utils.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_u64.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js",
+    "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js",
     "packages/canonical/src/bytes.ts",
     "packages/canonical/src/cbor.ts",
     "packages/canonical/src/errors.ts",
@@ -18,10 +18,13 @@
     "packages/canonical/src/index.ts",
     "packages/canonical/src/schema.ts",
     "packages/canonical/src/sync-hash.ts",
+    "packages/peer-generation/package.json",
     "packages/peer-generation/src/codec.ts",
     "packages/peer-generation/src/control-types.ts",
     "packages/peer-generation/src/control.ts",
     "packages/peer-generation/src/definition.ts",
+    "packages/peer-generation/src/participant.ts",
+    "packages/peer-generation/src/publication.ts",
     "packages/peer-generation/src/schema.ts",
     "packages/protocol/src/bytes.ts",
     "packages/protocol/src/cbor.ts",
@@ -36,10 +39,13 @@
     "packages/protocol/src/schema.ts",
     "packages/protocol/src/sealed.ts",
     "packages/protocol/src/sql.ts",
-    "packages/protocol/src/views.ts"
+    "packages/protocol/src/views.ts",
+    "tools/package-peer-generation-control.mjs"
   ],
   "sha256": {
-    "control.mjs": "8b054231d0d8ac3bae18a65d14f88fd904b7959506496cdc9488b9e22e15046a",
-    "control.d.ts": "9ac1eeebb87e18ddae2a76b81b3b2d9a40d10113ed3dabc3ab51fc0bb03f34b4"
+    "control.mjs": "681c8d6c96ce2e85c3b77ccf51d5c45e6e3256e4d16ce9b5d0755bdf2f76ebc0",
+    "control.d.ts": "43d084ab0052418d40091a9fae9e37cde752ccfd6f7b657f45a61e8ad3755378",
+    "participant.mjs": "33545d5069ba8c93c75cbfa8dc6ebdb1881711ab587e7da558a287c7f6d51487",
+    "participant.d.ts": "5636d117c920d7d312199528456989a8095b8ee3d97fbc553c65fffe0b8c6376"
   }
 }
