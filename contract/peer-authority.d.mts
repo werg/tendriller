@@ -508,6 +508,10 @@ export declare function assertReleaseStateExtension(previous: ReleaseState, next
 export declare function verifyReleaseContent(manifest: SignedReleaseManifest, content: ReleaseContentSource, options?: {
 	readonly signal?: AbortSignal;
 }): Promise<void>;
+/** Verify one stored asset before serving its immutable storage version. No page manifest is invented. */
+export declare function verifyReleaseAsset(asset: ReleaseAsset, content: ReleaseContentSource, options?: {
+	readonly signal?: AbortSignal;
+}): Promise<void>;
 /**
  * A control/content participant with no SQL replica or application decryption key.
  * The store has one exclusive durable owner. Content is immutable, and its adapter
