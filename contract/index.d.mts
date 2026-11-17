@@ -64,7 +64,7 @@ export interface RuntimeServices {
 export interface RuntimeApi extends RuntimeServices {}
 export type Contracts = WireContracts;
 export const CONTRACT_VERSION: 3;
-export const CORE_RELEASE: '0.3.0-rc.9';
+export const CORE_RELEASE: '0.3.0-rc.10';
 export { RESOURCE_LIMITS } from './limits.mjs';
 export { assertFilePath } from './paths.mjs';
 export const ROLES: readonly Role[];
