@@ -4,25 +4,27 @@ Tendriller connects an authenticated page to an agent through shared state, even
 
 ## Select the application history first
 
-Choose the authenticated history profile explicitly. The peer-generation preview
-uses `applied()` and separate retained coverage; recovery may abandon a suffix.
-Supply a matching public session archive and qualify its deployment. To require
-an immutable final prefix, select the chronological Chronolog backend and install
-its public Tendriller adapter. Native operation handles use
-`local()` and `final()`; both return accepted or rejected outcomes. Inspect the
-final outcome before dependent work. Queries and views default to the current
-applied final prefix without waiting for pending writes; request local previews
-explicitly. Omitting the application selection uses the hosted Cloudflare
-backend. See [current application backends](docs/APPLICATION_BACKENDS.md).
+New application work follows the selected-history contract: the target `local()`
+means applied here, and `final()` means committed and applied in the selected
+history. Explicit recovery may abandon a recent suffix, including work previously
+reported final. This is a recovery exception, not an immutable-history promise.
+The current public peer-session preview still spells its execution wait
+`applied()` and exposes retained coverage separately through `shared()`; use the
+actual archive API without adding aliases. The historical chronological adapter
+retains its older immutable-prefix guarantee and `local()` / `final()` methods;
+its checks do not qualify the new recovery model. Omitting the application
+selection still uses the hosted Cloudflare backend. See
+[application contracts](docs/APPLICATION_BACKENDS.md).
 
 ### Peer-generation session preview
 
 The host generation-control registry, verifier and lifecycle calls are
 implemented. Chronolog supplies the encrypted replica and public
-`@chronolog/peer-session` preview with native/browser entries. Its preserved packed
-native/events run uses an in-process link and dirty-source artifacts; it does not
-qualify a clean release, actual HTTP control routes, browser/RTC or deployed
-networks. Configuring host controls does not open or connect the session.
+`@chronolog/peer-session` preview with native/browser entries, framed network
+transport and maintained RTC integration. The preserved packed native/events run
+uses an in-process link and dirty-source artifacts. The newer RTC consumer needs
+its own exact-archive evidence; implemented transport does not establish browser
+or Internet/deployed readiness, provider cost or a recovery-age bound. Configuring host controls does not open or connect the session.
 
 The preview composition creates a page with
 `application:{kind:'peer',id:'<64 lowercase hex characters>'}` and uses a public
@@ -70,7 +72,7 @@ Choose the least durable mechanism that satisfies the task:
 | Live presence, previews, device samples, progress | `tendril.signals.send` / `subscribe` |
 | A retained fact or request, with the selected profile's recovery guarantee | Selected backend `events.publish` |
 | State and an event that must succeed together | Selected backend `submit` |
-| An irreversible external action | Explicit protected action or stronger finality profile, with provider idempotency/reconciliation |
+| An external action | Explicit dispatch policy, recovery-aware journal and provider idempotency/reconciliation; protect prerequisites when they must survive recovery |
 
 Hosted owner pages already have an authenticated `tendril.signals` port. A hosted
 agent explicitly opens `await host.connectSignals({signal})` and closes that
@@ -97,8 +99,11 @@ create a new guarded attempt when reapplication is appropriate.
 Use `session.changes({signal})` and capture `session.readView()` for related
 SQL/events/outcomes. Release each captured view. Recovery publishes a coherent
 reset with known abandoned work and an explicit unknown-loss flag.
-The generation profile has no final revision and cannot feed automatic irreversible
-effect workers. Reducers and projections remain free of external effects.
+The current generation preview has no `final()` wait or `finalRevision`; the
+unified target adds no promise of immunity from explicit recovery. Effects need
+explicit dispatch policy, recovery-aware journals and reconciliation. Protect
+complete prerequisites when the application requires them to survive recovery.
+Reducers and projections remain free of external effects.
 
 An agent, membership administrator, finality signer and SQL schema administrator
 are separate roles. Co-location grants no permissions. Authenticate instruction
@@ -115,7 +120,7 @@ use the agent's own application session for queries, commands, operation waits, 
 The Cloudflare state/input/timer procedures below apply only when that backend is
 selected. Publication, blobs, recovery, accounts, diagnostics, and peer bootstrap
 remain host facilities for either deployment. The retained Cloudflare record log
-is optional. Existing chronological and stronger-finality profiles retain their own explicit contracts.
+is optional. Historical chronological guarantees remain attached to their original implementation and evidence.
 
 ## Discover and check requirements
 
@@ -151,7 +156,8 @@ On hosted Cloudflare pages, Web Push can notify the owner even when the page is 
 
 Peer publication has no host-listener prerequisite. The agent session or owning
 Worker consumes the selected profile's events and operation status; only an
-explicitly finalized profile can feed a final-intent effect worker. Its
+historical finalized implementation can feed its existing final-intent worker;
+generation effects require their own recovery-aware dispatch policy. Its
 live signals and peer connections use the independently installed services.
 
 ### Cloudflare conversational delivery

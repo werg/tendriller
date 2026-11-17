@@ -2,12 +2,16 @@
 
 **Implementation status:** the hosted generation-control registry, lifecycle API
 and portable authority verifier are implemented. Chronolog now supplies an
-encrypted replica and public session preview with native/browser entries. The
-preserved independent package run covers native/events sessions over an in-process
-link with dirty-source artifacts. It does not qualify a clean release, actual HTTP
-control routes, physical RTC, browser storage or deployed networks. The
-[chronological backend](APPLICATION_BACKENDS.md) retains its separate `local` /
-`final` contract; adopting a generation session does not reinterpret that history.
+encrypted replica and public session preview with native/browser entries, framed
+network transport and maintained RTC integration. The preserved independent
+package run covers native/events sessions over an in-process link with dirty-source
+artifacts. New transport implementation needs its own exact-archive qualification;
+it does not establish actual HTTP/browser/Internet readiness or a clean release.
+The unified target uses `local()` for applied-here results and `final()` for
+committed/applied selected-history results, with explicit recovery able to abandon
+a recent suffix. The preview still exports `applied()`; historical chronological
+immutability belongs to the [older implementation](APPLICATION_BACKENDS.md), not
+to the proposed method name.
 
 ## Ownership and trust
 
@@ -130,12 +134,13 @@ query, command, operation wait, changes and recovery inspection. The host MCP
 supplies publication and explicit lifecycle controls, with no application proxy
 or second retry journal.
 
-## Optional profiles and evidence
+## Historical implementation and evidence
 
-Existing chronological/finality profiles retain their authenticated guarantees
-and portable membership administration. Stronger settlement, hosted archival,
-protected effects and optional native services are separately selected
-capabilities. They are not prerequisites for generation-scoped collaboration.
+Existing chronological packages retain their authenticated guarantees and original
+evidence. They are not a second architecture mandate for new applications. The
+selected-history target makes recovery and possible suffix loss explicit.
+Effects need recovery-aware journaling and reconciliation; protect their complete
+prerequisites only when the application requires survival of that recovery.
 
 Qualification records distinguish protocol models, loopback, actual
 browser/native/workerd runs and deployed networks. Ordinary-command host traffic

@@ -45,7 +45,9 @@ jobs:
 
   artifacts:
     name: Public package artifacts
-    needs: [check]
+    # Retain independently checked package inputs promptly for paired consumers.
+    # A newer PR commit may cancel the longer browser matrix; these are CI
+    # artifacts, while every deployment still requires the full check job.
     runs-on: ubuntu-latest
     permissions:
       contents: read

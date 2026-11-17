@@ -3,12 +3,16 @@
 **Implementation status:** Tendriller implements the hosted control registry and
 its public SDK, runtime and MCP lifecycle calls. Chronolog supplies the portable
 control verifier, encrypted replica and public `@chronolog/peer-session` preview,
-including native/browser entries. The preserved packed native/events preview
-uses an in-process link and dirty-source artifacts; it does not qualify a clean
-release, actual HTTP control routes, browser/RTC or deployed networks. Configuring
+including native/browser entries, framed network transport and maintained RTC
+integration. The preserved packed native/events report uses an in-process link
+and dirty-source artifacts; it does not qualify the newer RTC path, a clean
+release, actual HTTP control routes or deployed networks. Configuring
 host controls does not install or connect an application session. Supply a matching
-session archive and qualify the selected composition explicitly. The separate
-[chronological backend](APPLICATION_BACKENDS.md) retains `local` / `final` semantics.
+session archive and qualify the selected composition explicitly. The unified
+target uses local/final results with an explicit selected-history recovery
+exception. The current preview exports `applied()`; do not invent a `final()`
+alias. [Historical chronological semantics](APPLICATION_BACKENDS.md) retain their
+original immutable-prefix guarantee and evidence.
 
 The adopted target peer profile is Chronolog's authenticated `peer-generation-v1`
 policy. Its preview session lets a replaceable peer order ordinary commands.
@@ -135,8 +139,8 @@ The host need not see SQL or encrypted command bodies to enforce selected ancest
 
 The session implements the command and recovery contract below. Its independent
 packed preview exercises native/events behavior through the maintained in-process
-link. HTTP control integration, physical RTC and actual browser/deployment behavior
-need separate evidence. Discovery and host MCP calls do not themselves open or
+link. Maintained network/RTC transport now exists; its packed consumer, HTTP
+control integration and actual browser/deployment behavior need their own evidence. Discovery and host MCP calls do not themselves open or
 connect a session.
 
 Use `peers.discover()` and coalesced `peers.advertise()` on join, reconnect or
@@ -155,5 +159,8 @@ The host MCP offers `peer_application`, `discover_peers`,
 commands execute through the agent's own Chronolog session. The host MCP has no
 second operation journal or application command proxy.
 
-Protected external actions and optional stronger finality/archival services remain
-separate capabilities. An applied generation result is never a final receipt.
+External actions need an explicit dispatch policy, recovery-aware journal and
+reconciliation. Protect the complete prerequisite program when its business
+conditions must survive recovery. The preview's applied result does not promise
+irreversibility; neither does the unified target's selected-history final result
+when its documented recovery exception applies.

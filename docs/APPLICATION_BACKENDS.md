@@ -5,8 +5,10 @@ account sessions, publication recovery, explicit blob facilities, connection hin
 and short-lived WebRTC rendezvous. The selected backend owns application persistence, authored operations,
 retry identity, execution, event replay, and finality.
 
-For a resident native agent deployment, select a Chronolog peer backend. Run a
-replica, timers and effect workers in the resident agent service. A finality
+The chronological deployment below records the existing adapter and its historical
+contract. New work follows the selected-history target described under peer-generation
+results; the current session preview still exports `applied()`. In the older
+resident deployment, replicas, timers and effect workers run in the agent service. A finality
 service can run there or on another configured participant; an agent is not
 inherently a finality authority. The browser keeps its own replica. A Cloudflare JSON backend remains available for
 applications that deliberately choose the hosted state authority.
@@ -25,7 +27,7 @@ The selection is immutable. `id` is an application-owned stable identifier, not 
 host token, decryption key, grant, or authority key. Omitting `application` selects
 `{kind:'cloudflare', id:'cf:<page-id>'}`. Publication rollback changes code without
 changing the selected history. An unavailable authority never triggers failover
-to Cloudflare or to a different finality policy. Chronolog replicas always use
+to Cloudflare or to a different finality policy. Historical chronological replicas use
 the same signed author-time execution order. A finality provider supplies
 inclusion evidence and closes the author-time frontier; it does not choose that
 execution order.
@@ -339,14 +341,15 @@ refusal; earlier exact retries remain available.
 
 The public types below define Tendriller's generation-scoped backend contract.
 Chronolog's encrypted replica and public session/native/browser entries are
-implemented as a source-pinned preview. Its independent native/events package
-run uses an in-process link; browser/RTC and deployed integration require separate
-qualification. The session exposes its own query/command/view APIs. Installing
+implemented as a source-pinned preview, now including framed network transport
+and maintained RTC integration. The preserved native/events package run uses an
+in-process link; the newer packed RTC consumer and deployed integration require
+separate qualification. The session exposes its own query/command/view APIs. Installing
 it through this Tendriller contract requires a matching adapter; the existing
 `createChronologApplicationBackend` remains the chronological `local` / `final`
 adapter and does not convert a generation session.
 
-`peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that view. Requests for a final view fail explicitly because this profile does not provide irrevocable settlement.
+`peer-generation-v1` uses a replaceable coordinating peer and explicit recovery to a complete retained prefix. Its public backend declares `profile: 'peer-generation-v1'`. It exposes `view: 'applied'`, an opaque coherent revision, and the selected generation. There is no `finalRevision` on that current preview view. Its public execution wait is `applied()`, and requests for an unsupported final view fail explicitly. The unified target uses `local()` for applied-here results and `final()` for committed/applied selected-history results; explicit recovery may still abandon a recent suffix, including previously final work. Those target method names are not aliases exported by the current preview.
 
 Operations use `operationId` for caller intent and `attemptId` for exact authenticated bytes. Their states are:
 
@@ -362,4 +365,4 @@ A recovery notice identifies the adopted prefix, selected generation, known aban
 
 The host binding's `available` property means that an application adapter is installed. `ready()` also concerns installation. Neither promises peer reachability or synchronized application state. In peer mode `tendril.connected` stays false because there is no hosted application connection; actual readiness and recovery belong to the Chronolog session. Host requests remain explicit and the host never adds another application outbox.
 
-Existing chronological profiles and the hosted JSON backend retain their own explicit finality contracts. No old signed history is reinterpreted as a peer-generation history, and no migration or compatibility layer is supplied for this prerelease refactor.
+The older chronological packages and hosted JSON backend retain their original implementation guarantees and evidence. They are not a separate architecture mandate for new peer applications. No old signed history is silently reinterpreted, and no migration or compatibility layer is supplied for this prerelease refactor.
