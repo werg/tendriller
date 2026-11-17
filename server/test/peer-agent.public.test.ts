@@ -1,5 +1,43 @@
 import { expect, it } from "vitest";
-import { api, apiJson, create } from "./helpers";
+import { api, apiJson, create, inDO, publishFilesJson, req, type Handle } from "./helpers";
+
+it.each(["interactive", "dashboard"])("directs the initial %s peer agent to its selected backend", async mode => {
+  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode }) as Handle & {
+    agent_setup: { event_delivery: string; backend: string; next_step: string };
+  };
+  expect(h.agent_setup).toMatchObject({ event_delivery: "peer", backend: "peer-history" });
+  expect(h.agent_setup.next_step).toContain("Chronolog client");
+  expect(h.agent_setup.next_step).toContain("client.signals");
+  for (const hosted of ["events/socket", "wake/probe", "MCP Events", "stream subscriptions", "scoped producers"])
+    expect(h.agent_setup.next_step).not.toContain(hosted);
+});
+
+it("rejects hosted agent wake sockets and tickets for peer pages while retaining explicit host operations", async () => {
+  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "dashboard" });
+  const socket = await api(h, "GET", "events/socket?after=0", undefined, {
+    Upgrade: "websocket", "Sec-WebSocket-Protocol": `tendriller.agent.v2, ${h.token}`,
+  });
+  expect(socket.status).toBe(409);
+  expect(await socket.json()).toMatchObject({ error: { code: "application_backend" } });
+  const ticket = await api(h, "POST", "events/socket/ticket?after=0");
+  expect(ticket.status).toBe(409);
+  expect(await ticket.json()).toMatchObject({ error: { code: "application_backend" } });
+  expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length,
+    tickets: t.db.one<{ count: number }>("SELECT COUNT(*) AS count FROM socket_tickets")!.count })))
+    .toEqual({ sockets: 0, tickets: 0 });
+  for (const path of ["publications", "members", "logs", "peers/bootstrap"])
+    expect((await api(h, "GET", path)).status, path).toBe(200);
+});
+
+it("publishes an interactive peer page without hosted agent delivery", async () => {
+  const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "interactive" });
+  const receipt = await publishFilesJson(h, { "index.html": "<h1>Peer application</h1>" });
+  expect(receipt).toEqual({ version: 1, head_revision: 1 });
+  expect(await (await req(h.page_url)).text()).toContain("<h1>Peer application</h1>");
+  expect(await inDO(h.id, t => ({ sockets: t.ctx.getWebSockets().length, webhook: t.presenceFacts().webhook,
+    tickets: t.db.one<{ count: number }>("SELECT COUNT(*) AS count FROM socket_tickets")!.count })))
+    .toEqual({ sockets: 0, webhook: false, tickets: 0 });
+});
 
 it("guides peer agents to their selected backend and exposes only host tools", async () => {
   const h = await create({ application: { kind: "peer", id: "peer-history" }, listener: false, mode: "dashboard" });

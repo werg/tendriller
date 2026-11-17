@@ -6,6 +6,7 @@ import { createVersion, listVersions, pointers, rollback, servedVersion, storeCo
 import { HttpError, intParam, json, readBody, readJson } from "./http";
 import { newBlobId, randomB32, sha256Hex } from "./ids";
 import { mutate, replay } from "./scopes";
+import { selectedApplication } from "./application";
 
 export const STORAGE_ROUTE = /^(?:uploads|blobs|file-refs|publications)(?:\/|$)/;
 
@@ -281,7 +282,7 @@ export async function handleStorage(t: Tendril, req: Request, url: URL, actor: s
     const targets = { operations: ["publication.publish"], paths: [["publications"]] };
     const prior = replay<{ version: number; head_revision: number }>(t, actor, input, targets, input);
     if (prior.found) return json(prior.result);
-    if (t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
+    if (selectedApplication(t).kind === "cloudflare" && t.db.get<string>("mode", "interactive") !== "dashboard" && !t.db.get<number>("latest", 0)) {
       const facts = t.presenceFacts();
       if (!facts.agentSocket && !facts.webhook)
         throw new HttpError(428, "listener_required", "Attach a verified agent receiver before launching an interactive page");

@@ -1,6 +1,7 @@
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from "./peers";
 import { applicationSelection } from "../../contract/application.mjs";
+import { selectedApplication } from "./application";
 import runtimeRelease from "./runtime-release.json";
 import { RESOURCE_LIMITS, STREAM_LIMITS } from "../../contract/limits.mjs";
 // The Tendril Durable Object: owns all per-tendril state and logic.
@@ -348,6 +349,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   handle(token: string) {
+    const application = selectedApplication(this);
     return {
       id: this.tid,
       name: this.db.get("name", "Tendril"),
@@ -361,7 +363,11 @@ export class Tendril extends DurableObject<Env> {
       unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes,
         stream_retained_bytes: STREAM_LIMITS.unclaimed_retained_bytes },
       next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Before claim, stream retention and request bodies are each limited to 1 MiB: claim the page before starting a collector or uploading a large backlog. Publication health stays pending until a visible tab loads the new version. Once claimed, set lifetime to resident for a long-lived page.",
-      agent_setup: {
+      agent_setup: application.kind === "peer" ? {
+        event_delivery: "peer",
+        backend: application.id,
+        next_step: "Use the public Chronolog client on the resident or owning browser Worker for the selected backend. Observe durable operations and final events there, and use client.signals for live application messages. Use this host for participant administration and page publication.",
+      } : {
         event_delivery: "not_configured",
         next_step: this.db.get<string>("mode", "interactive") === "dashboard"
           ? "This dashboard may publish without an agent listener. Configure scoped producers and stream subscriptions; producer activity does not establish conversational agent delivery."
