@@ -7,8 +7,15 @@ import { servePageFile, servedVersion, versionFiles, publicationManifest } from 
 import { HttpError, json, readBody, readJson } from "./http";
 import { iconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
-import { allows, authenticatePage } from "./access";
+import { allows, authenticatePage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
+import { requireWritesOpen } from "./service-state";
+
+/** Internal admission result; the Worker consumes it before returning a page response. */
+export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
+export function pageAccessDenied(status: 401 | 403): Response {
+  return new Response(null, { status, headers: { [PAGE_ACCESS_HEADER]: status === 403 ? "unavailable" : "signin", "Cache-Control": "no-store" } });
+}
 
 export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Response> {
   const key = req.headers.get("x-tendril-key") ?? "";
@@ -22,11 +29,28 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (!expected || req.headers.get("Origin") !== expected) throw new HttpError(403, "bad_origin", "Request must originate from this tendril");
   }
   const link = await t.linkForKey(key);
-  if (!link) {
-    if (rest.startsWith("_tendril/")) throw new HttpError(404, "not_found", "Unknown or expired link");
-    return new Response("This link is not valid (it may have expired or been revoked).", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  if (!link) return pageAccessDenied(401);
+  let access: Awaited<ReturnType<typeof authenticatePage>>;
+  try { access = await authenticatePage(t, req, link); }
+  catch (error) {
+    if (error instanceof HttpError && error.status === 401) return pageAccessDenied(401);
+    throw error;
   }
-  const { principal, session } = await authenticatePage(t, req, link);
+  const { principal, session } = access;
+  // Count a display visit in the same authenticated request as the page operation.
+  // Shared platform assets need no visitor entry or second authentication pass.
+  if (principal.role === "display") {
+    await t.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
+    if (t.db.get("disabled", false)) return pageAccessDenied(403);
+    if (!currentPrincipal(t, principal)) return pageAccessDenied(401);
+  }
+  if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    await requireWritesOpen(t.env);
+    // The service-state read yields after authentication. Honor any local
+    // session/link revocation or hold before dispatching a mutation or socket.
+    if (!currentPrincipal(t, principal)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
+  }
+  t.recordAccess();
 
   if (!rest.startsWith("_tendril/")) {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method_not_allowed");

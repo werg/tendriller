@@ -35,7 +35,13 @@ export function recoverLifetimeChange(t: Tendril): Promise<void> {
     await Promise.resolve();
     try {
       await t.env.ACCOUNTS.prepare('UPDATE tendrils SET lifetime = ? WHERE id = ?').bind(target, t.tid).run();
-      t.transaction(() => { t.db.set('lifetime', target); t.db.del(PENDING); });
+      t.transaction(() => {
+        // Resident pages do not write per-request inactivity timestamps. Start
+        // a full idle window when a downgrade finally commits, also on recovery.
+        if (target === 'ad_hoc' && t.db.get<Lifetime>('lifetime', 'ad_hoc') === 'resident')
+          t.db.set('last_access', t.now());
+        t.db.set('lifetime', target); t.db.del(PENDING);
+      });
     } catch (error) {
       if (String(error).includes('account_residents_full')) {
         // This database constraint is a definite rollback, so release its intent.

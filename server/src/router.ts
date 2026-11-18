@@ -16,6 +16,7 @@ import { landingPage } from "./inject";
 import { serviceDescriptor } from "./descriptor";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
+import { PAGE_ACCESS_HEADER } from "./page";
 
 function stub(env: Env, id: string): DurableObjectStub {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
@@ -84,34 +85,42 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     if (page.rest === "_tendril/auth/session" && req.method === "GET") {
       return redeemPageCode(env, page.id, page.key, url.searchParams.get("code") ?? "");
     }
-    const check = await stub(env, page.id).fetch(new Request("https://tendril.internal/claim/check", {
-      headers: { "x-tendril-key": page.key, Cookie: req.headers.get("Cookie") ?? "",
-        "x-visitor-ip": req.headers.get("CF-Connecting-IP") ?? "" },
-    }));
-    if (check.status === 403) return new Response("This page is unavailable pending review.", {
-      status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
-    });
-    if (!check.ok) {
-      if (req.method === "GET" || req.method === "HEAD") {
-        return new Response(null, { status: 302, headers: { Location: `${publicBase(env)}/auth/page?tendril=${page.id}&key=${page.key}`,
-          "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
-      }
-      return errorResponse(401, "unauthorized", "Page sign-in required");
-    }
     const rest = page.rest;
-    const resource = /^_tendril\/assets\/([a-f0-9]{64})\/([A-Za-z0-9_-][A-Za-z0-9_.-]{0,199})$/.exec(rest);
-    if (resource) return immutableAsset(env, req, resource[1], resource[2]);
+    // These platform bytes are already public on the service origin. Fetching
+    // them on a valid page origin must not wake that page or query its account.
     const runtime = /^_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(rest);
-    if (runtime && !runtime[2].split("/").includes(".."))
-      return runtimeAsset(env, req, runtime[1], runtime[2]);
-    if (/^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest)) return asset(env, url, `/${rest}`);
-    if (rest === "_tendril/sw.js") return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
-    return forward(env, page.id, "page", req, url, {
+    const brand = /^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest);
+    if ((req.method === "GET" || req.method === "HEAD") && req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      if (runtime && !runtime[2].split("/").includes("..")) return runtimeAsset(env, req, runtime[1], runtime[2]);
+      if (brand) return asset(env, url, `/${rest}`);
+    }
+    const resource = /^_tendril\/assets\/([a-f0-9]{64})\/([A-Za-z0-9_-][A-Za-z0-9_.-]{0,199})$/.exec(rest);
+    // Optional resources and the scoped service worker keep their existing
+    // access gate; authored files and page APIs authenticate in their one DO call.
+    if (resource || rest === "_tendril/sw.js") {
+      const check = await stub(env, page.id).fetch(new Request("https://tendril.internal/claim/check", {
+        headers: { "x-tendril-key": page.key, Cookie: req.headers.get("Cookie") ?? "",
+          "x-visitor-ip": req.headers.get("CF-Connecting-IP") ?? "" },
+      }));
+      if (!check.ok && ![401, 403, 404].includes(check.status)) return check;
+      await check.body?.cancel();
+      if (!check.ok) return pageAdmissionFailure(req, env, page, check.status === 403);
+      if (resource) return immutableAsset(env, req, resource[1], resource[2]);
+      return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
+    }
+    const response = await forward(env, page.id, "page", req, url, {
       "x-tendril-key": page.key,
       "x-tendril-origin": url.origin,
       "x-tendril-base": page.base,
       "x-tendril-rest": encodeURIComponent(rest),
+      "x-visitor-ip": req.headers.get("CF-Connecting-IP") ?? "",
     });
+    const denied = response.headers.get(PAGE_ACCESS_HEADER);
+    if (denied === "signin" || denied === "unavailable") {
+      await response.body?.cancel();
+      return pageAdmissionFailure(req, env, page, denied === "unavailable");
+    }
+    return response;
   }
 
   if (path.startsWith("/api/")) {
@@ -156,6 +165,17 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
   const runtime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
   if (runtime) return runtimeAsset(env, req, runtime[1], runtime[2]);
   return errorResponse(404, "not_found", "Not found");
+}
+
+function pageAdmissionFailure(req: Request, env: Env, page: { id: string; key: string }, unavailable: boolean): Response {
+  if (unavailable) return new Response("This page is unavailable pending review.", {
+    status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+  });
+  if (req.method === "GET" || req.method === "HEAD") {
+    return new Response(null, { status: 302, headers: { Location: `${publicBase(env)}/auth/page?tendril=${page.id}&key=${page.key}`,
+      "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
+  }
+  return errorResponse(401, "unauthorized", "Page sign-in required");
 }
 
 async function api(req: Request, env: Env, url: URL): Promise<Response> {

@@ -23,9 +23,16 @@ export function requireAccess(principal: Principal, action: AccessAction): void 
   if (!allows(principal, action)) throw new HttpError(403, 'forbidden');
 }
 
+// Cache immutable row snapshots only within this live object. Db invalidates
+// every snapshot on local writes and rollback; time-dependent checks stay below.
+const localToken = (t: Tendril, hash: string) => t.db.cached(`access:token:${hash}`, () =>
+  t.db.one<{ name: string; hash: string }>("SELECT name,hash FROM tokens WHERE hash=?", hash));
+const localSession = (t: Tendril, hash: string) => t.db.cached(`access:session:${hash}`, () =>
+  t.db.one<{ account_id: string; role: Role; expires_at: number }>("SELECT account_id,role,expires_at FROM page_sessions WHERE hash=?", hash));
+
 export async function authenticateAgentToken(t: Tendril, token: string): Promise<AgentPrincipal> {
   const hash = await sha256Hex(token);
-  const row = t.db.one<{ name: string; hash: string }>("SELECT name,hash FROM tokens WHERE hash=?", hash);
+  const row = localToken(t, hash);
   if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
   return { kind: "agent", name: row.name, credentialHash: hash };
 }
@@ -55,7 +62,10 @@ export async function readPageSession(t: Tendril, req: Request): Promise<PageSes
   const token = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
   if (!token) return null;
   const hash = await sha256Hex(token);
-  const read = () => t.db.one<{ account_id: string; role: Role }>("SELECT account_id,role FROM page_sessions WHERE hash=? AND expires_at>?", hash, t.now());
+  const read = () => {
+    const row = localSession(t, hash);
+    return row && row.expires_at > t.now() ? { account_id: row.account_id, role: row.role } : null;
+  };
   const session = read();
   if (!session || !await accountActive(t, session.account_id)) return null;
   // The account query yields; the local session may have expired or been revoked.
@@ -65,15 +75,17 @@ export async function readPageSession(t: Tendril, req: Request): Promise<PageSes
 
 function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "name">): PagePrincipal | null {
   if (t.db.get("disabled", false)) return null;
-  const link = t.db.one<{ role: Role; expires_at: number | null; created_by_agent: number }>("SELECT role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId);
+  const link = t.db.cached(`access:link:${identity.linkId}`, () =>
+    t.db.one<{ role: Role; expires_at: number | null; created_by_agent: number }>("SELECT role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId));
   if (!link || link.role !== identity.role || link.expires_at !== null && link.expires_at <= t.now()) return null;
   if (identity.role === "display") {
     if (link.created_by_agent || !t.db.get("owner_account", null)) return null;
   } else {
-    if (!identity.sessionHash || !t.db.one("SELECT 1 FROM page_sessions WHERE hash=? AND account_id=? AND role=? AND expires_at>?",
-      identity.sessionHash, identity.accountId, identity.role, t.now())) return null;
+    const session = identity.sessionHash && localSession(t, identity.sessionHash);
+    if (!session || session.account_id !== identity.accountId || session.role !== identity.role || session.expires_at <= t.now()) return null;
     if (identity.role === "owner" && identity.accountId !== t.db.get("owner_account", null)) return null;
-    if (identity.role === "guest" && !t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, identity.linkId)) return null;
+    if (identity.role === "guest" && !t.db.cached(`access:guest:${JSON.stringify([identity.accountId, identity.linkId])}`, () =>
+      t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, identity.linkId))) return null;
   }
   return { kind: "page", name: identity.accountId ?? identity.linkId, ...identity };
 }
@@ -82,7 +94,7 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
 export function currentPrincipal(t: Tendril, principal: Principal): Principal | null {
   if (t.db.get("disabled", false)) return null;
   if (principal.kind === "page") return localPagePrincipal(t, principal);
-  return t.db.one("SELECT 1 FROM tokens WHERE hash=? AND name=?", principal.credentialHash, principal.name) ? principal : null;
+  return localToken(t, principal.credentialHash)?.name === principal.name ? principal : null;
 }
 
 export async function authenticatePage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {

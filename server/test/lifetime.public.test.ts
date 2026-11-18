@@ -3,7 +3,8 @@ import { env } from 'cloudflare:workers';
 import type { Tendril } from '../src/tendril';
 import { authenticateAgentToken } from '../src/access';
 import { changeLifetime, lifetimeChangePending } from '../src/lifetime';
-import { api, apiJson, create, inDO, runAlarm } from './helpers';
+import { advance, api, apiJson, create, inDO, runAlarm } from './helpers';
+import { AD_HOC_IDLE } from '../src/limits';
 
 async function resident() {
   const page = await create({ listener: false, application: { id: '45'.repeat(32) } });
@@ -81,4 +82,31 @@ it('continues alarm work and schedules bounded retries while account recovery st
   });
   await runAlarm(page.id);
   expect(await inDO(page.id, t => lifetimeChangePending(t))).toBe(false);
+});
+
+it.each([false, true])('starts a full inactivity window when an old resident page becomes ad-hoc (recovery=%s)', async interrupted => {
+  const page = await resident();
+  await advance(page.id, 2 * AD_HOC_IDLE);
+  if (interrupted) {
+    await inDO(page.id, async t => {
+      const restore = interceptAccountWrite(t, async statement => {
+        await statement.run();
+        throw new Error('Lost downgrade response');
+      });
+      try {
+        await expect(changeLifetime(t, 'ad_hoc')).rejects.toMatchObject({ code: 'lifetime_pending' });
+        // Advance before restoring account access: an already-due cleanup alarm
+        // may otherwise complete the recovery before a separate advance() call.
+        t.skew += 60_000;
+      }
+      finally { restore(); }
+    });
+    await runAlarm(page.id);
+  } else await apiJson(page, 'PATCH', '', { lifetime: 'ad_hoc' });
+  await inDO(page.id, t => {
+    expect(t.exists()).toBe(true);
+    expect(t.db.get('lifetime', '')).toBe('ad_hoc');
+    expect(t.expiresAt()!).toBeGreaterThan(t.now() + AD_HOC_IDLE - 2_000);
+    expect(lifetimeChangePending(t)).toBe(false);
+  });
 });
