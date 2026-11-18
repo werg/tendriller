@@ -68,7 +68,7 @@ function publish(peers: ReturnType<typeof client>['peers'], name: string) {
   });
 }
 
-test('owner claim, retry after a failed readiness request, signed publication, reload and live invitations', async ({ page, browser }) => {
+test('owner claim, reconnect for pushed first publication and live invitations', async ({ page, browser }) => {
   const handle = await createPage('First publication');
   const anonymous = await browser.newContext();
   try {
@@ -79,17 +79,29 @@ test('owner claim, retry after a failed readiness request, signed publication, r
     await anonymous.close();
   }
 
-  let requests = 0;
-  await page.route('**/_tendril/publication-ready', route => {
-    requests++;
-    return requests === 1 ? route.fulfill({ status: 503 }) : route.continue();
+  let connections = 0, checks = 0;
+  const messages: Array<string | Buffer> = [];
+  await page.routeWebSocket('**/_tendril/publication-ready', route => {
+    if (++connections === 1) return route.close({ code: 1011 });
+    route.connectToServer().onMessage(message => {
+      messages.push(message);
+      route.send(message);
+    });
   });
+  await page.route('**/_tendril/publication-ready', route => {
+    checks++;
+    return route.fulfill({ status: 503 });
+  });
+  const failure = page.waitForResponse(response => response.url().endsWith('/_tendril/publication-ready')
+    && response.request().method() === 'HEAD' && response.status() === 503);
   await openHoldingPage(page, handle);
-  await expect(page.getByRole('status')).toContainText('Retrying automatically');
+  await failure;
+  await expect.poll(() => connections).toBe(2);
   const peers = client(handle).peers;
   const release = await publish(peers, 'First signed release');
-  await expect(page.getByRole('heading', { name: 'First signed release' })).toBeVisible({ timeout: 25_000 });
-  expect(requests).toBeGreaterThan(1);
+  await expect(page.getByRole('heading', { name: 'First signed release' })).toBeVisible({ timeout: 10_000 });
+  expect(messages).toEqual(['ready']);
+  expect(checks).toBe(1);
   expect(await peers.publication()).toEqual(release);
 
   const listener = peers.listenInvitations('agent-staging-validation');

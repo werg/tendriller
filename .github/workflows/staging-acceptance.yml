@@ -12,41 +12,72 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  acceptance:
-    runs-on: ubuntu-24.04
+  fixture:
     if: github.ref == 'refs/heads/master'
-    timeout-minutes: 35
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CHRONOLOG_SHA: 5da4974d609fe099f9e3d50ef44cdb30ed8543de
+      EMSDK_VERSION: '4.0.20'
+      EMSDK_SHA: e4fe26ef59168ff44f4c23c466e497bf60b3411e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: ${{ env.CHRONOLOG_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - uses: actions/cache@v4
+        id: wasm
+        with:
+          path: ${{ runner.temp }}/chronolog-fixture/wasm
+          key: chronolog-wasm-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CHRONOLOG_SHA }}-${{ env.EMSDK_VERSION }}-${{ env.EMSDK_SHA }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build exact Chronolog WASM engine
+        if: steps.wasm.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          test "$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)" = "$EMSDK_SHA"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+          node tools/build-wasm-engine.mjs --emsdk "$RUNNER_TEMP/emsdk" --output "$RUNNER_TEMP/chronolog-build"
+          mkdir -p "$RUNNER_TEMP/chronolog-fixture/wasm"
+          cp "$RUNNER_TEMP"/chronolog-build/{manifest.json,sqlite3.mjs,sqlite3.wasm,sqlite3-opfs-async-proxy.js} "$RUNNER_TEMP/chronolog-fixture/wasm/"
+      - name: Build exact public Chronolog package
+        run: |
+          test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
+          node tools/package-peer-session.mjs --sql-native --sql-browser --output "$RUNNER_TEMP/chronolog-fixture/session"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staging-chronolog-fixture
+          path: ${{ runner.temp }}/chronolog-fixture
+          if-no-files-found: error
+          retention-days: 1
+
+  acceptance:
+    needs: [fixture]
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    timeout-minutes: 15
     environment: staging
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm ci
       - run: npm run build
-      - run: npx playwright install --with-deps chromium webkit
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          repository: werg/chronolog-db
-          ref: 5da4974d609fe099f9e3d50ef44cdb30ed8543de
-          path: .chronolog-staging
-          persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: .chronolog-staging/package.json
-      - name: Build exact public Chronolog package and engine
-        working-directory: .chronolog-staging
-        run: |
-          pnpm install --frozen-lockfile
-          git clone --depth 1 --branch 4.0.20 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          test "$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)" = e4fe26ef59168ff44f4c23c466e497bf60b3411e
-          "$RUNNER_TEMP/emsdk/emsdk" install 4.0.20
-          "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.20
-          node tools/package-peer-session.mjs --sql-native --sql-browser --output "$RUNNER_TEMP/session"
-          node tools/build-wasm-engine.mjs --emsdk "$RUNNER_TEMP/emsdk" --output "$RUNNER_TEMP/wasm"
-          npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$RUNNER_TEMP"/session/*.tgz
+          name: staging-chronolog-fixture
+          path: .chronolog-fixture
+      - run: npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts .chronolog-fixture/session/*.tgz
       - name: Smoke and exercise staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -54,6 +85,6 @@ jobs:
           E2E_MOBILE_MATRIX: '1'
         run: |
           export E2E_CHRONOLOG_CONSUMER="$RUNNER_TEMP/consumer"
-          export E2E_CHRONOLOG_WASM="$RUNNER_TEMP/wasm"
+          export E2E_CHRONOLOG_WASM="$GITHUB_WORKSPACE/.chronolog-fixture/wasm"
           node scripts/check-deployment.mjs https://staging.tendriller.dev
           node scripts/run-staging-acceptance.mjs
