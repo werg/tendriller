@@ -79,6 +79,8 @@ jobs:
     needs: [check]
     runs-on: ubuntu-latest
     environment: staging
+    outputs:
+      deployed: ${{ steps.smoke.outputs.deployed }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -108,11 +110,20 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler deploy --config server/wrangler.staging.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
-        run: node scripts/check-deployment.mjs https://staging.tendriller.dev
+        id: smoke
+        run: |
+          node scripts/check-deployment.mjs https://staging.tendriller.dev
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+  staging_acceptance:
+    if: needs.staging.outputs.deployed == 'true'
+    needs: [staging]
+    uses: ./.github/workflows/staging-acceptance.yml
+    secrets: inherit
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, staging]
+    needs: [check, staging_acceptance]
     runs-on: ubuntu-latest
     environment: production
     env:

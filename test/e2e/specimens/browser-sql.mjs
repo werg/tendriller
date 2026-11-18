@@ -5,12 +5,21 @@ const status = text => { el('status').textContent = text; };
 let session, editRevision = 0, currentAnswer = '', nextTask = 0, busy = false, painting = false, pending = false;
 const rendered = new Map();
 const owner = new AbortController();
+let draftKey, latestSubmission = 0;
 const errorStatus = error => status(`Could not complete the request: ${error.message}`);
 
 async function submit(command, input) {
+  const submitted = ++latestSubmission;
   const operation = await session.command(command, input, { operationId: crypto.randomUUID() });
   const outcome = await operation.applied({ signal: AbortSignal.timeout(15_000) });
-  status(outcome.outcome === 'accepted' ? 'Saved' : 'Change rejected. Review the current record and try again.');
+  if (outcome.outcome === 'accepted') {
+    status('Applied here. Waiting for another device to retain the change.');
+    void operation.shared({ signal: owner.signal }).then(() => {
+      if (submitted === latestSubmission) status('Shared with another device.');
+    }, () => { /* Applied work remains visible while no retained copy is observed. */ });
+  } else {
+    status('Change rejected. Review the current record and try again.');
+  }
   return outcome.outcome === 'accepted';
 }
 async function act(work) {
@@ -87,14 +96,30 @@ window.openAcceptanceSession = async options => {
   el('intake').hidden = !isIntake;
   el('answer-form').hidden = !isIntake || session.deviceId !== options.respondent;
   document.querySelector('h1').textContent = isIntake ? 'Private intake' : 'Shared checklist';
+  if (!isIntake) {
+    draftKey = `checklist-draft:${session.deviceId}`;
+    el('title').value = localStorage.getItem(draftKey) || '';
+    if (el('title').value) el('task-draft').textContent = 'Restored draft from this device. It has not been submitted.';
+  }
   await refresh(isIntake);
   if (isIntake) selectCurrentAnswer();
   status('Ready');
   void (async () => {
     for await (const change of session.changes({ signal: owner.signal })) {
       if (change) await refresh(isIntake);
+      if (change?.kind === 'recovery') status('History recovered. Review changes that had not been shared.');
     }
   })().catch(error => { if (!owner.signal.aborted) errorStatus(error); });
+  window.reconnectAcceptanceSession = (channel, remote) => new Promise((resolve, reject) => {
+    const finish = (callback, value) => { clearTimeout(timer); worker.removeEventListener('message', listen); callback(value); };
+    const listen = ({ data }) => {
+      if (data.type === 'reconnected') finish(resolve);
+      if (data.type === 'failure') finish(reject, new Error(data.message));
+    };
+    const timer = setTimeout(() => finish(reject, new Error('Browser SQL reconnect timed out')), 25_000);
+    worker.addEventListener('message', listen);
+    worker.postMessage({ type: 'reconnect', channel, remote });
+  });
   window.closeAcceptanceSession = async () => {
     owner.abort();
     await session.close();
@@ -109,6 +134,16 @@ window.openAcceptanceSession = async options => {
   };
 };
 
+el('title').oninput = () => {
+  if (!draftKey) return;
+  try {
+    localStorage.setItem(draftKey, el('title').value);
+    el('task-draft').textContent = el('title').value ? 'Draft saved on this device.' : '';
+  } catch {
+    el('task-draft').textContent = 'Draft could not be saved. Keep this page open.';
+  }
+};
+
 function selectCurrentAnswer() {
   editRevision = Number(el('current').dataset.revision);
   el('answer').value = currentAnswer;
@@ -120,7 +155,11 @@ el('task-form').onsubmit = event => {
   if (!title) return;
   void act(async () => {
     const id = Date.now() * 1000 + nextTask++ % 1000;
-    if (await submit('add', { id, title })) el('title').value = '';
+    if (await submit('add', { id, title }) && el('title').value.trim() === title) {
+      el('title').value = '';
+      localStorage.removeItem(draftKey);
+      el('task-draft').textContent = '';
+    }
   });
 };
 el('answer-form').onsubmit = event => {

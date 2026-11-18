@@ -81,7 +81,8 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
       expect(JSON.stringify(browserControl)).not.toContain('private answer');
       expect(browserControl.controls[0].payload.grants.filter(grant => grant.dataRole === 'member').map(grant => grant.publicKey).sort())
         .toEqual([a.deviceId, b.deviceId].sort());
-      return;
+      const [count, revision] = (await b.query('summary', null)).value;
+      return { count, revision };
     }
     expect((await add(a, 1, 'Retained task', 'retained')).outcome).toBe('accepted');
     await Promise.all(first.map(link => link.synchronize()));
@@ -96,17 +97,41 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
     expect((await apply(winner, 'finish', 'finish-by-claimant')).outcome).toBe('accepted');
     await Promise.all(first.map(link => link.synchronize()));
     expect((await b.query('assignment', 1)).value).toEqual([winner.deviceId, 1]);
+    const slot = 'Workshop bench · 15:00';
+    const book = async (session, command, operationId) =>
+      (await session.command(command, slot, { operationId })).applied({ signal: AbortSignal.timeout(12_000) });
+    const reservations = await Promise.all([book(a, 'reserve', 'reserve-a'), book(b, 'reserve', 'reserve-b')]);
+    expect(reservations.map(result => result.outcome).sort()).toEqual(['accepted', 'rejected']);
+    const [holder, waiting] = reservations[0].outcome === 'accepted' ? [a, b] : [b, a];
+    expect((await book(waiting, 'cancel', 'not-holder')).outcome).toBe('rejected');
+    expect((await book(holder, 'cancel', 'release-slot')).outcome).toBe('accepted');
+    expect((await book(waiting, 'reserve', 'book-after-release')).outcome).toBe('accepted');
+    await Promise.all(first.map(link => link.synchronize()));
+    expect((await b.query('reservations', null)).value).toEqual([[slot, waiting.deviceId]]);
     await Promise.all(first.map(link => link.close()));
     const reconnected = await connect(a, b);
     expect(await b.operations.get('retained', { author: a.deviceId })).toMatchObject({ outcome: 'accepted' });
     await Promise.all(reconnected.map(link => link.close()));
+    expect((await add(a, 4, 'Local edit before loss', 'offline-tail')).outcome).toBe('accepted');
+    expect((await b.query('tasks', null)).value.rows).toEqual([[1, 'Retained task']]);
     await a.close();
     await b.recovery.takeover(peers, { transitionId: randomUUID() });
     expect((await add(b, 3, 'After takeover', 'after-takeover')).outcome).toBe('accepted');
+    const returning = await open(await openDevice('a'), 'a');
+    const restored = await connect(returning, b);
+    expect(await returning.operations.get('offline-tail')).toMatchObject({ status: 'abandoned' });
+    expect((await b.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover']]);
+    const review = await returning.query('tasks', null);
+    const retry = await returning.reapply('offline-tail', 'add', { id: 4, title: 'Reviewed edit' },
+      { operationId: 'reviewed-tail', basedOn: review.revision });
+    expect((await retry.applied({ signal: AbortSignal.timeout(12_000) })).outcome).toBe('accepted');
+    await Promise.all(restored.map(link => link.synchronize()));
+    expect((await b.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover'], [4, 'Reviewed edit']]);
+    await Promise.all(restored.map(link => link.close()));
     await b.close();
     const reopened = await open(await openDevice('b'), 'b');
     expect(reopened.deviceId).toBe(bDevice.identity.publicKey);
-    expect((await reopened.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover']]);
+    expect((await reopened.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover'], [4, 'Reviewed edit']]);
     expect((await reopened.operations.get('after-takeover')).outcome).toBe('accepted');
     expect((await reopened.query('assignment', 1)).value).toEqual([winner.deviceId, 1]);
   } finally {

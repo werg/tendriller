@@ -97,17 +97,30 @@ export async function openBrowserSqlSpecimen(options: {
     entry: 'index.html', files }, signer);
   await peers.publish(publication, assets);
   await Promise.all(pages.map(page => expect(page.getByRole('heading', { name: 'Shared work' })).toBeVisible({ timeout: 25_000 })));
-  const channel = randomUUID();
-  const open = async (fixture: Fixture, remote?: string) => {
+  const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
       { name: fixture.name, remote, channel, key: Array.from(key), respondent: isPrivate ? first.id : undefined });
     await expect(fixture.page.getByRole('status').first()).toHaveText('Ready');
   };
-  await Promise.all([open(first, second.id), open(second, first.id)]);
-  return { async reopenFirst() {
-    await first.page.evaluate(async () => (window as any).closeAcceptanceSession());
-    await first.page.reload();
-    await open(first);
-  } };
+  const pair = () => {
+    const channel = randomUUID();
+    return Promise.all([open(first, second.id, channel), open(second, first.id, channel)]);
+  };
+  await pair();
+  return {
+    async reopenFirst() {
+      const context = first.page.context();
+      await first.page.close();
+      first.page = await context.newPage();
+      await first.page.goto(pageUrl);
+      await open(first);
+      return first.page;
+    },
+    async reconnect() {
+      const channel = randomUUID();
+      await Promise.all([[first, second], [second, first]].map(([local, remote]) => local.page.evaluate(
+        input => (window as any).reconnectAcceptanceSession(input.channel, input.remote), { channel, remote: remote.id })));
+    },
+  };
 }

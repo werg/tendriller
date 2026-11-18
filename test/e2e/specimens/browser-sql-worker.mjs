@@ -6,8 +6,22 @@ import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { createPeersClient } from '@tendriller/core/peers';
 import { checklist, intake } from './sql-domains.mjs';
 
-let session, pool;
+let session, pool, peers, link;
+async function connect(channel, remote) {
+  await link?.close();
+  const relay = peers.relay(channel, session.deviceId, { remotePeerId: remote, signal: session.signal });
+  const connection = await openWebSocketConnection(relay, { ready: relay.ready, signal: session.signal });
+  link = await session.connectPeer({ connection, peerIdentity: remote });
+  await link.synchronize();
+}
 self.addEventListener('message', async ({ data }) => {
+  if (data?.type === 'reconnect' && session) {
+    try {
+      await connect(data.channel, data.remote);
+      self.postMessage({ type: 'reconnected' });
+    } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
+    return;
+  }
   if (data?.type === 'release-engine') {
     try { await pool?.pauseVfs(); }
     finally { self.postMessage({ type: 'closed' }); }
@@ -26,7 +40,7 @@ self.addEventListener('message', async ({ data }) => {
     const device = await openBrowserDevice({ name: data.name });
     const definition = data.respondent ? intake(log, data.respondent) : checklist(log);
     const base = new URL('_tendril/', data.base);
-    const peers = createPeersClient({ applicationId: data.applicationId, base: base.href,
+    peers = createPeersClient({ applicationId: data.applicationId, base: base.href,
       async request(path, { method = 'GET', body, signal } = {}) {
         const response = await fetch(new URL(path, base), { method, signal, cache: 'no-store',
           ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }) });
@@ -45,12 +59,7 @@ self.addEventListener('message', async ({ data }) => {
         return createBrowserSqlEngine({ ...loaded, vfs: pool.vfsName });
       },
     });
-    if (data.remote) {
-      const relay = peers.relay(data.channel, session.deviceId, { remotePeerId: data.remote, signal: session.signal });
-      const connection = await openWebSocketConnection(relay, { ready: relay.ready, signal: session.signal });
-      const link = await session.connectPeer({ connection, peerIdentity: data.remote });
-      await link.synchronize();
-    }
+    if (data.remote) await connect(data.channel, data.remote);
     serveApplicationWorker(session, self);
     self.postMessage({ type: 'open' });
   } catch (error) {

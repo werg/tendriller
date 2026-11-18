@@ -2,7 +2,9 @@ export function checklist(log) {
   const collective = log.bytesToHex(log.APPLICATION_COLLECTIVE_ID);
   return log.defineApplication({
     id: 'staging-shared-tasks', version: '1',
-    schema: log.program('CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)'),
+    schema: log.program(
+      'CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)',
+      'CREATE TABLE reservations (slot TEXT PRIMARY KEY, holder TEXT NOT NULL)'),
     commands: {
       add: log.defineCommand({
         description: 'Add a task and record a corresponding event',
@@ -25,8 +27,22 @@ export function checklist(log) {
           log.sqlStatement('UPDATE tasks SET done=1 WHERE id=?', [id]),
           log.emit('task.finished', { id })),
       }),
+      reserve: log.defineCommand({
+        description: 'Reserve a specific resource and time slot', input: { type: 'string', maxLength: 80 },
+        prepare: slot => log.program(log.sqlStatement(
+          `INSERT INTO reservations (slot,holder,chronolog_owner) VALUES(?,lower(hex(chronolog_actor())),
+            (SELECT id FROM chronolog_principals WHERE key=X'${collective}'))`, [slot]), log.emit('slot.reserved', { slot })),
+      }),
+      cancel: log.defineCommand({
+        description: 'Release a reservation held by the signed-in device', input: { type: 'string', maxLength: 80 },
+        prepare: slot => log.program(
+          log.sqlStatement("SELECT chronolog_assert((SELECT holder=lower(hex(chronolog_actor())) FROM reservations WHERE slot=?),'holder_required')", [slot]),
+          log.sqlStatement('DELETE FROM reservations WHERE slot=?', [slot]), log.emit('slot.released', { slot })),
+      }),
     },
     queries: {
+      reservations: log.defineQuery({ description: 'Read the current reservations', input: { type: 'null' },
+        read: view => view.query('SELECT slot,holder FROM reservations ORDER BY slot').rows }),
       board: log.defineQuery({ description: 'Read tasks and their assignments from the same revision', input: { type: 'null' },
         read: view => view.query('SELECT id,title,claimed_by,done FROM tasks ORDER BY id LIMIT 200').rows }),
       assignment: log.defineQuery({ description: 'Read assignee and completion', input: { type: 'integer' },
@@ -57,6 +73,8 @@ export function intake(log, respondent) {
       }),
     },
     queries: {
+      summary: log.defineQuery({ description: 'Review only count and source revision', input: { type: 'null' },
+        read: view => view.query('SELECT COUNT(*),coalesce(MAX(revision),0) FROM answer').rows[0] }),
       answer: log.defineQuery({ description: 'Read the current private answer', input: { type: 'null' },
         read: view => view.query('SELECT body,revision FROM answer WHERE id=1').rows }),
     },

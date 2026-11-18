@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { devices, expect, test, webkit, type Page } from '@playwright/test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createClient } from '../../dist/sdk/client.mjs';
 import { publishAssetGraph } from './publication-helpers';
@@ -36,7 +36,7 @@ test.afterAll(async () => {
   expect(handles.map(handle => handle.id), 'staging test pages pending final cleanup').toEqual([]);
 });
 
-async function createPage(name: string): Promise<Handle> {
+async function createPage(name: string, intendedOwner = owner.email): Promise<Handle> {
   // Staging allows five creations per minute per runner IP.
   if (createAttempts.length === 5) {
     const first = createAttempts.shift()!;
@@ -44,7 +44,7 @@ async function createPage(name: string): Promise<Handle> {
   }
   createAttempts.push(Date.now());
   const response = await fetch(`${staging}/api/tendrils`, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, owner: owner.email }) });
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, owner: intendedOwner }) });
   expect(response.status, `Page creation returned HTTP ${response.status}`).toBe(201);
   const handle = await response.json() as Handle;
   handles.push(handle);
@@ -214,7 +214,7 @@ test('field inspection keeps a photo and notes through offline reload and reconn
   await page.getByRole('button', { name: 'Discard local draft' }).click();
 });
 
-test('private intake permits a correction and rejects a stale or unauthorized edit', async ({ page, browser }) => {
+test('private intake permits corrections and releases only a reviewed aggregate to a separate audience', async ({ page, browser }) => {
   const consumer = process.env.E2E_CHRONOLOG_CONSUMER;
   test.skip(!consumer, 'Install an exact --sql-native Chronolog archive and set E2E_CHRONOLOG_CONSUMER');
   const { runStagingSql } = await import('./staging-sql');
@@ -226,11 +226,67 @@ test('private intake permits a correction and rejects a stale or unauthorized ed
     await outsider.signIn(context);
     const response = await context.request.get(handle.page_url);
     expect(response.status()).toBe(403);
+    const summary = await runStagingSql({ consumer: consumer!, handle, page, peers: client(handle).peers, privateIntake: true });
+    expect(summary).toEqual({ count: 1, revision: 2 });
+    const shared = await createPage('Reviewed intake summary', outsider.email);
+    const display = await context.newPage();
+    await openHoldingPage(display, shared);
+    await publishAssetGraph(client(shared).peers, {
+      'index.html': { type: 'text/html', body: '<!doctype html><html lang="en"><head><title>Reviewed results</title></head><body><h1>Reviewed results</h1><p id="count"></p><script type="module" src="./results.mjs"></script></body></html>' },
+      'results.mjs': { type: 'text/javascript', body: `const summary = ${JSON.stringify(summary)}; document.querySelector("#count").textContent = \`Responses received: \${summary.count} · Reviewed revision \${summary.revision}\`;` },
+    });
+    await expect(display.getByText('Responses received: 1 · Reviewed revision 2')).toBeVisible({ timeout: 25_000 });
+    expect(shared.application.id).not.toBe(handle.application.id);
+    expect(await display.locator('body').textContent()).not.toContain('Corrected private answer');
+    const result = await context.request.get(new URL('results.mjs', display.url()).href);
+    expect(await result.text()).not.toContain('private answer');
   } finally {
     await context.close();
+    await cleanPages();
     outsider.close();
   }
-  await runStagingSql({ consumer: consumer!, handle, page, peers: client(handle).peers, privateIntake: true });
+});
+
+test('mobile inspection keeps drafts across connectivity loss and offers camera fallback', async ({ browser }) => {
+  test.skip(process.env.E2E_MOBILE_MATRIX !== '1', 'Install Chromium and WebKit and set E2E_MOBILE_MATRIX=1');
+  const { readFile } = await import('node:fs/promises');
+  const handle = await createPage('Mobile inspection');
+  const mobileWebKit = await webkit.launch();
+  try {
+    const android = await browser.newContext({ ...devices['Pixel 7'] });
+    const iphone = await mobileWebKit.newContext({ ...devices['iPhone 14'] });
+    try {
+      for (const context of [android, iphone]) {
+        await owner.signIn(context);
+        await context.addInitScript(() => {
+          if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = async () => {
+            throw new DOMException('Permission denied by the test device', 'NotAllowedError');
+          };
+        });
+      }
+      const pages = await Promise.all([android.newPage(), iphone.newPage()]);
+      await Promise.all(pages.map(page => openHoldingPage(page, handle)));
+      await publishAssetGraph(client(handle).peers, {
+        'index.html': { type: 'text/html', body: await readFile('test/e2e/specimens/inspection.html', 'utf8') },
+        'inspection.mjs': { type: 'text/javascript', body: await readFile('test/e2e/specimens/inspection.mjs', 'utf8') },
+      });
+      for (const [index, page] of pages.entries()) {
+        await expect(page.locator('main')).toHaveAttribute('data-ready', 'true', { timeout: 25_000 });
+        await page.getByRole('button', { name: 'Take evidence photo' }).tap();
+        await expect(page.locator('#result')).toHaveText('Could not take a photo. You can choose an image instead.');
+        await expect(page.getByLabel('Evidence photo')).toBeEnabled();
+        const draft = `Mobile draft ${index + 1}`;
+        await page.getByLabel('Inspection notes').fill(draft);
+        await page.context().setOffline(true);
+        try {
+          await page.getByRole('button', { name: 'Save draft on this device' }).tap();
+          await expect(page.locator('#result')).toHaveText('Draft saved on this device.');
+        } finally { await page.context().setOffline(false); }
+        await page.reload();
+        await expect(page.getByLabel('Inspection notes')).toHaveValue(draft);
+      }
+    } finally { await Promise.all([android.close(), iphone.close()]); }
+  } finally { await mobileWebKit.close(); }
 });
 
 for (const isPrivate of [false, true]) {
@@ -284,8 +340,19 @@ for (const isPrivate of [false, true]) {
         await expect(page.getByRole('button', { name: 'Claim task' })).toBeDisabled();
         await second.getByRole('button', { name: 'Complete task' }).click();
         await expect(page.getByText('Check the spare tire · Done')).toBeVisible();
-        await fixture.reopenFirst();
-        await expect(page.getByText('Check the spare tire · Done')).toBeVisible();
+        await secondContext.setOffline(true);
+        await page.getByLabel('Task title').fill('Check the jack');
+        await expect(page.getByText('Draft saved on this device.')).toBeVisible();
+        const reopened = await fixture.reopenFirst();
+        await expect(reopened.getByText('Check the spare tire · Done')).toBeVisible();
+        await expect(reopened.getByLabel('Task title')).toHaveValue('Check the jack');
+        await expect(reopened.getByText('Restored draft from this device. It has not been submitted.')).toBeVisible();
+        await reopened.getByRole('button', { name: 'Add task' }).click();
+        await expect(reopened.getByText('Check the jack · Open')).toBeVisible();
+        await expect(reopened.getByRole('status').first()).toHaveText('Applied here. Waiting for another device to retain the change.');
+        await secondContext.setOffline(false);
+        await fixture.reconnect();
+        await expect(second.getByText('Check the jack · Open')).toBeVisible();
       }
     } finally {
       await secondContext.close();
