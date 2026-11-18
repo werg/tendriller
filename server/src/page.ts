@@ -1,3 +1,4 @@
+import { watchPublication } from "./publication-watch";
 import { PEER_ROUTE, handlePeers } from "./peers";
 import { handleApplication, selectedApplication } from "./application";
 // Page routes under P (PROTOCOL section 2.1), executed inside the Tendril Durable Object.
@@ -7,7 +8,7 @@ import { servePageFile, servedVersion, versionFiles, publicationManifest } from 
 import { HttpError, json, readBody, readJson } from "./http";
 import { iconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
-import { accountActive, allows, authenticatePage, currentPrincipal } from "./access";
+import { allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
@@ -25,15 +26,16 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   // Before PSL acceptance sibling tendrils are same-site. Check the actual
   // browser origin for every mutation and WebSocket upgrade; cookies alone
   // cannot distinguish a hostile sibling origin.
-  const writes = req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+  const upgrade = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+  const writes = req.method !== "GET" && req.method !== "HEAD" || upgrade;
   if (writes) {
     const expected = req.headers.get("x-tendril-origin");
     if (!expected || req.headers.get("Origin") !== expected) throw new HttpError(403, "bad_origin", "Request must originate from this tendril");
   }
   const link = await t.linkForKey(key);
   if (!link) return pageAccessDenied(401);
-  let access: Awaited<ReturnType<typeof authenticatePage>>;
-  try { access = await authenticatePage(t, req, link); }
+  let access: Awaited<ReturnType<typeof authenticateLocalPage>>;
+  try { access = await authenticateLocalPage(t, req, link); }
   catch (error) {
     if (error instanceof HttpError && error.status === 401) return pageAccessDenied(401);
     throw error;
@@ -50,10 +52,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   // it could spend the page or owner's request allowance. Preserve that boundary
   // inside this single DO call, including display visits that hold the page.
   await admitPageTraffic(t.env, t.tid, t.db.get<string | null>("owner_account", null));
-  if (writes) await requireWritesOpen(t.env);
-  // A guest's account can be suspended without changing this page's SQL.
-  const active = principal.role !== "guest" || !principal.accountId || await accountActive(t, principal.accountId);
-  if (!currentPrincipal(t, principal, key) || !active) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
+  if (writes && !(upgrade && rest === "_tendril/publication-ready")) await requireWritesOpen(t.env);
+  const policy = await t.checkPagePolicy(principal.role === "display" ? null : principal.accountId);
+  if (policy === "page") return pageAccessDenied(403);
+  if (policy === "visitor" || !currentPrincipal(t, principal, key)) return pageAccessDenied(401);
   t.recordAccess();
 
   if (!rest.startsWith("_tendril/")) {
@@ -131,6 +133,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ ok: true });
   }
 
+  if (sub === "publication-ready" && m === "GET" && upgrade) return watchPublication(t, principal, key);
   if (sub === "publication-ready" && m === "HEAD") {
     return new Response(null, { status: servedVersion(t) > 0 ? 204 : 202, headers: { "Cache-Control": "no-store" } });
   }

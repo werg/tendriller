@@ -1,3 +1,4 @@
+import { isPublicationWatch } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
 import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expireRelays } from './peer-relay';
@@ -24,7 +25,7 @@ import type { Features } from './inject';
 import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR } from './limits';
 import { handlePage, pageAccessDenied } from './page';
 import { apiUrl, pageUrl, publicBase } from './urls';
-import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession } from './access';
+import { authenticateAgent, authenticateAgentToken, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
 import type { Role } from '../../contract/index.mjs';
 export type { Role } from '../../contract/index.mjs';
 
@@ -85,6 +86,16 @@ export class Tendril extends DurableObject<Env> {
     if (this.db.get<number>("last_access", 0) < through) this.db.set("last_access", through);
   }
 
+  async checkPagePolicy(visitor: string | null = null) {
+    const status = await pagePolicy(this, visitor);
+    if (status === "page" && this.db.get<string | null>("owner_account", null)) {
+      this.db.set("disabled", true);
+      this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
+      this.scheduleAlarm();
+    }
+    return status;
+  }
+
   // ---------------------------------------------------------------- dispatch
 
   /** Agent/control admission precedes handling; page admission charges after authentication. */
@@ -107,12 +118,8 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "agent" || kind === "page" || kind === "claim") {
         await recoverLifetimeChange(this);
         const owner = this.db.get<string | null>("owner_account", null);
-        if (owner) {
-          if (!await pageAccessAllowed(this)) {
-            this.db.set("disabled", true);
-            this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
-            this.scheduleAlarm();
-            if (kind === "page") return pageAccessDenied(403);
+        if (owner && kind !== "page" && url.pathname !== "/claim/check") {
+          if (await this.checkPagePolicy() === "page") {
             throw new HttpError(403, "disabled", "This tendril is unavailable");
           }
         }
@@ -183,6 +190,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isPublicationWatch(ws)) { ws.close(1008, "Publication watch is receive-only"); return; }
     if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
     // Relay packets have separate packet/byte/credit bounds. Their unchanged
     // local credentials are cached; cold or invalidated credentials need SQL.
@@ -397,11 +405,14 @@ export class Tendril extends DurableObject<Env> {
       return json({ status: row?.approved === 1 ? "approved" : row?.approved === -1 ? "declined" : row ? "pending" : "none" });
     }
     if (url.pathname === "/claim/check" && req.method === "GET") {
-      const { principal } = await authenticatePage(this, req, link);
+      const { principal } = await authenticateLocalPage(this, req, link);
       if (principal.role === "display") {
         await this.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
         if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
       }
+      const status = await this.checkPagePolicy(principal.role === "display" ? null : principal.accountId);
+      if (status === "page") throw new HttpError(403, "disabled");
+      if (status === "visitor" || !currentPrincipal(this, principal, key)) throw new HttpError(401, "unauthorized");
       return json({ role: principal.role });
     }
     if (url.pathname === "/claim/session" && req.method === "POST") {

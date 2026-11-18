@@ -58,9 +58,10 @@ export async function uploadRuntimeFile({ bucket, key, path, type, remote = fals
 }
 
 export async function installRuntimeResources({ bucket, manifest, registry = RUNTIME_RESOURCES,
-  remote = false, configPath, fetcher = fetch, upload = uploadRuntimeFile }) {
+  remote = false, configPath, fetcher = fetch, upload = uploadRuntimeFile, needed = () => true }) {
   if (!/^[a-z0-9-]+$/.test(bucket ?? '')) throw Error('Pass an R2 bucket name');
-  const resources = declaredRuntimeResources(manifest, registry);
+  const resources = declaredRuntimeResources(manifest, registry).filter(resource => needed(resource.url.slice('_tendril/'.length)));
+  if (!resources.length) return 0;
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-resources-'));
   try {
     for (const resource of resources) {

@@ -147,15 +147,38 @@ describe('page request cost and admission', () => {
       return t.renderLink(link);
     });
     const router = countedRouter(), headers = { Cookie: `__Host-tendril=${secret}` };
-    const allowed = await router.fetch(guest.url + '_tendril/application', { headers });
-    expect(allowed.status).toBe(200); await allowed.text();
+    const reads: string[] = [];
+    const restore = await inDO(h.id, t => {
+      const original = t.env.ACCOUNTS;
+      t.env.ACCOUNTS = new Proxy(original, { get(target, key) {
+        if (key === 'prepare') return (query: string) => { reads.push(query); return target.prepare(query); };
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      return () => { t.env.ACCOUNTS = original; };
+    });
+    try {
+      for (const [url, requestHeaders] of [[h.page_url, ownerHeaders(h.page_url)], [guest.url, headers]] as const) {
+        reads.length = 0;
+        const allowed = await router.fetch(url + '_tendril/application', { headers: requestHeaders });
+        expect(allowed.status).toBe(200); await allowed.text();
+        expect(reads).toHaveLength(1);
+        expect(reads[0]).toContain('visitor_active');
+      }
+      await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), account).run();
+      const denied = await router.fetch(guest.url + '_tendril/application', { headers });
+      expect(denied.status).toBe(302);
+      // A suspended guest does not put the owner's page on hold.
+      expect((await router.fetch(h.page_url, { headers: ownerHeaders(h.page_url), method: 'HEAD' })).status).toBe(200);
+      await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=NULL WHERE id=?').bind(account).run();
+    } finally { await inDO(h.id, restore); }
     const forbidden = await router.fetch(guest.url + '_tendril/agents', { headers });
     expect(forbidden.status).toBe(403);
     expect(await forbidden.json()).toMatchObject({ error: { code: 'forbidden' } });
     await inDO(h.id, t => t.db.run('UPDATE guest_accounts SET approved=0 WHERE account_id=?', account));
     const revoked = await router.fetch(guest.url + '_tendril/application', { headers });
     expect(revoked.status).toBe(302);
-    expect(router.calls).toEqual(['/page', '/page', '/page']);
+    expect(router.calls).toHaveLength(6);
   });
 
   it('records display visitors on authored requests while shared assets remain free of page work', async () => {

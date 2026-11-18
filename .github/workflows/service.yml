@@ -30,15 +30,23 @@ jobs:
         id: storage
         run: echo "revision=$(node scripts/storage-schema.mjs)" >> "$GITHUB_OUTPUT"
       - run: npm run check
-      - id: chromium
-        if: matrix.node == '24'
-        run: npx playwright install --with-deps chromium
-      - if: matrix.node == '24'
-        run: npm run test:browser
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:browser
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: browser-failure-traces-node-${{ matrix.node }}
+          name: browser-failure-traces
           path: test-results/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -76,7 +84,7 @@ jobs:
 
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check]
+    needs: [check, browser]
     runs-on: ubuntu-latest
     environment: staging
     outputs:
