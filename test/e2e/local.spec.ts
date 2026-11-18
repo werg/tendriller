@@ -8,11 +8,12 @@ test('verified owner claims a page and executes its signed authored module', asy
     expect(handle.application.id).toMatch(/^[a-f0-9]{64}$/);
     expect(handle.token).toMatch(/^tk_/);
     await signInFixture(context); await claim(context, handle);
+    await openClaimed(page, handle);
+    await expect(page.getByRole('heading')).toHaveText(/is getting ready/);
     const release = await publishFiles(handle, {
       'index.html': { type: 'text/html', body: '<!doctype html><html><head><title>Signed page</title></head><body><h1 id="welcome"></h1><script type="module" src="./page.mjs"></script></body></html>' },
       'page.mjs': { type: 'text/javascript', body: 'document.querySelector("#welcome").textContent = "Hello, owner";' },
     });
-    await openClaimed(page, handle);
     await expect(page.locator('#welcome')).toHaveText('Hello, owner');
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);

@@ -87,8 +87,9 @@ test('owner claim, retry after a failed readiness request, signed publication, r
   }
 
   await publish(peers, 'Second signed release');
-  await expect(page.getByRole('heading')).toHaveText('First signed release');
   await page.reload();
+  await expect(page.getByRole('heading')).toHaveText('First signed release');
+  await page.getByRole('link', { name: 'Open latest version' }).click();
   await expect(page.getByRole('heading')).toHaveText('Second signed release');
 });
 

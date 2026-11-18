@@ -10,11 +10,16 @@ export function mountUtility(api: RuntimeApi): () => void {
   const style = document.createElement("style");
   style.textContent = `:host{all:initial;color-scheme:light dark;font:13px/1.4 system-ui}nav{display:flex;align-items:center;gap:8px;padding:6px;border:1px solid #737373;border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 2px 12px #0002}a,button{font:inherit;color:inherit;padding:6px 9px;border:0;border-radius:7px;background:transparent;text-decoration:none;cursor:pointer}a:focus-visible,button:focus-visible{outline:2px solid Highlight;outline-offset:2px}button{background:#a32020;color:white}span{max-width:45vw}button[hidden],span[hidden]{display:none}`;
   const nav = document.createElement("nav"); nav.setAttribute("aria-label", "Page operations");
+  const latest = document.createElement("a");
+  latest.href = api.identity.base;
+  latest.textContent = "Open latest version";
+  latest.title = "Open the currently selected publication";
   const link = document.createElement("a"); link.href = api.identity.managementUrl; link.textContent = "Manage page";
   link.title = "Page recovery and device management"; link.target = "_blank"; link.rel = "noopener";
   const active = document.createElement("span"); active.setAttribute("role", "status");
   const stop = document.createElement("button"); stop.type = "button"; stop.textContent = "Stop sensors";
   stop.addEventListener("click", () => api.sensors.stopAll());
+  if (api.identity.version > 0) nav.append(latest);
   nav.append(link, active, stop); root.append(style, nav);
   const render = () => {
     const status = api.sensors.status();
