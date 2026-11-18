@@ -25,6 +25,8 @@ Daily limits reset at 00:00 UTC. Aggregate each product's usage across the accou
 
 SQL counts rows examined or changed, not statements or returned results. An unindexed lookup can read a growing table; indexes also add work when modified. DO `setAlarm()` consumes a row write, and deletes consume writes. Avoid using a count of `db.run()` calls as a complete quota measurement. See [D1 row accounting](https://developers.cloudflare.com/d1/platform/pricing/) and [DO storage accounting](https://developers.cloudflare.com/durable-objects/platform/pricing/).
 
+Logs have a separate allowance. Through November 30, 2026, Workers Free includes 200,000 log events per day with three-day retention. From December 1, [Observability pricing](https://developers.cloudflare.com/observability/pricing/) changes this to 0.5 GB per day of shared ingestion with seven-day retention; reaching that allowance stops new telemetry ingestion until the daily reset. The current configuration uses the default 100% sampling, including WebSocket and alarm invocation logs. Lower sampling reduces diagnostic usage but can omit errors and does not increase execution or SQL quotas. Choose it from measured volume and debugging needs. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
+
 ## What a normal session uses
 
 Application execution, commands and replication belong to the owned Chronolog session. Once direct RTC is established, ordinary edits do not require a Tendriller control request. Startup, authority/publication reads, introductions, coarse discovery leases and lifecycle work still use the host. Measure those separately from application activity; see [peer participation](PEER_CONNECTIONS.md).
@@ -43,7 +45,7 @@ The implementation targets repeated host work, while preserving the existing pro
 | --- | --- | --- |
 | Relay packets | Cache local authorization lookups while their underlying data is unchanged | Expiry checks, mutation invalidation, cold-start reads and periodic account revalidation |
 | Alarm scheduling | Keep a suitable existing alarm instead of writing the same or a later deadline repeatedly | Earlier deadlines, fired alarms and cold-start reconciliation still require attention |
-| Resident and unclaimed page HTTP/API activity | Avoid persisting an idle-expiry timestamp that these retention rules do not use | Authorized activity on a claimed ad-hoc page still updates expiry; unclaimed, held and cleanup deadlines remain unchanged |
+| Resident and unclaimed page HTTP/API activity | Avoid persisting an idle-expiry timestamp that these retention rules do not use | First claim and resident-to-ad-hoc transitions start a full idle window; claimed ad-hoc activity still updates expiry; unclaimed, held and cleanup deadlines remain unchanged |
 | Page routing | Avoid duplicate page authorization and DO calls for public shared runtime assets | Page-specific content and API routes still require authorization |
 | Orphan-file cleanup | Build the retained-hash reference set once with `NOT IN`, replacing a correlated lookup per stored file | Retained signed publications still protect all referenced files; this query rewrite adds no index and keeps schema revision 9 |
 

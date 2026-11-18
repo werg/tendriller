@@ -439,6 +439,8 @@ export class Tendril extends DurableObject<Env> {
         if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
         this.db.set("owner_account", b.account_id);
         this.db.set("claimed_at", this.now());
+        // Claiming starts ad-hoc inactivity even if the following page load fails.
+        this.recordAccess();
         const label = (b.identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
         if (typeof label === "string") this.db.set("owner_label", label.slice(0, 80));
         const creator = await this.env.ACCOUNTS.prepare("SELECT creator_ip FROM tendrils WHERE id = ?")

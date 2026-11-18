@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
+import { evictDurableObject } from 'cloudflare:test';
 import type { Tendril } from '../src/tendril';
 import { authenticateAgentToken } from '../src/access';
 import { changeLifetime, lifetimeChangePending } from '../src/lifetime';
-import { advance, api, apiJson, create, inDO, runAlarm } from './helpers';
-import { AD_HOC_IDLE } from '../src/limits';
+import { advance, api, apiJson, create, inDO, runAlarm, signInAsOwner, stub } from './helpers';
+import { AD_HOC_IDLE, HOUR } from '../src/limits';
 
 async function resident() {
   const page = await create({ listener: false, application: { id: '45'.repeat(32) } });
@@ -108,5 +109,42 @@ it.each([false, true])('starts a full inactivity window when an old resident pag
     expect(t.db.get('lifetime', '')).toBe('ad_hoc');
     expect(t.expiresAt()!).toBeGreaterThan(t.now() + AD_HOC_IDLE - 2_000);
     expect(lifetimeChangePending(t)).toBe(false);
+  });
+});
+
+it('retains a late first claim for a full idle window without a subsequent page load', async () => {
+  const email = `late-claim-${crypto.randomUUID()}@example.test`, account = crypto.randomUUID();
+  const page = await create({ claim: false, listener: false, owner: email });
+  const originalExpiry = await inDO(page.id, t => t.expiresAt()!);
+  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, Date.now(), email).run();
+  await advance(page.id, 20 * HOUR);
+  expect((await apiJson(page, 'GET', '')).expires_at).toBe(originalExpiry);
+  await advance(page.id, 3 * HOUR);
+  const beforeClaim = await inDO(page.id, t => t.now());
+  // Redeem the sign-in code, but deliberately never request the page itself.
+  // An interrupted redirect must not leave its new owner with the old expiry.
+  await signInAsOwner(page, account, email);
+  const saved = await inDO(page.id, t => {
+    const last = t.db.get('last_access', 0), expires = t.expiresAt();
+    expect(t.db.get('owner_account', '')).toBe(account);
+    expect(last).toBeGreaterThanOrEqual(beforeClaim);
+    expect(expires).toBe(last + AD_HOC_IDLE);
+    expect(expires!).toBeGreaterThan(t.now() + AD_HOC_IDLE - 2_000);
+    return { last, expires, skew: t.skew };
+  });
+  await evictDurableObject(stub(page.id));
+  await inDO(page.id, t => {
+    t.skew = saved.skew;
+    expect(t.db.get('last_access', 0)).toBe(saved.last);
+    expect(t.expiresAt()).toBe(saved.expires);
+  });
+  await advance(page.id, 2 * HOUR);
+  await runAlarm(page.id);
+  await inDO(page.id, t => {
+    expect(t.now()).toBeGreaterThan(originalExpiry);
+    expect(t.exists()).toBe(true);
+    expect(t.db.get('owner_account', '')).toBe(account);
+    expect(t.db.get('last_access', 0)).toBe(saved.last);
+    expect(t.expiresAt()).toBe(saved.expires);
   });
 });
