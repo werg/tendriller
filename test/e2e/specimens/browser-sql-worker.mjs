@@ -1,5 +1,6 @@
 import * as log from '@chronolog/peer-session';
-import { openBrowserDevice, serveApplicationWorker } from '@chronolog/peer-session/worker';
+import * as browserOwner from '@chronolog/peer-session/worker';
+const { openBrowserDevice, serveApplicationWorker } = browserOwner;
 import { openSqlApplication } from '@chronolog/peer-session/sql';
 import { createBrowserSqlEngine, loadBrowserEngine } from '@chronolog/peer-session/sql-browser';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
@@ -15,6 +16,16 @@ async function connect(channel, remote) {
   await link.synchronize();
 }
 self.addEventListener('message', async ({ data }) => {
+  if (data?.type === 'capabilities') {
+    try {
+      // An explicit scratch-only probe; no signer enrollment or data-store
+      // opening. Older independently pinned Chronolog artifacts lack this API.
+      const report = typeof browserOwner.probeBrowserCapabilities === 'function'
+        ? await browserOwner.probeBrowserCapabilities() : null;
+      self.postMessage({ type: 'capabilities', report });
+    } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
+    return;
+  }
   if (data?.type === 'reconnect' && session) {
     try {
       await connect(data.channel, data.remote);
@@ -38,6 +49,12 @@ self.addEventListener('message', async ({ data }) => {
   if (data?.type !== 'open' || session) return;
   try {
     const device = await openBrowserDevice({ name: data.name });
+    // SQL remains an explicit requirement of the signed application: selecting
+    // IndexedDB for events never substitutes for an unavailable SQL VFS.
+    if (typeof browserOwner.probeBrowserCapabilities === 'function') {
+      const report = await browserOwner.probeBrowserCapabilities();
+      if (!report.sql.apiEligible) throw new Error('BROWSER_SQL_PREREQUISITES_UNAVAILABLE: ' + report.sql.reason);
+    }
     const definition = data.respondent ? intake(log, data.respondent) : checklist(log);
     const base = new URL('_tendril/', data.base);
     peers = createPeersClient({ applicationId: data.applicationId, base: base.href,

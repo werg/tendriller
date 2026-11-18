@@ -20,10 +20,18 @@ The application and signal ports may instead be installed once after startup. Th
 Chronolog's protocol participant can be installed immediately without activating
 durable application data. Signals, peer authentication, membership and code updates
 remain available while `application.backend.status.database` is `idle`. The first
-actual data operation loads the database component and acquires OPFS inside the same
-owning Worker. The page-side `@chronolog/peer-session/browser` entry is only the
+actual data operation loads the database component and acquires an exclusive
+Web Lock, then opens its *pinned* OPFS or IndexedDB record backend inside the
+same owning Worker. The page-side `@chronolog/peer-session/browser` entry is only the
 Worker facade; the Worker imports its owner from `@chronolog/peer-session/worker`.
 See [the data lifecycle](APPLICATION_BACKENDS.md#protocol-first-durable-data-on-demand).
+
+An owning Worker can explicitly call `probeBrowserCapabilities()` to check
+new-device events eligibility without opening a signer or data store. The
+page runtime does not probe at startup and does not interpret SQL's separate
+OPFS SAH-pool prerequisite as event storage support. The browser may evict
+site storage or suspend a Worker; a successful probe is not a durability or
+Safari device-qualification guarantee.
 
 ## Public services
 
