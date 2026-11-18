@@ -47,8 +47,9 @@ self.addEventListener('message', async ({ data }) => {
     } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
   }
   if (data?.type !== 'open' || session) return;
+  let device;
   try {
-    const device = await openBrowserDevice({ name: data.name });
+    device = await openBrowserDevice({ name: data.name });
     // SQL remains an explicit requirement of the signed application: selecting
     // IndexedDB for events never substitutes for an unavailable SQL VFS.
     if (typeof browserOwner.probeBrowserCapabilities === 'function') {
@@ -80,8 +81,13 @@ self.addEventListener('message', async ({ data }) => {
     serveApplicationWorker(session, self);
     self.postMessage({ type: 'open' });
   } catch (error) {
-    await session?.close().catch(() => {});
-    if (pool) await pool.pauseVfs();
+    // Capability and engine errors can happen after identity metadata opens
+    // but before session ownership transfers. Always close that device.
+    try {
+      if (session) await session.close();
+      else await device?.close();
+    } catch { /* Preserve the original opening failure. */ }
+    try { await pool?.pauseVfs(); } catch { /* Preserve the original failure. */ }
     self.postMessage({ type: 'failure', message: error.message });
   }
 });
