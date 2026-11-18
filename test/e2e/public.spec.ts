@@ -259,8 +259,8 @@ for (const isPrivate of [false, true]) {
       try {
         await management.goto(new URL('_tendril/manage', handle.page_url).href);
         await expect(management.getByRole('heading', { name: 'Guest requests' })).toBeVisible();
-        await expect(management.getByText(guest.email, { exact: true })).toBeVisible();
-        await management.getByRole('button', { name: 'Approve', exact: true }).click();
+        await management.getByRole('listitem').filter({ hasText: guest.email })
+          .getByRole('button', { name: 'Approve', exact: true }).click();
         await expect(management.getByRole('status')).toHaveText('Guest access approved.');
       } finally { await management.close(); }
       await expect(second.getByRole('heading')).toHaveText(/is getting ready/, { timeout: 20_000 });

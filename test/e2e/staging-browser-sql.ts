@@ -63,11 +63,13 @@ export async function openBrowserSqlSpecimen(options: {
     executionManifestDigest: signedSchema.binding.executionManifestDigest, schemaAdministrator: signer.publicKey,
     epoch: 0, keyDigest: await log.bytesDigest(key),
     members: [
-      { grant: log.participantGrant(signer.publicKey, { administrator: true, publisher: true }) },
+      { grant: { ...log.controlParticipantGrant(signer.publicKey), administrator: false, recovery: false, publisher: true } },
       { grant: log.participantGrant(first.id) },
       { grant: log.participantGrant(second.id), accountId: options.guestAccount },
     ],
   });
+  expect(authority.controls[0].payload.grants.filter(grant => grant.reader).map(grant => grant.publicKey).sort())
+    .toEqual([first.id, second.id].sort());
   const descriptor = authority.descriptor.payload;
   await peers.administerGeneration({ expectedGeneration: null, coordinator: first.id, controlRevision: 0,
     base: null, reason: 'create', transitionId: randomUUID() });
