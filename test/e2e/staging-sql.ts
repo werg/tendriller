@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { checklist, intake } from './specimens/sql-domains.mjs';
 import type { createClient } from '../../dist/sdk/client.mjs';
 
 type Peers = ReturnType<typeof createClient>['peers'];
@@ -20,62 +21,6 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-live-sql-'));
   const sessions = [], devices = [], links = [];
   const id = handle.application.id, key = new Uint8Array(randomBytes(32)), engine = sqlNative.createNativeSqlEngine();
-  const collective = log.bytesToHex(log.APPLICATION_COLLECTIVE_ID);
-  const checklist = log.defineApplication({
-    id: 'staging-shared-tasks', version: '1',
-    schema: log.program('CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)'),
-    commands: {
-      add: log.defineCommand({
-        description: 'Add a task and record a corresponding event',
-        input: { type: 'object', properties: { id: { type: 'integer' }, title: { type: 'string' } }, required: ['id', 'title'] },
-        prepare: ({ id, title }) => log.program(log.sqlStatement(
-          `INSERT INTO tasks (id,title,chronolog_owner) VALUES (?,?,(SELECT id FROM chronolog_principals WHERE key=X'${collective}'))`,
-          [id, title]), log.emit('task.added', { id, title })),
-      }),
-      claim: log.defineCommand({
-        description: 'Claim an unfinished task', input: { type: 'integer' },
-        prepare: id => log.program(
-          log.sqlStatement("SELECT chronolog_assert((SELECT claimed_by IS NULL AND done=0 FROM tasks WHERE id=?),'task_unavailable')", [id]),
-          log.sqlStatement('UPDATE tasks SET claimed_by=lower(hex(chronolog_actor())) WHERE id=?', [id]),
-          log.emit('task.claimed', { id })),
-      }),
-      finish: log.defineCommand({
-        description: 'Finish a task only as its claimant', input: { type: 'integer' },
-        prepare: id => log.program(
-          log.sqlStatement("SELECT chronolog_assert((SELECT claimed_by=lower(hex(chronolog_actor())) AND done=0 FROM tasks WHERE id=?),'claim_required')", [id]),
-          log.sqlStatement('UPDATE tasks SET done=1 WHERE id=?', [id]),
-          log.emit('task.finished', { id })),
-      }),
-    },
-    queries: {
-      assignment: log.defineQuery({ description: 'Read assignee and completion', input: { type: 'integer' },
-        read: (view, id) => view.query('SELECT claimed_by,done FROM tasks WHERE id=?', [id]).rows[0] }),
-      tasks: log.defineQuery({ description: 'Read ordered tasks', input: { type: 'null' },
-        read: view => view.query('SELECT id,title FROM tasks ORDER BY id') }),
-    },
-  });
-  const intake = (respondent: string) => log.defineApplication({
-    id: 'staging-private-intake', version: '1',
-    schema: log.program('CREATE TABLE answer (id INTEGER PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL)'),
-    commands: {
-      submit: log.defineCommand({
-        description: 'Submit or correct a private answer at its expected revision',
-        input: { type: 'object', properties: { body: { type: 'string', minLength: 1, maxLength: 2000 },
-          revision: { type: 'integer', minimum: 0 } }, required: ['body', 'revision'] },
-        prepare: ({ body, revision }) => log.program(
-          log.sqlStatement("SELECT chronolog_assert(lower(hex(chronolog_actor()))=?,'respondent_required')", [respondent]),
-          log.sqlStatement("SELECT chronolog_assert(coalesce((SELECT revision FROM answer WHERE id=1),0)=?,'stale_answer')", [revision]),
-          log.sqlStatement(`INSERT INTO answer (id,body,revision,chronolog_owner)
-            VALUES(1,?,?,(SELECT id FROM chronolog_principals WHERE key=X'${collective}'))
-            ON CONFLICT(id) DO UPDATE SET body=excluded.body, revision=excluded.revision`, [body, revision + 1]),
-          log.emit('answer.updated', { revision: revision + 1 })),
-      }),
-    },
-    queries: {
-      answer: log.defineQuery({ description: 'Read the current private answer', input: { type: 'null' },
-        read: view => view.query('SELECT body,revision FROM answer WHERE id=1').rows }),
-    },
-  });
   try {
     const openDevice = async (name: string, create = false) => {
       const device = await native.openNativeDevice({ path: join(directory, `${name}.sqlite`), create });
@@ -83,7 +28,7 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
       return device;
     };
     const aDevice = await openDevice('a', true), bDevice = await openDevice('b', true);
-    const definition = privateIntake ? intake(aDevice.identity.publicKey) : checklist;
+    const definition = privateIntake ? intake(log, aDevice.identity.publicKey) : checklist(log);
     const prepared = await sql.prepareSqlApplication({ engine, applicationId: id, definition, schemaAdministrator: aDevice.identity });
     const base = await peers.configureApplication({ historyId: privateIntake ? 'private-intake' : 'live-task-board',
       definition: log.describeApplication(definition), schema: prepared.schema, executionManifestDigest: prepared.binding.executionManifestDigest,
@@ -136,7 +81,8 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
       expect(JSON.stringify(browserControl)).not.toContain('private answer');
       expect(browserControl.controls[0].payload.grants.filter(grant => grant.dataRole === 'member').map(grant => grant.publicKey).sort())
         .toEqual([a.deviceId, b.deviceId].sort());
-      return;
+      const [count, revision] = (await b.query('summary', null)).value;
+      return { count, revision };
     }
     expect((await add(a, 1, 'Retained task', 'retained')).outcome).toBe('accepted');
     await Promise.all(first.map(link => link.synchronize()));
@@ -151,17 +97,41 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
     expect((await apply(winner, 'finish', 'finish-by-claimant')).outcome).toBe('accepted');
     await Promise.all(first.map(link => link.synchronize()));
     expect((await b.query('assignment', 1)).value).toEqual([winner.deviceId, 1]);
+    const slot = 'Workshop bench · 15:00';
+    const book = async (session, command, operationId) =>
+      (await session.command(command, slot, { operationId })).applied({ signal: AbortSignal.timeout(12_000) });
+    const reservations = await Promise.all([book(a, 'reserve', 'reserve-a'), book(b, 'reserve', 'reserve-b')]);
+    expect(reservations.map(result => result.outcome).sort()).toEqual(['accepted', 'rejected']);
+    const [holder, waiting] = reservations[0].outcome === 'accepted' ? [a, b] : [b, a];
+    expect((await book(waiting, 'cancel', 'not-holder')).outcome).toBe('rejected');
+    expect((await book(holder, 'cancel', 'release-slot')).outcome).toBe('accepted');
+    expect((await book(waiting, 'reserve', 'book-after-release')).outcome).toBe('accepted');
+    await Promise.all(first.map(link => link.synchronize()));
+    expect((await b.query('reservations', null)).value).toEqual([[slot, waiting.deviceId]]);
     await Promise.all(first.map(link => link.close()));
     const reconnected = await connect(a, b);
     expect(await b.operations.get('retained', { author: a.deviceId })).toMatchObject({ outcome: 'accepted' });
     await Promise.all(reconnected.map(link => link.close()));
+    expect((await add(a, 4, 'Local edit before loss', 'offline-tail')).outcome).toBe('accepted');
+    expect((await b.query('tasks', null)).value.rows).toEqual([[1, 'Retained task']]);
     await a.close();
     await b.recovery.takeover(peers, { transitionId: randomUUID() });
     expect((await add(b, 3, 'After takeover', 'after-takeover')).outcome).toBe('accepted');
+    const returning = await open(await openDevice('a'), 'a');
+    const restored = await connect(returning, b);
+    expect(await returning.operations.get('offline-tail')).toMatchObject({ status: 'abandoned' });
+    expect((await b.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover']]);
+    const review = await returning.query('tasks', null);
+    const retry = await returning.reapply('offline-tail', 'add', { id: 4, title: 'Reviewed edit' },
+      { operationId: 'reviewed-tail', basedOn: review.revision });
+    expect((await retry.applied({ signal: AbortSignal.timeout(12_000) })).outcome).toBe('accepted');
+    await Promise.all(restored.map(link => link.synchronize()));
+    expect((await b.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover'], [4, 'Reviewed edit']]);
+    await Promise.all(restored.map(link => link.close()));
     await b.close();
     const reopened = await open(await openDevice('b'), 'b');
     expect(reopened.deviceId).toBe(bDevice.identity.publicKey);
-    expect((await reopened.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover']]);
+    expect((await reopened.query('tasks', null)).value.rows).toEqual([[1, 'Retained task'], [3, 'After takeover'], [4, 'Reviewed edit']]);
     expect((await reopened.operations.get('after-takeover')).outcome).toBe('accepted');
     expect((await reopened.query('assignment', 1)).value).toEqual([winner.deviceId, 1]);
   } finally {
