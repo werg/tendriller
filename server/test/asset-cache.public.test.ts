@@ -216,6 +216,27 @@ describe('immutable R2 byte caching', () => {
     expect(calls).toEqual({ get: 1, head: 0 });
   });
 
+  it('retries an R2 publication write after a transient storage error', async () => {
+    const h = await create();
+    await inDO(h.id, async t => {
+      const files = t.env.FILES;
+      let puts = 0;
+      t.env.FILES = new Proxy(files, { get(target, name) {
+        if (name === 'put') return (...args: Parameters<R2Bucket['put']>) => {
+          if (++puts === 1) throw new Error('put: We encountered an internal error. Please try again. (10001)');
+          return target.put(...args);
+        };
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      try {
+        const stored = await storeContent(t, new TextEncoder().encode('publication asset').buffer as ArrayBuffer, 'text/plain');
+        expect(puts).toBe(2);
+        expect(t.db.one('SELECT status FROM stored_files WHERE hash=?', stored.hash)).toEqual({ status: 'ready' });
+      } finally { t.env.FILES = files; }
+    });
+  });
+
   it('caches authored source bytes while rebuilding role-specific HTML and enforcing revoked access', async () => {
     const h = await create();
     await inDO(h.id, async t => {

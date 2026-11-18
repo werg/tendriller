@@ -93,8 +93,11 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
         await t.reserveGlobalBytes(body.byteLength);
         globalReserved = true;
       }
-      const head = await t.env.FILES.head(key);
-      if (!head) { await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }); uploaded = true; }
+      const head = await retryPublicationStorage(() => t.env.FILES.head(key));
+      if (!head) {
+        await retryPublicationStorage(() => t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }));
+        uploaded = true;
+      }
       t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
     } catch (err) {
       if (reserved) {
@@ -106,6 +109,17 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
     }
   });
   return { hash, size: body.byteLength };
+}
+
+async function retryPublicationStorage<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      if (!/\(10001\)\s*$/.test(String(error))) throw error;
+      if (attempt === 3) throw new HttpError(503, 'storage_unavailable', 'File storage is temporarily unavailable. Retry the same publication.');
+      await new Promise(resolve => setTimeout(resolve, 100 * 2 ** attempt));
+    }
+  }
 }
 
 export function versionFiles(t: Tendril, version: number): VersionFile[] {
