@@ -311,7 +311,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         let checkedBindings: AccountBinding[] = [];
         if (value.control !== undefined) {
           const change = object(value.control, ['epoch', 'keyDigest', 'grants', 'recoveryFloor', 'accounts']);
-          const authority = await readAuthority(t, state);
+          const authority = await verifyAuthorityBundle(bundle);
           if (!authority.grant(request.payload.requester)?.administrator) throw new HttpError(403, 'peer_control_change_forbidden');
           const revision = request.payload.controlRevision;
           if (!Number.isSafeInteger(revision) || revision < 1 || revision > bundle.controls.length) throw new HttpError(409, 'peer_control_revision_mismatch');

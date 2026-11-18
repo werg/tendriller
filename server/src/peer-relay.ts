@@ -10,7 +10,7 @@ interface Attachment {
   owner: string; principal: Principal; ready: boolean; expiresAt: number; authorizedUntil: number;
   received: number; pending: Pending[]; progressAt: number; window: number; packets: number;
 }
-interface QueuedMessage { socket: WebSocket; message: string | ArrayBuffer }
+type QueuedMessage = { socket: WebSocket; message: ArrayBuffer } | { socket: WebSocket; credit: string };
 interface Route { value: Attachment; other: WebSocket; recipient: Attachment }
 interface Refresh {
   sockets: WebSocket[]; ownerAccount: string | null; startedAt: number; queue: QueuedMessage[]; bytes: number;
@@ -109,7 +109,7 @@ function finishRefresh(t: Tendril, session: string): void {
 function refreshMembers(t: Tendril, session: string, state: Refresh): Attachment[] {
   const current = members(t, session), now = t.now();
   if (refreshing.get(t)?.get(session) !== state || t.db.get<string | null>('owner_account', null) !== state.ownerAccount || current.length !== 4 ||
-      current.some(ws => !state.sockets.includes(ws)) || now >= state.startedAt + LIMITS.authorizationMs)
+      current.some(ws => !state.sockets.includes(ws)) || now >= state.startedAt + refreshTimeoutMs)
     throw new Error('Relay authorization expired');
   return current.map(ws => {
     const value = attachment(ws)!;
@@ -141,7 +141,8 @@ async function refreshSession(t: Tendril, session: string, state: Refresh): Prom
     for (const ws of state.sockets) write(ws, { ...attachment(ws)!, authorizedUntil: state.startedAt + LIMITS.authorizationMs });
     while (refreshing.get(t)?.get(session) === state && state.queue.length) {
       const next = state.queue.shift()!;
-      forward(t, next.socket, next.message);
+      if ('credit' in next) next.socket.send(next.credit);
+      else forward(t, next.socket, next.message);
     }
     finishRefresh(t, session);
   } catch {
@@ -228,10 +229,23 @@ export function handleRelayMessage(t: Tendril, ws: WebSocket, message: string | 
     if (typeof message === 'string' ? bytes > 256 : bytes <= 4 || bytes > LIMITS.packetBytes + 4) throw new Error('Relay packet too large');
     const state = existing ?? startRefresh(t, value.session);
     if (state.queue.length >= refreshMessages || state.bytes + bytes > refreshBytes) throw new Error('Relay authorization queue exhausted');
-    state.queue.push({ socket: ws, message }); state.bytes += bytes;
+    const queued = typeof message === 'string'
+      ? { socket: route.other, credit: receiveReceipt(t, message, route) }
+      : { socket: ws, message };
+    state.queue.push(queued); state.bytes += bytes;
     if (!existing) void refreshSession(t, value.session, state);
     return state.done;
   } catch { closeSession(t, value.session, 1008, 'Invalid or unauthorized peer relay'); }
+}
+
+/** Accept progress when a receipt arrives; its credit can wait for policy. */
+function receiveReceipt(t: Tendril, message: string, { value, other, recipient }: Route): string {
+  if (new TextEncoder().encode(message).length > 256) throw new Error('Relay control too large');
+  const input = JSON.parse(message), pending = recipient.pending[0];
+  if (!input || typeof input !== 'object' || Object.keys(input).length !== 4 || input.t !== 'received' || input.session !== value.session ||
+      !pending || input.sequence !== pending[0] || input.receipt !== pending[1]) throw new Error('Invalid relay receipt');
+  write(other, { ...recipient, pending: recipient.pending.slice(1), progressAt: t.now() });
+  return JSON.stringify({ t: 'credit', session: value.session, sequence: input.sequence });
 }
 
 /** No ciphertext survives forwarding in attachments or storage. */
@@ -239,15 +253,10 @@ function forward(t: Tendril, ws: WebSocket, message: string | ArrayBuffer, check
   const value = checked?.value ?? attachment(ws);
   if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
   try {
-    const { other, recipient } = checked ?? endpoints(t, value);
+    const route = checked ?? endpoints(t, value), { other, recipient } = route;
     if (Math.min(value.authorizedUntil, recipient.authorizedUntil) <= t.now()) throw new Error('Relay authorization expired');
     if (typeof message === 'string') {
-      if (new TextEncoder().encode(message).length > 256) throw new Error('Relay control too large');
-      const input = JSON.parse(message), pending = recipient.pending[0];
-      if (!input || typeof input !== 'object' || Object.keys(input).length !== 4 || input.t !== 'received' || input.session !== value.session ||
-          !pending || input.sequence !== pending[0] || input.receipt !== pending[1]) throw new Error('Invalid relay receipt');
-      write(other, { ...recipient, pending: recipient.pending.slice(1), progressAt: t.now() });
-      other.send(JSON.stringify({ t: 'credit', session: value.session, sequence: input.sequence }));
+      other.send(receiveReceipt(t, message, route));
       return;
     }
     if (message.byteLength <= 4 || message.byteLength > LIMITS.packetBytes + 4) throw new Error('Relay packet too large');

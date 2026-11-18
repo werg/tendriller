@@ -331,6 +331,34 @@ it('uses the page-policy owner check for both lanes of an owner participant', as
   } finally { await restore(); a.close(); b.close(); }
 });
 
+it('counts a timely receipt during authorization and only releases credit after approval', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'receipt-during-refresh');
+  const started = deferred(), release = deferred();
+  try {
+    p.a.reliable.socket.send(packet(1));
+    await expect.poll(() => p.b.reliable.messages.length).toBe(2);
+    await inDO(h.id, t => {
+      for (const ws of t.ctx.getWebSockets('peer-relay')) {
+        const attachment = ws.deserializeAttachment();
+        ws.serializeAttachment({ ...attachment, authorizedUntil: t.now() - 1,
+          progressAt: t.now() - LIMITS.progressMs + 1000 });
+      }
+    });
+    const restore = await policy(h.id, async (_query, read) => {
+      const result = await read(); started.resolve(); await release.promise; return result;
+    });
+    try {
+      p.b.reliable.socket.send(receipt(p.session, p.b.reliable.messages[1] as ArrayBuffer));
+      await started.promise;
+      expect(p.a.reliable.messages).toHaveLength(1);
+      await advance(h.id, 1100);
+      release.resolve();
+      await expect.poll(() => p.a.reliable.messages.length).toBe(2);
+      expect(JSON.parse(p.a.reliable.messages[1] as string)).toMatchObject({ t: 'credit', sequence: 1 });
+    } finally { release.resolve(); await restore(); }
+  } finally { p.close(); }
+});
+
 it('times out stalled reauthorization, settles waiting traffic, and cannot forward a late D1 result', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'refresh-timeout');
   const started = deferred(), release = deferred(), returned = deferred();

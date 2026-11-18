@@ -5,11 +5,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { RUNTIME_RESOURCES } from '../runtime/resources.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
 const root = resolve(import.meta.dirname, '..');
+const run = promisify(execFile);
 
 export function declaredRuntimeResources(manifest, registry = RUNTIME_RESOURCES) {
   verifyRuntimeManifest(manifest);
@@ -36,12 +39,22 @@ export function declaredRuntimeResources(manifest, registry = RUNTIME_RESOURCES)
   });
 }
 
-export function uploadRuntimeFile({ bucket, key, path, type, remote = false, configPath }) {
+export async function uploadRuntimeFile({ bucket, key, path, type, remote = false, configPath }) {
   if (!/^[a-z0-9-]+$/.test(bucket ?? '')) throw Error('Pass an R2 bucket name');
-  execFileSync(process.execPath, [join(root, 'node_modules/wrangler/bin/wrangler.js'), 'r2', 'object', 'put',
+  const args = [join(root, 'node_modules/wrangler/bin/wrangler.js'), 'r2', 'object', 'put',
     `${bucket}/${key}`, '--file', path, '--content-type', type,
     '--cache-control', 'public, max-age=31536000, immutable', remote ? '--remote' : '--local',
-    ...(configPath ? ['--config', configPath] : [])], { cwd: root, stdio: 'inherit' });
+    ...(configPath ? ['--config', configPath] : [])];
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run(process.execPath, args, { cwd: root });
+      return;
+    } catch (error) {
+      if (!remote || attempt === 4 || !/ - (?:429|50[0234]):|\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b/.test(error.stderr ?? '')) throw error;
+      console.warn(`Retrying immutable upload for ${key} after an R2 error (${attempt}/3)`);
+      await delay(1000 * 2 ** (attempt - 1));
+    }
+  }
 }
 
 export async function installRuntimeResources({ bucket, manifest, registry = RUNTIME_RESOURCES,

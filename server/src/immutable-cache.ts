@@ -64,21 +64,28 @@ export async function immutableObject(env: Env, key: string, options: {
       if (options.context) options.context.waitUntil(saved);
       else await saved;
     } else {
-      // A tee can buffer the entire model for its slower reader. Stream large
-      // fills to cache once, then serve a fresh cache stream with backpressure.
-      try {
-        await cache.put(cacheKey, response);
-        const saved = await cache.match(cacheKey);
-        if (saved?.status === 200) return saved;
-        await saved?.body?.cancel();
-      } catch { /* Fall through to an uncached stream if the cache cannot retain it. */ }
-      if (body instanceof ArrayBuffer) return new Response(body, { headers });
-      if (!response.bodyUsed && !response.body?.locked) return response;
-      const retry = await env.FILES.get(key);
-      return retry ? new Response(retry.body, { headers: objectHeaders(retry) }) : null;
+      // Avoid teeing a large stream, and keep the first successful read for
+      // the client even when an independent cache fill fails or is evicted.
+      const saved = fillLarge(cache).catch(() => {});
+      if (options.context) options.context.waitUntil(saved);
+      else await saved;
     }
   }
   return response;
+
+  async function fillLarge(target: Cache): Promise<void> {
+    if (body instanceof ArrayBuffer) {
+      await target.put(cacheKey, new Response(body, { headers }));
+      return;
+    }
+    const fill = await env.FILES.get(key);
+    if (!fill) return;
+    if (fill.etag !== stored.etag || fill.size !== stored.size) {
+      await fill.body.cancel();
+      return;
+    }
+    await target.put(cacheKey, new Response(fill.body, { headers }));
+  }
 }
 
 function objectHeaders(object: R2Object): Headers {
@@ -122,7 +129,7 @@ export async function assetResponse(request: Request, response: Response): Promi
     const ifRange = request.headers.get('If-Range');
     const canRange = !ifRange || (ifRange.startsWith('"') || ifRange.startsWith('W/')
       ? ifRange === etag && !ifRange.startsWith('W/')
-      : !!modified && Date.parse(modified) <= Date.parse(ifRange));
+      : !!modified && Date.parse(modified) === Date.parse(ifRange));
     const range = canRange ? /^bytes=(\d*)-(\d*)$/.exec(request.headers.get('Range') ?? '') : null;
     if (range && (range[1] || range[2])) {
       const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));

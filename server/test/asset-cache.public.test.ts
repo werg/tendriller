@@ -77,6 +77,7 @@ describe('immutable R2 byte caching', () => {
     await env.FILES.put(`assets/${id}/model.bin`, '0123456789');
     const original = await immutableAsset(config, assetRequest(id, 'model.bin'), id, 'model.bin');
     const etag = original.headers.get('ETag')!;
+    const modified = original.headers.get('Last-Modified')!;
     await original.text();
     for (const condition of [etag, `"other", W/${etag}`, '*']) {
       const response = await immutableAsset(config, assetRequest(id, 'model.bin', { headers: { 'If-None-Match': condition } }), id, 'model.bin');
@@ -84,7 +85,9 @@ describe('immutable R2 byte caching', () => {
     }
     const range = await immutableAsset(config, assetRequest(id, 'model.bin', { headers: { Range: 'bytes=-3', 'If-Range': etag } }), id, 'model.bin');
     expect(range.status).toBe(206); expect(await range.text()).toBe('789');
-    for (const condition of ['"old"', '"9999"', `W/${etag}`]) {
+    const matchingDate = await immutableAsset(config, assetRequest(id, 'model.bin', { headers: { Range: 'bytes=0-1', 'If-Range': modified } }), id, 'model.bin');
+    expect(matchingDate.status).toBe(206); expect(await matchingDate.text()).toBe('01');
+    for (const condition of ['"old"', '"9999"', `W/${etag}`, new Date(Date.parse(modified) + 1000).toUTCString()]) {
       const stale = await immutableAsset(config, assetRequest(id, 'model.bin', { headers: { Range: 'bytes=0-1', 'If-Range': condition } }), id, 'model.bin');
       expect(stale.status).toBe(200); expect(await stale.text()).toBe('0123456789');
     }
@@ -128,11 +131,11 @@ describe('immutable R2 byte caching', () => {
       const full = await immutableAsset(config, assetRequest(id, 'model.bin'), id, 'model.bin');
       expect((await full.arrayBuffer()).byteLength).toBe(size);
       expect(clone).not.toHaveBeenCalled();
-      expect(calls).toEqual({ get: 1, head: 0 });
+      expect(calls).toEqual({ get: 2, head: 0 });
     } finally { clone.mockRestore(); }
   });
 
-  it('re-reads a large object once if a cache fill consumes its stream and then fails', async () => {
+  it('keeps the large client stream when the independent cache fill fails', async () => {
     const id = await freshId(), { config, calls } = countedFiles(), size = 1024 * 1024 + 1;
     await env.FILES.put(`assets/${id}/model.bin`, new Uint8Array(size).fill(9));
     const clone = vi.spyOn(Response.prototype, 'clone');
@@ -178,12 +181,19 @@ describe('immutable R2 byte caching', () => {
     const h = await create(), id = await freshId(), { config, calls } = countedFiles();
     await env.FILES.put(`assets/${id}/model.bin`, 'model');
     const url = `${h.page_url}_tendril/assets/${id}/model.bin`;
-    const owner = await route(new Request(url, { headers: ownerHeaders(h.page_url) }), config);
-    expect(owner.status).toBe(200); await owner.text();
+    const cache = await caches.open('tendriller-immutable-bytes-v1');
+    const put = vi.spyOn(cache, 'put');
+    const open = vi.spyOn(caches, 'open').mockResolvedValue(cache);
+    try {
+      const owner = await route(new Request(url, { headers: ownerHeaders(h.page_url) }), config);
+      expect(owner.status).toBe(200); await owner.text();
+      const key = put.mock.calls[0]?.[0] as Request;
+      expect(await (await cache.match(key))?.text()).toBe('model');
+      expect((await route(new Request(key.url), config)).status).toBe(404);
+    } finally { open.mockRestore(); put.mockRestore(); }
     expect((await route(new Request(url), config)).status).toBe(302);
     await inDO(h.id, t => t.db.run('DELETE FROM page_sessions'));
     expect((await route(new Request(url, { headers: ownerHeaders(h.page_url) }), config)).status).toBe(302);
-    expect((await route(new Request(`${env.PUBLIC_BASE}/_tendril/_cached-bytes/v1/assets/${id}/model.bin`), config)).status).toBe(404);
     expect(calls).toEqual({ get: 1, head: 0 });
   });
 

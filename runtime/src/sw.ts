@@ -26,6 +26,18 @@ const queued = (task: () => Promise<void>): Promise<void> => {
 };
 const absolute = (path: string, base = SCOPE) => new URL(path, base).href;
 const cacheName = (id: string) => PREFIX + id;
+function runtimeBases(base: string): string[] {
+  const suffix = /\/_tendril\/runtime\/[a-f0-9]{64}\/$/.exec(new URL(base, SCOPE).pathname)?.[0];
+  return suffix ? [...new Set([absolute(base), absolute(suffix), absolute(suffix.slice(1))])] : [absolute(base)];
+}
+
+async function cachedRuntime(cache: Cache, bases: string[], path: string): Promise<Response | undefined> {
+  for (const base of bases) {
+    const saved = await cache.match(base + path);
+    if (saved && !noStore(saved)) return saved;
+  }
+  return undefined;
+}
 
 async function readRegistry(): Promise<Registry> {
   if (registry) return registry;
@@ -221,16 +233,21 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
   for (const id of new Set(ids)) {
     const publication = meta.publications[id];
     if (!publication) continue;
-    const pageBase = absolute(publication.base), runtimeBase = absolute(publication.runtime.base);
+    const pageBase = absolute(publication.base), bases = runtimeBases(publication.runtime.base);
     const cache = await caches.open(cacheName(id));
-    if (url.startsWith(pageBase) || url.startsWith(runtimeBase)) {
+    if (url.startsWith(pageBase)) {
       const hit = await cache.match(url);
       if (hit && !noStore(hit)) return hit;
     }
-    const manifest = await cache.match(absolute("manifest.json", runtimeBase));
+    const runtimeBase = bases.find(base => url.startsWith(base));
+    if (runtimeBase) {
+      const hit = await cachedRuntime(cache, bases, url.slice(runtimeBase.length));
+      if (hit) return hit;
+    }
+    const manifest = await cachedRuntime(cache, bases, "manifest.json");
     if (manifest) {
       const declared = await manifest.json();
-      const optional = declared.assets.find((asset: PublicationAsset) => absolute(encodePublicationPath(asset.path), runtimeBase) === url);
+      const optional = runtimeBase && declared.assets.find((asset: PublicationAsset) => absolute(encodePublicationPath(asset.path), runtimeBase) === url);
       const asset = optional ? { url, sha256: optional.sha256, type: optional.type }
         : declared.resources.find((resource: RuntimeResource) => absolute(resource.url) === url);
       if (asset) resources.push({ cache, asset });
