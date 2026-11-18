@@ -6,6 +6,7 @@ export const SERVICE = 'https://service.localhost:8790';
 export const OWNER = 'owner@example.test';
 export const OWNER_TOKEN = 'tendriller-local-e2e-session';
 export const OTHER_TOKEN = 'tendriller-local-e2e-other-session';
+export const LOGOUT_TOKEN = 'tendriller-local-e2e-logout-session';
 let nextIp = 1;
 let localRequest: Promise<APIRequestContext> | undefined;
 export function requester() { return localRequest ??= request.newContext({ ignoreHTTPSErrors: true }); }

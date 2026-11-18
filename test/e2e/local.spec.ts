@@ -1,6 +1,6 @@
 import { test, expect, request } from '@playwright/test';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
-  requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN } from './local-helpers';
+  requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
 
 test('verified owner claims a page and executes its signed authored module', async ({ page, context }) => {
   const handle = await createPage();
@@ -110,7 +110,7 @@ test('browser forms request and approve guest access, report a page, and sign ou
   const handle = await createPage();
   const guest = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
-    await signInFixture(context);
+    await signInFixture(context, LOGOUT_TOKEN);
     await openClaimed(page, handle);
     const invitation = await agent(handle, '/links', 'POST', { role: 'guest' });
     expect(invitation.status).toBe(201);

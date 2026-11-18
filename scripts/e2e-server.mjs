@@ -14,6 +14,7 @@ const config = "server/wrangler.jsonc";
 const token = "tendriller-local-e2e-session";
 const hash = createHash("sha256").update(token).digest("hex");
 const otherHash = createHash("sha256").update("tendriller-local-e2e-other-session").digest("hex");
+const logoutHash = createHash("sha256").update("tendriller-local-e2e-logout-session").digest("hex");
 const now = Date.now();
 let worker;
 
@@ -33,6 +34,7 @@ async function main() {
     `INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES ('github', 'e2e-subject', 'e2e-owner', 'e2e-owner', 'owner@example.test', ${now})`,
     `INSERT INTO identity_emails (provider, subject, email) VALUES ('github', 'e2e-subject', 'owner@example.test')`,
     `INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES ('${hash}', 'e2e-owner', ${now}, ${now + 86_400_000})`,
+    `INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES ('${logoutHash}', 'e2e-owner', ${now}, ${now + 86_400_000})`,
     `INSERT INTO accounts (id, created_at, email) VALUES ('e2e-other', ${now}, 'other@example.test')`,
     `INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES ('google', 'e2e-other-subject', 'e2e-other', 'e2e-other', 'other@example.test', ${now})`,
     `INSERT INTO identity_emails (provider, subject, email) VALUES ('google', 'e2e-other-subject', 'other@example.test')`,
