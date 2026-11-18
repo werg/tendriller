@@ -63,6 +63,7 @@ export function provisionResources(plan, wrangler) {
 }
 
 export function deploymentConfig(plan, databaseId, account) {
+  const serviceZone = ['tendriller.dev', 'tendriller.site'].find(zone => plan.service.endsWith(`.${zone}`));
   return {
     $schema: '../node_modules/wrangler/config-schema.json', name: plan.worker,
     main: '../dist/engine/worker.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],
@@ -80,7 +81,7 @@ export function deploymentConfig(plan, databaseId, account) {
     routes: [{ pattern: plan.service, custom_domain: true },
       // A wildcard page route can otherwise intercept the service hostname
       // before Cloudflare evaluates its Custom Domain.
-      ...(plan.service.endsWith(`.${plan.pages}`) ? [{ pattern: `${plan.service}/*`, zone_name: plan.zone }] : []),
+      ...(serviceZone ? [{ pattern: `${plan.service}/*`, zone_name: serviceZone }] : []),
       { pattern: `*${plan.suffix}.${plan.pages}/*`, zone_name: plan.zone }],
     observability,
   };
