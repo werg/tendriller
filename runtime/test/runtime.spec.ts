@@ -281,20 +281,26 @@ test.describe('mobile home-screen setup', () => {
 
   test('suggestions stay out of typing and active sensor use', async ({ page }) => {
     await page.clock.install();
-    await open(page, mock.create({ html: '<main>Page content</main><input aria-label="Notes">' }));
+    await open(page, mock.create({ html: '<main style="margin-bottom:48px"><button style="min-height:44px">Use page</button></main><input aria-label="Notes">' }));
     const suggestion = page.getByRole('complementary', { name: 'Home screen suggestion' });
-    await page.getByRole('textbox', { name: 'Notes' }).tap();
+    const notes = page.getByRole('textbox', { name: 'Notes' });
+    const usePage = page.getByRole('button', { name: 'Use page', exact: true });
+    await notes.tap();
     await page.clock.fastForward(12_000); await expect(suggestion).toBeHidden();
-    // Mobile browsers may keep the input focused when non-focusable content is
-    // tapped. Finish editing explicitly before testing the separate sensor guard.
-    await page.getByRole('textbox', { name: 'Notes' }).blur();
+    // Keep the engagement target away from the input so mobile touch adjustment
+    // cannot refocus the editor while exercising the separate sensor guard.
+    await notes.blur();
     await page.evaluate(() => window.addEventListener('devicemotion', () => {}));
-    await page.locator('main').tap(); await page.clock.fastForward(12_000);
+    await usePage.tap(); await expect(notes).not.toBeFocused();
+    await expect.poll(() => page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: ['motion'], pending: [] });
+    await page.clock.fastForward(12_000);
     await expect(suggestion).toBeHidden();
     await expect(page.getByRole('button', { name: 'Stop Motion', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Stop Motion', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Page options', exact: true })).toBeFocused();
-    await page.locator('main').tap(); await page.clock.fastForward(12_000);
+    await usePage.tap(); await expect(notes).not.toBeFocused();
+    expect(await page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
+    await page.clock.fastForward(12_000);
     await expect(suggestion).toBeVisible();
   });
 
