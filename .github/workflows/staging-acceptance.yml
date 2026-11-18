@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -37,6 +38,7 @@ jobs:
           ref: ${{ env.CHRONOLOG_SHA }}
           path: .chronolog-staging
           persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE/.chronolog-staging"
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: .chronolog-staging/package.json
