@@ -3,6 +3,7 @@ const el = id => document.getElementById(id);
 const notes = el('notes'), photo = el('photo'), preview = el('preview'), result = el('result');
 const save = el('save'), clear = el('clear'), offline = el('offline');
 const restore = el('import');
+const capture = el('capture');
 let image;
 function show(value) {
   image = value;
@@ -23,7 +24,7 @@ try {
 save.onclick = async () => {
   const draftNotes = notes.value;
   const file = photo.files[0];
-  save.disabled = clear.disabled = photo.disabled = restore.disabled = true;
+  save.disabled = clear.disabled = photo.disabled = restore.disabled = capture.disabled = true;
   try {
     let selected = image;
     if (file) {
@@ -45,7 +46,7 @@ save.onclick = async () => {
   } catch {
     result.textContent = 'Could not save your draft. Keep this page open and copy your notes.';
   } finally {
-    save.disabled = clear.disabled = photo.disabled = restore.disabled = false;
+    save.disabled = clear.disabled = photo.disabled = restore.disabled = capture.disabled = false;
   }
 };
 offline.onclick = async () => {
@@ -86,7 +87,7 @@ el('export').onclick = () => {
 restore.onchange = async () => {
   const file = restore.files[0];
   if (!file) return;
-  restore.disabled = save.disabled = clear.disabled = photo.disabled = true;
+  restore.disabled = save.disabled = clear.disabled = photo.disabled = capture.disabled = true;
   try {
     if (file.size > 1024 * 1024) throw new Error('Draft too large');
     const draft = JSON.parse(await file.text());
@@ -102,7 +103,33 @@ restore.onchange = async () => {
     result.textContent = 'Could not restore this draft. Your current draft was kept.';
   } finally {
     restore.value = '';
-    restore.disabled = save.disabled = clear.disabled = photo.disabled = false;
+    restore.disabled = save.disabled = clear.disabled = photo.disabled = capture.disabled = false;
+  }
+};
+
+capture.onclick = async () => {
+  let stream;
+  capture.disabled = save.disabled = clear.disabled = restore.disabled = photo.disabled = true;
+  result.textContent = 'Opening the camera…';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 640 } }, audio: false });
+    const video = document.createElement('video');
+    video.muted = true;
+    video.srcObject = stream;
+    await video.play();
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(video.videoWidth, 640);
+    canvas.height = Math.round(video.videoHeight * canvas.width / video.videoWidth);
+    if (!canvas.width || !canvas.height) throw new Error('Camera provided no image');
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    show(canvas.toDataURL('image/jpeg', 0.8));
+    photo.value = '';
+    result.textContent = 'Photo captured. Save the draft to keep it on this device.';
+  } catch {
+    result.textContent = 'Could not take a photo. You can choose an image instead.';
+  } finally {
+    stream?.getTracks().forEach(track => track.stop());
+    capture.disabled = save.disabled = clear.disabled = restore.disabled = photo.disabled = false;
   }
 };
 

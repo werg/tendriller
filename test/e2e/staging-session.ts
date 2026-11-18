@@ -35,6 +35,7 @@ export function stagingSession() {
     throw new Error(`Staging fixture provisioning failed for account ${id}`);
   }
   return {
+    id,
     email,
     async signIn(context: BrowserContext) {
       await context.addCookies([{ name: '__Host-tendriller', value: token, url: staging,

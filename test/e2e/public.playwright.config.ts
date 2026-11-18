@@ -7,6 +7,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   outputDir: "../../test-results/public",
-  use: { browserName: "chromium", launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, ignoreHTTPSErrors: false,
+  use: { browserName: "chromium", launchOptions: { args: ["--use-fake-device-for-media-stream"],
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }, ignoreHTTPSErrors: false,
     trace: "off", screenshot: "off" },
 });
