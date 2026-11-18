@@ -1,6 +1,5 @@
 import * as log from '@chronolog/peer-session';
-import * as browserOwner from '@chronolog/peer-session/worker';
-const { openBrowserDevice, serveApplicationWorker } = browserOwner;
+import { openBrowserDevice, probeBrowserCapabilities, serveApplicationWorker } from '@chronolog/peer-session/worker';
 import { openSqlApplication } from '@chronolog/peer-session/sql';
 import { createBrowserSqlEngine, loadBrowserEngine } from '@chronolog/peer-session/sql-browser';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
@@ -18,11 +17,7 @@ async function connect(channel, remote) {
 self.addEventListener('message', async ({ data }) => {
   if (data?.type === 'capabilities') {
     try {
-      // An explicit scratch-only probe; no signer enrollment or data-store
-      // opening. Older independently pinned Chronolog artifacts lack this API.
-      const report = typeof browserOwner.probeBrowserCapabilities === 'function'
-        ? await browserOwner.probeBrowserCapabilities() : null;
-      self.postMessage({ type: 'capabilities', report });
+      self.postMessage({ type: 'capabilities', report: await probeBrowserCapabilities() });
     } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
     return;
   }
@@ -49,13 +44,9 @@ self.addEventListener('message', async ({ data }) => {
   if (data?.type !== 'open' || session) return;
   let device;
   try {
+    // The acceptance harness checks scratch diagnostics before enrollment.
+    // Opening the real engine below is the authoritative SQL/VFS check.
     device = await openBrowserDevice({ name: data.name });
-    // SQL remains an explicit requirement of the signed application: selecting
-    // IndexedDB for events never substitutes for an unavailable SQL VFS.
-    if (typeof browserOwner.probeBrowserCapabilities === 'function') {
-      const report = await browserOwner.probeBrowserCapabilities();
-      if (!report.sql.apiEligible) throw new Error('BROWSER_SQL_PREREQUISITES_UNAVAILABLE: ' + report.sql.reason);
-    }
     const definition = data.respondent ? intake(log, data.respondent) : checklist(log);
     const base = new URL('_tendril/', data.base);
     peers = createPeersClient({ applicationId: data.applicationId, base: base.href,

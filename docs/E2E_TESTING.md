@@ -62,3 +62,5 @@ durability. Browser quota failure, background suspension and site-data eviction
 remain explicit operational risks. Do not ship a pinned OPFS device with an
 implicit IDB reset/fallback; re-enrollment or migration is a separate, reviewed
 user operation.
+
+[WebKit documents native X25519 in Safari 18.4](https://webkit.org/blog/16574/webkit-features-in-safari-18-4/). Treat Safari/iPadOS 17 as unsupported for this native-crypto path unless an actual browser passes the required probe and device checks.

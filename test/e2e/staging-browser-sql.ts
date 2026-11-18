@@ -35,18 +35,37 @@ export async function openBrowserSqlSpecimen(options: {
     const name = randomUUID(), bootstrap = new URL('acceptance-identity.mjs', pageUrl).href;
     await page.route(bootstrap, route => route.fulfill({ contentType: 'text/javascript', body: workerCode }));
     try {
-      const id = await page.evaluate(({ bootstrap, name }) => new Promise<string>((resolve, reject) => {
+      const { id, report } = await page.evaluate(({ bootstrap, name }) => new Promise<{
+        id: string;
+        report: { secureContext: boolean; dedicatedWorker: boolean; events: { supported: boolean; reason?: string };
+          opfs: { syncAccessHandle: boolean }; sql: { apiEligible: boolean; qualified: boolean; reason: string } };
+      }>((resolve, reject) => {
         const worker = new Worker(bootstrap, { type: 'module' });
         const finish = () => { clearTimeout(timer); worker.terminate(); };
-        const timer = setTimeout(() => { finish(); reject(new Error('Browser identity timed out')); }, 10_000);
+        const timer = setTimeout(() => { finish(); reject(new Error('Browser capability and identity checks timed out')); }, 20_000);
+        let report: any;
         worker.onerror = event => { finish(); reject(new Error(event.message)); };
         worker.onmessage = ({ data }) => {
+          if (data.type === 'capabilities') {
+            report = data.report;
+            if (report?.events.supported && report.sql.apiEligible) {
+              worker.postMessage({ type: 'identity', name });
+              return;
+            }
+            finish();
+            reject(new Error('Browser prerequisites unavailable: ' + (report?.events.reason ?? report?.sql.reason)));
+            return;
+          }
           finish();
-          if (data.type === 'identity') resolve(data.id);
+          if (data.type === 'identity') resolve({ id: data.id, report });
           else reject(new Error(data.message));
         };
-        worker.postMessage({ type: 'identity', name });
+        worker.postMessage({ type: 'capabilities' });
       }), { bootstrap, name });
+      expect(report.secureContext).toBe(true);
+      expect(report.dedicatedWorker).toBe(true);
+      expect(report.opfs.syncAccessHandle).toBe(true);
+      expect(report.sql.qualified).toBe(false, 'API eligibility is not SQL application qualification');
       fixtures.push({ page, name, id });
     } finally {
       await page.unroute(bootstrap);
@@ -97,21 +116,6 @@ export async function openBrowserSqlSpecimen(options: {
     entry: 'index.html', files }, signer);
   await peers.publish(publication, assets);
   await Promise.all(pages.map(page => expect(page.getByRole('heading', { name: 'Shared work' })).toBeVisible({ timeout: 25_000 })));
-  // The capability check is an explicit, isolated Worker request made before
-  // any acceptance-session enrollment or first data use. It cannot qualify SQL.
-  const capabilityReports = await Promise.all(pages.map(page => page.evaluate(async () => {
-    const probe = (window as any).inspectAcceptanceBrowserCapabilities as (() => Promise<any>) | undefined;
-    return probe === undefined ? null : probe();
-  })));
-  for (const report of capabilityReports) {
-    if (report === null) continue; // Older pinned Chronolog consumers lack the diagnostic.
-    expect(report.secureContext).toBe(true);
-    expect(report.dedicatedWorker).toBe(true);
-    expect(report.events.supported).toBe(true);
-    expect(report.sql.apiEligible).toBe(true);
-    expect(report.opfs.syncAccessHandle).toBe(true);
-    expect(report.sql.qualified).toBe(false, 'API eligibility is not SQL application qualification');
-  }
   const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
@@ -124,7 +128,6 @@ export async function openBrowserSqlSpecimen(options: {
   };
   await pair();
   return {
-    capabilityReports,
     async reopenFirst() {
       const context = first.page.context();
       await first.page.close();
