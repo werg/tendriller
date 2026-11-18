@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { cloudflareClient, deletePreview, findDatabase, previewConfig, previewIdentity, previewSecrets,
-  provisionPreview, readPreviewTemplate, smokePreview, verifyPreview } from "../branch-preview.mjs";
+  provisionPreview, readPreviewRuntime, readPreviewTemplate, smokePreview, verifyPreview } from "../branch-preview.mjs";
+import { assetRouting, observability } from '../deployment-defaults.mjs';
 
 const account = "a".repeat(32), commit = "b".repeat(40), dbId = "11111111-2222-4333-8444-555555555555";
 const identity = previewIdentity("feat/branch-previews", commit);
+const runtimeId = JSON.parse(await readFile(new URL('../../server/src/runtime-release.json', import.meta.url), 'utf8')).id;
 
 test("preview success requires the selected source checkout's pinned deployment check", async t => {
   const scratch = resolve(import.meta.dirname, "../../.build");
@@ -46,7 +48,7 @@ test("branch names cannot target master or collide after slug normalization", ()
 
 test("preview config cannot carry staging resources, routes, or variables into deployment", async () => {
   const template = JSON.parse(await readFile(new URL("../../server/wrangler.staging.jsonc", import.meta.url), "utf8"));
-  const config = previewConfig(identity, { ...template, vars: { ...template.vars, GITHUB_CLIENT_SECRET: "never-copy" } }, dbId, account);
+  const config = previewConfig(identity, { ...template, vars: { ...template.vars, GITHUB_CLIENT_SECRET: "never-copy" } }, dbId, account, runtimeId);
   assert.equal(config.name, identity.worker);
   assert.equal(config.vars.PUBLIC_BASE, identity.url);
   assert.equal(config.vars.PAGE_HOST_SUFFIX, identity.suffix);
@@ -67,14 +69,34 @@ test("preview config cannot carry staging resources, routes, or variables into d
   assert.ok(!JSON.stringify(config).includes(template.d1_databases[0].database_id));
   assert.ok(config.ratelimits.every(r => !template.ratelimits.some(old => old.namespace_id === r.namespace_id)));
   assert.equal(new Set(config.ratelimits.map(r => r.namespace_id)).size, config.ratelimits.length);
-  const other = previewConfig(previewIdentity("other", commit), template, dbId, account);
+  const other = previewConfig(previewIdentity("other", commit), template, dbId, account, runtimeId);
   assert.ok(config.ratelimits.every(r => !other.ratelimits.some(b => b.namespace_id === r.namespace_id)));
   assert.throws(() => previewConfig(identity, { ...template, durable_objects: { bindings: [
     { name: "TENDRIL", class_name: "Tendril", script_name: "tendriller-production" },
-  ] } }, dbId, account));
+  ] } }, dbId, account, runtimeId));
   assert.throws(() => previewConfig(identity, { ...template, migrations: [{ tag: "v3", transferred_classes: [
     { from_script: "tendriller-production", from: "Tendril", to: "Tendril" },
-  ] }] }, dbId, account), /cannot transfer/);
+  ] }] }, dbId, account, runtimeId), /cannot transfer/);
+});
+
+test('preview routing uses the selected source runtime rather than the deployment controller checkout', async t => {
+  const scratch = resolve(import.meta.dirname, '../../.build');
+  await mkdir(scratch, { recursive: true });
+  const source = await mkdtemp(resolve(scratch, 'preview-runtime-'));
+  t.after(() => rm(source, { recursive: true, force: true }));
+  await mkdir(resolve(source, 'server/src'), { recursive: true });
+  const template = JSON.parse(await readFile(new URL('../../server/wrangler.staging.jsonc', import.meta.url), 'utf8'));
+  await writeFile(resolve(source, 'server/wrangler.staging.jsonc'), JSON.stringify(template));
+  const selected = runtimeId === 'a'.repeat(64) ? 'b'.repeat(64) : 'a'.repeat(64);
+  await writeFile(resolve(source, 'server/src/runtime-release.json'), JSON.stringify({ id: selected }));
+  const config = previewConfig(identity, await readPreviewTemplate(source), dbId, account, await readPreviewRuntime(source));
+  assert.deepEqual(config.assets.run_worker_first, assetRouting(selected));
+  assert.ok(config.assets.run_worker_first.includes(`!/_tendril/runtime/${selected}/*`));
+  assert.ok(!config.assets.run_worker_first.includes(`!/_tendril/runtime/${runtimeId}/*`), 'other releases must retain Worker/R2 fallback');
+  assert.deepEqual(config.observability, observability);
+  assert.throws(() => previewConfig(identity, template, dbId, account), /selected source runtime identity/);
+  await writeFile(resolve(source, 'server/src/runtime-release.json'), '{}');
+  await assert.rejects(readPreviewRuntime(source), /selected source runtime identity/);
 });
 
 test("only dedicated complete preview credential pairs are installed", () => {

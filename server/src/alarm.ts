@@ -28,6 +28,11 @@ export class DeadlineAlarm {
     return this.serial(() => { this.scheduled = null; });
   }
 
+  /** A failed invocation leaves retry ownership to the runtime. Read it afresh next time. */
+  failed(): Promise<void> {
+    return this.serial(() => { this.scheduled = undefined; });
+  }
+
   clear(): Promise<void> {
     return this.serial(async () => {
       await this.storage.deleteAlarm();

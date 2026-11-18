@@ -42,8 +42,9 @@ describe('page request cost and admission', () => {
 
   it('serves already-public runtime and brand bytes without any object call', async () => {
     const router = countedRouter();
-    for (const path of [runtimePath, '_tendril/brand/icon-64.png']) {
-      const response = await router.fetch(unknownPage + path);
+    for (const url of [unknownPage + runtimePath, unknownPage + '_tendril/brand/icon-64.png',
+      new URL('/' + runtimePath, unknownPage).href, new URL('/_tendril/brand/icon-64.png', unknownPage).href]) {
+      const response = await router.fetch(url);
       expect(response.status).toBe(200);
       expect(response.headers.get('Strict-Transport-Security')).toContain('includeSubDomains');
       await response.arrayBuffer();
@@ -60,7 +61,7 @@ describe('page request cost and admission', () => {
       unknownPage.replace('abcdefghijkl.', 'not-a-page.') + runtimePath,
       unknownPage.replace('abcdefghijkl.', 'nested.abcdefghijkl.') + runtimePath,
       unknownPage.replace('tendriller.site', 'tendriller.site.example.com') + runtimePath,
-      new URL('/' + runtimePath, unknownPage).href,
+      new URL('/_tendril/sw.js', unknownPage).href,
     ]) {
       expect((await router.fetch(url)).status).toBe(404);
     }

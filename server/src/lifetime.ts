@@ -38,7 +38,8 @@ export function recoverLifetimeChange(t: Tendril): Promise<void> {
       t.transaction(() => {
         // Resident pages do not write per-request inactivity timestamps. Start
         // a full idle window when a downgrade finally commits, also on recovery.
-        if (target === 'ad_hoc' && t.db.get<Lifetime>('lifetime', 'ad_hoc') === 'resident')
+        if (target === 'ad_hoc' && t.db.get<Lifetime>('lifetime', 'ad_hoc') === 'resident'
+          && t.db.get<string | null>('owner_account', null))
           t.db.set('last_access', t.now());
         t.db.set('lifetime', target); t.db.del(PENDING);
       });

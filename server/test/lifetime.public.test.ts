@@ -88,6 +88,7 @@ it('continues alarm work and schedules bounded retries while account recovery st
 it.each([false, true])('starts a full inactivity window when an old resident page becomes ad-hoc (recovery=%s)', async interrupted => {
   const page = await resident();
   await advance(page.id, 2 * AD_HOC_IDLE);
+  let beforeCommit = await inDO(page.id, t => t.now());
   if (interrupted) {
     await inDO(page.id, async t => {
       const restore = interceptAccountWrite(t, async statement => {
@@ -99,6 +100,7 @@ it.each([false, true])('starts a full inactivity window when an old resident pag
         // Advance before restoring account access: an already-due cleanup alarm
         // may otherwise complete the recovery before a separate advance() call.
         t.skew += 60_000;
+        beforeCommit = t.now();
       }
       finally { restore(); }
     });
@@ -107,8 +109,24 @@ it.each([false, true])('starts a full inactivity window when an old resident pag
   await inDO(page.id, t => {
     expect(t.exists()).toBe(true);
     expect(t.db.get('lifetime', '')).toBe('ad_hoc');
-    expect(t.expiresAt()!).toBeGreaterThan(t.now() + AD_HOC_IDLE - 2_000);
+    const last = t.db.get<number>('last_access', 0);
+    expect(last).toBeGreaterThanOrEqual(beforeCommit);
+    expect(t.expiresAt()).toBe(last + AD_HOC_IDLE);
     expect(lifetimeChangePending(t)).toBe(false);
+  });
+});
+
+it('skips unused inactivity state when a released resident page becomes ad-hoc', async () => {
+  const page = await resident();
+  await apiJson(page, 'POST', 'release', {});
+  const previous = await inDO(page.id, t => ({ last: t.db.get('last_access', 0), expires: t.expiresAt() }));
+  await advance(page.id, HOUR);
+  await apiJson(page, 'PATCH', '', { lifetime: 'ad_hoc' });
+  await inDO(page.id, t => {
+    expect(t.db.get('owner_account', null)).toBeNull();
+    expect(t.db.get('lifetime', '')).toBe('ad_hoc');
+    expect(t.db.get('last_access', 0)).toBe(previous.last);
+    expect(t.expiresAt()).toBe(previous.expires);
   });
 });
 
@@ -129,7 +147,7 @@ it('retains a late first claim for a full idle window without a subsequent page 
     expect(t.db.get('owner_account', '')).toBe(account);
     expect(last).toBeGreaterThanOrEqual(beforeClaim);
     expect(expires).toBe(last + AD_HOC_IDLE);
-    expect(expires!).toBeGreaterThan(t.now() + AD_HOC_IDLE - 2_000);
+    expect(expires!).toBeGreaterThanOrEqual(beforeClaim + AD_HOC_IDLE);
     return { last, expires, skew: t.skew };
   });
   await evictDurableObject(stub(page.id));
@@ -139,7 +157,7 @@ it('retains a late first claim for a full idle window without a subsequent page 
     expect(t.expiresAt()).toBe(saved.expires);
   });
   await advance(page.id, 2 * HOUR);
-  await runAlarm(page.id);
+  expect(await runAlarm(page.id)).toBe(true);
   await inDO(page.id, t => {
     expect(t.now()).toBeGreaterThan(originalExpiry);
     expect(t.exists()).toBe(true);

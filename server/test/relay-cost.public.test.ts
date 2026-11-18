@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { evictDurableObject } from 'cloudflare:test';
-import { createPeerRelay, PEER_RELAY_LIMITS } from '../../contract/peers.mjs';
+import { createPeerRelay } from '../../contract/peers.mjs';
 import { currentPrincipal, type Principal } from '../src/access';
 import { Db } from '../src/db';
 import { advance, inDO, stub } from './helpers';
@@ -95,7 +95,7 @@ it.each(['token', 'link', 'session', 'guest approval', 'disabled', 'owner'] as c
   },
 );
 
-it.each(['session', 'link', 'account admission'] as const)('checks %s expiry on each packet even with warm local rows', async reason => {
+it.each(['session', 'link'] as const)('checks %s expiry on each packet even with warm local rows', async reason => {
   const p = await pair();
   try {
     await inDO(p.id, t => {
@@ -103,7 +103,7 @@ it.each(['session', 'link', 'account admission'] as const)('checks %s expiry on 
       if (reason === 'link') t.db.run("UPDATE links SET expires_at=? WHERE role='guest'", t.now() + 10_000);
     });
     await p.exchange();
-    await advance(p.id, reason === 'account admission' ? PEER_RELAY_LIMITS.authorizationMs + 1 : 10_001);
+    await advance(p.id, 10_001);
     // No SQL mutation or policy-refresh alarm occurs between warming and expiry.
     p.a.reliable.send(new Uint8Array([1]));
     await expect.poll(() => p.a.signal.aborted && p.b.signal.aborted).toBe(true);

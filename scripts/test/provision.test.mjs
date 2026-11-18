@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { deploymentPlan, deploymentConfig, provisionResources } from '../provision.mjs';
 import { requiredStorageSchema } from '../storage-schema.mjs';
+import { assetRouting, observability } from '../deployment-defaults.mjs';
 
 const current = { name:'tendriller-staging', vars:{PUBLIC_BASE:'https://staging.tendriller.dev',PAGE_BASE_DOMAIN:'tendriller.dev'},
   d1_databases:[{database_name:'tendriller-staging-accounts'}],r2_buckets:[{bucket_name:'tendriller-staging-files'}] };
@@ -15,6 +16,17 @@ test('public fixture and deployed Workers use the same traffic binding definitio
   for (const file of ['wrangler.staging.jsonc', 'wrangler.production.jsonc'])
     assert.deepEqual(config(file), expected, `${file} differs from the public fixture`);
   assert.deepEqual(deploymentConfig(fresh(), 'fresh-database-id', 'account').ratelimits, expected);
+});
+
+test('canonical and retained deployment configs keep the same static routing and log defaults', () => {
+  for (const file of ['wrangler.staging.jsonc', 'wrangler.production.jsonc', 'wrangler.tendriller-staging-s9.jsonc']) {
+    const config = JSON.parse(readFileSync(new URL(`../../server/${file}`, import.meta.url), 'utf8'));
+    assert.deepEqual(config.assets.run_worker_first, assetRouting(), `${file} differs from current static routing`);
+    assert.deepEqual(config.observability, observability, `${file} differs from deployment log defaults`);
+  }
+  const config = deploymentConfig(fresh(), 'fresh-database-id', 'account');
+  assert.deepEqual(config.assets.run_worker_first, assetRouting());
+  assert.deepEqual(config.observability, observability);
 });
 const absent = code => Object.assign(new Error('Resource does not exist'), {stderr:`[code: ${code}]`});
 

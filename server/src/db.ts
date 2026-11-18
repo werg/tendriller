@@ -136,7 +136,9 @@ export class Db {
       this.del(k);
       return;
     }
-    this.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, JSON.stringify(v));
+    // Retried control operations often repeat the same metadata. Compare in SQL
+    // so mutable caller objects and cold caches cannot hide a real change.
+    this.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE meta.v <> excluded.v", k, JSON.stringify(v));
     remember(this.cache, k, v);
   }
 

@@ -69,3 +69,28 @@ it('rolls back the complete fresh schema when recording its identity fails', asy
     expect(recovered.one('SELECT revision FROM storage_schema')).toEqual({ revision: STORAGE_SCHEMA_REVISION });
   });
 });
+
+it('writes metadata only when its serialized durable value changes, including mutated cached objects', async () => {
+  await isolatedDatabase(storage => {
+    const cursors: { readonly rowsWritten: number }[] = [];
+    const sql = new Proxy(storage.sql, { get(target, name) {
+      if (name === 'exec') return (query: string, ...bindings: (string | number | null | ArrayBuffer)[]) => {
+        const cursor = target.exec(query, ...bindings);
+        cursors.push(cursor);
+        return cursor;
+      };
+      return Reflect.get(target, name, target);
+    } });
+    const db = new Db({ sql, transactionSync: write => storage.transactionSync(write) });
+    db.init();
+    db.set('retry', { count: 1 });
+    cursors.length = 0;
+    for (let i = 0; i < 20; i++) db.set('retry', { count: 1 });
+    expect(cursors.reduce((sum, cursor) => sum + cursor.rowsWritten, 0)).toBe(0);
+    const value = db.get('retry', { count: 0 });
+    value.count = 2;
+    db.set('retry', value);
+    expect(cursors.reduce((sum, cursor) => sum + cursor.rowsWritten, 0)).toBeGreaterThan(0);
+    expect(new Db(storage).get('retry', null)).toEqual({ count: 2 });
+  });
+});

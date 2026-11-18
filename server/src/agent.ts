@@ -10,7 +10,7 @@ import { pointers } from './files';
 import { HttpError, intParam, json, readJson } from './http';
 import { newPageKey, sha256Hex } from './ids';
 import { serviceDescriptor } from './descriptor';
-import { authenticateAgent, requireAccess } from './access';
+import { authenticateAgent, currentPrincipal, requireAccess } from './access';
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -31,6 +31,8 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   const rest = decodeURIComponent(req.headers.get('x-tendril-rest') ?? '');
   const method = req.method === 'HEAD' ? 'GET' : req.method;
   const principal = await authenticateAgent(t, req);
+  if (!currentPrincipal(t, principal)) throw new HttpError(401, 'unauthorized');
+  t.recordAccess();
   if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, principal);
   if (rest === 'application') return handleApplication(t, req, principal);
   const matches = routes.filter(route => route.pattern.test(rest));

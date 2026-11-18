@@ -10,6 +10,7 @@ import { serviceDescriptor } from "./descriptor";
 import { allows, authenticatePage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
 import { requireWritesOpen } from "./service-state";
+import { admitPageTraffic } from "./traffic-budget";
 
 /** Internal admission result; the Worker consumes it before returning a page response. */
 export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
@@ -44,6 +45,11 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (t.db.get("disabled", false)) return pageAccessDenied(403);
     if (!currentPrincipal(t, principal)) return pageAccessDenied(401);
   }
+  // The former /claim/check preflight rejected unauthenticated traffic before
+  // it could spend the page or owner's request allowance. Preserve that boundary
+  // inside this single DO call, including display visits that hold the page.
+  await admitPageTraffic(t.env, t.tid, t.db.get<string | null>("owner_account", null));
+  if (!currentPrincipal(t, principal)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
   if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
     await requireWritesOpen(t.env);
     // The service-state read yields after authentication. Honor any local

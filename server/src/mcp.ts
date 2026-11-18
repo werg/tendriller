@@ -4,6 +4,7 @@ import { CONTRACT_VERSION, validateSchema } from '../../contract/index.mjs';
 import { handleAgent } from './agent';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { PEER_CONTROL_TOOLS } from './peer-mcp';
+import { authenticateAgentToken, currentPrincipal } from './access';
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 class RpcError extends Error { constructor(public code: number, message: string, public data?: unknown) { super(message); } }
 const INSTRUCTIONS = 'This host is a filtered Chronolog participant for signed code publication, membership, discovery and explicit recovery. ' +
@@ -40,7 +41,9 @@ export async function handleMcp(t: Tendril, req: Request, rest: string): Promise
   const header = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1] ?? "";
   const token = pathToken || header;
   if (!token) throw new HttpError(401, "unauthorized", "Connect with Authorization: Bearer <token> or the URL <api>/mcp/<token>");
-  await t.authToken(token);
+  const principal = await authenticateAgentToken(t, token);
+  if (!currentPrincipal(t, principal)) throw new HttpError(401, 'unauthorized');
+  t.recordAccess();
   if (req.method !== "POST")
     return json({ error: { code: "method_not_allowed", message: "This MCP server takes JSON-RPC over POST and offers no event stream" } }, 405, { Allow: "POST" });
 

@@ -17,6 +17,7 @@ import { serviceDescriptor } from "./descriptor";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
+import type { CacheContext } from "./immutable-cache";
 
 function stub(env: Env, id: string): DurableObjectStub {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
@@ -44,13 +45,13 @@ async function asset(env: Env, url: URL, path: string, extra?: Record<string, st
   return out;
 }
 
-export async function route(req: Request, env: Env): Promise<Response> {
+export async function route(req: Request, env: Env, context?: CacheContext): Promise<Response> {
   const host = new URL(req.url).hostname.toLowerCase();
   const pagesDomain = env.PAGE_BASE_DOMAIN?.toLowerCase();
   const serviceHost = new URL(publicBase(env)).hostname.toLowerCase();
   const onPagesDomain = host !== serviceHost && !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
   let res: Response;
-  try { res = await routeInner(req, env, onPagesDomain); }
+  try { res = await routeInner(req, env, onPagesDomain, context); }
   catch (err) { res = toErrorResponse(err); }
   const preview = isBranchPreview(env);
   if (onPagesDomain || preview) {
@@ -63,12 +64,31 @@ export async function route(req: Request, env: Env): Promise<Response> {
   return res;
 }
 
-async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promise<Response> {
+async function routeInner(req: Request, env: Env, onPagesDomain: boolean, context?: CacheContext): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
-  if (onPagesDomain && !parsePageRoute(url, env)) return errorResponse(404, "not_found", "Not found");
+  const rootRuntime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
+  const rootBrand = path === '/favicon.ico' || /^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path);
+  const publicRead = (req.method === 'GET' || req.method === 'HEAD') && req.headers.get('Upgrade')?.toLowerCase() !== 'websocket';
+  if (onPagesDomain && !parsePageRoute(url, env)) {
+    // Old runtime releases missing from the static deployment still resolve
+    // through R2 at the same public root URL. Reuse the page-host validator so
+    // foreign preview labels and nested/unrecognised subdomains remain invalid.
+    const probe = new URL(url);
+    probe.pathname = `/s/${'a'.repeat(26)}/`;
+    if (!publicRead || !(rootRuntime || rootBrand) || !parsePageRoute(probe, env))
+      return errorResponse(404, "not_found", "Not found");
+  }
   if (!onPagesDomain && url.origin !== new URL(publicBase(env)).origin) return errorResponse(404, "not_found", "Not found");
+
+  if (publicRead && rootRuntime) return runtimeAsset(env, req, rootRuntime[1], rootRuntime[2], context);
+  if (publicRead && rootBrand) {
+    const response = await asset(env, url, path === '/favicon.ico' ? '/_tendril/brand/favicon.ico' : path);
+    response.headers.set('X-Content-Type-Options', 'nosniff');
+    if (req.method === 'HEAD') { await response.body?.cancel(); return new Response(null, response); }
+    return response;
+  }
 
   // Pages: P and everything under it.
   const page = parsePageRoute(url, env);
@@ -91,7 +111,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     const runtime = /^_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(rest);
     const brand = /^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest);
     if ((req.method === "GET" || req.method === "HEAD") && req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      if (runtime && !runtime[2].split("/").includes("..")) return runtimeAsset(env, req, runtime[1], runtime[2]);
+      if (runtime && !runtime[2].split("/").includes("..")) return runtimeAsset(env, req, runtime[1], runtime[2], context);
       if (brand) return asset(env, url, `/${rest}`);
     }
     const resource = /^_tendril\/assets\/([a-f0-9]{64})\/([A-Za-z0-9_-][A-Za-z0-9_.-]{0,199})$/.exec(rest);
@@ -105,7 +125,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
       if (!check.ok && ![401, 403, 404].includes(check.status)) return check;
       await check.body?.cancel();
       if (!check.ok) return pageAdmissionFailure(req, env, page, check.status === 403);
-      if (resource) return immutableAsset(env, req, resource[1], resource[2]);
+      if (resource) return immutableAsset(env, req, resource[1], resource[2], context);
       return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
     }
     const response = await forward(env, page.id, "page", req, url, {
@@ -163,7 +183,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean): Promi
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   }
   const runtime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
-  if (runtime) return runtimeAsset(env, req, runtime[1], runtime[2]);
+  if (runtime) return runtimeAsset(env, req, runtime[1], runtime[2], context);
   return errorResponse(404, "not_found", "Not found");
 }
 

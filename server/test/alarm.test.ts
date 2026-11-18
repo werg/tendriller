@@ -52,3 +52,15 @@ it('retries a failed alarm write instead of remembering an unpersisted deadline'
   await f.scheduler.ensure(2_000);
   expect(f.stats()).toEqual({ time: 2_000, reads: 1, writes: 2, deletes: 0 });
 });
+
+it('observes the pending platform retry after failure instead of replacing its backoff', async () => {
+  // A failed invocation retains its original alarm time while awaiting retry.
+  const f = fixture(1_000);
+  await f.scheduler.fired();
+  await f.scheduler.failed();
+  await f.scheduler.ensure(2_000);
+  expect(f.stats()).toEqual({ time: 1_000, reads: 1, writes: 0, deletes: 0 });
+  await f.scheduler.fired();
+  await f.scheduler.ensure(3_000);
+  expect(f.stats()).toEqual({ time: 3_000, reads: 1, writes: 1, deletes: 0 });
+});

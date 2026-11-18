@@ -10,6 +10,18 @@ interface Attachment {
   owner: string; principal: Principal; ready: boolean; expiresAt: number; authorizedUntil: number;
   received: number; pending: Pending[]; progressAt: number; window: number; packets: number;
 }
+interface QueuedMessage { socket: WebSocket; message: string | ArrayBuffer }
+interface Route { value: Attachment; other: WebSocket; recipient: Attachment }
+interface Refresh {
+  sockets: WebSocket[]; ownerAccount: string | null; startedAt: number; queue: QueuedMessage[]; bytes: number;
+  done: Promise<void>; finish: () => void; timer: ReturnType<typeof setTimeout>;
+}
+// The existing two peers' reliable/live credit plus all corresponding receipts.
+// Only an active policy check retains these bytes; nothing enters storage or an attachment.
+const refreshMessages = 4 * (LIMITS.pendingPackets + 1);
+const refreshBytes = 2 * (LIMITS.pendingBytes + LIMITS.liveBufferedBytes) + refreshMessages * 256;
+const refreshTimeoutMs = 5_000;
+const refreshing = new WeakMap<Tendril, Map<string, Refresh>>();
 const attachment = (ws: WebSocket): Attachment | null => {
   const value = ws.deserializeAttachment() as (Omit<Attachment, 'pending'> & { pending: ArrayBuffer }) | null;
   if (value?.kind !== 'peer-relay') return null;
@@ -36,24 +48,30 @@ function owner(t: Tendril, principal: Principal): string {
     throw new HttpError(403, 'forbidden', 'Peer relay requires an authenticated participant');
   return current.kind === 'agent' ? `agent:${current.credentialHash}` : `account:${current.accountId}`;
 }
-async function authorize(t: Tendril, principal: Principal): Promise<void> {
+async function authorize(t: Tendril, principal: Principal): Promise<number> {
+  const until = t.now() + LIMITS.authorizationMs;
   owner(t, principal);
-  if (!await pageAccessAllowed(t) || principal.kind === 'page' && principal.accountId && !await accountActive(t, principal.accountId))
+  const allowed = await pageAccessAllowed(t);
+  owner(t, principal);
+  if (!allowed || t.now() >= until)
     throw new HttpError(403, 'forbidden', 'Peer relay access is no longer active');
-  owner(t, principal);
+  if (principal.kind === 'page' && principal.accountId) {
+    const allowed = await accountActive(t, principal.accountId);
+    owner(t, principal);
+    if (!allowed || t.now() >= until) throw new HttpError(403, 'forbidden', 'Peer relay access is no longer active');
+  }
+  return until;
 }
 function members(t: Tendril, session: string): WebSocket[] {
   return all(t).filter(ws => ws.readyState === WebSocket.READY_STATE_OPEN && attachment(ws)?.session === session);
 }
 function closeSession(t: Tendril, session: string, code: number, reason: string): void {
+  finishRefresh(t, session);
   for (const ws of members(t, session)) ws.close(code, reason);
   t.scheduleAlarm();
 }
-// Refresh ahead of the hard admission expiry so a normal packet cannot race
-// the same timestamp as the alarm. A stalled refresh still fails closed.
-const refreshAt = (value: Attachment): number => value.authorizedUntil - Math.floor(LIMITS.authorizationMs / 3);
 function deadline(value: Attachment): number {
-  return Math.min(value.expiresAt, refreshAt(value),
+  return Math.min(value.expiresAt,
     value.pending.length ? value.progressAt + LIMITS.progressMs : Infinity);
 }
 function active(t: Tendril): WebSocket[] {
@@ -75,24 +93,74 @@ export function nextRelayDeadline(t: Tendril): number | null {
   });
   return times.length ? Math.min(...times) : null;
 }
-/** Account policy is revalidated at most 30s apart; local credential revocation is checked on every packet. */
-export async function expireRelays(t: Tendril): Promise<void> {
-  const sessions = new Set(active(t).map(ws => attachment(ws)!.session));
-  for (const session of sessions) {
-    const selected = members(t, session);
-    if (!selected.some(ws => refreshAt(attachment(ws)!) <= t.now())) continue;
-    try {
-      const principals = new Map(selected.map(ws => { const value = attachment(ws)!; return [value.owner, value.principal] as const; }));
-      await Promise.all([...principals.values()].map(principal => authorize(t, principal)));
-      // Authorization can yield to replacement, expiry or local revocation.
-      for (const ws of members(t, session)) {
-        const value = attachment(ws)!;
-        owner(t, value.principal);
-        if (value.expiresAt <= t.now()) throw new Error('expired');
-        write(ws, { ...value, authorizedUntil: t.now() + LIMITS.authorizationMs });
-      }
-    } catch { closeSession(t, session, 4003, 'Peer host access revoked'); }
+/** Quiet connections need only pairing, lifetime and outstanding-receipt deadlines. */
+export function expireRelays(t: Tendril): void { active(t); }
+
+function finishRefresh(t: Tendril, session: string): void {
+  const sessions = refreshing.get(t), state = sessions?.get(session);
+  if (!state) return;
+  sessions!.delete(session);
+  if (!sessions!.size) refreshing.delete(t);
+  clearTimeout(state.timer);
+  state.queue.length = 0; state.sockets.length = 0; state.bytes = 0;
+  state.finish();
+}
+/** Recheck the exact admitted session after every yield, including local mutations and time passing. */
+function refreshMembers(t: Tendril, session: string, state: Refresh): Attachment[] {
+  const current = members(t, session), now = t.now();
+  if (refreshing.get(t)?.get(session) !== state || t.db.get<string | null>('owner_account', null) !== state.ownerAccount || current.length !== 4 ||
+      current.some(ws => !state.sockets.includes(ws)) || now >= state.startedAt + LIMITS.authorizationMs)
+    throw new Error('Relay authorization expired');
+  return current.map(ws => {
+    const value = attachment(ws)!;
+    if (!value.ready || owner(t, value.principal) !== value.owner || value.expiresAt <= now ||
+        value.pending.length && value.progressAt + LIMITS.progressMs <= now) throw new Error('Relay expired');
+    return value;
+  });
+}
+/** A timeout/close releases the event handlers even if the underlying D1 request has not settled. */
+function policyCheck<T>(state: Refresh, work: () => Promise<T>): Promise<T> {
+  return Promise.race([work(), state.done.then(() => { throw new Error('Relay authorization cancelled'); })]);
+}
+async function refreshSession(t: Tendril, session: string, state: Refresh): Promise<void> {
+  try {
+    const values = refreshMembers(t, session, state);
+    const allowed = await policyCheck(state, () => pageAccessAllowed(t));
+    refreshMembers(t, session, state);
+    if (!allowed) throw new Error('Peer host access revoked');
+    // The page-policy join already checks its owner account. Other participants
+    // need their own policy read, shared across that account's two lanes.
+    const accounts = new Set(values.flatMap(value => value.principal.kind === 'page' && value.principal.accountId &&
+      value.principal.accountId !== state.ownerAccount ? [value.principal.accountId] : []));
+    for (const account of accounts) {
+      const allowed = await policyCheck(state, () => accountActive(t, account));
+      refreshMembers(t, session, state);
+      if (!allowed) throw new Error('Peer account access revoked');
+    }
+    // Start the lease before the first policy read, so slow reads cannot extend its bound.
+    for (const ws of state.sockets) write(ws, { ...attachment(ws)!, authorizedUntil: state.startedAt + LIMITS.authorizationMs });
+    while (refreshing.get(t)?.get(session) === state && state.queue.length) {
+      const next = state.queue.shift()!;
+      forward(t, next.socket, next.message);
+    }
+    finishRefresh(t, session);
+  } catch {
+    // A late result belongs only to its original refresh, never a replacement session.
+    if (refreshing.get(t)?.get(session) === state) closeSession(t, session, 4003, 'Peer host access revoked');
   }
+}
+function startRefresh(t: Tendril, session: string): Refresh {
+  let sessions = refreshing.get(t);
+  if (!sessions) refreshing.set(t, sessions = new Map());
+  let finish!: () => void;
+  const done = new Promise<void>(resolve => { finish = resolve; });
+  const state: Refresh = { sockets: members(t, session), ownerAccount: t.db.get<string | null>('owner_account', null),
+    startedAt: t.now(), queue: [], bytes: 0, done, finish,
+    timer: setTimeout(() => {
+      if (refreshing.get(t)?.get(session) === state) closeSession(t, session, 4003, 'Peer authorization timed out');
+    }, refreshTimeoutMs) };
+  sessions.set(session, state);
+  return state;
 }
 
 export async function handleRelay(t: Tendril, req: Request, url: URL, principal: Principal): Promise<Response> {
@@ -103,7 +171,7 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   if (!channel || !/^[A-Za-z0-9_.:-]{1,160}$/.test(channel) || !peerId || !remotePeerId ||
       !/^[0-9a-f]{64}$/.test(peerId) || !/^[0-9a-f]{64}$/.test(remotePeerId) || peerId === remotePeerId || !['reliable', 'live'].includes(lane ?? ''))
     throw new HttpError(400, 'bad_request', 'Relay needs a bounded channel, reciprocal signing identities and lane');
-  await authorize(t, principal);
+  const authorizedUntil = await authorize(t, principal);
   const owned = owner(t, principal), sockets = active(t), existing = sockets.filter(ws => attachment(ws)!.channel === channel);
   if (existing.some(ws => {
     const value = attachment(ws)!;
@@ -118,7 +186,7 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   const [client, server] = Object.values(new WebSocketPair()), now = t.now();
   const value: Attachment = { kind: 'peer-relay', channel, session: first?.session ?? crypto.randomUUID(), peerId, remotePeerId, lane: lane as Lane,
     owner: owned, principal, ready: false, expiresAt: first?.expiresAt ?? now + LIMITS.pairingMs,
-    authorizedUntil: now + LIMITS.authorizationMs, received: 0, pending: [], progressAt: now, window: now, packets: 0 };
+    authorizedUntil, received: 0, pending: [], progressAt: now, window: now, packets: 0 };
   t.ctx.acceptWebSocket(server, ['peer-relay']); write(server, value);
   const group = [...existing, server];
   if (group.length === 4) {
@@ -135,20 +203,44 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL } });
 }
 
-/** No ciphertext is retained in attachments, storage or a relay-owned payload queue. */
-export function handleRelayMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): void {
+function endpoints(t: Tendril, value: Attachment): Route {
+  owner(t, value.principal);
+  const now = t.now();
+  if (!value.ready || value.expiresAt <= now || value.pending.length && value.progressAt + LIMITS.progressMs <= now) throw new Error('Relay expired');
+  const other = members(t, value.session).find(socket => {
+    const recipient = attachment(socket)!;
+    return recipient.peerId === value.remotePeerId && recipient.remotePeerId === value.peerId && recipient.lane === value.lane;
+  });
+  if (!other) throw new Error('Relay peer disconnected');
+  const recipient = attachment(other)!; owner(t, recipient.principal);
+  if (!recipient.ready || recipient.expiresAt <= now || recipient.pending.length && recipient.progressAt + LIMITS.progressMs <= now)
+    throw new Error('Relay expired');
+  return { value, other, recipient };
+}
+/** Warm traffic is synchronous. Only expired admission temporarily buffers a bounded burst. */
+export function handleRelayMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): void | Promise<void> {
   const value = attachment(ws);
   if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
   try {
-    owner(t, value.principal);
-    if (!value.ready || value.expiresAt <= t.now() || value.authorizedUntil <= t.now() || value.pending.length && value.progressAt + LIMITS.progressMs <= t.now()) throw new Error('Relay expired');
-    const other = members(t, value.session).find(socket => {
-      const recipient = attachment(socket)!;
-      return recipient.peerId === value.remotePeerId && recipient.remotePeerId === value.peerId && recipient.lane === value.lane;
-    });
-    if (!other) throw new Error('Relay peer disconnected');
-    const recipient = attachment(other)!; owner(t, recipient.principal);
-    if (recipient.authorizedUntil <= t.now()) throw new Error('Relay authorization expired');
+    const route = endpoints(t, value), existing = refreshing.get(t)?.get(value.session);
+    if (!existing && Math.min(value.authorizedUntil, route.recipient.authorizedUntil) > t.now()) return forward(t, ws, message, route);
+    const bytes = typeof message === 'string' ? new TextEncoder().encode(message).length : message.byteLength;
+    if (typeof message === 'string' ? bytes > 256 : bytes <= 4 || bytes > LIMITS.packetBytes + 4) throw new Error('Relay packet too large');
+    const state = existing ?? startRefresh(t, value.session);
+    if (state.queue.length >= refreshMessages || state.bytes + bytes > refreshBytes) throw new Error('Relay authorization queue exhausted');
+    state.queue.push({ socket: ws, message }); state.bytes += bytes;
+    if (!existing) void refreshSession(t, value.session, state);
+    return state.done;
+  } catch { closeSession(t, value.session, 1008, 'Invalid or unauthorized peer relay'); }
+}
+
+/** No ciphertext survives forwarding in attachments or storage. */
+function forward(t: Tendril, ws: WebSocket, message: string | ArrayBuffer, checked?: Route): void {
+  const value = checked?.value ?? attachment(ws);
+  if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+  try {
+    const { other, recipient } = checked ?? endpoints(t, value);
+    if (Math.min(value.authorizedUntil, recipient.authorizedUntil) <= t.now()) throw new Error('Relay authorization expired');
     if (typeof message === 'string') {
       if (new TextEncoder().encode(message).length > 256) throw new Error('Relay control too large');
       const input = JSON.parse(message), pending = recipient.pending[0];

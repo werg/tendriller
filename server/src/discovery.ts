@@ -45,10 +45,12 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
   } catch (error) { throw new HttpError(400, 'bad_request', error instanceof Error ? error.message : 'Invalid advertisement'); }
   const owner = identity(t, principal);
   return t.transaction(() => {
+    const retained = t.db.get<StoredAdvertisement[]>(key, []);
     const rows = active(t), previous = rows.find(row => row.advertisement.peerId === peerId);
     if (previous && previous.owner !== owner) throw new HttpError(409, 'peer_identity_conflict', 'Another participant owns this active advertisement');
     if (action === 'withdraw') {
-      t.db.set(key, rows.filter(row => row.advertisement.peerId !== peerId));
+      if (previous || retained.length !== rows.length)
+        t.db.set(key, rows.filter(row => row.advertisement.peerId !== peerId));
       return { withdrawn: peerId };
     }
     if (!previous && (rows.length >= LIMITS.peers || rows.filter(row => row.owner === owner).length >= LIMITS.peersPerPrincipal))

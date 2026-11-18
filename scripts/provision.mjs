@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { assetRouting, observability } from './deployment-defaults.mjs';
 
 export function deploymentPlan(stage, { name, fresh = false } = {}, env = process.env, current = {}) {
   if (stage !== 'production' && stage !== 'staging') throw Error('Pass production or staging');
@@ -65,7 +66,7 @@ export function deploymentConfig(plan, databaseId, account) {
   return {
     $schema: '../node_modules/wrangler/config-schema.json', name: plan.worker,
     main: '../dist/engine/worker.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],
-    assets: { directory: './public', binding: 'ASSETS', run_worker_first: true },
+    assets: { directory: './public', binding: 'ASSETS', run_worker_first: assetRouting() },
     durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }] },
     migrations: [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }],
     d1_databases: [{ binding: 'ACCOUNTS', database_name: plan.database, database_id: databaseId, migrations_dir: 'migrations' }],
@@ -81,7 +82,7 @@ export function deploymentConfig(plan, databaseId, account) {
       // before Cloudflare evaluates its Custom Domain.
       ...(plan.service.endsWith(`.${plan.pages}`) ? [{ pattern: `${plan.service}/*`, zone_name: plan.zone }] : []),
       { pattern: `*${plan.suffix}.${plan.pages}/*`, zone_name: plan.zone }],
-    observability: { enabled: true },
+    observability,
   };
 }
 

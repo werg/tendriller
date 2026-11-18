@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
+import { evictDurableObject } from 'cloudflare:test';
 import { createPeerRelay, PEER_RELAY_LIMITS as LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
-import { advance, api, create, inDO, req, runAlarm, type Handle } from './helpers';
-import { closeRelay } from '../src/peer-relay';
+import { advance, api, create, inDO, req, runAlarm, stub, type Handle } from './helpers';
+import { closeRelay, handleRelayMessage, nextRelayDeadline } from '../src/peer-relay';
 import { createTestPage } from './public-fixture';
 
 const left = 'ab'.repeat(32), right = 'cd'.repeat(32), other = 'ef'.repeat(32);
@@ -28,6 +29,36 @@ async function pair(h: Handle, channel = 'test') {
 }
 function packet(sequence: number, size = 8): ArrayBuffer {
   const bytes = new Uint8Array(4 + size); new DataView(bytes.buffer).setUint32(0, sequence); bytes.fill(0x37, 4); return bytes.buffer;
+}
+
+async function policy(id: string, check: (query: string, read: () => Promise<unknown>) => Promise<unknown>) {
+  let restore!: () => void;
+  await inDO(id, t => {
+    const original = t.env.ACCOUNTS;
+    const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => new Proxy(statement, { get(target, key) {
+      if (key === 'bind') return (...bindings: unknown[]) => wrap(target.bind(...bindings), query);
+      if (key === 'first') return (...args: unknown[]) => check(query, () => Reflect.apply(target.first, target, args));
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    t.env.ACCOUNTS = new Proxy(original, { get(target, key) {
+      if (key === 'prepare') return (query: string) => wrap(target.prepare(query), query);
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    restore = () => { t.env.ACCOUNTS = original; };
+  });
+  return () => inDO(id, restore);
+}
+function receipt(session: string, message: ArrayBuffer): string {
+  const bytes = new Uint8Array(message);
+  return JSON.stringify({ t: 'received', session, sequence: new DataView(message).getUint32(0),
+    receipt: Array.from(bytes.subarray(4, 20), byte => byte.toString(16).padStart(2, '0')).join('') });
+}
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 it('forwards opaque binary over isolated reliable and live lanes through real authenticated upgrades', async () => {
@@ -120,7 +151,7 @@ it('bounds pending sessions per principal and expires unpaired and stalled relay
   } finally { p.close(); }
 });
 
-it('fences local revocation on every packet and rechecks account policy in the alarm', async () => {
+it('fences local revocation on every packet and rechecks account policy before expired traffic', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'revoked');
   await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
   p.a.reliable.socket.send(packet(1)); expect(await p.a.live.closed).toBe(1008);
@@ -129,31 +160,244 @@ it('fences local revocation on every packet and rechecks account policy in the a
   const account = await inDO(second.id, t => t.db.get('owner_account', ''));
   await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), account).run();
   await advance(second.id, LIMITS.authorizationMs + 1);
-  await runAlarm(second.id);
+  q.a.reliable.socket.send(packet(1));
   expect(await q.a.reliable.closed).toBe(4003); expect(await q.b.live.closed).toBe(4003); q.close();
   const third = await create({ mode: 'dashboard', listener: false }), r = await pair(third, 'policy-outage');
   await advance(third.id, LIMITS.authorizationMs + 1);
   await inDO(third.id, async t => {
     const original = t.env.ACCOUNTS;
     t.env.ACCOUNTS = { prepare() { throw new Error('Injected account policy outage'); } } as unknown as D1Database;
-    try { await t.alarm(); } finally { t.env.ACCOUNTS = original; }
+    const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
+    try { await handleRelayMessage(t, sender, packet(1)); } finally { t.env.ACCOUNTS = original; }
   });
   expect(await r.a.reliable.closed).toBe(4003); expect(await r.b.live.closed).toBe(4003); r.close();
 });
 
-it('refreshes admitted idle connections and enforces the absolute relay lifetime', async () => {
+it('does no idle authorization work and retains only actual relay deadlines', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'lifetime');
+  let checks = 0;
+  const restore = await policy(h.id, async (_query, read) => { checks++; return read(); });
   try {
-    const refresh = LIMITS.authorizationMs - Math.floor(LIMITS.authorizationMs / 3);
-    const due = await inDO(h.id, async t => (await t.ctx.storage.getAlarm())! - (t.now() - t.skew));
-    expect(due).toBeLessThanOrEqual(refresh);
-    expect(due).toBeGreaterThan(refresh - 2000);
-    await advance(h.id, refresh + 1); await runAlarm(h.id);
-    // The first authorization would expire here. The earlier alarm renewed it.
-    await advance(h.id, LIMITS.authorizationMs - refresh);
+    const expiry = await inDO(h.id, t => {
+      const deadline = t.ctx.getWebSockets('peer-relay')[0].deserializeAttachment().expiresAt;
+      expect(nextRelayDeadline(t)).toBe(deadline);
+      return deadline;
+    });
+    // A conservative alarm left over from pairing can run once, but never renews policy.
+    await advance(h.id, LIMITS.authorizationMs + 1); await runAlarm(h.id);
+    await inDO(h.id, async t => {
+      expect(nextRelayDeadline(t)).toBe(expiry);
+      expect(await t.ctx.storage.getAlarm()).toBe(expiry - t.skew);
+    });
+    expect(checks).toBe(0);
     p.a.reliable.socket.send(packet(1)); await expect.poll(() => p.b.reliable.messages.length).toBe(2);
+    expect(checks).toBe(1);
+    p.b.reliable.socket.send(receipt(p.session, p.b.reliable.messages[1] as ArrayBuffer));
+    await expect.poll(() => p.a.reliable.messages.length).toBe(2);
     await advance(h.id, LIMITS.lifetimeMs); await runAlarm(h.id);
     expect(await p.a.reliable.closed).toBe(1008); expect(await p.b.live.closed).toBe(1008);
+    expect(checks).toBe(1);
+  } finally { await restore(); p.close(); }
+});
+
+it('shares one traffic-triggered policy read across a full bidirectional burst and preserves lane order and receipts', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'burst-refresh');
+  const started = deferred(), release = deferred();
+  let checks = 0;
+  const restore = await policy(h.id, async (_query, read) => {
+    checks++; const result = await read(); started.resolve(); await release.promise; return result;
+  });
+  try {
+    await advance(h.id, LIMITS.authorizationMs + 1);
+    // Exercise all existing sender credit in both directions while one D1 read is pending.
+    for (let i = 1; i <= LIMITS.pendingPackets; i++) {
+      p.a.reliable.socket.send(packet(i, LIMITS.pendingBytes / LIMITS.pendingPackets));
+      p.b.reliable.socket.send(packet(i, LIMITS.pendingBytes / LIMITS.pendingPackets));
+    }
+    p.a.live.socket.send(packet(1, LIMITS.packetBytes)); p.b.live.socket.send(packet(1, LIMITS.packetBytes));
+    await started.promise;
+    expect(p.all.every(value => value.messages.length === 1)).toBe(true);
+    expect(checks).toBe(1);
+    release.resolve();
+    await expect.poll(() => p.a.reliable.messages.length + p.b.reliable.messages.length).toBe(2 + 2 * LIMITS.pendingPackets);
+    await expect.poll(() => p.a.live.messages.length + p.b.live.messages.length).toBe(4);
+    await inDO(h.id, async t => {
+      for (const [peerId, lanes] of [[left, p.a], [right, p.b]] as const) for (const lane of ['reliable', 'live'] as const) {
+        const delivered = lanes[lane].messages.slice(1) as ArrayBuffer[];
+        expect(delivered.map(message => new DataView(message).getUint32(0))).toEqual(
+          Array.from({ length: delivered.length }, (_, index) => index + 1));
+        const sender = t.ctx.getWebSockets('peer-relay').find(ws => {
+          const value = ws.deserializeAttachment(); return value.peerId === peerId && value.lane === lane;
+        })!;
+        for (const message of delivered) await t.webSocketMessage(sender, receipt(p.session, message));
+      }
+    });
+    await expect.poll(() => p.all.reduce((sum, value) => sum + value.messages.filter(message => typeof message === 'string').length, 0))
+      .toBe(4 + 2 * LIMITS.pendingPackets + 2);
+    expect(checks).toBe(1);
+    // A later authorization window must read policy again; no account-policy TTL outlives it.
+    await advance(h.id, LIMITS.authorizationMs + 1);
+    await inDO(h.id, async t => {
+      const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
+      await t.webSocketMessage(sender, packet(LIMITS.pendingPackets + 1));
+    });
+    await expect.poll(() => p.b.reliable.messages.filter(message => message instanceof ArrayBuffer).length).toBe(LIMITS.pendingPackets + 1);
+    expect(checks).toBe(2);
+  } finally { release.resolve(); await restore(); p.close(); }
+});
+
+it.each(['local revocation', 'owner change', 'authorization window', 'disconnect'] as const)(
+  'discards a pending renewal after %s and ignores its late policy result', async reason => {
+    const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, `late-${reason.replaceAll(' ', '-')}`);
+    const started = deferred(), release = deferred();
+    const restore = await policy(h.id, async (_query, read) => {
+      const result = await read(); started.resolve(); await release.promise; return result;
+    });
+    try {
+      await advance(h.id, LIMITS.authorizationMs + 1);
+      const handled = inDO(h.id, t => {
+        const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
+        return t.webSocketMessage(sender, packet(1));
+      });
+      await started.promise;
+      if (reason === 'local revocation') await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+      if (reason === 'owner change') await inDO(h.id, t => t.db.set('owner_account', 'replacement-owner'));
+      if (reason === 'authorization window') await advance(h.id, LIMITS.authorizationMs);
+      if (reason === 'disconnect') {
+        await inDO(h.id, t => closeRelay(t, t.ctx.getWebSockets('peer-relay')[0]));
+        await handled; // Close releases the waiting handler without needing the D1 result.
+      }
+      release.resolve(); await handled;
+      await p.b.reliable.closed;
+      expect(p.b.reliable.messages.length).toBe(1);
+      await inDO(h.id, t => {
+        expect(t.ctx.getWebSockets('peer-relay').filter(ws => ws.readyState === WebSocket.READY_STATE_OPEN)).toHaveLength(0);
+      });
+    } finally { release.resolve(); await restore(); p.close(); }
+  },
+);
+
+it('rechecks local guest authority after the separate account-policy query yields', async () => {
+  const page = await createTestPage(), guest = await page.participant();
+  const { id } = await (await page.api('GET', '')).json() as { id: string };
+  const relay = (socket: typeof page.relaySocket, peerId: string, remotePeerId: string) => createPeerRelay({
+    reliable: socket('guest-refresh', peerId, remotePeerId, 'reliable'), live: socket('guest-refresh', peerId, remotePeerId, 'live'),
+  }, { peerId, remotePeerId });
+  const a = relay(page.relaySocket, left, right), b = relay(guest.relaySocket, right, left);
+  await Promise.all([a.ready, b.ready]);
+  const started = deferred(), release = deferred();
+  let checks = 0, delivered = 0;
+  b.reliable.addEventListener('message', () => { delivered++; });
+  const restore = await policy(id, async (query, read) => {
+    checks++; const result = await read();
+    if (query.startsWith('SELECT 1 FROM accounts')) { started.resolve(); await release.promise; }
+    return result;
+  });
+  try {
+    await advance(id, LIMITS.authorizationMs + 1);
+    a.reliable.send(new Uint8Array([1]));
+    await started.promise;
+    expect(checks).toBe(2); // One page-policy read and one distinct participant account.
+    await inDO(id, t => t.db.run('DELETE FROM guest_accounts'));
+    release.resolve();
+    await expect.poll(() => a.signal.aborted && b.signal.aborted).toBe(true);
+    expect(delivered).toBe(0);
+  } finally { release.resolve(); await restore(); a.close(); b.close(); }
+});
+
+it('uses the page-policy owner check for both lanes of an owner participant', async () => {
+  const page = await createTestPage();
+  const { id } = await (await page.api('GET', '')).json() as { id: string };
+  const relay = (socket: typeof page.relaySocket, peerId: string, remotePeerId: string) => createPeerRelay({
+    reliable: socket('owner-refresh', peerId, remotePeerId, 'reliable'), live: socket('owner-refresh', peerId, remotePeerId, 'live'),
+  }, { peerId, remotePeerId });
+  const a = relay(page.relaySocket, left, right), b = relay(page.ownerRelaySocket, right, left);
+  await Promise.all([a.ready, b.ready]);
+  let checks = 0, delivered = 0;
+  b.reliable.addEventListener('message', () => { delivered++; });
+  const restore = await policy(id, async (_query, read) => { checks++; return read(); });
+  try {
+    await advance(id, LIMITS.authorizationMs + 1);
+    a.reliable.send(new Uint8Array([1]));
+    await expect.poll(() => delivered).toBe(1);
+    await expect.poll(() => a.reliable.bufferedAmount).toBe(0);
+    expect(checks).toBe(1);
+    const account = await inDO(id, t => t.db.get('owner_account', ''));
+    await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), account).run();
+    await advance(id, LIMITS.authorizationMs + 1);
+    a.reliable.send(new Uint8Array([2]));
+    await expect.poll(() => a.signal.aborted && b.signal.aborted).toBe(true);
+    expect(checks).toBe(2); expect(delivered).toBe(1);
+  } finally { await restore(); a.close(); b.close(); }
+});
+
+it('times out stalled reauthorization, settles waiting traffic, and cannot forward a late D1 result', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'refresh-timeout');
+  const started = deferred(), release = deferred(), returned = deferred();
+  const restore = await policy(h.id, async (_query, read) => {
+    const result = await read(); started.resolve(); await release.promise; returned.resolve(); return result;
+  });
+  try {
+    await advance(h.id, LIMITS.authorizationMs + 1);
+    const handled = inDO(h.id, t => {
+      const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
+      return t.webSocketMessage(sender, packet(1));
+    });
+    await started.promise;
+    expect(await p.b.reliable.closed).toBe(4003);
+    await handled;
+    expect(p.b.reliable.messages.length).toBe(1);
+    release.resolve(); await returned.promise;
+    await inDO(h.id, t => {
+      expect(t.ctx.getWebSockets('peer-relay').filter(ws => ws.readyState === WebSocket.READY_STATE_OPEN)).toHaveLength(0);
+    });
+    expect(p.b.reliable.messages.length).toBe(1);
+  } finally { release.resolve(); await restore(); p.close(); }
+});
+
+it('bounds queued events and bytes while a shared policy request is stalled', async () => {
+  for (const size of [1, LIMITS.packetBytes]) {
+    const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, `refresh-bound-${size}`);
+    const release = deferred();
+    let checks = 0;
+    const restore = await policy(h.id, async (_query, read) => {
+      checks++; const result = await read(); await release.promise; return result;
+    });
+    try {
+      await advance(h.id, LIMITS.authorizationMs + 1);
+      const handled = inDO(h.id, t => {
+        const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
+        const waiting = handleRelayMessage(t, sender, packet(1, size));
+        // Tiny frames hit the event cap; maximal frames hit the byte cap first.
+        for (let sequence = 2; sequence <= 4 * (LIMITS.pendingPackets + 1) + 1; sequence++) handleRelayMessage(t, sender, packet(sequence, size));
+        return waiting;
+      });
+      expect(await p.b.reliable.closed).toBe(1008);
+      await handled;
+      expect(checks).toBe(1);
+      expect(p.b.reliable.messages.length).toBe(1);
+    } finally { release.resolve(); await restore(); p.close(); }
+  }
+});
+
+it('reconstructs expired admission from hibernation attachments and reauthorizes on the next traffic', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'hibernate-refresh');
+  try {
+    // Persist an expired lease in the attachment, then really evict the object.
+    await inDO(h.id, t => {
+      for (const ws of t.ctx.getWebSockets('peer-relay')) ws.serializeAttachment({ ...ws.deserializeAttachment(), authorizedUntil: 0 });
+    });
+    await evictDurableObject(stub(h.id));
+    let checks = 0;
+    const restore = await policy(h.id, async (_query, read) => { checks++; return read(); });
+    try {
+      p.a.reliable.socket.send(packet(1)); await expect.poll(() => p.b.reliable.messages.length).toBe(2);
+      expect(checks).toBe(1);
+      await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+      p.a.reliable.socket.send(packet(2));
+      expect(await p.b.reliable.closed).toBe(1008);
+      expect(p.b.reliable.messages.length).toBe(2);
+    } finally { await restore(); }
   } finally { p.close(); }
 });
 

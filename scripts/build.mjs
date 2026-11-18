@@ -58,9 +58,38 @@ export async function buildPublicArtifacts() {
   const immutable = join(out, "_tendril/runtime", id);
   mkdirSync(immutable, { recursive: true }); cpSync(assets, immutable, { recursive: true });
   writeJson(join(root, "server/src/runtime-release.json"), { id, version: CORE_RELEASE, features: RUNTIME_FEATURES });
+  // Explicit asset-first exclusions return a static 404 on misses. Restrict
+  // them to the complete bundled graph so historical IDs still reach R2.
+  // Include previously generated candidate configs, preserving their JSONC.
+  for (const name of readdirSync(join(root, 'server')).filter(name => /^wrangler(?:\..+)?\.jsonc$/.test(name))) {
+    const path = join(root, 'server', name), previous = readFileSync(path, 'utf8');
+    const next = previous.replace(/"!\/_tendril\/runtime\/(?:[a-f0-9]{64}\/)?\*"/g, `"!/_tendril/runtime/${id}/*"`);
+    if (next !== previous) writeFileSync(path, next);
+  }
   mkdirSync(join(out, "_tendril"), { recursive: true });
   copyFileSync(join(assets, "sw.js"), join(out, "_tendril/sw.js"));
   cpSync(join(assets, "brand"), join(out, "_tendril/brand"), { recursive: true });
+  copyFileSync(join(assets, "brand/favicon.ico"), join(out, "favicon.ico"));
+  // Only these public root paths bypass the Worker. Scoped page documents,
+  // optional resources and the installing service worker keep their auth path.
+  writeFileSync(join(out, "_headers"), [
+    '/_tendril/runtime/*',
+    '  Cache-Control: public, max-age=31536000, immutable',
+    '  X-Content-Type-Options: nosniff',
+    '  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload',
+    '  X-Robots-Tag: noindex, nofollow',
+    '/_tendril/brand/*',
+    '  Cache-Control: no-cache',
+    '  X-Content-Type-Options: nosniff',
+    '  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload',
+    '  X-Robots-Tag: noindex, nofollow',
+    '/favicon.ico',
+    '  Cache-Control: no-cache',
+    '  X-Content-Type-Options: nosniff',
+    '  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload',
+    '  X-Robots-Tag: noindex, nofollow',
+    '',
+  ].join('\n'));
   copyFileSync(join(root, "preview-support/kernel.d.mts"), join(runtime, "kernel.d.mts"));
   copyFileSync(join(root, "preview-support/voice.d.mts"), join(runtime, "voice.d.mts"));
   const runtimeExports = { "./kernel": { types: "./kernel.d.mts", import: "./assets/kernel.mjs" }, "./voice": { types: "./voice.d.mts", import: "./assets/voice.mjs" }, "./manifest": "./assets/manifest.json", "./assets/*": "./assets/*" };

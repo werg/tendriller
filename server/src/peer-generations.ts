@@ -19,11 +19,18 @@ import { loadPeerControlIdentity } from './peer-control-identity';
 const CONFIG = 'peer_generation_configuration', ACCOUNTS = 'peer_generation_accounts';
 const VALUE_LIMIT = 16 * 1024 * 1024;
 const PUBLICATION_LIMIT = 256 * 1024;
+const VERIFIED_CACHE_LIMIT = 1024 * 1024;
 interface Configuration {
   descriptor: SignedApplicationDescriptor; control: SignedControlRevision; fingerprint: string;
   definition: ApplicationDescription; schema: SignedApplicationSchema | null;
 }
 interface AccountBinding { publicKey: string; accountId: string }
+interface VerifiedSnapshot {
+  bundle?: AuthorityBundle;
+  authority?: PeerAuthority;
+  definition?: { descriptor: SignedApplicationDescriptor; definition: ApplicationDescription; schema: SignedApplicationSchema | null };
+}
+const snapshot = (t: Tendril): VerifiedSnapshot => t.db.cached('peer-generation:verified', () => ({}));
 interface HostState {
   pending: Promise<unknown>; store: BytesStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
   registry?: GenerationRegistry; signer?: PeerIdentity;
@@ -38,9 +45,12 @@ function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
   return account;
 }
 async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
-  const account = identity(t, principal);
-  if (!await pageAccessAllowed(t) || !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
-  identity(t, principal);
+  const account = identity(t, principal), owner = t.db.get<string | null>('owner_account', null);
+  // Page policy already joins and checks this owner's active account. A guest
+  // still needs its own fresh account query; neither result survives this call.
+  if (!await pageAccessAllowed(t) || account !== owner && !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
+  if (t.db.get<string | null>('owner_account', null) !== owner || identity(t, principal) !== account)
+    throw new HttpError(403, 'forbidden');
 }
 function host(t: Tendril): HostState {
   let state = hosts.get(t);
@@ -89,6 +99,26 @@ async function registry(t: Tendril, state: HostState): Promise<GenerationRegistr
       controls: [configuration.control], signer: state.signer, requireExisting: true });
   }
   return state.registry;
+}
+async function readControl(t: Tendril, state: HostState): Promise<AuthorityBundle> {
+  const cached = snapshot(t);
+  if (cached.bundle) return structuredClone(cached.bundle);
+  const bundle = await (await registry(t, state)).read();
+  // The registry verifies its complete signed chain. Keep only a bounded copy
+  // and never publish an asynchronously prepared result into a newer snapshot.
+  if (cached === snapshot(t) && encodePeerValue(bundle).byteLength <= VERIFIED_CACHE_LIMIT)
+    cached.bundle = structuredClone(bundle);
+  return bundle;
+}
+async function readAuthority(t: Tendril, state: HostState): Promise<PeerAuthority> {
+  const cached = snapshot(t);
+  if (cached.authority) return cached.authority;
+  const authority = await verifyAuthorityBundle(await readControl(t, state));
+  Object.freeze(authority);
+  // PeerAuthority owns a private bundle and exposes clones, so callers cannot
+  // modify retained authority through an earlier response.
+  if (cached.bundle && cached === snapshot(t)) cached.authority = authority;
+  return authority;
 }
 function object(value: unknown, fields: readonly string[]): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(field => !fields.includes(field)))
@@ -168,13 +198,18 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
     try {
       identity(t, principal, ownerAction);
       if (action === 'read') {
-        const bundle = await (await registry(t, state)).read();
+        const bundle = await readControl(t, state);
         await freshAccess(t, principal); return bundle;
       }
       if (action === 'definition') {
         const configured = t.db.get<Configuration | null>(CONFIG, null);
         if (!configured) throw new HttpError(409, 'peer_application_unconfigured');
         if (!configured.definition || configured.schema === undefined) throw new HttpError(503, 'peer_publication_state_missing');
+        const cached = snapshot(t);
+        if (cached.definition) {
+          await freshAccess(t, principal);
+          return structuredClone(cached.definition);
+        }
         let published;
         try {
           // Public immutable metadata remains verifiable without the private signer.
@@ -188,7 +223,10 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           throw new HttpError(503, 'peer_definition_state_mismatch', 'Retained peer metadata does not match its signed authority');
         }
         await freshAccess(t, principal);
-        return { descriptor: configured.descriptor, definition: published.definition, schema: published.schema };
+        const result = { descriptor: configured.descriptor, definition: published.definition, schema: published.schema };
+        // publication() enforces the smaller 256 KiB definition/schema bound.
+        if (cached === snapshot(t)) cached.definition = structuredClone(result);
+        return structuredClone(result);
       }
       if (action === 'configure') {
         const owner = identity(t, principal, true);
@@ -199,7 +237,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         const fingerprint = await peerDigest({ ...value, definition: published.digest, schema: published.schemaDigest }), configured = t.db.get<Configuration | null>(CONFIG, null);
         if (configured) {
           if (configured.fingerprint !== fingerprint) throw new HttpError(409, 'peer_application_immutable', 'The application descriptor and initial policy are immutable');
-          const bundle = await (await registry(t, state)).read(); await freshAccess(t, principal); identity(t, principal, true); return bundle;
+          const bundle = await readControl(t, state); await freshAccess(t, principal); identity(t, principal, true); return bundle;
         }
         const applicationId = selectedApplication(t).id;
         if (!/^[0-9a-f]{64}$/.test(applicationId)) throw new HttpError(400, 'peer_application_identity', 'peer-generation-v1 applications use a 32-byte lowercase hex identity');
@@ -251,7 +289,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
       }
       if (action === 'select' || ownerAction) {
         const value = object(input, ownerAction ? ['transition', 'control'] : ['request', 'control']);
-        const service = await registry(t, state), bundle = await service.read();
+        const service = await registry(t, state), bundle = await readControl(t, state);
         let request: SignedTransitionRequest;
         if (ownerAction) {
           const transition = object(value.transition, ['transitionId', 'expectedGeneration', 'coordinator', 'controlRevision', 'reason', 'base']);
@@ -273,7 +311,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         let checkedBindings: AccountBinding[] = [];
         if (value.control !== undefined) {
           const change = object(value.control, ['epoch', 'keyDigest', 'grants', 'recoveryFloor', 'accounts']);
-          const authority = await verifyAuthorityBundle(bundle);
+          const authority = await readAuthority(t, state);
           if (!authority.grant(request.payload.requester)?.administrator) throw new HttpError(403, 'peer_control_change_forbidden');
           const revision = request.payload.controlRevision;
           if (!Number.isSafeInteger(revision) || revision < 1 || revision > bundle.controls.length) throw new HttpError(409, 'peer_control_revision_mismatch');
@@ -327,7 +365,7 @@ export function withPeerControlAuthority<T>(t: Tendril, principal: Principal, wo
   identity(t, principal);
   return serial(t, async state => {
     try {
-      const authority = await verifyAuthorityBundle(await (await registry(t, state)).read());
+      const authority = await readAuthority(t, state);
       await freshAccess(t, principal);
       return await work({ authority,
         authorizeAuthor(publicKey) {
