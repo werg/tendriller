@@ -92,9 +92,51 @@ ${brandHead("_tendril/brand/")}${brandStyle}
 <body>
 <main>
   <img class="holding-brand" src="_tendril/brand/icon-180.png" alt="Tendriller" width="88" height="88">
-  <span class="eyebrow">Your page is connected</span><h1>${n} is getting ready.</h1>
-  <p role="status"><span class="pulse" aria-hidden="true"></span>Your agent is preparing the first version. This page will update as soon as it arrives.</p><p>Continue in your agent session while you wait. The Tendriller link opens page status and recovery.</p>
+  <span class="eyebrow">Waiting for publication</span><h1>${n} is getting ready.</h1>
+  <p><span class="pulse" aria-hidden="true"></span><span id="publication-status" role="status">Your agent is preparing the first version. It will open here automatically.</span></p>
+  <p><a href="">Check now</a></p>
 </main>
+<script>
+(() => {
+  const status = document.querySelector('#publication-status');
+  const waiting = status.textContent;
+  const endpoint = new URL('_tendril/publication-ready', document.baseURI);
+  let timer, inFlight = false, done = false, delay = 2000;
+  function schedule(ms) {
+    clearTimeout(timer);
+    if (!done && !document.hidden && !inFlight) timer = setTimeout(check, ms);
+  }
+  async function check() {
+    if (done || document.hidden || inFlight) return;
+    inFlight = true;
+    try {
+      const response = await fetch(endpoint, { method: 'HEAD', cache: 'no-store', redirect: 'manual',
+        signal: AbortSignal.timeout(8000) });
+      if (response.status === 204) {
+        done = true;
+        location.reload();
+      } else if (response.status === 202) {
+        status.textContent = waiting;
+        delay = Math.min(delay * 1.5, 15000);
+      } else if ([401, 403, 404].includes(response.status) || response.type === 'opaqueredirect') {
+        done = true;
+        status.textContent = 'This page could not be opened. Select Check now to try again.';
+      } else {
+        throw new Error('Publication check failed');
+      }
+    } catch {
+      status.textContent = 'Could not check for updates. Retrying automatically.';
+      delay = Math.min(delay * 2, 15000);
+    } finally {
+      inFlight = false;
+      schedule(delay);
+    }
+  }
+  document.addEventListener('visibilitychange', () => schedule(0));
+  window.addEventListener('online', () => schedule(0));
+  schedule(0);
+})();
+</script>
 </body>
 </html>`;
 }

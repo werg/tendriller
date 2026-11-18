@@ -62,3 +62,5 @@ Load optional voice from `import(runtime.assetUrl('voice.mjs'))` or `@tendriller
 Each publication pins its complete authored file graph and runtime. `saveOffline()` resolves only after the required graph is verified and saved by the service worker. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads and offline reload.
 
 The service-owned management page remains available if authored JavaScript fails. It manages account access and displays publication history. Changing selected code requires a new signed Chronolog publication.
+
+While visible, the holding page checks for a signed publication and opens the selected release as soon as it is available. Once a version is open, its URL pins that publication so a reload can recover the same code. Use **Open latest version** in the page controls to load the currently selected release.
