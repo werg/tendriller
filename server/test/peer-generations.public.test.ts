@@ -11,6 +11,7 @@ import { authenticateAgentToken } from '../src/access';
 import { exchangePeerControl } from '../src/peer-generations';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { selectedApplication } from '../src/application';
+import { ensurePeerControlIdentity, loadPeerControlIdentity } from '../src/peer-control-identity';
 import type { Tendril } from '../src/tendril';
 
 const grant = (peer: PeerIdentity, extra: Partial<PeerGrant> = {}): PeerGrant => ({ ...participantGrant(peer.publicKey, { administrator: true }), ...extra });
@@ -24,6 +25,36 @@ const configuration = (peers: PeerIdentity[]) => ({ historyId: 'peer-history', e
   definition, schemaAdministrator: peers[0].publicKey, epoch: 0, keyDigest: '56'.repeat(32),
   members: peers.map(peer => ({ grant: grant(peer) })) } satisfies PeerApplicationConfiguration);
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
+
+it('shares one durable control root when release bootstrap precedes application configuration', async () => {
+  const device = await createPeerIdentity();
+  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const keys = await inDO(h.id, async t => (await Promise.all([
+    ensurePeerControlIdentity(t), ensurePeerControlIdentity(t), ensurePeerControlIdentity(t),
+  ])).map(identity => identity.publicKey));
+  expect(new Set(keys).size).toBe(1);
+  const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration([device]));
+  expect(authority.descriptor.payload.controlPublicKey).toBe(keys[0]);
+  expect(await inDO(h.id, async t => (await loadPeerControlIdentity(t))?.publicKey)).toBe(keys[0]);
+});
+
+it('keeps the hosted control key bound once to the owner when supplied among devices', async () => {
+  const device = await createPeerIdentity();
+  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const hosted = await inDO(h.id, async t => (await ensurePeerControlIdentity(t)).publicKey);
+  const guest = await admitGuest(h);
+  const config = configuration([device]);
+  const grant = controlParticipantGrant(hosted);
+  const forbidden = await peerApi(h, 'control/configure', { ...config, members: [...config.members, { grant, accountId: guest }] });
+  expect(forbidden.status).toBe(403);
+  expect(await forbidden.json()).toMatchObject({ error: { code: 'peer_host_control_account_immutable' } });
+  const accepted = await peerApiJson<AuthorityBundle>(h, 'control/configure',
+    { ...config, members: [...config.members, { grant }] });
+  expect(accepted.descriptor.payload.controlPublicKey).toBe(hosted);
+  const bindings = await inDO(h.id, async t => t.db.get<{ publicKey: string; accountId: string }[]>('peer_generation_accounts', []));
+  expect(bindings.filter(binding => binding.publicKey === hosted)).toEqual([{ publicKey: hosted, accountId: await inDO(h.id, t => t.db.get('owner_account', '')) }]);
+});
+
 async function admitGuest(h: Handle): Promise<string> {
   return inDO(h.id, async t => {
     const account = crypto.randomUUID(), link = await t.createLink('guest', 'control target', null);
