@@ -91,6 +91,10 @@ export class Db {
     // Only a single SELECT is known to be read-only. This also invalidates for
     // DDL and writes with RETURNING, including statements that write zero rows.
     if (!/^\s*SELECT\b/i.test(query) || query.includes(';')) this.clearCache();
+    return this.execute<T>(query, args);
+  }
+
+  private execute<T>(query: string, args: unknown[]): T[] {
     try {
       const cursor = this.sql.exec(query, ...args.map(norm));
       try { return cursor.toArray() as T[]; }
@@ -117,6 +121,16 @@ export class Db {
     return value;
   }
 
+  cachedAsync<T>(key: string, read: () => Promise<T>): Promise<T> {
+    return this.cached(key, () => {
+      const value = read().catch(error => {
+        if (this.reads.get(key) === value) this.reads.delete(key);
+        throw error;
+      });
+      return value;
+    });
+  }
+
   get<T>(k: string, def: T): T {
     if (this.cache.has(k)) {
       const value = this.cache.get(k);
@@ -137,7 +151,7 @@ export class Db {
     }
     // Retried control operations often repeat the same metadata. Compare in SQL
     // so mutable caller objects and cold caches cannot hide a real change.
-    this.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE meta.v <> excluded.v", k, JSON.stringify(v));
+    this.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE meta.v <> excluded.v", [k, JSON.stringify(v)]);
     remember(this.cache, k, v);
   }
 

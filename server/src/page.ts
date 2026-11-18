@@ -7,7 +7,7 @@ import { servePageFile, servedVersion, versionFiles, publicationManifest } from 
 import { HttpError, json, readBody, readJson } from "./http";
 import { iconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
-import { allows, authenticatePage, currentPrincipal } from "./access";
+import { accountActive, allows, authenticatePage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
@@ -25,7 +25,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   // Before PSL acceptance sibling tendrils are same-site. Check the actual
   // browser origin for every mutation and WebSocket upgrade; cookies alone
   // cannot distinguish a hostile sibling origin.
-  if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+  const writes = req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+  if (writes) {
     const expected = req.headers.get("x-tendril-origin");
     if (!expected || req.headers.get("Origin") !== expected) throw new HttpError(403, "bad_origin", "Request must originate from this tendril");
   }
@@ -43,19 +44,16 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (principal.role === "display") {
     await t.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
     if (t.db.get("disabled", false)) return pageAccessDenied(403);
-    if (!currentPrincipal(t, principal)) return pageAccessDenied(401);
+    if (!currentPrincipal(t, principal, key)) return pageAccessDenied(401);
   }
   // The former /claim/check preflight rejected unauthenticated traffic before
   // it could spend the page or owner's request allowance. Preserve that boundary
   // inside this single DO call, including display visits that hold the page.
   await admitPageTraffic(t.env, t.tid, t.db.get<string | null>("owner_account", null));
-  if (!currentPrincipal(t, principal)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
-  if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-    await requireWritesOpen(t.env);
-    // The service-state read yields after authentication. Honor any local
-    // session/link revocation or hold before dispatching a mutation or socket.
-    if (!currentPrincipal(t, principal)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
-  }
+  if (writes) await requireWritesOpen(t.env);
+  // A guest's account can be suspended without changing this page's SQL.
+  const active = principal.role !== "guest" || !principal.accountId || await accountActive(t, principal.accountId);
+  if (!currentPrincipal(t, principal, key) || !active) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
   t.recordAccess();
 
   if (!rest.startsWith("_tendril/")) {

@@ -113,6 +113,7 @@ route("POST", /^release$/, t => withUnconfiguredPeerApplication(t, async () => {
   const admission = t.env.ADMISSION.get(t.env.ADMISSION.idFromName("global"));
   const reopened = await admission.fetch(new Request("https://admission.internal/reopen", { method: "POST", headers: { "x-tendril-id": t.tid } }));
   if (!reopened.ok) {
+    if (reopened.status !== 404) return reopened;
     await reopened.body?.cancel();
     const reserved = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": t.tid } }));
     if (!reserved.ok) return reserved;

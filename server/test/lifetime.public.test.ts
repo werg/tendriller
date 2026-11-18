@@ -62,6 +62,26 @@ it('releases a definitively rejected resident quota reservation so a later revie
   });
 });
 
+it('does not delete an expired ad-hoc page while its resident upgrade is unresolved', async () => {
+  const page = await create({ listener: false });
+  await inDO(page.id, async t => {
+    const restore = interceptAccountWrite(t, async statement => {
+      await statement.run();
+      throw new Error('Lost resident upgrade response');
+    });
+    try {
+      await expect(changeLifetime(t, 'resident')).rejects.toMatchObject({ code: 'lifetime_pending' });
+      t.skew += AD_HOC_IDLE + 60_000;
+      await t.alarm();
+      expect(t.exists()).toBe(true);
+      expect(lifetimeChangePending(t)).toBe(true);
+      expect(await t.ctx.storage.getAlarm()).toBeGreaterThan(Date.now());
+    } finally { restore(); }
+  });
+  await runAlarm(page.id);
+  expect((await apiJson(page, 'GET', '')).lifetime).toBe('resident');
+});
+
 it('continues alarm work and schedules bounded retries while account recovery stays unavailable', async () => {
   const page = await resident();
   await inDO(page.id, async t => {

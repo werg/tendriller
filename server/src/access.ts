@@ -73,11 +73,11 @@ export async function readPageSession(t: Tendril, req: Request): Promise<PageSes
   return current && current.account_id === session.account_id && current.role === session.role ? { ...current, hash } : null;
 }
 
-function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "name">): PagePrincipal | null {
+function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "name">, key?: string): PagePrincipal | null {
   if (t.db.get("disabled", false)) return null;
   const link = t.db.cached(`access:link:${identity.linkId}`, () =>
-    t.db.one<{ role: Role; expires_at: number | null; created_by_agent: number }>("SELECT role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId));
-  if (!link || link.role !== identity.role || link.expires_at !== null && link.expires_at <= t.now()) return null;
+    t.db.one<{ key: string; role: Role; expires_at: number | null; created_by_agent: number }>("SELECT key,role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId));
+  if (!link || (key !== undefined && link.key !== key) || link.role !== identity.role || link.expires_at !== null && link.expires_at <= t.now()) return null;
   if (identity.role === "display") {
     if (link.created_by_agent || !t.db.get("owner_account", null)) return null;
   } else {
@@ -91,9 +91,9 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
 }
 
 /** Recheck local revocation at a synchronous commit after asynchronous preparation. */
-export function currentPrincipal(t: Tendril, principal: Principal): Principal | null {
+export function currentPrincipal(t: Tendril, principal: Principal, pageKey?: string): Principal | null {
   if (t.db.get("disabled", false)) return null;
-  if (principal.kind === "page") return localPagePrincipal(t, principal);
+  if (principal.kind === "page") return localPagePrincipal(t, principal, pageKey);
   return localToken(t, principal.credentialHash)?.name === principal.name ? principal : null;
 }
 

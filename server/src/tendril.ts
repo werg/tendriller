@@ -632,8 +632,8 @@ export class Tendril extends DurableObject<Env> {
     if (peerDue !== null) times.push(peerDue);
     const relayDue = nextRelayDeadline(this);
     if (relayDue !== null) times.push(relayDue);
-    if (expires !== null) times.push(expires);
     if (lifetimeChangePending(this)) times.push(now + 5000);
+    else if (expires !== null) times.push(expires);
     return this.alarms.ensure(Math.max(Math.min(...times) - this.skew, Date.now() + 1));
   }
 
@@ -647,12 +647,12 @@ export class Tendril extends DurableObject<Env> {
       // Expiry removes the entire object, so pruning and reconciling the same
       // records immediately before deletion would only add reads and writes.
       const due = this.expiresAt();
-      if (due !== null && due <= this.now()) { await this.destroy(); return; }
+      if (due !== null && due <= this.now() && !lifetimeChangePending(this)) { await this.destroy(); return; }
       expirePeers(this);
       await expireRelays(this);
       if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
       const expires = this.expiresAt();
-      if (expires !== null && expires <= this.now()) await this.destroy();
+      if (expires !== null && expires <= this.now() && !lifetimeChangePending(this)) await this.destroy();
       // Only successful work reconciles deadlines. Re-arming failed, overdue
       // maintenance would replace the platform's backoff with a 1ms loop.
       this.handlingAlarm = false;

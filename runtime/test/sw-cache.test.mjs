@@ -143,6 +143,20 @@ test("open A and newly published B keep complete independent asset graphs offlin
   }
 });
 
+test("two tabs on one publication keep both runtime URLs after a registry update", async () => {
+  const old = release('1'), net = network(old), sw = await worker(net);
+  await sw.install(); await sw.announce('old', old.publication);
+  const manifest = structuredClone(old.publication);
+  manifest.runtime.base = absolute(`/_tendril/runtime/${manifest.runtime.id}/`);
+  const resources = new Map([...old.resources].map(([url, response]) => [url.replace(old.publication.runtime.base, manifest.runtime.base), response]));
+  net.current = { ...old, publication: manifest, resources };
+  await sw.announce('new', manifest);
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  for (const [tab, base] of [['old', old.publication.runtime.base], ['new', manifest.runtime.base]])
+    assert.equal(await (await restarted.request(base + 'tendril.js', tab)).text(), 'runtime-1');
+});
+
 test("root runtime URLs remain in each offline publication graph alongside legacy scoped runtimes", async () => {
   const legacy = release('1'), root = release('2', '2', { 'model.bin': 'optional model' });
   const oldBase = root.publication.runtime.base;
