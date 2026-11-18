@@ -27,6 +27,20 @@ const assetRequest = (id: string, name: string, init?: RequestInit) => new Reque
   `https://abcdefghijkl.tendriller.site/s/${'a'.repeat(26)}/_tendril/assets/${id}/${name}`, init);
 
 describe('immutable R2 byte caching', () => {
+  it('rejects a corrupted object size before reading or caching its body', async () => {
+    const key = `test/${crypto.randomUUID()}`;
+    const sha256 = await sha256Hex('correct');
+    await env.FILES.put(key, 'unexpected larger bytes');
+    const get = vi.fn(async () => {
+      const object = (await env.FILES.get(key))!;
+      return { ...object, body: object.body, size: object.size, arrayBuffer: vi.fn(() => { throw new Error('should not buffer'); }) };
+    });
+    const config = { ...env, FILES: { get } } as unknown as Env;
+    await expect(immutableObject(config, key, { sha256, expectedBytes: 7 })).rejects.toMatchObject({ code: 'integrity_mismatch' });
+    await env.FILES.put(key, 'correct');
+    expect(await (await immutableObject(env, key, { sha256, expectedBytes: 7 }))!.text()).toBe('correct');
+  });
+
   it('shares immutable bytes across page URLs and queries without sharing cookies or partial responses', async () => {
     const id = await freshId(), { config, calls } = countedFiles();
     await env.FILES.put(`assets/${id}/model.bin`, '0123456789', { httpMetadata: { contentType: 'application/octet-stream' } });

@@ -12,6 +12,7 @@ export type CacheContext = Pick<ExecutionContext, 'waitUntil'>;
 export async function immutableObject(env: Env, key: string, options: {
   head?: boolean;
   sha256?: string;
+  expectedBytes?: number;
   javascriptSha256?: string;
   context?: CacheContext;
 } = {}): Promise<Response | null> {
@@ -26,15 +27,21 @@ export async function immutableObject(env: Env, key: string, options: {
     cache = await caches.open(CACHE_NAME);
     const hit = await cache.match(cacheKey);
     if (hit?.status === 200) {
-      if (!options.head) return hit;
-      await hit.body?.cancel();
-      return new Response(null, hit);
+      if (options.expectedBytes === undefined || hit.headers.get('Content-Length') === String(options.expectedBytes)) {
+        if (!options.head) return hit;
+        await hit.body?.cancel();
+        return new Response(null, hit);
+      }
     }
     await hit?.body?.cancel();
   } catch { /* An unavailable/evicted cache never makes immutable storage unavailable. */ }
 
   const object = options.head ? await env.FILES.head(key) : await env.FILES.get(key);
   if (!object) return null;
+  if (options.expectedBytes !== undefined && object.size !== options.expectedBytes) {
+    if ('body' in object) await (object as R2ObjectBody).body.cancel();
+    throw new HttpError(503, 'integrity_mismatch', 'Immutable content length does not match the publication');
+  }
   const headers = objectHeaders(object);
   if (options.head) return new Response(null, { headers });
 

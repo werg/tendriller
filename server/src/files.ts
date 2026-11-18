@@ -246,7 +246,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   // been checked. Cache only verified source bytes; rendering and authority stay
   // live on every request, including a cache hit.
   const obj = await immutableObject(t.env, fileKey(t, file.hash), {
-    head: req.method === 'HEAD', sha256: file.hash, context: t.ctx,
+    head: req.method === 'HEAD', sha256: file.hash, expectedBytes: file.size, context: t.ctx,
   });
   if (!obj) return new Response("File content missing", { status: 500 });
 

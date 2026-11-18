@@ -106,7 +106,6 @@ export class Db {
   }
 
   run(query: string, ...args: unknown[]): void {
-    this.clearCache();
     this.all(query, ...args);
   }
 
