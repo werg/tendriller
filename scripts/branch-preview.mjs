@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createRequire } from "node:module";
 import { CONTRACT_VERSION } from "../contract/index.mjs";
+import { assetRouting, observability } from './deployment-defaults.mjs';
 
 const ZONE = "tendriller.dev";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -41,8 +42,9 @@ function validateTemplate(template) {
   if ((template.ratelimits?.length ?? 0) > 15) throw new Error("Too many preview rate limit bindings");
 }
 
-export function previewConfig(identity, template, databaseId, accountId) {
+export function previewConfig(identity, template, databaseId, accountId, runtimeId) {
   if (!UUID.test(databaseId) || !/^[a-f0-9]{32}$/.test(accountId)) throw new Error("Invalid Cloudflare resource ID");
+  if (typeof runtimeId !== 'string') throw new Error('Preview deployment requires the selected source runtime identity');
   validateTemplate(template);
   return {
     $schema: "../node_modules/wrangler/config-schema.json",
@@ -53,7 +55,7 @@ export function previewConfig(identity, template, databaseId, accountId) {
     compatibility_flags: template.compatibility_flags,
     workers_dev: false,
     preview_urls: false,
-    assets: { directory: "./public", binding: "ASSETS", run_worker_first: true },
+    assets: { directory: "./public", binding: "ASSETS", run_worker_first: assetRouting(runtimeId) },
     // Every preview Worker is new and uses the public generic engine classes.
     // The canonical service's V4 aliases/tombstones belong only to its Worker.
     durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }] },
@@ -72,7 +74,7 @@ export function previewConfig(identity, template, databaseId, accountId) {
       BRANCH_PREVIEW_BRANCH: identity.branch, BRANCH_PREVIEW_SHA: identity.sha,
       CLOUDFLARE_ACCOUNT_ID: accountId },
     routes: identity.routes.map(pattern => ({ pattern, zone_name: ZONE })),
-    observability: { enabled: true },
+    observability,
   };
 }
 
@@ -135,6 +137,15 @@ export async function readPreviewTemplate(source) {
   const { rawConfig } = experimental_readRawConfig({ config: path });
   validateTemplate(rawConfig);
   return rawConfig;
+}
+
+export async function readPreviewRuntime(source) {
+  // The trusted deployment controller and selected branch are separate
+  // checkouts. Only the built branch's complete runtime can bypass fallback.
+  const runtime = JSON.parse(await readFile(resolve(source, 'server/src/runtime-release.json'), 'utf8'));
+  if (typeof runtime?.id !== 'string') throw new Error('Preview deployment requires the selected source runtime identity');
+  assetRouting(runtime.id); // Validate before provisioning any resources.
+  return runtime.id;
 }
 
 export async function provisionPreview(api, accountId, identity) {
@@ -274,10 +285,11 @@ async function main() {
   if (!identity.sha) throw new Error("Deploy requires --sha <checked commit>");
   const source = resolve(values.source);
   const template = await readPreviewTemplate(source);
+  const runtimeId = await readPreviewRuntime(source);
   const secrets = previewSecrets(process.env);
   const databaseId = await provisionPreview(api, accountId, identity);
   const configPath = resolve(source, "server/wrangler.branch-preview.json");
-  const config = previewConfig(identity, template, databaseId, accountId);
+  const config = previewConfig(identity, template, databaseId, accountId, runtimeId);
   await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
   await runWrangler(source, ["d1", "migrations", "apply", "ACCOUNTS", "--remote", "--config", configPath]);
   await runSourceScript(source, 'publish-runtime.mjs', ['--config', configPath]);

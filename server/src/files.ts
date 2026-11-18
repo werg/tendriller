@@ -9,6 +9,7 @@ import runtimeRelease from "./runtime-release.json";
 import { holdingPage, injectRuntime, type PublicationManifest } from "./inject";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
+import { assetResponse, etagMatches, immutableObject } from "./immutable-cache";
 
 function scanContent(body: ArrayBuffer): number {
   const text = new TextDecoder().decode(body.slice(0, 1024 * 1024));
@@ -92,8 +93,11 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
         await t.reserveGlobalBytes(body.byteLength);
         globalReserved = true;
       }
-      const head = await t.env.FILES.head(key);
-      if (!head) { await t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }); uploaded = true; }
+      const head = await retryPublicationStorage(() => t.env.FILES.head(key));
+      if (!head) {
+        await retryPublicationStorage(() => t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }));
+        uploaded = true;
+      }
       t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
     } catch (err) {
       if (reserved) {
@@ -105,6 +109,17 @@ export async function storeContent(t: Tendril, body: ArrayBuffer, type: string):
     }
   });
   return { hash, size: body.byteLength };
+}
+
+async function retryPublicationStorage<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      if (!/\(10001\)\s*$/.test(String(error))) throw error;
+      if (attempt === 3) throw new HttpError(503, 'storage_unavailable', 'File storage is temporarily unavailable. Retry the same publication.');
+      await new Promise(resolve => setTimeout(resolve, 100 * 2 ** attempt));
+    }
+  }
 }
 
 export function versionFiles(t: Tendril, version: number): VersionFile[] {
@@ -186,7 +201,7 @@ export function publicationManifest(t: Tendril, version: number, base: string): 
   const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
   return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: defaultEntry,
     assets: versionFiles(t, version).map(file => ({ path: file.path, sha256: file.hash, type: file.type, size: file.size })),
-    runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `${base}_tendril/runtime/${release.runtime_id}/` } };
+    runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `/_tendril/runtime/${release.runtime_id}/` } };
 }
 
 /** Serve exact published bytes and their pinned runtime. */
@@ -209,7 +224,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   }
   if (risk >= 5 && role === "owner" && accountId &&
     !t.db.one("SELECT 1 AS x FROM trusted_versions WHERE account_id = ? AND version = ?", accountId, version)) {
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review this version · Tendriller</title><link rel="icon" href="${base}_tendril/brand/icon-64.png"><style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1.25rem}img{vertical-align:middle;margin-right:.5rem}button{padding:.7rem 1rem;background:#17654b;color:white;border:0;border-radius:.6rem;font:inherit}</style></head><body><main><p><img src="${base}_tendril/brand/icon-64.png" alt="" width="32" height="32">Tendriller</p>
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review this version · Tendriller</title><link rel="icon" href="/_tendril/brand/icon-64.png"><style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1.25rem}img{vertical-align:middle;margin-right:.5rem}button{padding:.7rem 1rem;background:#17654b;color:white;border:0;border-radius:.6rem;font:inherit}</style></head><body><main><p><img src="/_tendril/brand/icon-64.png" alt="" width="32" height="32">Tendriller</p>
       <h1>Review this page before opening it</h1><p>This version asks for passwords, sends data elsewhere, or contains another risky pattern. Tendriller never asks for passwords. Continue only if you trust the agent that made it.</p>
       <form method="post" action="${base}_tendril/trust-version"><input type="hidden" name="version" value="${version}"><button>Continue to page</button></form></main></body></html>`;
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
@@ -223,7 +238,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     path = (rest === "" ? "" : rest) + "index.html";
     file = versionFile(t, version, path);
   }
-  const headers = new Headers({ "Cache-Control": pinned ? "private, max-age=31536000, immutable" : "no-cache", "X-Tendril-Version": String(version), "X-Tendril-Publication": String(version), "X-Content-Type-Options": "nosniff" });
+  const headers = new Headers({ "Cache-Control": pinned ? "private, max-age=31536000, immutable" : "private, no-cache", "X-Tendril-Version": String(version), "X-Tendril-Publication": String(version), "X-Content-Type-Options": "nosniff" });
 
   if (!file) {
     if (rest === "") {
@@ -239,9 +254,14 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   headers.set("Content-Type", file.type);
   if (!isHtmlType(file.type)) {
     headers.set("ETag", `"${file.hash}"`);
-    if (req.headers.get("If-None-Match") === headers.get("ETag")) return new Response(null, { status: 304, headers });
+    if (etagMatches(req.headers.get("If-None-Match"), headers.get("ETag")!)) return new Response(null, { status: 304, headers });
   }
-  const obj = await t.env.FILES.get(fileKey(t, file.hash));
+  // Admission, publication retention, risk review, and file membership have all
+  // been checked. Cache only verified source bytes; rendering and authority stay
+  // live on every request, including a cache hit.
+  const obj = await immutableObject(t.env, fileKey(t, file.hash), {
+    head: req.method === 'HEAD', sha256: file.hash, expectedBytes: file.size, context: t.ctx,
+  });
   if (!obj) return new Response("File content missing", { status: 500 });
 
   if (isHtmlType(file.type)) {
@@ -249,11 +269,12 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     // current host configuration. Reloading may refresh them without changing
     // the publication or adding a discovery poll to a running application.
     headers.set("Cache-Control", "private, no-cache");
+    if (req.method === 'HEAD') return new Response(null, { headers });
     const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
-    return new Response(req.method === "HEAD" ? null : html, { headers });
+    return new Response(html, { headers });
   }
   headers.set("Content-Length", String(file.size));
-  return new Response(req.method === "HEAD" ? null : obj.body, { headers });
+  return assetResponse(req, new Response(obj.body, { headers }));
 }
 
 export function filesResponse(t: Tendril, version: number) {

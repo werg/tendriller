@@ -143,6 +143,44 @@ test("open A and newly published B keep complete independent asset graphs offlin
   }
 });
 
+test("two tabs on one publication keep both runtime URLs after a registry update", async () => {
+  const old = release('1'), net = network(old), sw = await worker(net);
+  await sw.install(); await sw.announce('old', old.publication);
+  const manifest = structuredClone(old.publication);
+  manifest.runtime.base = absolute(`/_tendril/runtime/${manifest.runtime.id}/`);
+  const resources = new Map([...old.resources].map(([url, response]) => [url.replace(old.publication.runtime.base, manifest.runtime.base), response]));
+  net.current = { ...old, publication: manifest, resources };
+  await sw.announce('new', manifest);
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  for (const [tab, base] of [['old', old.publication.runtime.base], ['new', manifest.runtime.base]])
+    assert.equal(await (await restarted.request(base + 'tendril.js', tab)).text(), 'runtime-1');
+});
+
+test("root runtime URLs remain in each offline publication graph alongside legacy scoped runtimes", async () => {
+  const legacy = release('1'), root = release('2', '2', { 'model.bin': 'optional model' });
+  const oldBase = root.publication.runtime.base;
+  root.publication.runtime.base = new URL(`/_tendril/runtime/${root.publication.runtime.id}/`, scope).href;
+  for (const [url, response] of [...root.resources]) {
+    if (!url.startsWith(oldBase)) continue;
+    root.resources.delete(url);
+    root.resources.set(root.publication.runtime.base + url.slice(oldBase.length), response);
+  }
+  const net = network(legacy), sw = await worker(net), replies = [];
+  await sw.install(); await sw.announce('legacy', legacy.publication);
+  net.current = root;
+  await sw.install(); await sw.announce('root', root.publication, replies);
+  assert.deepEqual(replies, [{ t: 'publication', id: '2', status: 'ready' }]);
+  const resource = root.onDemand[0].url;
+  assert.ok(absolute(resource).startsWith(scope), 'optional resources retain their authenticated page scope');
+  assert.equal(await (await sw.request(resource, 'root')).text(), 'optional model');
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  assert.equal(await (await restarted.request(legacy.publication.runtime.base + 'tendril.js', 'legacy')).text(), 'runtime-1');
+  assert.equal(await (await restarted.request(root.publication.runtime.base + 'tendril.js', 'root')).text(), 'runtime-2');
+  assert.equal(await (await restarted.request(resource, 'root')).text(), 'optional model');
+});
+
 test("active publication identity survives a worker restart and offline activation", async () => {
   const a = release("1"), b = release("2"), net = network(a), first = await worker(net);
   await first.install(); await first.announce("a", a.publication);

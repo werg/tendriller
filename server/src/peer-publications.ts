@@ -1,6 +1,6 @@
 import {
   authorizePublication, verifyPublicationManifest, verifyPublicationAsset, peerDigest,
-  encodePeerValue, PUBLICATION_LIMITS, type SignedPublication, type PublicationFile,
+  encodePeerValue, PUBLICATION_LIMITS, type SignedPublication, type PublicationFile, type PeerAuthority,
 } from '@chronolog/peer-generation/control';
 import { assertFilePath } from '../../contract/index.mjs';
 import type { Principal } from './access';
@@ -17,6 +17,15 @@ export interface PeerPublicationReceipt {
 }
 function current(t: Tendril): PeerPublicationReceipt | null {
   return t.db.get<PeerPublicationReceipt | null>(HEAD, null);
+}
+async function verifyRetained(t: Tendril, receipt: PeerPublicationReceipt, authority: PeerAuthority): Promise<void> {
+  // Only retained records participate; caller-supplied manifests are always
+  // verified. Weak references cannot retain history beyond Db's bounded cache.
+  const cache = () => t.db.cached('peer-publication:verified', () => new WeakSet<PeerPublicationReceipt>());
+  const verified = cache();
+  if (verified.has(receipt)) return;
+  await verifyPublicationManifest(receipt.publication, authority);
+  if (verified === cache()) verified.add(receipt);
 }
 function record(value: unknown, fields: readonly string[]): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key)))
@@ -36,18 +45,18 @@ function assetBytes(value: unknown): Uint8Array {
 export async function exchangePeerPublication(t: Tendril, principal: Principal, action: 'read' | 'publish', input: unknown): Promise<unknown> {
   return withPeerControlAuthority(t, principal, async ({ authority, authorizeAuthor, checkAccess }) => {
     const previous = current(t);
-    if (previous !== null) await verifyPublicationManifest(previous.publication, authority);
+    if (previous !== null) await verifyRetained(t, previous, authority);
     if (action === 'read') {
       const query = record(input, ['id']);
       if (query.id !== undefined && (typeof query.id !== 'string' || !/^[0-9a-f]{64}$/.test(query.id)))
         throw new HttpError(400, 'peer_publication_id_invalid');
       const result = query.id === undefined ? previous : t.db.get<PeerPublicationReceipt | null>(`peer_publication_record:${query.id}`, null);
-      if (result !== null && result !== previous) await verifyPublicationManifest(result.publication, authority);
-      await checkAccess(); return result;
+      if (result !== null && result !== previous) await verifyRetained(t, result, authority);
+      await checkAccess(); return structuredClone(result);
     }
 
     const value = record(input, ['publication', 'assets']);
-    const publication = value.publication as SignedPublication;
+    const publication = structuredClone(value.publication) as SignedPublication;
     await verifyPublicationManifest(publication, authority);
     authorizeAuthor(publication.payload.author);
     const operation = `peer_publication_operation:${await peerDigest(publication.payload.operationId)}`;
@@ -58,7 +67,7 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
     // including after a later release or control transition.
     if (retained !== null) {
       if (await peerDigest(retained.publication) !== await peerDigest(publication)) throw new HttpError(409, 'peer_publication_operation_reused');
-      await checkAccess(); authorizeAuthor(publication.payload.author); return retained;
+      await checkAccess(); authorizeAuthor(publication.payload.author); return structuredClone(retained);
     }
     await authorizePublication(publication, authority, previous?.publication ?? null);
     if (publication.payload.revision >= PUBLICATION_LIMITS.revisions) throw new HttpError(413, 'peer_publication_history_limit');
@@ -123,6 +132,6 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
       },
     });
     if (receipt === null) throw new HttpError(500, 'peer_publication_receipt_missing');
-    return receipt;
+    return structuredClone(receipt);
   });
 }

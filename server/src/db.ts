@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS activity (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts I
 `;
 
 type Bindable = string | number | null | ArrayBuffer;
+const MISSING = Symbol('missing metadata');
+const MAX_CACHED_ENTRIES = 256;
+
+function remember(cache: Map<string, unknown>, key: string, value: unknown): void {
+  if (!cache.has(key) && cache.size >= MAX_CACHED_ENTRIES) cache.delete(cache.keys().next().value!);
+  cache.set(key, value);
+}
 
 function norm(v: unknown): Bindable {
   if (v === undefined || v === null) return null;
@@ -48,6 +55,7 @@ function norm(v: unknown): Bindable {
 
 export class Db {
   private cache = new Map<string, unknown>();
+  private reads = new Map<string, unknown>();
   private readonly sql: SqlStorage;
 
   constructor(private readonly storage: Pick<DurableObjectStorage, 'sql' | 'transactionSync'>) {
@@ -73,14 +81,28 @@ export class Db {
       }
       if (objects.length) throw new StorageSchemaError('existing application tables have no schema identity');
 
-      this.sql.exec(SCHEMA);
-      this.sql.exec('CREATE TABLE storage_schema (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)');
-      this.sql.exec('INSERT INTO storage_schema(id,revision) VALUES(1,?)', STORAGE_SCHEMA_REVISION);
+      this.run(SCHEMA);
+      this.run('CREATE TABLE storage_schema (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)');
+      this.run('INSERT INTO storage_schema(id,revision) VALUES(1,?)', STORAGE_SCHEMA_REVISION);
     });
   }
 
   all<T = Record<string, any>>(query: string, ...args: unknown[]): T[] {
-    return this.sql.exec(query, ...args.map(norm)).toArray() as T[];
+    // Only a single SELECT is known to be read-only. This also invalidates for
+    // DDL and writes with RETURNING, including statements that write zero rows.
+    if (!/^\s*SELECT\b/i.test(query) || query.includes(';')) this.clearCache();
+    return this.execute<T>(query, args);
+  }
+
+  private execute<T>(query: string, args: unknown[]): T[] {
+    try {
+      const cursor = this.sql.exec(query, ...args.map(norm));
+      try { return cursor.toArray() as T[]; }
+      finally { if (cursor.rowsWritten) this.clearCache(); }
+    } catch (error) {
+      this.clearCache();
+      throw error;
+    }
   }
 
   one<T = Record<string, any>>(query: string, ...args: unknown[]): T | null {
@@ -88,14 +110,37 @@ export class Db {
   }
 
   run(query: string, ...args: unknown[]): void {
-    this.sql.exec(query, ...args.map(norm)).toArray();
+    this.all(query, ...args);
+  }
+
+  /** Instance-local reads only; SQL writes, rollback and eviction discard them. */
+  cached<T>(key: string, read: () => T): T {
+    if (this.reads.has(key)) return this.reads.get(key) as T;
+    const value = read();
+    remember(this.reads, key, value);
+    return value;
+  }
+
+  cachedAsync<T>(key: string, read: () => Promise<T>): Promise<T> {
+    return this.cached(key, () => {
+      const value = read().catch(error => {
+        if (this.reads.get(key) === value) this.reads.delete(key);
+        throw error;
+      });
+      return value;
+    });
   }
 
   get<T>(k: string, def: T): T {
-    if (this.cache.has(k)) return this.cache.get(k) as T;
+    if (this.cache.has(k)) {
+      const value = this.cache.get(k);
+      return value === MISSING ? def : value as T;
+    }
     const row = this.one<{ v: string }>("SELECT v FROM meta WHERE k = ?", k);
     const v = row ? (JSON.parse(row.v) as T) : def;
-    if (row) this.cache.set(k, v);
+    // Publication reads may probe arbitrary missing identities. Bound metadata
+    // misses as well as present values so read-only requests cannot grow memory.
+    remember(this.cache, k, row ? v : MISSING);
     return v;
   }
 
@@ -104,8 +149,10 @@ export class Db {
       this.del(k);
       return;
     }
-    this.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, JSON.stringify(v));
-    this.cache.set(k, v);
+    // Retried control operations often repeat the same metadata. Compare in SQL
+    // so mutable caller objects and cold caches cannot hide a real change.
+    this.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE meta.v <> excluded.v", [k, JSON.stringify(v)]);
+    remember(this.cache, k, v);
   }
 
   del(k: string): void {
@@ -115,5 +162,6 @@ export class Db {
 
   clearCache(): void {
     this.cache.clear();
+    this.reads.clear();
   }
 }

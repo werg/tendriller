@@ -5,5 +5,7 @@ export const HOUR = 60 * 60 * 1000;
 export const DAY = 24 * HOUR;
 export const ACTIVITY_RETENTION = 30 * DAY;
 export const AD_HOC_IDLE = DAY;
+// Persist activity in minute buckets, granting at most this much extra retention.
+export const ACCESS_WRITE_INTERVAL = 60_000;
 export const ADOPT_MAX_ATTEMPTS = 10;
 export const ADOPT_CODE_TTL = 10 * 60 * 1000;

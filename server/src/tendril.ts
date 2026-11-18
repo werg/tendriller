@@ -14,14 +14,15 @@ import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
 import { handleMcp } from './mcp';
 import { Db } from './db';
+import { DeadlineAlarm } from './alarm';
 import { admitPageTraffic } from './traffic-budget';
 import { Transactions, type CommitEffect } from './transactions';
 import { deleteUnreferencedContent } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
 import { newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from './ids';
 import type { Features } from './inject';
-import { AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR } from './limits';
-import { handlePage } from './page';
+import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR } from './limits';
+import { handlePage, pageAccessDenied } from './page';
 import { apiUrl, pageUrl, publicBase } from './urls';
 import { authenticateAgent, authenticateAgentToken, authenticatePage, pageAccessAllowed, readPageSession } from './access';
 import type { Role } from '../../contract/index.mjs';
@@ -42,6 +43,8 @@ export class Tendril extends DurableObject<Env> {
   declare public ctx: DurableObjectState<{}>;
   db: Db;
   private transactions: Transactions;
+  private alarms: DeadlineAlarm;
+  private handlingAlarm = false;
   contentOperations = new Map<string, Promise<unknown>>();
   private ownerClaimTail: Promise<void> = Promise.resolve();
   /** Test hook: milliseconds added to the clock. */
@@ -52,6 +55,7 @@ export class Tendril extends DurableObject<Env> {
     this.db = new Db(ctx.storage);
     this.db.init();
     this.transactions = new Transactions(ctx.storage, () => this.db.clearCache(), work => ctx.waitUntil(work));
+    this.alarms = new DeadlineAlarm(ctx.storage);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping"}', '{"t":"pong"}'));
   }
 
@@ -71,11 +75,21 @@ export class Tendril extends DurableObject<Env> {
     return this.tid !== "";
   }
 
+  /** Reserve a full idle window with at most one timestamp write per minute. */
+  recordAccess(): void {
+    if (!this.db.get<string | null>("owner_account", null)
+      || this.db.get<string>("lifetime", "ad_hoc") !== "ad_hoc") return;
+    // Round upward so eviction can never shorten the full inactivity window.
+    // last_access is its durable upper bound, with at most one minute of grace.
+    const through = (Math.floor(this.now() / ACCESS_WRITE_INTERVAL) + 1) * ACCESS_WRITE_INTERVAL;
+    if (this.db.get<number>("last_access", 0) < through) this.db.set("last_access", through);
+  }
+
   // ---------------------------------------------------------------- dispatch
 
-  /** Bound work before SQL or participant handling. Rate limits are approximate per Cloudflare location. */
+  /** Agent/control admission precedes handling; page admission charges after authentication. */
   private async admitTraffic(kind: string): Promise<void> {
-    if (kind !== "agent" && kind !== "page") return;
+    if (kind !== "agent") return;
     await admitPageTraffic(this.env, this.tid, this.db.get<string | null>("owner_account", null));
   }
 
@@ -85,7 +99,10 @@ export class Tendril extends DurableObject<Env> {
     try {
       if (kind === "create") return await this.create(req);
       if (kind === "adopt") return await this.adopt(req);
-      if (!this.exists()) throw new HttpError(404, "not_found", "No such tendril");
+      if (!this.exists()) {
+        if (kind === "page") return pageAccessDenied(401);
+        throw new HttpError(404, "not_found", "No such tendril");
+      }
       await this.admitTraffic(kind);
       if (kind === "agent" || kind === "page" || kind === "claim") {
         await recoverLifetimeChange(this);
@@ -95,14 +112,16 @@ export class Tendril extends DurableObject<Env> {
             this.db.set("disabled", true);
             this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
             this.scheduleAlarm();
+            if (kind === "page") return pageAccessDenied(403);
             throw new HttpError(403, "disabled", "This tendril is unavailable");
           }
         }
       }
       if (this.db.get<boolean>("disabled", false) && (kind === "agent" || kind === "page")) {
+        if (kind === "page") return pageAccessDenied(403);
         throw new HttpError(403, "disabled", "This tendril is unavailable");
       }
-      if (kind === "agent" || kind === "page") this.db.set("last_access", this.now());
+      // Request handlers record activity only after their admission succeeds.
       if (kind === "claim") return await this.handleClaim(req, url);
       if (kind === "abuse" && url.pathname === "/abuse/report" && req.method === "POST") {
         const body = await readJson(req, 4096);
@@ -132,7 +151,7 @@ export class Tendril extends DurableObject<Env> {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
           name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
           version: this.db.get("current", 0), held: this.db.get("disabled", false),
-          bytes: this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0,
+          bytes: this.storageUsed(),
           agents: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")?.n ?? 0,
           guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
           last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
@@ -155,7 +174,6 @@ export class Tendril extends DurableObject<Env> {
         return await handleAgent(this, req, url);
       }
       if (kind === "page") {
-        if (req.method !== "GET" && req.method !== "HEAD" || req.headers.get("Upgrade")?.toLowerCase() === "websocket") await requireWritesOpen(this.env);
         return await handlePage(this, req, url);
       }
       throw new HttpError(404, "not_found");
@@ -165,9 +183,9 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    if (isRelaySocket(ws)) { handleRelayMessage(this, ws, message); return; }
-    // Relay packets have separate per-socket packet/byte/credit bounds and do
-    // not access SQLite. Charge control messages that can trigger host work.
+    if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
+    // Relay packets have separate packet/byte/credit bounds. Their unchanged
+    // local credentials are cached; cold or invalidated credentials need SQL.
     try { await this.admitTraffic("agent"); }
     catch { ws.close(1013, "Page traffic limit reached; reconnect shortly"); return; }
     if (isInvitationSocket(ws)) { handleInvitationMessage(this, ws, message); return; }
@@ -271,8 +289,9 @@ export class Tendril extends DurableObject<Env> {
   }
 
   mainPageUrl(): string {
-    const l = this.db.one<{ key: string }>("SELECT key FROM links WHERE id = 'l_main'");
-    return pageUrl(this.env, this.tid, l!.key);
+    const key = this.db.cached('links:main-key', () =>
+      this.db.one<{ key: string }>("SELECT key FROM links WHERE id = 'l_main'")!.key);
+    return pageUrl(this.env, this.tid, key);
   }
 
   async pageSession(req: Request): Promise<{ account_id: string; role: Role } | null> {
@@ -435,6 +454,8 @@ export class Tendril extends DurableObject<Env> {
       if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
       this.db.set("owner_account", accountId);
       this.db.set("claimed_at", this.now());
+      // Starting the claim also starts the inactivity window.
+      this.recordAccess();
       const label = (identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
       if (typeof label === "string") this.db.set("owner_label", label.slice(0, 80));
       const creator = await this.env.ACCOUNTS.prepare("SELECT creator_ip FROM tendrils WHERE id = ?")
@@ -500,7 +521,8 @@ export class Tendril extends DurableObject<Env> {
 
 
   storageUsed(): number {
-    return this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0;
+    return this.db.cached('files:stored-size', () =>
+      this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0);
   }
 
   checkLocalStorage(additional: number): void {
@@ -585,7 +607,10 @@ export class Tendril extends DurableObject<Env> {
 
   async linkForKey(key: string): Promise<Link | null> {
     const hash = await sha256Hex(key);
-    const l = this.db.one<Link & { key_hash: string }>("SELECT * FROM links WHERE key_hash = ?", hash);
+    const l = this.db.cached(`links:key:${hash}`, () => {
+      const row = this.db.one<Link & { key_hash: string }>("SELECT * FROM links WHERE key_hash = ?", hash);
+      return row ? Object.freeze(row) : null;
+    });
     if (!l || !safeEqual(l.key_hash, hash)) return null;
     if (l.expires_at !== null && l.expires_at < this.now()) return null;
     return l;
@@ -594,31 +619,52 @@ export class Tendril extends DurableObject<Env> {
   // ---------------------------------------------------------------- alarm
 
   scheduleAlarm(): void {
+    // The handler reconciles all deadlines once its work has finished. Avoid
+    // persisting intermediate cleanup/recovery deadlines that are already due.
+    if (this.handlingAlarm) return;
     this.afterCommit(() => this.scheduleCommittedAlarm());
   }
 
-  private scheduleCommittedAlarm(): void {
+  private scheduleCommittedAlarm(): Promise<void> | void {
     if (!this.exists()) return;
     const now = this.now(), times = [this.db.get<number>('next_cleanup', now + DAY)];
     const peerDue = nextPeerDeadline(this), expires = this.expiresAt();
     if (peerDue !== null) times.push(peerDue);
     const relayDue = nextRelayDeadline(this);
     if (relayDue !== null) times.push(relayDue);
-    if (expires !== null) times.push(expires);
     if (lifetimeChangePending(this)) times.push(now + 5000);
-    void this.ctx.storage.setAlarm(Math.max(Math.min(...times) - this.skew, Date.now() + 1)).catch(() => {});
+    else if (expires !== null) times.push(expires);
+    return this.alarms.ensure(Math.max(Math.min(...times) - this.skew, Date.now() + 1));
   }
 
   async alarm(): Promise<void> {
+    await this.alarms.fired();
     if (!this.exists()) return;
-    try { await recoverLifetimeChange(this); }
-    catch (error) { console.error('Lifetime recovery remains pending', error); }
-    expirePeers(this);
-    await expireRelays(this);
-    if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
-    const expires = this.expiresAt();
-    if (expires !== null && expires <= this.now()) { await this.destroy(); return; }
-    this.scheduleAlarm();
+    this.handlingAlarm = true;
+    try {
+      try { await recoverLifetimeChange(this); }
+      catch (error) { console.error('Lifetime recovery remains pending', error); }
+      // Expiry removes the entire object, so pruning and reconciling the same
+      // records immediately before deletion would only add reads and writes.
+      const due = this.expiresAt();
+      if (due !== null && due <= this.now() && !lifetimeChangePending(this)) { await this.destroy(); return; }
+      expirePeers(this);
+      await expireRelays(this);
+      if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
+      const expires = this.expiresAt();
+      if (expires !== null && expires <= this.now() && !lifetimeChangePending(this)) await this.destroy();
+      // Only successful work reconciles deadlines. Re-arming failed, overdue
+      // maintenance would replace the platform's backoff with a 1ms loop.
+      this.handlingAlarm = false;
+      await this.scheduleCommittedAlarm();
+    } catch (error) {
+      // A subsequent request must observe the runtime's pending retry instead
+      // of treating the failed invocation as a successfully consumed alarm.
+      await this.alarms.failed();
+      throw error;
+    } finally {
+      this.handlingAlarm = false;
+    }
   }
 
   async cleanup(): Promise<void> {
@@ -637,8 +683,10 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async pruneOrphanFiles(now: number): Promise<void> {
+    // version_files.hash is NOT NULL. Materialize its reference set once rather
+    // than scanning history for every stored file; no schema change needed.
     const rows = this.db.all<{ hash: string }>(`SELECT s.hash FROM stored_files s
-      WHERE s.created_at < ? AND NOT EXISTS (SELECT 1 FROM version_files v WHERE v.hash = s.hash)`, now - HOUR);
+      WHERE s.created_at < ? AND s.hash NOT IN (SELECT hash FROM version_files)`, now - HOUR);
     for (const { hash } of rows) {
       await deleteUnreferencedContent(this, hash, now - HOUR);
     }
@@ -664,7 +712,6 @@ export class Tendril extends DurableObject<Env> {
         cursor = list.truncated ? list.cursor : undefined;
       } while (cursor);
     }
-    await this.ctx.storage.deleteAlarm();
     if (id) {
       await this.env.ACCOUNTS.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
     }
@@ -676,6 +723,9 @@ export class Tendril extends DurableObject<Env> {
     await this.ctx.storage.deleteAll();
     this.db.clearCache();
     this.db.init();
+    // Clearing an alarm inside its handler can suppress retries. Keep it until
+    // all fallible deletion work has completed so outages remain retryable.
+    await this.alarms.clear();
   }
 }
 

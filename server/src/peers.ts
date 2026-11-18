@@ -60,7 +60,7 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
       try { value = validatePeerBootstrap(await readJson(req, 20_000)); }
       catch (error) { throw new HttpError(400, 'bad_request', error instanceof Error ? error.message : 'Invalid bootstrap hints'); }
       if (!authorized(t, principal)) throw new HttpError(403, 'forbidden');
-      t.db.set('peer_bootstrap', value);
+      if (JSON.stringify(t.db.get('peer_bootstrap', null)) !== JSON.stringify(value)) t.db.set('peer_bootstrap', value);
       return json(value);
     }
     throw new HttpError(405, 'method_not_allowed');

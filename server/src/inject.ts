@@ -43,7 +43,7 @@ export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
   const publication = cfg.publication;
   const directory = cfg.documentPath === null ? "" : cfg.documentPath.slice(0, cfg.documentPath.lastIndexOf("/") + 1);
   const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
-  const runtimeBase = publication?.runtime.base ?? `${cfg.base}_tendril/runtime/${runtimeRelease.id}/`;
+  const runtimeBase = publication?.runtime.base ?? `/_tendril/runtime/${runtimeRelease.id}/`;
   const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath,
     application: cfg.application, peerBootstrap: cfg.peerBootstrap,
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
@@ -84,14 +84,14 @@ export function holdingPage(name: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${n} is getting ready · Tendriller</title>
-${brandHead("_tendril/brand/")}${brandStyle}
+${brandHead()}${brandStyle}
 <style>
   :root{color-scheme:light dark}*{box-sizing:border-box}html,body{min-height:100%;margin:0}body{display:grid;place-items:center;font:1rem/1.6 system-ui,sans-serif;background:#f6f8f5;color:#203a2a;padding:1.25rem}main{max-width:35rem;width:100%;padding:clamp(1.5rem,5vw,3rem);border:1px solid #d2e5d6;border-radius:1.5rem;background:#e9f3eb;box-shadow:0 20px 70px #183b2012}.eyebrow{font-size:.8rem;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#39805a}h1{font-size:clamp(2rem,6vw,3.25rem);line-height:1.1;letter-spacing:-.04em;margin:.5rem 0 1rem}.pulse{display:inline-block;width:.7rem;height:.7rem;background:#29945b;border-radius:50%;margin-right:.5rem;animation:pulse 1.5s infinite}@keyframes pulse{50%{opacity:.35;transform:scale(.7)}}@media(prefers-reduced-motion:reduce){.pulse{animation:none}}@media(prefers-color-scheme:dark){body{background:#14221b;color:#eaf5ed}main{background:#203a29;border-color:#385d42}}
 </style>
 </head>
 <body>
 <main>
-  <img class="holding-brand" src="_tendril/brand/icon-180.png" alt="Tendriller" width="88" height="88">
+  <img class="holding-brand" src="/_tendril/brand/icon-180.png" alt="Tendriller" width="88" height="88">
   <span class="eyebrow">Waiting for publication</span><h1>${n} is getting ready.</h1>
   <p><span class="pulse" aria-hidden="true"></span><span id="publication-status" role="status">Your agent is preparing the first version. It will open here automatically.</span></p>
   <p><a href="">Check now</a></p>

@@ -66,17 +66,17 @@ async function admitGuest(h: Handle): Promise<string> {
 }
 /** Revoke the target at the requester's final asynchronous access check, after signing preparation. */
 async function revokePreparedTarget(t: Tendril, account: string, run: () => Promise<void>): Promise<void> {
-  const original = t.env.ACCOUNTS, owner = t.db.get('owner_account', '');
+  const original = t.env.ACCOUNTS;
   let checkedTarget = false, revoked = false;
   t.env.ACCOUNTS = { prepare(sql: string) {
     const statement = original.prepare(sql);
-    if (!sql.includes('FROM accounts WHERE id')) return statement;
+    if (!sql.includes('FROM accounts WHERE id') && !sql.includes('FROM tendrils t')) return statement;
     return { bind(...args: unknown[]) {
       const bound = statement.bind(...args);
       return { async first() {
         const result = await bound.first();
-        if (args[0] === account) checkedTarget = true;
-        if (checkedTarget && args[0] === owner && !revoked) {
+        if (sql.includes('FROM accounts WHERE id') && args[0] === account) checkedTarget = true;
+        if (checkedTarget && sql.includes('FROM tendrils t') && !revoked) {
           revoked = true; t.db.run('DELETE FROM guest_accounts WHERE account_id=?', account);
         }
         return result;
@@ -220,7 +220,7 @@ it('rechecks local access after asynchronous definition verification before disc
     let checked = false;
     t.env.ACCOUNTS = { prepare(sql: string) {
       const statement = original.prepare(sql);
-      if (!sql.includes('FROM accounts WHERE id')) return statement;
+      if (!sql.includes('FROM tendrils t')) return statement;
       return { bind(...args: unknown[]) {
         const bound = statement.bind(...args);
         return { async first() { const result = await bound.first(); checked = true; t.db.run('DELETE FROM tokens'); return result; } };
@@ -534,7 +534,7 @@ it('rechecks local token revocation after asynchronous authorization before comm
     let changed = false;
     t.env.ACCOUNTS = { prepare(sql: string) {
       const statement = original.prepare(sql);
-      if (!sql.includes('FROM accounts WHERE id')) return statement;
+      if (!sql.includes('FROM tendrils t')) return statement;
       return { bind(...args: unknown[]) {
         const bound = statement.bind(...args);
         return { async first() {
