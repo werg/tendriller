@@ -97,6 +97,21 @@ export async function openBrowserSqlSpecimen(options: {
     entry: 'index.html', files }, signer);
   await peers.publish(publication, assets);
   await Promise.all(pages.map(page => expect(page.getByRole('heading', { name: 'Shared work' })).toBeVisible({ timeout: 25_000 })));
+  // The capability check is an explicit, isolated Worker request made before
+  // any acceptance-session enrollment or first data use. It cannot qualify SQL.
+  const capabilityReports = await Promise.all(pages.map(page => page.evaluate(async () => {
+    const probe = (window as any).inspectAcceptanceBrowserCapabilities as (() => Promise<any>) | undefined;
+    return probe === undefined ? null : probe();
+  })));
+  for (const report of capabilityReports) {
+    if (report === null) continue; // Older pinned Chronolog consumers lack the diagnostic.
+    expect(report.secureContext).toBe(true);
+    expect(report.dedicatedWorker).toBe(true);
+    expect(report.events.supported).toBe(true);
+    expect(report.sql.apiEligible).toBe(true);
+    expect(report.opfs.syncAccessHandle).toBe(true);
+    expect(report.sql.qualified).toBe(false, 'API eligibility is not SQL application qualification');
+  }
   const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
@@ -109,6 +124,7 @@ export async function openBrowserSqlSpecimen(options: {
   };
   await pair();
   return {
+    capabilityReports,
     async reopenFirst() {
       const context = first.page.context();
       await first.page.close();
