@@ -90,9 +90,38 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     // that inspecting manifest JSON alone cannot establish.
     expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
     expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
-    await publish(handle, '<h1>Latest version</h1>');
+    const icons: Record<string, { type: string; body: string | Uint8Array }> = {
+      'index.html': { type: 'text/html', body: '<!doctype html><html><head><title>My mobile page</title></head><body><h1>Latest version</h1></body></html>' },
+    };
+    for (const format of ['png', 'webp']) {
+      const type = `image/${format}`;
+      const image = await page.evaluate(type => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 192;
+        const draw = canvas.getContext('2d')!;
+        draw.fillStyle = '#6a24b3';
+        draw.fillRect(0, 0, 192, 192);
+        return canvas.toDataURL(type);
+      }, type);
+      expect(image).toMatch(new RegExp(`^data:${type};base64,`));
+      icons[`custom.${format}`] = { type, body: Buffer.from(image.split(',')[1], 'base64') };
+    }
+    await publishFiles(handle, icons);
     await page.goto(new URL(manifest.start_url, result.url).href);
     await expect(page.getByRole('heading', { name: 'Latest version', exact: true })).toBeVisible();
+
+    // Each signed raster must pass Chromium's icon evaluator on its own.
+    for (const format of ['png', 'webp']) {
+      const customIcon = new URL(`custom.${format}`, page.url()).href;
+      expect((await agent(handle, '', 'PATCH', { icon: customIcon })).status).toBe(200);
+      await page.reload();
+      const branded = await cdp.send('Page.getAppManifest');
+      expect(JSON.parse(branded.data!).icons).toEqual([
+        { src: customIcon, sizes: 'any', type: `image/${format}`, purpose: 'any' },
+      ]);
+      expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+      expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+    }
     await cdp.detach();
   } finally {
     await context?.close();

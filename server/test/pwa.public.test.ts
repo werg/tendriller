@@ -56,24 +56,26 @@ describe('page installation metadata', () => {
     }
   });
 
-  it('describes custom icon formats accurately and always retains an installable fallback', async () => {
+  it('uses custom installation artwork in supported formats and defaults for other formats', async () => {
     const handle = await create();
-    for (const [icon, type, sizes] of [
-      ['https://images.example.test/app.svg?version=2', 'image/svg+xml', 'any'],
-      ['https://images.example.test/app.webp', 'image/webp', undefined],
-      ['https://images.example.test/app.PNG', 'image/png', undefined],
-      ['https://images.example.test/dynamic-icon', undefined, undefined],
+    for (const [icon, type] of [
+      ['https://images.example.test/app.svg?version=2', 'image/svg+xml'],
+      ['https://images.example.test/app.webp', 'image/webp'],
+      ['https://images.example.test/app.PNG', 'image/png'],
+      ['https://images.example.test/app.jpg', undefined],
+      ['https://images.example.test/dynamic-icon', undefined],
+      [null, undefined],
     ]) {
       await apiJson(handle, 'PATCH', '', { icon });
       const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
-      const custom = manifest.icons.at(-1)!;
-      expect(custom.src).toBe(icon);
-      expect(custom.type).toBe(type);
-      expect(custom.sizes).toBe(sizes);
-      expect(manifest.icons.some(entry => entry.src.endsWith('/icon.svg') && entry.sizes === 'any')).toBe(true);
-      const fallback = await req(handle.page_url + '_tendril/icon.svg');
-      expect(fallback.status).toBe(200);
-      expect(fallback.headers.get('Content-Type')).toBe('image/svg+xml');
+      if (type) {
+        expect(manifest.icons).toEqual([{ src: icon, type, sizes: 'any', purpose: 'any' }]);
+      } else {
+        expect(manifest.icons).toEqual([
+          { src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' },
+          { src: `${new URL(handle.page_url).pathname}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+        ]);
+      }
     }
   });
 });

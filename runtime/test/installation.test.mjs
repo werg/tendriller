@@ -73,6 +73,19 @@ test('only an available browser event enables prompting and each event is consum
   assert.equal(env.calls.requests, 0);
 });
 
+test('a call outside a user gesture preserves the prompt for the next click', async () => {
+  const env = environment();
+  env.navigator.userActivation = { isActive: false };
+  env.offer();
+  assert.equal(await env.api.prompt(), 'unavailable');
+  assert.equal(env.api.status().state, 'available');
+  assert.equal(env.calls.prompts, 0);
+
+  env.navigator.userActivation.isActive = true;
+  assert.equal(await env.api.prompt(), 'accepted');
+  assert.equal(env.calls.prompts, 1);
+});
+
 test('dismissed prompts remain manual until a fresh browser event arrives', async () => {
   const env = environment();
   env.offer({ outcome: 'dismissed' });

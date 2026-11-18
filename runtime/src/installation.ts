@@ -46,7 +46,9 @@ export function createInstallation(): { api: RuntimeInstallation; suspend(): voi
     status,
     on(listener: (status: InstallationStatus) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async prompt() {
-      if (status().state !== "available" || !deferred) return "unavailable";
+      if (status().state !== "available" || !deferred || navigator.userActivation?.isActive === false) {
+        return "unavailable";
+      }
       const event = deferred;
       // A browser event is single-use, including when prompting fails. Consume it
       // before invoking browser code so repeated clicks cannot open two prompts.

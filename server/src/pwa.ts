@@ -17,14 +17,15 @@ export function iconMediaType(icon: string): string | undefined {
 }
 
 export function pageIcons(base: string, icon: string | null) {
-  const fallback = [
+  const type = icon ? iconMediaType(icon) : undefined;
+  if (icon && (type === "image/png" || type === "image/webp" || type === "image/svg+xml")) {
+    // Chromium skips entries without sizes and prefers a sized default over a
+    // custom raster candidate marked "any". Let it decode and size the custom
+    // asset without claiming pixel dimensions that the URL cannot establish.
+    return [{ src: icon, sizes: "any", type, purpose: "any" }];
+  }
+  return [
     { src: "/_tendril/brand/icon-180.png", sizes: "180x180", type: "image/png", purpose: "any" },
     { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
   ];
-  if (!icon) return fallback;
-  const type = iconMediaType(icon);
-  // A URL alone does not establish raster dimensions. Keep the scalable default
-  // available, and let the browser inspect a custom icon whose size is unknown.
-  return [...fallback, { src: icon, ...(type ? { type } : {}),
-    ...(type === "image/svg+xml" ? { sizes: "any" } : {}), purpose: "any" }];
 }

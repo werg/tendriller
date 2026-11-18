@@ -60,6 +60,8 @@ Startup does not open an install prompt. On eligible published mobile pages, a s
 
 The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. An open tab remains pinned to its immutable publication, including on reload. **Page options → Open latest version** explicitly opens the selected release. Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
 
+For the default manifest, a custom page `icon` URL ending in `.png`, `.webp`, or `.svg` replaces the generated installation artwork. Serve a square image large enough for the target browsers. Use an authored manifest to declare exact sizes, provide alternate icons, or reference artwork at a URL without a supported file extension.
+
 Existing signed publications pin their `runtime_id`. Deploying this host updates metadata on newly served HTML, but existing pages receive the new Page options UI and `installation` API only through a new signed publication using the updated runtime. Cached HTML and already open tabs retain their existing publication behavior.
 
 `installation.status()` returns `{state, platform}`; `platform` is `ios`, `android` or `desktop`.
@@ -92,7 +94,7 @@ button.addEventListener('click', async () => {
 // Call unsubscribe() when disposing this view.
 ```
 
-`prompt()` returns `accepted`, `dismissed` or `unavailable` and consumes a native event at most once. Acceptance is the user's choice, not confirmation that installation has completed. The headless kernel exposes the same API without instructions or suggestions; authored UI must supply its own manual help. Do not duplicate the default runtime's automatic suggestion.
+`prompt()` returns `accepted`, `dismissed` or `unavailable` and consumes a native event at most once. Calling it without a user gesture leaves the pending prompt available for a click. Acceptance is the user's choice, not confirmation that installation has completed. The headless kernel exposes the same API without instructions or suggestions; authored UI must supply its own manual help. Do not duplicate the default runtime's automatic suggestion.
 
 A Home Screen app may need sign-in or device connection again. On iOS/iPadOS, installation can copy cookies but does not copy localStorage or IndexedDB, and subsequent storage is separate. Preserve the owned session's explicit enrollment/recovery flow; installing an icon does not transfer its device signer or application data. See [WebKit's storage behavior](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/).
 

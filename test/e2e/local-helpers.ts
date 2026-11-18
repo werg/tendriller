@@ -52,7 +52,7 @@ export function publish(handle: Handle, body: string) {
   return publishFiles(handle, { 'index.html': { type: 'text/html',
     body: `<!doctype html><html><head><meta charset="utf-8"><title>E2E</title></head><body>${body}</body></html>` } });
 }
-export function publishFiles(handle: Handle, files: Record<string, { type: string; body: string }>) {
+export function publishFiles(handle: Handle, files: Record<string, { type: string; body: string | Uint8Array }>) {
   return publishAssetGraph(client(handle).peers, files);
 }
 export function localPageUrl(handle: Handle) {
