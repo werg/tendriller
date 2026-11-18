@@ -129,3 +129,12 @@ test('signed page origins isolate storage and reject sibling participant request
   }, { endpoint, applicationId: b.application.id });
   expect((await blocked).status()).toBe(403);
 });
+
+test('Chronolog SQL peers share guarded changes, recover and reopen through the live host', async ({ page }) => {
+  const consumer = process.env.E2E_CHRONOLOG_CONSUMER;
+  test.skip(!consumer, 'Install an exact --sql-native Chronolog archive and set E2E_CHRONOLOG_CONSUMER');
+  const { runStagingSql } = await import('./staging-sql');
+  const handle = await createPage('Chronolog shared task board');
+  await openHoldingPage(page, handle);
+  await runStagingSql({ consumer: consumer!, handle, page, peers: client(handle).peers });
+});
