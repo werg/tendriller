@@ -47,8 +47,7 @@ scratch-only `probeBrowserCapabilities()` through a dedicated Worker. The
 report distinguishes `events.supported`, `events.backend`, native
 Ed25519/X25519, Web Locks, OPFS `createWritable` and sync handles, and SQL
 `apiEligible` from SQL `qualified` (false until separately tested).
-An installed older Chronolog artifact may not offer this diagnostic; report
-it as unverified rather than claiming success.
+The staging fixture uses the pinned Chronolog artifact and requires its diagnostics before enrolling either SQL peer.
 
 | Environment | Evidence and release claim |
 | --- | --- |

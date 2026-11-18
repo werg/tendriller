@@ -48,5 +48,3 @@ A real iPadOS 17 Safari **events-only** write/reload/resume/sync check is an
 additional physical-device gate before claiming Safari 17 qualified. SQL's
 DoltLite WASM/OPFS SAH-pool has a different gate, and no event-backend
 qualification implies SQL or uninterrupted mobile background work.
-
-[WebKit documents native X25519 in Safari 18.4](https://webkit.org/blog/16574/webkit-features-in-safari-18-4/). Treat Safari/iPadOS 17 as unsupported for this native-crypto path unless an actual browser passes the required probe and device checks.

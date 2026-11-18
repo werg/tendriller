@@ -105,5 +105,3 @@ This is the session's control participant over an authenticated HTTP transport. 
 ## Owned participation
 
 Call `session.participate({control,discovery,transport,...})` once to give the session its discovery and raw connection ports. `createPeerIntroductions` from `@tendriller/core/peers` supplies those two ports for this host. The controller owns connection attempts, reconnect grace, authenticated candidate evaluation, freshness budgets and recovery selection; applications do not implement a second policy loop. Observe its status and call `approveRecovery` only for the current displayed proposal when approval is required. See [peer participation](PEER_CONNECTIONS.md).
-
-[WebKit documents native X25519 in Safari 18.4](https://webkit.org/blog/16574/webkit-features-in-safari-18-4/). Treat Safari/iPadOS 17 as unsupported for this native-crypto path unless an actual browser passes the required probe and device checks.
