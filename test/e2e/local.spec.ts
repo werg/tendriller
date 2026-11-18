@@ -1,6 +1,6 @@
 import { test, expect, request } from '@playwright/test';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
-  requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN } from './local-helpers';
+  requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
 
 test('verified owner claims a page and executes its signed authored module', async ({ page, context }) => {
   const handle = await createPage();
@@ -104,4 +104,34 @@ test('signed publication HTTP delivery preserves authored bytes and exact retry 
     expect(await client(handle).peers.publish(selected.publication, assets)).toEqual(selected);
     expect(await client(handle).peers.publication()).toEqual(selected);
   } finally { await authenticated.dispose(); await deletePage(handle); }
+});
+
+test('browser forms request and approve guest access, report a page, and sign out', async ({ page, context, browser }) => {
+  const handle = await createPage();
+  const guest = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    await signInFixture(context, LOGOUT_TOKEN);
+    await openClaimed(page, handle);
+    const invitation = await agent(handle, '/links', 'POST', { role: 'guest' });
+    expect(invitation.status).toBe(201);
+    await signInFixture(guest, OTHER_TOKEN);
+    const visitor = await guest.newPage();
+    await visitor.goto(localPageUrl({ ...handle, page_url: invitation.data.url }));
+    await visitor.getByRole('button', { name: 'Request access' }).click();
+    await expect(visitor.getByRole('heading', { name: 'Waiting for the owner' })).toBeVisible();
+    await page.goto(new URL('_tendril/manage', localPageUrl(handle)).href);
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(page.getByRole('status')).toHaveText('Guest access approved.');
+    await page.getByRole('link', { name: 'Report this page' }).click();
+    await page.locator('textarea').fill('Synthetic browser form check');
+    await page.getByRole('button', { name: 'Send report' }).click();
+    await expect(page.locator('body')).toHaveText('Report received. Thank you.');
+    await page.goto('https://service.localhost:8790/dashboard');
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await expect(page).toHaveURL('https://service.localhost:8790/');
+    expect((await context.cookies()).some(cookie => cookie.name === '__Host-tendriller')).toBe(false);
+  } finally {
+    await guest.close();
+    await deletePage(handle);
+  }
 });

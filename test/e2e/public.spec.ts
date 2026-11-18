@@ -200,6 +200,17 @@ test('field inspection keeps a photo and notes through offline reload and reconn
   await expect(status).toHaveText('Exported draft restored on this device.');
   await expect(page.getByLabel('Inspection notes')).toHaveValue('Left hinge needs inspection');
   await expect.poll(() => page.locator('#preview').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  await context.grantPermissions(['camera'], { origin: new URL(handle.page_url).origin });
+  await page.getByRole('button', { name: 'Take evidence photo' }).click();
+  await expect(status).toHaveText('Photo captured. Save the draft to keep it on this device.').catch(async error => {
+    throw new Error(`Virtual camera failed: ${await status.getAttribute('data-camera-error') || 'no error recorded'}`, { cause: error });
+  });
+  expect(await page.locator('#preview').getAttribute('src')).toMatch(/^data:image\/jpeg/);
+  await expect.poll(() => page.evaluate(() => (window as any).tendril.sensors.status().active)).not.toContain('camera');
+  await page.getByRole('button', { name: 'Save draft on this device' }).click();
+  await expect(status).toHaveText('Draft saved on this device.');
+  await page.reload();
+  expect(await page.locator('#preview').getAttribute('src')).toMatch(/^data:image\/jpeg/);
   await page.getByRole('button', { name: 'Discard local draft' }).click();
 });
 
@@ -221,3 +232,64 @@ test('private intake permits a correction and rejects a stale or unauthorized ed
   }
   await runStagingSql({ consumer: consumer!, handle, page, peers: client(handle).peers, privateIntake: true });
 });
+
+for (const isPrivate of [false, true]) {
+  test(`real Chromium SQL: ${isPrivate ? 'private intake correction' : 'shared checklist and reopen'}`, async ({ page, browser }) => {
+    const consumer = process.env.E2E_CHRONOLOG_CONSUMER, engineDirectory = process.env.E2E_CHRONOLOG_WASM;
+    test.skip(!consumer || !engineDirectory, 'Requires the combined SQL archive and a verified browser engine');
+    const { openBrowserSqlSpecimen } = await import('./staging-browser-sql');
+    const handle = await createPage(isPrivate ? 'Browser intake' : 'Browser checklist');
+    const secondContext = await browser.newContext();
+    const guest = stagingSession();
+    try {
+      await guest.signIn(secondContext);
+      const second = await secondContext.newPage();
+      await openHoldingPage(page, handle);
+      const invitation = await fetch(`${handle.api}/links`, { method: 'POST',
+        headers: { Authorization: `Bearer ${handle.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'guest', label: 'Acceptance guest' }) });
+      expect(invitation.status).toBe(201);
+      const { url: guestUrl } = await invitation.json();
+      await second.goto(guestUrl);
+      await test.step('Guest requests access', async () => {
+        await second.getByRole('button', { name: 'Request access' }).click();
+        await expect(second.locator('#claim-status')).toBeVisible();
+      });
+      const management = await page.context().newPage();
+      try {
+        await management.goto(new URL('_tendril/manage', handle.page_url).href);
+        await expect(management.getByRole('heading', { name: 'Guest requests' })).toBeVisible();
+        await management.getByRole('listitem').filter({ hasText: guest.email })
+          .getByRole('button', { name: 'Approve', exact: true }).click();
+        await expect(management.getByRole('status')).toHaveText('Guest access approved.');
+      } finally { await management.close(); }
+      await expect(second.getByRole('heading')).toHaveText(/is getting ready/, { timeout: 20_000 });
+      const fixture = await test.step('Publish and open browser SQL peers', () => openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
+        peers: client(handle).peers, pageUrl: handle.page_url, applicationId: handle.application.id,
+        pages: [page, second], isPrivate, guestAccount: guest.id }));
+      if (isPrivate) {
+        await page.getByRole('textbox', { name: 'Your answer' }).fill('First answer');
+        await page.getByRole('button', { name: 'Save answer' }).click();
+        await expect(second.getByText('Current answer: First answer')).toBeVisible();
+        await expect(second.getByRole('textbox', { name: 'Your answer' })).toHaveCount(0);
+        await page.getByRole('textbox', { name: 'Your answer' }).fill('Corrected answer');
+        await page.getByRole('button', { name: 'Save answer' }).click();
+        await expect(second.getByText('Current answer: Corrected answer')).toBeVisible();
+      } else {
+        await page.getByLabel('Task title').fill('Check the spare tire');
+        await page.getByRole('button', { name: 'Add task' }).click();
+        await expect(second.getByText('Check the spare tire · Open')).toBeVisible();
+        await second.getByRole('button', { name: 'Claim task' }).click();
+        await expect(page.getByText('Check the spare tire · Claimed by a teammate')).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Claim task' })).toBeDisabled();
+        await second.getByRole('button', { name: 'Complete task' }).click();
+        await expect(page.getByText('Check the spare tire · Done')).toBeVisible();
+        await fixture.reopenFirst();
+        await expect(page.getByText('Check the spare tire · Done')).toBeVisible();
+      }
+    } finally {
+      await secondContext.close();
+      guest.close();
+    }
+  });
+}

@@ -4,6 +4,8 @@ export const serviceStyle = `<style>
 </style>`;
 
 export function servicePage(title: string, body: string, script = "", status = 200): Response {
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${title} · Tendriller</title>${brandHead()}${serviceStyle}${brandStyle}</head><body><main><header>${brandLink}<a href="/dashboard">Dashboard</a></header>${body}<footer><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></footer></main>${script}</body></html>`;
-  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": `default-src 'none'; script-src ${script ? "'unsafe-inline'" : "'none'"}; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'` } });
+  // Keep Origin on same-origin navigation POSTs without sending a referrer
+  // on cross-origin requests. The forms still require the expected Origin.
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>${title} · Tendriller</title>${brandHead()}${serviceStyle}${brandStyle}</head><body><main><header>${brandLink}<a href="/dashboard">Dashboard</a></header>${body}<footer><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></footer></main>${script}</body></html>`;
+  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin", "Content-Security-Policy": `default-src 'none'; script-src ${script ? "'unsafe-inline'" : "'none'"}; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'` } });
 }

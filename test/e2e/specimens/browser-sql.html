@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared work</title></head>
+<body>
+<main>
+  <h1>Shared work</h1>
+  <p id="status" role="status">Connecting…</p>
+  <form id="task-form" hidden>
+    <label>Task title <input id="title" required></label>
+    <button>Add task</button>
+  </form>
+  <ul id="tasks"></ul>
+  <section id="intake" hidden>
+    <p>Only the respondent and their facilitator can read this answer.</p>
+    <p id="current"></p>
+    <form id="answer-form" hidden>
+      <label>Your answer <textarea id="answer" maxlength="2000" required></textarea></label>
+      <button>Save answer</button>
+      <button type="button" id="review">Use current answer</button>
+    </form>
+  </section>
+</main>
+<script type="module" src="./browser-sql.mjs"></script>
+</body>
+</html>
