@@ -2,6 +2,7 @@ const key = 'inspection-draft';
 const el = id => document.getElementById(id);
 const notes = el('notes'), photo = el('photo'), preview = el('preview'), result = el('result');
 const save = el('save'), clear = el('clear'), offline = el('offline');
+const restore = el('import');
 let image;
 function show(value) {
   image = value;
@@ -22,7 +23,7 @@ try {
 save.onclick = async () => {
   const draftNotes = notes.value;
   const file = photo.files[0];
-  save.disabled = clear.disabled = photo.disabled = true;
+  save.disabled = clear.disabled = photo.disabled = restore.disabled = true;
   try {
     let selected = image;
     if (file) {
@@ -44,7 +45,7 @@ save.onclick = async () => {
   } catch {
     result.textContent = 'Could not save your draft. Keep this page open and copy your notes.';
   } finally {
-    save.disabled = clear.disabled = photo.disabled = false;
+    save.disabled = clear.disabled = photo.disabled = restore.disabled = false;
   }
 };
 offline.onclick = async () => {
@@ -65,6 +66,44 @@ clear.onclick = () => {
   photo.value = '';
   show(undefined);
   result.textContent = 'Local draft discarded.';
+};
+
+el('export').onclick = () => {
+  const draft = localStorage.getItem(key);
+  if (!draft) {
+    result.textContent = 'Save a draft before exporting it.';
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([draft], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'inspection-draft.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  result.textContent = 'Draft exported. The file contains your notes and photo.';
+};
+
+restore.onchange = async () => {
+  const file = restore.files[0];
+  if (!file) return;
+  restore.disabled = save.disabled = clear.disabled = photo.disabled = true;
+  try {
+    if (file.size > 1024 * 1024) throw new Error('Draft too large');
+    const draft = JSON.parse(await file.text());
+    if (typeof draft?.notes !== 'string' || !(draft.image === undefined ||
+      typeof draft.image === 'string' && /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(draft.image))) {
+      throw new Error('Invalid draft');
+    }
+    localStorage.setItem(key, JSON.stringify({ notes: draft.notes, image: draft.image }));
+    notes.value = draft.notes;
+    show(draft.image);
+    result.textContent = 'Exported draft restored on this device.';
+  } catch {
+    result.textContent = 'Could not restore this draft. Your current draft was kept.';
+  } finally {
+    restore.value = '';
+    restore.disabled = save.disabled = clear.disabled = photo.disabled = false;
+  }
 };
 
 document.querySelector('main').dataset.ready = 'true';

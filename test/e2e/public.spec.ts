@@ -188,10 +188,19 @@ test('field inspection keeps a photo and notes through offline reload and reconn
   await expect(status).toHaveText('Choose a PNG or JPEG under 512 KB.');
   await page.reload();
   await expect(page.getByLabel('Inspection notes')).toHaveValue('Left hinge needs inspection');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export saved draft' }).click();
+  const exported = await (await download).path();
+  expect(exported).toBeTruthy();
   await page.getByRole('button', { name: 'Discard local draft' }).click();
   await page.reload();
   await expect(page.getByLabel('Inspection notes')).toBeEmpty();
   await expect(page.getByRole('img', { name: 'Inspection evidence' })).toBeHidden();
+  await page.getByLabel('Restore exported draft').setInputFiles(exported!);
+  await expect(status).toHaveText('Exported draft restored on this device.');
+  await expect(page.getByLabel('Inspection notes')).toHaveValue('Left hinge needs inspection');
+  await expect.poll(() => page.locator('#preview').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Discard local draft' }).click();
 });
 
 test('private intake permits a correction and rejects a stale or unauthorized edit', async ({ page, browser }) => {
