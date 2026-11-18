@@ -4,7 +4,7 @@ The browser runtime composes one application session with page-host services and
 
 ## Runtime composition
 
-The default injected `tendril.js` entry assigns `window.tendril` and mounts a small management/sensor utility. The public `@tendriller/runtime/kernel` export instead provides `startRuntime(configuration, options)` without mounting UI. Both return the same `RuntimeApi`.
+The default injected `tendril.js` entry assigns `window.tendril` and mounts a small **Page options** utility for Home Screen setup, offline code saving, management and sensor cancellation. The public `@tendriller/runtime/kernel` export instead provides `startRuntime(configuration, options)` without mounting UI. Both return the same `RuntimeApi`.
 
 `configuration.application` is exactly `{id}`. A published document also carries its immutable publication/runtime manifest and its own logical `documentPath`. Startup rejects undeclared document paths before browser side effects.
 
@@ -47,9 +47,56 @@ Safari device-qualification guarantee.
 | `capabilities()` | Describe browser availability and permissions without requesting them |
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
+| `installation` | Observe browser installation state and explicitly request an available native prompt |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
 
 Construction starts no host connection, fetch, IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
+
+## Home Screen setup
+
+Open **Page options** to add the page to the Home Screen or read the current platform's setup steps. A native **Add to Home Screen** button appears only after the browser supplies a `beforeinstallprompt` event. Android otherwise uses the browser menu's **Add to Home Screen** or **Install app**. On iPhone and iPad, use **Share → Add to Home Screen**, leave **Open as Web App** enabled if shown, then tap **Add**. Share may be inside the page menu. If the option is missing, try Safari and **Share → Edit Actions**. Supporting third-party iOS browsers can also add web apps; Safari is a fallback, not a requirement. See [Chrome's custom install guidance](https://web.dev/articles/customize-install) and [Apple's Home Screen instructions](https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/ios).
+
+Startup does not open an install prompt. On eligible published mobile pages, a small suggestion may appear after a 12-second delay following a trusted page interaction. It stays out of focused form editing, active or pending sensor use, and hidden pages. **Not now** suppresses suggestions for that page on this browser for 30 days; Page options remains available. Already standalone pages do not show installation suggestions.
+
+The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. An open tab remains pinned to its immutable publication, including on reload. **Page options → Open latest version** explicitly opens the selected release. Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
+
+For the default manifest, a custom page `icon` URL ending in `.png`, `.webp`, or `.svg` replaces the generated installation artwork. Serve a square image large enough for the target browsers. Use an authored manifest to declare exact sizes, provide alternate icons, or reference artwork at a URL without a supported file extension.
+
+Existing signed publications pin their `runtime_id`. Deploying this host updates metadata on newly served HTML, but existing pages receive the new Page options UI and `installation` API only through a new signed publication using the updated runtime. Cached HTML and already open tabs retain their existing publication behavior.
+
+`installation.status()` returns `{state, platform}`; `platform` is `ios`, `android` or `desktop`.
+
+| State | Meaning |
+| --- | --- |
+| `available` | A native prompt is ready for a user gesture |
+| `manual` | Offer browser-menu instructions; no native prompt is currently available |
+| `installed` | This window is running as an app, or the browser reported installation |
+| `unavailable` | This context is insecure or embedded; open the page in a secure top-level browser window |
+
+`on(listener)` observes subsequent state changes and returns an unsubscribe function. Read `status()` for the initial view. An authored native-install button can use the same API:
+
+```js
+const button = document.querySelector('[data-install-page]');
+const message = document.querySelector('[data-install-status]'); // role="status"
+const render = ({ state }) => { button.hidden = state !== 'available'; };
+render(tendril.installation.status());
+const unsubscribe = tendril.installation.on(render);
+
+button.addEventListener('click', async () => {
+  // Call before any other await to preserve this click's user activation.
+  const result = await tendril.installation.prompt();
+  message.textContent = result === 'accepted'
+    ? 'Installation requested. Follow your browser’s confirmation.'
+    : result === 'dismissed'
+      ? 'You can add this page later.'
+      : 'Use your browser’s menu to add this page.';
+});
+// Call unsubscribe() when disposing this view.
+```
+
+`prompt()` returns `accepted`, `dismissed` or `unavailable` and consumes a native event at most once. Calling it without a user gesture leaves the pending prompt available for a click. Acceptance is the user's choice, not confirmation that installation has completed. The headless kernel exposes the same API without instructions or suggestions; authored UI must supply its own manual help. Do not duplicate the default runtime's automatic suggestion.
+
+A Home Screen app may need sign-in or device connection again. On iOS/iPadOS, installation can copy cookies but does not copy localStorage or IndexedDB, and subsequent storage is separate. Preserve the owned session's explicit enrollment/recovery flow; installing an icon does not transfer its device signer or application data. See [WebKit's storage behavior](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/).
 
 ## Connection lifecycle
 
@@ -67,7 +114,7 @@ Load optional voice from `import(runtime.assetUrl('voice.mjs'))` or `@tendriller
 
 ## Immutable code and offline use
 
-Each publication pins its complete authored file graph and runtime. `saveOffline()` resolves only after the required graph is verified and saved by the service worker. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads and offline reload.
+Each publication pins its complete authored file graph and runtime. **Page options → Save for offline use** calls `publication.saveOffline()`, which registers offline support on demand and resolves only after the required graph is verified and saved by the service worker. Home Screen installation does not implicitly call it. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads and offline reload; live features still depend on the page's data and connection lifecycle.
 
 The service-owned management page remains available if authored JavaScript fails. It manages account access and displays publication history. Changing selected code requires a new signed Chronolog publication.
 

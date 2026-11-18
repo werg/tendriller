@@ -103,6 +103,14 @@ Each asset is `{hash, bytes}`, with canonical base64 bytes. The signed manifest 
 
 `control.publication()` verifies and remembers the selected release chain. Historical code remains available at its immutable publication URL. Restoring old code requires a new signed publication; diagnostics and the management page cannot silently switch the selected code. Application recovery and code publication have separate histories.
 
+## Help people keep a useful page
+
+After the page has helped with the task, naturally suggest **Page options → Add to Home Screen** for repeat use on a phone. The default runtime provides native installation when the browser supports it, iPhone/iPad Share instructions, and a quiet mobile suggestion with a remembered **Not now** choice. Keep setup optional. Do not force installation, open prompts on load, or add a competing automatic nudge. For authored controls, use [`tendril.installation`](docs/BROWSER_API.md#home-screen-setup) and invoke `prompt()` directly from a click.
+
+Give the page a recognizable `name`, short Home Screen label and appropriate icon using the existing agent API: `PATCH` the returned agent `api` URL with `name`, `short_name`, `icon` (an HTTPS URL), and optionally `theme_color` and `background_color`. The host supplies default install metadata; authored manifest and icon tags can provide more specific branding. The Home Screen launch targets the stable page URL and selected publication, while an already open page remains pinned to its publication.
+
+Offer **Save for offline use** when retaining this version's code is useful. Explain separately what the application can do with disconnected data or peers. Installing the Home Screen app does not save its code or transfer a device signer; iOS may require sign-in and the session's normal device connection/recovery again. See [browser setup and storage details](docs/BROWSER_API.md#home-screen-setup).
+
 ## Verify the result
 
 Check the actual application behavior in the intended browser/native environment. Exercise lost replies, offline local work, explicit recovery, revoked access, stale publication heads and the page's stop/cancel controls where relevant. Confirm ordinary application traffic leaves the host idle. Report the exact artifacts and limits of the checks performed.

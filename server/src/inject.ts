@@ -1,6 +1,7 @@
 import runtimeRelease from "./runtime-release.json";
 import type { RuntimeArtifactFeatures } from "../../contract/index.mjs";
 import { brandHead, brandLink, brandLogo, brandStyle } from "./brand";
+import { DEFAULT_THEME_COLOR, iconMediaType, type PageBranding } from "./pwa";
 
 // Runtime injection into served HTML (PROTOCOL section 5) and built-in pages.
 
@@ -23,6 +24,8 @@ export type InjectConfig = {
   features: Features;
   application: import("../../contract/application.mjs").ApplicationSelection;
   peerBootstrap?: import("../../contract/peers.mjs").PeerBootstrap;
+  /** Server-rendered install branding, not part of the runtime configuration. */
+  branding?: PageBranding;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
 
 /** Escapes a JSON string for safe inclusion inside a <script> element. */
@@ -39,7 +42,7 @@ function attr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
+export function runtimeTags(cfg: InjectConfig, installTags = `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest" crossorigin="use-credentials">`): string {
   const publication = cfg.publication;
   const directory = cfg.documentPath === null ? "" : cfg.documentPath.slice(0, cfg.documentPath.lastIndexOf("/") + 1);
   const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
@@ -49,9 +52,7 @@ export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
-    // Every published page gets the per-origin install metadata. On iOS,
-    // installed Home Screen web apps can receive push when no tab is open.
-    (includeManifest ? `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest">` : "") +
+    installTags +
     `<script>window.__TENDRIL__=${scriptSafeJson(conf)};</script>` +
     `<script src="${attr(runtimeBase)}tendril.js"></script>`
   );
@@ -59,13 +60,48 @@ export function runtimeTags(cfg: InjectConfig, includeManifest = true): string {
 
 const HEAD_RE = /<head(?:\s[^>]*)?>/i;
 
+/** Read only actual metadata tags, not markup mentioned in comments or scripts. */
+function metadataTags(html: string): { tag: string; attributes: Map<string, string> }[] {
+  const head = /<head\b[^>]*>([\s\S]*?)<\/head>/i.exec(html)?.[1] ?? html;
+  const markup = head.replace(/<!--[\s\S]*?-->|<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+  return [...markup.matchAll(/<(link|meta)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)].map(match => {
+    const attributes = new Map<string, string>();
+    for (const attr of match[0].slice(match[1].length + 1, -1).matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) {
+      const name = attr[1].toLowerCase();
+      if (!attributes.has(name)) attributes.set(name, attr[2] ?? attr[3] ?? attr[4] ?? "");
+    }
+    return { tag: match[1].toLowerCase(), attributes };
+  });
+}
+
+function installMetadata(html: string, cfg: InjectConfig): string {
+  const tags = metadataTags(html);
+  const link = (...names: string[]) => tags.some(({ tag, attributes }) => tag === "link" &&
+    (attributes.get("rel") ?? "").toLowerCase().split(/\s+/).some(value => names.includes(value)));
+  const meta = (name: string) => tags.some(({ tag, attributes }) => tag === "meta" && attributes.get("name")?.toLowerCase() === name);
+  const authoredManifest = link("manifest");
+  const branding = cfg.branding;
+  const customAppleIcon = branding?.icon && iconMediaType(branding.icon) === "image/png" ? branding.icon : null;
+  return [
+    // Fetching a same-origin manifest still omits cookies without this attribute.
+    !authoredManifest ? `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest" crossorigin="use-credentials">` : "",
+    // Apple touch icons and title/theme metadata can take precedence over a
+    // manifest's branding. Leave an authored manifest in charge of those defaults.
+    !authoredManifest && !link("icon") ? `<link rel="icon" href="${attr(cfg.base)}_tendril/icon.svg" type="image/svg+xml" sizes="any">` : "",
+    !authoredManifest && !link("apple-touch-icon", "apple-touch-icon-precomposed") ? customAppleIcon
+      ? `<link rel="apple-touch-icon" href="${attr(customAppleIcon)}">`
+      : `<link rel="apple-touch-icon" href="/_tendril/brand/icon-180.png" sizes="180x180">` : "",
+    !authoredManifest && !meta("theme-color") ? `<meta name="theme-color" content="${attr(branding?.themeColor ?? DEFAULT_THEME_COLOR)}">` : "",
+    !authoredManifest && branding && !meta("apple-mobile-web-app-title")
+      ? `<meta name="apple-mobile-web-app-title" content="${attr(branding.shortName ?? branding.name)}">` : "",
+    !meta("viewport") ? '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' : "",
+  ].join("");
+}
+
 /** Inserts the runtime right after the opening <head> tag, or at the very start if there is none. */
 export function injectRuntime(html: string, cfg: InjectConfig): string {
-  // Preserve a page author's own install metadata. The generated manifest is
-  // only a default for pages that do not declare one.
-  const head = /<head\b[^>]*>([\s\S]*?)<\/head>/i.exec(html)?.[1] ?? html;
-  const hasManifest = /<link\b[^>]*\brel\s*=\s*(?:"[^"]*\bmanifest\b[^"]*"|'[^']*\bmanifest\b[^']*'|manifest\b)[^>]*>/i.test(head);
-  const tags = runtimeTags(cfg, !hasManifest);
+  // Defaults fill gaps individually; every authored install preference wins.
+  const tags = runtimeTags(cfg, installMetadata(html, cfg));
   const m = HEAD_RE.exec(html);
   if (!m) return tags + html;
   const at = m.index + m[0].length;

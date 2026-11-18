@@ -1,4 +1,7 @@
-import { test, expect, request } from '@playwright/test';
+import { test, expect, request, chromium } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
   requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
 
@@ -55,6 +58,76 @@ test('each signed release serves one immutable graph and canonical navigation se
     await expect(page.locator('#release')).toHaveText('one');
     expect((await client(handle).peers.publication(first.publication.id))?.publication).toEqual(first.publication);
   } finally { await deletePage(handle); }
+});
+
+test('Chromium reads authenticated per-page install metadata and launches the latest release', async () => {
+  const handle = await createPage();
+  const directory = await mkdtemp(join(tmpdir(), 'tendriller-install-'));
+  let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
+  try {
+    // Use full Chrome's installability evaluator, not headless-shell's stub.
+    // A dedicated persistent profile also avoids the intentional incognito error.
+    context = await chromium.launchPersistentContext(directory, {
+      channel: 'chromium', headless: true, ignoreHTTPSErrors: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+      args: ['--host-resolver-rules=MAP *.localhost 127.0.0.1'],
+    });
+    const page = await context.newPage();
+    await signInFixture(context); await claim(context, handle);
+    await publish(handle, '<!doctype html><html><head><title>My mobile page</title></head><body><h1>First version</h1></body></html>');
+    await openClaimed(page, handle);
+    const base = localPageUrl(handle);
+    await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('crossorigin', 'use-credentials');
+    const cdp = await context.newCDPSession(page);
+    const result = await cdp.send('Page.getAppManifest');
+    expect(result.errors).toEqual([]);
+    const manifest = JSON.parse(result.data!);
+    expect(manifest.id).toBe(new URL(base).pathname);
+    expect(new URL(manifest.start_url, result.url).href).toBe(base);
+    expect(manifest.scope).toBe(new URL(base).pathname);
+    expect(manifest.display).toBe('standalone');
+    // Real browser icon fetching/rendering catches auth, format and dimension errors
+    // that inspecting manifest JSON alone cannot establish.
+    expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+    expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+    const icons: Record<string, { type: string; body: string | Uint8Array }> = {
+      'index.html': { type: 'text/html', body: '<!doctype html><html><head><title>My mobile page</title></head><body><h1>Latest version</h1></body></html>' },
+    };
+    for (const format of ['png', 'webp']) {
+      const type = `image/${format}`;
+      const image = await page.evaluate(type => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 192;
+        const draw = canvas.getContext('2d')!;
+        draw.fillStyle = '#6a24b3';
+        draw.fillRect(0, 0, 192, 192);
+        return canvas.toDataURL(type);
+      }, type);
+      expect(image).toMatch(new RegExp(`^data:${type};base64,`));
+      icons[`custom.${format}`] = { type, body: Buffer.from(image.split(',')[1], 'base64') };
+    }
+    await publishFiles(handle, icons);
+    await page.goto(new URL(manifest.start_url, result.url).href);
+    await expect(page.getByRole('heading', { name: 'Latest version', exact: true })).toBeVisible();
+
+    // Each signed raster must pass Chromium's icon evaluator on its own.
+    for (const format of ['png', 'webp']) {
+      const customIcon = new URL(`custom.${format}`, page.url()).href;
+      expect((await agent(handle, '', 'PATCH', { icon: customIcon })).status).toBe(200);
+      await page.reload();
+      const branded = await cdp.send('Page.getAppManifest');
+      expect(JSON.parse(branded.data!).icons).toEqual([
+        { src: customIcon, sizes: 'any', type: `image/${format}`, purpose: 'any' },
+      ]);
+      expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+      expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+    }
+    await cdp.detach();
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+    await deletePage(handle);
+  }
 });
 
 test('sibling page origins isolate storage and cannot mutate each other through participant transport', async ({ context }) => {

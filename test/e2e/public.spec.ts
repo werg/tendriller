@@ -126,6 +126,7 @@ test('owner claim, reconnect for pushed first publication and live invitations',
   await publish(peers, 'Second signed release');
   await page.reload();
   await expect(page.getByRole('heading')).toHaveText('First signed release');
+  await page.getByRole('button', { name: 'Page options', exact: true }).click();
   await page.getByRole('link', { name: 'Open latest version' }).click();
   await expect(page.getByRole('heading')).toHaveText('Second signed release');
 });
