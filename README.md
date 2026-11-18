@@ -14,7 +14,9 @@ Open **Page options** on a published page to add it to your Home Screen. Support
 
 ## Start here
 
-- [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.
+- [Agent guide](agent.md) — Pick a first interaction, discover features and adapt a prompt.
+- [Tendriller skill](.agents/skills/tendriller/SKILL.md) — Reusable guidance for skill-aware agents.
+- [Setup and publication](docs/AGENT_SETUP.md) — Connect the application session and publish signed code.
 - [Application contract](docs/APPLICATION_BACKENDS.md): commands, applied operations, coherent reads and explicit recovery.
 - [Browser API](docs/BROWSER_API.md): session bindings, Home Screen setup, signals, host access, sensors and offline code.
 - [Participant protocol](docs/PROTOCOL.md): role filters, authorization and signed publication atomicity.

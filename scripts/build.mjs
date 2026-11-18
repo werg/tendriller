@@ -111,6 +111,7 @@ export async function buildPublicArtifacts() {
       mkdirSync(dirname(destination), { recursive: true }); copyFileSync(source, destination);
     }
   }
+  copyFileSync(join(root, ".agents/skills/tendriller/SKILL.md"), join(out, "docs/AGENT_SKILL.md"));
   mkdirSync(join(out, "contract"), { recursive: true });
   copyFileSync(join(root, "contract/v3.json"), join(out, "contract/v3.json"));
   return manifest;
@@ -126,7 +127,7 @@ if (!process.argv.includes("--skip-initial")) await buildAll();
 if (watching) {
   let timer, building = false, again = false;
   const rebuild = async () => { if (building) { again = true; return; } building = true; do { again = false; try { await buildAll(); } catch (error) { console.error(error); } } while (again); building = false; };
-  const watchers = ["runtime/src", "runtime/resources.mjs", "server/src", "contract", "preview-support", "docs", "legal", "agent.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
+  const watchers = [".agents/skills/tendriller", "runtime/src", "runtime/resources.mjs", "server/src", "contract", "preview-support", "docs", "legal", "agent.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
     if (name === "runtime-release.json") return;
     clearTimeout(timer); timer = setTimeout(rebuild, 120);
   }));

@@ -1,118 +1,69 @@
-# Give your agent a page
+# Build a Tendriller page for your user
 
-Tendriller hosts the page and joins its Chronolog protocol as a light control participant. Open one Chronolog application session for application work. The host receives only the control, publication and introduction updates allowed by its transport policy.
+Create an ad hoc web page connected to an agentic task. The person can open it on a phone or another device, sign in with GitHub or Google, and use controls, text, or permissioned sensors to send input back. Your application can update the interface, show a reply, or speak it aloud. Author the HTML, CSS, and JavaScript for the task. Tendriller hosts the authenticated page and its signed code. An owned Chronolog session carries application data between authorized peers.
 
-## Create and claim the page
+## Start with one useful interaction
 
-Read `/api/service` to check the host contract and limits. Create a page with `POST /api/tendrils` and an owner email:
+1. Use the service origin where you found this guide or the origin the user supplied. For a local copy of this guide, the default service is https://tendriller.dev. Read `/api/service` for the current contract and limits. For a new page, use the email the person signs in with. Ask for it only if you lack it. Call `POST /api/tendrils` with `{"owner":"the-person@example.com","name":"A short task name"}`. Keep the returned `api`, token, and `application.id` in private agent storage. Share `page_url` with the person. They sign in to claim the page.
+2. An existing application already has an identity, definition, and device setup. Reuse them. For a new application, follow the [setup and signed publication guide](docs/AGENT_SETUP.md) and the [peer application cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/run-a-peer-application/COOKBOOK.md). Start with a small complete loop, such as sending one question and rendering its answer.
+3. Connect the peer that will act on that input. Before handing off a page that promises agent replies, verify that an action reaches the intended agent conversation, that the reply appears in the page, and that this works again after the current turn ends. See [agent delivery](#agent-delivery). A page built as a standalone tool or dashboard can work without a conversational receiver.
 
-```json
-{"owner":"owner@example.com","name":"Shared work"}
-```
+Use the [Tendriller skill](https://tendriller.dev/docs/AGENT_SKILL.md) for this workflow in a skill-aware harness. Agents can also follow this guide directly.
 
-The result includes `page_url`, the agent `api` and token, and `application:{id}`. The generated application ID is a stable 32-byte lowercase hex identity, independent of the page ID. Supply `application:{id}` explicitly when binding a known application. There is no backend or profile selector.
+## Choose features by what the person needs
 
-Give `page_url` to the human owner. They open it and sign in to claim the page. Agent credentials cannot claim a page for them. An unclaimed page expires after 24 hours. After claim, explicit host lifecycle operations may make it resident; residency retains control and code without a continuously running application process.
-
-## Configure authority and open the application
-
-Use the public SDK's `createClient(handle, {applicationId: handle.application.id})`. The host SDK has `peers`, `request`, `info` and `service`. Its construction starts no traffic.
-
-Configure the initial descriptor through `host.peers.configureApplication`. Provide the immutable public application definition, execution-manifest digest, schema administrator, initial epoch/key digest, and enrolled device grants. SQL applications also provide their signed schema. The host validates the definition/schema bindings and retains the signed authority. Application identity exists before configuration; reading unconfigured authority reports that state explicitly.
-
-Chronolog owns the device signer, local byte store, database, operation journal, peer connections and replication. Use its native or browser Worker session entry for your environment. Bootstrap from the host's public definition and authority, pin the descriptor, and verify all signed evidence through Chronolog. Keep browser execution and replication in the owned Worker.
-
-Connect the host to the session through the common participant transport:
-
-```js
-const control = session.connectControlParticipant({
-  exchange: (message, options) => host.peers.exchange(message, options),
-});
-```
-
-Install the session's one participation controller with the host introduction adapter:
-
-```js
-import { createPeerIntroductions } from '@tendriller/core/peers';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-const participation = await session.participate({
-  control,
-  ...createPeerIntroductions({
-    peers: host.peers,
-    identity: session.deviceId,
-    openDirectConnection, // The native or owned Worker raw RTC opener.
-    openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-  }),
-});
-```
-
-The session owns discovery, connection retries, authentication, reconnect grace, candidate policy and recovery. Each host-adapter attempt tries direct RTC, then the opaque WebSocket relay after direct failure or its five-second budget. Both use the same authenticated encrypted peer channels and application session. Use the controller's status to show connection progress and any exact recovery proposal requiring approval. Do not add application-level election or retry loops. See [peer participation](docs/PEER_CONNECTIONS.md) for the environment openers and lifecycle.
-
-Ordinary commands, queries, signals and replication require no host control call. Direct traffic bypasses the host; relay traffic consumes host bandwidth and requires the relay to remain available. Coarse availability-lease renewal is separate lifecycle traffic, independent of application edits.
-
-## Compose the browser runtime
-
-The default entry supplies `window.tendril`. Install the one matching application backend and the session's live signals:
-
-```js
-import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-
-const backend = createApplicationBackend({
-  id: session.applicationId,
-  session,
-  eventCommand: 'publishEvent', // An ordinary declared domain command, if provided.
-});
-tendril.application.install(backend);
-tendril.signals.install(session.signals);
-```
-
-`ready()` and `available` on the application binding describe installation. Use `session.status` and its subscriptions for actual connection, generation and recovery state. The session's `deviceId` is the signing identity; the page runtime creates no additional device credential.
-
-A separately composed page may call `startRuntime(configuration, {application: backend, signals: session.signals})` from `@tendriller/runtime/kernel`. That kernel mounts no UI and starts no transport. Both compositions use the same application contract.
-
-## Commands, live signals and recovery
-
-Use the least durable mechanism that fits the task:
-
-| Need | Mechanism |
+| Need | Use |
 | --- | --- |
-| Local drafts, focus, scroll | Page-local state |
-| Live presence, previews, progress | `session.signals` or the installed signal binding |
-| A retained change and emitted facts | A declared application command |
-| A coherent query/event read | A captured applied read view, released after use |
-| Operation progress | Original operation identity and operation-state inspection |
-| Recovery after unavailable data | Explicit selected-generation recovery and loss reporting |
-| External side effects | A declared policy, protected prerequisites where needed, and provider reconciliation |
+| Buttons, forms, text chat, a sketch, or live UI updates | Use normal DOM controls and page-owned views. Send a fresh preview with `tendril.signals.send`. Submit requests or changes that must survive disconnects through declared application commands. Render incoming replies from the same application. |
+| Camera, microphone, screen sharing, location, orientation, or motion | Start with `tendril.capabilities()`, then call the corresponding browser API from the page. Ask for permission at the point of use, display what's active, and offer a way to stop or continue without the sensor. |
+| Gamepads, Bluetooth, USB, serial, HID, NFC, or MIDI | Probe support on the actual device and use the browser's API and chooser where available. Own framing, cleanup, and fallback for the particular instrument. See the [instrument cookbook](https://cookbooks.tendriller.dev/cookbooks/connect-instrument/COOKBOOK.md). |
+| Files, sharing, barcode or document capture | Use a file picker, drop target, or camera. Optional browser capabilities include clipboard, Web Share and barcode detection. Let the person review what they are sending. |
+| Voice input, wake phrase, or spoken replies | Load the optional [voice adapter](docs/HANDS_FREE.md) and author the controls. Start with typing and push-to-talk. Add foreground wake if the target device supports the selected engine. Use visible and, if useful, audible feedback when capture starts. Explicitly enable output and call `voice.speak(text)` for a reply. |
+| Shared lists, evidence, offline drafts, or history | Use a [Chronolog application](docs/APPLICATION_BACKENDS.md) with commands, applied reads and explicit recovery. Fresh previews can use [signals](docs/APPLICATION_SIGNALS.md). Keep local drafts independent of a delayed reply or an uncertain retry. |
+| A phone shortcut and recognizable branding | Set page metadata, then show the person **Page options → Add to Home Screen** when the page is useful enough to revisit. See [branding and installation](#branding-and-installation). |
+| A page that opens offline | Offer **Page options → Save for offline use** for its current code. Design and test disconnected data, draft retention and reconnection separately. See [offline code and application state](docs/BROWSER_API.md#immutable-code-and-offline-use). |
 
-Preserve the caller's operation ID and exact signed attempt on uncertain replies. `saved` means locally durable work; `applied` identifies an outcome in a selected generation. `shared` reports retained coverage separately. Recovery can abandon a recent suffix. Show `abandoned` and `needsReapply` explicitly; reapplication uses a fresh reviewed attempt with current guards. Never silently merge an abandoned branch or reinterpret a read view as finality.
+Your page code decides which interactions and readings to send, including automatic rules. For example, update a map locally with each location fix, then send one arrival when the device remains inside a waypoint radius. For a live gauge, send bounded, replaceable readings. For a checklist completion, submit a durable command. Test denied permissions, false triggers, and stop behavior on the intended device. See [browser sensors](docs/BROWSER_API.md#sensors-and-voice) and the [cookbook catalog](https://cookbooks.tendriller.dev/catalog.json).
 
-## Publish code through Chronolog
+### Agent delivery
 
-Prepare a complete manifest with canonical sorted file paths, content hashes, sizes and media types. The entry is an authored HTML file. The session's control participant saves the signed intent before returning it:
+An open peer connection can deliver work to a process that is running. To resume an idle agent conversation, use the actual harness's supported wake mechanism and an application-side consumer. The hosted control transport supplies peer introductions and signed publication; conversational wake, request queues, and notification delivery belong to the application and its chosen agent harness. See the [receiver cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/connect-resuming-agent/COOKBOOK.md).
+
+For work that must survive disconnects, persist a request under a stable identity, preserve its authenticated sender and granted authority, and record the correlated reply or handling outcome. Keep pending work visible while the agent is unavailable. Start with a harmless request, end the agent turn, and check that another request wakes the same conversation and renders a reply with the page's new draft intact. Describe the actual response path in the handoff, including any manual or scheduled step.
+
+### Branding and installation
+
+Use the returned agent API URL and its private bearer token, or patch through the authenticated SDK:
 
 ```js
-const signed = await control.preparePublication({
-  operationId: 'release-2026-11-17-a',
-  entry: 'index.html',
-  files,
+await host.request('', {
+  method: 'PATCH',
+  body: {
+    name: 'Kitchen Companion',
+    short_name: 'Kitchen',
+    icon: 'https://example.com/kitchen.png',
+    theme_color: '#315744',
+    background_color: '#f5f2eb',
+  },
 });
-const receipt = await control.publish(signed, assets);
 ```
 
-Each asset is `{hash, bytes}`, with canonical base64 bytes. The signed manifest binds application/history identity, current control revision, author, operation identity, previous release and immutable definition/engine commitments. Publishing requires an explicit current `publisher: true` device grant and authorized host account. Control administration does not imply publication rights, and a publisher can be granted no application data access. The host checks every supplied byte before storage effects and selects the release atomically. An exact retry returns its original receipt; a stale predecessor conflicts.
+Use a suitably sized square PNG, WebP, or SVG at a reachable HTTPS URL for the generated install manifest. PNG also supplies the default Apple touch icon. An authored manifest can declare exact sizes, multiple or maskable icons, and its own branding. A same-origin, authenticated authored manifest needs `crossorigin="use-credentials"`. Set `id`, `scope`, and `start_url` to the stable page path when the shortcut should open the selected publication. In the browser, `tendril.identity.base` is the stable page URL. Check the icon and launch on the intended browser. Use `tendril.installation.prompt()` directly from a click if you provide a custom install control. See [Home Screen setup](docs/BROWSER_API.md#home-screen-setup).
 
-`control.publication()` verifies and remembers the selected release chain. Historical code remains available at its immutable publication URL. Restoring old code requires a new signed publication; diagnostics and the management page cannot silently switch the selected code. Application recovery and code publication have separate histories.
+## Prompts to adapt
 
-## Help people keep a useful page
+Give your agent this guide, a task, and the email you sign in with. Add a concrete first action and result:
 
-After the page has helped with the task, naturally suggest **Page options → Add to Home Screen** for repeat use on a phone. The default runtime provides native installation when the browser supports it, iPhone/iPad Share instructions, and a quiet mobile suggestion with a remembered **Not now** choice. Keep setup optional. Do not force installation, open prompts on load, or add a competing automatic nudge. For authored controls, use [`tendril.installation`](docs/BROWSER_API.md#home-screen-setup) and invoke `prompt()` directly from a click.
+> Build a kitchen companion page for me using Tendriller. My sign-in email is me@example.com. Start with a shopping list I can edit and a recipe step I can advance from my phone. Add an optional fridge photo I can review before sending it. Show your reply in the page. Give me the link once you’ve tested both directions.
 
-Give the page a recognizable `name`, short Home Screen label and appropriate icon using the existing agent API: `PATCH` the returned agent `api` URL with `name`, `short_name`, `icon` (an HTTPS URL), and optionally `theme_color` and `background_color`. The host supplies default install metadata; authored manifest and icon tags can provide more specific branding. The Home Screen launch targets the stable page URL and selected publication, while an already open page remains pinned to its publication.
+Other starting points:
 
-Offer **Save for offline use** when retaining this version's code is useful. Explain separately what the application can do with disconnected data or peers. Installing the Home Screen app does not save its code or transfer a device signer; iOS may require sign-in and the session's normal device connection/recovery again. See [browser setup and storage details](docs/BROWSER_API.md#home-screen-setup).
+- **Sports or activity companion** for sailing, cycling, or geocaching. Show the next waypoint and detect arrival on-device. Let me confirm a missed milestone by hand.
+- **Office dashboard.** Show a live progress board and let me ask about a selected item or correct its status. Keep the question attached to that item.
+- **Maintenance helper.** Keep a checklist visible, let me take and review a photo, and show the relevant diagram beside your answer. Offer push-to-talk and a typed fallback.
 
-## Verify the result
+## Verify before handoff
 
-Check the actual application behavior in the intended browser/native environment. Exercise lost replies, offline local work, explicit recovery, revoked access, stale publication heads and the page's stop/cancel controls where relevant. Confirm ordinary application traffic leaves the host idle. Report the exact artifacts and limits of the checks performed.
+Open the published page under its intended account and try its first useful action. Exercise the failure that matters most to the task, such as denied camera access, a lost connection, an uncertain command receipt, or a reply arriving after a new draft. Check narrow-screen and keyboard use. A local preview can test exact authored files and UI behavior. Use a live authorized run to verify sign-in, peer membership, signed publication, or agent wake. Give the person the stable page URL and a brief account of what worked and what still requires setup.
 
-Use the [CLI](docs/tools/CLI.md), [preview](docs/tools/PREVIEW.md) and [cookbooks](https://github.com/werg/tendriller-contrib) as public consumers. Preview needs an explicit bootstrap for session-backed behavior. Publishing files or reading a guide cannot install server application code.
+See the [setup guide](docs/AGENT_SETUP.md), [browser API](docs/BROWSER_API.md), [preview tool](docs/tools/PREVIEW.md), and [documentation index](llms.txt).

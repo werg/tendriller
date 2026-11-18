@@ -4,7 +4,9 @@ Authenticated page hosting and a filtered Chronolog control participant. One own
 
 ## Public interfaces
 
-- [Agent guide](https://tendriller.dev/agent.md): page creation, owner claim, session composition and signed code publication.
+- [Agent guide](https://tendriller.dev/agent.md) — First-page workflow, feature map, branding, agent delivery and prompts.
+- [Tendriller skill](https://tendriller.dev/docs/AGENT_SKILL.md) — Reusable instructions for skill-aware agents.
+- [Setup and publication](https://tendriller.dev/docs/AGENT_SETUP.md) — Owner claim, session composition and signed code.
 - [Service descriptor](https://tendriller.dev/api/service): host contract, release and effective limits.
 - [Contract schema](https://tendriller.dev/contract/v3.json): executable host metadata schema.
 - [Protocol](https://tendriller.dev/docs/PROTOCOL.md): participant filters, authorization and signed release atomicity.
@@ -19,8 +21,10 @@ Authenticated page hosting and a filtered Chronolog control participant. One own
 ## Tools and qualification
 
 - [Releases](https://github.com/werg/tendriller/releases): SDK, runtime, engine and tools archives with immutable hashes.
+- [MCP host tools](https://tendriller.dev/docs/MCP.md) — Inspect the host and use its control and publication tools.
 - [CLI](https://tendriller.dev/docs/tools/CLI.md): public-session commands, queries, recovery and signed publication.
 - [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): exact authored files with an explicit session bootstrap.
-- [Cookbooks](https://github.com/werg/tendriller-contrib): design guidance, reference applications and independent integration qualification.
+- [Cookbook catalog](https://cookbooks.tendriller.dev/catalog.json) — Browse by task or capability.
+- [Cookbook source](https://github.com/werg/tendriller-contrib) — Current design guidance, reference applications and integration qualification.
 
 The application selection is exactly `{id}`. Application signing identity belongs to `session.deviceId`. The host receives no ordinary database commands, content replication or live UI signal bodies. Current software is pre-release: use the one current contract and fresh storage.
