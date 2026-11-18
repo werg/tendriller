@@ -233,6 +233,7 @@ test.describe('mobile home-screen setup', () => {
     const withSensors = await panel.boundingBox();
     expect(withSensors!.y).toBeGreaterThanOrEqual(0);
     expect(withSensors!.y + withSensors!.height).toBeLessThanOrEqual(640);
+    await page.screenshot({ path: test.info().outputPath('mobile-page-options.png') });
     await page.getByRole('button', { name: 'Close page options' }).click();
     await expect(panel).toBeHidden();
     await expect(page.getByRole('button', { name: 'Page options', exact: true })).toBeFocused();
@@ -284,11 +285,15 @@ test.describe('mobile home-screen setup', () => {
     const suggestion = page.getByRole('complementary', { name: 'Home screen suggestion' });
     await page.getByRole('textbox', { name: 'Notes' }).tap();
     await page.clock.fastForward(12_000); await expect(suggestion).toBeHidden();
+    // Mobile browsers may keep the input focused when non-focusable content is
+    // tapped. Finish editing explicitly before testing the separate sensor guard.
+    await page.getByRole('textbox', { name: 'Notes' }).blur();
     await page.evaluate(() => window.addEventListener('devicemotion', () => {}));
     await page.locator('main').tap(); await page.clock.fastForward(12_000);
     await expect(suggestion).toBeHidden();
     await expect(page.getByRole('button', { name: 'Stop Motion', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Stop Motion', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Page options', exact: true })).toBeFocused();
     await page.locator('main').tap(); await page.clock.fastForward(12_000);
     await expect(suggestion).toBeVisible();
   });

@@ -1,4 +1,7 @@
-import { test, expect, request } from '@playwright/test';
+import { test, expect, request, chromium } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
   requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
 
@@ -57,9 +60,19 @@ test('each signed release serves one immutable graph and canonical navigation se
   } finally { await deletePage(handle); }
 });
 
-test('Chromium reads authenticated per-page install metadata and launches the latest release', async ({ page, context }) => {
+test('Chromium reads authenticated per-page install metadata and launches the latest release', async () => {
   const handle = await createPage();
+  const directory = await mkdtemp(join(tmpdir(), 'tendriller-install-'));
+  let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   try {
+    // Use full Chrome's installability evaluator, not headless-shell's stub.
+    // A dedicated persistent profile also avoids the intentional incognito error.
+    context = await chromium.launchPersistentContext(directory, {
+      channel: 'chromium', headless: true, ignoreHTTPSErrors: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+      args: ['--host-resolver-rules=MAP *.localhost 127.0.0.1'],
+    });
+    const page = await context.newPage();
     await signInFixture(context); await claim(context, handle);
     await publish(handle, '<!doctype html><html><head><title>My mobile page</title></head><body><h1>First version</h1></body></html>');
     await openClaimed(page, handle);
@@ -76,11 +89,16 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     // Real browser icon fetching/rendering catches auth, format and dimension errors
     // that inspecting manifest JSON alone cannot establish.
     expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+    expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
     await publish(handle, '<h1>Latest version</h1>');
     await page.goto(new URL(manifest.start_url, result.url).href);
     await expect(page.getByRole('heading', { name: 'Latest version', exact: true })).toBeVisible();
     await cdp.detach();
-  } finally { await deletePage(handle); }
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+    await deletePage(handle);
+  }
 });
 
 test('sibling page origins isolate storage and cannot mutate each other through participant transport', async ({ context }) => {

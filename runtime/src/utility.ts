@@ -44,7 +44,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const nav = element("nav"); nav.setAttribute("aria-label", "Page operations");
   const active = element("span", undefined, "sensors"); active.setAttribute("role", "status");
   const stop = button("Stop sensors", "stop");
-  stop.addEventListener("click", () => api.sensors.stopAll());
+  stop.addEventListener("click", () => { api.sensors.stopAll(); options.focus(); });
   const options = button("Page options", "options");
   options.setAttribute("aria-expanded", "false"); options.setAttribute("aria-controls", "page-options");
   nav.append(active, stop, options);
