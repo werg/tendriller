@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Field inspection</title>
+</head>
+<body>
+<main>
+  <h1>Field inspection</h1>
+  <p>Your draft is stored on this device. Saving it does not send it to anyone.</p>
+  <label>Inspection notes <textarea id="notes"></textarea></label>
+  <label>Evidence photo <input id="photo" type="file" accept="image/png,image/jpeg"></label>
+  <img id="preview" alt="Inspection evidence" width="240" hidden>
+  <button id="save">Save draft on this device</button>
+  <button id="offline">Keep this page available offline</button>
+  <button id="clear">Discard local draft</button>
+  <p id="result" role="status"></p>
+</main>
+<script type="module" src="./inspection.mjs"></script>
+</body>
+</html>
+</html>
