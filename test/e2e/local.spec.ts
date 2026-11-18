@@ -14,7 +14,7 @@ test('verified owner claims a page and executes its signed authored module', asy
       'index.html': { type: 'text/html', body: '<!doctype html><html><head><title>Signed page</title></head><body><h1 id="welcome"></h1><script type="module" src="./page.mjs"></script></body></html>' },
       'page.mjs': { type: 'text/javascript', body: 'document.querySelector("#welcome").textContent = "Hello, owner";' },
     });
-    await expect(page.locator('#welcome')).toHaveText('Hello, owner');
+    await expect(page.locator('#welcome')).toHaveText('Hello, owner', { timeout: 25_000 });
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);
     expect((await client(handle).peers.publication())?.publication.id).toBe(release.publication.id);

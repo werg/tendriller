@@ -18,23 +18,28 @@ export function stagingSession() {
   const hash = createHash('sha256').update(token).digest('hex');
   const started = Date.now();
   const expires = started + 15 * 60_000;
-  writeStaging(`
+  const removeAccount = () => writeStaging(`DELETE FROM accounts WHERE id = '${id}' AND NOT EXISTS
+    (SELECT 1 FROM tendrils WHERE owner_account = '${id}');`);
+  try {
+    writeStaging(`
     INSERT INTO accounts (id, created_at, email) VALUES ('${id}', ${started}, '${email}');
     INSERT INTO identities (provider, subject, account_id, login, email, created_at)
       VALUES ('e2e', '${id}', '${id}', 'Staging test account', '${email}', ${started});
     INSERT INTO identity_emails (provider, subject, email) VALUES ('e2e', '${id}', '${email}');
     INSERT INTO sessions (hash, account_id, created_at, expires_at)
       VALUES ('${hash}', '${id}', ${started}, ${expires});
-  `);
+    `);
+  } catch {
+    try { removeAccount(); }
+    catch { throw new Error(`Staging fixture provisioning and cleanup failed for account ${id}`); }
+    throw new Error(`Staging fixture provisioning failed for account ${id}`);
+  }
   return {
     email,
     async signIn(context: BrowserContext) {
       await context.addCookies([{ name: '__Host-tendriller', value: token, url: staging,
         httpOnly: true, secure: true, sameSite: 'Lax', expires: Math.floor(expires / 1000) }]);
     },
-    close() {
-      writeStaging(`DELETE FROM accounts WHERE id = '${id}' AND NOT EXISTS
-        (SELECT 1 FROM tendrils WHERE owner_account = '${id}');`);
-    },
+    close: removeAccount,
   };
 }

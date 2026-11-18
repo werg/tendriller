@@ -49,3 +49,5 @@ The account dashboard shows host lifecycle/publication activity. Local camera, m
 ## Headless staging validation
 
 Run `npm run test:e2e:public` from the repo root with Wrangler authenticated to the staging Cloudflare account and Chromium installed for Playwright. Temporarily open page creation in the schema 9 staging database if it is paused, then restore the previous mode when the run is finished. The suite targets `https://staging.tendriller.dev` and provisions a disposable owner and 15-minute service session directly in the staging D1 database. The session uses the same cookie and account lookup as an OAuth session. No public test endpoint or permanent credential is required. The suite exercises the normal page claim, signed publication and live invitation routes, then removes its pages and account. OAuth provider consent and callback behavior are separate from this fixture.
+
+The browser suite creates three pages. Wait for the staging per-IP creation window to reset before repeating the suite from the same runner. Separate daily IP limits still apply.

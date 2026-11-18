@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createClient } from '../../dist/sdk/client.mjs';
 import { publishAssetGraph } from './publication-helpers';
 import { staging, stagingSession } from './staging-session';
@@ -10,16 +11,29 @@ let owner: ReturnType<typeof stagingSession>;
 
 test.beforeAll(() => { owner = stagingSession(); });
 test.beforeEach(async ({ context }) => { await owner.signIn(context); });
+async function cleanPages() {
+  const failed = await Promise.all(handles.map(async handle => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(handle.api, { method: 'DELETE', signal: AbortSignal.timeout(5_000),
+          headers: { Authorization: `Bearer ${handle.token}` } });
+        if (response.ok || response.status === 404) return null;
+      } catch { /* Retry a lost deletion response with the same handle. */ }
+      if (attempt < 2) await delay(500);
+    }
+    return handle;
+  }));
+  handles.splice(0, handles.length, ...failed.filter((handle): handle is Handle => handle !== null));
+}
 test.afterEach(async () => {
-  const failed = [];
-  for (const handle of handles) {
-    const response = await fetch(handle.api, { method: 'DELETE', headers: { Authorization: `Bearer ${handle.token}` } });
-    if (!response.ok && response.status !== 404) failed.push(handle);
-  }
-  handles.splice(0, handles.length, ...failed);
-  expect(failed.map(handle => handle.id), 'staging test pages pending cleanup').toEqual([]);
+  await cleanPages();
+  expect(handles.map(handle => handle.id), 'staging test pages pending cleanup').toEqual([]);
 });
-test.afterAll(() => { owner?.close(); });
+test.afterAll(async () => {
+  await cleanPages();
+  owner?.close();
+  expect(handles.map(handle => handle.id), 'staging test pages pending final cleanup').toEqual([]);
+});
 
 async function createPage(name: string): Promise<Handle> {
   const response = await fetch(`${staging}/api/tendrils`, { method: 'POST',
@@ -63,9 +77,9 @@ test('owner claim, retry after a failed readiness request, signed publication, r
   await expect(page.getByRole('status')).toContainText('Retrying automatically');
   const peers = client(handle).peers;
   const release = await publish(peers, 'First signed release');
-  await expect(page.getByRole('heading', { name: 'First signed release' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'First signed release' })).toBeVisible({ timeout: 25_000 });
   expect(requests).toBeGreaterThan(1);
-  expect((await peers.publication())?.publication.id).toBe(release.publication.id);
+  expect(await peers.publication()).toEqual(release);
 
   const listener = peers.listenInvitations('agent-staging-validation');
   try {
@@ -100,8 +114,8 @@ test('signed page origins isolate storage and reject sibling participant request
   await openHoldingPage(other, b);
   await publish(client(a).peers, 'Origin one');
   await publish(client(b).peers, 'Origin two');
-  await expect(page.getByRole('heading', { name: 'Origin one', exact: true })).toBeVisible();
-  await expect(other.getByRole('heading', { name: 'Origin two', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Origin one', exact: true })).toBeVisible({ timeout: 25_000 });
+  await expect(other.getByRole('heading', { name: 'Origin two', exact: true })).toBeVisible({ timeout: 25_000 });
   expect(new URL(page.url()).origin).not.toBe(new URL(other.url()).origin);
   await page.evaluate(() => localStorage.setItem('isolation-proof', 'from-a'));
   expect(await other.evaluate(() => localStorage.getItem('isolation-proof'))).toBeNull();

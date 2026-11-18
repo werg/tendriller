@@ -63,4 +63,4 @@ Each publication pins its complete authored file graph and runtime. `saveOffline
 
 The service-owned management page remains available if authored JavaScript fails. It manages account access and displays publication history. Changing selected code requires a new signed Chronolog publication.
 
-The holding page opens the first signed version automatically while it is visible. Once a version is open, its URL pins that publication so a reload can recover the same code. Use **Open latest version** in the page controls to load the currently selected release.
+While visible, the holding page checks for a signed publication and opens the selected release as soon as it is available. Once a version is open, its URL pins that publication so a reload can recover the same code. Use **Open latest version** in the page controls to load the currently selected release.
