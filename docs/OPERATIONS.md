@@ -45,3 +45,7 @@ Service state can pause creation or make the host read-only. Page/account holds 
 Inspect reserved file bytes against host/account ledgers when diagnosing storage discrepancies. Retained signed releases keep their immutable file references; orphan cleanup must not delete those assets. Page/account deletion deliberately removes hosted resources, while independently retained application data remains subject to the application's own policy.
 
 The account dashboard shows host lifecycle/publication activity. Local camera, microphone and location activity is tracked and stopped on the device; it is not a host sensor-history product. Use measured application/host traffic and actual deployment metrics when making capacity or cost claims.
+
+## Headless staging validation
+
+Run `npm run test:e2e:public` from the repo root with Wrangler authenticated to the staging Cloudflare account and Chromium installed for Playwright. Temporarily open page creation in the schema 9 staging database if it is paused, then restore the previous mode when the run is finished. The suite targets `https://staging.tendriller.dev` and provisions a disposable owner and 15-minute service session directly in the staging D1 database. The session uses the same cookie and account lookup as an OAuth session. No public test endpoint or permanent credential is required. The suite exercises the normal page claim, signed publication and live invitation routes, then removes its pages and account. OAuth provider consent and callback behavior are separate from this fixture.

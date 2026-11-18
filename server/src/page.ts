@@ -103,6 +103,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ ok: true });
   }
 
+  if (sub === "publication-ready" && m === "HEAD") {
+    return new Response(null, { status: servedVersion(t) > 0 ? 204 : 202, headers: { "Cache-Control": "no-store" } });
+  }
+
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
     return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
