@@ -251,7 +251,7 @@ test('mobile inspection keeps drafts across connectivity loss and offers camera 
   test.skip(process.env.E2E_MOBILE_MATRIX !== '1', 'Install Chromium and WebKit and set E2E_MOBILE_MATRIX=1');
   const { readFile } = await import('node:fs/promises');
   const handle = await createPage('Mobile inspection');
-  const mobileWebKit = await webkit.launch();
+  const mobileWebKit = await webkit.launch({ args: [], executablePath: process.env.E2E_WEBKIT_EXECUTABLE_PATH || undefined });
   try {
     const android = await browser.newContext({ ...devices['Pixel 7'] });
     const iphone = await mobileWebKit.newContext({ ...devices['iPhone 14'] });
@@ -274,7 +274,8 @@ test('mobile inspection keeps drafts across connectivity loss and offers camera 
         await expect(page.locator('main')).toHaveAttribute('data-ready', 'true', { timeout: 25_000 });
         await page.getByRole('button', { name: 'Take evidence photo' }).tap();
         await expect(page.locator('#result')).toHaveText('Could not take a photo. You can choose an image instead.');
-        await expect(page.getByLabel('Evidence photo')).toBeEnabled();
+        await page.getByLabel('Evidence photo').setInputFiles({ name: 'inspection.png', mimeType: 'image/png',
+          buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64') });
         const draft = `Mobile draft ${index + 1}`;
         await page.getByLabel('Inspection notes').fill(draft);
         await page.context().setOffline(true);
@@ -284,6 +285,7 @@ test('mobile inspection keeps drafts across connectivity loss and offers camera 
         } finally { await page.context().setOffline(false); }
         await page.reload();
         await expect(page.getByLabel('Inspection notes')).toHaveValue(draft);
+        await expect(page.getByRole('img', { name: 'Inspection evidence' })).toBeVisible();
       }
     } finally { await Promise.all([android.close(), iphone.close()]); }
   } finally { await mobileWebKit.close(); }

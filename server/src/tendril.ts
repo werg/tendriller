@@ -43,6 +43,7 @@ export class Tendril extends DurableObject<Env> {
   db: Db;
   private transactions: Transactions;
   contentOperations = new Map<string, Promise<unknown>>();
+  private ownerClaimTail: Promise<void> = Promise.resolve();
   /** Test hook: milliseconds added to the clock. */
   skew = 0;
 
@@ -407,49 +408,57 @@ export class Tendril extends DurableObject<Env> {
     if (url.pathname === "/claim/owner" && req.method === "POST") {
       const b = await readJson(req, 8192);
       if (link.role !== "owner" || typeof b.account_id !== "string" || !Array.isArray(b.identities)) throw new HttpError(403, "forbidden");
-      const current = this.db.get<string | null>("owner_account", null);
-      if (current && current !== b.account_id) throw new HttpError(403, "claimed", "Another account owns this tendril");
-      const expected = this.db.get<string | null>("intended_owner", null);
-      if (!current && expected && !ownerMatches(expected, b.identities)) throw new HttpError(403, "wrong_owner", "This tendril was made for another account");
-      if (!current) {
-        let row: unknown;
-        try {
-          row = await this.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = ?, claimed_at = ? WHERE id = ? AND owner_account IS NULL RETURNING id")
-            .bind(b.account_id, this.now(), this.tid).first();
-        } catch (err) {
-          if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
-          if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
-          throw err;
-        }
-        if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
-        this.db.set("owner_account", b.account_id);
-        this.db.set("claimed_at", this.now());
-        const label = (b.identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
-        if (typeof label === "string") this.db.set("owner_label", label.slice(0, 80));
-        const creator = await this.env.ACCOUNTS.prepare("SELECT creator_ip FROM tendrils WHERE id = ?")
-          .bind(this.tid).first<{ creator_ip: string | null }>();
-        if (creator?.creator_ip) {
-          const pattern = await this.env.ACCOUNTS.prepare(`SELECT COUNT(DISTINCT owner_account) AS n FROM tendrils
-            WHERE creator_ip = ? AND claimed_at > ? AND owner_account IS NOT NULL`)
-            .bind(creator.creator_ip, this.now() - DAY).first<{ n: number }>();
-          if ((pattern?.n ?? 0) >= 10) await this.hold("Ten different accounts claimed pages from one creator address within 24 hours");
-        }
-        const risk = this.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", this.db.get("current", 0))?.risk_score ?? 0;
-        if (risk >= 5) {
-          const account = await this.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(b.account_id)
-            .first<{ created_at: number }>();
-          if (account && account.created_at > this.now() - 7 * DAY) {
-            await this.hold("High static screening score on claim");
-          }
-        }
-      }
-      await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
-        .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
-      this.scheduleAlarm();
-      if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "held", "This page was held after screening. The owner can appeal.");
-      return json({ role: "owner" });
+      // D1 yields between reading and committing the first owner. A second
+      // tab for the same account waits for that claim and then opens normally.
+      const claim = this.ownerClaimTail.then(() => this.claimOwner(b.account_id, b.identities));
+      this.ownerClaimTail = claim.then(() => undefined, () => undefined);
+      return claim;
     }
     throw new HttpError(404, "not_found");
+  }
+
+  private async claimOwner(accountId: string, identities: unknown[]): Promise<Response> {
+    const current = this.db.get<string | null>("owner_account", null);
+    if (current && current !== accountId) throw new HttpError(403, "claimed", "Another account owns this tendril");
+    const expected = this.db.get<string | null>("intended_owner", null);
+    if (!current && expected && !ownerMatches(expected, identities)) throw new HttpError(403, "wrong_owner", "This tendril was made for another account");
+    if (!current) {
+      let row: unknown;
+      try {
+        row = await this.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = ?, claimed_at = ? WHERE id = ? AND owner_account IS NULL RETURNING id")
+          .bind(accountId, this.now(), this.tid).first();
+      } catch (err) {
+        if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
+        if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+        throw err;
+      }
+      if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
+      this.db.set("owner_account", accountId);
+      this.db.set("claimed_at", this.now());
+      const label = (identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
+      if (typeof label === "string") this.db.set("owner_label", label.slice(0, 80));
+      const creator = await this.env.ACCOUNTS.prepare("SELECT creator_ip FROM tendrils WHERE id = ?")
+        .bind(this.tid).first<{ creator_ip: string | null }>();
+      if (creator?.creator_ip) {
+        const pattern = await this.env.ACCOUNTS.prepare(`SELECT COUNT(DISTINCT owner_account) AS n FROM tendrils
+          WHERE creator_ip = ? AND claimed_at > ? AND owner_account IS NOT NULL`)
+          .bind(creator.creator_ip, this.now() - DAY).first<{ n: number }>();
+        if ((pattern?.n ?? 0) >= 10) await this.hold("Ten different accounts claimed pages from one creator address within 24 hours");
+      }
+      const risk = this.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", this.db.get("current", 0))?.risk_score ?? 0;
+      if (risk >= 5) {
+        const account = await this.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(accountId)
+          .first<{ created_at: number }>();
+        if (account && account.created_at > this.now() - 7 * DAY) {
+          await this.hold("High static screening score on claim");
+        }
+      }
+    }
+    await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
+      .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
+    this.scheduleAlarm();
+    if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "held", "This page was held after screening. The owner can appeal.");
+    return json({ role: "owner" });
   }
 
   linkUrl(key: string): string {

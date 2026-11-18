@@ -135,3 +135,20 @@ test('browser forms request and approve guest access, report a page, and sign ou
     await deletePage(handle);
   }
 });
+
+test('two browsers can open the same unclaimed page as its intended owner', async ({ context, browser }) => {
+  const handle = await createPage();
+  const second = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    await Promise.all([signInFixture(context), signInFixture(second)]);
+    const claims = await Promise.all([claim(context, handle), claim(second, handle)]);
+    expect(claims.map(response => response.status())).toEqual([303, 303]);
+    for (const device of [context, second]) {
+      const response = await device.request.get(localPageUrl(handle), { maxRedirects: 0 });
+      expect(response.status()).toBe(200);
+    }
+  } finally {
+    await second.close();
+    await deletePage(handle);
+  }
+});
