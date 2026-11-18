@@ -122,6 +122,7 @@ ${brandHead()}${brandStyle}
     clearTimeout(timer);
     timer = setTimeout(() => stream.close(), 8000);
     stream.onopen = () => {
+      if (socket !== stream) return;
       clearTimeout(timer);
       status.textContent = waiting;
     };
