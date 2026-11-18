@@ -107,7 +107,10 @@ window.openAcceptanceSession = async options => {
   void (async () => {
     for await (const change of session.changes({ signal: owner.signal })) {
       if (change) await refresh(isIntake);
-      if (change?.kind === 'recovery') status('History recovered. Review changes that had not been shared.');
+      if (change?.kind === 'recovery') {
+        latestSubmission++;
+        status('History recovered. Review changes that had not been shared.');
+      }
     }
   })().catch(error => { if (!owner.signal.aborted) errorStatus(error); });
   window.reconnectAcceptanceSession = (channel, remote) => new Promise((resolve, reject) => {

@@ -355,6 +355,7 @@ for (const isPrivate of [false, true]) {
         await secondContext.setOffline(false);
         await fixture.reconnect();
         await expect(second.getByText('Check the jack · Open')).toBeVisible();
+        await expect(reopened.getByRole('status').first()).toHaveText('Shared with another device.');
       }
     } finally {
       await secondContext.close();
