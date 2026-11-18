@@ -53,8 +53,9 @@ export async function buildPublicArtifacts() {
   const manifest = runtimeManifest({ version: CORE_RELEASE, contract: CONTRACT_VERSION, assets: entries, resources });
   const { id } = manifest;
   writeJson(join(assets, "manifest.json"), manifest);
-  // A release is copied to a content-addressed directory. Rebuilding never replaces
-  // bytes reachable by an earlier publication's runtime URL.
+  // A release bundle contains only current assets. Previously deployed
+  // runtime IDs resolve through R2; local watch sessions retain their builds.
+  if (process.argv.includes("--clean-public")) rmSync(out, { recursive: true, force: true });
   const immutable = join(out, "_tendril/runtime", id);
   mkdirSync(immutable, { recursive: true }); cpSync(assets, immutable, { recursive: true });
   writeJson(join(root, "server/src/runtime-release.json"), { id, version: CORE_RELEASE, features: RUNTIME_FEATURES });

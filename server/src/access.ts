@@ -43,34 +43,44 @@ export async function authenticateAgent(t: Tendril, req: Request): Promise<Agent
   return authenticateAgentToken(t, token);
 }
 
-/** One account/page policy for host requests and peer introductions. */
-export async function pageAccessAllowed(t: Tendril): Promise<boolean> {
-  if (t.db.get("disabled", false)) return false;
-  const status = await t.env.ACCOUNTS.prepare(`SELECT t.state,t.owner_account,a.id AS owner_id,a.suspended_at,a.deleting_at
-    FROM tendrils t LEFT JOIN accounts a ON a.id=t.owner_account WHERE t.id=?`).bind(t.tid)
-    .first<{ state: string; owner_account: string | null; owner_id: string | null; suspended_at: number | null; deleting_at: number | null }>();
-  return !t.db.get("disabled", false) && !!status && status.state === "active"
+/** Check page-owner and optional visitor account policy in one primary read. */
+export async function pagePolicy(t: Tendril, visitor: string | null = null): Promise<"active" | "page" | "visitor"> {
+  if (t.db.get("disabled", false)) return "page";
+  const status = await t.env.ACCOUNTS.prepare(`SELECT t.state,t.owner_account,a.id AS owner_id,a.suspended_at,a.deleting_at,
+    CASE WHEN ?1 IS NULL OR ?1=t.owner_account THEN 1 ELSE EXISTS(
+      SELECT 1 FROM accounts WHERE id=?1 AND suspended_at IS NULL AND deleting_at IS NULL
+    ) END AS visitor_active
+    FROM tendrils t LEFT JOIN accounts a ON a.id=t.owner_account WHERE t.id=?2`).bind(visitor, t.tid)
+    .first<{ state: string; owner_account: string | null; owner_id: string | null; suspended_at: number | null; deleting_at: number | null; visitor_active: number }>();
+  const pageActive = !t.db.get("disabled", false) && !!status && status.state === "active"
     && status.owner_account === t.db.get<string | null>("owner_account", null)
     && (!status.owner_account || !!status.owner_id)
     && status.suspended_at === null && status.deleting_at === null;
+  return !pageActive ? "page" : status.visitor_active ? "active" : "visitor";
+}
+
+export async function pageAccessAllowed(t: Tendril): Promise<boolean> {
+  return await pagePolicy(t) === "active";
 }
 export async function accountActive(t: Tendril, accountId: string): Promise<boolean> {
   return !!await t.env.ACCOUNTS.prepare("SELECT 1 FROM accounts WHERE id=? AND suspended_at IS NULL AND deleting_at IS NULL").bind(accountId).first();
 }
 
-export async function readPageSession(t: Tendril, req: Request): Promise<PageSession | null> {
+function sessionByHash(t: Tendril, hash: string): PageSession | null {
+  const row = localSession(t, hash);
+  return row && row.expires_at > t.now() ? { account_id: row.account_id, role: row.role, hash } : null;
+}
+
+async function browserSession(t: Tendril, req: Request): Promise<PageSession | null> {
   const token = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
-  if (!token) return null;
-  const hash = await sha256Hex(token);
-  const read = () => {
-    const row = localSession(t, hash);
-    return row && row.expires_at > t.now() ? { account_id: row.account_id, role: row.role } : null;
-  };
-  const session = read();
+  return token ? sessionByHash(t, await sha256Hex(token)) : null;
+}
+
+export async function readPageSession(t: Tendril, req: Request): Promise<PageSession | null> {
+  const session = await browserSession(t, req);
   if (!session || !await accountActive(t, session.account_id)) return null;
-  // The account query yields; the local session may have expired or been revoked.
-  const current = read();
-  return current && current.account_id === session.account_id && current.role === session.role ? { ...current, hash } : null;
+  const current = sessionByHash(t, session.hash);
+  return current && current.account_id === session.account_id && current.role === session.role ? current : null;
 }
 
 function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "name">, key?: string): PagePrincipal | null {
@@ -97,8 +107,8 @@ export function currentPrincipal(t: Tendril, principal: Principal, pageKey?: str
   return localToken(t, principal.credentialHash)?.name === principal.name ? principal : null;
 }
 
-export async function authenticatePage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
-  const session = await readPageSession(t, req);
+export async function authenticateLocalPage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
+  const session = link.role === "display" ? null : await browserSession(t, req);
   const principal = localPagePrincipal(t, { role: link.role, accountId: session?.account_id ?? null,
     linkId: link.id, sessionHash: session?.hash ?? null });
   if (!principal) throw new HttpError(401, "unauthorized", "Page sign-in required");

@@ -8,12 +8,20 @@ test('verified owner claims a page and executes its signed authored module', asy
     expect(handle.application.id).toMatch(/^[a-f0-9]{64}$/);
     expect(handle.token).toMatch(/^tk_/);
     await signInFixture(context); await claim(context, handle);
+    const notified = page.waitForEvent('websocket', socket => socket.url().endsWith('/_tendril/publication-ready'))
+      .then(socket => socket.waitForEvent('framereceived', frame => frame.payload === 'ready'));
+    const readinessRequests: string[] = [];
+    page.on('request', request => {
+      if (request.method() === 'HEAD' && request.url().endsWith('/_tendril/publication-ready')) readinessRequests.push(request.url());
+    });
     await openClaimed(page, handle);
     await expect(page.getByRole('heading')).toHaveText(/is getting ready/);
     const release = await publishFiles(handle, {
       'index.html': { type: 'text/html', body: '<!doctype html><html><head><title>Signed page</title></head><body><h1 id="welcome"></h1><script type="module" src="./page.mjs"></script></body></html>' },
       'page.mjs': { type: 'text/javascript', body: 'document.querySelector("#welcome").textContent = "Hello, owner";' },
     });
+    await notified;
+    expect(readinessRequests).toHaveLength(0);
     await expect(page.locator('#welcome')).toHaveText('Hello, owner', { timeout: 25_000 });
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);

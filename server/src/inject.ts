@@ -101,40 +101,78 @@ ${brandHead()}${brandStyle}
   const status = document.querySelector('#publication-status');
   const waiting = status.textContent;
   const endpoint = new URL('_tendril/publication-ready', document.baseURI);
-  let timer, inFlight = false, done = false, delay = 2000;
-  function schedule(ms) {
-    clearTimeout(timer);
-    if (!done && !document.hidden && !inFlight) timer = setTimeout(check, ms);
+  let socket, timer, done = false, delay = 2000;
+  function ready() {
+    done = true;
+    stop();
+    location.reload();
   }
-  async function check() {
-    if (done || document.hidden || inFlight) return;
-    inFlight = true;
-    try {
-      const response = await fetch(endpoint, { method: 'HEAD', cache: 'no-store', redirect: 'manual',
-        signal: AbortSignal.timeout(8000) });
-      if (response.status === 204) {
-        done = true;
-        location.reload();
-      } else if (response.status === 202) {
-        status.textContent = waiting;
-        delay = Math.min(delay * 1.5, 15000);
-      } else if ([401, 403, 404].includes(response.status) || response.type === 'opaqueredirect') {
-        done = true;
-        status.textContent = 'This page could not be opened. Select Check now to try again.';
-      } else {
-        throw new Error('Publication check failed');
+  function stop() {
+    clearTimeout(timer);
+    const old = socket;
+    socket = null;
+    old?.close();
+  }
+  function connect() {
+    if (done || document.hidden || !navigator.onLine || socket) return;
+    const url = new URL(endpoint);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const stream = new WebSocket(url);
+    socket = stream;
+    let recovering = false;
+    function arm(task, wait) {
+      clearTimeout(timer);
+      timer = setTimeout(task, wait);
+    }
+    function heartbeat() {
+      arm(() => {
+        if (socket !== stream) return;
+        try { stream.send('{"t":"ping"}'); } catch { void recover(); return; }
+        arm(recover, 8000);
+      }, 30000);
+    }
+    arm(recover, 8000);
+    stream.onopen = () => {
+      if (socket !== stream || recovering) return;
+      status.textContent = waiting;
+      heartbeat();
+    };
+    stream.onmessage = event => {
+      if (socket !== stream || recovering) return;
+      if (event.data === 'ready') ready();
+      else if (event.data === '{"t":"pong"}') heartbeat();
+    };
+    stream.onclose = recover;
+    async function recover() {
+      if (socket !== stream || recovering) return;
+      recovering = true;
+      clearTimeout(timer);
+      stream.close();
+      status.textContent = 'Connection interrupted. Retrying automatically.';
+      try {
+        const response = await fetch(endpoint, { method: 'HEAD', cache: 'no-store', redirect: 'manual',
+          signal: AbortSignal.timeout(8000) });
+        if (socket !== stream) return;
+        if (response.status === 204) return ready();
+        if ([401, 403, 404].includes(response.status) || response.type === 'opaqueredirect') {
+          done = true;
+          status.textContent = 'This page could not be opened. Select Check now to try again.';
+        }
+      } catch { /* Reconnect on transient network failures. */ }
+      if (socket !== stream) return;
+      socket = null;
+      if (!done && !document.hidden) {
+        timer = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, 15000);
       }
-    } catch {
-      status.textContent = 'Could not check for updates. Retrying automatically.';
-      delay = Math.min(delay * 2, 15000);
-    } finally {
-      inFlight = false;
-      schedule(delay);
     }
   }
-  document.addEventListener('visibilitychange', () => schedule(0));
-  window.addEventListener('online', () => schedule(0));
-  schedule(0);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else connect(); });
+  window.addEventListener('offline', stop);
+  window.addEventListener('online', connect);
+  window.addEventListener('pagehide', stop);
+  window.addEventListener('pageshow', connect);
+  connect();
 })();
 </script>
 </body>

@@ -39,12 +39,12 @@ export function declaredRuntimeResources(manifest, registry = RUNTIME_RESOURCES)
   });
 }
 
-export async function uploadRuntimeFile({ bucket, key, path, type, remote = false, configPath }) {
+export async function uploadRuntimeFile({ bucket, key, path, type, remote = false, configPath, jurisdiction }) {
   if (!/^[a-z0-9-]+$/.test(bucket ?? '')) throw Error('Pass an R2 bucket name');
   const args = [join(root, 'node_modules/wrangler/bin/wrangler.js'), 'r2', 'object', 'put',
     `${bucket}/${key}`, '--file', path, '--content-type', type,
     '--cache-control', 'public, max-age=31536000, immutable', remote ? '--remote' : '--local',
-    ...(configPath ? ['--config', configPath] : [])];
+    ...(configPath ? ['--config', configPath] : []), ...(jurisdiction ? ['--jurisdiction', jurisdiction] : [])];
   for (let attempt = 1; ; attempt++) {
     try {
       await run(process.execPath, args, { cwd: root });
@@ -58,19 +58,21 @@ export async function uploadRuntimeFile({ bucket, key, path, type, remote = fals
 }
 
 export async function installRuntimeResources({ bucket, manifest, registry = RUNTIME_RESOURCES,
-  remote = false, configPath, fetcher = fetch, upload = uploadRuntimeFile }) {
+  remote = false, configPath, jurisdiction, fetcher = fetch, upload = uploadRuntimeFile, needed = () => true }) {
   if (!/^[a-z0-9-]+$/.test(bucket ?? '')) throw Error('Pass an R2 bucket name');
-  const resources = declaredRuntimeResources(manifest, registry);
+  const resources = declaredRuntimeResources(manifest, registry).filter(resource => needed(resource.url.slice('_tendril/'.length)));
+  if (!resources.length) return 0;
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-resources-'));
   try {
     for (const resource of resources) {
       const response = await fetcher(resource.source);
       if (!response.ok) throw Error(`${resource.name}: HTTP ${response.status}`);
       const bytes = Buffer.from(await response.arrayBuffer());
-      if (createHash('sha256').update(bytes).digest('hex') !== resource.sha256) throw Error(`${resource.name}: integrity mismatch`);
+      if (createHash('sha256').update(bytes).digest('hex') !== resource.sha256
+          || (resource.etag && (bytes.length !== resource.size || createHash('md5').update(bytes).digest('hex') !== resource.etag))) throw Error(`${resource.name}: integrity mismatch`);
       const path = join(directory, resource.name);
       await writeFile(path, bytes);
-      await upload({ bucket, key: resource.url.slice('_tendril/'.length), path, type: resource.type, remote, configPath });
+      await upload({ bucket, key: resource.url.slice('_tendril/'.length), path, type: resource.type, remote, configPath, jurisdiction });
     }
     return resources.length;
   } finally { await rm(directory, { recursive: true, force: true }); }

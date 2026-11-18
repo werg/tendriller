@@ -16,6 +16,7 @@ async function fixture(t) {
   const bodies = [Buffer.from('first dependency'), Buffer.from('second dependency')];
   const registry = bodies.map((bytes, index) => ({
     name: `resource-${index}.bin`, sha256: digest(bytes), type: 'application/octet-stream',
+    size: bytes.length, etag: createHash('md5').update(bytes).digest('hex'),
     source: `https://resources.example/releases/pinned/resource-${index}.bin`,
     url: `_tendril/assets/${digest(bytes)}/resource-${index}.bin`,
   }));
@@ -33,7 +34,7 @@ async function fixture(t) {
     "r2_buckets": [{ "binding": "FILES", "bucket_name": "candidate-files", }],
   }`);
   const fetches = [], uploads = [];
-  const options = { directory, configPath, registry,
+  const options = { directory, configPath, registry, list: async () => new Map(),
     fetcher: async url => { fetches.push(url); return new Response(bodies[registry.findIndex(resource => resource.source === url)]); },
     upload: async file => { uploads.push({ ...file, bytes: await readFile(file.path) }); },
   };
@@ -98,4 +99,24 @@ test('an upload failure prevents the manifest from claiming a complete graph', a
     await f.options.upload(file);
   } }), /upload unavailable/);
   assert.deepEqual(f.uploads.map(file => file.key), f.registry.map(resource => resource.url.slice('_tendril/'.length)));
+});
+
+test('a warm deploy reuses immutable files and downloads only missing dependencies', async t => {
+  const f = await fixture(t);
+  await publishRuntime(f.options);
+  const entries = new Map(f.uploads.map(file => [file.key, {
+    size: file.bytes.length, etag: createHash('md5').update(file.bytes).digest('hex'),
+    http_metadata: { contentType: file.type },
+  }]));
+  f.uploads.length = f.fetches.length = 0;
+  const list = async () => entries;
+  assert.deepEqual(await publishRuntime({ ...f.options, list }), { id: f.manifest.id, files: 0, resources: 0 });
+  assert.deepEqual(f.uploads, []);
+  assert.deepEqual(f.fetches, []);
+  const resourceKey = f.registry[1].url.slice('_tendril/'.length);
+  entries.get(resourceKey).etag = 'wrong';
+  entries.get(`runtime/${f.manifest.id}/tendril.js`).etag = 'wrong';
+  assert.deepEqual(await publishRuntime({ ...f.options, list }), { id: f.manifest.id, files: 1, resources: 1 });
+  assert.deepEqual(f.uploads.map(file => file.key), [resourceKey, `runtime/${f.manifest.id}/tendril.js`]);
+  assert.deepEqual(f.fetches, [f.registry[1].source]);
 });
