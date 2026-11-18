@@ -148,26 +148,30 @@ describe('page request cost and admission', () => {
     });
     const router = countedRouter(), headers = { Cookie: `__Host-tendril=${secret}` };
     const reads: string[] = [];
+    let admitted = 0;
     const restore = await inDO(h.id, t => {
-      const original = t.env.ACCOUNTS;
+      const original = t.env.ACCOUNTS, rate = t.env.PAGE_RATE;
+      t.env.PAGE_RATE = { async limit() { admitted++; return { success: true }; } };
       t.env.ACCOUNTS = new Proxy(original, { get(target, key) {
         if (key === 'prepare') return (query: string) => { reads.push(query); return target.prepare(query); };
         const value = Reflect.get(target, key, target);
         return typeof value === 'function' ? value.bind(target) : value;
       } });
-      return () => { t.env.ACCOUNTS = original; };
+      return () => { t.env.ACCOUNTS = original; t.env.PAGE_RATE = rate; };
     });
     try {
       for (const [url, requestHeaders] of [[h.page_url, ownerHeaders(h.page_url)], [guest.url, headers]] as const) {
         reads.length = 0;
         const allowed = await router.fetch(url + '_tendril/application', { headers: requestHeaders });
         expect(allowed.status).toBe(200); await allowed.text();
-        expect(reads).toHaveLength(1);
+        expect(reads).toHaveLength(url === h.page_url ? 1 : 2);
         expect(reads[0]).toContain('visitor_active');
       }
       await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), account).run();
+      const beforeDenial = admitted;
       const denied = await router.fetch(guest.url + '_tendril/application', { headers });
       expect(denied.status).toBe(302);
+      expect(admitted).toBe(beforeDenial);
       // A suspended guest does not put the owner's page on hold.
       expect((await router.fetch(h.page_url, { headers: ownerHeaders(h.page_url), method: 'HEAD' })).status).toBe(200);
       await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=NULL WHERE id=?').bind(account).run();

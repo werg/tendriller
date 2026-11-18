@@ -8,7 +8,7 @@ import { servePageFile, servedVersion, versionFiles, publicationManifest } from 
 import { HttpError, json, readBody, readJson } from "./http";
 import { iconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
-import { allows, authenticateLocalPage, currentPrincipal } from "./access";
+import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
@@ -32,12 +32,14 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const expected = req.headers.get("x-tendril-origin");
     if (!expected || req.headers.get("Origin") !== expected) throw new HttpError(403, "bad_origin", "Request must originate from this tendril");
   }
+  const denyLocal = async () => pageAccessDenied(t.db.get<string | null>("owner_account", null)
+    && await t.checkPagePolicy() === "page" ? 403 : 401);
   const link = await t.linkForKey(key);
-  if (!link) return pageAccessDenied(401);
+  if (!link) return denyLocal();
   let access: Awaited<ReturnType<typeof authenticateLocalPage>>;
   try { access = await authenticateLocalPage(t, req, link); }
   catch (error) {
-    if (error instanceof HttpError && error.status === 401) return pageAccessDenied(401);
+    if (error instanceof HttpError && error.status === 401) return denyLocal();
     throw error;
   }
   const { principal, session } = access;
@@ -48,14 +50,15 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (t.db.get("disabled", false)) return pageAccessDenied(403);
     if (!currentPrincipal(t, principal, key)) return pageAccessDenied(401);
   }
-  // The former /claim/check preflight rejected unauthenticated traffic before
-  // it could spend the page or owner's request allowance. Preserve that boundary
-  // inside this single DO call, including display visits that hold the page.
-  await admitPageTraffic(t.env, t.tid, t.db.get<string | null>("owner_account", null));
-  if (writes && !(upgrade && rest === "_tendril/publication-ready")) await requireWritesOpen(t.env);
-  const policy = await t.checkPagePolicy(principal.role === "display" ? null : principal.accountId);
+  const policy = await t.checkPagePolicy(principal.accountId);
   if (policy === "page") return pageAccessDenied(403);
   if (policy === "visitor" || !currentPrincipal(t, principal, key)) return pageAccessDenied(401);
+  // Only an active account may charge the shared page and owner budgets.
+  await admitPageTraffic(t.env, t.tid, t.db.get<string | null>("owner_account", null));
+  if (writes && !(upgrade && rest === "_tendril/publication-ready")) await requireWritesOpen(t.env);
+  // Guest suspension does not necessarily invalidate this object's SQL.
+  const active = principal.role !== "guest" || !principal.accountId || await accountActive(t, principal.accountId);
+  if (!active || !currentPrincipal(t, principal, key)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
   t.recordAccess();
 
   if (!rest.startsWith("_tendril/")) {

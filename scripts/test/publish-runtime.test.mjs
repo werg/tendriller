@@ -16,6 +16,7 @@ async function fixture(t) {
   const bodies = [Buffer.from('first dependency'), Buffer.from('second dependency')];
   const registry = bodies.map((bytes, index) => ({
     name: `resource-${index}.bin`, sha256: digest(bytes), type: 'application/octet-stream',
+    size: bytes.length, etag: createHash('md5').update(bytes).digest('hex'),
     source: `https://resources.example/releases/pinned/resource-${index}.bin`,
     url: `_tendril/assets/${digest(bytes)}/resource-${index}.bin`,
   }));
@@ -113,7 +114,7 @@ test('a warm deploy reuses immutable files and downloads only missing dependenci
   assert.deepEqual(f.uploads, []);
   assert.deepEqual(f.fetches, []);
   const resourceKey = f.registry[1].url.slice('_tendril/'.length);
-  entries.delete(resourceKey);
+  entries.get(resourceKey).etag = 'wrong';
   entries.get(`runtime/${f.manifest.id}/tendril.js`).etag = 'wrong';
   assert.deepEqual(await publishRuntime({ ...f.options, list }), { id: f.manifest.id, files: 1, resources: 1 });
   assert.deepEqual(f.uploads.map(file => file.key), [resourceKey, `runtime/${f.manifest.id}/tendril.js`]);

@@ -92,8 +92,10 @@ test('owner claim, reconnect for pushed first publication and live invitations',
     checks++;
     return route.fulfill({ status: 503 });
   });
+  const failure = page.waitForResponse(response => response.url().endsWith('/_tendril/publication-ready')
+    && response.request().method() === 'HEAD' && response.status() === 503);
   await openHoldingPage(page, handle);
-  await expect(page.getByRole('status')).toContainText('Retrying automatically');
+  await failure;
   await expect.poll(() => connections).toBe(2);
   const peers = client(handle).peers;
   const release = await publish(peers, 'First signed release');

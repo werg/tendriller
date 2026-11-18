@@ -1,4 +1,4 @@
-import { accountActive, currentPrincipal, pageAccessAllowed, type PagePrincipal } from "./access";
+import { currentPrincipal, pagePolicy, type PagePrincipal } from "./access";
 import { HttpError } from "./http";
 import type { Tendril } from "./tendril";
 
@@ -19,7 +19,14 @@ function ready(socket: WebSocket): void {
 }
 
 export function watchPublication(t: Tendril, principal: PagePrincipal, key: string): Response {
-  if (t.ctx.getWebSockets(tag).filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN).length >= 32)
+  const active = t.ctx.getWebSockets(tag).filter(socket => {
+    if (socket.readyState !== WebSocket.READY_STATE_OPEN) return false;
+    const watch = socket.deserializeAttachment() as Watch;
+    if (currentPrincipal(t, watch.principal, watch.key)) return true;
+    socket.close(4003, "Page access ended");
+    return false;
+  });
+  if (active.length >= 32)
     throw new HttpError(429, "watch_limit", "Too many viewers waiting for publication");
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, [tag]);
@@ -33,17 +40,14 @@ export function watchPublication(t: Tendril, principal: PagePrincipal, key: stri
 export async function notifyPublicationWatchers(t: Tendril): Promise<void> {
   const watchers = t.ctx.getWebSockets(tag).filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN);
   if (!watchers.length) return;
-  const permitted = pageAccessAllowed(t);
-  const visitors = new Map<string, Promise<boolean>>();
+  const policies = new Map<string | null, ReturnType<typeof pagePolicy>>();
   await Promise.all(watchers.map(async socket => {
     const { principal, key } = socket.deserializeAttachment() as Watch;
+    const visitor = principal.role === "guest" ? principal.accountId : null;
     try {
-      let active = await permitted;
-      if (active && principal.role === "guest" && principal.accountId) {
-        let check = visitors.get(principal.accountId);
-        if (!check) visitors.set(principal.accountId, check = accountActive(t, principal.accountId));
-        active = await check;
-      }
+      let check = policies.get(visitor);
+      if (!check) policies.set(visitor, check = pagePolicy(t, visitor));
+      const active = await check === "active";
       if (socket.readyState !== WebSocket.READY_STATE_OPEN) return;
       if (active && currentPrincipal(t, principal, key)) ready(socket);
       else socket.close(4003, "Page access ended");

@@ -17,7 +17,8 @@ export async function publishRuntime({ configPath, directory = join(root, 'dist/
   directory = resolve(directory);
   const { experimental_readRawConfig } = createRequire(import.meta.url)('wrangler');
   const { rawConfig: config } = experimental_readRawConfig({ config: configPath });
-  const bucket = config.r2_buckets?.find(binding => binding.binding === 'FILES')?.bucket_name;
+  const binding = config.r2_buckets?.find(binding => binding.binding === 'FILES');
+  const bucket = binding?.bucket_name;
   if (!bucket) throw Error('The selected deployment has no FILES bucket.');
   const manifest = verifyRuntimeManifest(JSON.parse(readFileSync(join(directory, 'manifest.json'), 'utf8')));
   const paths = new Set(['manifest.json']);
@@ -35,18 +36,18 @@ export async function publishRuntime({ configPath, directory = join(root, 'dist/
   const manifestBytes = readFileSync(manifestPath);
   const marker = { key: `runtime/${manifest.id}/manifest.json`, path: manifestPath, type: 'application/json',
     size: manifestBytes.length, etag: createHash('md5').update(manifestBytes).digest('hex') };
-  const destination = { bucket, remote: true, configPath };
+  const destination = { bucket, remote: true, configPath, jurisdiction: binding.jurisdiction };
   const prefixes = [`runtime/${manifest.id}/`, ...dependencies.map(resource => resource.url.slice('_tendril/'.length))];
   const retained = await list({ config, ...destination, prefixes });
   const missing = file => {
     const object = retained.get(file.key);
     return !object || object.http_metadata?.contentType !== file.type
-      || (file.etag ? object.size !== file.size || object.etag !== file.etag : !(object.size > 0));
+      || !file.etag || object.size !== file.size || object.etag !== file.etag;
   };
-  // Runtime bundle assets have a local byte-for-byte digest. Resource hashes
-  // are encoded in their immutable R2 keys and verified on every new upload.
+  // Compare the actual single-PUT ETag and length with the expected bytes.
+  // Resource source bytes still require SHA-256 verification on upload.
   const neededResources = new Set(dependencies
-    .map(resource => ({ key: resource.url.slice('_tendril/'.length), type: resource.type }))
+    .map(resource => ({ ...resource, key: resource.url.slice('_tendril/'.length) }))
     .filter(missing).map(resource => resource.key));
   const resources = await installRuntimeResources({ ...destination, manifest, registry, fetcher, upload,
     needed: key => neededResources.has(key) });
@@ -57,14 +58,21 @@ export async function publishRuntime({ configPath, directory = join(root, 'dist/
   return { id: manifest.id, files: uploaded, resources };
 }
 
-async function listRetainedObjects({ config, configPath, bucket, prefixes }) {
-  const account = config.account_id || process.env.CLOUDFLARE_ACCOUNT_ID || config.vars?.CLOUDFLARE_ACCOUNT_ID;
-  if (!/^[a-f0-9]{32}$/.test(account ?? '')) throw Error('The selected deployment has no Cloudflare account ID.');
-  const credential = JSON.parse(execFileSync(process.execPath, [join(root, 'node_modules/wrangler/bin/wrangler.js'),
-    'auth', 'token', '--json', '--config', configPath], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
-  const headers = { Authorization: `Bearer ${credential.token}` };
-  const binding = config.r2_buckets.find(binding => binding.binding === 'FILES');
-  if (binding.jurisdiction) headers['cf-r2-jurisdiction'] = binding.jurisdiction;
+async function listRetainedObjects({ config, configPath, bucket, prefixes, jurisdiction }) {
+  const wrangler = (...args) => JSON.parse(execFileSync(process.execPath,
+    [join(root, 'node_modules/wrangler/bin/wrangler.js'), ...args, '--json', '--config', configPath],
+    { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  let account = config.account_id || process.env.CLOUDFLARE_ACCOUNT_ID || config.vars?.CLOUDFLARE_ACCOUNT_ID;
+  if (!account) {
+    const accounts = wrangler('whoami').accounts;
+    if (accounts?.length === 1) account = accounts[0].id;
+  }
+  if (!/^[a-f0-9]{32}$/.test(account ?? '')) throw Error('Select the Cloudflare account for the FILES bucket.');
+  const credential = wrangler('auth', 'token');
+  const headers = credential.token ? { Authorization: `Bearer ${credential.token}` }
+    : { 'X-Auth-Key': credential.key, 'X-Auth-Email': credential.email };
+  if (Object.values(headers).some(value => !value)) throw Error('Wrangler did not return R2 API credentials.');
+  if (jurisdiction) headers['cf-r2-jurisdiction'] = jurisdiction;
   const retained = new Map();
   await Promise.all(prefixes.map(async prefix => {
     const url = new URL(`https://api.cloudflare.com/client/v4/accounts/${account}/r2/buckets/${bucket}/objects`);

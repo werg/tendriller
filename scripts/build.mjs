@@ -55,7 +55,7 @@ export async function buildPublicArtifacts() {
   writeJson(join(assets, "manifest.json"), manifest);
   // A release bundle contains only current assets. Previously deployed
   // runtime IDs resolve through R2; local watch sessions retain their builds.
-  if (!watching) rmSync(out, { recursive: true, force: true });
+  if (process.argv.includes("--clean-public")) rmSync(out, { recursive: true, force: true });
   const immutable = join(out, "_tendril/runtime", id);
   mkdirSync(immutable, { recursive: true }); cpSync(assets, immutable, { recursive: true });
   writeJson(join(root, "server/src/runtime-release.json"), { id, version: CORE_RELEASE, features: RUNTIME_FEATURES });

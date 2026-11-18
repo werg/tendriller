@@ -119,19 +119,35 @@ ${brandHead()}${brandStyle}
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const stream = new WebSocket(url);
     socket = stream;
-    clearTimeout(timer);
-    timer = setTimeout(() => stream.close(), 8000);
-    stream.onopen = () => {
-      if (socket !== stream) return;
+    let recovering = false;
+    function arm(task, wait) {
       clearTimeout(timer);
+      timer = setTimeout(task, wait);
+    }
+    function heartbeat() {
+      arm(() => {
+        if (socket !== stream) return;
+        try { stream.send('{"t":"ping"}'); } catch { void recover(); return; }
+        arm(recover, 8000);
+      }, 30000);
+    }
+    arm(recover, 8000);
+    stream.onopen = () => {
+      if (socket !== stream || recovering) return;
       status.textContent = waiting;
+      heartbeat();
     };
     stream.onmessage = event => {
-      if (socket === stream && event.data === 'ready') ready();
+      if (socket !== stream || recovering) return;
+      if (event.data === 'ready') ready();
+      else if (event.data === '{"t":"pong"}') heartbeat();
     };
-    stream.onclose = async () => {
-      if (socket !== stream) return;
+    stream.onclose = recover;
+    async function recover() {
+      if (socket !== stream || recovering) return;
+      recovering = true;
       clearTimeout(timer);
+      stream.close();
       status.textContent = 'Connection interrupted. Retrying automatically.';
       try {
         const response = await fetch(endpoint, { method: 'HEAD', cache: 'no-store', redirect: 'manual',
@@ -149,7 +165,7 @@ ${brandHead()}${brandStyle}
         timer = setTimeout(connect, delay);
         delay = Math.min(delay * 2, 15000);
       }
-    };
+    }
   }
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else connect(); });
   window.addEventListener('offline', stop);

@@ -100,7 +100,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - run: npm run build:deploy
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
         id: current
@@ -145,7 +145,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - run: npm run build:deploy
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
         id: current
