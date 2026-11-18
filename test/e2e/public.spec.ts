@@ -45,7 +45,11 @@ async function createPage(name: string, intendedOwner = owner.email): Promise<Ha
   createAttempts.push(Date.now());
   const response = await fetch(`${staging}/api/tendrils`, { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, owner: intendedOwner }) });
-  expect(response.status, `Page creation returned HTTP ${response.status}`).toBe(201);
+  if (response.status !== 201) {
+    const body = await response.json().catch(() => null);
+    const reason = body?.error?.message;
+    throw new Error(`Page creation returned HTTP ${response.status}${typeof reason === 'string' ? ` (${reason})` : ''}`);
+  }
   const handle = await response.json() as Handle;
   handles.push(handle);
   expect(new URL(handle.api).origin).toBe(staging);
