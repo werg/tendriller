@@ -37,7 +37,7 @@ export class MockServer {
         ...Object.entries(files).map(([path, file]) => ({ path, sha256: hash(file.body), type: file.type }))] };
     const cfg = { id: page.id, base, version, documentPath: 'index.html', publication: manifest,
       application: { id: hash(page.id) }, features: { speech: null, shared_by: 'Fixture' } };
-    const html = `<!doctype html><html><head><base href="${publicationBase}"><script>window.__TENDRIL__=${JSON.stringify(cfg)};</script>` +
+    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><base href="${publicationBase}"><script>window.__TENDRIL__=${JSON.stringify(cfg)};</script>` +
       (page.noSw ? '<script>window.__TENDRIL_NO_SW__=true</script>' : '') +
       `<script src="${this.runtimeUrl(page)}tendril.js"></script><title>Page ${page.id}</title></head><body>${page.html}</body></html>`;
     const publication = { html, files, manifest }; page.publications.set(version, publication); return publication;

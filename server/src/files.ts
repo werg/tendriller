@@ -241,13 +241,15 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     file = versionFile(t, version, path);
   }
   const headers = new Headers({ "Cache-Control": pinned ? "private, max-age=31536000, immutable" : "private, no-cache", "X-Tendril-Version": String(version), "X-Tendril-Publication": String(version), "X-Content-Type-Options": "nosniff" });
+  const branding = () => ({ name: t.db.get("name", "Tendril"), shortName: t.db.get<string | null>("short_name", null),
+    themeColor: t.db.get<string | null>("theme_color", null), icon: t.db.get<string | null>("icon", null) });
 
   if (!file) {
     if (rest === "") {
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null, branding: branding() });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -272,7 +274,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     // the publication or adding a discovery poll to a running application.
     headers.set("Cache-Control", "private, no-cache");
     if (req.method === 'HEAD') return new Response(null, { headers });
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base) });
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base), branding: branding() });
     return new Response(html, { headers });
   }
   headers.set("Content-Length", String(file.size));

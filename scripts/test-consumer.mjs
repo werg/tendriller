@@ -99,6 +99,10 @@ declare const application: ApplicationBackend;
 declare const runtime: RuntimeApi;
 const cfg: RuntimeConfiguration = {id:'page',base:'/p/',version:0,documentPath:null,application:{id:'12'.repeat(32)},features:{speech:null,shared_by:'Owner'}};
 const page = startRuntime(cfg, {application});
+const installState:'installed'|'available'|'manual'|'unavailable'=page.installation.status().state;
+const installChoice:'accepted'|'dismissed'|'unavailable'=await page.installation.prompt();
+const offInstallation:()=>void=page.installation.on(status => { const platform:'ios'|'android'|'desktop'=status.platform; void platform; });
+void installState; void installChoice; offInstallation();
 const binding = createApplicationBinding(cfg.application, application);
 const operation: ApplicationOperation = await binding.backend.submit({}, {operationId:'exact-id'});
 if (operation.status === 'applied') { const outcome:'accepted'|'rejected'=operation.outcome; void outcome; }

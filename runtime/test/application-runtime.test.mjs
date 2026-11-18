@@ -39,6 +39,8 @@ class Element extends EventTarget {
   append(...children) { for (const child of children) { child.remove(); child.parentNode = this; this.children.push(child); } }
   remove() { if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; }
   attachShadow() { return this.shadowRoot = new Element('shadow-root'); }
+  get firstChild() { return this.children[0]; }
+  focus() {}
 }
 
 function environment({ defaultEntry = false } = {}) {
@@ -158,7 +160,8 @@ test('the served bootstrap mounts working management and sensor controls without
   const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
   assert.ok(host, 'the complete default entry must mount its operational utility');
   const nav = host.shadowRoot.children.find(element => element.tagName === 'nav');
-  const links = nav.children.filter(element => element.tagName === 'a');
+  const panel = host.shadowRoot.children.find(element => element.id === 'page-options');
+  const links = panel.children.find(element => element.className === 'links').children;
   const [latest, link] = links;
   const indicator = nav.children.find(element => element.tagName === 'span');
   const stop = nav.children.find(element => element.tagName === 'button');
@@ -169,6 +172,11 @@ test('the served bootstrap mounts working management and sensor controls without
   assert.equal(link.target, '_blank');
   assert.equal(link.rel, 'noopener');
   assert.equal(stop.hidden, true);
+  assert.equal(panel.hidden, true);
+  const options = nav.children.find(element => element.textContent === 'Page options');
+  options.dispatchEvent(new Event('click'));
+  assert.equal(panel.hidden, false);
+  assert.equal(options.attributes.get('aria-expanded'), 'true');
 
   env.api.application.install(backend()); await env.api.application.ready();
   env.window.addEventListener('devicemotion', () => {});
@@ -201,6 +209,49 @@ test('host operations remain explicit and publication saving registers offline s
   assert.deepEqual(plain(await env.api.publication.saveOffline()), { id: '1', status: 'ready' });
   assert.equal(env.calls.registrations, 1, 'one explicit registration is shared by later save requests');
   assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);
+});
+
+test('offline registration failure rejects promptly and a retry shares one successful registration and listener set', async () => {
+  for (const firstAttempt of [() => { throw Error('offline'); }, async () => { throw Error('offline'); }, async () => null]) {
+    const env = environment(), worker = env.context.navigator.serviceWorker;
+    const originalRegister = worker.register, originalLookup = worker.getRegistration;
+    let attempts = 0, lookups = 0;
+    worker.register = () => ++attempts === 1 ? firstAttempt() : originalRegister();
+    worker.getRegistration = () => { lookups++; return originalLookup(); };
+    await assert.rejects(env.api.publication.saveOffline(), { code: 'offline_unavailable' });
+    assert.equal(lookups, 0, 'a failed registration must not wait for serviceWorker.ready');
+    assert.equal(env.calls.publications.length, 0, 'failure must not install announcement callbacks');
+    assert.deepEqual(plain(await env.api.publication.saveOffline()), { id: '1', status: 'ready' });
+    assert.deepEqual(plain(await env.api.publication.saveOffline()), { id: '1', status: 'ready' });
+    assert.equal(attempts, 2, 'retry must register again and successful registration must remain shared');
+    const messages = env.calls.publications.length;
+    worker.dispatchEvent(new Event('controllerchange'));
+    worker.dispatchEvent(Object.assign(new Event('message'), { data: { t: 'publication_request' } }));
+    assert.equal(env.calls.publications.length - messages, 2, 'each browser event must invoke exactly one announcement');
+  }
+});
+
+test('concurrent offline saves share a failed registration attempt and permit a later retry', async () => {
+  const env = environment(), worker = env.context.navigator.serviceWorker, originalRegister = worker.register;
+  let reject, attempts = 0;
+  worker.register = () => { attempts++; return new Promise((_resolve, fail) => { reject = fail; }); };
+  const pending = Promise.allSettled([env.api.publication.saveOffline(), env.api.publication.saveOffline()]);
+  assert.equal(attempts, 1);
+  reject(Error('connection interrupted'));
+  const results = await pending;
+  assert.ok(results.every(result => result.status === 'rejected' && result.reason.code === 'offline_unavailable'));
+  worker.register = () => { attempts++; return originalRegister(); };
+  assert.deepEqual(plain(await env.api.publication.saveOffline()), { id: '1', status: 'ready' });
+  assert.equal(attempts, 2);
+});
+
+test('disabled or unsupported offline saving fails immediately without attempting registration', async () => {
+  for (const disable of [env => { env.context.window.__TENDRIL_NO_SW__ = true; }, env => { delete env.context.navigator.serviceWorker; }]) {
+    const env = environment(); disable(env);
+    await assert.rejects(env.api.publication.saveOffline(), { code: 'offline_unavailable' });
+    assert.equal(env.calls.registrations, 0);
+    assert.equal(env.calls.publications.length, 0);
+  }
 });
 
 test('application runtime exposes only supported services and leaves authority to the application session', async () => {

@@ -39,6 +39,18 @@ export interface SensorStatus {
 }
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
+export interface InstallationStatus {
+  /** available means the browser supplied a native prompt; manual means browser-menu instructions are needed. */
+  state: "installed" | "available" | "manual" | "unavailable";
+  platform: "ios" | "android" | "desktop";
+}
+export interface RuntimeInstallation {
+  status(): InstallationStatus;
+  /** Observe subsequent changes. Read status() for the initial snapshot. */
+  on(listener: (status: InstallationStatus) => void): () => void;
+  /** Call directly from a user gesture. accepted is a choice, not confirmation that installation completed. */
+  prompt(): Promise<"accepted" | "dismissed" | "unavailable">;
+}
 /** Explicit hosted operations. Constructing these services starts no connection or request. */
 export interface HostServices {
   readonly peers: import("./peers.mjs").PeersClient;
@@ -54,6 +66,8 @@ export interface RuntimeServices {
   capabilities(): Promise<CapabilityReport>;
   readonly version: number;
   readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
+  /** Browser installation state and an explicit native prompt; never registers offline support. */
+  readonly installation: RuntimeInstallation;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
   /** Resolves only after the exact required publication graph is saved by its service worker. */

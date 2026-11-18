@@ -12,6 +12,7 @@ import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "
 import { handleManagement } from "./management";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
+import { DEFAULT_THEME_COLOR, pageIcons } from "./pwa";
 
 /** Internal admission result; the Worker consumes it before returning a page response. */
 export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
@@ -146,7 +147,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
-  if (sub === "manifest.webmanifest" && m === "GET") {
+  if (sub === "manifest.webmanifest" && (m === "GET" || m === "HEAD")) {
     const meta = tendrilMeta(t);
     const name = t.db.get("name", "Tendril");
     const body = {
@@ -156,28 +157,20 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       start_url: base,
       scope: base,
       display: "standalone",
-      theme_color: meta.theme_color ?? "#2d6a4f",
+      theme_color: meta.theme_color ?? DEFAULT_THEME_COLOR,
       background_color: meta.background_color ?? "#ffffff",
-      icons: [
-        { src: `${base}_tendril/icon`, sizes: "512x512", type: iconType(t, meta.icon), purpose: "any" },
-        { src: `${base}_tendril/icon`, sizes: "192x192", type: iconType(t, meta.icon), purpose: "any" },
-      ],
+      icons: pageIcons(base, meta.icon),
     };
-    return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "no-cache" } });
+    return new Response(m === "HEAD" ? null : JSON.stringify(body), { headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 
-  if (sub === "icon" && m === "GET") {
+  if ((sub === "icon" || sub === "icon.svg") && (m === "GET" || m === "HEAD")) {
     const icon = t.db.get<string | null>("icon", null);
-    if (icon && /^https:\/\//.test(icon)) return Response.redirect(icon, 302);
-    const svg = iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? "#2d6a4f");
-    return new Response(svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache" } });
+    if (sub === "icon" && icon && /^https:\/\//.test(icon)) return new Response(null, { status: 302,
+      headers: { Location: icon, "Cache-Control": "private, no-cache" } });
+    const svg = iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR);
+    return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 
   throw new HttpError(404, "not_found", `No route _tendril/${sub}`);
-}
-
-function iconType(t: Tendril, icon: string | null): string {
-  if (icon && /\.png(\?|$)/i.test(icon)) return "image/png";
-  if (icon) return "image/png";
-  return "image/svg+xml";
 }

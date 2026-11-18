@@ -4,13 +4,19 @@ Tendriller hosts authenticated pages and participates in Chronolog through a fil
 
 A page has one stable application identity, `{id}`, independent of its URL and the devices that join it. Native agents and browser Workers use the same application contract. The host's role and transport decide which protocol updates it receives; ordinary application commands, database history, content replication and live UI signals stay between peers.
 
-Author HTML, JavaScript and assets for the task. The page owns its layout, application policy and ordinary web dependencies. A small runtime utility provides a management link and a stop action for tracked sensors. The headless kernel mounts no interface; voice is an explicit optional module.
+Author HTML, JavaScript and assets for the task. The page owns its layout, application policy and ordinary web dependencies. A small runtime utility provides Home Screen setup, explicit offline code saving, a management link and a stop action for tracked sensors. The headless kernel mounts no interface; voice is an explicit optional module.
+
+## Keep a page on your phone
+
+Open **Page options** on a published page to add it to your Home Screen. Supporting browsers provide a native install button; iPhone and iPad users get **Share → Add to Home Screen** instructions. A quiet, dismissible mobile suggestion helps make setup discoverable after interaction. Each page has its own stable launch URL, which opens the selected release while existing tabs keep their pinned publication.
+
+**Save for offline use** separately retains that version's page files. Application data, device enrollment and live connections remain the application's responsibility; an installed iOS app may need sign-in or connection again. See the [Home Screen setup and browser API](docs/BROWSER_API.md#home-screen-setup) for platform details and authored controls.
 
 ## Start here
 
 - [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.
 - [Application contract](docs/APPLICATION_BACKENDS.md): commands, applied operations, coherent reads and explicit recovery.
-- [Browser API](docs/BROWSER_API.md): session installation, signals, host access, sensors and offline code.
+- [Browser API](docs/BROWSER_API.md): session bindings, Home Screen setup, signals, host access, sensors and offline code.
 - [Participant protocol](docs/PROTOCOL.md): role filters, authorization and signed publication atomicity.
 - [Membership](docs/MEMBERSHIP.md): account access, independent device rights and control changes.
 - [Peer connections](docs/PEER_CONNECTIONS.md): discovery, invitations and bounded SDP rendezvous.

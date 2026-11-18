@@ -57,6 +57,32 @@ test('each signed release serves one immutable graph and canonical navigation se
   } finally { await deletePage(handle); }
 });
 
+test('Chromium reads authenticated per-page install metadata and launches the latest release', async ({ page, context }) => {
+  const handle = await createPage();
+  try {
+    await signInFixture(context); await claim(context, handle);
+    await publish(handle, '<!doctype html><html><head><title>My mobile page</title></head><body><h1>First version</h1></body></html>');
+    await openClaimed(page, handle);
+    const base = localPageUrl(handle);
+    await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('crossorigin', 'use-credentials');
+    const cdp = await context.newCDPSession(page);
+    const result = await cdp.send('Page.getAppManifest');
+    expect(result.errors).toEqual([]);
+    const manifest = JSON.parse(result.data!);
+    expect(manifest.id).toBe(new URL(base).pathname);
+    expect(new URL(manifest.start_url, result.url).href).toBe(base);
+    expect(manifest.scope).toBe(new URL(base).pathname);
+    expect(manifest.display).toBe('standalone');
+    // Real browser icon fetching/rendering catches auth, format and dimension errors
+    // that inspecting manifest JSON alone cannot establish.
+    expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+    await publish(handle, '<h1>Latest version</h1>');
+    await page.goto(new URL(manifest.start_url, result.url).href);
+    await expect(page.getByRole('heading', { name: 'Latest version', exact: true })).toBeVisible();
+    await cdp.detach();
+  } finally { await deletePage(handle); }
+});
+
 test('sibling page origins isolate storage and cannot mutate each other through participant transport', async ({ context }) => {
   const a = await createPage(), b = await createPage();
   try {
