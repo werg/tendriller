@@ -9,6 +9,13 @@ import type { createClient } from '../../dist/sdk/client.mjs';
 
 type Peers = ReturnType<typeof createClient>['peers'];
 type Fixture = { page: Page; name: string; id: string };
+type CapabilityReport = {
+  secureContext: boolean;
+  dedicatedWorker: boolean;
+  events: { supported: boolean; reason?: string };
+  opfs: { syncAccessHandle: boolean };
+  sql: { apiEligible: boolean; qualified: boolean; reason: string };
+};
 
 export async function openBrowserSqlSpecimen(options: {
   consumer: string; engineDirectory: string; peers: Peers; pageUrl: string; applicationId: string;
@@ -35,18 +42,35 @@ export async function openBrowserSqlSpecimen(options: {
     const name = randomUUID(), bootstrap = new URL('acceptance-identity.mjs', pageUrl).href;
     await page.route(bootstrap, route => route.fulfill({ contentType: 'text/javascript', body: workerCode }));
     try {
-      const id = await page.evaluate(({ bootstrap, name }) => new Promise<string>((resolve, reject) => {
+      const { id, report } = await page.evaluate(({ bootstrap, name }) => new Promise<{
+        id: string; report: CapabilityReport;
+      }>((resolve, reject) => {
         const worker = new Worker(bootstrap, { type: 'module' });
         const finish = () => { clearTimeout(timer); worker.terminate(); };
-        const timer = setTimeout(() => { finish(); reject(new Error('Browser identity timed out')); }, 10_000);
+        const timer = setTimeout(() => { finish(); reject(new Error('Browser capability and identity checks timed out')); }, 20_000);
+        let report: CapabilityReport | undefined;
         worker.onerror = event => { finish(); reject(new Error(event.message)); };
         worker.onmessage = ({ data }) => {
+          if (data.type === 'capabilities') {
+            report = data.report;
+            if (report?.events.supported && report.sql.apiEligible) {
+              worker.postMessage({ type: 'identity', name });
+              return;
+            }
+            finish();
+            reject(new Error('Browser prerequisites unavailable: ' + (report?.events.reason ?? report?.sql.reason)));
+            return;
+          }
           finish();
-          if (data.type === 'identity') resolve(data.id);
+          if (data.type === 'identity' && report) resolve({ id: data.id, report });
           else reject(new Error(data.message));
         };
-        worker.postMessage({ type: 'identity', name });
+        worker.postMessage({ type: 'capabilities' });
       }), { bootstrap, name });
+      expect(report.secureContext).toBe(true);
+      expect(report.dedicatedWorker).toBe(true);
+      expect(report.opfs.syncAccessHandle).toBe(true);
+      expect(report.sql.qualified).toBe(false, 'API eligibility is not SQL application qualification');
       fixtures.push({ page, name, id });
     } finally {
       await page.unroute(bootstrap);

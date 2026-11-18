@@ -30,3 +30,36 @@ The optional voice adapter uses explicit consent, transcript and output callback
 ## Record evidence
 
 Report the exact source and paired archive hashes, which suites ran and which were unavailable. A mock relay is not proof of direct RTC; a static preview is not proof of database semantics; a local workerd run is not proof of deployed OAuth, Internet reachability or operating cost. Avoid broadening checks after the concrete remaining risk is resolved.
+
+## Record storage and browser eligibility
+
+The exact, packaged Chronolog session owns the browser journal and its Web
+Lock. No Tendriller page/runtime bundle should instantiate a parallel data
+store, signer or migration path. Chronolog's independent Chromium Worker
+suite exercises both OPFS and IndexedDB `BytesStore` conformance, immutable
+backend pin, legacy OPFS protection, lock contention and reload/resume.
+Tendriller's own `npm run check:release` verifies the host/runtime boundary,
+but **does not substitute** for Chronolog's packaged browser test or an
+exact-commit cross-repository composition.
+
+The browser SQL acceptance specimen can explicitly request Chronolog's
+scratch-only `probeBrowserCapabilities()` through a dedicated Worker. The
+report distinguishes `events.supported`, `events.backend`, native
+Ed25519/X25519, Web Locks, OPFS `createWritable` and sync handles, and SQL
+`apiEligible` from SQL `qualified` (false until separately tested).
+The staging fixture uses the pinned Chronolog artifact and requires its diagnostics before enrolling either SQL peer.
+
+| Environment | Evidence and release claim |
+| --- | --- |
+| Desktop Chromium | Actual OPFS/IDB records and Worker lifecycle can be qualified in automated browser CI |
+| Chrome for Android | Requires real-device record write, Worker restart and reopening |
+| Safari 17 on a real iPad | Events-only requires native crypto, Web Locks, IndexedDB fallback, write/reopen/resume and peer exchange on the physical device; desktop WebKit does not qualify it |
+| Browser SQL/WASM | Separate actual DoltLite WASM + OPFS SAH-pool VFS qualification required for each target browser |
+
+Never equate IndexedDB's `durability: 'strict'` hint with universal power-loss
+durability. Browser quota failure, background suspension and site-data eviction
+remain explicit operational risks. Do not ship a pinned OPFS device with an
+implicit IDB reset/fallback; re-enrollment or migration is a separate, reviewed
+user operation.
+
+[WebKit documents native X25519 in Safari 18.4](https://webkit.org/blog/16574/webkit-features-in-safari-18-4/). Treat Safari/iPadOS 17 as unsupported for this native-crypto path unless an actual browser passes the required probe and device checks.

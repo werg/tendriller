@@ -22,8 +22,11 @@ the backend, and awaiting `application.ready()` do not open an application datab
 
 Chronolog initializes its one durable data component on the first command, query,
 history read, durable content operation or other explicit data use. Concurrent
-first operations share that initialization. Browser OPFS acquisition, the exclusive
-application-storage lock, replica, journal and materializer belong to that component.
+first operations share that initialization. A backend-agnostic exclusive Web Lock, the locally pinned record store,
+replica, journal and materializer belong to that component. For a fresh browser
+device Chronolog prefers OPFS when createWritable actually works, otherwise
+uses an independently probed IndexedDB bytes store. An existing device's
+backend never switches automatically after an error or browser upgrade.
 The `/sql` entry accepts `createEngine({signal})`; import and create the SQL/WASM
 engine inside that factory. A custom materializer uses `createMaterializer` with
 the same on-demand lifecycle. The existing participant,
@@ -36,11 +39,32 @@ Connecting to a peer, receiving live signals or observing a database update hint
 does not activate a cold follower. An authorized data request may activate the
 selected coordinator that must serve it.
 
-The browser stores only the device identity and verified control/publication
-metadata in a small IndexedDB store before durable data is used. It does not acquire
-OPFS or a database ownership lock for those protocol responsibilities. This metadata
-is necessary for stable identity and monotonic signed control; it is not a second
-application database or a temporary journal to migrate later.
+The browser stores only the device identity, immutable record-backend pin and
+verified control/publication metadata in a small IndexedDB store before durable
+data is used. It does not acquire OPFS or a database ownership lock for those
+protocol responsibilities. The separate record database is OPFS or
+`chronolog-data:<name>` IndexedDB, selected only on the first data use.
+Existing OPFS stores (including possible pre-upgrade interrupted writes) are
+retained as OPFS or fail explicitly; losing one storage surface cannot generate
+an empty history with the old identity. This metadata is necessary for stable
+identity and monotonic signed control; it is not a temporary journal to migrate
+later. There is no unapproved record migration or in-memory durability fallback.
+
+The owning Worker exposes `probeBrowserCapabilities()` from the Chronolog
+`/worker` entry for an **explicit** scratch-only eligibility check. It separates
+native Ed25519/X25519 and Web Locks from OPFS and IndexedDB record writability.
+The returned `events.backend` is only a recommendation for a *new* store, not
+a reading of an existing device's immutable pin. A diagnostic does not open or
+mutate a Tendriller application device; it is not an implicit enrollment,
+database activation, or a proof of synchronized peers.
+
+**SQL/WASM is independent of the record backend.** The browser SQL specimen's
+separate DoltLite engine and OPFS SAH-pool VFS still require their own assets,
+capability checks and qualification. An IndexedDB event journal does not make
+SQL available, and a SQL-required signed definition must fail explicitly rather
+than silently run as events-only. Safari 17/iPadOS 17 events-only eligibility
+does **not** establish SQL support or physical-device qualification. See
+[browser qualification](E2E_TESTING.md#record-storage-and-browser-eligibility).
 
 Native agents use the session directly. Browser code owns its session in a Worker and uses the public Worker facade. Both expose the same operations and recovery model. The Tendriller adapter changes API composition, not application semantics.
 
