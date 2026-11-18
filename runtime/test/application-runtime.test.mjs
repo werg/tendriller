@@ -158,9 +158,12 @@ test('the served bootstrap mounts working management and sensor controls without
   const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
   assert.ok(host, 'the complete default entry must mount its operational utility');
   const nav = host.shadowRoot.children.find(element => element.tagName === 'nav');
-  const link = nav.children.find(element => element.tagName === 'a');
+  const links = nav.children.filter(element => element.tagName === 'a');
+  const [latest, link] = links;
   const indicator = nav.children.find(element => element.tagName === 'span');
   const stop = nav.children.find(element => element.tagName === 'button');
+  assert.equal(latest.textContent, 'Open latest version');
+  assert.equal(latest.href, 'https://fixture.test/page/');
   assert.equal(link.textContent, 'Manage page');
   assert.equal(link.href, 'https://fixture.test/page/_tendril/manage');
   assert.equal(link.target, '_blank');
