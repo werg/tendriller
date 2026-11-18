@@ -202,7 +202,9 @@ test('field inspection keeps a photo and notes through offline reload and reconn
   await expect.poll(() => page.locator('#preview').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   await context.grantPermissions(['camera'], { origin: new URL(handle.page_url).origin });
   await page.getByRole('button', { name: 'Take evidence photo' }).click();
-  await expect(status).toHaveText('Photo captured. Save the draft to keep it on this device.');
+  await expect(status).toHaveText('Photo captured. Save the draft to keep it on this device.').catch(async error => {
+    throw new Error(`Virtual camera failed: ${await status.getAttribute('data-camera-error') || 'no error recorded'}`, { cause: error });
+  });
   expect(await page.locator('#preview').getAttribute('src')).toMatch(/^data:image\/jpeg/);
   await expect.poll(() => page.evaluate(() => (window as any).tendril.sensors.status().active)).not.toContain('camera');
   await page.getByRole('button', { name: 'Save draft on this device' }).click();
@@ -249,17 +251,22 @@ for (const isPrivate of [false, true]) {
       expect(invitation.status).toBe(201);
       const { url: guestUrl } = await invitation.json();
       await second.goto(guestUrl);
-      await second.getByRole('button', { name: 'Request access' }).click();
+      await test.step('Guest requests access', async () => {
+        await second.getByRole('button', { name: 'Request access' }).click();
+        await expect(second.locator('#claim-status')).toBeVisible();
+      });
       const management = await page.context().newPage();
       try {
         await management.goto(new URL('_tendril/manage', handle.page_url).href);
+        await expect(management.getByRole('heading', { name: 'Guest requests' })).toBeVisible();
+        await expect(management.getByText(guest.email, { exact: true })).toBeVisible();
         await management.getByRole('button', { name: 'Approve', exact: true }).click();
         await expect(management.getByRole('status')).toHaveText('Guest access approved.');
       } finally { await management.close(); }
       await expect(second.getByRole('heading')).toHaveText(/is getting ready/, { timeout: 20_000 });
-      const fixture = await openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
+      const fixture = await test.step('Publish and open browser SQL peers', () => openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
         peers: client(handle).peers, pageUrl: handle.page_url, applicationId: handle.application.id,
-        pages: [page, second], isPrivate, guestAccount: guest.id });
+        pages: [page, second], isPrivate, guestAccount: guest.id }));
       if (isPrivate) {
         await page.getByRole('textbox', { name: 'Your answer' }).fill('First answer');
         await page.getByRole('button', { name: 'Save answer' }).click();

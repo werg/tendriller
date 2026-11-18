@@ -111,6 +111,7 @@ capture.onclick = async () => {
   let stream;
   capture.disabled = save.disabled = clear.disabled = restore.disabled = photo.disabled = true;
   result.textContent = 'Opening the camera…';
+  delete result.dataset.cameraError;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 640 } }, audio: false });
     const video = document.createElement('video');
@@ -125,7 +126,8 @@ capture.onclick = async () => {
     show(canvas.toDataURL('image/jpeg', 0.8));
     photo.value = '';
     result.textContent = 'Photo captured. Save the draft to keep it on this device.';
-  } catch {
+  } catch (error) {
+    result.dataset.cameraError = error.name;
     result.textContent = 'Could not take a photo. You can choose an image instead.';
   } finally {
     stream?.getTracks().forEach(track => track.stop());

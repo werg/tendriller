@@ -71,14 +71,16 @@ async function refresh(isIntake) {
 window.openAcceptanceSession = async options => {
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
   await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Browser SQL Worker did not open within 25 seconds')), 25_000);
+    const finish = (callback, value) => { clearTimeout(timer); callback(value); };
     worker.addEventListener('message', ({ data }) => {
-      if (data.type === 'open') resolve();
-      if (data.type === 'failure') reject(new Error(data.message));
+      if (data.type === 'open') finish(resolve);
+      if (data.type === 'failure') finish(reject, new Error(data.message));
     });
-    worker.addEventListener('error', event => reject(new Error(event.message)), { once: true });
+    worker.addEventListener('error', event => finish(reject, new Error(event.message)), { once: true });
     worker.postMessage({ type: 'open', base: window.tendril.identity.base,
       applicationId: window.__TENDRIL__.application.id, ...options });
-  });
+  }).catch(error => { worker.terminate(); throw error; });
   session = await connectApplicationWorker(worker, { timeoutMs: 20_000 });
   const isIntake = Boolean(options.respondent);
   el('task-form').hidden = isIntake;
