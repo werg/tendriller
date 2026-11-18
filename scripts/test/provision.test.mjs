@@ -48,6 +48,18 @@ test('provisioning rejects suffixes the runtime cannot route', () => {
     {...environment,STAGING_PAGE_HOST_SUFFIX:'--candidate'},current),/twelve lowercase hexadecimal/);
 });
 
+test('a production candidate gets an explicit route in the service zone behind its wildcard', () => {
+  const plan = deploymentPlan('production', { name: 'tendriller-candidate', fresh: true }, {
+    PRODUCTION_PUBLIC_BASE: 'https://candidate.tendriller.dev',
+    PRODUCTION_PAGE_HOST_SUFFIX: '--p-aaaaaaaaaaaa',
+  });
+  assert.deepEqual(deploymentConfig(plan, 'candidate-id', 'account').routes, [
+    { pattern: 'candidate.tendriller.dev', custom_domain: true },
+    { pattern: 'candidate.tendriller.dev/*', zone_name: 'tendriller.dev' },
+    { pattern: '*--p-aaaaaaaaaaaa.tendriller.site/*', zone_name: 'tendriller.site' },
+  ]);
+});
+
 test('fresh provisioning refuses configured resources and either reused origin', () => {
   assert.throws(()=>deploymentPlan('staging',{fresh:true},environment,current),/new explicit/);
   assert.throws(()=>deploymentPlan('staging',{name:current.name,fresh:true},environment,current),/new explicit/);
