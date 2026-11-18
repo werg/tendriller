@@ -75,8 +75,25 @@ async function refresh(isIntake) {
   } finally { painting = false; }
 }
 
+// This diagnostic is explicit. Opening the page/reading status never enrolls
+// a device, selects its record backend or instantiates the SQL engine.
+window.inspectAcceptanceBrowserCapabilities = () => new Promise((resolve, reject) => {
+  const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
+  const timer = setTimeout(() => finish(reject, new Error('Capability probe timed out')), 20_000);
+  const finish = (callback, result) => {
+    clearTimeout(timer); worker.removeEventListener('message', listen); worker.terminate(); callback(result);
+  };
+  const listen = ({ data }) => {
+    if (data?.type === 'capabilities') finish(resolve, data.report);
+    else if (data?.type === 'failure') finish(reject, new Error(data.message));
+  };
+  worker.addEventListener('message', listen);
+  worker.addEventListener('error', event => finish(reject, new Error(event.message)), { once: true });
+  worker.postMessage({ type: 'capabilities' });
+});
+
 // Test deployments supply enrollment from outside the signed code graph.
-// The Worker owns commands, signing, the relay and OPFS.
+// The Worker owns commands, signing, the relay and the pinned record backend; SQL owns a distinct OPFS VFS.
 window.openAcceptanceSession = async options => {
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
   await new Promise((resolve, reject) => {

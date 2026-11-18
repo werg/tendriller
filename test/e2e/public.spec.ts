@@ -342,23 +342,34 @@ for (const isPrivate of [false, true]) {
       const fixture = await test.step('Publish and open browser SQL peers', () => openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
         peers: client(handle).peers, pageUrl: handle.page_url, applicationId: handle.application.id,
         pages: [page, second], isPrivate, guestAccount: guest.id }));
+      async function expectReplication(source: Page, target: Page, text: string) {
+        try {
+          await expect(source.locator('#status')).toHaveText(
+            /Applied here|Shared with another device/, { timeout: 15_000 });
+          await expect(target.getByText(text)).toBeVisible({ timeout: 15_000 });
+        } catch (error) {
+          const status = (peer: Page) => peer.locator('#status').textContent({ timeout: 1_000 }).catch(() => 'unavailable');
+          const [sender, receiver] = await Promise.all([status(source), status(target)]);
+          throw new Error(`Replication did not become visible. Sender: ${sender}. Receiver: ${receiver}.`, { cause: error });
+        }
+      }
       if (isPrivate) {
         await page.getByRole('textbox', { name: 'Your answer' }).fill('First answer');
         await page.getByRole('button', { name: 'Save answer' }).click();
-        await expect(second.getByText('Current answer: First answer')).toBeVisible();
+        await expectReplication(page, second, 'Current answer: First answer');
         await expect(second.getByRole('textbox', { name: 'Your answer' })).toHaveCount(0);
         await page.getByRole('textbox', { name: 'Your answer' }).fill('Corrected answer');
         await page.getByRole('button', { name: 'Save answer' }).click();
-        await expect(second.getByText('Current answer: Corrected answer')).toBeVisible();
+        await expectReplication(page, second, 'Current answer: Corrected answer');
       } else {
         await page.getByLabel('Task title').fill('Check the spare tire');
         await page.getByRole('button', { name: 'Add task' }).click();
-        await expect(second.getByText('Check the spare tire · Open')).toBeVisible();
+        await expectReplication(page, second, 'Check the spare tire · Open');
         await second.getByRole('button', { name: 'Claim task' }).click();
-        await expect(page.getByText('Check the spare tire · Claimed by a teammate')).toBeVisible();
+        await expectReplication(second, page, 'Check the spare tire · Claimed by a teammate');
         await expect(page.getByRole('button', { name: 'Claim task' })).toBeDisabled();
         await second.getByRole('button', { name: 'Complete task' }).click();
-        await expect(page.getByText('Check the spare tire · Done')).toBeVisible();
+        await expectReplication(second, page, 'Check the spare tire · Done');
         await secondContext.setOffline(true);
         await page.getByLabel('Task title').fill('Check the jack');
         await expect(page.getByText('Draft saved on this device.')).toBeVisible();
@@ -371,8 +382,8 @@ for (const isPrivate of [false, true]) {
         await expect(reopened.getByRole('status').first()).toHaveText('Applied here. Waiting for another device to retain the change.');
         await secondContext.setOffline(false);
         await fixture.reconnect();
-        await expect(second.getByText('Check the jack · Open')).toBeVisible();
-        await expect(reopened.getByRole('status').first()).toHaveText('Shared with another device.');
+        await expectReplication(reopened, second, 'Check the jack · Open');
+        await expect(reopened.getByRole('status').first()).toHaveText('Shared with another device.', { timeout: 15_000 });
       }
     } finally {
       await secondContext.close();
