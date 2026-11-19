@@ -42,7 +42,7 @@ actual position in the selected shared history. They are not a prior read
 followed by unguarded writes. Another writer can change a balance between the UI
 read and submission; the stale command then rejects. SQL/platform failure
 rejects the whole program, rolls back its changes, and produces no effective
-emit. The protocol's [deterministic SQL contract](https://github.com/werg/chronolog-db/blob/6ca258c46cc9bb059446bacf4ffe287a543d0ed5/docs/implementation-specs/10-deterministic-sql-transactions.md)
+emit. The protocol's [deterministic SQL contract](https://github.com/werg/chronolog-db/blob/d3efeb6d75ac24bb9b44899f27d6940475ab55e9/docs/implementation-specs/10-deterministic-sql-transactions.md)
 defines those atomicity and rejection rules.
 
 The literal source is short enough to inspect. The central part is:
@@ -99,19 +99,19 @@ needs.
 
 ```sh
 git clone https://github.com/werg/chronolog-db.git ../../chronolog-sql-source
-git -C ../../chronolog-sql-source checkout --detach 6ca258c46cc9bb059446bacf4ffe287a543d0ed5
+git -C ../../chronolog-sql-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
 cd ../../chronolog-sql-source
 corepack pnpm install --frozen-lockfile
 node tools/package-peer-session.mjs --sql-native --output artifacts/session-sql
 node tools/test-peer-session-sql.mjs \
-  --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-6ca258c4-sql.tgz"
+  --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-d3efeb6d-sql.tgz"
 ```
 
 Return to your starter's `sql/` directory, and install the produced archive by
 its absolute path:
 
 ```sh
-npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-6ca258c4-sql.tgz
+npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-d3efeb6d-sql.tgz
 npm run engine
 ```
 
@@ -129,7 +129,7 @@ failure to resolve before initialization. Do not substitute the unpatched
 upstream DoltLite prebuild, fabricate a manifest or continue with an events
 session under the same SQL descriptor.
 
-The package's [native packager](https://github.com/werg/chronolog-db/blob/6ca258c46cc9bb059446bacf4ffe287a543d0ed5/tools/package-peer-session.mjs)
+The package's [native packager](https://github.com/werg/chronolog-db/blob/d3efeb6d75ac24bb9b44899f27d6940475ab55e9/tools/package-peer-session.mjs)
 includes the exact compiled addon and records its build identity. The default
 archive has no SQL engine. `--sql-native` supplies `/sql` and `/sql-native`;
 `--sql-browser` supplies `/sql` and `/sql-browser`. The flags can be combined,
@@ -226,7 +226,7 @@ test "$(git -C ../chronolog-emsdk rev-parse HEAD)" = e4fe26ef59168ff44f4c23c466e
 node tools/build-wasm-engine.mjs --emsdk ../chronolog-emsdk --output artifacts/wasm
 ```
 
-Install `chronolog-peer-session-6ca258c4-sql-wasm.tgz` into the application in
+Install `chronolog-peer-session-d3efeb6d-sql-wasm.tgz` into the application in
 place of its native-only package. Preserve these four engine files together in
 the authored publication's `engine/` directory:
 
@@ -237,7 +237,7 @@ the authored publication's `engine/` directory:
 | `sqlite3-opfs-async-proxy.js` | Engine storage support asset |
 | `manifest.json` | Toolchain, native build identity and WASM digest |
 
-The [WASM builder](https://github.com/werg/chronolog-db/blob/6ca258c46cc9bb059446bacf4ffe287a543d0ed5/tools/build-wasm-engine.mjs)
+The [WASM builder](https://github.com/werg/chronolog-db/blob/d3efeb6d75ac24bb9b44899f27d6940475ab55e9/tools/build-wasm-engine.mjs)
 uses the same pinned native sources/hooks. `loadBrowserEngine` verifies the
 WASM digest and supported build identity; `openSqlApplication` also checks the
 engine's execution-manifest digest against the application descriptor before
