@@ -156,42 +156,80 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
     async pauseForRecovery(subscriptionId, notice) {
       const snapshot = await store.read(), observed = snapshot.subscriptions?.[subscriptionId];
       if (!observed?.active) return;
-      const recoveryId = 'recovery_' + digest([observed.applicationId, notice.revision]);
-      const recoverySubscribers = [];
-      for (const sub of Object.values(snapshot.subscriptions ?? {})) if (live(sub, clock()) && sub.applicationId === observed.applicationId && sub.name === 'application.recovery_notice') {
-        try { await authorize(sub.owner, sub.applicationId, sub.name); recoverySubscribers.push(sub.id); } catch { /* no egress without current consent */ }
-      }
-      await store.transaction(state => {
+      let revision, projectionError = null;
+      try { revision = bounded(notice?.revision, 16384); text(revision?.generation, 'selected generation', 256); }
+      catch { revision = null; projectionError = 'RECOVERY_NOTICE_INVALID'; }
+      const recoveryId = 'recovery_' + digest([observed.applicationId, revision]);
+      // Persist the fail-closed pause before any authorization I/O or outbox
+      // insertion. A full journal must never undo a recovery safety boundary.
+      const recoverySubscribers = await store.transaction(state => {
+        const recipients = [];
         for (const sub of Object.values(state.subscriptions ?? {})) if (sub.active && sub.applicationId === observed.applicationId) {
-          sub.pausedReason = 'recovery_review_required'; sub.recoveryRevision = notice.revision; sub.recoveryAt = clock();
-          if (recoverySubscribers.includes(sub.id)) insert(state, sub, { name: 'application.recovery_notice', sourceEventId: recoveryId,
-            revision: notice.revision, data: { summary: 'Selected application history changed. Review pending operations and choose how to resume notifications.' } }, 'recovery');
+          if (!sub.pausedReason || canonical(sub.recoveryRevision ?? null) !== canonical(revision)) {
+            sub.version = (sub.version ?? 0) + 1;
+            sub.recoveryVersion = (sub.recoveryVersion ?? 0) + 1;
+            sub.recoveryAt = clock();
+            sub.recoveryNoticeQueuedAt = null;
+            sub.recoveryNoticeError = projectionError;
+          }
+          sub.pausedReason = 'recovery_review_required'; sub.recoveryRevision = revision;
+          if (live(sub, clock()) && sub.name === 'application.recovery_notice') recipients.push(sub);
         }
+        return recipients;
       });
       await cancelInactive();
+      let failures = 0;
+      for (const recipient of recoverySubscribers) {
+        let errorCode = projectionError;
+        if (!errorCode) {
+          try { await authorize(recipient.owner, recipient.applicationId, recipient.name); }
+          catch { errorCode = 'RECOVERY_NOTICE_UNAUTHORIZED'; }
+        }
+        await store.transaction(state => {
+          const current = state.subscriptions?.[recipient.id];
+          if (!live(current, clock()) || !sameActivation(recipient, current) || !current.pausedReason || current.recoveryVersion !== recipient.recoveryVersion) return;
+          if (!errorCode) {
+            try {
+              insert(state, current, { name: 'application.recovery_notice', sourceEventId: recoveryId,
+                revision, data: { summary: 'Selected application history changed. Review pending operations and choose how to resume notifications.' } }, 'recovery');
+              current.recoveryNoticeQueuedAt = clock();
+            } catch (error) { errorCode = error.code === 'OUTBOX_CAPACITY' ? 'OUTBOX_CAPACITY' : 'RECOVERY_NOTICE_INVALID'; }
+          }
+          current.recoveryNoticeError = errorCode;
+          if (errorCode) failures++;
+        });
+      }
+      return { paused: true, recoveryNoticeFailures: failures };
     },
     async resume(principal, { subscriptionId, strategy }) {
       if (!['from_current', 'replay_selected'].includes(strategy)) fail('INVALID_RECOVERY_STRATEGY', 'Choose from_current or replay_selected after reviewing recovery');
       const sub = (await store.read()).subscriptions?.[subscriptionId];
       if (!sub || !sameOwner(principal, sub.owner)) fail('SUBSCRIPTION_NOT_FOUND', 'Subscription not found', { status: 404 });
       if (!live(sub, clock())) fail('SUBSCRIPTION_INACTIVE', 'Refresh the subscription before resuming');
+      if (!sub.pausedReason) fail('RECOVERY_REVIEW_NOT_REQUIRED', 'This subscription is not paused for recovery');
       await authorize(sub.owner, sub.applicationId, sub.name);
       const baseline = strategy === 'from_current' ? await selectedTail(bridge, sub.applicationId) : { cursor: null, revision: sub.recoveryRevision };
+      await authorize(sub.owner, sub.applicationId, sub.name);
       await store.transaction(state => {
-        const current = state.subscriptions[subscriptionId];
-        if (current.version !== sub.version) fail('SUBSCRIPTION_CHANGED', 'Subscription changed during recovery review');
+        const current = state.subscriptions?.[subscriptionId];
+        if (!live(current, clock()) || !sameActivation(sub, current) || current.version !== sub.version ||
+            current.recoveryVersion !== sub.recoveryVersion || current.pausedReason !== sub.pausedReason ||
+            canonical(current.recoveryRevision ?? null) !== canonical(sub.recoveryRevision ?? null))
+          fail('SUBSCRIPTION_CHANGED', 'Subscription changed during recovery review', { status: 409 });
         Object.assign(current, { pausedReason: null, sourceCursor: baseline.cursor, sourceRevision: baseline.revision,
           resumedAt: clock(), resumeStrategy: strategy, version: current.version + 1 });
         if (strategy === 'from_current') for (const job of Object.values(state.jobs ?? {})) if (job.subscriptionId === subscriptionId && pending(job.state) && job.sourceKind === 'domain')
           Object.assign(job, { state: 'cancelled', reason: 'reviewed_start_from_current', updatedAt: clock() });
       });
+      await cancelInactive();
       return { subscriptionId, strategy, resumed: true };
     },
     async status(principal, applicationId, requestId) {
       const state = await store.read();
       const subscriptions = Object.values(state.subscriptions ?? {}).filter(sub => sub.applicationId === applicationId && sameOwner(principal, sub.owner))
         .map(sub => ({ id: sub.id, name: sub.name, active: live(sub, clock()), expiresAt: sub.expiresAt ?? null,
-          pausedReason: sub.pausedReason ?? null, observedAt: sub.observedAt ?? null, recoveryAt: sub.recoveryAt ?? null }));
+          pausedReason: sub.pausedReason ?? null, observedAt: sub.observedAt ?? null, recoveryAt: sub.recoveryAt ?? null,
+          recoveryNoticeError: sub.recoveryNoticeError ?? null, recoveryNoticeQueuedAt: sub.recoveryNoticeQueuedAt ?? null }));
       const jobs = Object.values(state.jobs ?? {}).filter(job => job.applicationId === applicationId && sameOwner(principal, job.owner) &&
         (requestId === undefined || job.envelope.data.request_id === requestId))
         .sort((a, b) => b.createdAt - a.createdAt).slice(0, 100)

@@ -143,3 +143,67 @@ test('old activation jobs are cancelled before being claimed or sent', async () 
   assert.equal(f.sent.length, 0);
   assert.equal(Object.values((await f.store.read()).jobs)[0].reason, 'subscription_replaced');
 });
+
+test('a newer recovery pause cannot be cleared by an older resume still scanning history', async () => {
+  const f = fixture(), scanning = gate();
+  await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  f.bridge.readEvents = async () => { scanning.enter(); await scanning.wait; return { cursor: 'g2-tail', revision: { generation: 'g2' }, hasMore: false }; };
+  const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current' });
+  await scanning.entered;
+  await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g3' } });
+  scanning.release();
+  await assert.rejects(resuming, { code: 'SUBSCRIPTION_CHANGED', status: 409 });
+  const sub = (await f.store.read()).subscriptions['sub-a'];
+  assert.equal(sub.pausedReason, 'recovery_review_required');
+  assert.equal(sub.recoveryRevision.generation, 'g3');
+  assert.equal(sub.sourceCursor, 'tail');
+});
+
+test('expiry, revocation and unsubscribe during recovery review prevent resumption', async () => {
+  for (const change of ['expiry', 'revocation', 'unsubscribe']) {
+    const f = fixture(), scanning = gate();
+    await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+    f.bridge.readEvents = async () => { scanning.enter(); await scanning.wait; return { cursor: 'tail', revision, hasMore: false }; };
+    const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current' });
+    await scanning.entered;
+    if (change === 'expiry') f.advance(10_000_000);
+    if (change === 'revocation') f.allow(false);
+    if (change === 'unsubscribe') await f.store.transaction(state => { delete state.subscriptions['sub-a']; });
+    scanning.release();
+    await assert.rejects(resuming, change === 'revocation' ? /revoked/ : { code: 'SUBSCRIPTION_CHANGED' });
+  }
+});
+
+test('a full recovery-notice queue cannot roll back the pause and reports a bounded status error', async () => {
+  const f = fixture({ maxJobs: 1 });
+  await f.store.transaction(state => { state.subscriptions.recovery = { ...subscription('recovery'), name: 'application.recovery_notice' }; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const result = await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  assert.deepEqual(result, { paused: true, recoveryNoticeFailures: 1 });
+  const state = await f.store.read();
+  assert.equal(state.subscriptions['sub-a'].pausedReason, 'recovery_review_required');
+  assert.equal(state.subscriptions.recovery.pausedReason, 'recovery_review_required');
+  assert.equal(state.subscriptions.recovery.recoveryNoticeError, 'OUTBOX_CAPACITY');
+  assert.equal(Object.keys(state.jobs).length, 1);
+  await f.outbox.dispatchDue(); assert.equal(f.sent.length, 0);
+  const status = await f.outbox.status(owner, 'app-a');
+  assert.equal(status.subscriptions.find(sub => sub.id === 'recovery').recoveryNoticeError, 'OUTBOX_CAPACITY');
+  assert.doesNotMatch(JSON.stringify(status), /whsec_|callback\.example/);
+});
+
+test('recovery pauses persist before slow notification authorization and invalid projection', async () => {
+  const checking = gate(); let hold = false;
+  const f = fixture({ authorize: async () => { if (hold) { checking.enter(); await checking.wait; } } });
+  await f.store.transaction(state => { state.subscriptions.recovery = { ...subscription('recovery'), name: 'application.recovery_notice' }; });
+  hold = true;
+  const pausing = f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  await checking.entered;
+  assert.equal((await f.store.read()).subscriptions['sub-a'].pausedReason, 'recovery_review_required');
+  checking.release(); await pausing; hold = false;
+  const before = (await f.store.read()).subscriptions['sub-a'].version;
+  await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  assert.equal((await f.store.read()).subscriptions['sub-a'].version, before, 'Repeated identical notices must not invalidate review');
+  await f.outbox.pauseForRecovery('sub-a', { revision: { malformed: true } });
+  assert.equal((await f.store.read()).subscriptions['sub-a'].pausedReason, 'recovery_review_required');
+  assert.equal((await f.store.read()).subscriptions.recovery.recoveryNoticeError, 'RECOVERY_NOTICE_INVALID');
+});
