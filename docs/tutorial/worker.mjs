@@ -5,12 +5,13 @@ import { createPeersClient, createPeerIntroductions } from '@tendriller/core/pee
 import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
 import { definition } from './domain.mjs';
 
-const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => {
+serveBrowserOwner({ async load({ signal }) {
+const configuration = await fetch(new URL('./configuration.json', import.meta.url), { signal }).then(response => {
   if (!response.ok) throw Error('Application configuration is unavailable.');
   return response.json();
 });
 const profileId = `tendriller-notes-${configuration.applicationId}`;
-serveBrowserOwner({ profileId,
+return { profileId,
   async createIdentity() {
     const device = await openBrowserDevice({ name: profileId, create: true });
     try { return device.identity.publicKey; } finally { await device.close(); }
@@ -50,4 +51,5 @@ serveBrowserOwner({ profileId,
       return { session, control };
     } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
   },
-});
+};
+}});

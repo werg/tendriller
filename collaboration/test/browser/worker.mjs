@@ -8,7 +8,11 @@ const profileId = new URL(import.meta.url).searchParams.get('profile') || 'brows
 const applicationId = '91'.repeat(32), encoder = new TextEncoder(), decoder = new TextDecoder();
 const definition = defineApplication({id:'owner-fixture',version:'1',commands:{say:defineCommand({description:'Retain test message',input:{type:'string',minLength:1,maxLength:128},prepare:text=>program(emit('message',{text}))})},
   queries:{messages:defineQuery({description:'Coherent test messages',input:{type:'null'},read:view=>view.readEvents()})}});
-serveBrowserOwner({profileId,async openSession(){
+serveBrowserOwner({async load(){
+  // Exercise first-message delivery while configuration performs real async work.
+  await new Promise(resolve=>setTimeout(resolve,30));
+  return{profileId,async createIdentity(){const device=await openBrowserDevice({name:profileId,create:true});try{return device.identity.publicKey;}finally{await device.close();}},
+  async openSession(){
   const device=await openBrowserDevice({name:profileId,create:true});let session;
   try{
     let raw=await device.store.get('test/authority'),key=await device.store.get('test/epoch');
@@ -27,4 +31,5 @@ serveBrowserOwner({profileId,async openSession(){
     session=await openPeerApplication({device,definition,authority:JSON.parse(decoder.decode(raw)),epochKeys:new Map([[0,key]]),signals:{localEcho:true,delivery:'neighbors'}});
     return{session};
   }catch(error){if(session)await session.close();else await device.close();throw error;}
+}};
 }});

@@ -132,6 +132,12 @@ The Worker calls `serveBrowserOwner` from
 authority and opens `openBrowserApplication`. The callback returns its session
 and control participant. Browser identity creation is a separate explicit action.
 
+When configuration must be fetched, call `serveBrowserOwner({ load: async
+({ signal }) => { /* fetch and return the configuration */ } })` synchronously
+at module startup. This registers message and SharedWorker connection listeners
+before awaiting network work, preserving the first attachment or identity request.
+Do not await a top-level configuration fetch before installing the owner service.
+
 The page calls `openBrowserOwner` from
 `@tendriller/core/collaboration/browser`, supplying the worker URL, retained
 profile, immutable application/definition identity and its view/document context.

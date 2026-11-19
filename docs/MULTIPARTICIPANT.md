@@ -20,6 +20,13 @@ queries therefore label historical source metadata `signer-asserted` and replace
 its device ID with the verified execution author. They never promote a stored
 `owner-bound` label into independently verified historical evidence.
 
+Every request, current claim, result, message, cancellation and aggregate also
+exposes an `operation` reference containing application ID, actual author,
+operation ID, signed attempt ID and original generation. The schema captures
+the engine's transaction identity; queries join the reserved signed execution
+evidence. A writer cannot supply another attempt or overwrite that reference
+with fields in JSON.
+
 | Identity | Meaning |
 | --- | --- |
 | Application / page | Shared history / hosted publication handle |
@@ -58,6 +65,106 @@ receipt is outcome-unknown. No component promises exactly-once external effects.
 Addressing and filtering do not restrict history readership. Private projections
 need separate grants/keys or an explicitly approved sanitized export. Camera,
 microphone, focus, navigation, and speech stay under the receiving view's control.
+
+## Compose the public modules
+
+Create a new SQL application with `createCollaborationDefinition` as its immutable
+definition. Use the exact native/WASM engine manifest and normal signed authority
+bootstrap described in [State models](STATE_MODELS.md). The definition's explicit
+administrator signer list is immutable policy; a participant label or presence
+message never supplies administration rights.
+
+```js
+import { createCollaborationDefinition, createCollaborationClient,
+  createViewStore } from '@tendriller/core/collaboration';
+
+const definition = createCollaborationDefinition({ administrators: [ownerSigner] });
+// Configure the application with this definition and its signed SQL schema.
+// session below is the actual enrolled native session or owner attachment.
+const store = createViewStore({ storage: localStorage,
+  applicationId: session.applicationId, profileId, viewId });
+const work = createCollaborationClient({ session, store });
+const request = await work.request({
+  interactionId: 'review-proposal-42', kind: 'review', title: 'Review proposal 42',
+  input: { proposal: immutableProposal },
+  target: { kind: 'workerGroup', groupId: 'reviewers', mode: 'claimOne' },
+  responsePolicy: 'allSlots',
+  slots: [
+    { slotId: 'feasibility', eligibleSigners: [feasibilitySigner] },
+    { slotId: 'risks', eligibleSigners: [riskSigner] },
+  ],
+}, { operationId: 'request-proposal-42' });
+const applied = await request.applied();
+if (applied.outcome !== 'accepted') throw Error('Inspect the rejected request');
+```
+
+Each eligible worker uses its own client to `claim` its slot with an expected
+epoch. It reads the accepted claim before executing work, and submits `result`
+with that exact generation, epoch, run and endpoint incarnation. A successful
+command receipt alone is not proof that a result was accepted: inspect its
+domain `disposition`. After review, `finalize` supplies the exact parent version
+and selected result IDs. Membership changes cannot silently alter the frozen
+denominator. Handoff, cancellation acknowledgement and generation rebind each
+have explicit commands and fences.
+
+Use `inspect(interactionId)` after a lost response, `waitForOutcome` for a
+cancellable observation, and the returned full `operation` for exact journal
+inspection. Cancelling the waiter does not call task cancellation. A completed
+provider receipt is retained by `createSqliteEffectJournal` outside application
+history; `createEffectDispatcher` admits one original effect identity and requires
+reconciliation for uncertain dispatch. The provider integration supplies fresh
+authorization and its real idempotency/reconciliation behavior.
+
+## Membership, observation and diagnostics
+
+`await session.authority()` returns a cloned current public signed authority
+bundle from the owner, without initializing the data engine or making a host
+request. Verify it against the pinned descriptor to build the roster. This
+accessor needs the attachment's diagnostics capability. Combine authenticated
+membership with expiring presence for display; never derive grants from presence.
+`participantModel`, `receiptModel` and `mountParticipantPanel` provide optional
+presentation. Participant updates preserve focused controls and selection while
+revocation disables requests. They do not activate cameras, speech or navigation.
+
+Ordinary UI refresh uses coherent queries and `session.changes`. Pure derived
+state uses Chronolog projections, whose reducers may replay and must have no
+external effects. A durable background handler owns a separate consumer ID and
+checkpoint; filter/generation/retention changes require an explicit reset. The
+gateway's scoped subscriptions and outbox implement this delivery boundary.
+Observation never acquires a task claim.
+
+With the native peer running, use the public CLI diagnostics:
+
+```sh
+npx tendril --session ./session.mjs self
+npx tendril --session ./session.mjs endpoints
+npx tendril --session ./session.mjs doctor
+npx tendril --session ./session.mjs operation ORIGINAL_OPERATION_ID
+```
+
+The owner assigns endpoint/incarnation and binds a trusted native credential to
+its stable caller namespace. A new CLI process detaches locally after its call.
+Use `--mode own` only for explicit standalone ownership, and `--mode independent
+--profile NAME` only for a separately provisioned and enrolled retained profile.
+Failure to attach is an error; it never silently creates another signer.
+
+## Bounded supported composition
+
+The default owner admits 32 attachments, with 16 requests, eight streams and
+eight captured views per attachment, subject to owner totals of 512 requests,
+256 streams and 128 views. The SQL definition defaults to 32 frozen slots,
+eight active claims per signer, 64 results per slot and 4,096 requests. These
+limits may be reduced; increasing the domain limits requires a new qualified
+definition. Oversized application snapshots require querying one task instead.
+
+The independent public consumer measures eight actual signers with 32 simultaneous
+local attachments and records its exact topology, timing samples and memory use.
+This is a local qualification profile, not an Internet latency promise. The
+browser suite separately exercises actual SharedWorker and elected-owner modes.
+Signal queues, encrypted fallback frames, native IPC and gateway deliveries have
+independent bounds so a slow client cannot turn disposable progress into an
+unbounded durable queue. Named host tokens share their human owner's admission
+budget while retaining independently revocable routes.
 
 ## Version and release boundaries
 

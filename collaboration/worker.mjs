@@ -3,9 +3,17 @@ import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastOwner } from '
 import { prepareCollaborationCommand } from './protocol.mjs';
 
 /** One public owner composition for SharedWorker and the Web-Lock-elected fallback. */
-export function serveBrowserOwner({profileId,openSession,createIdentity,scope=globalThis,ownerOptions={}}){
-  if(!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(profileId)||typeof openSession!=='function')throw Error('OWNER_CONFIGURATION_INVALID');
+export function serveBrowserOwner(options){
+  const scope=options.scope??globalThis;
   const lifetime=new AbortController(),attached=new Set();
+  let profileId,openSession,createIdentity,ownerOptions;
+  // Install the root listeners synchronously. A worker's first message/connect
+  // event can arrive while a top-level configuration fetch is still awaiting.
+  const configured=Promise.resolve().then(()=>typeof options.load==='function'?options.load({signal:lifetime.signal}):options).then(value=>{
+    ({profileId,openSession,createIdentity,ownerOptions={}}=value);
+    if(!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(profileId)||typeof openSession!=='function')throw Error('OWNER_CONFIGURATION_INVALID');
+  });
+  void configured.catch(()=>{});
   let owner,owned,lease,opening,channel,election,broadcast,closed=false;
   const failure=(endpoint,id,error)=>endpoint.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'failure',id,
     code:error.code??error.message??'OWNER_UNREACHABLE',message:error.message??String(error)});
@@ -34,6 +42,7 @@ export function serveBrowserOwner({profileId,openSession,createIdentity,scope=gl
     const message=({data})=>{
       if(data?.protocol!==BROWSER_OWNER_PROTOCOL||closed)return;
       void(async()=>{
+        await configured;lifetime.signal.throwIfAborted();
         if(data.profileId!==profileId)throw Error('OWNER_PROFILE_MISMATCH');
         if(data.type==='identity'){
           if(typeof createIdentity!=='function')throw Error('IDENTITY_CREATION_UNAVAILABLE');
@@ -52,6 +61,6 @@ export function serveBrowserOwner({profileId,openSession,createIdentity,scope=gl
   scope.addEventListener('connect',event=>{for(const port of event.ports)attachBootstrap(port);});
   attachBootstrap(scope);
   return Object.freeze({get owner(){return owner;},async close(){if(closed)return;closed=true;lifetime.abort(Error('OWNER_UNREACHABLE'));
-    try{await broadcast?.close();await owner?.close();await owned?.close?.();}finally{await lease?.close();channel?.close();}
+    try{await Promise.allSettled([opening]);await broadcast?.close();await owner?.close();await owned?.close?.();}finally{await lease?.close();channel?.close();}
   }});
 }

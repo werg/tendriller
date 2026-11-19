@@ -15,14 +15,16 @@ const server=createServer(async(req,res)=>{const path=new URL(req.url,'http://lo
   try{res.writeHead(200,{'content-type':'text/javascript'});res.end(await readFile(join(out,path.slice(1))));}catch{res.writeHead(404);res.end();}
 });
 await new Promise(done=>server.listen(0,'127.0.0.1',done));const base=`http://127.0.0.1:${server.address().port}`;
-let browser;const evidence={scenarios:[],scope:'Actual Chromium; local origin, events backend; no mobile/provider/Internet claim'};
+let browser;const evidence={status:'failed',scenarios:[],scope:'Actual Chromium; local origin, events backend; no mobile/provider/Internet claim'};
+const deadline=setTimeout(()=>{evidence.failure='Browser qualification exceeded its 120 second deadline';void browser?.close();},120000);
 try{
   browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}:{})});
   evidence.browser=browser.version();
   for(const mode of ['shared','elected']){
     const context=await browser.newContext(),profile=`qualification-${mode}`,one=await context.newPage(),two=await context.newPage();
     const url=(path,view='copied-view')=>`${base}/${path}?profile=${profile}&mode=${mode}&view=${view}`;
-    await one.goto(url('board.html'));const a=await one.evaluate(()=>window.ready);
+    await one.goto(url('board.html')+'&identity=create');const a=await one.evaluate(()=>window.ready);
+    await one.evaluate(()=>window.verifyParticipantPanel());
     await two.goto(url('discussion.html'));const b=await two.evaluate(()=>window.ready);
     assert.equal(a.deviceId,b.deviceId);assert.equal(a.endpoint.ownerInstanceId,b.endpoint.ownerInstanceId);
     assert.notEqual(a.endpoint.endpointIncarnation,b.endpoint.endpointIncarnation);assert.notEqual(a.endpoint.context.viewId,b.endpoint.context.viewId);
@@ -49,7 +51,7 @@ try{
       assert.equal(await two.evaluate(async()=>(await window.session.operations.inspect('first')).state.status),'applied');
     }
     evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,protocolOnlyCold:true,signedLocalSignals:true,
-      concurrentCommands:true,independentDrafts:true,suspendResume:true,detachOrCrashReopen:true});await context.close();
+      concurrentCommands:true,independentDrafts:true,suspendResume:true,detachOrCrashReopen:true,asyncIdentityBootstrap:true,participantFocus:true});await context.close();
   }
   evidence.status='passed';console.log(JSON.stringify(evidence,null,2));
-}finally{await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(root,'.results/collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}
+}finally{clearTimeout(deadline);await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(root,'.results/collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}

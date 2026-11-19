@@ -31,6 +31,8 @@ export async function openBrowserOwner(options){
   try{
     if(shared){
       worker=new SharedWorker(url,{type:'module',name:`tendriller:${options.profileId}:v2`});worker.port.start();
+      worker.addEventListener('error',event=>worker.port.dispatchEvent(new MessageEvent('message',{data:{
+        protocol:BROWSER_OWNER_PROTOCOL,type:'failure',code:'OWNER_UNREACHABLE',message:event.message||'Shared owner module failed to load',id}})));
       const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,options);
       worker.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'shared',id,profileId:options.profileId});
       await ready;session=await connectApplicationOwner(worker.port,handshake);
