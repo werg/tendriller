@@ -89,7 +89,8 @@ export function withUnconfiguredPeerApplication<T>(t: Tendril, work: () => Promi
 }
 async function registry(t: Tendril, state: HostState): Promise<GenerationRegistry> {
   const configuration = t.db.get<Configuration | null>(CONFIG, null);
-  if (!configuration) throw new HttpError(409, 'peer_application_unconfigured', 'Publish the signed peer application descriptor first');
+  if (!configuration) throw new HttpError(409, 'peer_application_unconfigured',
+    'Configure authority with host.peers.configureApplication after owner claim, then select the initial generation. See /docs/BUILD_AN_APP.md');
   const signer = await loadPeerControlIdentity(t);
   if (!signer) throw new HttpError(503, 'peer_control_state_missing', 'The pinned control identity is unavailable; recovery must preserve its original trust state');
   state.signer = signer;
@@ -203,7 +204,8 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
       }
       if (action === 'definition') {
         const configured = t.db.get<Configuration | null>(CONFIG, null);
-        if (!configured) throw new HttpError(409, 'peer_application_unconfigured');
+        if (!configured) throw new HttpError(409, 'peer_application_unconfigured',
+          'Configure authority with host.peers.configureApplication after owner claim. See /docs/BUILD_AN_APP.md');
         if (!configured.definition || configured.schema === undefined) throw new HttpError(503, 'peer_publication_state_missing');
         const cached = snapshot(t);
         if (cached.definition) {

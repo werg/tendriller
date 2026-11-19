@@ -1,4 +1,83 @@
-# Give your agent a page
+# Build a Tendriller application
+
+**The deliverable is a running hosted application connected to the user's work.**
+Initiate provisioning, surface the concrete owner claim, configure the session,
+start the participant and publish as part of the task. Read
+[delivery and process lifetime](docs/AGENT_DELIVERY.md); source files alone do not
+establish the requested result.
+
+**Start with [Build an app](docs/BUILD_AN_APP.md)** and the
+[capability map](docs/CAPABILITIES.md). The guide takes you from a service
+domain to a small application with durable state, a native session, an enrolled
+browser Worker and a signed publication. Use its complete files first, then adapt
+the commands and UI to the user's task. The [session bootstrap](docs/SESSION_BOOTSTRAP.md)
+explains the setup code. This page is the concise workflow and contract reference.
+
+## If the user gave you only a domain
+
+1. Read that origin's `/api/service` for its contract/release and
+   `/.well-known/tendriller.json` for the first-app guide and machine-readable route.
+   `/llms.txt` is the ordered index; `/llms-full.txt` is the combined onboarding text.
+   Search `/.well-known/tendriller-capabilities.json` for the task's state, refresh,
+   media, voice and preview needs before implementing equivalent plumbing.
+2. Follow **create → claim → define state → configure authority and the first
+   generation → connect devices → publish → verify** in the build guide.
+3. Ask for the owner's verified email when it is not known. Create the real page
+   early and give its claim URL to the owner while preparing the application.
+   The owner must open it and complete sign-in. Do the remaining setup in the agent's
+   supported runtime and preserve it so later invocations can resume.
+4. Finish only after a browser command is visible in a native read, a native
+   command reaches the browser, reload retains state, and the selected signed
+   publication matches the built UI. Lead the handoff with the working page,
+   receipt and running process/resume details. Report any part you could not verify.
+
+## Reuse the supplied implementation
+
+Start from the downloadable source and actually import or adapt its session,
+reactive-view, operation-view, reviewed-input, camera and voice modules. The
+[pattern guide](docs/APP_PATTERNS.md) and [media/inference example](docs/AI_INPUT.md)
+identify those files. Record which current implementations you used; reading
+contrib cookbooks without applying their public APIs is not integration evidence.
+
+Use `tendril-preview ./page` as soon as the authored UI exists. Static preview
+checks layout. Live preview needs an actual authored bootstrap and real enrolled
+session; see [Preview](docs/tools/PREVIEW.md). Verify the tutorial's connected
+behavior on its published page, whose authentication and device origin are real.
+Neither a static preview nor an independent local database qualifies the hosted app.
+
+Use the supplied service origin throughout. Examples using `https://tendriller.dev`
+must target the requested host when working on staging or a self-hosted instance.
+The public SDK and session packages are prerelease artifacts: follow the build
+guide's acquisition and version checks instead of assuming npm package names
+alone identify an installable compatible release.
+
+## Choose the native application path
+
+For a shared checklist, notebook, dashboard or agent interface, define state and
+commands in Chronolog and build the browser UI around that same application.
+Tendriller supplies authenticated hosting and control/discovery; Chronolog supplies
+application persistence and peer exchange. Evaluate that path before choosing a
+separate database or backend. If an external service is needed for a specific
+capability, explain the requirement and keep application state ownership explicit.
+
+A page URL, a host token, an application ID and a device signing identity are
+different things. Creating the page does not create its command implementation,
+device grants, first generation, connected session or selected code release.
+
+The agent needs an environment that can run the native session. The browser needs
+its own Worker and authorized device. Tendriller does not host an always-running
+agent, wake an arbitrary chat session, or execute application commands through MCP.
+For live agent responses, keep the agent process connected and integrate its
+application changes into the agent's execution loop. If your environment cannot
+run that process, report this precise blocker and the supported next step; an HTTP
+page upload cannot substitute for a connected application.
+
+Use [troubleshooting](docs/TROUBLESHOOTING.md) at the failing stage. In particular,
+`peer_application_unconfigured` means configuration is missing; an unavailable
+browser backend means its session bootstrap has not completed. Neither is evidence
+that the platform needs a parallel persistence layer.
+
+## Platform responsibilities
 
 Tendriller hosts the page and joins its Chronolog protocol as a light control participant. Open one Chronolog application session for application work. The host receives only the control, publication and introduction updates allowed by its transport policy.
 
@@ -19,6 +98,19 @@ Give `page_url` to the human owner. They open it and sign in to claim the page. 
 Use the public SDK's `createClient(handle, {applicationId: handle.application.id})`. The host SDK has `peers`, `request`, `info` and `service`. Its construction starts no traffic.
 
 Configure the initial descriptor through `host.peers.configureApplication`. Provide the immutable public application definition, execution-manifest digest, schema administrator, initial epoch/key digest, and enrolled device grants. SQL applications also provide their signed schema. The host validates the definition/schema bindings and retains the signed authority. Application identity exists before configuration; reading unconfigured authority reports that state explicitly.
+
+**Select the first generation before opening the application.** Configuration
+returns the descriptor and initial control revision with no selected generation.
+The bootstrap prepares and durably saves an authorized signed transition with
+`reason: 'create'` and `expectedGeneration: null`, then submits that exact request
+through `host.peers.selectGeneration`. Refresh and verify the returned authority.
+Do not recreate keys, identity or transition IDs when resuming a partial setup.
+The complete [bootstrap](docs/SESSION_BOOTSTRAP.md) covers this missing connection
+between configuration and session opening.
+
+For later enrollment, the authenticated agent's `host.info()` includes
+`owner_account_id` (`null` until claimed). Use it as an explicit account binding
+only for a verified device belonging to that owner. It grants no device rights.
 
 Chronolog owns the device signer, local byte store, database, operation journal, peer connections and replication. Use its native or browser Worker session entry for your environment. Bootstrap from the host's public definition and authority, pin the descriptor, and verify all signed evidence through Chronolog. Keep browser execution and replication in the owned Worker.
 
@@ -60,11 +152,14 @@ import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 const backend = createApplicationBackend({
   id: session.applicationId,
   session,
-  eventCommand: 'publishEvent', // An ordinary declared domain command, if provided.
 });
 tendril.application.install(backend);
 tendril.signals.install(session.signals);
 ```
+
+The optional `eventCommand` setting is only for an event-publication command
+actually declared by your domain. Shared Notes does not declare `publishEvent`;
+adding that name to its adapter would fail with `APPLICATION_EVENT_COMMAND_UNKNOWN`.
 
 `ready()` and `available` on the application binding describe installation. Use `session.status` and its subscriptions for actual connection, generation and recovery state. The session's `deviceId` is the signing identity; the page runtime creates no additional device credential.
 
@@ -116,3 +211,9 @@ Offer **Save for offline use** when retaining this version's code is useful. Exp
 Check the actual application behavior in the intended browser/native environment. Exercise lost replies, offline local work, explicit recovery, revoked access, stale publication heads and the page's stop/cancel controls where relevant. Confirm ordinary application traffic leaves the host idle. Report the exact artifacts and limits of the checks performed.
 
 Use the [CLI](docs/tools/CLI.md), [preview](docs/tools/PREVIEW.md) and [cookbooks](https://github.com/werg/tendriller-contrib) as public consumers. Preview needs an explicit bootstrap for session-backed behavior. Publishing files or reading a guide cannot install server application code.
+
+The reference snippets above assume the objects established by the first-app
+bootstrap. They are not independent setup programs. For a domain-only entry,
+return to [Build an app](docs/BUILD_AN_APP.md), or run `tendril guide --server URL`
+for a credential-free workflow map. `tendril service --server URL` inspects a host
+before creating or selecting a page.

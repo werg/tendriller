@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
 
 export async function withSession(modulePath, run, { signal } = {}) {
-  if (!modulePath) throw Error('Supply --session with a module exporting openSession({ signal })');
+  if (!modulePath) throw Error('Supply --session with a module exporting openSession({ signal }). A page handle does not open a Chronolog session. Run tendril guide --server YOUR_SERVICE_ORIGIN and follow /docs/BUILD_AN_APP.md to configure authority, enroll the device and compose the session.');
   signal?.throwIfAborted();
   const bootstrap = await import(pathToFileURL(resolve(modulePath)).href);
   if (typeof bootstrap.openSession !== 'function') throw Error('The session module must export openSession({ signal })');
@@ -30,7 +30,7 @@ export function jsonInput(value, description = 'JSON input') {
 const identity = options => ({ operationId: required(options.operation, '--operation with a stable operation identity'),
   ...(options['based-on'] === undefined ? {} : { basedOn: jsonInput(options['based-on'], 'captured revision JSON') }) });
 const controlOf = owned => {
-  if (!owned.control) throw Error('This action requires the session-owned control participant returned by openSession');
+  if (!owned.control) throw Error('This action requires the session-owned control participant returned by openSession. Connect it with session.connectControlParticipant({ exchange }) and return { session, control }; see /docs/BUILD_AN_APP.md. Signed publication also requires an explicit publisher grant, independent of page access.');
   return owned.control;
 };
 

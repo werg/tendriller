@@ -8,6 +8,19 @@ After the owner claims a page, `host.peers.configureApplication(configuration)` 
 
 The host derives and verifies definition/schema commitments. Configuration persists the public authority; it creates no resident application process. Clients bootstrap from these records, pin the descriptor and verify them through Chronolog before execution.
 
+Configuration establishes the descriptor and first control revision, but selects
+no application generation. The creator must save and submit the first signed
+`selectGeneration` request (`reason: 'create'`, `expectedGeneration: null`), then
+refresh and verify authority before opening a session. The complete
+[first-app bootstrap](SESSION_BOOTSTRAP.md) shows this order and resumable setup.
+
+For owner-device enrollment, authenticated `host.info()` includes
+`owner_account_id`, which is `null` before claim. This is the explicit account
+identifier for `control.accounts` bindings; confirm that the device belongs to the
+owner before enrolling it. Existing bindings cannot be reassigned, and this field
+grants neither application nor publication rights. The field is returned only by
+the authenticated agent metadata route, not public discovery or page configuration.
+
 ## Independent rights
 
 Ordinary participants receive the common participant grant. Explicit grants can independently control recovery requests, coordinator eligibility, writes, reads, code publication, key access, schema administration and protected data roles. Device control administration, code publication and application data administration are separate rights. A browser and a native process use the same rights model.

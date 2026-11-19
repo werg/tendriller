@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Shared notes</title>
+  <style>
+    :root{font:17px/1.5 system-ui,sans-serif;color:#173428;background:#f5f8f3}*{box-sizing:border-box}body{margin:0}main{max-width:48rem;margin:2rem auto;padding:0 1.2rem}h1{font-size:2.6rem;line-height:1.1;margin-bottom:.4rem}h2{font-size:1.25rem}section,fieldset{background:white;border:1px solid #cbdccd;border-radius:.8rem;padding:1.2rem;margin:1rem 0}fieldset:disabled{opacity:.65}label{display:block;font-weight:600;margin:.6rem 0}textarea,input{width:100%;font:inherit;padding:.7rem;border:1px solid #8da997;border-radius:.35rem}textarea{min-height:7rem}button{font:inherit;border:1px solid #17634b;border-radius:.4rem;background:#17634b;color:white;padding:.55rem .85rem;cursor:pointer;margin:.3rem .3rem .3rem 0}button:disabled{opacity:.5;cursor:default}button.secondary{background:white;color:#17634b}code,pre,small{overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#f1f6ef;border-radius:.4rem;padding:.7rem}ul{padding-left:1.3rem}li{border-bottom:1px solid #dce8dc;padding-bottom:.8rem}li p{white-space:pre-wrap}small,.muted{color:#4f695c}#recovery{border:2px solid #b8790c;background:#fff8e9}a{color:#17634b}:focus-visible{outline:3px solid #c28110;outline-offset:2px}
+  </style>
+</head>
+<body>
+<main>
+  <p class="muted">A Tendriller application</p>
+  <h1>Shared notes</h1>
+  <p>Write a note, reopen this device, and see the same retained conversation.</p>
+  <section aria-labelledby="device-heading">
+    <h2 id="device-heading">Connect this browser</h2>
+    <p>First visit: create this browser's device, then ask the owner to enroll its public key. Returning here: connect the existing device.</p>
+    <button id="create-device">Set up this browser</button>
+    <button id="connect">Connect existing device</button>
+    <button id="close" class="secondary" disabled>Close connection</button>
+    <label for="device-key">This browser's public key</label>
+    <input id="device-key" readonly spellcheck="false">
+    <div id="enrollment" hidden>
+      <p>Verify this key belongs to your own browser. In the private application project, with its native peer stopped:</p>
+      <pre id="enrollment-command"></pre>
+      <p>Then start <code>npm run peer</code> and choose <strong>Connect existing device</strong>. Only the public key is shared.</p>
+    </div>
+    <p id="connection" role="status">Not connected.</p>
+    <p id="data-status" class="muted"></p>
+  </section>
+  <section id="recovery" role="alert" hidden></section>
+  <form id="form">
+    <fieldset id="editor" disabled>
+      <legend>Add a retained note</legend>
+      <label for="note">Note</label>
+      <textarea id="note" maxlength="2000" required></textarea>
+      <p class="muted">Draft text stays on this device. Sending creates a signed operation in the shared application.</p>
+      <button id="submit" type="submit">Save note</button>
+      <h2>Inspect uncertain work</h2>
+      <label for="operation-id">Operation ID</label>
+      <input id="operation-id" spellcheck="false">
+      <button id="inspect" type="button" class="secondary">Inspect operation</button>
+      <button id="retry" type="button" class="secondary">Retry same operation</button>
+      <button id="reapply" type="button" class="secondary" disabled>Reapply after reviewing current notes</button>
+      <button id="refresh" type="button" class="secondary">Refresh notes</button>
+    </fieldset>
+  </form>
+  <pre id="result" role="status" aria-live="polite">No operation submitted.</pre>
+  <section id="media-panel" aria-labelledby="media-heading" hidden>
+    <h2 id="media-heading">Review a photo</h2>
+    <p>Select a file or take a photo, then write the observation you want to keep.
+      Optional analysis sends the photo to OpenAI through the owner's inference
+      participant. An owner using a custom provider must name it here before use.
+      Analyzing or saving also makes the photo available to this app's authorized readers.</p>
+    <label for="media-file">Choose a photo</label>
+    <input id="media-file" type="file" accept="image/png,image/jpeg,image/webp">
+    <button id="media-camera" type="button">Open camera</button>
+    <button id="media-capture" type="button" disabled>Take photo</button>
+    <button id="media-stop" type="button" class="secondary">Stop camera</button>
+    <video id="media-video" playsinline muted hidden style="max-width:100%;border-radius:.5rem"></video>
+    <img id="media-preview" alt="Photo selected for review" hidden style="max-width:100%;max-height:22rem;border-radius:.5rem">
+    <p id="media-status" role="status">Choose a photo to begin.</p>
+    <label><input id="media-share" type="checkbox" style="width:auto"> I want to send this photo to OpenAI for suggestions.</label>
+    <button id="media-analyze" type="button" disabled>Analyze photo</button>
+    <button id="media-cancel" type="button" class="secondary">Discard candidate / cancel analysis</button>
+    <pre id="media-suggestion" aria-live="polite">No analysis requested.</pre>
+    <label for="media-review">Your reviewed observation</label>
+    <textarea id="media-review" maxlength="2000" placeholder="Edit or write the observation to keep. Analysis never saves it automatically."></textarea>
+    <button id="media-use-suggestion" type="button" class="secondary" disabled>Copy suggestion into review</button>
+    <button id="media-commit" type="button" disabled>Save reviewed observation</button>
+    <button id="media-new" type="button" class="secondary" disabled>Start another observation</button>
+    <pre id="media-result" role="status" aria-live="polite">No evidence command submitted.</pre>
+    <h2>Dictate a draft note</h2>
+    <p>Voice supplies editable text. Review it in the note field before saving.</p>
+    <label><input id="voice-consent" type="checkbox" style="width:auto"> Allow voice preparation and microphone use for this draft.</label>
+    <button id="voice-prepare" type="button">Prepare voice</button>
+    <button id="voice-start" type="button">Dictate</button>
+    <button id="voice-finish" type="button" class="secondary">Finish</button>
+    <button id="voice-cancel" type="button" class="secondary">Cancel voice</button>
+    <p id="voice-status" role="status">Voice is off.</p>
+    <textarea id="voice-draft" readonly aria-label="Recognized draft text"></textarea>
+    <button id="voice-use" type="button" class="secondary" disabled>Copy transcript into note draft</button>
+  </section>
+  <section aria-labelledby="notes-heading">
+    <h2 id="notes-heading">Notes</h2>
+    <p id="count" class="muted">Connect to read retained notes.</p>
+    <ul id="notes"></ul>
+  </section>
+  <p class="muted">This first app uses a running native peer to coordinate writes. A saved operation can wait while that peer is away. Page options can add this page to your Home Screen; saving code offline is a separate choice.</p>
+</main>
+<script type="module" src="./page.mjs"></script>
+</body>
+</html>

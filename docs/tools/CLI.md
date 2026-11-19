@@ -5,6 +5,39 @@ application's own bootstrap module. Host lifecycle commands use the host's
 metadata API. Application commands, queries, events, live signals, recovery and
 page-code publication use the session and its explicit control participant.
 
+## Start with only a domain
+
+Install the tools archive using the artifact instructions in
+[Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md), then inspect the
+workflow and the host before creating anything:
+
+```sh
+tendril guide --server https://tendriller.dev --pretty
+tendril service --server https://tendriller.dev --pretty
+```
+
+`guide` prints structured steps, prerequisites, authorization checkpoints and
+links for that service origin. It is offline: it creates no page, reads no
+private handle, and does not claim the host is reachable. `service --server`
+reads `/api/service` without credentials, even if page credentials are present
+in the environment. Use the actual staging or self-hosted origin throughout.
+
+`service --tendril NAME` still reads the selected page's effective limits.
+Without either flag, a configured page is used if available; otherwise the
+public descriptor comes from `TENDRIL_SERVER` or `https://tendriller.dev`.
+
+Follow the [complete application workflow](https://tendriller.dev/docs/BUILD_AN_APP.md)
+for initial authority, device enrollment, UI composition and publication. A
+successful `new` command gives you a hosted page and independent application
+identity. It does not configure application authority or open a Chronolog
+session. The human owner must open the returned `page_url` and sign in to claim
+the page. Keep its private handle and tokens out of the authored page files.
+
+Initial configuration also needs a selected first generation. Save its signed
+transition request before sending it, then verify the selected authority before
+opening the session. `configureApplication` alone does not satisfy this step;
+the tutorial's initialization command performs both stages.
+
 ## Supply the application composition
 
 `--session /absolute/application.mjs` names a module exporting
@@ -14,7 +47,10 @@ The tool closes the session after the action and when the invocation is
 interrupted. The session owns its signer store, transports, keyring and operation
 journal. A single invocation never silently creates a missing identity.
 
-A deployment module can provide verified cached authority, the domain
+The following is a **composition outline**, not a runnable first-app starter.
+Its `deployment.mjs` import represents the setup outputs described in
+[Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md). Complete that setup
+before using the commands below. A deployment module provides verified cached authority, the domain
 definition, authorized keys, a host participant exchange and the configured peer
 connection composition:
 
@@ -39,7 +75,16 @@ export async function openSession({ signal }) {
 `deployment.mjs` is application setup, including enrollment and real routes; it
 is not supplied by these tools. Use the same definition and execution artifacts
 as the browser. Explicit device creation uses the native public API during
-provisioning, before normal command invocations.
+provisioning, before normal command invocations. Reopen that same device during
+normal work; do not use `create: true` as a recovery strategy when a store or
+identity is missing. Browser execution belongs in its owned Worker.
+
+Before publishing, ensure that `openSession` returns its actual `control`
+participant and that the device has an explicit `publisher: true` grant.
+Page access, an agent bearer token and control administration do not by
+themselves confer publication or application data rights. See
+[troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md) for the next
+step when authority, device storage, participation or publication is blocked.
 
 ## Inspect and submit domain work
 
@@ -111,10 +156,16 @@ publishing earlier content is a new reviewed signed publication.
 ## Host lifecycle commands
 
 `new [name] --owner VERIFIED_EMAIL` creates a page and saves its private handle
-with restricted file permissions. Choose that handle with `--tendril NAME`, or
+with restricted file permissions, including its stable `application.id`.
+Choose that handle with `--tendril NAME`, or
 supply `TENDRIL_API` and `TENDRIL_TOKEN`. `info`, `service`, `meta <json>`,
 `release`, `activity`, `link` and `token` operate on host metadata and access.
 `remove --yes` deletes hosted state. These routes do not carry domain commands.
+
+Handles saved by older CLI builds may lack `application`. Retrieve the selected
+page's `application.id` with `info`; use that identity when composing the host
+client. Do not create a different application identity to fill the missing
+local field.
 
 The default invocation timeout is 30 seconds. `watch` continues until interrupted
 unless `--timeout SECONDS` supplies a bound. `--pretty` formats the JSON result.

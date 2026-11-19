@@ -14,6 +14,8 @@ import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, 
 import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
 import { serviceDescriptor } from "./descriptor";
+import { onboardingDescriptor, onboardingLinks } from "./onboarding";
+import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
@@ -158,7 +160,25 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
-    return new Response(landingPage(publicBase(env)), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    return new Response(req.method === "HEAD" ? null : landingPage(publicBase(env)), {
+      headers: { "Content-Type": "text/html; charset=utf-8", Link: onboardingLinks(publicBase(env)) },
+    });
+  }
+  if (path === "/.well-known/tendriller.json" && publicRead) {
+    const response = json(onboardingDescriptor(publicBase(env)), 200, { Link: onboardingLinks(publicBase(env)) });
+    return req.method === "HEAD" ? new Response(null, response) : response;
+  }
+  if (path === "/.well-known/tendriller-capabilities.json" && publicRead) {
+    const response = json(capabilityCatalog(publicBase(env)), 200, { Link: onboardingLinks(publicBase(env)) });
+    return req.method === "HEAD" ? new Response(null, response) : response;
+  }
+  if (path === "/downloads/tendriller-first-app.tgz" && publicRead) {
+    const response = await asset(env, url, path, {
+      "Content-Type": "application/gzip", "Content-Disposition": 'attachment; filename="tendriller-first-app.tgz"',
+      "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)),
+    });
+    if (req.method === "HEAD") { await response.body?.cancel(); return new Response(null, response); }
+    return response;
   }
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
@@ -171,11 +191,13 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
     return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
   }
-  if (path === "/agent.md" || path === "/llms.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
+  if (path === "/agent.md" || path === "/AGENTS.md" || path === "/llms.txt" || path === "/llms-full.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
+    if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
     const guide = await asset(env, url, path);
     if (!guide.ok) return guide;
-    return new Response((await guide.text()).replaceAll("https://tendriller.dev", publicBase(env)), {
-      headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
+    return new Response(req.method === "HEAD" ? null : body, {
+      headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)) },
     });
   }
   if (path === "/contract/v3.json") return json(schemaDocument);
@@ -201,7 +223,8 @@ function pageAdmissionFailure(req: Request, env: Env, page: { id: string; key: s
 async function api(req: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   try {
-    if (path === "/api/service" && req.method === "GET") return json(serviceDescriptor());
+    if (path === "/api/service" && req.method === "GET")
+      return json(serviceDescriptor(), 200, { Link: onboardingLinks(publicBase(env)) });
     if (path === "/api/tendrils") {
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
       await requireCreationOpen(env);

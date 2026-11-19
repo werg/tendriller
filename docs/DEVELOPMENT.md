@@ -8,6 +8,8 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run build:tools` | Package the session CLI, authored-file packer and explicit preview against built public artifacts |
 | `npm run build:artifacts` | Build all four public archives |
 | `npm run dev` | Build assets and run the local account/page host |
+| `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
+| `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
 
@@ -50,3 +52,62 @@ Commit and push incremental changes before publishing clean artifacts. A source 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
 
 For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md). The [branch inventory](BRANCH_INVENTORY.md) records older unmerged branch heads for review.
+
+## Onboarding as a public surface
+
+The homepage, `agent.md`, `AGENTS.md`, ordered `llms.txt`, machine discovery at
+`/.well-known/tendriller.json`, CLI `guide` and MCP `tendril_guide` all lead to
+`docs/BUILD_AN_APP.md`. Discovery uses a separate document and HTTP Link headers;
+the task-oriented `/.well-known/tendriller-capabilities.json` points to actual
+imports, starter modules, guides and ownership boundaries. Neither catalog probes
+device permissions. `docs/AGENT_DELIVERY.md` defines completion as the live
+connected application with explicit process lifetime and resume evidence;
+the strict existing `/api/service` JSON contract remains unchanged. Staging and
+branch previews rewrite host documentation links to their own service origin.
+
+`scripts/onboarding.mjs` generates `llms-full.txt` from maintained guides and
+packages the explicitly enumerated tutorial source files into a download.
+Generated private handles, device stores, epoch keys and build output must never
+enter that archive. Tutorial HTML is available inside the download, not as an
+executable document on the service origin. `npm run test:onboarding` runs in the
+normal Node test gate; public Worker tests follow the discovery links anonymously.
+
+The tutorial is an application consumer of public packages. It does not enter the
+SDK, host or runtime import graph. Validate it with an exact Chronolog archive
+when changing application APIs. [The cold-start acceptance test](AGENT_ONBOARDING_TEST.md)
+measures the full domain-only journey separately from automated route/link tests.
+
+`test:first-app` downloads the starter from its own isolated host, installs only
+public archives in a temporary consumer, and exercises owner claim, descriptor
+configuration, initial generation selection, native commands and process reopen,
+signed publication, browser enrollment, shared state and uncertain-command retry
+after reload. It records source/archive identities and results in
+`.results/first-app.json`, with desktop and narrow-viewport homepage and connected
+starter screenshots. The photo flow transports actual encrypted session content
+and signals to an authorized native test participant. It uses an injected
+deterministic provider, verifies analysis makes no domain write, then commits only
+the person's edited observation and reopens it. It does not call a live AI service.
+Helper tests also cover stale reads, cancellation, uncertain operation states,
+failed preparation, fixed reviewed values and explicit reapplication lineage. The
+`Agent onboarding` workflow runs it with a pinned Chronolog source commit and
+the repository's Playwright container. It needs no production credentials.
+
+For a local run, build the events-only Chronolog archive as described in
+[Build an app](BUILD_AN_APP.md), run `npm run build:artifacts`, then supply that
+archive's absolute path to `test:first-app`. Use Playwright's installed Chromium,
+or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chromium executable.
+If the environment cannot start
+a browser, `--native-only` runs setup, durable commands/reopen, bundling and signed
+publication, and explicitly records a **partial** result with browser checks
+omitted. It does not qualify browser behavior. All modes use a synthetic local
+owner session and encrypted WebSocket relay; they do not qualify live OAuth,
+Internet connectivity, native RTC, mobile execution or unaided agent usability.
+
+The workflow also builds the pinned optional SQL-native engine on its Node 24
+runner and runs `test:first-app -- --session-archive /absolute/sql-archive.tgz
+--sql-native-only`. That mode records `.results/first-app-sql.json` and qualifies
+the separate SQL starter's setup, signed schema, guarded transfer, atomic
+rejection, exact retry and native process reopen. It reports native coverage
+explicitly and does not claim the supplied SQL browser Worker is qualified by
+that check. Engine archives must match the target Node/platform/architecture/libc
+requirements; an events-only archive cannot stand in for SQL.

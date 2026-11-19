@@ -11,6 +11,8 @@ import { HttpError, intParam, json, readJson } from './http';
 import { newPageKey, sha256Hex } from './ids';
 import { serviceDescriptor } from './descriptor';
 import { authenticateAgent, currentPrincipal, requireAccess } from './access';
+import { onboardingDescriptor } from './onboarding';
+import { publicBase } from './urls';
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -48,7 +50,7 @@ async function tendrilInfo(t: Tendril) {
     .bind(ownerId).first<{ provider: string; login: string }>() : null;
   return { id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
     application: selectedApplication(t), configured: t.db.get('peer_generation_configuration', null) !== null,
-    expires_at: t.expiresAt(), owner, version: pointers(t), meta: tendrilMeta(t) };
+    expires_at: t.expiresAt(), owner, owner_account_id: ownerId, version: pointers(t), meta: tendrilMeta(t) };
 }
 export function tendrilMeta(t: Tendril) {
   return {
@@ -62,6 +64,7 @@ export function tendrilMeta(t: Tendril) {
 
 route('GET', /^$/, async t => json(await tendrilInfo(t)));
 route('GET', /^service$/, t => json(serviceDescriptor(t)));
+route('GET', /^guide$/, t => json(onboardingDescriptor(publicBase(t.env))));
 route("PATCH", /^$/, async (t, req) => {
   const b = await readJson(req, 64 * 1024);
   if (b.name !== undefined) t.db.set("name", validName(b.name));

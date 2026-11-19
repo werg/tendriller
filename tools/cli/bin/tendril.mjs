@@ -4,8 +4,13 @@ import { parseArgs, intFlag } from '../lib/args.mjs';
 import { resolveConfig, saveConfig, removeConfig, serverBase } from '../lib/config.mjs';
 import { request, client, ApiError } from '../lib/api.mjs';
 import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/session.mjs';
+import { onboardingGuide, publicServiceOrigin } from '../lib/guide.mjs';
 
 const usage = `Usage: tendril <command> [options]
+
+Start with a service domain (no saved handle or session required):
+  guide [--server URL]                  Print the application-building workflow; no network access
+  service [--server URL]                Read the public host contract and limits
 
 Owned application session (--session /absolute/application.mjs):
   describe | status | query <name> [json]
@@ -19,7 +24,7 @@ Owned application session (--session /absolute/application.mjs):
 
 Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
   new [name] --owner VERIFIED_EMAIL [--server URL] [--as NAME]
-  info [--show-url] | service | meta <json> | release
+  info [--show-url] | service --tendril NAME | meta <json> | release
   link list | create <json> | rotate <id> | remove <id>
   token list | create <name> | remove <name>
   activity [--after N] | remove --yes
@@ -27,6 +32,8 @@ Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
 --timeout SECONDS bounds an invocation (default 30; watch waits until interrupted).
 --pretty formats JSON. The session module exports openSession({signal}) and returns
 {session, control?}; control is session.connectControlParticipant(...).
+Start with guide if you have a page handle but no application session. Page
+creation and owner sign-in do not themselves configure or connect that session.
 Chronolog owns signing, exact retry, durable identity and recovery. No host data
 API or extra delivery queue is installed. A timed out waiter leaves its saved
 operation available under the original identity.`;
@@ -36,17 +43,23 @@ const flagsByCommand = {
   describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'], operation: [],
   retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: [],
   signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], publish: ['operation', 'entry'],
-  new: ['owner', 'server', 'as'], info: ['show-url'], service: [], meta: [], release: [], link: [], token: [],
+  guide: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: [],
   activity: ['after'], remove: ['yes'],
 };
 const arity = { describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2], operation: [1, 1], retry: [1, 1],
   reapply: [3, 3], events: [0, 0], watch: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
-  publish: [1, 1], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
+  publish: [1, 1], guide: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
   link: [1, 2], token: [1, 2], activity: [0, 0], remove: [0, 0] };
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
 async function hostCommand(command, args, flags, signal) {
+  if (command === 'guide') return onboardingGuide(flags);
+  if (command === 'service' && (flags.server !== undefined ||
+      !(flags.tendril || process.env.TENDRIL_NAME || process.env.TENDRIL_API && process.env.TENDRIL_TOKEN))) {
+    const server = publicServiceOrigin(serverBase(process.env, flags));
+    return request(`${server}/api/service`, { signal });
+  }
   if (command === 'new') {
     const owner = String(flags.owner ?? process.env.TENDRIL_OWNER ?? '').trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner) || owner.length > 254) throw invalid('new requires --owner VERIFIED_EMAIL');
@@ -83,10 +96,12 @@ async function main() {
   if (flags.help || cmd === 'help' || cmd === undefined) { console.log(usage); return; }
   if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
   const application = applicationCommands.has(cmd);
-  const allowed = new Set(['pretty', 'timeout', application ? 'session' : 'tendril', ...flagsByCommand[cmd]]);
+  const allowed = new Set(['pretty', 'timeout', ...(cmd === 'guide' ? [] : [application ? 'session' : 'tendril']), ...flagsByCommand[cmd]]);
   for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
   const [min, max] = arity[cmd];
   if (args.length < min || args.length > max) throw invalid(`Invalid arguments for ${cmd}; see --help`);
+  if (cmd === 'service' && flags.server !== undefined && flags.tendril !== undefined)
+    throw invalid('Choose public service --server URL or page-scoped service --tendril NAME');
   if (flags.saved && flags.shared) throw invalid('Choose --saved or --shared');
   if (cmd === 'reapply' && flags['based-on'] === undefined) throw invalid('reapply requires --based-on with the reviewed current revision');
   const seconds = intFlag(flags.timeout, 'timeout', cmd === 'watch' ? 0 : 30);

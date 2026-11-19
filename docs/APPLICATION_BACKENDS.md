@@ -1,5 +1,7 @@
 # The application session contract
 
+New application? Start with [Build an app](BUILD_AN_APP.md) and its [complete session bootstrap](SESSION_BOOTSTRAP.md). This reference explains the contract implemented by that session.
+
 Every application uses the same owned Chronolog session and one Tendriller binding. `ApplicationSelection` contains only `{id}`. There is no execution-profile discriminator or host fallback.
 
 ## Installation

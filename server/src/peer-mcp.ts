@@ -19,7 +19,7 @@ export const PEER_CONTROL_TOOLS: Tool[] = [
     inputSchema: schema(), call: call('publication', 'definition') },
   { name: 'discover_peers', description: 'Read bounded expiring routing hints on join or reconnect. Hints grant no authority or retention guarantee; healthy sessions do not poll.',
     inputSchema: schema(), call: call('discovery', 'read') },
-  { name: 'configure_peer_application', description: 'Publish the initial peer-generation-v1 descriptor and enrolled device grants. The hosted control participant stores no application commands and creates no permanent peer role.',
+  { name: 'configure_peer_application', description: 'Configure the initial peer-generation-v1 descriptor and enrolled device grants after owner claim. Next select the first generation before opening the session. Call tendril_guide for the complete setup. The host creates no permanent peer role.',
     inputSchema: schema({ configuration: { type: 'object' } }, ['configuration']), call: call('control', 'configure', args => args.configuration) },
   { name: 'select_peer_generation', description: 'Submit an exact signed Chronolog transition at creation, handover, takeover or restrictive control change. Preserve the signed transition on lost replies; ordinary application commands stay in the local peer session.',
     inputSchema: schema({ request: { type: 'object' }, control: { type: 'object' } }, ['request']),
