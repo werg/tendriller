@@ -6,11 +6,11 @@ import { route } from '../src/router';
 import { oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { challengeFor } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
-import { bytesDigest, bytesToHex, describeApplication, eventExecutionManifest, executionManifestArtifacts, MemoryBytesStore,
+import { bytesDigest, bytesToHex, createApplicationTools, describeApplication, eventExecutionManifest, executionManifestArtifacts, MemoryBytesStore,
   openApplicationDevice, openPeerApplication, participantGrant, signTransitionRequest } from '@chronolog/peer-session';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { createPeerIntroductions, createPeersClient } from '../../contract/peers.mjs';
-import { definition } from '../../integrations/chatgpt/examples/kitchen/domain.mjs';
+import { createPeersClient } from '../../contract/peers.mjs';
+import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
+import { connectApplicationAssistant, createAssistantKey, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 import { advance, create, inDO, runAlarm, stub } from './helpers';
 
@@ -416,174 +416,170 @@ it('authenticated bridge preflight returns only its exact deployment settings wi
     managementRedirectUris: [MANAGEMENT], authorizationServerReady: true });
 });
 
+const notes = defineApplication({
+  id: 'notes-mcp-integration', version: '1',
+  commands: { addNote: defineCommand({
+    description: 'Save text in the notebook.', input: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    prepare: ({ text }) => program(emit('note', { text })),
+  }) },
+  queries: { notes: defineQuery({ description: 'Read retained notes.', input: { type: 'null' },
+    read: (view: ApplicationReadView) => view.readEvents({ topics: ['note'] }).events.map(event => event.payload) }) },
+});
+const counter = defineApplication({
+  id: 'counter-mcp-integration', version: '1',
+  commands: { count: defineCommand({
+    description: 'Add one reading.',
+    input: { type: 'integer', minimum: 1, maximum: 10 },
+    prepare: value => program(emit('reading', { value })),
+  }) },
+  queries: { readings: defineQuery({ description: 'Return the retained meter readings.',
+    input: { type: 'null' }, read: (view: ApplicationReadView) => view.readEvents({ topics: ['reading'] }).events.map(event => event.payload),
+  }) },
+});
 
-it('uses the page Worker for MCP, selected-event delivery and retry after eviction', async () => {
-  const f = await hostFixture(), now = Date.now(), resource = ISSUER + '/mcp';
-  const config = JSON.parse(f.settings.OAUTH_CONFIG_JSON!), scopes = 'applications:read applications:write events:subscribe';
-  config.resource = resource;
-  config.bridges = [];
-  config.clients[0].scopes = scopes.split(' ');
-  const settings: Partial<Env> = {
-    OAUTH_CONFIG_JSON: JSON.stringify(config), OAUTH_SIGNING_JWK: f.settings.OAUTH_SIGNING_JWK,
-    ASSISTANT_PAGE_ID: f.page.id, ASSISTANT_PAGE_TOKEN: f.page.token,
-    ASSISTANT_STORE_KEY: btoa('test-local-assistant-store-key!!'),
-    ASSISTANT_CALLBACK_ORIGINS: 'https://callback.example',
-  };
-  const previous = await inDO(f.page.id, t => {
-    const before = Object.fromEntries(Object.keys(settings).map(key => [key, t.env[key as keyof Env]]));
-    Object.assign(t.env, settings); return before;
+it('serves unrelated native applications through one MCP endpoint and retains inbox and signed push across eviction', async () => {
+  const a = await hostFixture(), b = await hostFixture(), now = Date.now(), resource = ISSUER + '/mcp';
+  const scopes = 'tendrils:list applications:read applications:write events:subscribe';
+  const bind = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource, clients: [
+    { id: 'chatgpt', redirectUris: [REDIRECT], scopes: scopes.split(' ') },
+  ] }),
+  ASSISTANT_STORE_KEY: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))), ASSISTANT_CALLBACK_ORIGINS: 'https://callback.example' });
+  const settings = Object.fromEntries(['OAUTH_CONFIG_JSON', 'OAUTH_SIGNING_JWK', 'ASSISTANT_STORE_KEY', 'ASSISTANT_CALLBACK_ORIGINS']
+    .map(key => [key, bind[key as keyof Env]]));
+  const restore = await inDO(a.page.id, t => {
+    const previous = Object.fromEntries(Object.keys(settings).map(key => [key, t.env[key as keyof Env]]));
+    Object.assign(t.env, settings); return previous;
   });
-  const bind = { ...f.settings, ...settings }, oauth = (await oauthConfig(bind))!;
-  const transportHeaders = { Authorization: 'Bearer ' + f.page.token, 'Content-Type': 'application/json' };
+  await inDO(b.page.id, t => { Object.assign(t.env, settings); });
+  const oauth = (await oauthConfig(bind))!, adapters: AssistantParticipant[] = [], sessions: { close(): Promise<void> }[] = [];
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
-    rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0,
-    invitationReceivedBytes: 0, relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
-  const peers = createPeersClient({ base: f.page.api, applicationId: f.page.application.id,
-    request: async (path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}) => {
-      const response = await request(new URL(f.page.api).pathname + '/' + path, bind,
-        { method: options.method, headers: transportHeaders, signal: options.signal,
+    rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
+    relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
+  async function open(f: typeof a, definition: typeof notes | typeof counter, query: string, command: string, eventName: string) {
+    const pagePath = new URL(f.page.api).pathname, headers = { Authorization: 'Bearer ' + f.page.token, 'Content-Type': 'application/json' };
+    const peers = createPeersClient({ base: f.page.api, applicationId: f.page.application.id,
+      request: async (path, options = {}) => {
+        const res = await request(pagePath + '/' + path, bind, { method: options.method, headers,
           ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
-      if (!response.ok) throw Error(`${path}: ${response.status} ${await response.text()}`);
-      return response.json();
-    },
-    socket: (raw: string, protocols: readonly string[]) => {
-      const url = new URL(raw);
-      if (url.pathname.endsWith('/relay')) traffic.relayUpgrades++;
-      return testPeerSocket(() => request(url.pathname + url.search, bind,
-        { headers: { ...transportHeaders, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', ') } }),
-        traffic, url.pathname.endsWith('/relay') ? 'relay' : 'invitation');
-    },
-  });
-  const pagePath = new URL(f.page.api).pathname;
-  const deviceRequest = () => request(pagePath + '/assistant/device', bind, { method: 'POST', headers: transportHeaders });
-  const generated = await deviceRequest();
-  expect(generated.status, await generated.clone().text()).toBe(200);
-  const { publicKey } = await generated.json() as { publicKey: string };
-  expect((await (await deviceRequest()).json() as { publicKey: string }).publicKey).toBe(publicKey);
-  const device = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const epochKey = crypto.getRandomValues(new Uint8Array(32)), manifest = await executionManifestArtifacts(await eventExecutionManifest());
-  const base = await peers.configureApplication({
-    historyId: 'kitchen-worker-assistant', definition: describeApplication(definition), schema: null,
-    executionManifestDigest: bytesToHex(manifest.executionManifestDigest), schemaAdministrator: device.identity.publicKey,
-    epoch: 0, keyDigest: await bytesDigest(epochKey),
-    members: [
-      { grant: participantGrant(device.identity.publicKey, { administrator: true }) },
-      { grant: { ...participantGrant(publicKey), recovery: false, coordinator: false } },
-    ],
-  });
-  const desc = base.descriptor.payload;
-  await peers.selectGeneration(await signTransitionRequest({
-    applicationId: desc.applicationId, profile: desc.profile, policy: desc.policy,
-    transitionId: 'create-worker-assistant', expectedGeneration: null, requester: device.identity.publicKey,
-    coordinator: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null,
-  }, device.identity));
-  const session = await openPeerApplication({ device, definition, authority: await peers.application(), epochKeys: new Map([[0, epochKey]]) });
+        if (!res.ok) throw Error(path + ': ' + res.status + ': ' + await res.text());
+        return res.json();
+      },
+    });
+    const device = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+    const epoch = crypto.getRandomValues(new Uint8Array(32)), manifest = await executionManifestArtifacts(await eventExecutionManifest());
+    const base = await peers.configureApplication({ historyId: 'generic-mcp-test', definition: describeApplication(definition),
+      schema: null, executionManifestDigest: bytesToHex(manifest.executionManifestDigest), schemaAdministrator: device.identity.publicKey,
+      epoch: 0, keyDigest: await bytesDigest(epoch), members: [{ grant: participantGrant(device.identity.publicKey, { administrator: true }) }],
+    });
+    const descriptor = base.descriptor.payload;
+    await peers.selectGeneration(await signTransitionRequest({ applicationId: descriptor.applicationId, profile: descriptor.profile,
+      policy: descriptor.policy, transitionId: 'initial', expectedGeneration: null, requester: device.identity.publicKey,
+      coordinator: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null,
+    }, device.identity));
+    const session = await openPeerApplication({ device, definition, authority: await peers.application(), epochKeys: new Map([[0, epoch]]) });
+    sessions.push(session);
+    const key = createAssistantKey(), reviewPath = '/connections/' + f.page.id;
+    const blueprints = { queries: [query], commands: [command], events: [{ name: eventName, description: 'An approved app event.' }] };
+    const proposal = await proposeApplicationAssistant({ api: f.page.api, token: f.page.token, key, label: f.page.name,
+      ...blueprints, fetcher: (url, init) => request(new URL(String(url)).pathname, bind, init) });
+    expect(proposal.approved).toBe(false);
+    expect(proposal.reviewUrl).toBe(ISSUER + reviewPath);
+    expect((await request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } })).status).toBe(404);
+    const upgrade = () => request(pagePath + '/assistant/adapter', bind, { headers: {
+      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.application-mcp.v1, ' + key,
+    } });
+    expect((await upgrade()).status).toBe(401);
+    const review = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
+    expect(review.status).toBe(200);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(await review.text())?.[1] ?? '';
+    const form = { csrf, action: 'approve', queries: query, commands: command, events: eventName };
+    expect((await formPost(reviewPath, form, bind, f.cookie, 'https://evil.example')).status).toBe(403);
+    expect((await formPost(reviewPath, form, bind, f.cookie)).status).toBe(303);
+    const start = () => connectApplicationAssistant({ api: f.page.api, key, session, tools: createApplicationTools(session),
+      ...blueprints, openSocket: () => testPeerSocket(upgrade, traffic, 'rendezvous') as unknown as globalThis.WebSocket });
+    const adapter = start();
+    adapters.push(adapter);
+    await vi.waitFor(() => expect(adapter.online).toBe(true));
+    const gid = crypto.randomUUID(), jti = crypto.randomUUID();
+    const bearer = await signAccessToken(oauth, { iss: ISSUER, aud: resource, sub: f.subject, sid: gid, jti, scope: scopes,
+      exp: Math.floor((now + 300_000) / 1000) });
+    await env.ACCOUNTS.batch([
+      env.ACCOUNTS.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
+        .bind(gid, f.subject, 'chatgpt', resource, scopes, now, now + 600_000),
+      env.ACCOUNTS.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES (?,?,?,?,?,?)')
+        .bind(await sha256Hex(bearer), gid, jti, scopes, now, now + 300_000),
+    ]);
+    const rpc = async (method: string, params: Record<string, unknown> = {}) => {
+      const res = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method, params }, bind, bearer);
+      return res.json<any>();
+    };
+    const tool = (name: string, args: Record<string, unknown> = {}) => rpc('tools/call', { name, arguments: args });
+    return { adapter, session, eventName, gid, rpc, tool, id: f.page.application.id };
+  }
   const sent: { id: string; body: string }[] = [];
   const secretBytes = new Uint8Array(32).fill(9), secret = 'whsec_' + btoa(String.fromCharCode(...secretBytes));
   const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const req = new Request(input, init);
     expect(req.url).toBe('https://callback.example/events');
-    const data = await req.text(), event = JSON.parse(data), id = req.headers.get('webhook-id')!;
+    const body = await req.text(), value = JSON.parse(body), id = req.headers.get('webhook-id')!;
     const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${req.headers.get('webhook-timestamp')}.${data}`));
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${req.headers.get('webhook-timestamp')}.${body}`));
     expect(req.headers.get('webhook-signature')).toBe('v1,' + btoa(String.fromCharCode(...new Uint8Array(signature))));
-    if (event.type === 'verification') return Response.json({ challenge: event.challenge });
-    sent.push({ id, body: data });
+    expect(req.headers.get('X-MCP-Subscription-Id')).toMatch(/^sub_/);
+    if (value.type === 'verification') return Response.json({ challenge: value.challenge });
+    sent.push({ id, body });
     return new Response(null, { status: sent.length === 1 ? 503 : 204 });
   });
   try {
-    const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
-    await session.participate({ control, ...createPeerIntroductions({ peers, identity: session.deviceId, directTimeoutMs: 1,
-      openDirectConnection: async () => { throw Error('Relay only test'); },
-      openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay as Parameters<typeof openWebSocketConnection>[0], { ready: relay.ready, signal }) }) });
-    const started = await session.command('setCookingStep', { stepId: 'first', text: 'Slice apples' } as never, { operationId: 'set-step' });
-    await started.applied();
-
-    const consent = await request('/connections', bind, { headers: { Cookie: f.cookie } });
-    expect(consent.status, await consent.clone().text()).toBe(200);
-    const csrf = /name="csrf" value="([^"]+)"/.exec(await consent.text())?.[1];
-    expect(csrf).toBeTruthy();
-    const management = await formPost('/connections', { csrf: csrf!, action: 'grant',
-      applicationId: f.page.application.id, queries: 'kitchenContext', commands: 'replyToAssistance', events: 'assistant.help_requested', days: '1' }, bind, f.cookie);
-    expect(management.status, await management.clone().text()).toBe(303);
-    const gid = 'assistant-' + crypto.randomUUID(), jti = 'jti-' + crypto.randomUUID();
-    const token = await signAccessToken(oauth, { iss: ISSUER, aud: resource, sub: f.subject, sid: gid, jti,
-      scope: scopes, exp: Math.floor((now + 300_000) / 1000) });
-    await env.ACCOUNTS.batch([
-      env.ACCOUNTS.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
-        .bind(gid, f.subject, 'chatgpt', resource, scopes, now, now + 600_000),
-      env.ACCOUNTS.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES (?,?,?,?,?,?)')
-        .bind(await sha256Hex(token), gid, jti, scopes, now, now + 300_000),
+    const first = await open(a, notes, 'notes', 'addNote', 'note.added');
+    const second = await open(b, counter, 'readings', 'count', 'counter.changed');
+    expect((await first.rpc('initialize')).result.capabilities.events).toEqual({});
+    expect((await first.tool('list_tendrils')).result.structuredContent.applications).toEqual([
+      { applicationId: first.id, label: a.page.name, pageId: a.page.id },
     ]);
-    const mcp = (method: string, params = {}) => jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method, params }, bind, token);
-    expect((await mcp('initialize')).status).toBe(200);
-    expect(traffic.relayUpgrades).toBe(0);
-    const idle = await request(pagePath + '/assistant/wake', bind, { method: 'POST', headers: transportHeaders });
-    expect(idle.status).toBe(204);
-    await inDO(f.page.id, t => expect(t.db.get('assistant_work', null)).toBeNull());
-    const read = await mcp('tools/call', { name: 'query_application', arguments: {
-      applicationId: f.page.application.id, query: 'kitchenContext', input: null,
-    } });
-    const result = await read.json() as { result?: { isError?: boolean; structuredContent?: unknown } };
-    expect(result.result?.isError, JSON.stringify({ result, traffic, state: session.status, participation: session.participation?.status })).not.toBe(true);
-    expect(JSON.stringify(result.result?.structuredContent)).toContain('Slice apples');
-    expect(traffic.relayUpgrades).toBeGreaterThan(0);
-    await inDO(f.page.id, t => {
-      expect(t.ctx.getWebSockets('peer-relay').every(socket => socket.readyState !== WebSocket.READY_STATE_OPEN)).toBe(true);
-      expect(t.db.get('assistant_work', null)).toBeNull();
-    });
-    const subscribed = await mcp('events/subscribe', { name: 'assistant.help_requested',
-      arguments: { application_id: f.page.application.id },
+    expect((await first.tool('describe_application', { applicationId: second.id })).result.isError).toBe(true);
+    expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual([second.id + '.counter.changed']);
+    expect((await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.queries[0].name).toBe('notes');
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'readings', input: null })).result.isError).toBe(true);
+    const write = { applicationId: first.id, command: 'addNote', operationId: 'reply-one', input: { text: 'Rope checked' } };
+    expect((await first.tool('call_application_command', write)).result.isError).toBeUndefined();
+    expect((await first.tool('call_application_command', write)).result.isError).toBeUndefined();
+    expect((await second.tool('call_application_command', { applicationId: second.id, command: 'count', operationId: 'count-one', input: 7 })).result.isError).toBeUndefined();
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
+    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
+
+    const watch = await first.rpc('events/subscribe', { name: first.id + '.note.added', arguments: { application_id: first.id },
       delivery: { mode: 'webhook', url: 'https://callback.example/events', secret } });
-    const registration = await subscribed.json() as { result?: { id?: string } };
-    expect(registration.result?.id, JSON.stringify(registration)).toMatch(/^sub_/);
-
-    const view = await session.readView();
-    const batch = view.readEvents({ topics: ['assistant'] });
-    const step = batch.events.find(e => (e.payload as { type?: string }).type === 'step.selected')!;
+    expect(watch.result?.id, JSON.stringify(watch)).toMatch(/^sub_/);
+    const view = await first.session.readView(), batch = view.readEvents({ topics: ['note'] });
     await view.release();
-    const operation = await session.command('requestAssistance', {
-      requestId: 'help-apples', kind: 'recipe_help', question: 'Private details about slicing?',
-      cookingStepId: 'first', cookingStepEventId: step.id, contextRevision: 'observed-first',
-      expiresAtMs: Date.now() + 60_000,
-    } as never, { operationId: 'ask-slicing' });
-    await operation.applied();
-    const hint = () => request(pagePath + '/assistant/wake', bind, { method: 'POST', headers: transportHeaders });
-    expect((await hint()).status).toBe(204);
-    expect((await hint()).status).toBe(204);
-    await advance(f.page.id, 100);
-    await runAlarm(f.page.id);
-    await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 12_000 });
-    expect(sent[0].body).not.toContain('Private details');
-    expect(JSON.parse(sent[0].body).data.request_id).toBe('help-apples');
+    expect(batch.events).toHaveLength(1);
+    const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, generation: batch.revision.generation, payload: { ready: true } };
+    const sequence = await first.adapter.publish(emitted);
+    expect(await first.adapter.publish(emitted)).toBe(sequence);
+    const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
+    expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
+    expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
 
-    await evictDurableObject(stub(f.page.id));
-    await inDO(f.page.id, t => { Object.assign(t.env, settings); });
-    await advance(f.page.id, 3_000);
-    await runAlarm(f.page.id);
-    await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 12_000 });
+    await advance(a.page.id, 100);
+    await runAlarm(a.page.id);
+    expect(sent).toHaveLength(1);
+    await evictDurableObject(stub(a.page.id));
+    await inDO(a.page.id, t => { Object.assign(t.env, settings); });
+    await advance(a.page.id, 3000);
+    await runAlarm(a.page.id);
+    expect(sent).toHaveLength(2);
     expect(sent[1]).toEqual(sent[0]);
-    const requestEventId = JSON.parse(sent[1].body).data.source_event_id;
-    const reply = await mcp('tools/call', { name: 'reply_to_assistance', arguments: {
-      applicationId: f.page.application.id, operationId: 'reply-to-slicing', requestId: 'help-apples',
-      requestEventId, answer: 'Cut the apples into thin wedges.', suggestedSteps: [],
-      basedOnContextRevision: 'observed-first', cookingStepId: 'first',
-    } });
-    const replyResult = await reply.json() as { result?: { isError?: boolean; structuredContent?: unknown } };
-    expect(replyResult.result?.structuredContent, JSON.stringify(replyResult)).toMatchObject({
-      operation: { status: 'applied', outcome: 'accepted' }, operationId: 'reply-to-slicing',
-    });
-    await vi.waitFor(async () => {
-      const status = await session.query('assistanceStatus', { requestId: 'help-apples' } as never);
-      expect(JSON.stringify(status.value)).toContain('Cut the apples into thin wedges.');
-    }, { timeout: 8_000 });
-    await inDO(f.page.id, t => expect(t.db.get('assistant_work', null)).toBeNull());
-    expect((await (await deviceRequest()).json() as { publicKey: string }).publicKey).toBe(publicKey);
-    await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), gid).run();
-    expect((await mcp('initialize')).status).toBe(401);
+    await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull());
+
+    await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), first.gid).run();
+    expect((await first.rpc('initialize')).error).toBe('invalid_token');
+    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
   } finally {
+    await Promise.all(adapters.map(item => item.close()));
+    await Promise.all(sessions.map(item => item.close()));
     outbound.mockRestore();
-    await session.close();
-    await inDO(f.page.id, t => { Object.assign(t.env, previous); });
+    await inDO(a.page.id, t => { Object.assign(t.env, restore); });
+    await inDO(b.page.id, t => { Object.assign(t.env, restore); });
   }
-});
+}, 30_000);
