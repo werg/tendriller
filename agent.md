@@ -65,12 +65,15 @@ different things. Creating the page does not create its command implementation,
 device grants, first generation, connected session or selected code release.
 
 The agent needs an environment that can run the native session. The browser needs
-its own Worker and authorized device. Tendriller does not host an always-running
-agent, wake an arbitrary chat session, or execute application commands through MCP.
-For live agent responses, keep the agent process connected and integrate its
-application changes into the agent's execution loop. If your environment cannot
-run that process, report this precise blocker and the supported next step; an HTTP
-page upload cannot substitute for a connected application.
+its own Worker and authorized device. The Tendriller host does not run an
+always-running agent; its MCP endpoint exposes host administration. For remote
+application tools, explicit supported event subscriptions, a mounted assistance
+card or a separate Workspace Agent route, use the optional
+[ChatGPT integration](docs/CHATGPT_INTEGRATION.md). It requires its own enrolled
+native process, account authorization and owner consent. It cannot wake an
+arbitrary ordinary chat. Keep the selected participant/agent processes running
+and report their restart state. If that environment is unavailable, choose the
+guide's native-tool or manual-handoff fallback and name the exact prerequisite.
 
 Use [troubleshooting](docs/TROUBLESHOOTING.md) at the failing stage. In particular,
 `peer_application_unconfigured` means configuration is missing; an unavailable

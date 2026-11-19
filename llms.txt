@@ -14,6 +14,7 @@
 - [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview versus an explicitly composed real-session preview; no substitute persistence.
 - [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): what every setup file does, persistent identity, explicit enrollment and safe resume.
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries and reference snippets after setup.
+- [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md): optional enrolled remote bridge, tools, explicit supported event subscriptions, mounted UI, Workspace Agent route, exact retry and practical fallbacks.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): identify the incomplete stage and the exact next action.
 
 Do not treat page creation or runtime installation as application completion. Verify a browser command in a native read, a native command in the browser, persistence after reload, and the signed publication receipt. Keep the native agent process running for the example's applied writes and live agent behavior. Host login, device grants and publisher rights are separate. Preserve private identity, keys and exact operation IDs; never publish them with the UI. Evaluate Chronolog's native persistence before selecting another backend.
@@ -36,7 +37,7 @@ Do not treat page creation or runtime installation as application completion. Ve
 - [Protocol](https://tendriller.dev/docs/PROTOCOL.md): participant filters, authorization and release atomicity.
 - [Live signals](https://tendriller.dev/docs/APPLICATION_SIGNALS.md): ephemeral delivery, expiration and cancellation.
 - [Voice](https://tendriller.dev/docs/HANDS_FREE.md): optional input/output; it does not connect an agent by itself.
-- [MCP scope](https://tendriller.dev/docs/MCP.md): host administration; application commands still use a running session.
+- [MCP scope](https://tendriller.dev/docs/MCP.md): host administration versus the separate application integration; application execution stays in an enrolled session.
 
 ## Tools, examples and verification
 
