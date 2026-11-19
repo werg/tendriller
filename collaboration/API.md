@@ -54,6 +54,11 @@ operation handle also has a full `reference` with application/signer/operation.
 writeDraft, removeDraft, retainOperation, inspectOperation, removeOperation,
 pending({allViews?}). It indexes separate operation references; it is never a
 command queue. Only explicit copying transfers a draft between views.
+Its local storage keys encode each application/profile/view/operation/draft
+identity separately, including identifiers containing colons or slashes. The
+`local:v2` namespace preserves older candidate records without importing them:
+the former concatenated keys can be ambiguous, so applications must review any
+such records explicitly before copying them into a selected view.
 
 `participantModel(entries,{selfEndpoint,now})`, `receiptModel(evidence)`, and
 `mountParticipantPanel({container,participants,selfEndpoint,onSelect})` are optional

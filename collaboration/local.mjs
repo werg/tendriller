@@ -4,8 +4,12 @@ import { canonicalJson, CollaborationError, identifier, signerId } from './proto
 export function createViewStore({ storage, applicationId, profileId, viewId }) {
   if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function') throw new CollaborationError('LOCAL_STORAGE_UNAVAILABLE');
   [applicationId, profileId, viewId].forEach(value => identifier(value));
-  const prefix = `tendriller:collaboration:v1:${applicationId}:${profileId}:`;
-  const viewPrefix = `${prefix}view:${viewId}:`;
+  // Every caller-controlled segment is encoded independently. Identifiers may
+  // contain ':' and '/', so concatenating them raw aliases unrelated views.
+  // Keep the old, ambiguous namespace untouched instead of guessing ownership.
+  const segment = value => encodeURIComponent(identifier(value));
+  const prefix = `tendriller:collaboration:local:v2:${segment(applicationId)}:${segment(profileId)}:`;
+  const viewPrefix = `${prefix}view:${segment(viewId)}:`;
   function read(key) {
     const value = storage.getItem(key);
     if (value === null) return null;
@@ -17,12 +21,12 @@ export function createViewStore({ storage, applicationId, profileId, viewId }) {
   }
   function operationKey(reference) {
     if (reference.applicationId !== applicationId) throw new CollaborationError('OPERATION_SCOPE_MISMATCH');
-    return `${prefix}operation:${signerId(reference.author)}:${identifier(reference.operationId)}:view:${viewId}`;
+    return `${prefix}operation:${signerId(reference.author)}:${segment(reference.operationId)}:view:${segment(viewId)}`;
   }
   return Object.freeze({ viewId,
-    readDraft(draftId = 'main') { return read(`${viewPrefix}draft:${identifier(draftId)}`); },
-    writeDraft(value, draftId = 'main') { write(`${viewPrefix}draft:${identifier(draftId)}`, value); },
-    removeDraft(draftId = 'main') { storage.removeItem(`${viewPrefix}draft:${identifier(draftId)}`); },
+    readDraft(draftId = 'main') { return read(`${viewPrefix}draft:${segment(draftId)}`); },
+    writeDraft(value, draftId = 'main') { write(`${viewPrefix}draft:${segment(draftId)}`, value); },
+    removeDraft(draftId = 'main') { storage.removeItem(`${viewPrefix}draft:${segment(draftId)}`); },
     retainOperation(reference, context = {}) {
       const key = operationKey(reference), existing = read(key);
       const value = { reference, viewId, context };

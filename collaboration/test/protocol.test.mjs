@@ -19,6 +19,34 @@ test('local drafts and references are independent even when two views inspect th
   assert.equal(b.inspectOperation(ref).reference.attemptId,'first-attempt');
   assert.throws(()=>b.retainOperation({...ref,attemptId:'replacement'},{input:'original'}),{code:'OPERATION_REFERENCE_CONFLICT'});
 });
+test('local storage encodes every identity segment without allowing sibling removals',()=>{
+  const shared=storage(),scope={storage:shared,applicationId:'app',profileId:'profile'};
+  const left=createViewStore({...scope,viewId:'c'}),right=createViewStore({...scope,viewId:'b:view:c'});
+  const ref={applicationId:'app',author:signer,operationId:'a:view:b'},other={...ref,operationId:'a'};
+  left.retainOperation(ref,{input:'left'});right.retainOperation(other,{input:'right'});
+  assert.equal(left.pending().length,1);assert.equal(right.pending().length,1);
+  assert.equal(left.pending({allViews:true}).length,2);
+  left.removeOperation(ref);assert.equal(right.inspectOperation(other).context.input,'right');
+
+  const draftLeft=createViewStore({...scope,viewId:'a'}),draftRight=createViewStore({...scope,viewId:'a:draft:b'});
+  draftLeft.writeDraft({text:'left'},'b:draft:c');draftRight.writeDraft({text:'right'},'c');
+  draftLeft.removeDraft('b:draft:c');assert.equal(draftRight.readDraft('c').text,'right');
+
+  const appLeft=createViewStore({storage:shared,applicationId:'a:b',profileId:'c',viewId:'view'});
+  const appRight=createViewStore({storage:shared,applicationId:'a',profileId:'b:c',viewId:'view'});
+  appLeft.writeDraft({text:'left'});appRight.writeDraft({text:'right'});appLeft.removeDraft();
+  assert.equal(appRight.readDraft().text,'right');
+  appLeft.retainOperation({...ref,applicationId:'a:b'},{input:'left'});
+  assert.equal(appRight.pending({allViews:true}).length,0);
+});
+test('ambiguous candidate storage is preserved without assigning it to a new view',()=>{
+  const shared=storage(),legacy='tendriller:collaboration:v1:app:profile:operation:'+signer+':a:view:b:view:c';
+  shared.setItem(legacy,JSON.stringify({reference:{applicationId:'app',author:signer,operationId:'a'},viewId:'b:view:c',context:{}}));
+  const view=createViewStore({storage:shared,applicationId:'app',profileId:'profile',viewId:'c'});
+  assert.deepEqual(view.pending({allViews:true}),[]);
+  view.removeOperation({applicationId:'app',author:signer,operationId:'a:view:b'});
+  assert.notEqual(shared.getItem(legacy),null);
+});
 test('owner attribution replaces caller source and full incarnation fences endpoint identity',()=>{
   const endpoint={ownerInstanceId:'owner',endpointId:'endpoint',endpointIncarnation:'incarnation',context:{runId:'real-run',documentPath:'board.html'}};
   const prepared=prepareCollaborationCommand(endpoint,'collab.request',{source:'{"deviceId":"forged"}'},signer);
