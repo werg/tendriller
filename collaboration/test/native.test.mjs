@@ -204,7 +204,7 @@ process.stdout.write(JSON.stringify({deviceId:supervisor.profile.deviceId,ownerI
   assert.equal((await returning.session.query('notes', null)).value.length, 1);
 });
 
-test('revocation and key rotation persist independently; malformed clients do not stop healthy clients', async t => {
+test('revocation and key rotation persist independently; malformed clients do not stop healthy clients', {timeout:15_000}, async t => {
   const f = await fixture(t);
   let supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner });
   t.after(() => supervisor.close());
@@ -215,6 +215,9 @@ test('revocation and key rotation persist independently; malformed clients do no
   await assert.rejects(observed.session.command('add', 'forbidden', { operationId: 'denied' }), /APPLICATION_ATTACHMENT_FORBIDDEN/);
   await assert.rejects(f.attach(createNativeAttachmentKey()),{code:'SUPERVISOR_BINDING_REVOKED'});
   const malformed = createConnection(supervisor.socketPath); await once(malformed, 'connect');
+  // Consume the bounded terminal error so this deliberately raw client observes
+  // EOF; an unread Node stream can retain data after the server has closed.
+  malformed.resume();
   malformed.write(Buffer.from([0x7f, 0xff, 0xff, 0xff])); await once(malformed, 'close');
   assert.equal((await writing.session.query('notes', null)).value.length, 0);
   const rotated = await supervisor.rotateBinding('writer');
