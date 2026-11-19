@@ -47,6 +47,7 @@ jobs:
             "$GITHUB_WORKSPACE/core/.results/chatgpt-chronolog-provenance.json"
       - name: Test integration contracts and actual native peers
         working-directory: core
+        shell: bash
         env:
           CHRONOLOG_SESSION_PACKAGE: ${{ runner.temp }}/chronolog-peer-session
         run: npm run test:chatgpt 2>&1 | tee .results/chatgpt-tests.log
