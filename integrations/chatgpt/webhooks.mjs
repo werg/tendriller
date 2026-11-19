@@ -57,9 +57,10 @@ export function createPublicWebhookTransport({ resolve, requestImpl = request, t
         lookup: checkedLookup, rejectUnauthorized: true, signal: combined,
         headers: { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
       }, response => {
+        response.on('error', reject);
         const status = response.statusCode ?? 0;
         if (status >= 300 && status < 400) {
-          response.resume();
+          response.destroy(); req.destroy();
           reject(Object.assign(Error('Webhook redirects are not allowed'), { code: 'CALLBACK_REDIRECT' }));
           return;
         }
@@ -70,7 +71,6 @@ export function createPublicWebhookTransport({ resolve, requestImpl = request, t
             response.destroy(); reject(Object.assign(Error('Webhook response exceeds limit'), { code: 'CALLBACK_RESPONSE_TOO_LARGE' }));
           } else chunks.push(Buffer.from(chunk));
         });
-        response.on('error', reject);
         response.on('end', () => resolveResult({ status, body: Buffer.concat(chunks).toString('utf8') }));
       });
       req.on('error', reject); req.end(body);

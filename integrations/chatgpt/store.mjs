@@ -49,8 +49,9 @@ export function openDeliveryStore({ path, key }) {
       try {
         const state = read(), result = mutator(state);
         if (result && typeof result.then === 'function') fail('ASYNC_TRANSACTION', 'Delivery transaction mutators must be synchronous');
+        const returned = structuredClone(result);
         put.run(encrypt(state)); db.exec('COMMIT');
-        return structuredClone(result);
+        return returned;
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     },
     async close() { if (!closed) { closed = true; db.close(); secret.fill(0); } },
@@ -64,7 +65,8 @@ export function createMemoryStore(initial = {}) {
     async transaction(mutator) {
       const copy = structuredClone(state), result = mutator(copy);
       if (result && typeof result.then === 'function') fail('ASYNC_TRANSACTION', 'Delivery transaction mutators must be synchronous');
-      state = copy; return structuredClone(result);
+      const returned = structuredClone(result);
+      state = copy; return returned;
     },
     async close() {},
   };

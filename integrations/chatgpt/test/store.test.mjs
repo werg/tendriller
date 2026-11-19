@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { openDeliveryStore } from '../store.mjs';
+import { openDeliveryStore, createMemoryStore } from '../store.mjs';
 
 test('cursor and jobs survive reopen together, secrets are encrypted, failed transactions roll back', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tendriller-delivery-'));
@@ -15,6 +15,7 @@ test('cursor and jobs survive reopen together, secrets are encrypted, failed tra
       state.cursor = 'selected-cursor'; state.jobs = [{ secret: 'whsec_private-secret-value', state: 'queued' }];
     });
     await assert.rejects(store.transaction(state => { state.cursor = 'wrong'; throw Error('crash'); }), /crash/);
+    await assert.rejects(store.transaction(state => { state.cursor = 'uncloneable'; return () => {}; }), /could not be cloned/);
     await store.close();
     assert.equal((await readFile(path)).includes(Buffer.from('whsec_private-secret-value')), false);
     store = openDeliveryStore({ path, key });
@@ -25,6 +26,12 @@ test('cursor and jobs survive reopen together, secrets are encrypted, failed tra
     store = openDeliveryStore({ path, key: randomBytes(32) });
     await assert.rejects(store.read(), /cannot be authenticated/);
   } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('uncloneable transaction return values cannot commit memory state', async () => {
+  const store = createMemoryStore();
+  await assert.rejects(store.transaction(state => { state.changed = true; return () => {}; }), /could not be cloned/);
+  assert.deepEqual(await store.read(), {});
 });
 
 test('multiple store connections preserve updates and no encryption key is generated silently', async () => {

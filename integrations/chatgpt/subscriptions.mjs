@@ -1,4 +1,5 @@
-import { bounded, canonical, digest, fail, fields, object, text } from './common.mjs';
+import { randomUUID } from 'node:crypto';
+import { bounded, canonical, digest, fail, fields, text } from './common.mjs';
 import { callbackUrl, verifyCallback, webhookKey, createPublicWebhookTransport } from './webhooks.mjs';
 
 const descriptions = {
@@ -18,7 +19,7 @@ export const EVENT_CATALOG = Object.freeze(Object.entries(descriptions).map(([na
 })));
 
 export function ownerIdentity(principal) {
-  return { id: text(principal?.id, 'principal ID', 512), issuer: text(principal?.issuer ?? 'configured', 'issuer', 2048) };
+  return { id: text(principal?.id, 'principal ID', 512), issuer: text(principal?.issuer, 'issuer', 2048) };
 }
 export function subscriptionIdentity(principal, name, args, url) {
   return 'sub_' + digest([ownerIdentity(principal), url, name, args]);
@@ -29,6 +30,8 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
   maxTtlMs = 604800000, maxPerOwner = 50, catalog = EVENT_CATALOG } = {}) {
   if (!store || typeof authorize !== 'function' || typeof captureCursor !== 'function' || typeof applicationIds !== 'function')
     fail('SUBSCRIPTION_CONFIGURATION_REQUIRED', 'Subscriptions require durable storage, account consent and a selected-history cursor reader');
+  if (![ttlMs, maxTtlMs, maxPerOwner].every(value => Number.isSafeInteger(value) && value > 0))
+    fail('SUBSCRIPTION_CONFIGURATION_REQUIRED', 'Subscription lifetimes and quota must be positive safe integers');
   const listeners = new Set();
   const changed = () => { for (const listener of listeners) { try { listener(); } catch { /* observers own their failures */ } } };
   const validate = (params, subscription) => {
@@ -61,52 +64,69 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
     async subscribe(principal, params, { signal } = {}) {
       const url = validate(params, true), owner = ownerIdentity(principal);
       const applicationId = params.arguments.application_id;
-      await authorize(owner, applicationId, params.name);
       const id = subscriptionIdentity(principal, params.name, params.arguments, url);
-      const snapshot = await store.read(), previous = snapshot.subscriptions?.[id], version = previous?.version ?? 0;
-      const ownerCount = Object.values(snapshot.subscriptions ?? {}).filter(sub => sub.active && sub.expiresAt > clock() && canonical(sub.owner) === canonical(owner)).length;
-      if (!previous?.active && ownerCount >= maxPerOwner) fail('SUBSCRIPTION_LIMIT', 'Too many active subscriptions', { status: 429 });
-      const secret = params.delivery.secret;
-      const canReuse = previous?.active && previous.expiresAt > clock();
-      const cachedVerification = canReuse && previous.secret === secret && previous.verifiedAt > clock() - 300000;
-      if (!cachedVerification)
-        await verifyCallback({ subscriptionId: id, url, secret, send, now: clock(), signal });
-      // Capture the current selected tail for a new subscription. Internal crash
-      // recovery uses this durable cursor; protocol cursor:null promises no replay.
-      const baseline = canReuse ? { cursor: previous.sourceCursor, revision: previous.sourceRevision } : await captureCursor(applicationId);
-      await authorize(owner, applicationId, params.name);
-      const now = clock();
-      const sub = await store.transaction(state => {
+      const attempt = randomUUID();
+      // Reserve before the first asynchronous authorization. Unsubscribe can
+      // remove this exact attempt; a later completion must never resurrect it.
+      const previous = await store.transaction(state => {
         state.subscriptions ??= {};
+        for (const [key, item] of Object.entries(state.subscriptions))
+          if ((!item.active || item.expiresAt <= clock()) && !(item.pendingUntil > clock())) delete state.subscriptions[key];
         const current = state.subscriptions[id];
-        if ((current?.version ?? 0) !== version) fail('SUBSCRIPTION_CHANGED', 'Subscription changed while callback verification was in progress; refresh explicitly', { status: 409 });
-        const count = Object.values(state.subscriptions).filter(item => item.active && item.expiresAt > now && canonical(item.owner) === canonical(owner)).length;
-        if (!current?.active && count >= maxPerOwner) fail('SUBSCRIPTION_LIMIT', 'Too many active subscriptions', { status: 429 });
-        const replacement = { id, owner, applicationId, name: params.name, arguments: bounded(params.arguments), url, secret,
-          active: true, version: version + 1, createdAt: canReuse ? previous.createdAt : now,
-          verifiedAt: cachedVerification ? previous.verifiedAt : now,
-          expiresAt: now + Math.min(params.ttlMs ?? ttlMs, maxTtlMs),
-          sourceCursor: (canReuse ? current.sourceCursor : baseline.cursor) ?? null,
-          sourceRevision: (canReuse ? current.sourceRevision : baseline.revision) ?? null,
-          pausedReason: canReuse ? current.pausedReason ?? null : null,
-          recoveryRevision: canReuse ? current.recoveryRevision ?? null : null,
-          previousSecret: canReuse && previous.secret !== secret ? { secret: previous.secret, expiresAt: now + 300000 } :
-            canReuse && previous.previousSecret?.expiresAt > now ? previous.previousSecret : null,
-        };
-        state.subscriptions[id] = replacement;
-        return replacement;
+        if (current?.pendingUntil > clock()) fail('SUBSCRIPTION_PENDING', 'Subscription verification is already pending', { status: 409 });
+        const count = Object.values(state.subscriptions).filter(item => item.id !== id &&
+          (item.active && item.expiresAt > clock() || item.pendingUntil > clock()) && canonical(item.owner) === canonical(owner)).length;
+        if (count >= maxPerOwner) fail('SUBSCRIPTION_LIMIT', 'Too many active or pending subscriptions', { status: 429 });
+        const before = current ? structuredClone(current) : null;
+        state.subscriptions[id] = { ...(current ?? { id, owner, applicationId, name: params.name, active: false, version: 0 }),
+          pendingToken: attempt, pendingUntil: clock() + 60000 };
+        return before;
       });
-      changed(); return result(sub);
+      try {
+        await authorize(owner, applicationId, params.name);
+        const secret = params.delivery.secret, canReuse = previous?.active && previous.expiresAt > clock();
+        const cachedVerification = canReuse && previous.secret === secret && previous.verifiedAt > clock() - 300000;
+        if (!cachedVerification) await verifyCallback({ subscriptionId: id, url, secret, send, now: clock(), signal });
+        // Internal crash recovery uses the selected tail; cursor:null promises
+        // no protocol replay. Refresh must preserve any concurrently advanced cursor.
+        const baseline = canReuse ? null : await captureCursor(applicationId);
+        await authorize(owner, applicationId, params.name);
+        const now = clock();
+        const sub = await store.transaction(state => {
+          const current = state.subscriptions?.[id];
+          if (current?.pendingToken !== attempt || current.pendingUntil <= now)
+            fail('SUBSCRIPTION_CHANGED', 'Subscription changed while authorization or callback verification was in progress; refresh explicitly', { status: 409 });
+          const replacement = { id, owner, applicationId, name: params.name, arguments: bounded(params.arguments), url, secret,
+            active: true, version: (current.version ?? 0) + 1, createdAt: canReuse ? previous.createdAt : now,
+            verifiedAt: cachedVerification ? previous.verifiedAt : now,
+            expiresAt: now + Math.min(params.ttlMs ?? ttlMs, maxTtlMs),
+            sourceCursor: (canReuse ? current.sourceCursor : baseline.cursor) ?? null,
+            sourceRevision: (canReuse ? current.sourceRevision : baseline.revision) ?? null,
+            pausedReason: canReuse ? current.pausedReason ?? null : null,
+            recoveryRevision: canReuse ? current.recoveryRevision ?? null : null,
+            previousSecret: canReuse && previous.secret !== secret ? { secret: previous.secret, expiresAt: now + 300000 } :
+              canReuse && previous.previousSecret?.expiresAt > now ? previous.previousSecret : null,
+          };
+          state.subscriptions[id] = replacement; return replacement;
+        });
+        changed(); return result(sub);
+      } finally {
+        await store.transaction(state => {
+          const current = state.subscriptions?.[id];
+          if (current?.pendingToken !== attempt) return;
+          if (!current.active) delete state.subscriptions[id];
+          else { delete current.pendingToken; delete current.pendingUntil; }
+        });
+      }
     },
     async unsubscribe(principal, params) {
       const url = validate(params, false), owner = ownerIdentity(principal);
       const id = subscriptionIdentity(principal, params.name, params.arguments, url);
       await store.transaction(state => {
         state.subscriptions ??= {};
-        const previous = state.subscriptions[id];
-        // Keep a tombstone to defeat an in-flight verify/activate race.
-        state.subscriptions[id] = { id, owner, applicationId: params.arguments.application_id,
-          name: params.name, active: false, version: (previous?.version ?? 0) + 1, stoppedAt: clock() };
+        // An unknown unsubscribe stores no tombstone. Pending activation checks
+        // its random reservation token, so removal also cancels in-flight work.
+        delete state.subscriptions[id];
         for (const job of Object.values(state.jobs ?? {})) if (job.subscriptionId === id && ['queued', 'retry', 'sending'].includes(job.state))
           Object.assign(job, { state: 'cancelled', reason: 'unsubscribed', updatedAt: clock() });
       });

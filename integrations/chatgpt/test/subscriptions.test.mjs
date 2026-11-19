@@ -69,3 +69,27 @@ test('invalid cursors and callbacks cannot activate; empty scanned batches still
   } }, 'app-a');
   assert.equal(calls, 2); assert.equal(tail.cursor, 'end');
 });
+
+test('disconnect during initial account lookup defeats the pending reservation', async () => {
+  let release, entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = fixture({ authorize: async () => { entered(); await new Promise(resolve => { release = resolve; }); } });
+  const input = request(), pending = f.service.subscribe(owner, input);
+  await ready;
+  await f.service.unsubscribe(owner, { name: input.name, arguments: input.arguments, delivery: { mode: 'webhook', url: input.delivery.url } });
+  // The second authorization uses a new waiter; release both lookups.
+  release(); await new Promise(resolve => setImmediate(resolve)); release();
+  await assert.rejects(pending, /changed while/);
+  assert.equal((await f.service.active()).length, 0);
+});
+
+test('expired subscriptions cannot bypass quota, and unknown unsubscribes do not grow storage', async () => {
+  const f = fixture({ maxPerOwner: 1 }), input = request();
+  await f.service.subscribe(owner, { ...input, ttlMs: 1 }); f.advance(2);
+  await f.service.subscribe(owner, { ...input, delivery: { ...input.delivery, url: 'https://second.example/callback' } });
+  await assert.rejects(f.service.subscribe(owner, input), /Too many/);
+  const count = Object.keys((await f.store.read()).subscriptions).length;
+  for (let i = 0; i < 20; i++) await f.service.unsubscribe(owner, { name: input.name, arguments: input.arguments,
+    delivery: { mode: 'webhook', url: `https://unused.example/${i}` } });
+  assert.equal(Object.keys((await f.store.read()).subscriptions).length, count);
+});

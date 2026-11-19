@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { callbackUrl, publicAddress, publicLookup, webhookKey, signedHeaders, verifyCallback, deliveryDisposition } from '../webhooks.mjs';
+import { EventEmitter } from 'node:events';
+import { callbackUrl, publicAddress, publicLookup, webhookKey, signedHeaders, verifyCallback, deliveryDisposition, createPublicWebhookTransport } from '../webhooks.mjs';
 
 const secret = 'whsec_' + Buffer.alloc(32, 7).toString('base64');
 test('HTTPS callbacks reject credentials, private and special IPv4/IPv6 destinations', () => {
@@ -11,6 +12,19 @@ test('HTTPS callbacks reject credentials, private and special IPv4/IPv6 destinat
   assert.equal(publicAddress('2606:4700:4700::1111'), true);
   for (const url of ['http://example.com', 'https://name:secret@example.com', 'https://example.com/#fragment', 'https://127.1', 'https://[::1]/'])
     assert.throws(() => callbackUrl(url));
+});
+
+test('a redirect response cannot crash the process on subsequent socket failure', async () => {
+  const response = new EventEmitter(); response.statusCode = 302;
+  response.destroy = () => {};
+  const requestImpl = (_url, _options, callback) => {
+    const req = new EventEmitter(); req.destroy = () => {};
+    req.end = () => { callback(response); }; return req;
+  };
+  const send = createPublicWebhookTransport({ requestImpl });
+  await assert.rejects(send('https://callback.example', { body: '{}' }), /redirects/);
+  assert.ok(response.listenerCount('error') > 0);
+  assert.doesNotThrow(() => response.emit('error', Error('late socket reset')));
 });
 
 test('socket lookup validates every DNS answer and returns exact checked addresses', async () => {
