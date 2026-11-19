@@ -84,6 +84,25 @@ Chronolog grants, and the destination subscription remain independent
 prerequisites. Use the integration's configuration and diagnostics for those
 layers. Enrollment by itself does not subscribe any ChatGPT conversation.
 
+If another enrollment advances authority before a saved request ever commits,
+`enroll` reports `reviewRequired` and sends no replacement. Review a new signed
+request against the current generation, including all grants, account binding
+and selected prefix, then approve that exact digest:
+
+```sh
+npm run enroll:review -- VERIFIED_PUBLIC_KEY
+# Inspect the full returned review. Stop if its key, account, grants or prefix differ from your intent.
+npm run enroll:approve -- VERIFIED_PUBLIC_KEY EXACT_REVIEW_DIGEST
+```
+
+This works for browser and bridge enrollments. A changed generation or owner
+invalidates an unapproved review. The reviewed replacement link is saved before
+the first send; retrying `enroll` after a lost reply follows that exact request.
+Original requests and reviews are never overwritten. A committed transition
+always retains exact replay, even after later controls; replay cannot restore a
+subsequently revoked grant. The result reports the currently verified grant
+separately from historical transition commitment.
+
 ## Read and answer a request
 
 The canonical native query is:

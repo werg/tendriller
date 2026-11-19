@@ -266,3 +266,88 @@ test('actual native kitchen definition correlates a second-device response and s
       assert.equal((await reopened.session.query('assistanceStatus', { requestId: 'help-1' })).value.answer.answer, 'Check its texture.');
     } finally { await fixture?.close(); await rm(directory, { recursive: true, force: true }); }
   });
+
+test('native enrollment preserves committed retries and reviews only obsolete uncommitted requests',
+  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
+    const { createNativeFixture, loadNativePackage } = await import('./native-fixture.mjs');
+    const { mkdtemp, cp, mkdir, symlink, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
+    const { packagePath } = await loadNativePackage();
+    const directory = await mkdtemp(join(tmpdir(), 'kitchen-enrollment-')); let fixture;
+    try {
+      await mkdir(join(directory, 'node_modules', '@chronolog'), { recursive: true });
+      await symlink(packagePath, join(directory, 'node_modules', '@chronolog', 'peer-session'), 'dir');
+      for (const name of ['domain.mjs', 'projection.mjs', 'enrollment.mjs']) await cp(new URL(`../examples/kitchen/${name}`, import.meta.url), join(directory, name));
+      const { definition } = await import(pathToFileURL(join(directory, 'domain.mjs')).href);
+      const { createEnrollmentManager } = await import(pathToFileURL(join(directory, 'enrollment.mjs')).href);
+      fixture = await createNativeFixture(definition, { historyId: 'kitchen-enrollment-test' });
+      const { peer, registry, descriptor, hostSigner } = fixture;
+      assert.ok(hostSigner, 'Use the shared native fixture with its test host signer');
+      const a = await fixture.open(0); await a.session.query('kitchenContext', null);
+      const records = createPrivateRecords(pathToFileURL(directory + '/'));
+      const keys = await Promise.all([1, 2, 3].map(() => peer.createPeerIdentity()));
+      let failure = 'before', target = keys[0].publicKey, sends = [], sequence = 0;
+      const host = { info: async () => ({ owner_account_id: 'owner-account' }), peers: {
+        application: () => registry.read(), async selectGeneration(request, { control }) {
+          sends.push(structuredClone({ request, control }));
+          const isTarget = control.accounts[0].publicKey === target;
+          if (isTarget && failure === 'before') { failure = null; throw Error('lost before enrollment reached host'); }
+          const bundle = await registry.read();
+          const exists = bundle.generations.some(value => value.payload.transition.payload.transitionId === request.payload.transitionId);
+          let selected;
+          if (exists) selected = await registry.select(request);
+          else {
+            const previous = bundle.controls.at(-1);
+            const signed = await peer.signControlRevision({ applicationId: descriptor.payload.applicationId,
+              profile: descriptor.payload.profile, policy: descriptor.payload.policy,
+              revision: previous.payload.revision + 1, previous: await peer.peerDigest(previous),
+              epoch: control.epoch, keyDigest: control.keyDigest, grants: control.grants, recoveryFloor: control.recoveryFloor }, hostSigner);
+            selected = await registry.select(request, { control: signed });
+          }
+          if (isTarget && failure === 'after') { failure = null; throw Error('lost after enrollment committed'); }
+          return selected;
+        },
+      } };
+      const options = { host, descriptor, read: records.read, save: records.save,
+        async prepare({ publicKey, ownerAccountId, verified }) {
+          await a.control.application();
+          const current = verified.control.payload;
+          const control = { epoch: current.epoch, keyDigest: current.keyDigest,
+            grants: [...current.grants, { ...peer.participantGrant(publicKey), coordinator: false, recovery: false }],
+            recoveryFloor: current.recoveryFloor, accounts: [{ publicKey, accountId: ownerAccountId }] };
+          const request = await peer.signTransitionRequest({ applicationId: descriptor.payload.applicationId,
+            profile: descriptor.payload.profile, policy: descriptor.payload.policy,
+            transitionId: `enroll-native-${++sequence}`, expectedGeneration: verified.current.id,
+            coordinator: fixture.devices[0].identity.publicKey, requester: fixture.devices[0].identity.publicKey,
+            controlRevision: current.revision + 1, reason: 'control-change', base: await a.session.recoveryPoint() }, fixture.devices[0].identity);
+          return { request, control };
+        } };
+      let manager = createEnrollmentManager(options);
+      await assert.rejects(manager.enroll(target), /lost before/);
+      const original = await records.read(`enroll-${target}.json`);
+      await assert.rejects(manager.review(target), /ORIGINAL_REQUEST_STILL_CURRENT/);
+      await manager.enroll(keys[1].publicKey);
+      const beforeReview = sends.length;
+      assert.equal((await manager.enroll(target)).reviewRequired, true);
+      assert.equal(sends.length, beforeReview);
+      const staleReview = await manager.review(target);
+      assert.equal(sends.length, beforeReview);
+      await manager.enroll(keys[2].publicKey);
+      await assert.rejects(manager.approve(target, staleReview.reviewDigest), /REVIEW_STALE/);
+      const review = await manager.review(target);
+      assert.notEqual(review.review.request.payload.transitionId, original.request.payload.transitionId);
+      assert.equal(review.review.previousTransitionId, original.request.payload.transitionId);
+      failure = 'after';
+      await assert.rejects(manager.approve(target, review.reviewDigest), /lost after/);
+      const acceptedRequest = sends.at(-1), generation = (await registry.read()).generations.at(-1).id;
+      manager = createEnrollmentManager(options); // Restart follows the durable approved replacement.
+      const result = await manager.enroll(target);
+      assert.equal(result.enrolled, target); assert.equal(result.transitionCommitted, true);
+      assert.deepEqual(sends.at(-1), acceptedRequest);
+      assert.equal((await registry.read()).generations.at(-1).id, generation);
+      assert.deepEqual(await records.read(`enroll-${target}.json`), original);
+      await assert.rejects(manager.review(target), /ALREADY_COMMITTED_RETRY_ORIGINAL/);
+      assert.equal((await manager.approve(target, review.reviewDigest)).enrolled, target);
+    } finally { await fixture?.close(); await rm(directory, { recursive: true, force: true }); }
+  });
