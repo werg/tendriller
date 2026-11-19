@@ -19,6 +19,12 @@ function fixture(options = {}) {
   return { outbox, store, bridge, sent, advance: n => { now += n; }, select: v => { selected = v; }, allow: v => { allowed = v; } };
 }
 const batch = (event = source()) => ({ applicationId: 'app-a', revision, cursor: 'next', events: [event], hasMore: false });
+function gate() {
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const wait = new Promise(resolve => { release = resolve; });
+  return { enter, release, entered, wait };
+}
 
 test('jobs and cursor commit together, deduplicate immutable sources, never cross application filters', async () => {
   const f = fixture();
@@ -78,4 +84,62 @@ test('recovery pauses notifications until explicit resume and records the select
   const state = await f.store.read();
   assert.equal(state.subscriptions['sub-a'].sourceCursor, 'new-tail');
   assert.equal(Object.values(state.jobs)[0].reason, 'reviewed_start_from_current');
+});
+
+test('a cancelled claim cannot send after another process recreates the same subscription', async () => {
+  const f = fixture(), checking = gate();
+  f.bridge.verifySource = async () => { checking.enter(); await checking.wait; return { selected: true }; };
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await checking.entered;
+  // A different worker has no access to this process's AbortControllers.
+  await f.store.transaction(state => {
+    Object.assign(Object.values(state.jobs)[0], { state: 'cancelled', reason: 'unsubscribed' });
+    state.subscriptions['sub-a'] = { ...subscription(), activationId: 'activation-new' };
+  });
+  checking.release(); await dispatch;
+  assert.equal(f.sent.length, 0);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'cancelled');
+});
+
+test('reclaimed leases invalidate old workers without disturbing the current delivery controller', async () => {
+  const firstCheck = gate(), secondSend = gate();
+  let checks = 0, deliveredSignal;
+  const f = fixture({ send: async (_url, { signal }) => { deliveredSignal = signal; secondSend.enter(); await secondSend.wait; return { status: 200 }; } });
+  f.bridge.verifySource = async () => {
+    if (++checks === 1) { firstCheck.enter(); await firstCheck.wait; }
+    return { selected: true };
+  };
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const stale = f.outbox.dispatchDue({ limit: 1 }); await firstCheck.entered;
+  f.advance(30_001);
+  const current = f.outbox.dispatchDue({ limit: 1 }); await secondSend.entered;
+  firstCheck.release(); await stale;
+  await f.store.transaction(state => { Object.values(state.jobs)[0].state = 'cancelled'; });
+  await f.outbox.cancelInactive();
+  assert.equal(deliveredSignal.aborted, true, 'The old worker must not remove the new controller');
+  secondSend.release(); await current;
+  assert.equal(checks, 2);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'cancelled');
+});
+
+test('a late 410 cannot stop a newly activated subscription with the same version', async () => {
+  const delivery = gate();
+  const f = fixture({ send: async () => { delivery.enter(); await delivery.wait; return { status: 410 }; } });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await delivery.entered;
+  await f.store.transaction(state => { state.subscriptions['sub-a'] = { ...subscription(), activationId: 'activation-new' }; });
+  delivery.release(); await dispatch;
+  assert.equal((await f.store.read()).subscriptions['sub-a'].active, true);
+});
+
+test('old activation jobs are cancelled before being claimed or sent', async () => {
+  const f = fixture();
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-new'; });
+  await f.outbox.dispatchDue();
+  assert.equal(f.sent.length, 0);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].reason, 'subscription_replaced');
 });

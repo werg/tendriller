@@ -6,6 +6,7 @@ import { signedHeaders, deliveryDisposition, createPublicWebhookTransport } from
 const pending = state => ['queued', 'retry', 'sending'].includes(state);
 const sameOwner = (a, b) => canonical(ownerIdentity(a)) === canonical(ownerIdentity(b));
 const live = (sub, now) => sub?.active && sub.expiresAt > now;
+const sameActivation = (job, sub) => (job.activationId ?? null) === (sub?.activationId ?? null);
 
 function envelope(sub, event, now) {
   const projected = event.data ?? {};
@@ -32,9 +33,9 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
   const sending = new Map();
   const cancelInactive = async () => {
     const state = await store.read();
-    for (const [eventId, controller] of sending) {
+    for (const [lease, { eventId, controller }] of sending) {
       const job = state.jobs?.[eventId], sub = state.subscriptions?.[job?.subscriptionId];
-      if (!job || !pending(job.state) || !live(sub, clock()) || sub.pausedReason && job.sourceKind !== 'recovery') controller.abort();
+      if (!job || job.state !== 'sending' || job.lease !== lease || !live(sub, clock()) || !sameActivation(job, sub) || sub.pausedReason && job.sourceKind !== 'recovery') controller.abort();
     }
   };
   function insert(state, sub, event, sourceKind = 'domain') {
@@ -43,6 +44,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
     if (state.jobs[value.eventId]) return;
     if (Object.keys(state.jobs).length >= maxJobs) fail('OUTBOX_CAPACITY', 'Delivery journal is full; archive reviewed receipts before resuming observation');
     state.jobs[value.eventId] = { eventId: value.eventId, subscriptionId: sub.id, applicationId: sub.applicationId,
+      activationId: sub.activationId ?? null,
       owner: sub.owner, sourceEventId: event.sourceEventId, sourceRevision: event.revision, sourceKind,
       envelope: value, state: 'queued', attempts: 0, createdAt: clock(), nextAttemptAt: clock() };
   }
@@ -57,8 +59,8 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       for (const candidate of Object.values(state.jobs ?? {})) {
         if (!pending(candidate.state)) continue;
         const sub = state.subscriptions?.[candidate.subscriptionId];
-        if (!live(sub, clock())) {
-          Object.assign(candidate, { state: 'cancelled', reason: sub?.active ? 'subscription_expired' : 'subscription_stopped', updatedAt: clock() }); continue;
+        if (!live(sub, clock()) || !sameActivation(candidate, sub)) {
+          Object.assign(candidate, { state: 'cancelled', reason: !sameActivation(candidate, sub) ? 'subscription_replaced' : sub?.active ? 'subscription_expired' : 'subscription_stopped', updatedAt: clock() }); continue;
         }
         if (sub.pausedReason && candidate.sourceKind !== 'recovery') continue;
         if (candidate.state === 'sending' && candidate.leaseUntil > clock() || candidate.nextAttemptAt > clock()) continue;
@@ -69,20 +71,36 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       return null;
     });
     if (!job) return false;
-    const controller = new AbortController(); sending.set(job.eventId, controller);
+    const controller = new AbortController(); sending.set(job.lease, { eventId: job.eventId, controller });
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     try {
-      let sub = (await store.read()).subscriptions[job.subscriptionId];
+      let sub = (await store.read()).subscriptions?.[job.subscriptionId];
+      if (!live(sub, clock()) || !sameActivation(job, sub)) {
+        await finish(job.eventId, job.lease, { state: 'cancelled', reason: 'subscription_changed' }); return true;
+      }
       await authorize(sub.owner, sub.applicationId, sub.name);
       if (job.sourceKind === 'domain') {
         const source = await bridge.verifySource(job.applicationId, job.sourceEventId, job.sourceRevision);
         if (!source.selected) { await finish(job.eventId, job.lease, { state: 'abandoned', reason: 'source_not_selected' }); return true; }
       } else await bridge.getStatus(job.applicationId);
       await authorize(sub.owner, sub.applicationId, sub.name);
-      sub = (await store.read()).subscriptions[job.subscriptionId];
-      if (!live(sub, clock()) || sub.pausedReason && job.sourceKind !== 'recovery') {
-        await finish(job.eventId, job.lease, { state: 'cancelled', reason: 'subscription_changed' }); return true;
-      }
+      // Another process may have cancelled or reclaimed this job while source
+      // verification awaited I/O. Reacquire only this exact lease before egress.
+      sub = await store.transaction(state => {
+        const current = state.jobs?.[job.eventId], subscription = state.subscriptions?.[job.subscriptionId];
+        if (current?.state !== 'sending' || current.lease !== job.lease) return null;
+        if (!live(subscription, clock()) || !sameActivation(current, subscription)) {
+          Object.assign(current, { state: 'cancelled', reason: 'subscription_changed', updatedAt: clock(), lease: null, leaseUntil: null });
+          return null;
+        }
+        if (subscription.pausedReason && job.sourceKind !== 'recovery') {
+          Object.assign(current, { state: 'queued', reason: 'recovery_review_required', updatedAt: clock(), lease: null, leaseUntil: null });
+          return null;
+        }
+        current.leaseUntil = clock() + leaseMs;
+        return subscription;
+      });
+      if (!sub) return true;
       combined.throwIfAborted();
       const body = JSON.stringify(job.envelope);
       const secrets = [sub.secret, ...(sub.previousSecret?.expiresAt > clock() ? [sub.previousSecret.secret] : [])];
@@ -95,7 +113,11 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
         await finish(job.eventId, job.lease, { state: 'failed', reason: disposition === 'gone' ? 'callback_gone' : 'callback_rejected', responseStatus: response.status });
         if (disposition === 'gone') await store.transaction(state => {
           const current = state.subscriptions[sub.id];
-          if (current?.version === sub.version) { current.active = false; current.stoppedAt = clock(); current.stopReason = 'callback_gone'; current.version++; delete current.secret; delete current.previousSecret; }
+          if (current?.version === sub.version && sameActivation(job, current)) {
+            current.active = false; current.stoppedAt = clock(); current.stopReason = 'callback_gone'; current.version++;
+            delete current.secret; delete current.previousSecret;
+            delete current.pendingToken; delete current.pendingUntil;
+          }
         });
       }
     } catch (error) {
@@ -104,7 +126,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
         reason: forbidden ? 'authorization_or_destination_revoked' : combined.aborted ? 'delivery_interrupted' : 'delivery_unavailable',
         lastError: String(error.code ?? error.name ?? 'DELIVERY_FAILED').slice(0, 128),
         nextAttemptAt: clock() + Math.min(300000, 1000 * 2 ** job.attempts) });
-    } finally { sending.delete(job.eventId); }
+    } finally { sending.delete(job.lease); }
     return true;
   }
   return {
