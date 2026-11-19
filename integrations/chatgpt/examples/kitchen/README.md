@@ -133,7 +133,15 @@ so its recovery notice must be read alongside current application state.
 
 `node --test integrations/chatgpt/test/kitchen.test.mjs` exercises correlation,
 conflicts, stale steps, expiry presentation, metadata egress and uncertain
-operation resumption. The browser files are a real public-session composition,
+operation resumption. With `CHRONOLOG_SESSION_PACKAGE` pointing at an extracted
+public archive, its optional native case additionally creates two actual native
+stores under signed authority, submits a request and a second-device response,
+checks exact retry, and reopens the first store to verify persistence. This case
+passed against Chronolog `d014879ecb29714e80311d6101cfa8973953d5c4` (archive SHA-256
+`673a6ecdf6c6741721efbb250f711f3acf7fa9784624ad5bcbf6596e5a00996c`). It uses the
+public in-process transport; it does not qualify Internet RTC or relay.
+
+The browser files are a real public-session composition,
 not a claim that a production page, OAuth connection or ChatGPT subscription has
 been provisioned. Record the claim, signed release, two-device read, reload,
 exact retry and actual subscribed-chat write-back before declaring that live

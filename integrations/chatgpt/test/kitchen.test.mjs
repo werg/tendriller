@@ -73,3 +73,51 @@ test('uncertain submit survives restart with its exact operation and input', asy
   await client.acknowledge();
   assert.equal(pending, null);
 });
+
+test('actual native kitchen definition correlates a second-device response and survives reopen',
+  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
+    const { createNativeFixture, loadNativePackage } = await import('./native-fixture.mjs');
+    const { mkdtemp, cp, mkdir, symlink, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
+    const { packagePath } = await loadNativePackage();
+    // Install only the exact public package into an isolated consumer. The
+    // authored definition retains its normal package import unchanged.
+    const directory = await mkdtemp(join(tmpdir(), 'kitchen-definition-'));
+    let fixture;
+    try {
+      await mkdir(join(directory, 'node_modules', '@chronolog'), { recursive: true });
+      await symlink(packagePath, join(directory, 'node_modules', '@chronolog', 'peer-session'), 'dir');
+      for (const name of ['domain.mjs', 'projection.mjs']) await cp(new URL(`../examples/kitchen/${name}`, import.meta.url), join(directory, name));
+      const { definition } = await import(pathToFileURL(join(directory, 'domain.mjs')).href);
+      fixture = await createNativeFixture(definition, { historyId: 'kitchen-native-test' });
+      const a = await fixture.open(0), b = await fixture.open(1);
+      const link = fixture.track(await fixture.peer.connectApplications(a.session, b.session));
+      const applied = async (session, name, input, operationId) => {
+        const operation = await session.command(name, input, { operationId });
+        const state = await operation.applied({ signal: AbortSignal.timeout(5000) });
+        assert.equal(state.outcome, 'accepted');
+        await link.synchronize();
+      };
+      await applied(a.session, 'setCookingStep', { stepId: 's1', text: 'Prepare' }, 'step-1');
+      const context = await a.session.query('kitchenContext', null);
+      const input = { requestId: 'help-1', question: 'How long?', kind: 'recipe_help', cookingStepId: 's1',
+        contextRevision: JSON.stringify(context.revision), expiresAtMs: Date.now() + 900000 };
+      await applied(a.session, 'requestAssistance', input, 'request-1');
+      const request = await b.session.query('assistanceStatus', { requestId: 'help-1' });
+      assert.equal(request.value.status, 'requested');
+      const reply = { requestId: 'help-1', requestEventId: request.value.requestEventId, answer: 'Check its texture.',
+        suggestedSteps: ['Stir'], cookingStepId: 's1', basedOnContextRevision: request.value.contextRevision };
+      await applied(b.session, 'replyToAssistance', reply, 'reply-1');
+      const original = await b.session.operations.inspect('reply-1');
+      await applied(b.session, 'replyToAssistance', reply, 'reply-1');
+      assert.deepEqual((await b.session.operations.inspect('reply-1')).attempt, original.attempt);
+      const status = await a.session.query('assistanceStatus', { requestId: 'help-1' });
+      assert.equal(status.value.status, 'answered'); assert.equal(status.value.replies.length, 1);
+      assert.equal(status.value.answer.author, b.session.deviceId);
+      await link.close(); await a.session.close();
+      const reopened = await fixture.open(0, true);
+      assert.equal((await reopened.session.query('assistanceStatus', { requestId: 'help-1' })).value.answer.answer, 'Check its texture.');
+    } finally { await fixture?.close(); await rm(directory, { recursive: true, force: true }); }
+  });
