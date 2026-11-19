@@ -3,6 +3,13 @@ import { CONTRACT_VERSION, CORE_RELEASE } from '../../contract/index.mjs';
 // Task vocabulary maps to the real public owner/API, including boundaries that
 // cannot be inferred from a feature name. This is discovery, not a device probe.
 const capabilities = [
+  { id: 'session-diagnostics', title: 'Explain owner, authority and recovery state without submitting work',
+    keywords: ['doctor', 'diagnostics', 'owner', 'keys', 'coordinator', 'recovery', 'next action'],
+    owner: 'Optional public diagnostic helper over the owned Chronolog session', availability: 'provided',
+    imports: ['@tendriller/core/collaboration/diagnostics'],
+    api: ['diagnoseApplicationSession', 'diagnosticFinding'],
+    guide: '/docs/tools/CLI.md', example: 'tendril --session ./session.mjs doctor; diagnoseApplicationSession(session)',
+    boundary: 'Protocol-only observations activate no database or host request. Presence, diagnostic readiness and retry safety do not establish remote execution or authorize replacement operation identities.' },
   { id: 'multi-view-owner', title: 'Several browser views sharing one retained signer',
     keywords: ['tabs', 'documents', 'multi-participant', 'SharedWorker', 'owner', 'endpoint', 'draft'],
     owner: 'Chronolog application owner and Tendriller browser composition', availability: 'provided',

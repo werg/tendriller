@@ -3,6 +3,7 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
+import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
 
 export async function withSession(modulePath, run, { signal, mode, profile, runId } = {}) {
   if (!modulePath) throw Error('Supply --session with a module exporting attachSession({ signal }) or openSession({ signal }). A page handle does not open a Chronolog session. Run tendril guide --server YOUR_SERVICE_ORIGIN and follow /docs/BUILD_AN_APP.md to configure authority, enroll the device and compose the session.');
@@ -61,10 +62,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     if (typeof session.endpoints !== 'function') throw Error('Endpoint diagnostics require an attached application owner.');
     return session.endpoints();
   }
-  if (command === 'doctor') return { identity: await runSessionCommand(owned, 'self', []),
-    definition: session.describe(), status: session.status,
-    capabilities: session.endpoint?.capabilities ?? null,
-    ...(typeof session.endpoints === 'function' ? { endpoints: await session.endpoints() } : {}) };
+  if (command === 'doctor') return diagnoseApplicationSession(session, { mode: owned.mode ?? 'own', signal });
   if (command === 'query') return session.query(required(args[0], 'a query name'), jsonInput(args[1] ?? '{}'));
   if (command === 'operation') return session.operations.inspect(required(args[0], 'an operation identity'));
   if (command === 'command' || command === 'reapply') {

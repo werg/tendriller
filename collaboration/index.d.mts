@@ -132,3 +132,4 @@ export declare function createEffectDispatcher<Fence=unknown,Input=unknown,Recei
   journal:EffectJournal<Fence,Receipt>;dispatch:(input:{effectId:string;idempotencyKey:string;fence:Fence;input:Input})=>Receipt|Promise<Receipt>;
   authorize:(fence:Fence)=>void|Promise<void>;reconcile?:(id:string,record:EffectRecord<Fence,Receipt>)=>Receipt|null|undefined|Promise<Receipt|null|undefined>;
 }):{execute(input:{effectId:string;fence:Fence;input:Input}):Promise<EffectRecord<Fence,Receipt>>};
+export * from './diagnostics.mjs';

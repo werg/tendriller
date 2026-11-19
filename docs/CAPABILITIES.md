@@ -17,6 +17,7 @@ the current browser without requesting permissions.
 | Several tabs or documents using one signing profile | `openBrowserOwner` / `serveBrowserOwner` with bounded attachments | `@tendriller/core/collaboration/browser` and `/worker`; [multi-participant composition](MULTIPARTICIPANT.md) |
 | Addressed work, exclusive claims, fan-out and guarded synthesis | `createCollaborationDefinition` and `createCollaborationClient` | `@tendriller/core/collaboration`; [immutable schema and recovery](MULTIPARTICIPANT.md) |
 | Native clients sharing a retained signer | `createNativeSessionSupervisor` and `attachNativeSession` | `@tendriller/core/collaboration/native`; [CLI attachment modes](tools/CLI.md) |
+| Explain owner, keys, coordinator and recovery state | `diagnoseApplicationSession` / CLI `doctor`; bounded findings and next actions | `@tendriller/core/collaboration/diagnostics`; [diagnostic output](tools/CLI.md) |
 | Independently revocable agent connections | Scoped host credentials and approved application consumer bindings | [Agent bindings](AGENT_BINDINGS.md) |
 | State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `helpers/live-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |

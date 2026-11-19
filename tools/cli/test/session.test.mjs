@@ -124,7 +124,8 @@ test('self and endpoint diagnostics expose the actual attachment provenance', as
   assert.deepEqual(await runSessionCommand(owned, 'self', []), { mode: 'attach', applicationId: 'application',
     historyId: null, deviceId: 'signer', endpoint });
   const diagnostic = await runSessionCommand(owned, 'doctor', []);
-  assert.equal(diagnostic.identity.endpoint, endpoint); assert.deepEqual(diagnostic.capabilities, ['queries']);
+  assert.deepEqual(diagnostic.identity.endpoint.identity, endpoint.identity); assert.deepEqual(diagnostic.capabilities, ['queries']);
+  assert.equal(diagnostic.protocol, 'tendriller.diagnostics.v1'); assert.equal(diagnostic.assessment, 'ready');
   assert.deepEqual(await runSessionCommand(owned, 'endpoints', []), [endpoint]);
 });
 

@@ -76,9 +76,23 @@ npx tendril --session ./session.mjs --mode attach --run review-1 query notes nul
 
 `self` exposes the actual application, signing device, attachment, owner
 incarnation and binding identity. `endpoints` lists authorized local endpoint
-metadata; `doctor` combines that provenance with definition, capabilities and
-session status. These observations do not turn presence into an authorization
-grant. A restricted binding may lack endpoint diagnostics.
+metadata; `doctor` combines that provenance with definition names, capabilities
+and session status. Its versioned diagnostic report has `assessment`, `scope`
+and `findings`, each with a stable `code`, current `state`, `retrySafe` and a
+concrete `nextAction`. It distinguishes unopened data from missing keys,
+unreachable coordinators, recovery review and a closed owner. A restricted
+endpoint list adds its original denial code while preserving other observations.
+It never activates the database, fetches authority, submits work, retries an
+operation or includes command inputs, credentials and full definition schemas.
+
+Applications can use the same pure public helper:
+`diagnoseApplicationSession(session)` from
+`@tendriller/core/collaboration/diagnostics`. `diagnosticFinding(error, {scope})`
+maps an existing exact error to the same bounded report without including its
+arbitrary message or payload. CLI errors include this diagnostic alongside the
+original error. A ready observation is not a remote delivery, model turn or
+external effect guarantee; retry safety never authorizes replacing an uncertain
+operation ID. Presence remains separate from authorization.
 
 Initial publication before starting the peer uses `--mode own`. Administrative
 setup and enrollment still need exclusive ownership or a deliberately granted

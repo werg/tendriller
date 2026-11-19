@@ -5,6 +5,7 @@ import { resolveConfig, saveConfig, removeConfig, serverBase } from '../lib/conf
 import { request, client, ApiError } from '../lib/api.mjs';
 import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/session.mjs';
 import { onboardingGuide, publicServiceOrigin } from '../lib/guide.mjs';
+import { diagnosticFinding } from '@tendriller/core/collaboration/diagnostics';
 
 const usage = `Usage: tendril <command> [options]
 
@@ -134,6 +135,7 @@ async function main() {
 }
 main().catch(error => {
   console.error(JSON.stringify({ error: { code: error.code ?? 'command_failed', message: error.message },
+    diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
     ...(error instanceof ApiError ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}) }));
   process.exitCode = error.exit ?? 1;
 });

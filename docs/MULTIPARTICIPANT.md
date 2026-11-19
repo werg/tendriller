@@ -21,7 +21,7 @@ its device ID with the verified execution author. They never promote a stored
 `owner-bound` label into independently verified historical evidence.
 
 Every request, current claim, result, message, cancellation and aggregate also
-exposes an `operation` reference containing application ID, actual author,
+exposes an `operation` reference containing application ID, verified history ID, actual author,
 operation ID, signed attempt ID and original generation. The schema captures
 the engine's transaction identity; queries join the reserved signed execution
 evidence. A writer cannot supply another attempt or overwrite that reference
