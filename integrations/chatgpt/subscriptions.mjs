@@ -21,6 +21,17 @@ export const EVENT_CATALOG = Object.freeze(Object.entries(descriptions).map(([na
 export function ownerIdentity(principal) {
   return { id: text(principal?.id, 'principal ID', 512), issuer: text(principal?.issuer, 'issuer', 2048) };
 }
+// Authorization metadata comes only from the authenticated principal. It must
+// survive background delivery, but must not change owner or subscription identity.
+function deliveryPrincipal(principal) {
+  const owner = ownerIdentity(principal);
+  if (principal.oauthGrantId !== undefined) owner.oauthGrantId = text(principal.oauthGrantId, 'OAuth grant ID', 512);
+  if (principal.scopes !== undefined) {
+    if (!Array.isArray(principal.scopes) || principal.scopes.length > 128) fail('INVALID_PRINCIPAL', 'Invalid principal scopes');
+    owner.scopes = [...new Set(principal.scopes.map(scope => text(scope, 'scope', 128)))].sort();
+  }
+  return owner;
+}
 export function subscriptionIdentity(principal, name, args, url) {
   return 'sub_' + digest([ownerIdentity(principal), url, name, args]);
 }
@@ -57,12 +68,12 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
     async list(principal) {
       const apps = await applicationIds(principal), available = [];
       for (const event of catalog) for (const applicationId of apps) {
-        try { await authorize(ownerIdentity(principal), applicationId, event.name); available.push(event); break; } catch { /* do not disclose inaccessible event types */ }
+        try { await authorize(deliveryPrincipal(principal), applicationId, event.name); available.push(event); break; } catch { /* do not disclose inaccessible event types */ }
       }
       return { events: structuredClone(available) };
     },
     async subscribe(principal, params, { signal } = {}) {
-      const url = validate(params, true), owner = ownerIdentity(principal);
+      const url = validate(params, true), owner = deliveryPrincipal(principal);
       const applicationId = params.arguments.application_id;
       const id = subscriptionIdentity(principal, params.name, params.arguments, url);
       const attempt = randomUUID();
@@ -75,7 +86,7 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
         const current = state.subscriptions[id];
         if (current?.pendingUntil > clock()) fail('SUBSCRIPTION_PENDING', 'Subscription verification is already pending', { status: 409 });
         const count = Object.values(state.subscriptions).filter(item => item.id !== id &&
-          (item.active && item.expiresAt > clock() || item.pendingUntil > clock()) && canonical(item.owner) === canonical(owner)).length;
+          (item.active && item.expiresAt > clock() || item.pendingUntil > clock()) && canonical(ownerIdentity(item.owner)) === canonical(ownerIdentity(owner))).length;
         if (count >= maxPerOwner) fail('SUBSCRIPTION_LIMIT', 'Too many active or pending subscriptions', { status: 429 });
         const before = current ? structuredClone(current) : null;
         state.subscriptions[id] = { ...(current ?? { id, owner, applicationId, name: params.name, active: false, version: 0 }),
@@ -123,7 +134,7 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
         await store.transaction(state => {
           const current = state.subscriptions?.[id];
           if (current?.pendingToken !== attempt) return;
-          if (!current.active) delete state.subscriptions[id];
+          if (!current.active && !current.pausedReason) delete state.subscriptions[id];
           else { delete current.pendingToken; delete current.pendingUntil; }
         });
       }

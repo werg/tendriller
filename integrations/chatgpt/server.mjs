@@ -154,10 +154,10 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
       let result;
       if (typeof bridge.inspectOperation === 'function') {
         const inspected = await bridge.inspectOperation(args.applicationId, args.operationId);
-        if (inspected.state !== null && (!inspected.identity || inspected.identity.applicationId !== args.applicationId ||
+        if (inspected !== null && (!inspected.identity || inspected.identity.applicationId !== args.applicationId ||
             inspected.identity.operationId !== args.operationId || inspected.identity.command !== record.name || inspected.identity.author !== inspected.deviceId))
           fail('OPERATION_IDENTITY_MISMATCH', 'The native operation does not match the confirmed integration command', { status: 409 });
-        result = inspected.state;
+        result = inspected?.state ?? null;
       } else result = await bridge.operation(args.applicationId, args.operationId);
       await access(principal, args.applicationId, 'command', record.name); return { ...args, operation: result };
     }),

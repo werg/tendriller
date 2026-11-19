@@ -182,15 +182,20 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
         hasMore: batch.hasMore, events }, maxResultBytes);
     } finally { await view.release(); }
   }
-  async function findEvent(id, sourceEventId, { maxBatches = 32 } = {}) {
+  async function findEvent(id, sourceEventId, { maxBatches } = {}) {
     text(sourceEventId, 'source event ID', 512);
-    if (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 128) fail('BRIDGE_INPUT_INVALID');
+    if (maxBatches !== undefined && (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 128)) fail('BRIDGE_INPUT_INVALID');
     const entry = entryFor(id), { session } = await access(entry), view = await session.readView();
     try {
       let cursor;
-      for (let scanned = 0; scanned < maxBatches; scanned++) {
+      // The captured native view is finite. A fixed prefix budget would make
+      // every delivery retry fail for a perfectly valid older source. Bound
+      // each page, yield to native recovery/close, and finish this selected view.
+      for (let scanned = 0; maxBatches === undefined || scanned < maxBatches; scanned++) {
+        lifetime.signal.throwIfAborted();
         const batch = await view.readEvents({ topics: [...entry.topics].sort(), limit: 128,
           ...(cursor === undefined ? {} : { cursor }) });
+        selected(session, batch.revision);
         const event = batch.events.find(value => value.id === sourceEventId && entry.topics.has(value.topic));
         const projection = event === undefined ? null : await project(entry, event, batch.revision);
         if (projection !== null || !batch.hasMore) {
@@ -200,6 +205,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
         }
         if (batch.cursor === cursor) fail('BRIDGE_EVENT_CURSOR_STALLED');
         cursor = batch.cursor;
+        await new Promise(resolve => setImmediate(resolve));
       }
       fail('BRIDGE_EVENT_SCAN_LIMIT', 'Selected event lookup exceeded its bounded scan; absence was not established');
     } finally { await view.release(); }

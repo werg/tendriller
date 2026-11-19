@@ -20,7 +20,9 @@ function config() {
     getStatus: async () => ({ applicationId: APP, status: { phase: 'ready', generation: 'g1' } }),
     readEvents: async () => ({ applicationId: APP, revision, cursor: 'tail', hasMore: false, events: [] }),
     query: async () => ({ revision, value: { question: 'How should I cook this?', requestId: 'r1' } }),
-    verifySource: async () => ({ selected: true }),
+    verifySource: async () => ({ selected: true, currentRevision: revision }),
+    readRevision: async () => revision,
+    assertSelection: (_id, value) => assert.equal(value.generation, revision.generation),
     async *observe(_id, { signal }) {
       observed++;
       try {

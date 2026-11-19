@@ -86,6 +86,6 @@ export async function createNativeFixture(definition, { applicationId = 'a'.repe
       return { session, control: session.connectControlParticipant({ exchange }) };
     };
     const track = resource => { cleanup.push(() => resource.close()); return resource; };
-    return { peer, native, packagePath, directory, paths, devices, descriptor, registry, publications, exchange, open, select, track, close };
+    return { peer, native, packagePath, directory, paths, devices, descriptor, hostSigner, registry, publications, exchange, open, select, track, close };
   } catch (error) { await close(); throw error; }
 }

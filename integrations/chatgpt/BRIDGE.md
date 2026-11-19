@@ -98,6 +98,16 @@ authorization and source lookup, call it after the last storage/lease await and
 immediately before invoking an external send. It is not an authorization check
 and cannot retract an external request that has already begun.
 
+The durable outbox uses these methods for both delivery and recovery review.
+Its final account/consent authorization precedes a fresh source lookup; the
+captured generation is checked synchronously after the lease transaction and
+immediately before invoking the callback transport. Resuming either recovery
+strategy refreshes the live native revision and checks the reviewed generation
+inside the durable transaction. A newer generation keeps delivery paused and
+updates the revision that must be reviewed; ordinary progress within the same
+generation does not invalidate the approval. Controlled replacement bridges must
+implement `readRevision`, `assertSelection` and `verifySource.currentRevision`.
+
 `observe(id,{cursor?,signal?})` yields `kind: 'events'` batches with explicit pull
 backpressure. Finish the atomic outbox/cursor transaction before requesting the
 next batch. A native recovery yields one `kind: 'recovery'` notice with
@@ -109,8 +119,12 @@ to stop a waiting observer. No extra transport or coordinator retry loop exists.
 `getEvent(id,sourceEventId,{maxBatches?})` scans one coherent selected history and
 returns the real permitted source event plus its current projected summary. It
 returns `null` only after a complete scan; `BRIDGE_EVENT_SCAN_LIMIT` means absence
-was not established within the budget. The default budget scans 4,096 native
-transactions. Only an allowlisted topic with a non-null projection is exposed.
+was not established within an explicitly requested budget (up to 128 batches).
+By default the lookup completes the finite captured selected history in pages of
+128 transactions, yielding between pages so shutdown and native recovery can
+interrupt it. History size cannot permanently defeat every retry at the same
+4,096-transaction prefix. The view is released after success, failure or shutdown.
+Only an allowlisted topic with a non-null projection is exposed.
 The event details contain application data and require the caller's corresponding
 read/egress permission, separately from permission to send a summary.
 `verifySource(id,sourceEventId,sourceRevision)` returns `selected` plus the actual

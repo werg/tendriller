@@ -152,6 +152,33 @@ test('selected-history lookup distinguishes absent events and exhausted scan bud
   await f.bridge.close();
 });
 
+test('default selected-source lookup completes histories longer than 32 bounded pages', async () => {
+  const f = fixture(); let reads = 0, releases = 0;
+  f.session.readView = async () => ({ revision, readEvents({ cursor, limit }) {
+    assert.equal(limit, 128); reads++;
+    const page = cursor === undefined ? 0 : Number(cursor);
+    return { revision, cursor: String(page + 1), hasMore: page < 34,
+      events: page === 34 ? [{ id: 'older-source:0', operationId: 'older-operation', attemptId: 'attempt',
+        author: deviceId, topic: 'assistant', payload: { question: 'selected' } }] : [] };
+  }, release() { releases++; } });
+  assert.equal((await f.bridge.verifySource(id, 'older-source:0', revision)).selected, true);
+  assert.equal(reads, 35); assert.equal(releases, 1);
+  assert.equal((await f.bridge.getEvent(id, 'older-source:0')).event.operationId, 'older-operation');
+  assert.equal(reads, 70); assert.equal(releases, 2);
+  await f.bridge.close();
+});
+
+test('long selected-history lookup yields to bridge close and releases its view', async () => {
+  const f = fixture(); let enter, releases = 0, reads = 0;
+  const reading = new Promise(resolve => { enter = resolve; });
+  f.session.readView = async () => ({ revision, readEvents() {
+    enter(); return { revision, cursor: String(++reads), hasMore: true, events: [] };
+  }, release() { releases++; } });
+  const rejected = assert.rejects(f.bridge.getEvent(id, 'never:0'), { code: 'BRIDGE_CLOSED' });
+  await reading; await f.bridge.close(); await rejected;
+  assert.equal(releases, 1); assert.equal(reads, 1);
+});
+
 test('recovery racing projection cannot export excluded captured events', async () => {
   let f;
   f = fixture({ eventProjection: () => {
