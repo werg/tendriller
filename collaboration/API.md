@@ -29,6 +29,18 @@ status` (active, offered, needsReview, completed, cancelRequested, cancelled).
 A result has `taskId,slotId,resultId,author,runId,claimEpoch,generation,outcome,
 content,disposition` (accepted, superseded, cancelled, needsReview).
 
+Every request, current claim, result, aggregate and message includes an `operation`
+reference with `applicationId`, `author`, `operationId`, `attemptId` and `generation`.
+Cancellation and acknowledgement references are exposed through
+`task.cancellation.operation` and `claim.acknowledgement`. These fields come from the
+engine-authenticated transaction log and generation evidence joined to the row's
+protected binary `attempt_id`; caller-provided JSON cannot supply or replace them.
+For a late result, `result.generation` names its original claim fence while
+`result.operation.generation` names the generation in which that result was recorded.
+Use the full reference with `inspectOperation` to inspect the original signing
+operation. The fresh schema requires raw writers to set
+`attempt_id = chronolog_transaction_id()`.
+
 `createCollaborationClient({session, endpoint?, runId?, store?})` provides:
 `request`, `claim`, `handoff`, `result`, `cancel`, `acknowledgeCancel`, `finalize`,
 `rebind`, `message` and `inspect(taskId)`/`snapshot()`/`waitForOutcome(taskId,{signal})`.
@@ -47,3 +59,7 @@ command queue. Only explicit copying transfers a draft between views.
 `mountParticipantPanel({container,participants,selfEndpoint,onSelect})` are optional
 headless/accessibility helpers. Membership authority and live observations are
 separate fields. No camera/speech/focus action is inferred from shared activity.
+Panel updates retain controls by signer/binding/endpoint incarnation, preserving
+the existing recipient's focus during presence updates and reorder. An explicit
+incarnation change replaces the stale control; revocation disables selection.
+Repeated advertisements of the same endpoint do not increase participant counts.

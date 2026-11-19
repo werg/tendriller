@@ -49,6 +49,7 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       type TEXT NOT NULL CHECK(type IN ('request','claim','rebind','handoff','result','cancel','ackCancel','finalize','message')),
       task_id TEXT NOT NULL CHECK(length(task_id) BETWEEN 1 AND 160), slot_id TEXT NOT NULL,
       author TEXT NOT NULL CHECK(length(author)=64), generation TEXT NOT NULL CHECK(length(generation)=64),
+      attempt_id BLOB NOT NULL CHECK(typeof(attempt_id)='blob' AND length(attempt_id)=32),
       body TEXT NOT NULL CHECK(json_valid(body) AND length(CAST(body AS BLOB))<=16384))`,
     'CREATE INDEX collab_by_task ON collab_journal(task_id,sequence)',
     'CREATE INDEX collab_by_slot ON collab_journal(task_id,slot_id,type,sequence)',
@@ -60,6 +61,7 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     `CREATE TRIGGER collab_admission BEFORE INSERT ON collab_journal BEGIN
       ${assert(`NEW.author=${actor}`, 'collab_author')}
       ${assert(`NEW.generation=${generation}`, 'collab_generation')}
+      ${assert('NEW.attempt_id IS chronolog_transaction_id()', 'collab_attempt')}
       ${assert('NEW.sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal)', 'collab_sequence')}
       ${assert(`NEW.type IN ('request','message') OR EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id AND type='request')`, 'collab_task_missing')}
       ${assert(`NEW.type NOT IN ('claim','rebind','handoff','result','ackCancel') OR EXISTS
@@ -155,9 +157,9 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       sqlStatement(`SELECT chronolog_assert(NOT EXISTS (SELECT 1 FROM collab_journal WHERE id=? AND
         (type<>? OR task_id<>? OR slot_id<>? OR author<>${actor} OR ${base}<>?)),'collab_identity_conflict')`,
       [eventId, type, taskId, slotId, bodyJson]),
-      sqlStatement(`INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,generation,body,chronolog_owner)
+      sqlStatement(`INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,generation,attempt_id,body,chronolog_owner)
         SELECT ?, (SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal), ?, candidate.task_id,candidate.slot_id,
-          candidate.author,candidate.generation,${result ? `json_set(candidate.body,'$.disposition',(${prepareDisposition}))` : 'candidate.body'},
+          candidate.author,candidate.generation,chronolog_transaction_id(),${result ? `json_set(candidate.body,'$.disposition',(${prepareDisposition}))` : 'candidate.body'},
           (SELECT id FROM chronolog_principals WHERE key=?)
         FROM (SELECT ? AS task_id,? AS slot_id,${actor} AS author,${generation} AS generation,? AS body) candidate
         WHERE NOT EXISTS (SELECT 1 FROM collab_journal WHERE id=?)`,
@@ -224,11 +226,21 @@ function historicalSource(encoded, author) {
     deviceId: author, evidence: 'signer-asserted', contextEvidence: 'caller-asserted' };
 }
 async function readSnapshot(view, taskId) {
-  const result = await view.query(`SELECT id,sequence,type,task_id,slot_id,author,generation,body FROM collab_journal
-    ${taskId ? 'WHERE task_id=?' : ''} ORDER BY sequence LIMIT 10001`, taskId ? [taskId] : []);
+  const result = await view.query(`SELECT j.id,j.sequence,j.type,j.task_id,j.slot_id,j.author,j.generation,j.body,
+      lower(hex(j.attempt_id)) AS attempt_id,t.operation_id,lower(hex(t.author_id)) AS verified_author,
+      lower(hex(p.application_id)) AS application_id,lower(hex(g.generation)) AS verified_generation,t.outcome
+    FROM collab_journal j LEFT JOIN chronolog_transactions t ON t.tx_id=j.attempt_id
+      LEFT JOIN chronolog_attempt_generations g ON g.transaction_id=j.attempt_id
+      LEFT JOIN chronolog_peer_control p ON p.singleton=1
+    ${taskId ? 'WHERE j.task_id=?' : ''} ORDER BY j.sequence LIMIT 10001`, taskId ? [taskId] : []);
   if (result.rows.length > 10000) throw new CollaborationError('SNAPSHOT_TOO_LARGE', 'Query one task instead of the application-wide snapshot');
-  const events = result.rows.map(([id,sequence,type,taskId,slotId,author,generation,body]) =>
-    ({id,sequence:Number(sequence),type,taskId,slotId,author,generation,body:JSON.parse(body)}));
+  const events = result.rows.map(([id,sequence,type,taskId,slotId,author,generation,body,attemptId,operationId,verifiedAuthor,applicationId,verifiedGeneration,outcome]) => {
+    if (outcome!=='accepted' || verifiedAuthor!==author || verifiedGeneration!==generation || typeof operationId!=='string' ||
+        !/^[0-9a-f]{64}$/u.test(applicationId) || !/^[0-9a-f]{64}$/u.test(attemptId))
+      throw new CollaborationError('PROVENANCE_UNAVAILABLE','The selected domain record does not match its authenticated transaction evidence');
+    return {id,sequence:Number(sequence),type,taskId,slotId,author,generation,body:JSON.parse(body),
+      operation:Object.freeze({applicationId,author,operationId,attemptId,generation})};
+  });
   const selectedGeneration = currentGeneration(view);
   const tasks = [], claims = [], results = [], messages = [];
   for (const record of events.filter(event => event.type === 'request')) {
@@ -236,12 +248,13 @@ async function readSnapshot(view, taskId) {
     const cancel = entries.find(event => event.type === 'cancel');
     const finalized = entries.find(event => event.type === 'finalize');
     const body = record.body;
-    const task = {taskId:record.taskId,creator:record.author,generation:record.generation,taskVersion:1,version:entries.length,
+    const task = {taskId:record.taskId,creator:record.author,generation:record.generation,operation:record.operation,taskVersion:1,version:entries.length,
       title:body.title,kind:body.kind,responsePolicy:body.responsePolicy,slots:body.slots,
       ...Object.fromEntries(['input','target','context'].map(key => [key,JSON.parse(body[key])])),
       source:historicalSource(body.source,record.author),
+      cancellation:cancel?{...cancel.body,author:cancel.author,generation:cancel.generation,operation:cancel.operation}:null,
       status:finalized?'completed':cancel?'cancelRequested':'open',aggregate:finalized ? {
-        ...finalized.body,content:JSON.parse(finalized.body.content),author:finalized.author,generation:finalized.generation,
+        ...finalized.body,content:JSON.parse(finalized.body.content),author:finalized.author,generation:finalized.generation,operation:finalized.operation,
         disposition: finalized.body.resultIds.length < body.slots.length && body.responsePolicy==='manual' ? 'partial' : 'complete',
       }:null};
     const taskClaims = [];
@@ -249,10 +262,10 @@ async function readSnapshot(view, taskId) {
       const current = entries.filter(event => event.slotId===slot.slotId && ['claim','rebind','handoff'].includes(event.type)).at(-1);
       if (!current) continue;
       const completed=entries.some(event=>event.slotId===slot.slotId && event.type==='result' && event.body.disposition==='accepted');
-      const ack=entries.some(event=>event.slotId===slot.slotId && event.type==='ackCancel' && event.body.claimEpoch===current.body.epoch);
+      const ack=entries.find(event=>event.slotId===slot.slotId && event.type==='ackCancel' && event.body.claimEpoch===current.body.epoch);
       const claim={taskId:record.taskId,slotId:slot.slotId,claimEpoch:current.body.epoch,taskVersion:1,
         claimant:current.type==='handoff'?current.body.assignee:current.author,runId:current.body.runId??null,
-        endpointIncarnation:current.body.endpointIncarnation??null,generation:current.generation,
+        endpointIncarnation:current.body.endpointIncarnation??null,generation:current.generation,operation:current.operation,acknowledgement:ack?.operation??null,
         status:completed?'completed':cancel?(ack||current.type==='handoff'?'cancelled':'cancelRequested'):
           current.type==='handoff'?'offered':current.generation!==selectedGeneration?'needsReview':'active'};
       claims.push(claim);taskClaims.push(claim);
@@ -261,9 +274,9 @@ async function readSnapshot(view, taskId) {
     else if(!finalized&&!cancel&&taskClaims.some(claim=>claim.status==='needsReview'))task.status='needsReview';
     tasks.push(task);
     for (const entry of entries.filter(event=>event.type==='result')) results.push({taskId:record.taskId,slotId:entry.slotId,
-      ...entry.body,content:JSON.parse(entry.body.content),author:entry.author,operationRecord:entry.id});
+      ...entry.body,content:JSON.parse(entry.body.content),author:entry.author,operationRecord:entry.id,operation:entry.operation});
   }
   for(const entry of events.filter(event=>event.type==='message'))messages.push({threadId:entry.taskId,...entry.body,
-    source:historicalSource(entry.body.source,entry.author),author:entry.author,generation:entry.generation});
+    source:historicalSource(entry.body.source,entry.author),author:entry.author,generation:entry.generation,operation:entry.operation});
   return taskId ? {task:tasks[0]??null,claims,results} : {tasks,claims,results,messages};
 }
