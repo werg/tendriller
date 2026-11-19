@@ -1,6 +1,9 @@
 import type { ApplicationDefinition, ApplicationSession, ApplicationEndpointBinding, PeerRevision,
   OperationState, AppliedResult, SignedRetainedCoverage, SignedAttempt } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
+import type { CollaborationTaskPageOptions, CollaborationResultPageOptions, CollaborationMessagePageOptions,
+  CollaborationThreadPageOptions, CollaborationTaskPage, CollaborationResultPage, CollaborationMessagePage,
+  CollaborationPage, CollaborationAcceptedResult, CapturedCollaborationReader } from './paging.mjs';
 
 export declare const COLLABORATION_PROTOCOL: 'tendriller.collaboration.v1';
 export declare const COLLABORATION_LIMITS: Readonly<{slots:number;activeClaimsPerSigner:number;payloadBytes:number;resultsPerSlot:number;requests:number;observers:number}>;
@@ -70,8 +73,15 @@ export interface CollaborationMessage {
   readonly threadId:string;readonly messageId:string;readonly text:string;readonly inReplyTo?:string;
   readonly source:SignerAssertedSource;readonly author:string;readonly generation:string;readonly operation:VerifiedOperationReference;
 }
-export interface CollaborationTaskSnapshot {readonly task:CollaborationTask|null;readonly claims:readonly CollaborationClaim[];readonly results:readonly CollaborationResult[]}
-export interface CollaborationSnapshot {readonly tasks:readonly CollaborationTask[];readonly claims:readonly CollaborationClaim[];readonly results:readonly CollaborationResult[];readonly messages:readonly CollaborationMessage[]}
+export interface CollaborationTaskSnapshot {
+  readonly task:CollaborationTask|null;readonly claims:readonly CollaborationClaim[];readonly results:readonly CollaborationResult[];
+  readonly acceptedResults:readonly CollaborationAcceptedResult[];readonly resultsPage:CollaborationPage;
+}
+export interface CollaborationSnapshot {
+  readonly tasks:readonly CollaborationTask[];readonly claims:readonly CollaborationClaim[];readonly results:readonly CollaborationResult[];
+  readonly acceptedResults:readonly CollaborationAcceptedResult[];readonly messages:readonly CollaborationMessage[];
+  readonly pages:Readonly<{tasks:CollaborationPage;results:CollaborationPage;messages:CollaborationPage}>;
+}
 export interface CollaborationQuery<Value> {readonly revision:PeerRevision;readonly value:Value}
 export interface RetainedOperation {readonly reference:OperationReference;readonly viewId:string;readonly context:Readonly<Record<string,unknown>>}
 export interface ViewStore<Draft=unknown> {
@@ -94,6 +104,11 @@ export interface CollaborationClient<Session extends CollaborationSession=Collab
   finalize(input:{taskId:string;actionId?:string;expectedVersion:number;resultIds:readonly string[];content:unknown;allowPartial?:boolean},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'actionId'>>;
   message(input:{threadId:string;messageId?:string;text:string;inReplyTo?:string},options?:SubmitOptions):Promise<CollaborationOperation<'threadId'|'messageId'>>;
   inspect(taskId:string):Promise<CollaborationQuery<CollaborationTaskSnapshot>>;snapshot():Promise<CollaborationQuery<CollaborationSnapshot>>;
+  tasks(options?:CollaborationTaskPageOptions):Promise<CollaborationQuery<CollaborationTaskPage>>;
+  results(options?:CollaborationResultPageOptions):Promise<CollaborationQuery<CollaborationResultPage>>;
+  messages(options?:CollaborationMessagePageOptions):Promise<CollaborationQuery<CollaborationMessagePage>>;
+  thread(options:CollaborationThreadPageOptions):Promise<CollaborationQuery<CollaborationMessagePage>>;
+  capture(options?:{signal?:AbortSignal}):Promise<CapturedCollaborationReader>;
   waitForOutcome(taskId:string,options?:{signal?:AbortSignal}):Promise<CollaborationTaskSnapshot&{readonly revision:PeerRevision}>;
   inspectOperation(reference:OperationReference):Promise<{readonly state:OperationState;readonly attempt:SignedAttempt}|null>;
   retry(reference:OperationReference):Promise<void>;detach():Promise<void>;
@@ -147,3 +162,4 @@ export declare function createEffectDispatcher<Fence=unknown,Input=unknown,Recei
   authorize:(fence:Fence)=>void|Promise<void>;reconcile?:(id:string,record:EffectRecord<Fence,Receipt>)=>Receipt|null|undefined|Promise<Receipt|null|undefined>;
 }):{execute(input:{effectId:string;fence:Fence;input:Input}):Promise<EffectRecord<Fence,Receipt>>};
 export * from './diagnostics.mjs';
+export * from './paging.mjs';

@@ -1,4 +1,5 @@
 import { canonicalJson, CollaborationError, identifier, operationReference, signerId } from './protocol.mjs';
+import { captureCollaborationReader } from './paging.mjs';
 
 function immutableJson(value) {
   const copy = JSON.parse(canonicalJson(value, 65536));
@@ -107,6 +108,11 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
     message(input, options) { return submit('collab.message', { ...input, messageId: input.messageId ?? crypto.randomUUID(), source: canonicalJson(source, 2048) }, options); },
     inspect,
     snapshot() { active(); return session.query('collab.snapshot', null); },
+    tasks(options = {}) { active(); return session.query('collab.tasks', options); },
+    results(options = {}) { active(); return session.query('collab.results', options); },
+    messages(options = {}) { active(); return session.query('collab.messages', options); },
+    thread(options) { active(); return session.query('collab.thread', options); },
+    capture(options = {}) { active(); return captureCollaborationReader(session, options); },
     async waitForOutcome(taskId, { signal } = {}) {
       active(); signal?.throwIfAborted();
       const lifetime = new AbortController();

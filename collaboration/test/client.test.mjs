@@ -153,6 +153,19 @@ test('outcome observation subscribes before querying and closes its waiter witho
   assert.equal(result.task.status,'completed');assert.equal(returned,true);assert.equal(cancellations,0);
 });
 
+test('page conveniences use approved named queries and capture stays an explicit raw-query capability',async()=>{
+  const queries=[],denied=Object.assign(Error('named-query scope'),{code:'APPLICATION_ATTACHMENT_QUERY_FORBIDDEN'});
+  let views=0,released=0;
+  const session={command(){},query(name,input){queries.push({name,input});return Promise.resolve({value:{},revision:{}});},
+    async readView(){views++;return{query(){throw denied;},release(){released++;}};}};
+  const client=createCollaborationClient({session});
+  await client.tasks({limit:8,state:'open'});await client.results({taskId:'task',limit:16});
+  await client.messages({cursor:'cursor'});await client.thread({threadId:'thread',limit:16});
+  assert.deepEqual(queries.map(value=>value.name),['collab.tasks','collab.results','collab.messages','collab.thread']);
+  assert.deepEqual(queries[0].input,{limit:8,state:'open'});assert.equal(views,0);
+  await assert.rejects(client.capture(),value=>value===denied);assert.equal(views,1);assert.equal(released,1);
+});
+
 test('a completed provider receipt wins a concurrent dispatch failure and is never replaced', async () => {
   const records=new Map();let rejectDispatch,started;
   const entered=new Promise(resolve=>{started=resolve;});

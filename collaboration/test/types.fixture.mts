@@ -1,7 +1,7 @@
 import type { ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { createCollaborationClient, createViewStore, createEffectDispatcher, mountParticipantPanel, type ParticipantEntry } from '../index.mjs';
+import { createCollaborationClient, createViewStore, createEffectDispatcher, mountParticipantPanel, captureCollaborationReader, type ParticipantEntry } from '../index.mjs';
 import { createSqliteEffectJournal, attachNativeSession } from '../native.mjs';
 import { serveBrowserOwner } from '../worker.mjs';
 declare const native: ApplicationSession;
@@ -22,6 +22,17 @@ generated.identities.interactionId='replacement';
 // @ts-expect-error the exact submitted input is readonly
 generated.submission.input.interactionId='replacement';
 const snapshot=await attachedClient.snapshot();
+const reader=await captureCollaborationReader(attached),taskPage=await reader.tasks({limit:8,eligibleSigner:'key',state:'open'});
+const cursor:string|null=taskPage.value.page.nextCursor;void cursor;
+const acceptedResult=taskPage.value.acceptedResults[0];
+if(acceptedResult){const disposition:'accepted'=acceptedResult.disposition;void disposition;
+  // @ts-expect-error current accepted summaries deliberately omit full content
+  void acceptedResult.content;}
+await reader.thread({threadId:'thread',limit:16});await reader.close();
+await attachedClient.results({taskId:'task',disposition:'needsReview'});
+const ownReader=await nativeClient.capture();await ownReader.close();
+// @ts-expect-error thread pagination requires an exact thread identity
+await attachedClient.thread({limit:16});
 const reference=snapshot.value.tasks[0]?.operation;
 if(reference){const attempt:string=reference.attemptId;const history:string=reference.historyId;await nativeClient.inspectOperation(reference);void attempt;void history;}
 const store=createViewStore<{text:string}>({storage:localStorage,applicationId:'app',historyId:attached.historyId,profileId:'profile',viewId:'view'});

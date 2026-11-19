@@ -19,9 +19,10 @@ Requests are tasks: `taskId` is the original `interactionId`.
 | `collab.finalize` | `{taskId,actionId,expectedVersion,resultIds:[ids],content:JSON-string,allowPartial:boolean}` |
 | `collab.message` | `{threadId,messageId,text,source:JSON-string,inReplyTo?}`; observation does not execute work |
 
-`collab.snapshot(null)` returns `{tasks, claims, results, messages}`.
+`collab.snapshot(null)` returns a bounded preview
+`{tasks, claims, acceptedResults, results, messages, pages}`.
 `collab.task({taskId})` and `collab.interaction({interactionId})` return
-`{task, claims, results}`. Query result wrappers are the ordinary session
+`{task, claims, acceptedResults, results, resultsPage}`. Query result wrappers are the ordinary session
 `{value,revision,...}`. A task has `taskId,creator,title,kind,input,target,source,
 context,responsePolicy,slots,version,taskVersion,generation,status,aggregate`.
 A claim has `taskId,slotId,claimEpoch,claimant,runId,endpointIncarnation,generation,
@@ -47,6 +48,8 @@ operation. The fresh schema requires raw writers to set
 `createCollaborationClient({session, endpoint?, runId?, store?})` provides:
 `request`, `claim`, `handoff`, `result`, `cancel`, `acknowledgeCancel`, `finalize`,
 `rebind`, `message` and `inspect(taskId)`/`snapshot()`/`waitForOutcome(taskId,{signal})`.
+Named-query page helpers are `tasks(options?)`, `results(options?)`,
+`messages(options?)`, and `thread({threadId,...options})`.
 Each command accepts the equivalent camelCase object plus standard submit options
 `{operationId,basedOn?}`. Request input/target/context and result/finalize content
 are ordinary JSON in the client; it serializes them for the tool schema. Source,
@@ -103,6 +106,52 @@ Every retained operation requires its original `historyId`, which is part of the
 key. Supplying the store's `historyId` also isolates drafts and rejects operations
 from another history. Omitting it permits drafts before attachment; it does not
 infer a history for operation references or merge references from different histories.
+
+## Bounded current state and retained evidence
+
+| Named query / client method | Filters and limits | Value |
+| --- | --- | --- |
+| `collab.tasks` / `tasks` | `creator?`, `eligibleSigner?`, `state?: 'all'\|'open'\|'closed'`, `limit?:1..32` (default 8), `cursor?` | `{tasks,claims,acceptedResults,page}` |
+| `collab.results` / `results` | `taskId?`, `slotId?`, `disposition?`, `limit?:1..64` (default 16), `cursor?` | `{results,page}` |
+| `collab.messages` / `messages` | `threadId?`, `limit?:1..64` (default 20), `cursor?` | `{messages,page}` |
+| `collab.thread` / `thread` | Required `threadId`, `limit?:1..64` (default 20), `cursor?` | `{messages,page}` |
+
+The task-page `state` filter describes claim admission. `closed` includes a
+durable cancellation request or finalization; `task.status` still distinguishes
+pending cancellation acknowledgements, completed cancellation and finalization.
+`open` can include accepted contributions awaiting parent finalization.
+
+Task cards include current claims and accepted-result summaries with their full
+verified reference and claim fence. Those summaries omit result content; full
+accepted and historical result evidence is available through `results`. Retained
+messages and superseded claims do not enlarge the current task projection. The
+snapshot preview exposes separate continuations in `pages.tasks`, `pages.results`
+and `pages.messages`; it never claims its first pages are the complete history.
+The single-task read includes the first result page and `resultsPage` for the rest.
+
+Each `page` has `{nextCursor,hasMore,total,returned,limit,revision}`. Cursors bind
+the exact captured application/history/generation/revision, named query and
+filters. Reusing one after a different revision or filter yields
+`CURSOR_RESET_REQUIRED`; restarting a query is explicit. Pages also obey byte
+budgets: current task cards fit within 384 KiB and result/message evidence within
+128 KiB, so `returned` can be smaller than the requested limit when `hasMore` is
+true. A single record that exceeds the budget produces `PAGE_ITEM_TOO_LARGE`
+instead of truncating its evidence.
+
+`captureCollaborationReader(session,{signal?})`, also available as
+`client.capture({signal?})`, holds one public read view so callers can traverse
+multiple pages coherently while new writes arrive. It exposes `revision`,
+`tasks`, `results`, `messages`, `thread`, `inspect`, `snapshot`, and `close`.
+Always close the reader when the user refreshes or leaves the view; caller or
+session cancellation also releases it. Closing a reader never closes the
+application owner. One reader admits at most eight simultaneous reads.
+
+The captured reader requires unrestricted public SQL query capability and probes
+that capability before returning. A named-query-only or events-only attachment
+cannot obtain raw access through this helper; failed admission releases the
+reserved read view. Such attachments continue using their approved named page
+queries through the client. Their cursor must be explicitly restarted if a live
+write changes the revision between page requests.
 
 `participantModel(entries,{selfEndpoint,now})`, `receiptModel(evidence)`, and
 `mountParticipantPanel({container,participants,selfEndpoint,onSelect})` are optional
