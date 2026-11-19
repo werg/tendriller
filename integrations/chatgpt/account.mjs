@@ -1,10 +1,9 @@
-import { createHash } from 'node:crypto';
 import { createOAuthVerifier, OAuthError } from './auth.mjs';
+import { createHostAccountBrowser } from './account-browser.mjs';
 import { canonical, fail, SCOPES } from './common.mjs';
 
 const ID = /^[a-f0-9]{64}$/;
 const boundedText = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x20\x7f]/.test(value);
-const sha = value => createHash('sha256').update(value).digest('hex');
 function originUrl(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.origin !== value || url.username || url.password)
@@ -132,6 +131,6 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
     },
     // The browser flow below shares this same fixed-origin credential and
     // current-account lookup; the credential is never sent to the browser.
-    _browser: { ...browserOptions, post, lookup, clock, origin, resourceOrigin: resourceUrl.origin, bridgeId, sha },
+    createBrowser: options => createHostAccountBrowser({ ...browserOptions, ...options, post, lookup, clock, origin, resourceOrigin: resourceUrl.origin, bridgeId }),
   };
 }
