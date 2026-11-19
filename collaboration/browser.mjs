@@ -1,5 +1,5 @@
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint } from './browser-transport.mjs';
+import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint, isOwnerAnnouncement } from './browser-transport.mjs';
 import { CollaborationError } from './protocol.mjs';
 
 function waitFor(endpoint,predicate,{signal,timeoutMs=30000}={}){
@@ -30,28 +30,29 @@ export async function openBrowserOwner(options){
   let worker,channel,transport,session;
   try{
     if(shared){
-      worker=new SharedWorker(url,{type:'module',name:`tendriller:${options.profileId}:v1`});worker.port.start();
+      worker=new SharedWorker(url,{type:'module',name:`tendriller:${options.profileId}:v2`});worker.port.start();
       const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,options);
       worker.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'shared',id,profileId:options.profileId});
       await ready;session=await connectApplicationOwner(worker.port,handshake);
     }else{
       if(typeof BroadcastChannel!=='function'||typeof Worker!=='function')throw new CollaborationError('OWNER_CAPABILITY_UNAVAILABLE','The elected owner route needs Worker and BroadcastChannel');
       channel=new BroadcastChannel(ownerChannelName(options.profileId));
-      const ready=waitFor(channel,data=>data.type==='ready',options);
+      const ready=waitFor(channel,data=>isOwnerAnnouncement(data,options.profileId),options);
       worker=new Worker(url,{type:'module',name:`tendriller-owner-${id}`});
       // The worker queues an exclusive Web Lock. Suspension never permits takeover.
       worker.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_OWNER_PROTOCOL&&data.type==='failure')channel?.dispatchEvent(new MessageEvent('message',{data}));});
       worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'elected',id,profileId:options.profileId});
       channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
-      const active=await ready;transport=createBroadcastEndpoint(channel,active.ownerInstanceId,{onReplaced:options.onOwnerReplaced});
+      const active=await ready;transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
+        onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs});
       session=await connectApplicationOwner(transport,handshake);
     }
-  }catch(error){transport?.close();channel?.close();if(shared)worker?.port?.close();else worker?.terminate();throw error;}
+  }catch(error){await transport?.close();channel?.close();if(shared)worker?.port?.close();else worker?.terminate();throw error;}
   let detached=false;
   return Object.freeze({session,mode:shared?'shared':'elected',
-    async suspend(){if(!detached)await session.suspend();},
-    async resume(){if(detached)throw new CollaborationError('ENDPOINT_STALE');await session.resumeAttachment();return session;},
-    async detach(){if(detached)return;detached=true;try{await session.detach();}finally{transport?.close();channel?.close();if(shared)worker.port.close();else worker.terminate();}},
+    async suspend(){if(!detached){await session.suspend();transport?.suspend();}},
+    async resume(){if(detached)throw new CollaborationError('ENDPOINT_STALE');transport?.resume();await session.resumeAttachment();return session;},
+    async detach(){if(detached)return;detached=true;try{await session.detach();}finally{await transport?.close();channel?.close();if(shared)worker.port.close();else worker.terminate();}},
   });
 }
 /** Enrollment is deliberate. A lock/storage failure never creates a replacement signer. */
