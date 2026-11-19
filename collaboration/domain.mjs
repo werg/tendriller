@@ -1,6 +1,7 @@
 import { APPLICATION_COLLECTIVE_ID, defineApplication, defineCommand, defineQuery,
   program, sqlStatement, emit } from '@chronolog/peer-session';
 import { canonicalJson, COLLABORATION_LIMITS, CollaborationError, identifier, signerId, validateTarget } from './protocol.mjs';
+import { readCollaborationTasks, readCollaborationResults, readCollaborationMessages, readCollaborationThread, readCollaborationTask, readCollaborationSnapshot } from './paging-read.mjs';
 
 const text = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const id = text(160), signer = text(64), json = text(8192);
@@ -52,6 +53,8 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       attempt_id BLOB NOT NULL CHECK(typeof(attempt_id)='blob' AND length(attempt_id)=32),
       body TEXT NOT NULL CHECK(json_valid(body) AND length(CAST(body AS BLOB))<=16384))`,
     'CREATE INDEX collab_by_task ON collab_journal(task_id,sequence)',
+    'CREATE INDEX collab_by_type ON collab_journal(type,sequence)',
+    'CREATE INDEX collab_by_task_type ON collab_journal(task_id,type,sequence)',
     'CREATE INDEX collab_by_slot ON collab_journal(task_id,slot_id,type,sequence)',
     `CREATE VIEW collab_latest_claims AS SELECT c.* FROM collab_journal c WHERE c.type IN ('claim','rebind','handoff')
       AND NOT EXISTS (SELECT 1 FROM collab_journal n WHERE n.task_id=c.task_id AND n.slot_id=c.slot_id
@@ -174,13 +177,24 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       { ...value, claimId, epoch: expectedEpoch + 1 }));
   const resultInput = object({ taskId: id, slotId: id, resultId: id, claimEpoch: integer, taskVersion: { type: 'integer', minimum: 1, maximum: 1 },
     generation: signer, runId: id, endpointIncarnation: text(200), outcome: { type: 'string', enum: ['succeeded','failed'] }, content: json });
+  const pageOptions = { limit: { type: 'integer', minimum: 1, maximum: 64 }, cursor: text(8192) };
   const queries = {
-    'collab.snapshot': defineQuery({ description: 'Bounded coherent tasks, current claims, attributed results and conversation; presence is separate', input: { type: 'null' },
-      read: view => readSnapshot(view) }),
-    'collab.task': defineQuery({ description: 'Inspect a durable task, frozen recipients, claim fences, late results and aggregate provenance', input: object({ taskId: id }),
-      read: (view, { taskId }) => readSnapshot(view, taskId) }),
+    'collab.snapshot': defineQuery({ description: 'Bounded coherent preview with explicit task, result and message continuations; presence is separate', input: { type: 'null' },
+      read: view => readCollaborationSnapshot(view) }),
+    'collab.task': defineQuery({ description: 'Current task/claim projection and bounded retained result evidence with explicit continuation', input: object({ taskId: id }),
+      read: (view, { taskId }) => readCollaborationTask(view, taskId) }),
     'collab.interaction': defineQuery({ description: 'Inspect the original addressed request after reconnect or an uncertain response', input: object({ interactionId: id }),
-      read: (view, { interactionId }) => readSnapshot(view, interactionId) }),
+      read: (view, { interactionId }) => readCollaborationTask(view, interactionId) }),
+    'collab.tasks': defineQuery({ description: 'Page indexed current task cards, current claims and accepted result references; discovery grants no claim',
+      input: object({ ...pageOptions, limit: { type: 'integer', minimum: 1, maximum: 32 }, creator: signer, eligibleSigner: signer,
+        state: { type: 'string', enum: ['all','open','closed'] } }, []), read: (view, input) => readCollaborationTasks(view, input) }),
+    'collab.results': defineQuery({ description: 'Page complete retained result evidence, including late and superseded work, within a captured revision',
+      input: object({ ...pageOptions, taskId: id, slotId: id, disposition: { type: 'string', enum: ['accepted','superseded','cancelled','needsReview'] } }, []),
+      read: (view, input) => readCollaborationResults(view, input) }),
+    'collab.messages': defineQuery({ description: 'Page attributed durable messages, optionally selecting one thread', input: object({ ...pageOptions, threadId: id }, []),
+      read: (view, input) => readCollaborationMessages(view, input) }),
+    'collab.thread': defineQuery({ description: 'Page one durable thread without reading unrelated application history', input: object({ ...pageOptions, threadId: id }, ['threadId']),
+      read: (view, input) => readCollaborationThread(view, input) }),
   };
   return defineApplication({ id: definitionId, version, schema: program(...schema.map(value => sqlStatement(value))), commands: {
     'collab.request': event('request', 'Create one addressed interaction with a frozen set of eligible contribution slots', object({
@@ -213,73 +227,4 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       object({threadId:id,messageId:id,text:text(4000),source:text(2048),inReplyTo:id},['threadId','messageId','text','source']),
       ({threadId,messageId,...value}) => insert('message',`message:${threadId}:${messageId}`,threadId,'',{...value,messageId,source:parse(value.source,2048)})),
   }, queries });
-}
-
-function currentGeneration(view) { return typeof view.generation === 'string' ? view.generation : view.revision?.generation; }
-// A signed writer can submit a raw ChangeProgram, so stored labels cannot prove
-// which local attachment prepared it. Only the engine-authenticated author is
-// verified here. Live owner endpoint bindings have a separate, local boundary.
-function historicalSource(encoded, author) {
-  const asserted = JSON.parse(encoded);
-  const context = asserted && typeof asserted === 'object' && !Array.isArray(asserted) ? asserted : { assertion: asserted };
-  return { ...context, ...(context.deviceId && context.deviceId !== author ? { assertedDeviceId: context.deviceId } : {}),
-    deviceId: author, evidence: 'signer-asserted', contextEvidence: 'caller-asserted' };
-}
-async function readSnapshot(view, taskId) {
-  const revision = view.revision;
-  if (typeof revision?.historyId !== 'string' || !revision.historyId)
-    throw new CollaborationError('PROVENANCE_UNAVAILABLE', 'The captured view must identify its verified history');
-  const result = await view.query(`SELECT j.id,j.sequence,j.type,j.task_id,j.slot_id,j.author,j.generation,j.body,
-      lower(hex(j.attempt_id)) AS attempt_id,t.operation_id,lower(hex(t.author_id)) AS verified_author,
-      lower(hex(p.application_id)) AS application_id,lower(hex(g.generation)) AS verified_generation,t.outcome
-    FROM collab_journal j LEFT JOIN chronolog_transactions t ON t.tx_id=j.attempt_id
-      LEFT JOIN chronolog_attempt_generations g ON g.transaction_id=j.attempt_id
-      LEFT JOIN chronolog_peer_control p ON p.singleton=1
-    ${taskId ? 'WHERE j.task_id=?' : ''} ORDER BY j.sequence LIMIT 10001`, taskId ? [taskId] : []);
-  if (result.rows.length > 10000) throw new CollaborationError('SNAPSHOT_TOO_LARGE', 'Query one task instead of the application-wide snapshot');
-  const events = result.rows.map(([id,sequence,type,taskId,slotId,author,generation,body,attemptId,operationId,verifiedAuthor,applicationId,verifiedGeneration,outcome]) => {
-    if (outcome!=='accepted' || verifiedAuthor!==author || verifiedGeneration!==generation || typeof operationId!=='string' ||
-        !/^[0-9a-f]{64}$/u.test(applicationId) || applicationId !== revision.applicationId || !/^[0-9a-f]{64}$/u.test(attemptId))
-      throw new CollaborationError('PROVENANCE_UNAVAILABLE','The selected domain record does not match its authenticated transaction evidence');
-    return {id,sequence:Number(sequence),type,taskId,slotId,author,generation,body:JSON.parse(body),
-      operation:Object.freeze({applicationId,historyId:revision.historyId,author,operationId,attemptId,generation})};
-  });
-  const selectedGeneration = currentGeneration(view);
-  const tasks = [], claims = [], results = [], messages = [];
-  for (const record of events.filter(event => event.type === 'request')) {
-    const entries = events.filter(event => event.taskId === record.taskId);
-    const cancel = entries.find(event => event.type === 'cancel');
-    const finalized = entries.find(event => event.type === 'finalize');
-    const body = record.body;
-    const task = {taskId:record.taskId,creator:record.author,generation:record.generation,operation:record.operation,taskVersion:1,version:entries.length,
-      title:body.title,kind:body.kind,responsePolicy:body.responsePolicy,slots:body.slots,
-      ...Object.fromEntries(['input','target','context'].map(key => [key,JSON.parse(body[key])])),
-      source:historicalSource(body.source,record.author),
-      cancellation:cancel?{...cancel.body,author:cancel.author,generation:cancel.generation,operation:cancel.operation}:null,
-      status:finalized?'completed':cancel?'cancelRequested':'open',aggregate:finalized ? {
-        ...finalized.body,content:JSON.parse(finalized.body.content),author:finalized.author,generation:finalized.generation,operation:finalized.operation,
-        disposition: finalized.body.resultIds.length < body.slots.length && body.responsePolicy==='manual' ? 'partial' : 'complete',
-      }:null};
-    const taskClaims = [];
-    for (const slot of body.slots) {
-      const current = entries.filter(event => event.slotId===slot.slotId && ['claim','rebind','handoff'].includes(event.type)).at(-1);
-      if (!current) continue;
-      const completed=entries.some(event=>event.slotId===slot.slotId && event.type==='result' && event.body.disposition==='accepted');
-      const ack=entries.find(event=>event.slotId===slot.slotId && event.type==='ackCancel' && event.body.claimEpoch===current.body.epoch);
-      const claim={taskId:record.taskId,slotId:slot.slotId,claimEpoch:current.body.epoch,taskVersion:1,
-        claimant:current.type==='handoff'?current.body.assignee:current.author,runId:current.body.runId??null,
-        endpointIncarnation:current.body.endpointIncarnation??null,generation:current.generation,operation:current.operation,acknowledgement:ack?.operation??null,
-        status:completed?'completed':cancel?(ack||current.type==='handoff'?'cancelled':'cancelRequested'):
-          current.type==='handoff'?'offered':current.generation!==selectedGeneration?'needsReview':'active'};
-      claims.push(claim);taskClaims.push(claim);
-    }
-    if(cancel&&taskClaims.every(claim=>['completed','cancelled'].includes(claim.status)))task.status='cancelled';
-    else if(!finalized&&!cancel&&taskClaims.some(claim=>claim.status==='needsReview'))task.status='needsReview';
-    tasks.push(task);
-    for (const entry of entries.filter(event=>event.type==='result')) results.push({taskId:record.taskId,slotId:entry.slotId,
-      ...entry.body,content:JSON.parse(entry.body.content),author:entry.author,operationRecord:entry.id,operation:entry.operation});
-  }
-  for(const entry of events.filter(event=>event.type==='message'))messages.push({threadId:entry.taskId,...entry.body,
-    source:historicalSource(entry.body.source,entry.author),author:entry.author,generation:entry.generation,operation:entry.operation});
-  return taskId ? {task:tasks[0]??null,claims,results} : {tasks,claims,results,messages};
 }

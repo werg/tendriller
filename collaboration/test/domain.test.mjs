@@ -27,7 +27,7 @@ function harness() {
       db.prepare('INSERT INTO chronolog_attempt_generations VALUES(?,?)').run(attempt,Buffer.from(generation,'hex'));db.exec('COMMIT');return reference;
     }catch(error){db.exec('ROLLBACK');throw error;}}
   function execute(name,input,as=author){return executeProgram(()=>steps(definition.commands[name].prepare(input)),as);}
-  const view={get revision(){return{applicationId:APP,historyId:HISTORY,generation};},get generation(){return generation;},query(sql,parameters=[]){const statement=db.prepare(sql);return{rows:statement.all(...parameters).map(row=>Object.values(row))};}};
+  const view={get revision(){return{applicationId:APP,historyId:HISTORY,generation,point:{sequence,root:'9'.repeat(64)},controlRevision:0,materializationRevision:`materialization-${sequence}`};},get generation(){return generation;},query(sql,parameters=[]){const statement=db.prepare(sql);return{rows:statement.all(...parameters).map(row=>Object.values(row))};}};
   return {db,definition,execute,view,raw(sql,as){return executeProgram(()=>db.exec(sql),as);},setGeneration(value){generation=value;db.prepare('UPDATE chronolog_execution_context SET generation=?').run(Buffer.from(value,'hex'));},
     snapshot(taskId='task'){return definition.queries['collab.task'].read(view,{taskId});}};
 }
@@ -117,4 +117,80 @@ test('fan-in uses frozen slots, guarded parent version and explicit partial manu
   assert.throws(()=>h.execute('collab.finalize',{taskId:'task',actionId:'stale',expectedVersion:3,resultIds:['result-b','result-c'],content:'{}',allowPartial:false},A));
   h.execute('collab.finalize',{taskId:'task',actionId:'complete',expectedVersion:5,resultIds:['result-b','result-c'],content:'{}',allowPartial:false},A);
   assert.equal((await h.snapshot()).task.aggregate.disposition,'complete');h.db.close();
+});
+
+
+test('current task inspection and bounded previews remain usable beyond ten thousand retained records',async()=>{
+  const h=harness();request(h);h.execute('collab.claim',claim(),B);
+  for(let index=0;index<40;index++){
+    h.execute('collab.handoff',{taskId:'task',slotId:'main',actionId:`handoff-${index}`,expectedEpoch:1+index*2,assignee:B,reason:'Retained historical handoff'},A);
+    h.execute('collab.claim',claim(`replacement-${index}`,2+index*2),B);
+  }
+  h.raw(`WITH RECURSIVE retained(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM retained WHERE n<10050)
+    INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,generation,attempt_id,body,chronolog_owner)
+    SELECT 'retained-message-'||n,n+(SELECT MAX(sequence) FROM collab_journal),'message','task','',lower(hex(chronolog_actor())),
+      '${G}',chronolog_transaction_id(),json_object('messageId','retained-message-'||n,'text','Retained conversation','source','{}'),1 FROM retained`,A);
+  const batches=[],query=h.view.query.bind(h.view);
+  h.view.query=(sql,parameters=[])=>{const value=query(sql,parameters);batches.push(value.rows.length);return value;};
+  const snapshot=await h.snapshot();
+  assert.equal(snapshot.task.version,10132);assert.equal(snapshot.claims.length,1);assert.equal(snapshot.claims[0].claimEpoch,81);
+  assert.equal(snapshot.resultsPage.total,0);assert.equal(snapshot.resultsPage.hasMore,false);
+  const preview=await h.definition.queries['collab.snapshot'].read(h.view,null);
+  assert.equal(preview.tasks.length,1);assert.equal(preview.messages.length,20);assert.equal(preview.pages.messages.total,10050);
+  assert.equal(preview.pages.messages.hasMore,true);assert.ok(preview.pages.messages.nextCursor);
+  assert.ok(Math.max(...batches)<=8,'Even captured Worker SQL responses must use bounded inner batches');
+  const second=await h.definition.queries['collab.messages'].read(h.view,{cursor:preview.pages.messages.nextCursor});
+  assert.equal(second.messages[0].messageId,'retained-message-21');
+  const cancellation=h.execute('collab.cancel',{taskId:'task',actionId:'after-large-history',expectedVersion:snapshot.task.version,reason:'Guard uses the complete count'},A);
+  assert.equal((await h.snapshot()).task.cancellation.operation.attemptId,cancellation.attemptId);h.db.close();
+});
+
+test('result evidence pages obey a byte budget and expose all late evidence independently of current accepted slots',async()=>{
+  const h=harness();request(h);h.execute('collab.claim',claim(),B);
+  for(let index=0;index<40;index++)h.execute('collab.result',{...result(`large-result-${index}`),content:JSON.stringify({text:'e'.repeat(7600)})},B);
+  const initial=await h.definition.queries['collab.results'].read(h.view,{taskId:'task',limit:64});
+  assert.ok(initial.results.length<40);assert.equal(initial.page.total,40);assert.equal(initial.page.hasMore,true);
+  assert.ok(Buffer.byteLength(JSON.stringify(initial))<140000);
+  const seen=[...initial.results];let cursor=initial.page.nextCursor;
+  while(cursor){const next=await h.definition.queries['collab.results'].read(h.view,{taskId:'task',limit:64,cursor});seen.push(...next.results);cursor=next.page.nextCursor;}
+  assert.equal(seen.length,40);assert.equal(new Set(seen.map(value=>value.resultId)).size,40);
+  assert.equal(seen.filter(value=>value.disposition==='superseded').length,39);
+  const current=await h.snapshot();assert.equal(current.resultsPage.total,40);assert.equal(current.resultsPage.hasMore,true);
+  assert.equal(current.acceptedResults.length,1);assert.equal(current.acceptedResults[0].resultId,'large-result-0');
+  assert.equal('content' in current.acceptedResults[0],false);assert.equal(current.claims[0].status,'completed');
+  assert.equal(current.task.version,42);assert.equal(current.acceptedResults[0].operation.historyId,HISTORY);h.db.close();
+});
+
+test('task discovery uses explicit eligibility and terminal filters and continuation binds its complete captured scope',async()=>{
+  const h=harness();
+  function make(taskId,eligible){h.execute('collab.request',{interactionId:taskId,kind:'review',title:taskId,input:'null',target:JSON.stringify({kind:'signer',deviceId:eligible}),
+    source:'{}',context:'{}',slots:[{slotId:'main',eligibleSigners:[eligible]}],responsePolicy:'one'},A);}
+  make('one',B);make('two',B);make('other',C);
+  h.execute('collab.cancel',{taskId:'one',actionId:'closed',expectedVersion:1,reason:'Done'},A);
+  const open=await h.definition.queries['collab.tasks'].read(h.view,{eligibleSigner:B,state:'open'});
+  assert.deepEqual(open.tasks.map(value=>value.taskId),['two']);assert.equal(open.page.total,1);
+  const first=await h.definition.queries['collab.tasks'].read(h.view,{eligibleSigner:B,limit:1});
+  assert.equal(first.page.hasMore,true);assert.equal(first.page.total,2);
+  const second=await h.definition.queries['collab.tasks'].read(h.view,{eligibleSigner:B,limit:1,cursor:first.page.nextCursor});
+  assert.deepEqual(second.tasks.map(value=>value.taskId),['two']);assert.equal(second.page.hasMore,false);assert.equal(second.page.nextCursor,null);
+  await assert.rejects(h.definition.queries['collab.tasks'].read(h.view,{eligibleSigner:C,cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
+  await assert.rejects(h.definition.queries['collab.tasks'].read({...h.view,revision:{...h.view.revision,historyId:'different-history'}},{eligibleSigner:B,cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
+  make('three',B);
+  await assert.rejects(h.definition.queries['collab.tasks'].read(h.view,{eligibleSigner:B,cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
+  h.setGeneration(G2);
+  await assert.rejects(h.definition.queries['collab.tasks'].read(h.view,{eligibleSigner:B,cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});h.db.close();
+});
+
+test('thread pages cannot cross threads or accept unscoped cursors and preserve original message lineage',async()=>{
+  const h=harness();
+  for(let index=0;index<7;index++)h.execute('collab.message',{threadId:index<5?'selected':'other',messageId:`message-${index}`,text:`Message ${index}`,source:'{}'},A);
+  const first=await h.definition.queries['collab.thread'].read(h.view,{threadId:'selected',limit:2});
+  assert.equal(first.page.total,5);assert.deepEqual(first.messages.map(value=>value.messageId),['message-0','message-1']);
+  const second=await h.definition.queries['collab.thread'].read(h.view,{threadId:'selected',limit:2,cursor:first.page.nextCursor});
+  assert.deepEqual(second.messages.map(value=>value.messageId),['message-2','message-3']);
+  const last=await h.definition.queries['collab.thread'].read(h.view,{threadId:'selected',limit:2,cursor:second.page.nextCursor});
+  assert.equal(last.page.hasMore,false);assert.equal(last.messages[0].messageId,'message-4');assert.equal(last.messages[0].operation.historyId,HISTORY);
+  await assert.rejects(h.definition.queries['collab.thread'].read(h.view,{threadId:'other',cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
+  await assert.rejects(h.definition.queries['collab.messages'].read(h.view,{threadId:'selected',cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
+  await assert.rejects(h.definition.queries['collab.thread'].read(h.view,{threadId:'selected',cursor:'{"after":2}'}),{code:'CURSOR_RESET_REQUIRED'});h.db.close();
 });
