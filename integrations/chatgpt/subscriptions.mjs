@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { bounded, canonical, digest, fail, fields, text } from './common.mjs';
 import { callbackUrl, verifyCallback, webhookKey } from './webhook-data.mjs';
+import { consumerOwner, consumerIdentity, accountIdentity, retainedConsumer } from './consumer.mjs';
 
 const descriptions = {
   'assistant.help_requested': 'A person explicitly requested help in the selected application. Fetch current authorized context before replying.',
@@ -15,25 +16,25 @@ export const EVENT_CATALOG = Object.freeze(Object.entries(descriptions).map(([na
     application_id: { type: 'string' }, source_event_id: { type: 'string' }, source_operation_id: { type: 'string' },
     request_id: { type: 'string' }, kind: { type: 'string' }, summary: { type: 'string', maxLength: 512 },
     selected_generation: { type: 'string' }, context_revision: { type: 'object' }, details_tool: { type: 'string' },
+    source_author: { type: 'string' }, source_attempt_id: { type: 'string' }, export: { type: 'object' }, source_evidence: { type: 'string' },
   }, required: ['application_id', 'source_event_id', 'selected_generation'], additionalProperties: false },
 })));
 
 export function ownerIdentity(principal) {
-  return { id: text(principal?.id, 'principal ID', 512), issuer: text(principal?.issuer, 'issuer', 2048) };
+  return consumerOwner(principal);
 }
 // Authorization metadata comes only from the authenticated principal. It must
 // survive background delivery, but must not change owner or subscription identity.
 function deliveryPrincipal(principal) {
-  const owner = ownerIdentity(principal);
-  if (principal.oauthGrantId !== undefined) owner.oauthGrantId = text(principal.oauthGrantId, 'OAuth grant ID', 512);
-  if (principal.scopes !== undefined) {
-    if (!Array.isArray(principal.scopes) || principal.scopes.length > 128) fail('INVALID_PRINCIPAL', 'Invalid principal scopes');
-    owner.scopes = [...new Set(principal.scopes.map(scope => text(scope, 'scope', 128)))].sort();
-  }
-  return owner;
+  return retainedConsumer(principal);
 }
 export function subscriptionIdentity(principal, name, args, url) {
   return 'sub_' + digest([ownerIdentity(principal), url, name, args]);
+}
+export function sourceCursorScope(sub, exported, revision) {
+  return { schemaVersion: 1, consumerId: consumerIdentity(sub.owner).consumerId, applicationId: sub.applicationId,
+    historyId: exported?.historyId ?? revision?.historyId ?? null, exportFingerprint: exported?.fingerprint ?? null,
+    filter: sub.name, generation: revision?.generation ?? null };
 }
 
 export function createSubscriptions({ store, authorize, captureCursor, applicationIds,
@@ -86,7 +87,7 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
         const current = state.subscriptions[id];
         if (current?.pendingUntil > clock()) fail('SUBSCRIPTION_PENDING', 'Subscription verification is already pending', { status: 409 });
         const count = Object.values(state.subscriptions).filter(item => item.id !== id &&
-          (item.active && item.expiresAt > clock() || item.pendingUntil > clock()) && canonical(ownerIdentity(item.owner)) === canonical(ownerIdentity(owner))).length;
+          (item.active && item.expiresAt > clock() || item.pendingUntil > clock()) && canonical(accountIdentity(item.owner)) === canonical(accountIdentity(owner))).length;
         if (count >= maxPerOwner) fail('SUBSCRIPTION_LIMIT', 'Too many active or pending subscriptions', { status: 429 });
         const before = current ? structuredClone(current) : null;
         state.subscriptions[id] = { ...(current ?? { id, owner, applicationId, name: params.name, active: false, version: 0 }),
@@ -115,7 +116,11 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
             expiresAt: now + Math.min(params.ttlMs ?? ttlMs, maxTtlMs),
             sourceCursor: (canReuse || mustReview ? current.sourceCursor : baseline.cursor) ?? null,
             sourceRevision: (canReuse || mustReview ? current.sourceRevision : baseline.revision) ?? null,
+            sourceExport: (canReuse || mustReview ? current.sourceExport : baseline.export) ?? null,
+            cursorScope: canReuse || mustReview ? current.cursorScope ?? null : sourceCursorScope(current, baseline.export, baseline.revision),
             pausedReason: current.pausedReason ?? null,
+            cursorReset: current.cursorReset ?? null,
+            reviewToken: current.reviewToken ?? null,
             recoveryRevision: current.recoveryRevision ?? null,
             recoveryVersion: current.recoveryVersion ?? 0,
             recoveryAt: current.recoveryAt ?? null,
@@ -159,12 +164,13 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
 }
 
 export async function selectedTail(bridge, applicationId, { maxBatches = 256 } = {}) {
-  let cursor, revision;
+  let cursor, revision, exported;
   for (let i = 0; i < maxBatches; i++) {
     const batch = await bridge.readEvents(applicationId, { ...(cursor == null ? {} : { cursor }), limit: 128 });
     if (batch.hasMore && batch.cursor === cursor) fail('SOURCE_CURSOR_STALLED', 'Selected history cursor did not advance');
-    cursor = batch.cursor; revision = batch.revision;
-    if (!batch.hasMore) return { cursor: cursor ?? null, revision };
+    if (exported !== undefined && canonical(exported) !== canonical(batch.export ?? null)) fail('SOURCE_EXPORT_CHANGED', 'Event export changed during baseline capture');
+    cursor = batch.cursor; revision = batch.revision; exported = batch.export ?? null;
+    if (!batch.hasMore) return { cursor: cursor ?? null, revision, export: exported };
   }
   fail('SOURCE_BASELINE_LIMIT', 'Selected history is too large for one subscription baseline; configure a larger bounded scan budget');
 }

@@ -52,17 +52,17 @@ test('operation identity is bound to the owner and source even across adapter re
   const f = fixture(); await f.adapter.trigger(principal, input);
   const restarted = createWorkspaceAgentAdapter(f.options);
   await assert.rejects(restarted.trigger(principal, { ...input, sourceEventId: 'other-event' }), /OPERATION_CONFLICT/);
-  await assert.rejects(restarted.trigger({ id: 'other' }, input), /OPERATION_CONFLICT/);
   await assert.rejects(restarted.status({ id: 'other' }, { operationId: input.operationId }), /NOT_FOUND/);
-  assert.equal(f.sent.length, 1);
+  await restarted.trigger({ id: 'other' }, input);
+  assert.equal(f.sent.length, 2);
+  assert.notEqual(f.sent[0].init.headers['Idempotency-Key'], f.sent[1].init.headers['Idempotency-Key']);
 });
 
 test('same subject from another issuer cannot read receipts or reuse the conversation', async () => {
   const f = fixture(), one = { id: 'shared-subject', issuer: 'https://issuer.one' }, two = { id: 'shared-subject', issuer: 'https://issuer.two' };
   await f.adapter.trigger(one, input);
-  await assert.rejects(f.adapter.trigger(two, input), /OPERATION_CONFLICT/);
   await assert.rejects(f.adapter.status(two, { operationId: input.operationId }), /NOT_FOUND/);
-  await f.adapter.trigger(two, { ...input, operationId: 'trigger-two' });
+  await f.adapter.trigger(two, input);
   assert.notEqual(JSON.parse(f.sent[0].init.body).conversation_key, JSON.parse(f.sent[1].init.body).conversation_key);
   const owners = Object.values((await f.store.read()).workspaceAgentOperations).map(value => value.ownerId);
   assert.deepEqual(owners, [JSON.stringify([one.issuer, one.id]), JSON.stringify([two.issuer, two.id])]);
@@ -227,4 +227,16 @@ test('run status checks fixed provider identity and never claims a signed write-
   const status = await restarted.status(principal, { operationId: input.operationId });
   assert.equal(status.runStatus, 'completed'); assert.equal(status.answer, undefined); assert.match(status.writeback, /does not return the answer/);
   await restarted.status(principal, { operationId: input.operationId }); assert.equal(polls, 1);
+});
+
+test('approved sibling agents keep independent provider keys and conversations across token rotation', async () => {
+  const f = fixture(), first = { ...principal, agentBindingId: 'planner' }, second = { ...principal, agentBindingId: 'reviewer' };
+  await f.adapter.trigger(first, input);
+  await assert.rejects(f.adapter.status(second, { operationId: input.operationId }), /NOT_FOUND/);
+  await f.adapter.trigger(second, input);
+  assert.equal(f.sent.length, 2);
+  assert.notEqual(f.sent[0].init.headers['Idempotency-Key'], f.sent[1].init.headers['Idempotency-Key']);
+  assert.notEqual(JSON.parse(f.sent[0].init.body).conversation_key, JSON.parse(f.sent[1].init.body).conversation_key);
+  await createWorkspaceAgentAdapter(f.options).trigger({ ...first, oauthGrantId: 'new-token' }, input);
+  assert.equal(f.sent.length, 2);
 });

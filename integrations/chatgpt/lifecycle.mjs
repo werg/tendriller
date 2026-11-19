@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { consumerOwner } from './consumer.mjs';
 
 const ID = /^[a-f0-9]{64}$/u;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -15,7 +16,11 @@ function text(value, label, max = 256) {
   if (typeof value !== 'string' || !value || value.length > max || /[\x00-\x1f\x7f]/u.test(value)) fail('LIFECYCLE_INPUT_INVALID', `Invalid ${label}`);
   return value;
 }
-function owner(principal) { return canonical([principal?.issuer ?? '', text(principal?.id, 'authenticated account identity', 512)]); }
+function owner(principal) {
+  const issuer = principal?.issuer ?? '', subject = text(principal?.id, 'authenticated account identity', 512);
+  const { agentBindingId, clientId } = consumerOwner({ ...principal, issuer: issuer || 'legacy:unscoped' });
+  return canonical([issuer, subject, ...(agentBindingId ? [{ agentBindingId }] : clientId ? [{ clientId }] : [])]);
+}
 function fields(input, allowed) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.includes(key))) fail('LIFECYCLE_INPUT_INVALID', 'Unknown lifecycle input field');
 }
@@ -57,7 +62,7 @@ function graph(input, maxBytes) {
 }
 function publicReview(record) {
   return { reviewId: record.id, reviewDigest: record.digest, applicationId: record.applicationId,
-    operationId: record.operationId, status: record.status, totalBytes: record.totalBytes,
+    operationId: record.operationId, ...(record.clientOperationId ? { clientOperationId: record.clientOperationId } : {}), status: record.status, totalBytes: record.totalBytes,
     unsigned: true, signingRequest: { operationId: record.operationId, entry: record.entry, files: record.files },
     expected: record.expected,
     handoff: { method: 'existing-publisher-device', action: 'Review the complete graph and sign with the application\'s enrolled publisher using signReviewedRelease. Return that exact SignedPublication; the bridge has no signer.' } };
@@ -218,7 +223,10 @@ export function createLifecycleService({ store, creation, applications = [], aut
         definitionDigest: authority.descriptor.definitionDigest, executionManifestDigest: authority.descriptor.executionManifestDigest,
         previous: selected?.publication.id ?? null, revision: selected ? selected.publication.payload.revision + 1 : 0 };
       const { assets, ...packedMetadata } = packed;
-      const record = { id, account, applicationId: input.applicationId, operationId: input.operationId, inputDigest,
+      const scoped = principal.agentBinding?.id ?? principal.agentBindingId ?? principal.clientId;
+      const record = { id, account, applicationId: input.applicationId,
+        operationId: scoped ? `publication_v2_${hash(canonical([account, input.applicationId, input.operationId]))}` : input.operationId,
+        ...(scoped ? { clientOperationId: input.operationId } : {}), inputDigest,
         ...packedMetadata, assets: assets.map(asset => ({ hash: asset.hash, blobKey: assetKey(id, asset.hash) })),
         expected, status: 'awaiting_publisher_signature', createdAt: clock() };
       record.digest = hash(canonical({ format: 'tendriller-page-review-v1', ...expected,

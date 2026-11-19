@@ -1,4 +1,4 @@
-import { scopedDeadline } from './common.mjs';
+import { scopedDeadline, digest, canonical } from './common.mjs';
 
 /** An enrolled native peer, independent from Tendriller's filtered HTTP host. */
 const ID = /^[a-f0-9]{64}$/u;
@@ -57,7 +57,8 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
     const entry = { id: input.id, label: text(input.label ?? input.id, 'label', 160), openSession: input.openSession,
       queries: names(input.allowedQueries ?? [], 'allowedQueries'), commands: names(input.allowedCommands ?? [], 'allowedCommands'),
       topics: names(input.eventTopics ?? [], 'eventTopics', value => value.length > 0 && value.length <= 128),
-      project: input.eventProjection };
+      project: input.eventProjection,
+      exportVersion: input.exportVersion === undefined ? digest(String(input.eventProjection ?? 'no-projection')) : text(input.exportVersion, 'export version', 128) };
     configured.set(entry.id, entry);
   }
   function entryFor(id) {
@@ -110,6 +111,12 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       throw error;
     }
   }
+  function exportDefinition(entry, session) {
+    const description = session.describe();
+    const value = { schemaVersion: 1, applicationId: entry.id, historyId: session.historyId, deviceId: session.deviceId,
+      definitionId: description.id, definitionVersion: description.version, exportVersion: entry.exportVersion, topics: [...entry.topics].sort() };
+    return { ...value, fingerprint: digest(value) };
+  }
   async function project(entry, event, revision) {
     if (!entry.topics.has(event.topic) || !entry.project) return null;
     const projection = await entry.project(structuredClone(event), { revision: structuredClone(revision) });
@@ -142,8 +149,9 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       }
       await access(entry);
       selected(owned.session, batch.revision);
-      return bounded({ applicationId: id, revision: batch.revision, cursor: batch.cursor,
-        hasMore: batch.hasMore, events }, maxResultBytes);
+      const exported = exportDefinition(entry, owned.session);
+      return bounded({ applicationId: id, revision: batch.revision, cursor: batch.cursor, export: exported,
+        hasMore: batch.hasMore, events: events.map(event => ({ ...event, export: exported })) }, maxResultBytes);
     } finally { await view.release(); }
   }
   async function findEvent(id, sourceEventId, { maxBatches, initialCursor, sourceGeneration } = {}) {
@@ -188,7 +196,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
     },
     async getStatus(id) {
       const { session, grant } = await access(entryFor(id));
-      return bounded({ applicationId: id, deviceId: session.deviceId, status: session.status,
+      return bounded({ applicationId: id, historyId: session.historyId, deviceId: session.deviceId, status: session.status,
         grant: Object.fromEntries(['reader', 'writer', 'coordinator', 'recovery', 'administrator', 'publisher'].map(name => [name, grant[name] === true])),
         participation: session.participation?.status ?? null }, maxResultBytes);
     },
@@ -196,6 +204,16 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       const { session } = await access(entryFor(id)), view = await session.readView();
       try { selected(session, view.revision); return bounded(view.revision, 16 * 1024); }
       finally { await view.release(); }
+    },
+    async exportDefinition(id) {
+      const entry = entryFor(id), { session } = await access(entry);
+      return bounded(exportDefinition(entry, session), 16384);
+    },
+    assertExport(id, expected) {
+      const entry = entryFor(id), session = available.get(id)?.session;
+      if (!session || session.status.phase === 'closed') fail('BRIDGE_SESSION_UNAVAILABLE');
+      if (canonical(expected ?? null) !== canonical(exportDefinition(entry, session)))
+        fail('BRIDGE_EXPORT_CHANGED', 'Review the changed event export before resuming external delivery');
     },
     // This synchronous fence follows a fresh authorized native read. No I/O or
     // await may be inserted between this check and invoking an external effect.
@@ -242,6 +260,33 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       text(operationId, 'operation ID', 256);
       const { session } = await access(entryFor(id));
       return bounded(await session.operations.get(operationId), maxResultBytes);
+    },
+    async retryOperation(id, operationId, { beforeSubmit } = {}) {
+      text(operationId, 'operation ID', 256);
+      const entry = entryFor(id), { session } = await access(entry, 'writer');
+      const original = await session.operations.inspect(operationId);
+      if (!original) fail('BRIDGE_OPERATION_NOT_FOUND');
+      permitted(entry, session.describe(), 'commands', original.attempt.payload.header.command);
+      await beforeSubmit?.(); lifetime.signal.throwIfAborted();
+      await session.retry(operationId);
+      return bounded(await session.operations.get(operationId), maxResultBytes);
+    },
+    async waitOperation(id, operationId, { signal, timeoutMs = 5000 } = {}) {
+      text(operationId, 'operation ID', 256);
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) fail('BRIDGE_WAIT_LIMIT');
+      const { session } = await access(entryFor(id)), deadline = scopedDeadline(timeoutMs, signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal);
+      try { return bounded(await session.operations.wait(operationId, { signal: deadline.signal }), maxResultBytes); }
+      catch (error) { if (!deadline.signal.aborted) throw error; return bounded(await session.operations.get(operationId), maxResultBytes); }
+      finally { deadline.close(); }
+    },
+    async reapplyOperation(id, originalOperationId, name, input, { operationId, basedOn, beforeSubmit, onSaved } = {}) {
+      const entry = entryFor(id), { session } = await access(entry, 'writer');
+      permitted(entry, session.describe(), 'commands', name);
+      text(operationId, 'operation ID', 256); text(originalOperationId, 'original operation ID', 256);
+      if (!basedOn || basedOn.applicationId !== id || basedOn.historyId !== session.historyId) fail('BRIDGE_REVISION_SCOPE_MISMATCH');
+      await beforeSubmit?.(); lifetime.signal.throwIfAborted();
+      const operation = await session.reapply(originalOperationId, name, bounded(input, 65536), { operationId, basedOn: bounded(basedOn, 16384) });
+      await onSaved?.(); return bounded(await operation.get(), maxResultBytes);
     },
     async inspectOperation(id, operationId) {
       text(operationId, 'operation ID', 256);

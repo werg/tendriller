@@ -131,7 +131,11 @@ test('events use coherent native views, projected egress and immutable native pr
   const batch = await f.bridge.readEvents(id);
   assert.equal(batch.cursor, 'cursor-1');
   assert.deepEqual(batch.events[0], { name: 'assistant.help_requested', data: { request_id: 'request' },
-    sourceEventId: 'source:0', sourceOperationId: 'request', sourceAuthor: deviceId, sourceAttemptId: 'attempt', revision });
+    sourceEventId: 'source:0', sourceOperationId: 'request', sourceAuthor: deviceId, sourceAttemptId: 'attempt', revision, export: batch.export });
+  assert.deepEqual(batch.export, await f.bridge.exportDefinition(id));
+  assert.equal(batch.export.historyId, revision.historyId); assert.equal(batch.export.deviceId, deviceId);
+  assert.deepEqual(batch.export.topics, ['assistant']); assert.equal(batch.export.schemaVersion, 1);
+  assert.throws(() => f.bridge.assertExport(id, { ...batch.export, fingerprint: 'other' }), { code: 'BRIDGE_EXPORT_CHANGED' });
   assert.equal(JSON.stringify(batch).includes('private'), false);
   assert.equal(f.counts().releases, 1);
   assert.deepEqual(f.calls.find(value => value.read).read, { topics: ['assistant'], limit: 128 });

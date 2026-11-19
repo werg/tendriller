@@ -441,10 +441,10 @@ test('real native G3 selection requires a new review after a paused G2 for both 
         eventProjection: event => ({ name: 'assistant.help_requested', data: { request_id: event.operationId } }) }] });
       await native.select(native.devices[1], await b.session.recoveryPoint(), 'g2');
       await b.session.adopt(await native.registry.read()); await link.synchronize();
-      const g2 = await bridge.readRevision(applicationId), paused = [];
+      const g2 = await bridge.readRevision(applicationId), currentExport = await bridge.exportDefinition(applicationId), paused = [];
       for (const strategy of ['from_current', 'replay_selected']) {
         const store = createMemoryStore({ subscriptions: { 'sub-a': { ...subscription('sub-a', applicationId), expiresAt: Date.now() + 60000,
-          sourceCursor: 'paused-tail' } }, jobs: { retained: { subscriptionId: 'sub-a', sourceKind: 'domain', state: 'retry', attempts: 3 } } });
+          sourceCursor: 'paused-tail', sourceExport: currentExport } }, jobs: { retained: { subscriptionId: 'sub-a', sourceKind: 'domain', state: 'retry', attempts: 3 } } });
         const outbox = createOutbox({ store, bridge, authorize: async () => {}, send: async () => { throw Error('No callback expected during review'); } });
         await outbox.pauseForRecovery('sub-a', { revision: g2 }); paused.push({ strategy, store, outbox });
       }
@@ -464,3 +464,79 @@ test('real native G3 selection requires a new review after a paused G2 for both 
       }
     } finally { await bridge?.close(); await native.close(); }
   });
+
+test('export changes pause scoped cursors and queued egress until exact consumer review', async () => {
+  const f = fixture(), selected = { applicationId: 'app-a', historyId: 'history', generation: 'g1' };
+  const oldExport = { schemaVersion: 1, applicationId: 'app-a', historyId: 'history', fingerprint: 'old', exportVersion: '1' };
+  const newExport = { ...oldExport, fingerprint: 'new', exportVersion: '2' };
+  let currentExport = oldExport;
+  f.recover(selected);
+  f.bridge.exportDefinition = async () => currentExport;
+  f.bridge.assertExport = (_id, expected) => assert.deepEqual(expected, currentExport);
+  f.bridge.readEvents = async () => ({ applicationId: 'app-a', cursor: 'latest', revision: selected, export: currentExport, events: [], hasMore: false });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].sourceExport = oldExport; });
+  const event = { ...source(), sourceAuthor: 'signed-device', sourceAttemptId: 'signed-attempt', revision: selected, export: oldExport };
+  await f.outbox.ingest('sub-a', { ...batch(event), revision: selected, export: oldExport }, { expectedCursor: 'tail' });
+  const originalJob = Object.values((await f.store.read()).jobs)[0].eventId;
+  currentExport = newExport;
+  await f.outbox.dispatchDue();
+  assert.equal(f.sent.length, 0);
+  let status = (await f.outbox.status(owner, 'app-a')).subscriptions[0];
+  assert.equal(status.pausedReason, 'export_review_required');
+  assert.equal(status.cursorReset.previousExport.fingerprint, 'old');
+  assert.equal(status.cursorReset.currentExport.fingerprint, 'new');
+  assert.equal((await f.store.read()).subscriptions['sub-a'].sourceCursor, 'next', 'Pause preserves the old scoped checkpoint');
+  const review = { subscriptionId: 'sub-a', strategy: 'replay_selected', recoveryRevision: status.recoveryRevision };
+  await assert.rejects(f.outbox.resume(owner, review), { code: 'EXPORT_REVIEW_CHANGED' });
+  await assert.rejects(f.outbox.resume({ ...owner, agentBindingId: 'sibling' }, { ...review, reviewToken: status.reviewToken }), { code: 'SUBSCRIPTION_NOT_FOUND' });
+  await f.outbox.resume(owner, { ...review, reviewToken: status.reviewToken });
+  const resumed = (await f.store.read()).subscriptions['sub-a'];
+  assert.equal(resumed.sourceCursor, null); assert.equal(resumed.cursorScope.exportFingerprint, 'new');
+  assert.equal(resumed.cursorScope.generation, 'g1'); assert.equal(resumed.cursorReset.requiresReview, false);
+  await f.outbox.ingest('sub-a', { ...batch({ ...event, export: newExport }), revision: selected, export: newExport }, { expectedCursor: null });
+  await f.outbox.dispatchDue();
+  assert.equal(f.sent.length, 1);
+  const delivered = JSON.parse(f.sent[0].body);
+  assert.equal(delivered.data.export.fingerprint, 'new'); assert.equal(delivered.data.source_author, 'signed-device');
+  assert.equal(delivered.data.source_attempt_id, 'signed-attempt'); assert.equal(delivered.data.source_evidence, 'native-verified');
+  const jobs = (await f.outbox.status(owner, 'app-a')).jobs;
+  assert.equal(jobs.length, 2); assert.equal(jobs.find(value => value.eventId === originalJob).state, 'cancelled');
+  assert.equal(jobs.find(value => value.eventId !== originalJob).deliveryState, 'delivered');
+});
+
+test('changed export batches cannot silently advance a cursor or bypass a stale review', async () => {
+  const f = fixture(), revision = { applicationId: 'app-a', historyId: 'history', generation: 'g1' };
+  const exported = version => ({ applicationId: 'app-a', historyId: 'history', fingerprint: `export-${version}`, exportVersion: version });
+  f.recover(revision); let currentExport = exported('2');
+  f.bridge.exportDefinition = async () => currentExport;
+  f.bridge.readEvents = async () => ({ cursor: 'latest', revision, export: currentExport, hasMore: false, events: [] });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].sourceExport = exported('1'); });
+  assert.equal(await f.outbox.ingest('sub-a', { ...batch(), export: currentExport, revision }, { expectedCursor: 'tail' }), false);
+  let status = (await f.outbox.status(owner, 'app-a')).subscriptions[0];
+  const originalToken = status.reviewToken;
+  assert.equal((await f.store.read()).subscriptions['sub-a'].sourceCursor, 'tail');
+  assert.equal(Object.keys((await f.store.read()).jobs ?? {}).length, 0);
+  currentExport = exported('3');
+  await assert.rejects(f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: revision, reviewToken: originalToken }), { code: 'EXPORT_REVIEW_CHANGED' });
+  status = (await f.outbox.status(owner, 'app-a')).subscriptions[0];
+  assert.notEqual(status.reviewToken, originalToken); assert.equal(status.cursorReset.currentExport.fingerprint, 'export-3');
+});
+
+test('durable dispatch turns serve accounts and sibling consumers before draining a noisy backlog', async () => {
+  const f = fixture();
+  const consumer = (id, account = 'alice') => ({ id: account, issuer: owner.issuer, agentBindingId: id });
+  await f.store.transaction(state => {
+    state.subscriptions = {
+      first: { ...subscription('first'), owner: consumer('first') },
+      sibling: { ...subscription('sibling'), owner: consumer('sibling') },
+      other: { ...subscription('other'), owner: consumer('other', 'bob') },
+    };
+  });
+  await f.outbox.ingest('first', { ...batch(), events: [source('one'), source('two'), source('three')] }, { expectedCursor: 'tail' });
+  for (const id of ['sibling', 'other']) await f.outbox.ingest(id, batch(source(id)), { expectedCursor: 'tail' });
+  await f.outbox.dispatchDue({ limit: 3 });
+  assert.deepEqual(f.sent.map(value => value.url.split('/').at(-1)), ['first', 'other', 'sibling']);
+  assert.equal((await f.outbox.status(consumer('first'), 'app-a')).jobs.length, 3);
+  assert.equal((await f.outbox.status(consumer('sibling'), 'app-a')).jobs.length, 1);
+  await f.outbox.dispatchDue(); assert.equal(f.sent.length, 5);
+});
