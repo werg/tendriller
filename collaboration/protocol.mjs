@@ -89,7 +89,15 @@ export function resolveRecipient(target, entries, { capability } = {}) {
   return candidates.find(entry => entry.deviceId === signers[0]);
 }
 export function operationReference(session, operationId, state) {
-  return Object.freeze({ applicationId: session.applicationId ?? session.id, author: state?.author ?? session.deviceId,
+  // These public session getters come from the owner's verified descriptor,
+  // including through its attachment metadata. Input/state labels cannot choose
+  // the history, and a pre-descriptor partial reference is never safe to retry.
+  const applicationId = session.applicationId ?? session.id, historyId = session.historyId;
+  if (typeof applicationId !== 'string' || !applicationId || typeof historyId !== 'string' || !historyId)
+    throw new CollaborationError('OPERATION_SCOPE_MISMATCH', 'An attached application and verified history are required');
+  if (state?.operationId !== undefined && state.operationId !== operationId)
+    throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The saved state belongs to a different operation');
+  return Object.freeze({ applicationId, historyId, author: signerId(state?.author ?? session.deviceId),
     operationId: identifier(operationId, 'operation'), ...(state?.attemptId ? { attemptId: state.attemptId } : {}),
     ...(state?.generation ? { generation: state.generation } : {}) });
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createViewStore, createEffectDispatcher } from '../local.mjs';
-import { canonicalJson, prepareCollaborationCommand, resolveRecipient, consumerCursor, validateConsumerCursor } from '../protocol.mjs';
+import { canonicalJson, prepareCollaborationCommand, resolveRecipient, consumerCursor, validateConsumerCursor, operationReference } from '../protocol.mjs';
 
 function storage(){const data=new Map();return{get length(){return data.size;},key:i=>[...data.keys()][i]??null,
   getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)};}
@@ -10,7 +10,7 @@ test('local drafts and references are independent even when two views inspect th
   const shared=storage(),scope={storage:shared,applicationId:'app',profileId:'profile'};
   const a=createViewStore({...scope,viewId:'view-a'}),b=createViewStore({...scope,viewId:'view-b'});
   a.writeDraft({text:'a'});b.writeDraft({text:'b'});assert.equal(a.readDraft().text,'a');
-  const ref={applicationId:'app',author:signer,operationId:'operation'};
+  const ref={applicationId:'app',historyId:'history',author:signer,operationId:'operation'};
   a.retainOperation(ref,{input:'original'});b.retainOperation(ref,{input:'original'});a.removeOperation(ref);
   assert.equal(a.pending().length,0);assert.equal(b.pending().length,1);
   assert.throws(()=>b.retainOperation(ref,{input:'edited'}),{code:'OPERATION_REFERENCE_CONFLICT'});
@@ -22,7 +22,7 @@ test('local drafts and references are independent even when two views inspect th
 test('local storage encodes every identity segment without allowing sibling removals',()=>{
   const shared=storage(),scope={storage:shared,applicationId:'app',profileId:'profile'};
   const left=createViewStore({...scope,viewId:'c'}),right=createViewStore({...scope,viewId:'b:view:c'});
-  const ref={applicationId:'app',author:signer,operationId:'a:view:b'},other={...ref,operationId:'a'};
+  const ref={applicationId:'app',historyId:'history',author:signer,operationId:'a:view:b'},other={...ref,operationId:'a'};
   left.retainOperation(ref,{input:'left'});right.retainOperation(other,{input:'right'});
   assert.equal(left.pending().length,1);assert.equal(right.pending().length,1);
   assert.equal(left.pending({allViews:true}).length,2);
@@ -44,8 +44,25 @@ test('ambiguous candidate storage is preserved without assigning it to a new vie
   shared.setItem(legacy,JSON.stringify({reference:{applicationId:'app',author:signer,operationId:'a'},viewId:'b:view:c',context:{}}));
   const view=createViewStore({storage:shared,applicationId:'app',profileId:'profile',viewId:'c'});
   assert.deepEqual(view.pending({allViews:true}),[]);
-  view.removeOperation({applicationId:'app',author:signer,operationId:'a:view:b'});
+  view.removeOperation({applicationId:'app',historyId:'history',author:signer,operationId:'a:view:b'});
   assert.notEqual(shared.getItem(legacy),null);
+});
+test('references bind verified session history and local stores separate histories',()=>{
+  const session={applicationId:'app',historyId:'history: one/二',deviceId:signer};
+  const ref=operationReference(session,'operation',{historyId:'caller-label'});
+  assert.equal(ref.historyId,session.historyId);assert.ok(Object.isFrozen(ref));
+  assert.throws(()=>operationReference({...session,historyId:undefined},'operation'),{code:'OPERATION_SCOPE_MISMATCH'});
+  assert.throws(()=>operationReference(session,'operation',{operationId:'different'}),{code:'OPERATION_REFERENCE_CONFLICT'});
+  const shared=storage(),scope={storage:shared,applicationId:'app',profileId:'profile',viewId:'view'};
+  const beforeAttachment=createViewStore(scope),bound=createViewStore({...scope,historyId:session.historyId});
+  const other=createViewStore({...scope,historyId:'history: two/二'}),foreign={...ref,historyId:other.historyId};
+  beforeAttachment.retainOperation(ref,{input:'first'});beforeAttachment.retainOperation(foreign,{input:'second'});
+  beforeAttachment.removeOperation(ref);assert.equal(beforeAttachment.inspectOperation(foreign).context.input,'second');
+  bound.writeDraft({text:'first'});other.writeDraft({text:'second'});bound.removeDraft();
+  assert.equal(other.readDraft().text,'second');assert.equal(beforeAttachment.readDraft(),null);
+  bound.retainOperation(ref);assert.throws(()=>bound.retainOperation(foreign),{code:'OPERATION_SCOPE_MISMATCH'});
+  assert.equal(other.pending({allViews:true}).length,0);
+  assert.throws(()=>beforeAttachment.retainOperation({...ref,historyId:undefined}),{code:'OPERATION_SCOPE_MISMATCH'});
 });
 test('owner attribution replaces caller source and full incarnation fences endpoint identity',()=>{
   const endpoint={ownerInstanceId:'owner',endpointId:'endpoint',endpointIncarnation:'incarnation',context:{runId:'real-run',documentPath:'board.html'}};

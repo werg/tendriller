@@ -30,11 +30,14 @@ A result has `taskId,slotId,resultId,author,runId,claimEpoch,generation,outcome,
 content,disposition` (accepted, superseded, cancelled, needsReview).
 
 Every request, current claim, result, aggregate and message includes an `operation`
-reference with `applicationId`, `author`, `operationId`, `attemptId` and `generation`.
+reference with `applicationId`, `historyId`, `author`, `operationId`, `attemptId`
+and `generation`.
 Cancellation and acknowledgement references are exposed through
 `task.cancellation.operation` and `claim.acknowledgement`. These fields come from the
 engine-authenticated transaction log and generation evidence joined to the row's
 protected binary `attempt_id`; caller-provided JSON cannot supply or replace them.
+`historyId` comes from the captured view's verified descriptor revision and its
+application identity must match the authenticated transaction log.
 For a late result, `result.generation` names its original claim fence while
 `result.operation.generation` names the generation in which that result was recorded.
 Use the full reference with `inspectOperation` to inspect the original signing
@@ -48,9 +51,19 @@ Each command accepts the equivalent camelCase object plus standard submit option
 `{operationId,basedOn?}`. Request input/target/context and result/finalize content
 are ordinary JSON in the client; it serializes them for the tool schema. Source,
 run and endpoint context are filled by the client/owner. Each returned ordinary
-operation handle also has a full `reference` with application/signer/operation.
+operation handle also has a full `reference` with application/history/signer/operation.
+`operationReference(session, operationId, savedState?)` obtains application and
+history from the public session's verified descriptor getters, including on an
+attached session. `inspectOperation(reference)` reads the original author scope
+and checks any supplied attempt/generation against the inspected signed header.
+`retry(reference)` additionally requires the original local signer and retained
+attempt; it never chooses another signer with a matching local operation ID.
+Both reject wrong or missing history with `OPERATION_SCOPE_MISMATCH`. Earlier
+unmerged candidate references lacking history require explicit inspection of the
+original owner before a full reference is reconstructed; they are never upgraded
+using caller labels or by selecting the current history implicitly.
 
-`createViewStore({storage,applicationId,profileId,viewId})` offers readDraft,
+`createViewStore({storage,applicationId,historyId?,profileId,viewId})` offers readDraft,
 writeDraft, removeDraft, retainOperation, inspectOperation, removeOperation,
 pending({allViews?}). It indexes separate operation references; it is never a
 command queue. Only explicit copying transfers a draft between views.
@@ -59,6 +72,10 @@ identity separately, including identifiers containing colons or slashes. The
 `local:v2` namespace preserves older candidate records without importing them:
 the former concatenated keys can be ambiguous, so applications must review any
 such records explicitly before copying them into a selected view.
+Every retained operation requires its original `historyId`, which is part of the
+key. Supplying the store's `historyId` also isolates drafts and rejects operations
+from another history. Omitting it permits drafts before attachment; it does not
+infer a history for operation references or merge references from different histories.
 
 `participantModel(entries,{selfEndpoint,now})`, `receiptModel(evidence)`, and
 `mountParticipantPanel({container,participants,selfEndpoint,onSelect})` are optional

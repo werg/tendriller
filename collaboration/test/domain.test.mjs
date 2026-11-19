@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createCollaborationDefinition } from '../domain.mjs';
 
-const A='a'.repeat(64),B='b'.repeat(64),C='c'.repeat(64),G='1'.repeat(64),G2='2'.repeat(64),APP='7'.repeat(64);
+const A='a'.repeat(64),B='b'.repeat(64),C='c'.repeat(64),G='1'.repeat(64),G2='2'.repeat(64),APP='7'.repeat(64),HISTORY='verified-domain-history';
 function harness() {
   const db=new DatabaseSync(':memory:');let author=A,generation=G,attempt=Buffer.alloc(32,1),sequence=0;
   db.exec('PRAGMA recursive_triggers=ON');
@@ -22,12 +22,12 @@ function harness() {
   steps(definition.schema);db.exec('ALTER TABLE collab_journal ADD COLUMN chronolog_owner INTEGER');
   function executeProgram(run,as=author){author=as;attempt=Buffer.alloc(32);attempt.writeUInt32BE(++sequence,28);
     db.prepare('UPDATE chronolog_execution_context SET transaction_id=?,generation=?').run(attempt,Buffer.from(generation,'hex'));
-    const reference={applicationId:APP,author,operationId:`operation-${sequence}`,attemptId:attempt.toString('hex'),generation};
+    const reference={applicationId:APP,historyId:HISTORY,author,operationId:`operation-${sequence}`,attemptId:attempt.toString('hex'),generation};
     db.exec('BEGIN');try{run();db.prepare('INSERT INTO chronolog_transactions VALUES(?,?,?,?)').run(attempt,Buffer.from(author,'hex'),reference.operationId,'accepted');
       db.prepare('INSERT INTO chronolog_attempt_generations VALUES(?,?)').run(attempt,Buffer.from(generation,'hex'));db.exec('COMMIT');return reference;
     }catch(error){db.exec('ROLLBACK');throw error;}}
   function execute(name,input,as=author){return executeProgram(()=>steps(definition.commands[name].prepare(input)),as);}
-  const view={get generation(){return generation;},query(sql,parameters=[]){const statement=db.prepare(sql);return{rows:statement.all(...parameters).map(row=>Object.values(row))};}};
+  const view={get revision(){return{applicationId:APP,historyId:HISTORY,generation};},get generation(){return generation;},query(sql,parameters=[]){const statement=db.prepare(sql);return{rows:statement.all(...parameters).map(row=>Object.values(row))};}};
   return {db,definition,execute,view,raw(sql,as){return executeProgram(()=>db.exec(sql),as);},setGeneration(value){generation=value;db.prepare('UPDATE chronolog_execution_context SET generation=?').run(Buffer.from(value,'hex'));},
     snapshot(taskId='task'){return definition.queries['collab.task'].read(view,{taskId});}};
 }
@@ -73,13 +73,16 @@ test('record provenance is the verified attempt and original operation, includin
 });
 test('raw writers cannot substitute an attempt or override the verified read reference with JSON',async()=>{
   const h=harness();
-  const body=JSON.stringify({text:'Attributed raw message',messageId:'raw',source:'{}',operation:{author:C,operationId:'forged',attemptId:'f'.repeat(64)}}).replaceAll("'","''");
+  const body=JSON.stringify({text:'Attributed raw message',messageId:'raw',source:'{}',operation:{historyId:'forged-history',author:C,operationId:'forged',attemptId:'f'.repeat(64)}}).replaceAll("'","''");
   const insert=attempt=>`INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,generation,attempt_id,body,chronolog_owner)
     VALUES('raw',1,'message','thread','',lower(hex(chronolog_actor())),'${G}',${attempt},'${body}',1)`;
   assert.throws(()=>h.raw(insert(`X'${'f'.repeat(64)}'`),A),/collab_attempt/);
   const verified=h.raw(insert('chronolog_transaction_id()'),A);
   const snapshot=await h.definition.queries['collab.snapshot'].read(h.view,null);
   assert.deepEqual(snapshot.messages[0].operation,verified);assert.equal(snapshot.messages[0].operation.author,A);
+  assert.equal(snapshot.messages[0].operation.historyId,HISTORY);
+  await assert.rejects(h.definition.queries['collab.snapshot'].read({...h.view,revision:{applicationId:'8'.repeat(64),historyId:HISTORY}},null),{code:'PROVENANCE_UNAVAILABLE'});
+  await assert.rejects(h.definition.queries['collab.snapshot'].read({...h.view,revision:undefined},null),{code:'PROVENANCE_UNAVAILABLE'});
   h.db.exec('DELETE FROM chronolog_transactions');
   await assert.rejects(h.definition.queries['collab.snapshot'].read(h.view,null),error=>error.code==='PROVENANCE_UNAVAILABLE');h.db.close();
 });

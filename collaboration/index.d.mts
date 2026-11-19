@@ -9,7 +9,7 @@ export declare class CollaborationError extends Error {
   constructor(code:string,message?:string,scope?:Record<string,unknown>);
 }
 export interface EndpointReference { readonly deviceId:string; readonly endpointId:string; readonly endpointIncarnation:string }
-export interface OperationReference { readonly applicationId:string; readonly author:string; readonly operationId:string; readonly attemptId?:string; readonly generation?:string }
+export interface OperationReference { readonly applicationId:string; readonly historyId:string; readonly author:string; readonly operationId:string; readonly attemptId?:string; readonly generation?:string }
 /** Read from immutable domain rows and the engine-owned authenticated transaction log. */
 export interface VerifiedOperationReference extends OperationReference { readonly attemptId:string; readonly generation:string }
 export type Target = {readonly kind:'endpoint';readonly endpoint:EndpointReference}|{readonly kind:'signer';readonly deviceId:string}|{readonly kind:'participant';readonly principalId:string}|{readonly kind:'agent';readonly agentBindingId:string}|{readonly kind:'workerGroup';readonly groupId:string;readonly mode:'claimOne'}|{readonly kind:'thread';readonly threadId:string};
@@ -61,11 +61,11 @@ export interface CollaborationSnapshot {readonly tasks:readonly CollaborationTas
 export interface CollaborationQuery<Value> {readonly revision:PeerRevision;readonly value:Value}
 export interface RetainedOperation {readonly reference:OperationReference;readonly viewId:string;readonly context:Readonly<Record<string,unknown>>}
 export interface ViewStore<Draft=unknown> {
-  readonly viewId:string;readDraft(draftId?:string):Draft|null;writeDraft(value:Draft,draftId?:string):void;removeDraft(draftId?:string):void;
+  readonly viewId:string;readonly historyId?:string;readDraft(draftId?:string):Draft|null;writeDraft(value:Draft,draftId?:string):void;removeDraft(draftId?:string):void;
   retainOperation(reference:OperationReference,context?:Record<string,unknown>):RetainedOperation;inspectOperation(reference:OperationReference):RetainedOperation|null;
   removeOperation(reference:OperationReference):void;pending(options?:{allViews?:boolean}):readonly RetainedOperation[];
 }
-export declare function createViewStore<Draft=unknown>(options:{storage:Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;applicationId:string;profileId:string;viewId:string}):ViewStore<Draft>;
+export declare function createViewStore<Draft=unknown>(options:{storage:Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;applicationId:string;historyId?:string;profileId:string;viewId:string}):ViewStore<Draft>;
 export declare function createCollaborationDefinition(options?:{id?:string;version?:string;administrators?:readonly string[];limits?:Partial<typeof COLLABORATION_LIMITS>}):ApplicationDefinition;
 export type CollaborationSession = ApplicationSession|WorkerApplicationSession;
 export interface CollaborationClient<Session extends CollaborationSession=CollaborationSession> {
@@ -96,7 +96,7 @@ export interface RecipientEntry {
   readonly agentBindingId?:string;readonly endpoint?:EndpointReference;readonly capabilities?:readonly string[];
 }
 export declare function resolveRecipient<Entry extends RecipientEntry>(target:Target,entries:readonly Entry[],options?:{capability?:string}):Entry;
-export declare function operationReference(session:{applicationId?:string;id?:string;deviceId:string},operationId:string,state?:{author?:string;attemptId?:string;generation?:string}|null):OperationReference;
+export declare function operationReference(session:{applicationId?:string;id?:string;historyId:string;deviceId:string},operationId:string,state?:{operationId?:string;author?:string;attemptId?:string;generation?:string}|null):OperationReference;
 export declare function prepareCollaborationCommand<Input>(endpoint:ApplicationEndpointBinding,name:string,input:Input,deviceId:string):Input;
 export interface ConsumerScope {readonly applicationId:string;readonly consumerId:string;readonly generation:string;readonly filterVersion:string}
 export interface ConsumerCursor extends ConsumerScope {readonly protocol:typeof COLLABORATION_PROTOCOL;readonly sequence:number}

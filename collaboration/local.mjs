@@ -1,14 +1,20 @@
 import { canonicalJson, CollaborationError, identifier, signerId } from './protocol.mjs';
 
 /** Per-key writes avoid a shared read/modify/write list that loses sibling references. */
-export function createViewStore({ storage, applicationId, profileId, viewId }) {
+export function createViewStore({ storage, applicationId, historyId, profileId, viewId }) {
   if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function') throw new CollaborationError('LOCAL_STORAGE_UNAVAILABLE');
   [applicationId, profileId, viewId].forEach(value => identifier(value));
   // Every caller-controlled segment is encoded independently. Identifiers may
   // contain ':' and '/', so concatenating them raw aliases unrelated views.
   // Keep the old, ambiguous namespace untouched instead of guessing ownership.
   const segment = value => encodeURIComponent(identifier(value));
-  const prefix = `tendriller:collaboration:local:v2:${segment(applicationId)}:${segment(profileId)}:`;
+  const historySegment = value => {
+    if (typeof value !== 'string' || !value || value.length > 128 || /[\u0000-\u001f\u007f]/u.test(value))
+      throw new CollaborationError('OPERATION_SCOPE_MISMATCH', 'A verified history identity is required');
+    return encodeURIComponent(value);
+  };
+  const prefix = `tendriller:collaboration:local:v2:${segment(applicationId)}:${segment(profileId)}:` +
+    (historyId === undefined ? 'unbound:' : `history:${historySegment(historyId)}:`);
   const viewPrefix = `${prefix}view:${segment(viewId)}:`;
   function read(key) {
     const value = storage.getItem(key);
@@ -20,10 +26,11 @@ export function createViewStore({ storage, applicationId, profileId, viewId }) {
     catch (error) { throw new CollaborationError('LOCAL_STORAGE_UNAVAILABLE', `Could not retain the local record: ${error.message}`); }
   }
   function operationKey(reference) {
-    if (reference.applicationId !== applicationId) throw new CollaborationError('OPERATION_SCOPE_MISMATCH');
-    return `${prefix}operation:${signerId(reference.author)}:${segment(reference.operationId)}:view:${segment(viewId)}`;
+    if (reference.applicationId !== applicationId || (historyId !== undefined && reference.historyId !== historyId))
+      throw new CollaborationError('OPERATION_SCOPE_MISMATCH');
+    return `${prefix}operation:${historySegment(reference.historyId)}:${signerId(reference.author)}:${segment(reference.operationId)}:view:${segment(viewId)}`;
   }
-  return Object.freeze({ viewId,
+  return Object.freeze({ viewId, ...(historyId === undefined ? {} : { historyId }),
     readDraft(draftId = 'main') { return read(`${viewPrefix}draft:${segment(draftId)}`); },
     writeDraft(value, draftId = 'main') { write(`${viewPrefix}draft:${segment(draftId)}`, value); },
     removeDraft(draftId = 'main') { storage.removeItem(`${viewPrefix}draft:${segment(draftId)}`); },

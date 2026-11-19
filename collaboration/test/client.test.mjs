@@ -9,13 +9,44 @@ test('a client cannot silently select a different run than its owner binding', (
 });
 test('uncertain submission retains the original signer reference before entering the owner', async () => {
   let retained;
-  const session = { applicationId:'app', deviceId:signer, query(){}, async command() {
+  const session = { applicationId:'app', historyId:'history', deviceId:signer, query(){}, async command() {
     assert.equal(retained.reference.author, signer); throw Object.assign(Error('response lost'), {code:'TIMEOUT'});
   } };
   const client = createCollaborationClient({session, store:{retainOperation(reference,context){retained={reference,context};}}});
   await assert.rejects(client.message({threadId:'thread',text:'hello'}, {operationId:'original'}), error =>
     error.code === 'TIMEOUT' && error.operationReference.author === signer && error.operationReference.operationId === 'original');
   assert.equal(retained.context.input.text,'hello');
+  assert.equal(retained.reference.historyId,'history');
+});
+
+test('operation inspection uses the original signer and retry verifies the signed attempt scope', async () => {
+  const other='b'.repeat(64),attemptId='1'.repeat(64),generation='2'.repeat(64),calls=[],retried=[];
+  const session={applicationId:'app',historyId:'verified-history',deviceId:signer,command(){},query(){},
+    operations:{async inspect(operationId,{author}){calls.push({operationId,author});return {
+      state:{status:'saved',operationId,attemptId,generation},
+      attempt:{id:attemptId,payload:{header:{applicationId:'app',operationId,author,generation}}}
+    };}},async retry(id){retried.push(id);}};
+  const client=createCollaborationClient({session}),reference={applicationId:'app',historyId:'verified-history',author:other,operationId:'shared-local-id',attemptId,generation};
+  assert.equal((await client.inspectOperation(reference)).attempt.payload.header.author,other);
+  assert.deepEqual(calls,[{operationId:'shared-local-id',author:other}]);
+  await assert.rejects(client.retry(reference),{code:'ORIGINAL_SIGNER_REQUIRED'});
+  const own={...reference,author:signer};await client.retry(own);assert.deepEqual(retried,['shared-local-id']);
+  for(const changed of [{...own,historyId:'other'},{...own,historyId:undefined},{...own,applicationId:'other'}]) {
+    const before=calls.length;
+    await assert.rejects(client.inspectOperation(changed),{code:'OPERATION_SCOPE_MISMATCH'});
+    await assert.rejects(client.retry(changed),{code:'OPERATION_SCOPE_MISMATCH'});
+    assert.equal(calls.length,before);
+  }
+  for(const changed of [{...own,attemptId:'3'.repeat(64)},{...own,generation:'4'.repeat(64)}])
+    await assert.rejects(client.retry(changed),{code:'OPERATION_REFERENCE_CONFLICT'});
+  assert.deepEqual(retried,['shared-local-id']);
+  session.operations.inspect=async()=>null;
+  assert.equal(await client.inspectOperation(own),null);
+  await assert.rejects(client.retry(own),{code:'OPERATION_UNAVAILABLE'});
+  session.operations.inspect=async()=>({state:{operationId:own.operationId,attemptId,generation},
+    attempt:{id:attemptId,payload:{header:{applicationId:'app',operationId:own.operationId,author:other,generation}}}});
+  await assert.rejects(client.retry(own),{code:'OPERATION_REFERENCE_CONFLICT'});
+  assert.deepEqual(retried,['shared-local-id']);
 });
 
 test('outcome observation subscribes before querying and closes its waiter without cancelling work', async () => {

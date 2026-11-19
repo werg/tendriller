@@ -1,4 +1,4 @@
-import { canonicalJson, CollaborationError, identifier, operationReference } from './protocol.mjs';
+import { canonicalJson, CollaborationError, identifier, operationReference, signerId } from './protocol.mjs';
 
 /** Ordinary operations and journals remain owned by the supplied session. */
 export function createCollaborationClient({ session, endpoint = session?.endpoint, runId, store } = {}) {
@@ -35,6 +35,30 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
   const fence = input => ({ ...input, runId: input.runId ?? currentRun,
     endpointIncarnation: input.endpointIncarnation ?? incarnation });
   const inspect = async taskId => { active(); return session.query('collab.task', { taskId: identifier(taskId) }); };
+  function operationScope(reference) {
+    active();
+    if (!reference || reference.applicationId !== session.applicationId ||
+        typeof reference.historyId !== 'string' || !reference.historyId || reference.historyId !== session.historyId)
+      throw new CollaborationError('OPERATION_SCOPE_MISMATCH', 'Select the original application and verified history before inspecting or retrying');
+    identifier(reference.operationId, 'operation'); signerId(reference.author);
+  }
+  async function inspectOperation(reference) {
+    operationScope(reference);
+    const inspected = await session.operations.inspect(reference.operationId, { author: reference.author });
+    if (!inspected) return null;
+    const { state, attempt } = inspected, header = attempt?.payload?.header;
+    // The saved/abandoned state need not contain an author. Use the inspected
+    // signed attempt, never the current signer or a caller's provenance label.
+    if (!header || header.applicationId !== reference.applicationId || header.author !== reference.author ||
+        header.operationId !== reference.operationId || state?.operationId !== reference.operationId ||
+        typeof attempt.id !== 'string' || !attempt.id || state.attemptId !== attempt.id ||
+        typeof header.generation !== 'string' || !header.generation || state.generation !== header.generation ||
+        (state.author !== undefined && state.author !== header.author) ||
+        (reference.attemptId !== undefined && reference.attemptId !== attempt.id) ||
+        (reference.generation !== undefined && reference.generation !== header.generation))
+      throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The retained reference does not match the original signed attempt');
+    return inspected;
+  }
   return Object.freeze({ session, endpoint, runId: currentRun, source: Object.freeze(source),
     request(input, options) {
       return submit('collab.request', { ...input, interactionId: input.interactionId ?? crypto.randomUUID(),
@@ -71,13 +95,13 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
         }
       } finally { lifetime.abort(); await changes.return?.(); }
     },
-    async inspectOperation(reference) {
-      active(); if(reference.applicationId !== session.applicationId) throw new CollaborationError('OPERATION_SCOPE_MISMATCH');
-      return session.operations.inspect(reference.operationId, { author: reference.author });
-    },
+    inspectOperation,
     async retry(reference) {
-      active(); if(reference.applicationId!==session.applicationId || reference.author!==session.deviceId)
+      operationScope(reference);
+      if(reference.author!==session.deviceId)
         throw new CollaborationError('ORIGINAL_SIGNER_REQUIRED', 'Exact retry must use the original owning journal');
+      if (!await inspectOperation(reference))
+        throw new CollaborationError('OPERATION_UNAVAILABLE', 'The original owning journal does not retain this operation; do not create a replacement');
       return session.retry(reference.operationId);
     },
     async detach() { if(detached)return; detached=true; if(typeof session.detach==='function')await session.detach(); },

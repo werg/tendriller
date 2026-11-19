@@ -226,6 +226,9 @@ function historicalSource(encoded, author) {
     deviceId: author, evidence: 'signer-asserted', contextEvidence: 'caller-asserted' };
 }
 async function readSnapshot(view, taskId) {
+  const revision = view.revision;
+  if (typeof revision?.historyId !== 'string' || !revision.historyId)
+    throw new CollaborationError('PROVENANCE_UNAVAILABLE', 'The captured view must identify its verified history');
   const result = await view.query(`SELECT j.id,j.sequence,j.type,j.task_id,j.slot_id,j.author,j.generation,j.body,
       lower(hex(j.attempt_id)) AS attempt_id,t.operation_id,lower(hex(t.author_id)) AS verified_author,
       lower(hex(p.application_id)) AS application_id,lower(hex(g.generation)) AS verified_generation,t.outcome
@@ -236,10 +239,10 @@ async function readSnapshot(view, taskId) {
   if (result.rows.length > 10000) throw new CollaborationError('SNAPSHOT_TOO_LARGE', 'Query one task instead of the application-wide snapshot');
   const events = result.rows.map(([id,sequence,type,taskId,slotId,author,generation,body,attemptId,operationId,verifiedAuthor,applicationId,verifiedGeneration,outcome]) => {
     if (outcome!=='accepted' || verifiedAuthor!==author || verifiedGeneration!==generation || typeof operationId!=='string' ||
-        !/^[0-9a-f]{64}$/u.test(applicationId) || !/^[0-9a-f]{64}$/u.test(attemptId))
+        !/^[0-9a-f]{64}$/u.test(applicationId) || applicationId !== revision.applicationId || !/^[0-9a-f]{64}$/u.test(attemptId))
       throw new CollaborationError('PROVENANCE_UNAVAILABLE','The selected domain record does not match its authenticated transaction evidence');
     return {id,sequence:Number(sequence),type,taskId,slotId,author,generation,body:JSON.parse(body),
-      operation:Object.freeze({applicationId,author,operationId,attemptId,generation})};
+      operation:Object.freeze({applicationId,historyId:revision.historyId,author,operationId,attemptId,generation})};
   });
   const selectedGeneration = currentGeneration(view);
   const tasks = [], claims = [], results = [], messages = [];
