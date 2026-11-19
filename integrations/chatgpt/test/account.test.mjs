@@ -8,7 +8,7 @@ const SECRET = 'private-bridge-secret-'.padEnd(43, 's');
 const keys = generateKeyPairSync('ec', { namedCurve: 'P-256' });
 const jwk = { ...keys.publicKey.export({ format: 'jwk' }), kid: 'test-key', use: 'sig', alg: 'ES256' };
 function fixture() {
-  const now = Date.now(), state = { active: true, access: true, owner: true, grant: true, mismatched: false, oversized: false, outage: false };
+  const now = Date.now(), state = { active: true, access: true, owner: true, grant: true, mismatched: false, oversized: false, outage: false, configured: true };
   const calls = [], scopes = ['applications:read', 'applications:write', 'events:subscribe'];
   const claims = { sub: 'account-1', iss: HOST, aud: RESOURCE, iat: Math.floor(now / 1000), exp: Math.floor(now / 1000) + 300, scope: scopes.join(' '), sid: 'grant-1' };
   const header = Buffer.from(JSON.stringify({ alg: 'ES256', typ: 'at+jwt', kid: jwk.kid })).toString('base64url');
@@ -22,6 +22,8 @@ function fixture() {
     const value = options.headers['Content-Type'] === 'application/json' ? JSON.parse(options.body) : Object.fromEntries(options.body);
     calls.push({ path: new URL(url).pathname, value });
     if (state.oversized) return Response.json({ padding: 'x'.repeat(40000) });
+    if (new URL(url).pathname === '/oauth/bridge-status') return Response.json({ authorizationServerReady: true, bridgeId: 'bridge-1', resource: RESOURCE,
+      applicationIds: state.configured ? [APP] : [], managementRedirectUris: ['https://assistant.example/connections/callback'] });
     if (new URL(url).pathname === '/oauth/introspect') {
       assert.equal(value.token, token);
       return Response.json(state.grant ? { active: true, ...claims, client_id: 'chatgpt-client' } : { active: false });
@@ -84,8 +86,17 @@ test('host verification outages and malformed results fail closed without conver
 
 test('host adapter validates deployment settings and propagates request cancellation', async () => {
   const f = fixture();
-  for (const value of [{ origin: 'http://accounts.example' }, { bridgeSecret: 'short' }, { applications: [{ id: APP }] }, { requestTimeoutMs: 0 }])
+  for (const value of [{ origin: 'http://accounts.example' }, { bridgeSecret: 'short' }, { bridgeSecret: 's'.repeat(42) }, { applications: [{ id: APP }] }, { requestTimeoutMs: 0 }])
     assert.throws(() => createTendrillerAccountAdapter({ ...f.config, ...value }), { code: 'HOST_ACCOUNT_CONFIGURATION_INVALID' });
   const controller = new AbortController(); controller.abort();
   await assert.rejects(f.adapter.authorizeOwner({ id: 'account-1', issuer: HOST, requestSignal: controller.signal }, APP), { name: 'AbortError' });
+});
+
+test('online configuration check verifies the registered bridge without inventing an account or grant', async () => {
+  const f = fixture();
+  const result = await f.adapter.checkHostConfiguration();
+  assert.equal(result.ready, true); assert.equal(result.liveChatGptVerified, false);
+  assert.deepEqual(f.calls.at(-1).value, {}); assert.deepEqual(result.applications, [APP]);
+  f.state.configured = false;
+  await assert.rejects(f.adapter.checkHostConfiguration(), { code: 'HOST_ACCOUNT_MAPPING_INCOMPLETE' });
 });

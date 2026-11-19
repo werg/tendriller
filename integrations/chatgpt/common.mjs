@@ -7,6 +7,15 @@ export class IntegrationError extends Error {
   }
 }
 export function fail(code, message, options) { throw new IntegrationError(code, message, options); }
+export function abortable(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new DOMException('Request cancelled', 'AbortError'));
+    signal.addEventListener('abort', aborted, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+    if (signal.aborted) aborted();
+  });
+}
 export function object(value, label = 'value') {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(value)))

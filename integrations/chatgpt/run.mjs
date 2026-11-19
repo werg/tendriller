@@ -30,7 +30,10 @@ export async function startHttpService(config) {
         ...(['GET', 'HEAD'].includes(incoming.method) ? {} : { body: Readable.toWeb(incoming), duplex: 'half' }) });
       const response = await integration.handler(request);
       cancelled.signal.throwIfAborted();
-      outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+      const responseHeaders = Object.fromEntries(response.headers), cookies = response.headers.getSetCookie();
+      delete responseHeaders['set-cookie'];
+      if (cookies.length) responseHeaders['set-cookie'] = cookies;
+      outgoing.writeHead(response.status, responseHeaders);
       if (!response.body) outgoing.end();
       else await pipeline(Readable.fromWeb(response.body), outgoing, { signal: cancelled.signal });
     } catch {

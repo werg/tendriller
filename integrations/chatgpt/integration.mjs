@@ -1,4 +1,5 @@
 import { createOAuthVerifier } from './auth.mjs';
+import { createTendrillerAccountAdapter } from './account.mjs';
 import { createConsentManagementHandler, createConsentService } from './consent.mjs';
 import { createSessionBridge } from './bridge.mjs';
 import { createLifecycleService } from './lifecycle.mjs';
@@ -23,7 +24,7 @@ function waitForWake(signal, delay, setWake) {
 export async function createIntegration(config = {}) {
   const resource = new URL(config.resource);
   if (resource.protocol !== 'https:' || resource.username || resource.password || resource.search || resource.hash ||
-      typeof config.authorizeAccountAccess !== 'function')
+      !config.hostAccount && typeof config.authorizeAccountAccess !== 'function')
     fail('INTEGRATION_CONFIGURATION_REQUIRED', 'Configure an HTTPS MCP resource and an authoritative account-to-application lookup');
   const clock = config.clock ?? Date.now;
   if (!Number.isSafeInteger(config.tickMs ?? 1000) || (config.tickMs ?? 1000) < 25 || (config.tickMs ?? 1000) > 60000)
@@ -33,17 +34,24 @@ export async function createIntegration(config = {}) {
     try { config.onError?.(details); } catch { /* diagnostics never override the original state */ }
   };
   const store = config.store ?? openDeliveryStore({ ...config.storeLimits, path: config.storePath, key: config.storeKey });
-  let bridge;
+  let bridge, account;
   try {
-    const auth = config.auth ?? createOAuthVerifier({ ...(config.oauth ?? {}), issuer: config.issuer, resource: config.resource,
+    const managementPath = config.management?.path ?? config.hostAccount?.managementPath ?? '/connections';
+    if (config.hostAccount && [config.auth, config.authorizeAccountAccess, config.authorizeOwner].some(value => value !== undefined))
+      fail('INTEGRATION_CONFIGURATION_REQUIRED', 'Choose the host account adapter or explicit external identity callbacks, without mixing authorization modes');
+    account = config.hostAccount ? createTendrillerAccountAdapter({ ...config.hostAccount, resource: config.resource,
+      applications: config.applications, managementPath, clock }) : undefined;
+    const authorizeAccountAccess = account?.authorizeAccountAccess ?? config.authorizeAccountAccess;
+    const authorizeOwner = account?.authorizeOwner ?? config.authorizeOwner;
+    const auth = account?.auth ?? config.auth ?? createOAuthVerifier({ ...(config.oauth ?? {}), issuer: config.issuer, resource: config.resource,
       jwksUri: config.jwksUri, scopesSupported: SCOPES });
     bridge = config.bridge ?? createSessionBridge({ applications: config.applications, ...(config.bridgeLimits ?? {}) });
-    const originalConsent = createConsentService({ store, authorizeOwner: config.authorizeOwner, clock });
+    const originalConsent = createConsentService({ store, authorizeOwner, clock });
     const lifetime = new AbortController(), watchers = new Map(), sideTasks = new Set();
     let started = false, closed = false, loop, wake, stopping;
     const wakeUp = () => wake?.();
     async function authorized(principal, applicationId, eventName) {
-      if (await config.authorizeAccountAccess({ ...principal, requestSignal: lifetime.signal }, applicationId) !== true)
+      if (await authorizeAccountAccess({ ...principal, requestSignal: lifetime.signal }, applicationId) !== true)
         fail('ACCOUNT_ACCESS_DENIED', 'Current account access to the application is required', { status: 403 });
       await originalConsent.assertAccess(principal, { applicationId, kind: eventName == null ? 'read' : 'event', ...(eventName == null ? {} : { name: eventName }) });
       return true;
@@ -51,7 +59,7 @@ export async function createIntegration(config = {}) {
     const subscriptions = createSubscriptions({ store, clock, authorize: authorized,
       captureCursor: id => selectedTail(bridge, id), applicationIds: async principal => {
         const ids = [];
-        for (const item of bridge.listApplications()) if (await config.authorizeAccountAccess(principal, item.id) === true) ids.push(item.id);
+        for (const item of bridge.listApplications()) if (await authorizeAccountAccess(principal, item.id) === true) ids.push(item.id);
         return ids;
       }, ...(config.delivery?.send ? { send: config.delivery.send } : {}), ...(config.subscriptionLimits ?? {}) });
     const outbox = createOutbox({ store, bridge, clock, authorize: authorized,
@@ -85,10 +93,18 @@ export async function createIntegration(config = {}) {
       async grant(principal, input) { const result = await originalConsent.grant(principal, input); await recheckSubscriptions(); wakeUp(); return result; },
       async revoke(principal, input) { const result = await originalConsent.revoke(principal, input); await recheckSubscriptions(); wakeUp(); return result; },
     };
+    const browser = account && config.management !== false ? account.createBrowser({ store, managementPath }) : undefined;
     let management;
-    if (config.management) management = createConsentManagementHandler({ ...config.management, service: consent, origin: resource.origin, clock });
+    if (browser || config.management) {
+      management = createConsentManagementHandler({ ...(browser ? { authenticate: browser.authenticateBrowserSession,
+        applicationsForPrincipal: account.applicationsForPrincipal, csrfKey: config.hostAccount.csrfKey } : {}),
+        ...config.management, path: managementPath, service: consent, origin: resource.origin, clock });
+      if (browser) management = browser.wrapManagement(management);
+    }
     const publicationApproval = config.lifecycle?.authorizePublication;
-    const lifecycle = config.lifecycle ? createLifecycleService({ ...config.lifecycle, store, clock,
+    if (config.lifecycle?.creation === true && !account) fail('INTEGRATION_CONFIGURATION_REQUIRED', 'Automatic creation setup requires the host account adapter');
+    const lifecycle = config.lifecycle ? createLifecycleService({ ...config.lifecycle,
+      ...(config.lifecycle.creation === true ? { creation: { origin: config.hostAccount.origin, ownerEmailForPrincipal: account.ownerEmailForPrincipal } } : {}), store, clock,
       ...(publicationApproval ? { authorizePublication: async (principal, review) => {
         await authorized(principal, review.applicationId, null);
         if (await publicationApproval(principal, review) !== true) return false;
@@ -97,15 +113,16 @@ export async function createIntegration(config = {}) {
     }) : undefined;
     const workspaceAgent = config.workspaceAgent ? createWorkspaceAgentAdapter({ ...config.workspaceAgent,
       store, bridge, authorize: authorized, clock }) : undefined;
-    const handler = createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
-      authorizeAccountAccess: config.authorizeAccountAccess, resource: config.resource, lifecycle, workspaceAgent,
-      management, managementPath: config.management?.path ?? '/connections', clock, onSubscriptionsChanged: changed,
+    const mcpHandler = createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
+      authorizeAccountAccess, resource: config.resource, lifecycle, workspaceAgent,
+      management, managementPath, clock, onSubscriptionsChanged: changed,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
       ...(config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {}),
       ...(config.requestsPerMinute !== undefined ? { requestsPerMinute: config.requestsPerMinute } : {}),
       ...(config.maxOperations !== undefined ? { maxOperations: config.maxOperations } : {}),
       ...(config.maxProfiles !== undefined ? { maxProfiles: config.maxProfiles } : {}),
     });
+    const handler = browser ? async request => await browser.handleRequest(request) ?? mcpHandler(request) : mcpHandler;
     async function observationFailure(id, error) {
       await store.transaction(state => {
         const sub = state.subscriptions?.[id];
@@ -147,12 +164,13 @@ export async function createIntegration(config = {}) {
       if (!stopping) {
         closed = true; detach(); lifetime.abort(); wakeUp();
         for (const watcher of watchers.values()) watcher.controller.abort();
+        account?.close();
         stopping = Promise.allSettled([bridge.close(), loop, ...sideTasks, ...[...watchers.values()].map(watcher => watcher.task)]);
       }
       return stopping;
     }
     return {
-      handler, auth, bridge, consent, subscriptions, outbox, store, lifecycle, workspaceAgent,
+      handler, auth, bridge, consent, subscriptions, outbox, store, lifecycle, workspaceAgent, account,
       stop,
       start() {
         if (closed) fail('INTEGRATION_CLOSED', 'Integration is closed');
@@ -174,5 +192,5 @@ export async function createIntegration(config = {}) {
         if (failed) throw failed.reason;
       },
     };
-  } catch (error) { await bridge?.close?.(); await store.close(); throw error; }
+  } catch (error) { account?.close(); await bridge?.close?.(); await store.close(); throw error; }
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { bounded, canonical, digest, fail, fields, IntegrationError, requireScope, validateArguments } from './common.mjs';
+import { abortable, bounded, canonical, digest, fail, fields, IntegrationError, requireScope, validateArguments } from './common.mjs';
 import { WIDGET_URI, createWidgetResource } from './widget/resource.mjs';
 
 const string = (maxLength = 128) => ({ type: 'string', minLength: 1, maxLength });
@@ -228,7 +228,7 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     if (url.pathname !== resourceUrl.pathname) return json({ error: 'not_found' }, 404);
     if (request.headers.has('Origin') && !origins.has(request.headers.get('Origin'))) return json({ error: 'origin_not_allowed' }, 403);
     let principal;
-    try { principal = { ...await auth.authenticate(request), requestSignal: request.signal }; request.signal.throwIfAborted(); }
+    try { request.signal.throwIfAborted(); principal = { ...await abortable(auth.authenticate(request), request.signal), requestSignal: request.signal }; request.signal.throwIfAborted(); }
     catch (error) { return json(safeError(error), error.status ?? 401, { 'WWW-Authenticate': error.challenge ?? auth.challenge?.() ?? 'Bearer' }); }
     const rateKey = digest([principal.issuer, principal.id]), now = clock();
     for (const [key, window] of rateWindows) if (window.until <= now) rateWindows.delete(key);

@@ -248,3 +248,66 @@ test('HTTP shutdown deadline also releases a blocked native read before store cl
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_application_status', arguments: { applicationId: APP } } }) }).catch(error => error);
   await ready; await service.close(); await pending; assert.equal(f.closed(), true);
 });
+
+function hostConfig(fetcher) {
+  const f = config(); delete f.value.auth; delete f.value.authorizeAccountAccess; delete f.value.authorizeOwner;
+  f.value.applications = [{ id: APP, pageId: 'real-page', label: 'Kitchen', allowedQueries: ['assistanceStatus'],
+    allowedCommands: ['replyToAssistance'], allowedEvents: ['assistant.help_requested'] }];
+  f.value.hostAccount = { origin: 'https://accounts.example', bridgeId: 'bridge-1', bridgeSecret: 's'.repeat(43), csrfKey: Buffer.alloc(32, 3), fetch: fetcher };
+  return f;
+}
+
+test('host-backed HTTP setup completes browser sign-in and explicit consent with both callback cookies preserved', async () => {
+  const issuer = 'https://accounts.example', subject = 'actual-owner', managementSessionId = 'm'.repeat(43);
+  let managementActive = true;
+  const f = hostConfig(async (url, options) => {
+    assert.equal(options.headers.Authorization, `Bearer ${'s'.repeat(43)}`);
+    const input = JSON.parse(options.body);
+    if (url === issuer + '/oauth/management/exchange') return Response.json({ id: subject, issuer, managementSessionId, expiresAt: Date.now() + 900000 });
+    assert.equal(url, issuer + '/oauth/account-access'); assert.equal(input.managementSessionId, managementSessionId);
+    return Response.json({ active: managementActive, owner: managementActive, access: managementActive,
+      account: managementActive ? { id: subject, issuer } : undefined,
+      ...(input.applicationId ? { applicationId: input.applicationId, pageId: input.pageId } : {}),
+    });
+  });
+  const service = await startHttpService({ ...f.value, port: 0 }), local = `http://127.0.0.1:${service.address.port}`;
+  try {
+    const login = await fetch(local + '/connections/login', { redirect: 'manual' });
+    const target = new URL(login.headers.get('Location'));
+    const binding = login.headers.getSetCookie()[0].split(';')[0];
+    const callback = '/connections/callback?' + new URLSearchParams({ state: target.searchParams.get('state'), iss: issuer, code: 'c'.repeat(43) });
+    const linked = await fetch(local + callback, { redirect: 'manual', headers: { Cookie: binding } });
+    const cookies = linked.headers.getSetCookie();
+    assert.equal(linked.status, 303); assert.equal(cookies.length, 2);
+    assert.ok(cookies.some(value => value.startsWith('__Host-tendriller-integration-login=;')));
+    const session = cookies.find(value => value.startsWith('__Host-tendriller-integration=')).split(';')[0];
+    const page = await fetch(local + '/connections', { headers: { Cookie: session }, redirect: 'manual' });
+    assert.equal(page.status, 200); const html = await page.text();
+    assert.match(html, /No applications are connected/); assert.match(html, /Sign out of connection management/);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
+    const saved = await fetch(local + '/connections', { method: 'POST', redirect: 'manual',
+      headers: { Cookie: session, Origin: 'https://integration.example', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf, action: 'grant', applicationId: APP, queries: 'assistanceStatus', days: '30' }) });
+    assert.equal(saved.status, 303);
+    assert.deepEqual((await service.integration.consent.list({ id: subject, issuer }))[0].queries, ['assistanceStatus']);
+    managementActive = false;
+    assert.equal((await fetch(local + '/connections', { redirect: 'manual', headers: { Cookie: session } })).headers.get('Location'), '/connections/login');
+  } finally { await service.close(); }
+});
+
+test('HTTP shutdown cancels a request stalled specifically in shared JWKS discovery', async () => {
+  let entered, jwksAborted = false;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = hostConfig(async (url, options) => {
+    assert.equal(url, 'https://accounts.example/oauth/jwks');
+    return new Promise((_resolve, reject) => {
+      entered(); options.signal.addEventListener('abort', () => { jwksAborted = true; reject(options.signal.reason); }, { once: true });
+    });
+  });
+  const service = await startHttpService({ ...f.value, port: 0, shutdownTimeoutMs: 25 });
+  const token = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'pending' })).toString('base64url') + '.' + Buffer.from('{}').toString('base64url') + '.AA';
+  const pending = fetch(`http://127.0.0.1:${service.address.port}/mcp`, { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) }).catch(error => error);
+  await ready; await service.close(); await pending;
+  assert.equal(jwksAborted, true); assert.equal(f.closed(), true);
+});

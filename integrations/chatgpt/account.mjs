@@ -1,6 +1,6 @@
 import { createOAuthVerifier, OAuthError } from './auth.mjs';
 import { createHostAccountBrowser } from './account-browser.mjs';
-import { canonical, fail, SCOPES } from './common.mjs';
+import { abortable, canonical, fail, SCOPES } from './common.mjs';
 
 const ID = /^[a-f0-9]{64}$/;
 const boundedText = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x20\x7f]/.test(value);
@@ -41,11 +41,11 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
   ...browserOptions } = {}) {
   const host = originUrl(origin), resourceUrl = new URL(resource);
   if (resourceUrl.protocol !== 'https:' || resourceUrl.username || resourceUrl.password || resourceUrl.search || resourceUrl.hash ||
-      !boundedText(bridgeId) || typeof bridgeSecret !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(bridgeSecret) ||
+      !boundedText(bridgeId) || typeof bridgeSecret !== 'string' || !/^[A-Za-z0-9_-]{43,256}$/.test(bridgeSecret) ||
       !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30000 ||
       !Array.isArray(applications) || applications.length > 128)
     fail('HOST_ACCOUNT_CONFIGURATION_INVALID', 'Configure the exact MCP resource, registered bridge credential and bounded page mappings');
-  const mapped = new Map();
+  const mapped = new Map(), lifetime = new AbortController();
   for (const app of applications) {
     if (!ID.test(app.id) || !boundedText(app.pageId) || mapped.has(app.id))
       fail('HOST_ACCOUNT_CONFIGURATION_INVALID', 'Each application needs its actual unique application ID and page ID');
@@ -61,12 +61,12 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
     let response;
     try {
       response = await fetcher(new URL(path, host).href, { method: 'POST', redirect: 'error', credentials: 'omit', cache: 'no-store',
-        signal: AbortSignal.any([AbortSignal.timeout(requestTimeoutMs), ...(signal ? [signal] : [])]),
+        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(requestTimeoutMs), ...(signal ? [signal] : [])]),
         headers: { Authorization: `Bearer ${bridgeSecret}`, Accept: 'application/json',
           'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json' },
         body: form ? new URLSearchParams(body) : JSON.stringify(body) });
     } catch {
-      signal?.throwIfAborted();
+      signal?.throwIfAborted(); lifetime.signal.throwIfAborted();
       fail('HOST_ACCOUNT_UNAVAILABLE', 'Current account authorization could not be reached', { status: 503 });
     }
     const result = await responseObject(response); signal?.throwIfAborted(); return result;
@@ -82,6 +82,7 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
     const result = await post('/oauth/account-access', { issuer: origin, subject: principal.id,
       ...(app ? { applicationId: app.id, pageId: app.pageId } : {}),
       ...(principal.oauthGrantId ? { grantId: principal.oauthGrantId } : {}),
+      ...(principal.managementSessionId ? { managementSessionId: principal.managementSessionId } : {}),
     }, { signal: principal.requestSignal });
     if (typeof result.active !== 'boolean' || typeof result.access !== 'boolean' || typeof result.owner !== 'boolean' ||
         result.active && (result.account?.id !== principal.id || result.account?.issuer !== origin) ||
@@ -92,10 +93,11 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
   const grantCurrent = (principal, result) => boundedText(principal.oauthGrantId) && result.oauthAuthorized === true &&
     Array.isArray(principal.scopes) && Array.isArray(result.scopes) && principal.scopes.every(scope => result.scopes.includes(scope));
   const verifier = createOAuthVerifier({ issuer: origin, resource, jwksUri: `${origin}/oauth/jwks`, scopesSupported: SCOPES, clock,
-    fetch: (url, options = {}) => fetcher(url, { ...options, signal: AbortSignal.any([AbortSignal.timeout(requestTimeoutMs), ...(options.signal ? [options.signal] : [])]) }),
+    fetch: (url, options = {}) => fetcher(url, { ...options, signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(requestTimeoutMs), ...(options.signal ? [options.signal] : [])]) }),
   });
   const auth = { ...verifier, async authenticate(request, requiredScopes = []) {
-    const principal = await verifier.authenticate(request, requiredScopes);
+    request.signal.throwIfAborted();
+    const principal = await abortable(verifier.authenticate(request, requiredScopes), request.signal);
     const token = request.headers.get('Authorization').slice(7);
     const result = await post('/oauth/introspect', { token, token_type_hint: 'access_token' }, { signal: request.signal, form: true });
     const currentScopes = typeof result.scope === 'string' ? [...new Set(result.scope.split(' ').filter(Boolean))].sort() : null;
@@ -107,7 +109,18 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
   } };
   return {
     auth,
+    close() { lifetime.abort(); },
     metadata: Object.freeze({ origin, resource, bridgeId }),
+    async checkHostConfiguration({ signal, management = true } = {}) {
+      const result = await post('/oauth/bridge-status', {}, { signal });
+      const callback = resourceUrl.origin + (browserOptions.managementPath ?? '/connections') + '/callback';
+      if (result.authorizationServerReady !== true || result.bridgeId !== bridgeId || result.resource !== resource ||
+          !Array.isArray(result.applicationIds) || [...mapped.keys()].some(id => !result.applicationIds.includes(id)) ||
+          management && (!Array.isArray(result.managementRedirectUris) || !result.managementRedirectUris.includes(callback)))
+        fail('HOST_ACCOUNT_MAPPING_INCOMPLETE', 'Register this exact bridge, MCP resource, application IDs and management callback in the account host', { status: 503 });
+      return { ready: true, issuer: origin, resource, bridgeId, applications: [...mapped.keys()],
+        managementCallback: management ? callback : null, liveChatGptVerified: false };
+    },
     async authorizeAccountAccess(principal, applicationId) {
       const result = await lookup(principal, applicationId);
       return result.active === true && result.access === true && grantCurrent(principal, result);

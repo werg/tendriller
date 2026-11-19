@@ -40,8 +40,9 @@ export function createHostAccountBrowser({ origin, resourceOrigin, bridgeId, pos
       const token = cookie(request, SESSION);
       if (!token) return null;
       const record = (await store.read()).chatgptBrowser?.sessions?.[sha(token)];
-      if (!record || record.expiresAt <= clock()) return null;
-      const principal = { id: record.id, issuer: record.issuer, expiresAt: record.expiresAt, requestSignal: request.signal };
+      if (!record || record.expiresAt <= clock() || !TOKEN.test(record.managementSessionId ?? '')) return null;
+      const principal = { id: record.id, issuer: record.issuer, expiresAt: record.expiresAt,
+        managementSessionId: record.managementSessionId, requestSignal: request.signal };
       const result = await lookup(principal);
       return result.active === true ? principal : null;
     })();
@@ -89,16 +90,17 @@ export function createHostAccountBrowser({ origin, resourceOrigin, bridgeId, pos
         if (!TOKEN.test(code ?? '')) fail('HOST_LOGIN_INVALID', 'The account host returned an invalid login code');
         const linked = await post('/oauth/management/exchange', { code, redirect_uri: callback, code_verifier: pending.verifier }, { signal: request.signal });
         if (typeof linked.id !== 'string' || !linked.id || linked.id.length > 512 || /[\x00-\x20\x7f]/.test(linked.id) ||
-            linked.issuer !== origin || !Number.isSafeInteger(linked.expiresAt) || linked.expiresAt <= clock() || linked.expiresAt > clock() + 86400000)
+            linked.issuer !== origin || !TOKEN.test(linked.managementSessionId ?? '') ||
+            !Number.isSafeInteger(linked.expiresAt) || linked.expiresAt <= clock() || linked.expiresAt > clock() + 86400000)
           fail('HOST_LOGIN_INVALID', 'The account host returned an invalid session proof', { status: 503 });
-        const principal = { id: linked.id, issuer: linked.issuer, requestSignal: request.signal };
+        const principal = { id: linked.id, issuer: linked.issuer, managementSessionId: linked.managementSessionId, requestSignal: request.signal };
         if (!(await lookup(principal)).active) fail('HOST_LOGIN_INACTIVE', 'The Tendriller account is no longer active', { status: 403 });
         const token = randomBytes(32).toString('base64url'), expiresAt = Math.min(linked.expiresAt, clock() + sessionTtlMs);
         await store.transaction(value => {
           const data = records(value, clock()), previous = cookie(request, SESSION);
           if (previous) delete data.sessions[sha(previous)];
           if (Object.keys(data.sessions).length >= maxSessions) fail('HOST_SESSION_CAPACITY', 'Browser session capacity reached', { status: 503 });
-          data.sessions[sha(token)] = { id: linked.id, issuer: origin, expiresAt };
+          data.sessions[sha(token)] = { id: linked.id, issuer: origin, managementSessionId: linked.managementSessionId, expiresAt };
         });
         return redirect(managementPath, [setCookie(PENDING, '', 0), setCookie(SESSION, token, Math.floor((expiresAt - clock()) / 1000))]);
       }

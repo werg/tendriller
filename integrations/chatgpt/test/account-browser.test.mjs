@@ -12,13 +12,13 @@ function fixture(options = {}) {
   const store = createMemoryStore();
   const browser = createHostAccountBrowser({ origin: HOST, resourceOrigin: ORIGIN, bridgeId: 'configured-bridge', store,
     clock: () => now, ...options,
-    lookup: async principal => { assert.equal(principal.issuer, HOST); return { active }; },
+    lookup: async principal => { assert.equal(principal.issuer, HOST); assert.equal(principal.managementSessionId, 'm'.repeat(43)); return { active }; },
     post: async (path, input) => {
       exchanges++; assert.equal(path, '/oauth/management/exchange');
       assert.equal(input.redirect_uri, `${ORIGIN}/connections/callback`);
       assert.equal(createHash('sha256').update(input.code_verifier).digest('base64url'), expectedChallenge);
       if (failExchange) throw Error('Private transport diagnostic');
-      return { id: 'verified-owner', issuer: HOST, expiresAt: now + 900000 };
+      return { id: 'verified-owner', issuer: HOST, managementSessionId: 'm'.repeat(43), expiresAt: now + 900000 };
     },
   });
   const request = (path, cookies, init = {}) => new Request(ORIGIN + path, { ...init, headers: { ...init.headers, ...(cookies ? { Cookie: cookies } : {}) } });
