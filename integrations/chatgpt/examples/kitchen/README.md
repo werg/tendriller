@@ -7,6 +7,8 @@ the maintained [first-app tutorial](../../../../docs/tutorial/README.md).
 The fixture does not change an existing kitchen's immutable application
 definition. Create a new application or use a separately supported evolution
 procedure when adopting these commands in an existing project.
+The current fixture definition is version 2: requests require the original
+`cookingStepEventId`. Republishing this page cannot upgrade a version 1 domain.
 
 ## Run the application
 
@@ -101,6 +103,20 @@ const operation = await session.command('replyToAssistance', {
 native `basedOn` is a structured revision captured by the fresh read. Preserve
 those distinct values. Do not serialize the native revision into the native
 `basedOn` parameter.
+
+When creating a request, copy both `cookingStepId` and `cookingStepEventId` from
+the same `kitchenContext` snapshot (`currentStep.stepId` and
+`currentStep.eventId`). If the step changes before the request is ordered, its
+original event binding makes the answer visibly stale even when the step name
+is reused. The projection never substitutes the newer step event.
+
+`kitchenContext` returns the current step, total request count and the latest 20
+compact request summaries. It excludes full questions, context revisions and
+answers. Open **Read request and answer**, or enter an older request ID, to query
+`assistanceStatus`. That query preserves the full question and canonical answer,
+up to 8 recent replies and 32 conflict references, plus totals and truncation
+flags. Older facts remain in native history; the bounded page result does not
+erase or declare them resolved.
 
 The domain records facts. Its query chooses the first valid response, keeps
 additional answers and duplicate request IDs visible as conflicts, and labels a

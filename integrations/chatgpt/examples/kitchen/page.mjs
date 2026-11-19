@@ -15,6 +15,7 @@ const storageKey = `tendriller-kitchen-${configuration.applicationId}:pending`;
 const pendingStorage = createPendingStorage({ key: storageKey });
 let worker, rtc, session, client, liveView, busy = false, operationRead = 0;
 let terminalOperationId;
+let selectedRequestId, detailRead = 0;
 const pending = () => pendingStorage.load();
 function controls() {
   const unresolved = Boolean(pending());
@@ -37,18 +38,13 @@ function render(value) {
   if (!value.requests.length) list.append(node('p', 'Your first help request will appear here.'));
   for (const request of [...value.requests].reverse()) {
     const article = document.createElement('article');
-    article.append(node('p', visibleAssistanceStatus(request), 'status'), node('h3', request.question),
+    article.append(node('p', visibleAssistanceStatus(request), 'status'), node('h3', `${request.questionPreview}${request.questionTruncated ? '…' : ''}`),
       node('small', `Step ${request.cookingStepId} · request ${request.requestId}`));
-    if (request.answer) {
-      article.append(node('p', request.answer.answer, 'answer'));
-      const steps = document.createElement('ol');
-      for (const step of request.answer.suggestedSteps) steps.append(node('li', step));
-      article.append(steps);
-    }
-    for (const reply of request.replies.filter(reply => reply.reasons.length)) {
-      article.append(node('p', `Response needs review: ${reply.reasons.join(', ')}. ${reply.answer}`, 'warning'));
-    }
-    if (request.conflicts.length) article.append(node('p', `${request.conflicts.length} conflicting fact(s) retained for review.`, 'warning'));
+    if (request.answerAvailable) article.append(node('p', 'An answer is available. Open details to read it.'));
+    if (request.conflictCount) article.append(node('p', `${request.conflictCount} conflicting fact(s) retained for review.`, 'warning'));
+    const details = node('button', 'Read request and answer', 'secondary');
+    details.onclick = () => { selectedRequestId = request.requestId; void readRequestDetails().catch(report); };
+    article.append(details);
     const handoff = document.createElement('button'); handoff.className = 'secondary';
     handoff.textContent = 'Copy request reference';
     handoff.addEventListener('click', async () => {
@@ -58,8 +54,33 @@ function render(value) {
     });
     article.append(handoff); list.append(article);
   }
-  if (value.currentStep) $('#data-status').textContent = `Selected step: ${value.currentStep.text}. ${value.requests.length} request(s) in this history.`;
-  else $('#data-status').textContent = `${value.requests.length} request(s) in this history. Choose a cooking step before asking.`;
+  const count = `${value.requestCount} request(s) in this history.${value.requestsTruncated ? ' Showing the latest 20; find older requests by ID below.' : ''}`;
+  if (value.currentStep) $('#data-status').textContent = `Selected step: ${value.currentStep.text}. ${count}`;
+  else $('#data-status').textContent = `${count} Choose a cooking step before asking.`;
+  if (selectedRequestId) void readRequestDetails().catch(report);
+}
+async function readRequestDetails() {
+  const currentSession = session, requestId = selectedRequestId, read = ++detailRead;
+  const panel = $('#request-details'); panel.replaceChildren(node('p', 'Reading current request details…'));
+  let value;
+  try { ({ value } = await currentSession.query('assistanceStatus', { requestId })); }
+  catch (error) { if (session === currentSession && read === detailRead) throw error; return; }
+  if (session !== currentSession || read !== detailRead) return;
+  if (!value) { panel.replaceChildren(node('p', 'This request is absent from the selected history.')); return; }
+  panel.replaceChildren(node('p', visibleAssistanceStatus(value), 'status'), node('h3', value.question),
+    node('small', `Request ${value.requestId} · step ${value.cookingStepId}`));
+  if (value.answer) {
+    panel.append(node('p', value.answer.answer, 'answer'));
+    const steps = document.createElement('ol');
+    for (const step of value.answer.suggestedSteps) steps.append(node('li', step));
+    panel.append(steps);
+  }
+  for (const reply of value.replies.filter(reply => reply.eventId !== value.answer?.eventId)) {
+    panel.append(node('p', `${reply.reasons.length ? `Response needs review: ${reply.reasons.join(', ')}` : 'Additional response'}. ${reply.answer}`, 'warning'));
+  }
+  if (value.conflictCount) panel.append(node('p', `${value.conflictCount} conflicting fact(s) retained.`, 'warning'));
+  if (value.repliesTruncated || value.conflictsTruncated) panel.append(node('p',
+    `Showing the canonical answer, up to 8 recent replies and 32 conflict references (${value.replyCount} replies total). The full facts remain in native history.`, 'warning'));
 }
 async function inspectOperation() {
   const currentSession = session, read = ++operationRead;
@@ -144,6 +165,7 @@ $('#connect').onclick = async () => {
     liveView = createLiveView(session, { query: 'kitchenContext', input: null,
       onSnapshot(snapshot) { render(snapshot.value); void inspectOperation().catch(report); },
       onRecovery() {
+        detailRead++; $('#request-details').replaceChildren(node('p', 'History changed. Reading the selected request again.'));
         $('#recovery').hidden = false;
         $('#recovery').textContent = 'Selected history changed. Inspect uncertain or abandoned commands before explicitly reapplying work.';
       }, onError: report,
@@ -176,10 +198,17 @@ $('#ask-form').onsubmit = event => {
     const current = await refresh();
     if (!current.value.currentStep) throw Error('Choose a current step first.');
     return client.request({ question: $('#question').value.trim(), cookingStepId: current.value.currentStep.stepId,
+      cookingStepEventId: current.value.currentStep.eventId,
       contextRevision: JSON.stringify(current.revision) });
   });
 };
 $('#inspect').onclick = () => refresh().catch(report);
+$('#request-lookup').onsubmit = event => {
+  event.preventDefault();
+  const requestId = $('#request-id').value.trim();
+  if (!session || !requestId || requestId.length > 128) { report(Error('Connect and enter a valid request ID.')); return; }
+  selectedRequestId = requestId; void readRequestDetails().catch(report);
+};
 $('#retry').onclick = () => act(() => client.resume());
 $('#resolve').onclick = async () => {
   busy = true; controls();
@@ -198,6 +227,7 @@ window.addEventListener('storage', event => {
   controls(); if (client) void inspectOperation().catch(report);
 });
 $('#close').onclick = async () => {
+  detailRead++; $('#request-details').replaceChildren(node('p', 'Connection closed. Reconnect to read current request details.'));
   liveView?.close(); await session?.close(); rtc?.close(); worker?.terminate();
   session = undefined; $('#editor').disabled = true;
   $('#connection').textContent = 'Connection closed. Reload to reconnect the same device.';

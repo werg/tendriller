@@ -19,14 +19,15 @@ export function createAssistanceClient(session, { pendingStorage, now = Date.now
       return submit('setCookingStep', { stepId: text(stepId, 128), text: text(description, 1000) }, randomId());
     },
     cancel(requestId) { return submit('cancelAssistance', { requestId: text(requestId, 128) }, randomId()); },
-    async request({ question, kind = 'recipe_help', cookingStepId, contextRevision, ttlMs = 900000 }) {
+    async request({ question, kind = 'recipe_help', cookingStepId, cookingStepEventId, contextRevision, ttlMs = 900000 }) {
       if (!Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > 86400000) throw Error('ASSISTANCE_TTL_INVALID');
       question = text(question, 4000); cookingStepId = text(cookingStepId, 128); contextRevision = text(contextRevision, 16384);
+      cookingStepEventId = text(cookingStepEventId, 256);
       if (!['recipe_help', 'inventory_review', 'general'].includes(kind)) throw Error('ASSISTANCE_INPUT_INVALID');
       const expiresAtMs = now() + ttlMs;
       if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs < 1 || expiresAtMs > 8640000000000000) throw Error('ASSISTANCE_TTL_INVALID');
       const requestId = randomId(), operationId = randomId();
-      const input = { requestId, kind, question, cookingStepId, contextRevision, expiresAtMs };
+      const input = { requestId, kind, question, cookingStepId, cookingStepEventId, contextRevision, expiresAtMs };
       return { requestId, ...await submit('requestAssistance', input, operationId) };
     },
     async inspect() {

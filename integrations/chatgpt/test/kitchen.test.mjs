@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { projectKitchen, visibleAssistanceStatus, kitchenEventProjection } from '../examples/kitchen/projection.mjs';
+import { projectKitchen, summarizeKitchen, boundAssistance, visibleAssistanceStatus, kitchenEventProjection } from '../examples/kitchen/projection.mjs';
 import { createAssistanceClient } from '../examples/kitchen/client.mjs';
 import { createPendingStorage } from '../examples/kitchen/pending-storage.mjs';
 
@@ -17,43 +17,49 @@ function pendingFixture() {
 
 const event = (id, payload, author = 'cook') => ({ id, topic: 'assistant', payload, author,
   operationId: `op-${id}`, authorTimestampMs: 200 });
+const selectedStep = event('step-original', { type: 'step.selected', stepId: 's1', text: 'Prepare' });
+const project = events => projectKitchen([selectedStep, ...events]);
 const request = event('r1', { type: 'help.requested', requestId: 'request-1', kind: 'recipe_help',
-  question: 'How long?', cookingStepId: 's1', contextRevision: 'revision-1', expiresAtMs: 1000 });
+  question: 'How long?', cookingStepId: 's1', cookingStepEventId: 'step-original', contextRevision: 'revision-1', expiresAtMs: 1000 });
 const answer = event('a1', { type: 'help.answered', requestId: 'request-1', requestEventId: 'r1',
   answer: 'Check the texture.', suggestedSteps: ['Stir'], cookingStepId: 's1', basedOnContextRevision: 'revision-1' }, 'assistant');
 
 test('selected history correlates one response and labels changed steps without inventing finality', () => {
-  const result = projectKitchen([request, answer]);
+  const result = project([request, answer]);
   assert.equal(result.requests[0].status, 'answered');
   assert.equal(result.requests[0].answer.operationId, 'op-a1');
-  const changed = projectKitchen([request, answer, event('s2', { type: 'step.selected', stepId: 's2', text: 'Serve' })]);
+  const changed = project([request, answer, event('s2', { type: 'step.selected', stepId: 's2', text: 'Serve' })]);
   assert.equal(changed.requests[0].status, 'stale');
   assert.equal(changed.requests[0].answer.answer, 'Check the texture.');
-  assert.equal(projectKitchen([request]).requests[0].answer, null); // Recovery excludes the response.
+  assert.equal(project([request]).requests[0].answer, null); // Recovery excludes the response.
   const initialStep = event('step-original', { type: 'step.selected', stepId: 's1', text: 'Prepare' });
   const changedSameId = event('step-updated', { type: 'step.selected', stepId: 's1', text: 'Different preparation' });
-  assert.equal(projectKitchen([initialStep, request, answer]).requests[0].status, 'answered');
-  assert.equal(projectKitchen([initialStep, request, answer, changedSameId]).requests[0].status, 'stale');
+  assert.equal(project([initialStep, request, answer]).requests[0].status, 'answered');
+  assert.equal(project([initialStep, request, answer, changedSameId]).requests[0].status, 'stale');
+  // The requester read the old event, but a same-name update orders first.
+  assert.equal(project([changedSameId, request, answer]).requests[0].status, 'stale');
+  assert.equal(project([changedSameId, request, answer]).requests[0].capturedStepEventId, selectedStep.id);
+  assert.equal(projectKitchen([request, answer]).requests[0].status, 'stale');
 });
 
 test('conflicting requests, context and additional responses remain visible', () => {
   const duplicate = { ...request, id: 'r2', payload: { ...request.payload, question: 'Different?' } };
   const stale = { ...answer, id: 'a0', payload: { ...answer.payload, basedOnContextRevision: 'wrong' } };
-  const value = projectKitchen([request, duplicate, stale, answer, { ...answer, id: 'a2' }]).requests[0];
+  const value = project([request, duplicate, stale, answer, { ...answer, id: 'a2' }]).requests[0];
   assert.equal(value.question, 'How long?');
   assert.equal(value.status, 'conflicting');
   assert.equal(value.answer.eventId, 'a1');
   assert.deepEqual(value.conflicts.map(x => x.type), ['duplicate-request', 'stale-reply', 'additional-reply']);
-  assert.equal(projectKitchen([answer, request]).requests[0].answer, null);
-  assert.equal(projectKitchen([request, request, answer]).requests[0].conflicts.length, 0);
+  assert.equal(project([answer, request]).requests[0].answer, null);
+  assert.equal(project([request, request, answer]).requests[0].conflicts.length, 0);
 });
 
 test('only requester cancellation is honored; expiry is explicit display evidence', () => {
   const bad = event('c1', { type: 'help.cancelled', requestId: 'request-1' }, 'assistant');
-  assert.equal(projectKitchen([request, bad]).requests[0].cancelled, false);
-  assert.equal(projectKitchen([request, { ...bad, author: 'cook' }]).requests[0].status, 'cancelled');
-  assert.equal(visibleAssistanceStatus(projectKitchen([request]).requests[0], 1001), 'expired');
-  const late = projectKitchen([request, { ...answer, authorTimestampMs: 1001 }]).requests[0];
+  assert.equal(project([request, bad]).requests[0].cancelled, false);
+  assert.equal(project([request, { ...bad, author: 'cook' }]).requests[0].status, 'cancelled');
+  assert.equal(visibleAssistanceStatus(project([request]).requests[0], 1001), 'expired');
+  const late = project([request, { ...answer, authorTimestampMs: 1001 }]).requests[0];
   assert.equal(late.answer, null);
   assert.deepEqual(late.replies[0].reasons, ['late-by-author-clock']);
 });
@@ -66,6 +72,26 @@ test('egress sends request metadata and never reply text or a self-triggering re
   assert.equal(kitchenEventProjection(answer), null);
 });
 
+test('context and single-request details stay bounded with long answer history', () => {
+  const events = [];
+  for (let i = 0; i < 70; i++) {
+    events.push({ ...request, id: `request-${i}`, payload: { ...request.payload, requestId: `request-${i}`, question: 'q'.repeat(4000) } });
+    events.push({ ...answer, id: `answer-${i}`, payload: { ...answer.payload, requestId: `request-${i}`, requestEventId: `request-${i}`, answer: 'a'.repeat(8000) } });
+  }
+  const value = project(events), summary = summarizeKitchen(value);
+  assert.ok(Buffer.byteLength(JSON.stringify(value)) > 1024 * 1024);
+  assert.equal(summary.requestCount, 70); assert.equal(summary.requests.length, 20); assert.equal(summary.requestsTruncated, true);
+  assert.ok(summary.requests.every(value => value.questionPreview.length === 240 && !('answer' in value) && !('replies' in value)));
+  assert.ok(Buffer.byteLength(JSON.stringify(summary)) < 20000);
+  const repeated = project([request, ...Array.from({ length: 100 }, (_, i) => ({ ...answer, id: `repeat-${i}`,
+    payload: { ...answer.payload, answer: '😀'.repeat(4000), suggestedSteps: Array(12).fill('😀'.repeat(250)) } }))]).requests[0];
+  const detail = boundAssistance(repeated);
+  assert.equal(detail.replyCount, 100); assert.equal(detail.replies.length, 8); assert.equal(detail.repliesTruncated, true);
+  assert.equal(detail.conflictCount, 99); assert.equal(detail.conflicts.length, 32); assert.equal(detail.conflictsTruncated, true);
+  assert.equal(detail.answer.eventId, 'repeat-0');
+  assert.ok(Buffer.byteLength(JSON.stringify(detail)) < 512 * 1024);
+});
+
 test('uncertain submit survives restart with its exact operation and input', async () => {
   let saved = null, calls = [], fail = true;
   const pendingStorage = pendingFixture().open();
@@ -75,8 +101,8 @@ test('uncertain submit survives restart with its exact operation and input', asy
   const options = { pendingStorage,
     now: () => 100, randomId: (() => { let id = 0; return () => `id-${++id}`; })() };
   const client = createAssistanceClient(session, options);
-  await assert.rejects(client.request({ question: 'Help', cookingStepId: 's1', contextRevision: 'r1' }), /response lost/);
-  await assert.rejects(client.request({ question: 'Again', cookingStepId: 's1', contextRevision: 'r1' }), /UNRESOLVED/);
+  await assert.rejects(client.request({ question: 'Help', cookingStepId: 's1', cookingStepEventId: 'step-1', contextRevision: 'r1' }), /response lost/);
+  await assert.rejects(client.request({ question: 'Again', cookingStepId: 's1', cookingStepEventId: 'step-1', contextRevision: 'r1' }), /UNRESOLVED/);
   fail = false;
   await createAssistanceClient(session, options).resume();
   assert.deepEqual(calls[0], calls[1]);
@@ -179,6 +205,7 @@ test('actual native kitchen definition correlates a second-device response and s
       await applied(a.session, 'setCookingStep', { stepId: 's1', text: 'Prepare' }, 'step-1');
       const context = await a.session.query('kitchenContext', null);
       const input = { requestId: 'help-1', question: 'How long?', kind: 'recipe_help', cookingStepId: 's1',
+        cookingStepEventId: context.value.currentStep.eventId,
         contextRevision: JSON.stringify(context.revision), expiresAtMs: Date.now() + 900000 };
       await applied(a.session, 'requestAssistance', input, 'request-1');
       const request = await b.session.query('assistanceStatus', { requestId: 'help-1' });
@@ -192,6 +219,13 @@ test('actual native kitchen definition correlates a second-device response and s
       const status = await a.session.query('assistanceStatus', { requestId: 'help-1' });
       assert.equal(status.value.status, 'answered'); assert.equal(status.value.replies.length, 1);
       assert.equal(status.value.answer.author, b.session.deviceId);
+      await applied(a.session, 'setCookingStep', { stepId: 's1', text: 'Serve' }, 'step-2');
+      await applied(a.session, 'requestAssistance', { ...input, requestId: 'raced-help' }, 'raced-request');
+      const raced = await b.session.query('assistanceStatus', { requestId: 'raced-help' });
+      assert.equal(raced.value.status, 'stale');
+      assert.equal(raced.value.capturedStepEventId, context.value.currentStep.eventId);
+      await applied(b.session, 'replyToAssistance', { ...reply, requestId: 'raced-help', requestEventId: raced.value.requestEventId }, 'raced-reply');
+      assert.equal((await a.session.query('assistanceStatus', { requestId: 'raced-help' })).value.status, 'stale');
       await link.close(); await a.session.close();
       const reopened = await fixture.open(0, true);
       assert.equal((await reopened.session.query('assistanceStatus', { requestId: 'help-1' })).value.answer.answer, 'Check its texture.');
