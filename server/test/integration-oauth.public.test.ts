@@ -519,9 +519,23 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     };
     expect((await review(blueprints.queries, 'https://evil.example')).status).toBe(403);
     expect((await review(blueprints.queries)).status).toBe(303);
+    let dropNextResult = false, droppedResult: Record<string, any> | null = null;
     const start = (whichKey = key, peer = session) => {
       const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createApplicationTools(peer),
-        ...blueprints, openSocket: (_url, protocols) => testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous') as unknown as globalThis.WebSocket });
+        ...blueprints, openSocket: (_url, protocols) => {
+          const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
+          socket.send = data => {
+            const frame = typeof data === 'string' ? JSON.parse(data) : null;
+            if (dropNextResult && frame?.type === 'result' && frame.value?.operationReference) {
+              dropNextResult = false; droppedResult = frame.value;
+              // The real native tool saved/applied this operation. Only its
+              // transport response is lost, so another dispatch is unsafe.
+              socket.close(1000, 'Lost reply after native save'); return;
+            }
+            send(data);
+          };
+          return socket as unknown as globalThis.WebSocket;
+        } });
       adapters.push(adapter);
       return adapter;
     };
@@ -560,7 +574,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       return res.json<any>();
     };
     const tool = (name: string, args: Record<string, unknown> = {}) => rpc('tools/call', { name, arguments: args });
-    return { adapter, session, eventName, gid, rpc, tool, review, reviewAction, startBackup, backupKey, id: f.page.application.id };
+    return { adapter, session, eventName, gid, rpc, tool, review, reviewAction, startBackup, backupKey, id: f.page.application.id,
+      loseNextResult: () => { dropNextResult = true; droppedResult = null; }, lostResult: () => droppedResult };
   }
   const sent: { id: string; body: string }[] = [];
   let mounted: WebSocket | undefined;
@@ -696,6 +711,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(accepted.recent).toMatchObject([{ outcome: 'accepted', attempts: 2, sourceEventId: emitted.sourceEventId }]);
 
     // Keep an old event pinned by a webhook while the visible inbox moves on.
+    rejectCallback = true;
     const later = { ...emitted, sourceEventId: 'pinned-after-retry' };
     const pinned = await first.adapter.publish(later);
     await inDO(a.page.id, t => {
@@ -808,6 +824,29 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await second.tool('revoke_application_agent', { applicationId: second.id, bindingToken: rotated })).result.structuredContent.status).toBe('revoked');
     expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: rotated })).result.structuredContent.code).toBe('agent_binding_revoked');
     expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: plannerKey })).result.structuredContent.caller.verification).toBe('approved-binding');
+    const beforeLoss = (await second.tool('describe_application', { applicationId: second.id })).result.structuredContent.provider;
+    second.loseNextResult();
+    const uncertain = (await second.tool('call_application_command', { applicationId: second.id, bindingToken: plannerKey,
+      command: 'count', input: 5, operationId: 'reply-lost-after-save', context: { runId: 'original-run' } })).result.structuredContent;
+    expect(uncertain).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: second.session.deviceId } });
+    expect(['saved', 'applied']).toContain(second.lostResult()!.status);
+    expect(second.lostResult()!.attemptId).toMatch(/^[a-f0-9]{64}$/u);
+    await vi.waitFor(() => expect(second.adapter.online).toBe(true), { timeout: 5000 });
+    const restored = (await second.tool('inspect_application_operation', { applicationId: second.id,
+      bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
+    expect(restored.operationReference).toMatchObject({ operationId: uncertain.operationReference.operationId,
+      attemptId: second.lostResult()!.attemptId, deviceId: second.session.deviceId, historyId: 'generic-mcp-test',
+      sourceContext: { runId: 'original-run', evidence: 'caller-asserted' } });
+    const retried = (await second.tool('retry_application_operation', { applicationId: second.id,
+      bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
+    expect(retried.operationReference.attemptId).toBe(restored.operationReference.attemptId);
+    expect(retried.operationReference.sourceContext.runId).toBe('original-run');
+    expect((await second.tool('query_application', { applicationId: second.id, bindingToken: plannerKey, query: 'readings', input: null }))
+      .result.structuredContent.value.filter((value: { value: number }) => value.value === 5)).toHaveLength(1);
+    const afterLoss = (await second.tool('describe_application', { applicationId: second.id })).result.structuredContent.provider;
+    expect(afterLoss.bindingId).toBe(beforeLoss.bindingId);
+    expect(afterLoss.selectionEpoch).toBe(beforeLoss.selectionEpoch);
+    expect(afterLoss.connectionEpoch).toBeGreaterThan(beforeLoss.connectionEpoch);
   } finally {
     outbound.mockRestore();
     mounted?.close();

@@ -92,7 +92,7 @@ async function coreArtifacts(core) {
 }
 async function chronoArtifact(chronolog, { corrupt = false } = {}) {
   const directory = join(chronolog.directory, 'artifacts/peer-session/package');
-  await json(join(directory, 'package.json'), { name: '@chronolog/peer-session', version: '0.0.0-gd014879e', type: 'module',
+  await json(join(directory, 'package.json'), { name: '@chronolog/peer-session', version: '0.0.0-gf0b71005', type: 'module',
     exports: { '.': './index.mjs', './native': './native.mjs' }, dependencies: {} });
   await text(join(directory, 'index.mjs'), 'export const defineApplication = value => value;\n');
   await text(join(directory, 'native.mjs'), 'export const openNativeDevice = () => {};\n');
@@ -101,7 +101,7 @@ async function chronoArtifact(chronolog, { corrupt = false } = {}) {
   await json(join(directory, 'provenance.json'), { format: 'chronolog-peer-session-package/v1', source: chronolog.source,
     sourceTree: chronolog.sourceTree, dirty: false, optionalNativeRtc: false, sqlEngines: [], sha256: hashes });
   if (corrupt) await text(join(directory, 'native.mjs'), 'export const openNativeDevice = () => "tampered";\n');
-  await pack(directory, join(chronolog.directory, 'artifacts/peer-session/chronolog-peer-session-d014879e.tgz'));
+  await pack(directory, join(chronolog.directory, 'artifacts/peer-session/chronolog-peer-session-f0b71005.tgz'));
 }
 async function realRun(executable, args, options = {}) {
   const result = await command(executable, args, { cwd: options.cwd, env: options.env, maxBuffer: 16 * 1024 * 1024 });

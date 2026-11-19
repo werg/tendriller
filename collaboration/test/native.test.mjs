@@ -68,7 +68,7 @@ test('two authenticated native clients share one signer, isolate identical local
   const pending = stream[Symbol.asyncIterator]().next();
   await new Promise(resolve => setImmediate(resolve));
   cancellation.abort(Error('stop this waiter'));
-  await assert.rejects(pending);
+  assert.equal((await pending).done, true, 'cancellation closes this live subscription normally');
   assert.equal((await second.session.query('notes', null)).value.length, 2);
   await first.detach();
   assert.equal((await second.session.operations.inspect('same-local-id')).state.attemptId, b.attemptId);
@@ -165,7 +165,7 @@ test('revocation and key rotation persist independently; malformed clients do no
   const writer = await supervisor.createBinding({ id: 'writer' });
   const observed = await f.attach(observer.token), writing = await f.attach(writer.token);
   t.after(() => Promise.allSettled([observed.detach(), writing.detach()]));
-  await assert.rejects(observed.session.command('add', 'forbidden', { operationId: 'denied' }), /CAPABILITY/);
+  await assert.rejects(observed.session.command('add', 'forbidden', { operationId: 'denied' }), /APPLICATION_ATTACHMENT_FORBIDDEN/);
   await assert.rejects(f.attach(createNativeAttachmentKey()));
   const malformed = createConnection(supervisor.socketPath); await once(malformed, 'connect');
   malformed.write(Buffer.from([0x7f, 0xff, 0xff, 0xff])); await once(malformed, 'close');
