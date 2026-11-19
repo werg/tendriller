@@ -52,8 +52,15 @@ async function fixture(t) {
     [prefix + 'package-lock.json']: JSON.stringify({ lockfileVersion: 3, packages: {} }),
     [prefix + 'integration.mjs']: 'export const createIntegration = () => {};\n',
     [prefix + 'account.mjs']: 'export const createTendrillerAccountAdapter = () => {};\n',
+    [prefix + 'account-browser.mjs']: 'export const createHostAccountBrowser = () => {};\n',
     [prefix + 'run.mjs']: '// exact fixture runtime\n',
     [prefix + 'config.host-account.example.mjs']: 'export default {};\n',
+    [prefix + 'deploy/prepare.mjs']: 'export const prepareDeployment = () => {};\n',
+    [prefix + 'deploy/preflight.mjs']: 'export const preflightConfig = () => {};\n',
+    [prefix + 'deploy/stage-bridge.mjs']: 'export const stageBridge = () => {};\n',
+    [prefix + 'deploy/common.mjs']: '// fixture deployment helpers\n',
+    [prefix + 'deploy/README.md']: '# Fixture deployment instructions\n',
+    [prefix + 'deploy/settings.example.json']: '{}\n',
     [prefix + 'examples/kitchen/domain.mjs']: 'export const definition = {};\n',
     [prefix + 'examples/kitchen/projection.mjs']: 'export const project = () => null;\n',
     [prefix + 'examples/kitchen/session.mjs']: "import {createClient} from '@tendriller/core'; import {openNativeDevice} from '@chronolog/peer-session/native'; export const openSession = () => ({createClient,openNativeDevice});\n",
@@ -152,6 +159,15 @@ test('assembly uses exact public archives, locked runtime dependencies and a min
   assert.equal(JSON.parse(await readFile(join(result.nativePackage, 'provenance.json'), 'utf8')).source, CHRONOLOG_SOURCE);
   for (const artifact of Object.values(result.archives)) assert.equal(await hashFile(join(destination, artifact.file)), artifact.sha256);
   const checks = { nativeIntegration: { passed: true, tests: 3, skipped: 0 }, hostAccountIntegration: { passed: true }, runtimeImports: true };
+  for (const name of ['account.mjs', 'account-browser.mjs', 'deploy/prepare.mjs', 'deploy/preflight.mjs',
+    'deploy/stage-bridge.mjs', 'deploy/common.mjs', 'deploy/README.md', 'deploy/settings.example.json']) {
+    const path = join(destination, 'integrations/chatgpt', name), original = await readFile(path);
+    await rm(path);
+    await assert.rejects(sealRelease(destination, { ...f, archives: result.archives, checks }), { code: 'RELEASE_INCOMPLETE' },
+      `A release missing ${name} must never be sealed`);
+    await assert.rejects(lstat(join(destination, 'RELEASE.json')), { code: 'ENOENT' });
+    await writeFile(path, original);
+  }
   const manifest = await sealRelease(destination, { ...f, archives: result.archives, checks, toolchain: { node: process.version } });
   assert.deepEqual(Object.keys(manifest.files).sort(), (await files(destination)).filter(name => name !== 'RELEASE.json'));
   for (const [name, hash] of Object.entries(manifest.files)) assert.equal(bytesHash(await readFile(join(destination, name))), hash);
