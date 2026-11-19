@@ -52,6 +52,8 @@ instructions plus a small identifier record, and omits request text, summaries,
 photos and media. The recipient fetches current context through authorized MCP
 tools. `conversation_key` is derived from configured channel, principal and
 application, so this route consistently uses its own application conversation.
+Principal identity includes the exact issuer and subject. Equal subjects from
+different issuers cannot share an operation receipt or conversation key.
 
 ## Idempotency, restart and recovery
 
@@ -60,7 +62,16 @@ owner, application, immutable source event and configured channel. Reusing the
 same operation ID for another owner or source fails. A retry sends the original
 body and idempotency key; accepted operations return their retained receipt.
 Short durable leases coalesce concurrent processes and permit recovery after
-a crashed sender's bounded lease expires.
+a crashed sender's bounded lease expires. The adapter checks current lease and
+state after asynchronous authorization immediately before provider I/O. A valid
+late acceptance receipt remains evidence even after its original lease expires;
+it cannot make a recovered source current again or regress an observed run.
+
+The journal defaults to at most 10,000 operations (`maxOperations`, configurable
+from 1 to 100,000). At capacity, new operations fail before provider I/O while
+existing receipts and exact retries remain available. Receipts are not silently
+evicted, because doing so would discard idempotency evidence. Reconcile and
+archive reviewed operations deliberately before changing storage or capacity.
 
 Transport failures, redirects or malformed `202` receipts are **uncertain**:
 the provider may have accepted the event. A retry preserves identity. The
