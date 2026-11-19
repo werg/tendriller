@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSessionBridge } from '../bridge.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createNativeSessionOpener, createSessionBridge } from '../bridge.mjs';
 
 const id = 'a'.repeat(64), deviceId = 'b'.repeat(64), generation = 'c'.repeat(64);
 const revision = { applicationId: id, historyId: 'bridge-test', generation,
@@ -168,3 +172,125 @@ test('observer resumes stale cursor with recovery evidence, not silent replay', 
   assert.equal(observed[0].recovery.unknownLoss, false);
   await f.bridge.close();
 });
+
+test('native opener resumes the existing device and composes maintained participation ports', async () => {
+  const f = fixture(), calls = [], descriptor = { payload: { applicationId: id } };
+  const host = { peers: { application: () => f.control.application(), exchange: async message => message } };
+  const device = { close: async () => calls.push('device-closed') };
+  f.session.connectControlParticipant = input => { calls.push(input); return f.control; };
+  f.session.participate = async input => { calls.push(input); };
+  const opener = createNativeSessionOpener({ host, definition: {}, devicePath: '/private/existing.sqlite', pinnedDescriptor: descriptor,
+    loadModules: async () => ({
+      peer: { verifyAuthorityBundle: async (authority, pin) => { assert.deepEqual(pin, descriptor); assert.equal(authority.descriptor.payload.applicationId, id); } },
+      native: { openNativeDevice: async input => { calls.push(input); return device; },
+        openNativeApplication: async input => { assert.equal(input.device, device); return f.session; } },
+      peers: { createPeerIntroductions: input => { calls.push(input); return { discovery: {}, transport: {} }; } },
+      websocket: { openWebSocketConnection: async (relay, options) => ({ relay, options }) },
+    }),
+  });
+  const owned = await opener();
+  assert.equal(owned.session, f.session);
+  assert.deepEqual(calls[0], { path: '/private/existing.sqlite' });
+  const introductions = calls.find(value => value.identity === deviceId);
+  await assert.rejects(introductions.openDirectConnection(), { code: 'BRIDGE_NATIVE_RTC_NOT_CONFIGURED' });
+  const relay = { ready: Promise.resolve() };
+  const connection = await introductions.openRelayConnection({ relay });
+  assert.equal(connection.relay, relay);
+  assert.equal(calls.some(value => value.control === f.control && value.discovery && value.transport), true);
+  await owned.session.close();
+});
+
+// Run against the exact, independently packed public artifact, not source-private
+// modules. Its optional path is explicit because this repository does not vendor
+// a native session package or pretend the prerelease is available from npm.
+test('real native peers preserve signed attempts across bridge restart and selected-history recovery',
+  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
+    const packagePath = resolve(process.env.CHRONOLOG_SESSION_PACKAGE);
+    const peer = await import(pathToFileURL(join(packagePath, 'index.mjs')).href);
+    const native = await import(pathToFileURL(join(packagePath, 'native.mjs')).href);
+    const directory = await mkdtemp(join(tmpdir(), 'tendriller-bridge-native-'));
+    const cleanup = [];
+    try {
+      const hostSigner = await peer.createPeerIdentity();
+      const paths = [join(directory, 'a.sqlite'), join(directory, 'b.sqlite')];
+      const devices = await Promise.all(paths.map(path => native.openNativeDevice({ path, create: true })));
+      for (const device of devices) cleanup.push(() => device.close());
+      const definition = peer.defineApplication({ id: 'bridge-test', version: '1', commands: {
+        say: peer.defineCommand({ description: 'Retain a test request', input: { type: 'string', minLength: 1, maxLength: 128 },
+          prepare: message => peer.program(peer.emit('assistant', { type: 'help.requested', question: message })) }),
+      }, queries: {
+        messages: peer.defineQuery({ description: 'Read selected assistance facts', input: { type: 'null' },
+          read: view => view.readEvents({ topics: ['assistant'] }).events }),
+      } });
+      const epochKey = crypto.getRandomValues(new Uint8Array(32));
+      const artifacts = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
+      const descriptor = await peer.signApplicationDescriptor({ applicationId: id, historyId: 'native-bridge-test',
+        profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: hostSigner.publicKey,
+        schemaAdministrator: devices[0].identity.publicKey, definitionDigest: await peer.applicationDefinitionDigest(definition),
+        executionManifestDigest: peer.bytesToHex(artifacts.executionManifestDigest), schemaDigest: null }, hostSigner);
+      const control = await peer.signControlRevision({ applicationId: id, profile: descriptor.payload.profile,
+        policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0, keyDigest: await peer.bytesDigest(epochKey), recoveryFloor: null,
+        grants: devices.map(device => peer.participantGrant(device.identity.publicKey, { administrator: true, dataRole: 'member' })) }, hostSigner);
+      const registry = await peer.createGenerationRegistry({ store: new peer.MemoryBytesStore(), descriptor, controls: [control], signer: hostSigner });
+      const select = async (device, base, transitionId) => {
+        const bundle = await registry.read();
+        return registry.select(await peer.signTransitionRequest({ applicationId: id, profile: descriptor.payload.profile,
+          policy: descriptor.payload.policy, expectedGeneration: bundle.generations.at(-1)?.id ?? null,
+          coordinator: device.identity.publicKey, requester: device.identity.publicKey, controlRevision: 0,
+          base, transitionId, reason: base === null ? 'create' : 'takeover' }, device.identity));
+      };
+      await select(devices[0], null, 'initial');
+      const exchange = async request => {
+        assert.equal(request.facet, 'control'); assert.equal(request.action, 'read');
+        return peer.createParticipantResponse(request, await registry.read());
+      };
+      const open = async (index, resume = false) => {
+        const device = resume ? await native.openNativeDevice({ path: paths[index] }) : devices[index];
+        const session = await native.openNativeApplication({ device, definition, authority: await registry.read(),
+          ...(resume ? {} : { epochKeys: new Map([[0, epochKey]]) }) });
+        cleanup.push(() => session.close());
+        return { session, control: session.connectControlParticipant({ exchange }) };
+      };
+      let a = await open(0); const b = await open(1);
+      const buildBridge = () => createSessionBridge({ applications: [{ id, openSession: async () => a,
+        allowedQueries: ['messages'], allowedCommands: ['say'], eventTopics: ['assistant'],
+        eventProjection: event => ({ name: 'assistant.help_requested', data: { request_id: event.operationId } }),
+      }] });
+      let bridge = buildBridge(); cleanup.push(() => bridge.close());
+      const link = await peer.connectApplications(a.session, b.session); cleanup.push(() => link.close());
+      await bridge.command(id, 'say', 'retained request', { operationId: 'once' });
+      await a.session.operations.wait('once', { signal: AbortSignal.timeout(5000) });
+      await link.synchronize();
+      const first = await bridge.query(id, 'messages', null);
+      assert.equal(first.value.length, 1);
+      assert.equal(first.value[0].author, a.session.deviceId);
+      const saved = await a.session.operations.inspect('once');
+      await bridge.command(id, 'say', 'retained request', { operationId: 'once' });
+      assert.deepEqual((await a.session.operations.inspect('once')).attempt, saved.attempt);
+      assert.equal((await bridge.query(id, 'messages', null)).value.length, 1);
+      assert.equal((await b.session.query('messages', null)).value[0].operationId, 'once');
+      await link.close();
+      await bridge.close();
+      a = await open(0, true); bridge = buildBridge();
+      assert.equal((await bridge.query(id, 'messages', null)).value.length, 1);
+      assert.deepEqual((await a.session.operations.inspect('once')).attempt, saved.attempt);
+      const base = await b.session.recoveryPoint();
+      await bridge.command(id, 'say', 'excluded tail', { operationId: 'tail' });
+      await a.session.operations.wait('tail', { signal: AbortSignal.timeout(5000) });
+      const before = await bridge.readEvents(id), tail = before.events.find(event => event.sourceOperationId === 'tail');
+      assert(tail);
+      await select(devices[1], base, 'recover');
+      await b.session.adopt(await registry.read());
+      const recoveredLink = await peer.connectApplications(a.session, b.session); cleanup.push(() => recoveredLink.close());
+      await recoveredLink.synchronize();
+      assert.equal((await bridge.verifySource(id, tail.sourceEventId, before.revision)).selected, false);
+      assert.equal(await bridge.getEvent(id, tail.sourceEventId), null);
+      assert.equal((await bridge.operation(id, 'tail')).status, 'abandoned');
+      assert.equal((await bridge.verifySource(id, first.value[0].id, first.revision)).selected, true);
+      await assert.rejects(bridge.readEvents(id, { cursor: before.cursor }), /APPLICATION_VIEW_RECOVERED/);
+      assert.equal((await bridge.query(id, 'messages', null)).value.length, 1);
+    } finally {
+      for (const close of cleanup.reverse()) await close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });

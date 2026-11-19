@@ -33,6 +33,45 @@ function bounded(value, maximum, code = 'BRIDGE_RESULT_TOO_LARGE') {
   return JSON.parse(encoded);
 }
 
+/** Resume an explicitly enrolled native device with the maintained transports. */
+export function createNativeSessionOpener({ host, definition, devicePath, pinnedDescriptor,
+  openDirectConnection = async () => { throw new BridgeError('BRIDGE_NATIVE_RTC_NOT_CONFIGURED'); },
+  loadModules = async () => {
+    const [peer, native, websocket, peers] = await Promise.all([
+      import('@chronolog/peer-session'), import('@chronolog/peer-session/native'),
+      import('@chronolog/peer-session/websocket'), import('@tendriller/core/peers'),
+    ]);
+    return { peer, native, websocket, peers };
+  } } = {}) {
+  text(devicePath, 'existing native device path', 4096);
+  if (!host?.peers || typeof host.peers.application !== 'function' || typeof host.peers.exchange !== 'function'
+    || !definition || !pinnedDescriptor || typeof openDirectConnection !== 'function' || typeof loadModules !== 'function') {
+    fail('BRIDGE_CONFIGURATION_INVALID', 'Native bootstrap requires a configured host, definition, pinned descriptor and existing enrolled device');
+  }
+  const pinned = structuredClone(pinnedDescriptor);
+  return async function openSession({ signal } = {}) {
+    signal?.throwIfAborted();
+    const { peer, native, websocket, peers } = await loadModules();
+    const authority = await host.peers.application();
+    await peer.verifyAuthorityBundle(authority, pinned);
+    signal?.throwIfAborted();
+    // No create:true, exported browser signer, plaintext epoch key or fallback
+    // identity. Explicit enrollment and first key acquisition happen separately.
+    const device = await native.openNativeDevice({ path: devicePath });
+    let session;
+    try {
+      session = await native.openNativeApplication({ device, definition, authority });
+      const control = session.connectControlParticipant({ exchange: (message, options) => host.peers.exchange(message, options) });
+      await session.participate({ control, ...peers.createPeerIntroductions({ peers: host.peers, identity: session.deviceId,
+        openDirectConnection,
+        openRelayConnection: ({ relay, signal }) => websocket.openWebSocketConnection(relay, { ready: relay.ready, signal }),
+      }) });
+      signal?.throwIfAborted();
+      return { session, control };
+    } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
+  };
+}
+
 /**
  * openSession returns {session, control} using the public native session API.
  * Account access and egress consent belong to the caller; the signed native
@@ -218,6 +257,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       for await (const change of session.changes({ signal: observation })) {
         observation.throwIfAborted();
         if (change.kind === 'recovery') {
+          await access(entry);
           yield bounded({ kind: 'recovery', applicationId: id, revision: change.revision,
             recovery: change.recovery, previousCursor: cursor ?? null, resetRequired: true }, maxResultBytes);
           // The consumer must durably record/reconcile this notice and explicitly

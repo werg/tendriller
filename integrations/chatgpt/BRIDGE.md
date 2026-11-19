@@ -36,6 +36,17 @@ application history. Topic filters and projections minimize exported data;
 they do not reduce that native grant. Publisher, administrator, recovery and
 coordinator rights are separate and are not required by this adapter.
 
+`createNativeSessionOpener({host,definition,devicePath,pinnedDescriptor,
+openDirectConnection?})` provides that composition when those application inputs
+already exist. It imports only public packages, verifies the pinned descriptor,
+resumes the device, attaches the control participant and installs the maintained
+peer introduction adapter. With no native RTC opener, its explicit direct failure
+uses the adapter's existing encrypted WebSocket fallback. It does not create or
+enroll a device, mint grants, export a signer, choose recovery or supply new epoch
+keys. Keep an enrolled reader reachable for a fresh reader's key acquisition.
+The optional `loadModules` dependency loader exists for exact public artifact
+composition/testing; never expose module loading or paths as remote tool input.
+
 ## API
 
 `listApplications()` reads only configured IDs/labels and opens no session.
@@ -91,3 +102,19 @@ supported evolution path. Publishing new HTML does not replace a bound domain.
 Run adapter checks with `node --test integrations/chatgpt/test/bridge.test.mjs`.
 These contract checks do not qualify a deployed ChatGPT subscription or OAuth
 flow. Native-session integration evidence is recorded separately.
+
+The same test file contains an opt-in real two-device native scenario. Build the
+exact public session archive as described in [Build an app](../../docs/BUILD_AN_APP.md),
+then set `CHRONOLOG_SESSION_PACKAGE` to its extracted package directory:
+
+```sh
+CHRONOLOG_SESSION_PACKAGE=/absolute/chronolog-source/artifacts/peer-session/package \
+  node --test integrations/chatgpt/test/bridge.test.mjs
+```
+
+It exercises actual native SQLite stores, signed authority and attempts,
+authenticated peer exchange, cross-device reads, exact retry, device reopen,
+selected-history recovery, excluded source detection and retained ancestor
+events. It uses a synthetic signed control registry and in-process framed peer
+transport; it does not qualify a deployed host, Internet relay/RTC, OAuth or a
+ChatGPT model run. The check is explicitly skipped when no package is supplied.
