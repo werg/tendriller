@@ -25,6 +25,7 @@ export async function cleanup(env: Env): Promise<void> {
   await env.ACCOUNTS.batch([
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_intents WHERE expires_at<=?').bind(now),
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_handoffs WHERE expires_at<=?').bind(now),
+    env.ACCOUNTS.prepare('DELETE FROM integration_oauth_management_sessions WHERE expires_at<=?').bind(now),
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_access WHERE expires_at<=?').bind(now),
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_grants WHERE expires_at<=? OR revoked_at<?').bind(now, now - 600000),
   ]);

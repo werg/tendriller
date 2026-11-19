@@ -58,12 +58,25 @@ CREATE TABLE integration_oauth_handoffs (
   expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE integration_oauth_management_sessions (
+  hash TEXT PRIMARY KEY,
+  bridge_id TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  session_hash TEXT NOT NULL REFERENCES sessions(hash) ON DELETE CASCADE,
+  resource TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
 CREATE INDEX integration_oauth_intents_account ON integration_oauth_intents(account_id, expires_at);
 CREATE INDEX integration_oauth_grants_account ON integration_oauth_grants(account_id, expires_at);
 CREATE INDEX integration_oauth_codes_grant ON integration_oauth_codes(grant_id);
 CREATE INDEX integration_oauth_refresh_grant ON integration_oauth_refresh(grant_id);
 CREATE INDEX integration_oauth_access_grant ON integration_oauth_access(grant_id);
 CREATE INDEX integration_oauth_handoffs_account ON integration_oauth_handoffs(account_id, expires_at);
+CREATE INDEX integration_oauth_management_sessions_account ON integration_oauth_management_sessions(account_id, expires_at);
+CREATE INDEX integration_oauth_management_sessions_host ON integration_oauth_management_sessions(session_hash);
+CREATE INDEX integration_oauth_management_sessions_expiry ON integration_oauth_management_sessions(expires_at);
 CREATE INDEX integration_oauth_intents_expiry ON integration_oauth_intents(expires_at);
 CREATE INDEX integration_oauth_handoffs_expiry ON integration_oauth_handoffs(expires_at);
 CREATE INDEX integration_oauth_access_expiry ON integration_oauth_access(expires_at);

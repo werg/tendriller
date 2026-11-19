@@ -27,13 +27,24 @@ export async function bridgeStatus(req: Request, env: Env, config: OAuthConfig):
 export async function accountAccess(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
   const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
   const bridge = await bridgeIdentity(req, config, env);
-  const input = await bodyObject(req, ['issuer', 'subject', 'applicationId', 'pageId', 'grantId'], ['issuer', 'subject']);
+  const input = await bodyObject(req, ['issuer', 'subject', 'applicationId', 'pageId', 'grantId', 'managementSessionId'], ['issuer', 'subject']);
   const subject = text(input.subject, 'subject', 512), issuer = text(input.issuer, 'issuer', 2048);
   const scoped = input.applicationId !== undefined || input.pageId !== undefined;
   if (scoped && (typeof input.applicationId !== 'string' || !/^[a-f0-9]{64}$/u.test(input.applicationId) || typeof input.pageId !== 'string' || !TENDRIL_ID_RE.test(input.pageId)))
     reject('invalid_request', 'applicationId and pageId must identify one configured page');
   const grantId = input.grantId === undefined ? undefined : text(input.grantId, 'grant ID', 128);
-  const active = issuer === config.issuer && await activeAccount(env, subject);
+  const managementHash = input.managementSessionId === undefined ? undefined : await sha256Hex(text(input.managementSessionId, 'management session', 128));
+  const managementActive = async () => {
+    if (managementHash === undefined) return true;
+    const now = Date.now();
+    const ticket = await env.ACCOUNTS.prepare(`SELECT m.redirect_uri FROM integration_oauth_management_sessions m
+      JOIN sessions s ON s.hash=m.session_hash AND s.account_id=m.account_id JOIN accounts a ON a.id=m.account_id
+      WHERE m.hash=? AND m.bridge_id=? AND m.account_id=? AND m.resource=? AND m.expires_at>? AND s.expires_at>?
+        AND a.suspended_at IS NULL AND a.deleting_at IS NULL`)
+      .bind(managementHash, bridge.id, subject, config.resource, now, now).first<{ redirect_uri: string }>();
+    return !!ticket && bridge.managementRedirectUris.includes(ticket.redirect_uri);
+  };
+  const active = issuer === config.issuer && await activeAccount(env, subject) && await managementActive();
   let access = false, owner = false;
   if (active && scoped && bridge.applicationIds.includes(input.applicationId as string)) {
     const stub = env.TENDRIL.get(env.TENDRIL.idFromName(input.pageId as string));
@@ -52,7 +63,7 @@ export async function accountAccess(req: Request, env: Env, config: OAuthConfig)
     ON i.provider=e.provider AND i.subject=e.subject JOIN accounts a ON a.id=i.account_id
     WHERE a.id=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL ORDER BY CASE WHEN lower(e.email)=lower(a.email) THEN 0 ELSE 1 END,e.email LIMIT 1`)
     .bind(subject).first<{ email: string }>() : null;
-  const stillActive = active && await activeAccount(env, subject);
+  const stillActive = active && await activeAccount(env, subject) && await managementActive();
   return oauthJson({ active: stillActive, access: stillActive && access, owner: stillActive && owner,
     oauthAuthorized: stillActive && grant !== null, scopes: stillActive && grant ? scopesOf(grant) : [],
     ...(stillActive ? { account: { id: subject, issuer: config.issuer, ...(verified ? { email: verified.email } : {}) } } : {}),
@@ -110,9 +121,17 @@ export async function managementExchange(req: Request, env: Env, config: OAuthCo
       AND s.account_id=integration_oauth_handoffs.account_id AND s.expires_at>? AND a.suspended_at IS NULL AND a.deleting_at IS NULL)
     RETURNING account_id,session_hash`).bind(hash, bridge.id, uri, Date.now(), Date.now()).first<{ account_id: string; session_hash: string }>();
   if (!claimed) reject('invalid_grant', 'Management handoff expired or was already used');
-  const session = await env.ACCOUNTS.prepare(`SELECT s.expires_at FROM sessions s JOIN accounts a ON a.id=s.account_id
-    WHERE s.hash=? AND s.account_id=? AND s.expires_at>? AND a.suspended_at IS NULL AND a.deleting_at IS NULL`)
-    .bind(claimed!.session_hash, claimed!.account_id, Date.now()).first<{ expires_at: number }>();
-  if (!session) reject('invalid_grant', 'The browser session is no longer active');
-  return oauthJson({ id: claimed!.account_id, issuer: config.issuer, expiresAt: Math.min(session!.expires_at, Date.now() + 900000) });
+  // This opaque proof is bound to the original host session, including after exchange.
+  // Deleting that session cascades to the ticket; expiration and suspension are checked on each use.
+  const managementSessionId = randomToken(), now = Date.now();
+  const session = await env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_management_sessions
+      (hash,bridge_id,account_id,session_hash,resource,redirect_uri,expires_at)
+    SELECT ?,?,s.account_id,s.hash,?,?,MIN(s.expires_at,?) FROM sessions s JOIN accounts a ON a.id=s.account_id
+    WHERE s.hash=? AND s.account_id=? AND s.expires_at>? AND a.suspended_at IS NULL AND a.deleting_at IS NULL
+      AND (SELECT COUNT(*) FROM integration_oauth_management_sessions WHERE account_id=s.account_id AND expires_at>?)<20
+    RETURNING expires_at`)
+    .bind(await sha256Hex(managementSessionId), bridge.id, config.resource, uri, now + 900000,
+      claimed!.session_hash, claimed!.account_id, now, now).first<{ expires_at: number }>();
+  if (!session) reject('invalid_grant', 'The browser session expired or too many management sessions are active');
+  return oauthJson({ id: claimed!.account_id, issuer: config.issuer, expiresAt: session!.expires_at, managementSessionId });
 }

@@ -156,12 +156,52 @@ it('management handoff requires existing browser login, explicit approval, PKCE 
   expect((await jsonPost('/oauth/management/exchange', input, f.settings, 'x'.repeat(64))).status).toBe(401);
   const exchanged = await jsonPost('/oauth/management/exchange', input, f.settings);
   expect(exchanged.status).toBe(200);
-  const value = await exchanged.json() as { id: string; issuer: string; expiresAt: number };
+  const value = await exchanged.json() as { id: string; issuer: string; expiresAt: number; managementSessionId: string };
   expect(value).toMatchObject({ id: f.subject, issuer: ISSUER }); expect(value.expiresAt).toBeGreaterThan(Date.now());
   expect(value.expiresAt).toBeLessThanOrEqual(Date.now() + 900000);
+  expect(value.managementSessionId).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, managementSessionId: value.managementSessionId }, f.settings)).json()).toMatchObject({ active: true });
   expect(JSON.stringify(value)).not.toContain(f.raw);
   expect((await jsonPost('/oauth/management/exchange', input, f.settings)).status).toBe(400);
   expect((await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM integration_oauth_grants WHERE account_id=?').bind(f.subject).first<{ n: number }>())!.n).toBe(0);
+});
+
+it('management tickets stay bound to the exact bridge, account, resource, callback and original host session', async () => {
+  const f = await hostFixture(), { location, verifier } = await handoff(f), now = Date.now();
+  await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').bind(now + 90000, await sha256Hex(f.raw)).run();
+  const exchanged = await jsonPost('/oauth/management/exchange', { code: location.searchParams.get('code'), redirect_uri: MANAGEMENT, code_verifier: verifier }, f.settings);
+  expect(exchanged.status).toBe(200);
+  const result = await exchanged.json() as { managementSessionId: string; expiresAt: number };
+  expect(result.expiresAt).toBe(now + 90000);
+  const input = { issuer: ISSUER, subject: f.subject, managementSessionId: result.managementSessionId, applicationId: f.page.application.id, pageId: f.page.id };
+  const lookup = async (value = input, settings = f.settings, secret = BRIDGE_SECRET) =>
+    (await jsonPost('/oauth/account-access', value, settings, secret)).json();
+  const denied = { active: false, access: false, owner: false, oauthAuthorized: false, scopes: [], applicationId: f.page.application.id, pageId: f.page.id };
+  expect(await lookup()).toMatchObject({ active: true, access: true, owner: true });
+  expect(await lookup({ ...input, managementSessionId: 'unknown' })).toEqual(denied);
+  const other = await hostFixture();
+  expect(await lookup({ ...input, subject: other.subject })).toEqual(denied);
+  const bridgeSecret = 'second-' + 'c'.repeat(48), config = JSON.parse(f.settings.OAUTH_CONFIG_JSON!);
+  config.bridges.push({ ...config.bridges[0], id: 'second-bridge', secretSha256: await sha256Hex(bridgeSecret) });
+  expect(await lookup(input, { ...f.settings, OAUTH_CONFIG_JSON: JSON.stringify(config) }, bridgeSecret)).toEqual(denied);
+  config.bridges.pop(); config.resource = 'https://changed.example/mcp';
+  expect(await lookup(input, { ...f.settings, OAUTH_CONFIG_JSON: JSON.stringify(config) })).toEqual(denied);
+  config.resource = RESOURCE; config.bridges[0].managementRedirectUris = [];
+  expect(await lookup(input, { ...f.settings, OAUTH_CONFIG_JSON: JSON.stringify(config) })).toEqual(denied);
+  const ticketHash = await sha256Hex(result.managementSessionId);
+  expect(await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_management_sessions WHERE hash=?').bind(ticketHash).first()).toEqual({ hash: ticketHash });
+  await env.ACCOUNTS.prepare('UPDATE integration_oauth_management_sessions SET expires_at=? WHERE hash=?').bind(now - 1, ticketHash).run();
+  expect(await lookup()).toEqual(denied);
+  await env.ACCOUNTS.prepare('UPDATE integration_oauth_management_sessions SET expires_at=? WHERE hash=?').bind(now + 90000, ticketHash).run();
+  await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').bind(now - 1, await sha256Hex(f.raw)).run();
+  expect(await lookup()).toEqual(denied);
+  await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').bind(now + 90000, await sha256Hex(f.raw)).run();
+  expect((await formPost('/auth/logout', {}, f.settings, f.cookie)).status).toBe(302);
+  expect(await lookup()).toEqual(denied);
+  expect(await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_management_sessions WHERE hash=?').bind(ticketHash).first()).toBeNull();
+  // Account-only service authorization is separate; a management caller must always supply its ticket.
+  const { managementSessionId: ignored, ...accountOnly } = input;
+  expect(await (await jsonPost('/oauth/account-access', accountOnly, f.settings)).json()).toMatchObject({ active: true, access: true, owner: true });
 });
 
 it('handoff denial, changed session, hostile origin and logout cannot produce a management identity', async () => {
