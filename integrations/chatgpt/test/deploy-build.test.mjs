@@ -77,11 +77,11 @@ async function fixture(t) {
   await text(join(core.directory, prefix + 'examples/kitchen/.tendriller/device.sqlite'), 'creator-private-signer');
   return { root, core, chronolog, chronoActualRef: chronoRepo.source };
 }
-async function coreArtifacts(core) {
+async function coreArtifacts(core, sdkPackage = {}) {
   const artifacts = [];
   for (const [kind, name] of [['sdk', '@tendriller/core'], ['runtime', '@tendriller/runtime'], ['engine', '@tendriller/engine'], ['tools', '@tendriller/tools']]) {
     const packageDir = join(core.directory, 'dist', kind), file = `tendriller-${kind}-1.2.3.tgz`;
-    await json(join(packageDir, 'package.json'), { name, version: '1.2.3', type: 'module', exports: './client.mjs' });
+    await json(join(packageDir, 'package.json'), { name, version: '1.2.3', type: 'module', exports: './client.mjs', ...(kind === 'sdk' ? sdkPackage : {}) });
     await text(join(packageDir, 'client.mjs'), 'export const createClient = () => {};\n');
     await pack(packageDir, join(core.directory, 'dist', file), kind === 'tools' ? '.' : 'package');
     const artifact = { name, version: '1.2.3', file, sha256: await hashFile(join(core.directory, 'dist', file)) };
@@ -265,4 +265,28 @@ test('an unsuccessful host account report cannot seal otherwise qualified releas
   await assert.rejects(lstat(join(output, 'release.pending/RELEASE.json')), { code: 'ENOENT' });
   assert.equal(JSON.parse(await readFile(join(output, 'build/logs/host-account-report.json'), 'utf8')).status, 'failed');
   assert.deepEqual(await inspectSource(f.core.directory, f.core.source), f.core);
+});
+
+test('assembly permits only the known optional SDK peer satisfied by the exact verified session archive', async t => {
+  const allowed = { peerDependencies: { '@chronolog/peer-session': '*' }, peerDependenciesMeta: { '@chronolog/peer-session': { optional: true } } };
+  const variants = [
+    { name: 'known optional peer', value: allowed, accepted: true },
+    { name: 'unknown optional peer', value: { peerDependencies: { surprise: '*' }, peerDependenciesMeta: { surprise: { optional: true } } } },
+    { name: 'required session peer', value: { peerDependencies: { '@chronolog/peer-session': '*' } } },
+    { name: 'non-optional metadata', value: { ...allowed, peerDependenciesMeta: { '@chronolog/peer-session': { optional: false } } } },
+    { name: 'additional runtime dependency', value: { ...allowed, dependencies: { surprise: '1.0.0' } } },
+    { name: 'additional optional dependency', value: { ...allowed, optionalDependencies: { surprise: '1.0.0' } } },
+  ];
+  for (const variant of variants) await t.test(variant.name, async subtest => {
+    const f = await fixture(subtest), destination = join(f.root, 'assembled');
+    await coreArtifacts(f.core, variant.value); await chronoArtifact(f.chronolog);
+    const assemble = () => assembleRelease({ ...f, destination, env: process.env }, { run: runtimeInstaller([]) });
+    if (!variant.accepted) { await assert.rejects(assemble(), { code: 'RELEASE_PUBLIC_PACKAGE_INVALID' }); return; }
+    const result = await assemble();
+    const installed = JSON.parse(await readFile(join(destination, 'integrations/chatgpt/node_modules/@tendriller/core/package.json'), 'utf8'));
+    assert.deepEqual(installed.peerDependencies, allowed.peerDependencies);
+    assert.deepEqual(installed.peerDependenciesMeta, allowed.peerDependenciesMeta);
+    assert.equal(JSON.parse(await readFile(join(result.nativePackage, 'provenance.json'), 'utf8')).source, CHRONOLOG_SOURCE);
+    assert.equal(await hashFile(join(destination, result.archives.chronolog.file)), result.archives.chronolog.sha256);
+  });
 });

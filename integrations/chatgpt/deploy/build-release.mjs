@@ -98,7 +98,15 @@ function proofIdentity(proof, expected, format) {
 }
 async function packageIdentity(directory, name) {
   const value = await json(join(directory, 'package.json'));
-  if (value.name !== name || Object.keys(value.dependencies ?? {}).length || Object.keys(value.peerDependencies ?? {}).length)
+  const peers = Object.entries(value.peerDependencies ?? {}), metadata = value.peerDependenciesMeta ?? {};
+  // The optional SDK collaboration entry consumes the exact session archive
+  // installed and verified below. This is the only permitted runtime peer;
+  // nothing here asks npm to resolve another version or dependency graph.
+  const optionalSessionPeer = name === '@tendriller/core' && peers.length === 1 && peers[0][0] === '@chronolog/peer-session' && peers[0][1] === '*' &&
+    Object.keys(metadata).length === 1 && metadata['@chronolog/peer-session']?.optional === true &&
+    Object.keys(metadata['@chronolog/peer-session']).length === 1;
+  if (value.name !== name || Object.keys(value.dependencies ?? {}).length || Object.keys(value.optionalDependencies ?? {}).length ||
+      (peers.length || Object.keys(metadata).length) && !optionalSessionPeer)
     fail('RELEASE_PUBLIC_PACKAGE_INVALID', 'The release requires the self-contained public SDK and events-only native session packages.');
   return value;
 }
