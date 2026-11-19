@@ -24,6 +24,12 @@ export interface Env {
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /** Optional first-party integration OAuth. Register exact clients and resource. */
+  OAUTH_CONFIG_JSON?: string;
+  /** Private RS256/ES256 JWK, installed as a Worker secret. Never published. */
+  OAUTH_SIGNING_JWK?: string;
+  /** Optional previous public signing keys retained while issued tokens expire. */
+  OAUTH_PUBLIC_JWKS?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   ADMIN_IDENTITIES?: string;

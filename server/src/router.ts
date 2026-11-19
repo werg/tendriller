@@ -4,6 +4,7 @@ import { assertValid, schemaDocument } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
+import { routeIntegrationOAuth } from "./accounts/integration-oauth";
 import { dashboard } from "./accounts/keys";
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
@@ -150,6 +151,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return withCors(await api(req, env, url));
   }
 
+  if (path === '/.well-known/oauth-authorization-server' || path.startsWith('/oauth/')) return routeIntegrationOAuth(req, env, url);
   if (path === "/auth/page") return routePageAuth(req, env, url);
   if (path === "/report") return reportPage(req, env, url);
   if (path === "/internal/budget") return budgetWebhook(req, env);
