@@ -49,6 +49,8 @@ try {
   assert.equal(runtime.exports['./preview-support'], undefined);
   writeFileSync(join(directory, 'consumer.mjs'), `
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {DatabaseSync} from 'node:sqlite';
 import { createClient, requireService } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
 import { createApplicationBinding } from '@tendriller/core/application';
@@ -59,6 +61,12 @@ import { createVoice } from '@tendriller/runtime/voice';
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 const application = { id: '12'.repeat(32) };
+const accounts = new DatabaseSync(':memory:');
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/integration-oauth-schema')), 'utf8'));
+assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_management_sessions'").get().name,
+  'integration_oauth_management_sessions');
+accounts.close();
 assert.equal(CONTRACT_VERSION, 3); assert.equal(typeof startRuntime, 'function'); assert.equal(typeof createVoice, 'function');
 assert.equal(schema.$defs.stateUpdate, undefined); assert.equal(schema.$defs.create.properties.application.properties.kind, undefined);
 assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));

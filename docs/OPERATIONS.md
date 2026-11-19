@@ -18,6 +18,13 @@ Store secrets in the platform's secret store. Agent bearer tokens and OAuth/page
 
 The service starts with creation paused. Configure and exercise owner sign-in, page claim, account status, page-origin isolation and signed publication before opening creation. Publish the exact runtime assets required by the engine. Changing configuration or building code does not deploy it.
 
+The optional [first-party integration OAuth server](INTEGRATION_OAUTH.md) uses the
+same current GitHub/Google account login. Enable it only after applying the
+additive `0002_integration_oauth.sql` account migration and registering exact
+clients, MCP resource, bridge credentials and signing keys. It adds no Durable
+Object schema revision. Ordinary host deployments keep OAuth disabled when
+`OAUTH_CONFIG_JSON` is absent.
+
 ## Durable Object traffic budgets
 
 The host charges authenticated page HTTP/API requests and host control WebSocket messages to `PAGE_RATE` (600/minute per page). Claimed pages also charge `ACCOUNT_RATE` (1,800/minute across that owner's pages). Unauthenticated requests can still reach the Durable Object before admission. Unclaimed pages have no account key. Relay data packets have their own packet, byte and credit bounds and are excluded from these request budgets; local authorization caching reduces repeated SQL lookups but cold starts and invalidation still require reads. The existing agent-token limit remains 300 requests/minute. Limit failures return HTTP 429 (`page_rate_limited` or `account_rate_limited`); control sockets close with 1013. The checked-in configurations and `scripts/provision.mjs` install the same limits, in separate namespaces 107 and 108.

@@ -5,6 +5,7 @@ import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expir
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
+import { integrationPageAccess } from './accounts/integration-access';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
@@ -154,6 +155,7 @@ export class Tendril extends DurableObject<Env> {
           files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
+      if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
           name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
