@@ -140,6 +140,27 @@ history; `createEffectDispatcher` admits one original effect identity and requir
 reconciliation for uncertain dispatch. The provider integration supplies fresh
 authorization and its real idempotency/reconciliation behavior.
 
+## Bounded reads
+
+Use `client.tasks({ limit, cursor })` for current task cards, `client.results` for
+full result evidence, and `client.thread({ threadId, limit, cursor })` for a selected
+conversation. Task cards include current claims and complete accepted-result
+summaries, so the visible result page never changes the contribution denominator.
+The legacy `snapshot()` is a bounded preview with explicit continuation metadata.
+
+A continuation belongs to its complete captured revision, history and query
+filters. If participants continue writing while someone browses several pages,
+use `const reader = await client.capture()` and issue those reads through the one
+reader. Close it when the view leaves or refreshes. Changing scope requires an
+explicit restart; `CURSOR_RESET_REQUIRED` never silently skips changed history.
+Current task versions still count all admitted task facts, including records
+outside the displayed page, and continue to guard cancellation and synthesis.
+
+Captured readers require unrestricted SQL query authority. An attachment limited
+to approved named queries uses `client.tasks`, `client.results`, or `client.thread`
+within its allowlist. An events grant alone does not authorize SQL, and no paging
+helper broadens the attachment's capabilities.
+
 ## Membership, observation and diagnostics
 
 `await session.authority()` returns a cloned current public signed authority

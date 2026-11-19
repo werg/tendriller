@@ -16,6 +16,7 @@ the current browser without requesting permissions.
 | Atomic stock deduction, multiple related rows, relational guards | The optional SQL capability and a signed schema/engine manifest | `sql/` in the starter; [events versus SQL](STATE_MODELS.md) |
 | Several tabs or documents using one signing profile | `openBrowserOwner` / `serveBrowserOwner` with bounded attachments | `@tendriller/core/collaboration/browser` and `/worker`; [multi-participant composition](MULTIPARTICIPANT.md) |
 | Addressed work, exclusive claims, fan-out and guarded synthesis | `createCollaborationDefinition` and `createCollaborationClient` | `@tendriller/core/collaboration`; [immutable schema and recovery](MULTIPARTICIPANT.md) |
+| Current tasks and paged conversation or result history | `client.tasks`, `client.results`, `client.thread`; `client.capture` for one stable reading revision | `@tendriller/core/collaboration`; [bounded reads](MULTIPARTICIPANT.md#bounded-reads) |
 | Native clients sharing a retained signer | `createNativeSessionSupervisor` and `attachNativeSession` | `@tendriller/core/collaboration/native`; [CLI attachment modes](tools/CLI.md) |
 | Explain owner, keys, coordinator and recovery state | `diagnoseApplicationSession` / CLI `doctor`; bounded findings and next actions | `@tendriller/core/collaboration/diagnostics`; [diagnostic output](tools/CLI.md) |
 | Independently revocable agent connections | Scoped host credentials and approved application consumer bindings | [Agent bindings](AGENT_BINDINGS.md) |

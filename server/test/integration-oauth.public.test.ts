@@ -669,15 +669,13 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await view.release();
     expect(batch.events).toHaveLength(1);
     const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, generation: batch.revision.generation, payload: { ready: true } };
+    // Establish the outage before enqueueing work. The real alarm may fire
+    // immediately after publication; racing it here would test fixture timing.
+    await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
     const sequence = await first.adapter.publish(emitted);
     expect(await first.adapter.publish(emitted)).toBe(sequence);
-    await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
-    const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
-    expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
-    expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
 
     // A deployment with OAuth temporarily unavailable preserves existing jobs.
-    await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
     await advance(a.page.id, 100);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(0);
@@ -686,6 +684,9 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       expect(t.db.one('SELECT block_reason,attempts FROM assistant_jobs')).toMatchObject({ block_reason: 'oauth_unavailable', attempts: 0 });
       t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
     });
+    const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
+    expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
+    expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(1);
     expect((await first.review(['notes'])).status).toBe(303);
@@ -714,6 +715,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     rejectCallback = true;
     const later = { ...emitted, sourceEventId: 'pinned-after-retry' };
     const pinned = await first.adapter.publish(later);
+    await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
     await inDO(a.page.id, t => {
       t.transaction(() => {
         for (let i = 0; i < 258; i++)
