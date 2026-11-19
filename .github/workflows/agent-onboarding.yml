@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+          ref: d1cc92bc1f03d2558cc03124333493baad35ea32
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -47,7 +47,7 @@ jobs:
         working-directory: core
       - name: Exercise the downloaded tutorial in a real browser
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz"
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d1cc92bc.tgz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+          ref: d1cc92bc1f03d2558cc03124333493baad35ea32
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -84,7 +84,7 @@ jobs:
         working-directory: core
       - name: Exercise SQL initialization, guarded writes and reopen
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d-sql.tgz" --sql-native-only
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d1cc92bc-sql.tgz" --sql-native-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:

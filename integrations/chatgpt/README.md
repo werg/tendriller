@@ -381,12 +381,12 @@ Build the pinned public events artifact and extract its archive to enable them:
 
 ```sh
 git clone https://github.com/werg/chronolog-db.git chronolog-source
-git -C chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+git -C chronolog-source checkout --detach d1cc92bc1f03d2558cc03124333493baad35ea32
 cd chronolog-source
 corepack pnpm install --frozen-lockfile --ignore-scripts
 node tools/package-peer-session.mjs
 mkdir -p /absolute/private/native-test-package
-tar -xzf artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz \
+tar -xzf artifacts/peer-session/chronolog-peer-session-d1cc92bc.tgz \
   -C /absolute/private/native-test-package --strip-components=1
 cd /absolute/path/to/tendriller
 CHRONOLOG_SESSION_PACKAGE=/absolute/private/native-test-package npm run test:chatgpt
