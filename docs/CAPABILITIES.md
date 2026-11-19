@@ -24,6 +24,8 @@ the current browser without requesting permissions.
 | UI preview and headless browser interaction | `tendril-preview ./page`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
 | Inference using a protected provider credential | An explicitly enabled native participant with an allowed-device list and request budget | `media/inference-client.mjs`, `media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Agent-side tools and a connected process | The same owned session plus `createApplicationTools` / `serveApplicationToolLines` | [Delivery and process lifetime](AGENT_DELIVERY.md) |
+| Remote ChatGPT reads, writes and mounted assistance UI | Separate enrolled Node 24 bridge, OAuth and explicit connection consent | [ChatGPT routes and setup](CHATGPT_INTEGRATION.md) |
+| App-triggered assistant work | Verified MCP Events subscription in a supported surface, or a configured published Workspace Agent | [Delivery, recovery and fallbacks](CHATGPT_INTEGRATION.md#event-delivery-and-recovery) |
 | Hosted UI and signed publication | `createClient` from `@tendriller/core` and the authorized session publisher | [Build an app](BUILD_AN_APP.md) |
 
 The starter's helper modules are ordinary, importable application source. Adapt
@@ -104,11 +106,15 @@ point for this onboarding route, with current helpers directly available to impo
 
 ## Capabilities that need an additional integration
 
-A running session watcher can receive application work while its process exists.
-It cannot arrange a future ChatGPT turn. This release does not provide or qualify
-a direct handoff from an arbitrary ChatGPT conversation to a device grant,
-running participant and supported wake mechanism. See
-[delivery](AGENT_DELIVERY.md#an-existing-chatgpt-conversation) before promising that.
+A running session watcher receives application work while its process exists.
+The optional [ChatGPT integration](CHATGPT_INTEGRATION.md) adds concrete remote
+tools, explicit supported event subscriptions, a mounted widget, and a separate
+published Workspace Agent route. These require deployment, trusted account
+adapters, an enrolled device and owner consent; they are not enabled by page
+residency. An arbitrary ordinary conversation still has no automatic wake route.
+Use the guide's route/failure matrix and record actual live acceptance evidence.
+The integration's native and injected-transport tests alone do not qualify a
+deployed ChatGPT connection.
 
 Likewise, general vision/LLM inference is an application integration. The example
 keeps credentials in a native process and returns reviewed suggestions. It does

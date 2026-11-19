@@ -7,6 +7,7 @@ export const ONBOARDING_DOCS = Object.freeze([
   'agent.md', 'docs/CAPABILITIES.md', 'docs/AGENT_DELIVERY.md',
   'docs/BUILD_AN_APP.md', 'docs/APP_PATTERNS.md', 'docs/AI_INPUT.md',
   'docs/STATE_MODELS.md', 'docs/SESSION_BOOTSTRAP.md',
+  'docs/CHATGPT_INTEGRATION.md',
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md',
 ]);
 export const TUTORIAL_FILES = Object.freeze([
