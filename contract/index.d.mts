@@ -65,7 +65,7 @@ export interface RuntimeServices {
   ready(): void;
   capabilities(): Promise<CapabilityReport>;
   readonly version: number;
-  readonly identity: Readonly<{ page: string; version: number; publication: string | null; base: string; managementUrl: string }>;
+  readonly identity: Readonly<{ page: string; version: number; publication: string | null; documentPath: string | null; base: string; managementUrl: string }>;
   /** Browser installation state and an explicit native prompt; never registers offline support. */
   readonly installation: RuntimeInstallation;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */

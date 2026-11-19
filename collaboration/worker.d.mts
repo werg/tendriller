@@ -1,0 +1,1 @@
+export declare function serveBrowserOwner(options:{profileId:string;openSession:(options:{signal:AbortSignal})=>Promise<{session:any;control?:any;close?:()=>Promise<void>}>;createIdentity?:(options:{signal:AbortSignal})=>Promise<string>;scope?:any;ownerOptions?:Record<string,unknown>}):{readonly owner:any;close():Promise<void>};

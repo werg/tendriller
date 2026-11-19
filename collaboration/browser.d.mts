@@ -1,0 +1,3 @@
+export interface BrowserOwnerOptions {workerUrl:string|URL;profileId:string;applicationId:string;definitionId:string;definitionVersion:string;context?:{viewId?:string;documentPath?:string;publicationId?:string;runId?:string};mode?:'auto'|'shared'|'elected';signal?:AbortSignal;timeoutMs?:number;onOwnerReplaced?:(context:{previous:string;current:string})=>void}
+export declare function openBrowserOwner(options:BrowserOwnerOptions):Promise<{readonly session:any;readonly mode:'shared'|'elected';suspend():Promise<void>;resume():Promise<any>;detach():Promise<void>}>;
+export declare function createBrowserIdentity(options:Pick<BrowserOwnerOptions,'workerUrl'|'profileId'|'signal'|'timeoutMs'>):Promise<string>;

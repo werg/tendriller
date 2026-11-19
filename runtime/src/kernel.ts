@@ -56,7 +56,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   });
   const tracker = installSensorWrappers();
   const installation = createInstallation();
-  const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null,
+  const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null, documentPath: cfg.documentPath,
     base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
   const observe = () => observeCapabilities(() => tracker.status().active, report => core.bus.emit("capabilities", report));
   let capabilityObserver: ReturnType<typeof observe> | null = observe();
