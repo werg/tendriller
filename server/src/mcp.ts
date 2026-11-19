@@ -5,13 +5,15 @@ import { handleAgent } from './agent';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { PEER_CONTROL_TOOLS } from './peer-mcp';
 import { authenticateAgentToken, currentPrincipal } from './access';
+import { publicBase } from './urls';
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 class RpcError extends Error { constructor(public code: number, message: string, public data?: unknown) { super(message); } }
 const INSTRUCTIONS = 'This host is a filtered Chronolog participant for signed code publication, membership, discovery and explicit recovery. ' +
   'Open one public Chronolog application session for commands, queries, operations and ephemeral signals. ' +
   'Use applied() for a generation-scoped result and shared() for retained coverage. Explicit recovery can abandon a suffix. ' +
   'The host has no ordinary application command endpoint or event queue. Verify signed authority and publication ancestry in your session. ' +
-  'Preserve the original operation identity and signed bytes on uncertain replies; code rollback is a newly signed release.';
+  'Preserve the original operation identity and signed bytes on uncertain replies; code rollback is a newly signed release. ' +
+  'For a first application, call tendril_guide. Configure authority and select the initial generation before opening the session; page creation alone does not complete setup.';
 export interface ToolRequest {
   method: string;
   rest: string;
@@ -31,6 +33,10 @@ export interface Tool {
 }
 
 const TOOLS: Tool[] = [...PEER_CONTROL_TOOLS, {
+  name: 'tendril_guide', description: 'Get the complete first-app guide, downloadable setup files, lifecycle and troubleshooting links for this service origin. Read this before configuring a new application.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  call: () => ({ method: 'GET', rest: 'guide' }),
+}, {
   name: 'tendril_info', description: 'Read page identity, current signed publication storage version and host lifecycle metadata.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   call: () => ({ method: 'GET', rest: '' }),
@@ -64,7 +70,8 @@ async function dispatch(t: Tendril, token: string, method: string, params: Recor
   switch (method) {
     case 'initialize': return {
       protocolVersion: typeof params.protocolVersion === 'string' && PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
-      capabilities: { tools: {} }, serverInfo: { name: 'tendriller', version: String(CONTRACT_VERSION) }, instructions: INSTRUCTIONS,
+      capabilities: { tools: {} }, serverInfo: { name: 'tendriller', version: String(CONTRACT_VERSION) },
+      instructions: `${INSTRUCTIONS} Start here: ${publicBase(t.env)}/docs/BUILD_AN_APP.md`,
     };
     case 'ping': return {};
     case 'tools/list': return { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) };

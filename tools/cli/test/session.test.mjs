@@ -12,6 +12,15 @@ async function directory(t) {
   return path;
 }
 
+test('missing application setup reports the next step before issuing session work', async () => {
+  let called = false;
+  await assert.rejects(withSession(undefined, () => { called = true; }),
+    error => /page handle does not open a Chronolog session/.test(error.message) && /BUILD_AN_APP\.md/.test(error.message));
+  assert.equal(called, false);
+  await assert.rejects(runSessionCommand({ session: {} }, 'publication', []),
+    error => /session-owned control participant/.test(error.message) && /publisher grant/.test(error.message));
+});
+
 test('commands preserve exact operation identity and captured revision without a tool retry queue', async () => {
   const calls = [], revision = { generation: 'selected', point: { sequence: 4 } };
   const operation = { status: 'saved', operationId: 'intent-1', attemptId: 'signed-original' };

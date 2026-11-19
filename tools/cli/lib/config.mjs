@@ -1,5 +1,5 @@
 // Config resolution.
-//   1. --tendril <name>   -> <configDir>/<name>.json  ({api, token, page_url, id, name, server})
+//   1. --tendril <name>   -> <configDir>/<name>.json  ({api, token, page_url, application, id, name, server})
 //   2. TENDRIL_NAME env   -> same
 //   3. TENDRIL_API + TENDRIL_TOKEN env
 // configDir = TENDRIL_CONFIG_DIR, else $XDG_CONFIG_HOME/tendril, else ~/.config/tendril.
@@ -65,6 +65,7 @@ export function saveConfig(handle, wanted, env = process.env, server) {
   }
   const data = {
     id: handle.id, name: handle.name, page_url: handle.page_url, api: handle.api, token: handle.token,
+    ...(handle.application ? { application: handle.application } : {}),
     lifetime: handle.lifetime, mode: handle.mode, server: server || null, saved_at: new Date().toISOString(),
   };
   writeFileSync(p, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });

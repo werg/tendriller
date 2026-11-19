@@ -222,8 +222,11 @@ export function landingPage(publicBase: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tendriller</title>
-<meta name="description" content="Connect a live page and device sensors to an ongoing agent session. Talk to your agent and see the page change as you work.">
-<meta property="og:type" content="website"><meta property="og:title" content="Tendriller"><meta property="og:description" content="Connect a live page and device sensors to an ongoing agent session."><meta property="og:image" content="${escapeHtml(publicBase)}/_tendril/brand/logo.png">
+<meta name="description" content="Build an app with your agent: shared state, a live browser interface and device sensors. Start with the complete Tendriller application guide.">
+<meta property="og:type" content="website"><meta property="og:title" content="Tendriller"><meta property="og:description" content="Build a shared, session-connected app with your agent."><meta property="og:image" content="${escapeHtml(publicBase)}/_tendril/brand/logo.png">
+<link rel="alternate" type="text/markdown" href="${escapeHtml(publicBase)}/agent.md" title="Agent instructions">
+<link rel="alternate" type="text/plain" href="${escapeHtml(publicBase)}/llms.txt" title="Documentation index">
+<link rel="service-desc" type="application/json" href="${escapeHtml(publicBase)}/.well-known/tendriller.json">
 ${brandHead()}${brandStyle}
 <style>
 :root{color-scheme:light dark;--paper:#f8f5ec;--ink:#20332c;--muted:#52685c;--line:#d8e0d5;--green:#195d46;--orange:#e87442;--cream:#fff9ea}
@@ -246,23 +249,23 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 </head>
 <body>
 <main>
-<header>${brandLink}<nav aria-label="Main navigation"><a href="/dashboard">Dashboard</a><a href="https://github.com/werg/tendriller">GitHub</a></nav></header>
+<header>${brandLink}<nav aria-label="Main navigation"><a href="${escapeHtml(publicBase)}/docs/BUILD_AN_APP.md">Build an app</a><a href="/dashboard">Dashboard</a><a href="https://github.com/werg/tendriller">GitHub</a></nav></header>
 <section class="hero" aria-labelledby="hero-title">
 <div class="hero-art">${brandLogo}</div>
 <div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
-<p>Your agent creates an ad-hoc page connected to your ongoing session. Talk or type to the agent from that page while it updates the interface live.</p>
-<p>Open it on any of your devices. The page can send taps and other UI interactions back to the agent, along with camera, location, motion, microphone, and other sensor input you allow.</p>
-<p><strong>Agents: read <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">${escapeHtml(publicBase)}/agent.md</a>.</strong> It explains page creation, authentication, publication and live event delivery. <a href="https://cookbooks.tendriller.dev/" style="color:inherit">Cookbooks</a> help you choose an approach and adapt the page to the task; their <a href="https://github.com/werg/tendriller-contrib" style="color:inherit">source is on GitHub</a>. See <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">the documentation index</a> for platform APIs and optional operational tools.</p>
-<div class="actions"><a class="button" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a><a class="button secondary" href="${escapeHtml(publicBase)}/agent.md">Agent setup guide</a></div></div>
+<p>Give your agent a task and this website. It can build a shared app with a browser interface, durable state and live connections to your devices.</p>
+<p>Open the app on your devices. Its interface can exchange updates with a running agent and use the camera, location, motion, microphone, and other sensor input you allow.</p>
+<p><strong>Agents: start with <a href="${escapeHtml(publicBase)}/docs/BUILD_AN_APP.md" style="color:inherit">Build an app</a>.</strong> Follow the complete example from page creation to shared state, browser enrollment and signed publication. <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">Agent instructions</a> and the <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">ordered documentation index</a> explain the path.</p>
+<div class="actions"><a class="button" href="${escapeHtml(publicBase)}/docs/BUILD_AN_APP.md">Build your first app</a><a class="button secondary" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a></div></div>
 </section>
-<section class="how" aria-labelledby="how-title"><h2 id="how-title">How it works</h2><p>Setup starts in the agent session you already use.</p>
+<section class="how" aria-labelledby="how-title"><h2 id="how-title">From a task to a working app</h2><p>Give your agent the task, this domain, and the email address you will use to sign in. The guide supplies the setup and application files.</p>
 <ol class="flow">
-<li><span class="flow-number" aria-hidden="true">1</span><p>Tell your agent about Tendriller.</p></li>
-<li><span class="flow-number" aria-hidden="true">2</span><p>It creates a page for your email address.</p></li>
-<li><span class="flow-number" aria-hidden="true">3</span><p>It gives you the page URL.</p></li>
-<li><span class="flow-number" aria-hidden="true">4</span><p>Open it and sign in with GitHub or Google.</p></li>
-<li><span class="flow-number" aria-hidden="true">5</span><p>Keep talking here or in your agent session. The page changes live.</p></li>
-</ol></section>
+<li><span class="flow-number" aria-hidden="true">1</span><p>Create the app for your task.</p></li>
+<li><span class="flow-number" aria-hidden="true">2</span><p>Define its shared state and commands.</p></li>
+<li><span class="flow-number" aria-hidden="true">3</span><p>Build the browser interface.</p></li>
+<li><span class="flow-number" aria-hidden="true">4</span><p>Sign in and connect your devices.</p></li>
+<li><span class="flow-number" aria-hidden="true">5</span><p>Publish and verify it together.</p></li>
+</ol><p style="margin-top:1.7rem">Shared data belongs to the app’s Chronolog session. Tendriller hosts the page and its access controls. Live agent responses need the agent’s connected process to remain running. <a href="${escapeHtml(publicBase)}/docs/TROUBLESHOOTING.md">Setup help</a> names the next step when something is missing.</p></section>
 <section class="access" aria-labelledby="access-title"><h2 id="access-title">Access and permissions</h2><p>Your owner page is gated by <strong>GitHub or Google OAuth sign-in</strong>. Your agent uses a separate credential that you can revoke. Camera, location, and other browser permissions are requested on the device where you open the page.</p></section>
 <section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Choose the interface and behavior that fit your task. <a href="https://cookbooks.tendriller.dev/">Explore the decisions and alternatives in the cookbooks.</a></p><ul class="ideas">
 <li><h3>Field notebook</h3><p>Collect photos, location, voice notes, and observations on a walk.</p></li>

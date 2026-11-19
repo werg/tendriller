@@ -3,6 +3,21 @@
 These optional Node tools use the common public application session. They do not
 supply another database, host data protocol, signer, outbox or event dispatcher.
 
+Start with a service domain:
+
+```sh
+tendril guide --server https://tendriller.dev --pretty
+tendril service --server https://tendriller.dev --pretty
+```
+
+The first command prints the workflow and same-service documentation links
+without network access or a saved handle. The second reads the public host
+contract without credentials. Follow
+[Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md) to create and claim a
+page, define state, build the UI, connect the session, and publish signed code.
+Page creation alone does not configure a session. The guide names required
+authority and device setup so a missing bootstrap has a concrete next step.
+
 | Entry | Purpose |
 | --- | --- |
 | `tendril` | Domain commands and coherent queries, exact operations, explicit recovery, signed publication, and host lifecycle administration |

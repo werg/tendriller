@@ -1,0 +1,13 @@
+{
+  "name": "tendriller-shared-notes",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "create": "node setup.mjs create",
+    "init": "node setup.mjs init",
+    "enroll": "node setup.mjs enroll",
+    "build": "node build.mjs",
+    "peer": "node session.mjs"
+  }
+}

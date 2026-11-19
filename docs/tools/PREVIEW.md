@@ -1,5 +1,7 @@
 # Preview exact authored files and the real session
 
+For a complete native/browser application, start with [Build an app](../BUILD_AN_APP.md). A file preview verifies presentation; session behavior requires the actual enrolled Worker and running peer from that guide.
+
 The preview serves a complete authored asset graph. It does not emulate hosted
 state, streams, event sockets, upload receipts or a second application runtime.
 A static page can be inspected without installing application services:

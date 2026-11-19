@@ -36,7 +36,7 @@ export const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type, Range, X-Tendril-Name, X-Tendril-Lease, Mcp-Protocol-Version, Mcp-Session-Id",
-  "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Disposition",
+  "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Disposition, Link",
   "Access-Control-Max-Age": "86400",
 };
 

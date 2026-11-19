@@ -1,5 +1,12 @@
 # Tendriller
 
+**Build an app:** follow [the complete first-app guide](docs/BUILD_AN_APP.md) for
+**create → define state → build UI → connect session → publish**. It includes page
+claim, initial authority/generation setup, a persistent native session, browser
+enrollment and verification. Agents starting from a domain should read
+[`/agent.md`](https://tendriller.dev/agent.md) or
+[`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json).
+
 Tendriller hosts authenticated pages and participates in Chronolog through a filtered control transport. Each application uses one owned Chronolog session for commands, queries, applied views, operation state, live signals, replication and recovery. The host handles account access, signed membership and generation control, signed page-code publications, discovery and bounded connection introductions.
 
 A page has one stable application identity, `{id}`, independent of its URL and the devices that join it. Native agents and browser Workers use the same application contract. The host's role and transport decide which protocol updates it receives; ordinary application commands, database history, content replication and live UI signals stay between peers.
@@ -14,6 +21,9 @@ Open **Page options** on a published page to add it to your Home Screen. Support
 
 ## Start here
 
+- [Build an app](docs/BUILD_AN_APP.md): the recommended first working application, with complete tutorial files and checkpoints.
+- [Session bootstrap](docs/SESSION_BOOTSTRAP.md): create and resume native identity, configure authority, enroll a browser and open the same application.
+- [Troubleshooting](docs/TROUBLESHOOTING.md): exact failing stages, safe retries and the next concrete action.
 - [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.
 - [Application contract](docs/APPLICATION_BACKENDS.md): commands, applied operations, coherent reads and explicit recovery.
 - [Browser API](docs/BROWSER_API.md): session bindings, Home Screen setup, signals, host access, sensors and offline code.
@@ -24,6 +34,7 @@ Open **Page options** on a published page to add it to your Home Screen. Support
 - [CLI and preview](docs/tools/CLI.md): explicit public-session tools and authored-file preview.
 - [Cookbooks](https://github.com/werg/tendriller-contrib): reasoning, application examples and independent qualification.
 - [Three-repository qualification](docs/RELEASE_COMPOSITION.md): choose exact core, Chronolog and cookbook commits, run the public gates, and stage the host.
+- [Agent onboarding acceptance](docs/AGENT_ONBOARDING_TEST.md): evaluate the journey starting with only a domain.
 
 ## Build and verify
 

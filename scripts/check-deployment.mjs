@@ -37,7 +37,24 @@ if (objectResponse.status !== 404 || objectResult?.error?.message !== "No such t
 }
 const guide = await (await get("/agent.md")).text();
 if (!guide.includes("Tendriller")) throw new Error("Agent guide is missing or incomplete");
-console.log(`Deployment smoke check passed: ${base}`);
+const landing = await (await get('/')).text();
+if (!landing.includes(`${base}/docs/BUILD_AN_APP.md`)) throw new Error('Homepage is missing the first-app entry point');
+const onboarding = await (await get('/.well-known/tendriller.json')).json();
+if (onboarding.start_here !== `${base}/docs/BUILD_AN_APP.md` ||
+    onboarding.starter !== `${base}/downloads/tendriller-first-app.tgz`)
+  throw new Error('Onboarding navigation must target this deployment');
+for (const path of ['/AGENTS.md', '/llms.txt', '/llms-full.txt', '/docs/BUILD_AN_APP.md',
+  '/docs/SESSION_BOOTSTRAP.md', '/docs/TROUBLESHOOTING.md']) {
+  const response = await get(path);
+  if (!(response.headers.get('content-type') || '').match(/text\/(markdown|plain)/))
+    throw new Error(`${path}: expected a readable public guide`);
+  if (!(await response.text()).trim()) throw new Error(`${path}: empty onboarding guide`);
+}
+const starter = await get('/downloads/tendriller-first-app.tgz');
+if (!starter.headers.get('content-disposition')?.startsWith('attachment;'))
+  throw new Error('The first-app archive must be a download');
+const archive = new Uint8Array(await starter.arrayBuffer());
+if (archive[0] !== 0x1f || archive[1] !== 0x8b) throw new Error('First-app download is not a gzip archive');
 
 const descriptor = await (await get("/api/service")).json();
 // Browser Integrity Check can reject ordinary automated clients before this
@@ -54,3 +71,4 @@ const runtime = JSON.parse(readFileSync(new URL("../server/src/runtime-release.j
 const manifest = await (await get(`/_tendril/runtime/${runtime.id}/manifest.json`)).json();
 if(manifest.id!==runtime.id)throw Error("Runtime artifact mismatch");
 console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} with the filtered participant transport`);
+console.log(`Deployment and agent onboarding smoke check passed: ${base}`);

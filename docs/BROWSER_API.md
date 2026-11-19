@@ -1,5 +1,7 @@
 # Browser API
 
+For the complete Worker, device enrollment and UI files, start with [Build an app](BUILD_AN_APP.md). This is the API reference after that bootstrap; `ready()` alone does not mean a peer is connected.
+
 The browser runtime composes one application session with page-host services and local device utilities. It does not own a second application database, device signer, transport or delivery queue.
 
 ## Runtime composition

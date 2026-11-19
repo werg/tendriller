@@ -1,0 +1,56 @@
+name: Agent onboarding
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-onboarding-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  first-app:
+    name: First app from public artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          path: chronolog
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Trust checked-out sources for provenance
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/core"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/chronolog"
+      - run: npm ci
+        working-directory: core
+      - name: Build the pinned events session archive
+        working-directory: chronolog
+        run: |
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+          node tools/package-peer-session.mjs
+      - run: npm run build:artifacts
+        working-directory: core
+      - name: Exercise the downloaded tutorial in a real browser
+        working-directory: core
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d014879e.tgz"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: first-app-qualification
+          path: core/.results/first-app*
+          include-hidden-files: true
+          if-no-files-found: ignore

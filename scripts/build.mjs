@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { CORE_RELEASE, CONTRACT_VERSION } from "../contract/index.mjs";
 import { RUNTIME_FEATURES, RUNTIME_RESOURCES } from "../runtime/resources.mjs";
 import { runtimeManifest } from "./runtime-manifest.mjs";
+import { buildOnboardingAssets } from "./onboarding.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const out = join(root, "server/public");
@@ -103,16 +104,17 @@ export async function buildPublicArtifacts() {
     copyFileSync(join(dist, result.filename), target);
     if (join(dist, result.filename) !== target) rmSync(join(dist, result.filename));
   }
-  for (const name of ["agent.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
+  for (const name of ["agent.md", "AGENTS.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
-    for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path))) {
+    for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path) && !path.startsWith(join(root, "docs/tutorial") + "/"))) {
       const destination = join(target, relative(join(root, directory), source));
       mkdirSync(dirname(destination), { recursive: true }); copyFileSync(source, destination);
     }
   }
   mkdirSync(join(out, "contract"), { recursive: true });
   copyFileSync(join(root, "contract/v3.json"), join(out, "contract/v3.json"));
+  buildOnboardingAssets(root, out);
   return manifest;
 }
 
@@ -126,7 +128,7 @@ if (!process.argv.includes("--skip-initial")) await buildAll();
 if (watching) {
   let timer, building = false, again = false;
   const rebuild = async () => { if (building) { again = true; return; } building = true; do { again = false; try { await buildAll(); } catch (error) { console.error(error); } } while (again); building = false; };
-  const watchers = ["runtime/src", "runtime/resources.mjs", "server/src", "contract", "preview-support", "docs", "legal", "agent.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
+  const watchers = ["runtime/src", "runtime/resources.mjs", "server/src", "contract", "preview-support", "docs", "legal", "agent.md", "AGENTS.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
     if (name === "runtime-release.json") return;
     clearTimeout(timer); timer = setTimeout(rebuild, 120);
   }));

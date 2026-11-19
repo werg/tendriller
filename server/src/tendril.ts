@@ -283,15 +283,17 @@ export class Tendril extends DurableObject<Env> {
       api: apiUrl(this.env, this.tid),
       token,
       agent_md: `${publicBase(this.env)}/agent.md`,
+      build_guide: `${publicBase(this.env)}/docs/BUILD_AN_APP.md`,
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
       unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes },
-      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Configure Chronolog authority after claiming the page, then publish signed page code. Once claimed, set lifetime to resident for a long-lived page.",
+      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Follow build_guide to define the app, configure Chronolog authority, select the initial generation, connect devices and publish signed page code. Once claimed, set lifetime to resident for a long-lived page.",
       application,
       agent_setup: {
         application: application.id,
-        next_step: "Open the public Chronolog application session. Commands, queries, durable events and ephemeral signals use that session. Connect this host as the filtered control participant for membership, discovery, recovery and signed page-code publication.",
+        guide: `${publicBase(this.env)}/docs/BUILD_AN_APP.md`,
+        next_step: "Configure authority and select the initial generation before opening the public Chronolog application session. Commands, queries, durable events and ephemeral signals use that session. Connect this host as the filtered control participant for membership, discovery, recovery and signed page-code publication.",
       },
     };
   }
