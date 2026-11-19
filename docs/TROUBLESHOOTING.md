@@ -145,8 +145,11 @@ coarse discovery renewal and explicit control/publication calls also use it.
 Do not interpret zero host application writes as a failed save, or claim zero
 host traffic for a relay-backed session.
 
-The MCP endpoint administers host controls; it does not run domain commands or
-wake an agent conversation. State which native process or integration actually
+The ordinary host MCP endpoint administers host controls; it does not run domain
+commands or wake an agent conversation. For application tools, subscribed events,
+mounted UI handoff and the optional Workspace Agent route, use the separate
+[ChatGPT integration guide](CHATGPT_INTEGRATION.md), including its failure matrix
+and recovery procedure. State which native process or integration actually
 consumes the application work and how long it remains available. If a prerequisite
 is missing, report the completed checkpoint, exact missing artifact/authority,
 redacted error, preserved work and next action. Keep a separate persistence
