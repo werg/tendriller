@@ -458,7 +458,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
     rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
     relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
-  async function open(f: typeof a, definition: typeof notes | typeof counter, query: string, command: string, eventName: string) {
+  async function open<D extends typeof notes | typeof counter>(f: typeof a, definition: D, query: string, command: string, eventName: string) {
     const pagePath = new URL(f.page.api).pathname, headers = { Authorization: 'Bearer ' + f.page.token, 'Content-Type': 'application/json' };
     const peers = createPeersClient({ base: f.page.api, applicationId: f.page.application.id,
       request: async (path, options = {}) => {
