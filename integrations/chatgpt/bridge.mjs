@@ -52,7 +52,7 @@ export function createNativeSessionOpener({ host, definition, devicePath, pinned
   return async function openSession({ signal } = {}) {
     signal?.throwIfAborted();
     const { peer, native, websocket, peers } = await loadModules();
-    const authority = await host.peers.application();
+    const authority = await host.peers.application({ signal });
     await peer.verifyAuthorityBundle(authority, pinned);
     signal?.throwIfAborted();
     // No create:true, exported browser signer, plaintext epoch key or fallback
@@ -83,7 +83,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
   for (const limit of [maxResultBytes, maxEventBytes]) {
     if (!Number.isSafeInteger(limit) || limit < 1024 || limit > 1024 * 1024) fail('BRIDGE_CONFIGURATION_INVALID');
   }
-  const configured = new Map(), opened = new Map(), lifetime = new AbortController();
+  const configured = new Map(), opened = new Map(), available = new Map(), lifetime = new AbortController();
   let closed = false, closing;
   for (const input of applications) {
     if (!input || !ID.test(input.id) || configured.has(input.id) || typeof input.openSession !== 'function') {
@@ -111,6 +111,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
             || typeof owned.session.close !== 'function' || typeof owned.control?.application !== 'function') {
             fail('BRIDGE_SESSION_INVALID', 'An application requires its own matching native session and verified control participant');
           }
+          available.set(entry.id, owned);
           return owned;
         } catch (error) { await owned?.session?.close?.(); throw error; }
       });
@@ -219,6 +220,21 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       return bounded({ applicationId: id, deviceId: session.deviceId, status: session.status,
         participation: session.participation?.status ?? null }, maxResultBytes);
     },
+    async readRevision(id) {
+      const { session } = await access(entryFor(id)), view = await session.readView();
+      try { selected(session, view.revision); return bounded(view.revision, 16 * 1024); }
+      finally { await view.release(); }
+    },
+    // This synchronous fence follows a fresh authorized native read. No I/O or
+    // await may be inserted between this check and invoking an external effect.
+    assertSelection(id, revision) {
+      entryFor(id);
+      const session = available.get(id)?.session;
+      if (!session || session.status.phase === 'closed') fail('BRIDGE_SESSION_UNAVAILABLE');
+      if (!revision || revision.applicationId !== id || revision.historyId !== session.historyId)
+        fail('BRIDGE_REVISION_SCOPE_MISMATCH');
+      selected(session, revision);
+    },
     async query(id, name, input) {
       const entry = entryFor(id), { session } = await access(entry);
       permitted(entry, session.describe(), 'queries', name);
@@ -227,22 +243,41 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       selected(session, result.revision);
       return bounded(result, maxResultBytes);
     },
-    async command(id, name, input, { operationId, basedOn } = {}) {
+    async command(id, name, input, { operationId, basedOn, beforeSubmit, onSaved } = {}) {
       const entry = entryFor(id), { session } = await access(entry, 'writer');
       permitted(entry, session.describe(), 'commands', name);
       text(operationId, 'operation ID', 256);
       if (basedOn !== undefined && (!basedOn || typeof basedOn !== 'object' || Array.isArray(basedOn)
         || basedOn.applicationId !== id || basedOn.historyId !== session.historyId)) fail('BRIDGE_REVISION_SCOPE_MISMATCH');
+      if ([beforeSubmit, onSaved].some(callback => callback !== undefined && typeof callback !== 'function')) fail('BRIDGE_INPUT_INVALID');
       const metadata = { operationId, ...(basedOn === undefined ? {} : { basedOn: bounded(basedOn, 16 * 1024) }) };
+      const value = bounded(input, 64 * 1024, 'BRIDGE_INPUT_TOO_LARGE');
       // Native command prepares and durably saves one signed attempt. Return its
       // real state promptly; an HTTP deadline never creates another attempt.
-      const operation = await session.command(name, bounded(input, 64 * 1024, 'BRIDGE_INPUT_TOO_LARGE'), metadata);
+      await beforeSubmit?.();
+      lifetime.signal.throwIfAborted();
+      const operation = await session.command(name, value, metadata);
+      await onSaved?.();
       return bounded(await operation.get(), maxResultBytes);
     },
     async operation(id, operationId) {
       text(operationId, 'operation ID', 256);
       const { session } = await access(entryFor(id));
       return bounded(await session.operations.get(operationId), maxResultBytes);
+    },
+    async inspectOperation(id, operationId) {
+      text(operationId, 'operation ID', 256);
+      const entry = entryFor(id), { session } = await access(entry);
+      const inspected = await session.operations.inspect(operationId);
+      if (inspected === null) return null;
+      const { state, attempt } = inspected, header = attempt?.payload?.header;
+      if (!header || header.applicationId !== id || header.operationId !== operationId || header.author !== session.deviceId
+        || state?.operationId !== operationId || state.attemptId !== attempt.id) fail('BRIDGE_OPERATION_IDENTITY_INVALID');
+      permitted(entry, session.describe(), 'commands', header.command);
+      return bounded({ state, deviceId: session.deviceId, identity: { attemptId: attempt.id, applicationId: header.applicationId,
+        historyId: session.historyId, operationId: header.operationId, author: header.author, command: header.command,
+        commandVersion: header.commandVersion, basedOn: header.basedOn, coreDigest: header.coreDigest,
+        generation: header.generation } }, maxResultBytes);
     },
     readEvents: read,
     async getEvent(id, sourceEventId, options) { return (await findEvent(id, sourceEventId, options)).found; },
@@ -301,7 +336,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       closing = (async () => {
         const results = await Promise.allSettled([...opened.values()]);
         const shutdown = await Promise.allSettled(results.filter(result => result.status === 'fulfilled').map(result => result.value.session.close()));
-        opened.clear();
+        opened.clear(); available.clear();
         const failed = shutdown.find(result => result.status === 'rejected');
         if (failed) throw failed.reason;
       })();
