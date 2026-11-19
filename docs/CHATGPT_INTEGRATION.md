@@ -11,7 +11,7 @@ a supported ChatGPT subscription remain separate prerequisites.
 | Need | Implemented route | Required next action or fallback |
 | --- | --- | --- |
 | Read or change an app from a tool-capable chat | OAuth-protected remote MCP queries and commands | Link the account, approve exact application permissions, then inspect `describe_application` before calling a domain command. |
-| An app request should start work later | MCP Events subscriptions with durable delivery | Use a supported Work chat or dot, explicitly subscribe to an allowed event, and verify its callback. Keep the bridge running. |
+| An app request should start work later | MCP Events subscriptions with durable delivery | Use a supported Work chat or dot, explicitly subscribe to an allowed event, and verify its callback. Keep the application coordinator available. |
 | Continue the current mounted UI interaction | Assistance card attached to `get_assistance_status` | Choose **Send to ChatGPT** in a compatible MCP Apps host; the card sends only the request reference on that gesture. |
 | The current chat has no event subscription feature | Manual request-reference handoff plus tools | Copy the application/request identifiers into the chat. Read current context through the linked tools before replying. |
 | The agent can run local processes | Native session tools or `tendril --session` | Keep that enrolled process available, or resume its exact device store on the next invocation. |
@@ -36,14 +36,14 @@ promising support on another surface.
    supplies a concrete request/reply domain, browser Worker and dedicated bridge
    enrollment commands. A new HTML release cannot change an existing immutable
    application definition.
-2. Enroll a **separate bridge device** with reader access and only the necessary
-   writer access. Preserve its device store and pinned authority across restart.
-   It needs no publisher, administrator, recovery or coordinator grant. A native
-   reader can read the application history; outbound topic filters do not create
-   a narrower cryptographic grant.
-3. Follow the [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). Use the
-   [first-party OAuth service](INTEGRATION_OAUTH.md) with the same exact
-   Tendriller `/mcp` resource and the actual callback shown by the intended client.
+2. Follow the [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md) to configure
+   the exact Tendriller `/mcp` resource and register the callback shown by the
+   intended client. Provision the Worker’s dedicated device key as part of setup.
+3. Enroll that device with reader access and only the necessary writer access.
+   The page Durable Object retains the device. Keep publishing, administration,
+   recovery and coordination on their existing authorized devices. The reader
+   grant permits application history reads. Outbound event filters govern which
+   metadata is sent in notifications.
 4. Link the OAuth account in the client. The integration verifies issuer,
    audience, signature, expiry and scopes. The host account adapter also
    introspects the token and binds all application checks to that exact live
@@ -67,14 +67,11 @@ See [authentication implementation](https://github.com/werg/tendriller/blob/mast
 and the provider's [OAuth requirements](https://developers.openai.com/plugins/build/auth)
 for exact issuer/resource metadata, PKCE and redirect configuration.
 
-The generated systemd and Caddy files describe the remaining installation:
-the existing native coordinator remains a separate process, and the Node bridge
-uses its own enrolled reader/writer store. The release builder and preparation
-commands do not install or start production services. Local preflight verifies
-release hashes, runtime paths and private storage; online preflight additionally
-checks host registration, current native selection and least-privilege grants.
-It never submits a command, grants consent or sends an event. A successful
-preflight is readiness evidence, not a live ChatGPT round trip.
+The page Durable Object wakes for tool calls and delivery work. Keep the
+application's coordinator available so it can serve selected history and
+accept signed commands. For operators hosting a custom adapter outside
+Tendriller, the [standalone setup](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/deploy/README.md)
+documents its own process and preflight checks.
 
 ## Discover and use the tools
 
@@ -217,7 +214,7 @@ store concurrently from several processes.
 | `OPERATION_ID_CONFLICT` or uncertain command | Inspect the original operation and retained inputs. Preserve identity for exact retry; review any new intent separately. |
 | `OPERATION_IDENTITY_UNCONFIRMED` | Retry the original request with its exact operation ID and inputs; status is withheld until the native saved identity is verified. |
 | `HOST_ACCOUNT_MAPPING_INCOMPLETE`, OAuth configuration or migration 503 | Apply the additive OAuth migration and check the exact resource, bridge credential, application IDs and registered callbacks using preflight. |
-| Management sign-in expired or host logout | Start `/connections/login` again. A new browser session does not replace revoked OAuth grants or application consent. |
+| Management sign-in expired or host logout | Open `/connections` again and complete Tendriller sign-in. Review any expired or revoked grants separately. |
 | `REQUEST_TOO_LARGE` | Reduce the bounded remote graph or use the public CLI; an operator may configure up to 12 MiB after considering host limits. |
 | Missing publication tool, publisher denial or changed release context | Configure the real approval lookup, use the enrolled publisher and prepare a new review for changed context. |
 | `STORE_DECRYPTION_FAILED`, journal/outbox capacity | Restore the matching private key/store or archive reviewed receipts deliberately. Do not clear pending identities to make a retry succeed. |
@@ -225,7 +222,9 @@ store concurrently from several processes.
 
 ## Verification and completion
 
-Run the separate Node 24 gate, `npm run test:chatgpt`. The integration's tests
+The server test `integration-oauth.public.test.ts` covers the Worker route,
+including eviction, callback retry and signed reply. The separate Node 24 gate,
+`npm run test:chatgpt`, covers the shared and standalone integration APIs. Its tests
 exercise OAuth verification, consent, callbacks, durable delivery and recovery,
 MCP schemas, widget behavior, lifecycle handoff and Workspace Agent transport.
 Supplying the pinned public Chronolog package additionally runs real native
