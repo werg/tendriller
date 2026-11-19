@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryStore } from '../store.mjs';
-import { createSubscriptions, selectedTail } from '../subscriptions.mjs';
+import { createSubscriptions, selectedTail, subscriptionIdentity } from '../subscriptions.mjs';
 
 const owner = { id: 'owner', issuer: 'https://issuer.example' };
 const request = () => ({ name: 'assistant.help_requested', arguments: { application_id: 'app-a' },
@@ -108,4 +108,48 @@ test('refresh preserves recovery review across expiry, while a fresh activation 
   await fresh.store.transaction(state => { state.jobs = { pending: { subscriptionId: old.id, state: 'queued' } }; });
   fresh.advance(11); await fresh.service.subscribe(owner, input);
   assert.equal((await fresh.store.read()).jobs.pending.state, 'cancelled');
+});
+
+test('failed refresh preserves an inactive recovery pause until explicit review', async () => {
+  let failChallenge = false;
+  const f = fixture({ send: async (_url, { body }) => {
+    if (failChallenge) throw Error('CALLBACK_UNAVAILABLE');
+    return { status: 200, body: JSON.stringify({ challenge: JSON.parse(body).challenge }) };
+  } });
+  const input = request(), first = await f.service.subscribe(owner, input);
+  await f.store.transaction(state => {
+    const sub = state.subscriptions[first.id];
+    Object.assign(sub, { active: false, pausedReason: 'recovery_review_required', recoveryRevision: { generation: 'g2' },
+      recoveryVersion: 1, sourceCursor: 'reviewed-later', stopReason: 'callback_gone' });
+    delete sub.secret;
+  });
+  failChallenge = true;
+  await assert.rejects(f.service.subscribe(owner, input), /Callback verification failed/);
+  let sub = (await f.store.read()).subscriptions[first.id];
+  assert.equal(sub.active, false); assert.equal(sub.pausedReason, 'recovery_review_required');
+  assert.equal(sub.pendingToken, undefined); assert.equal(sub.pendingUntil, undefined);
+  failChallenge = false; await f.service.subscribe(owner, input);
+  sub = (await f.store.read()).subscriptions[first.id];
+  assert.equal(sub.active, true); assert.equal(sub.pausedReason, 'recovery_review_required');
+  assert.equal(sub.sourceCursor, 'reviewed-later'); assert.deepEqual(sub.recoveryRevision, { generation: 'g2' });
+  assert.equal(f.captures(), 1, 'A failed refresh cannot turn paused history into a new baseline');
+});
+
+test('trusted OAuth grant metadata survives delivery and refresh without changing identity or quota', async () => {
+  const checked = [], f = fixture({ maxPerOwner: 1, authorize: async principal => { checked.push(principal); } });
+  const input = request(), old = { ...owner, oauthGrantId: 'grant-old', scopes: ['events:subscribe'], accessToken: 'never-persist' };
+  const first = await f.service.subscribe(old, input);
+  assert.equal(first.id, subscriptionIdentity(owner, input.name, input.arguments, input.delivery.url));
+  assert.equal((await f.service.list(old)).events.length, 4);
+  assert.equal(checked.every(principal => principal.oauthGrantId === 'grant-old'), true);
+  await f.store.transaction(state => { state.subscriptions[first.id].sourceCursor = 'pending-history'; });
+  const fresh = { ...old, oauthGrantId: 'grant-new', scopes: ['applications:read', 'events:subscribe'] };
+  const refreshed = await f.service.subscribe(fresh, input);
+  assert.equal(refreshed.id, first.id);
+  const stored = (await f.store.read()).subscriptions[first.id];
+  assert.deepEqual(stored.owner, { ...owner, oauthGrantId: 'grant-new', scopes: fresh.scopes });
+  assert.equal(stored.sourceCursor, 'pending-history'); assert.equal(f.captures(), 1);
+  await assert.rejects(f.service.subscribe({ ...fresh, oauthGrantId: 'grant-third' }, { ...input,
+    delivery: { ...input.delivery, url: 'https://second.example/callback' } }), { code: 'SUBSCRIPTION_LIMIT' });
+  assert.equal(JSON.stringify(await f.store.read()).includes('never-persist'), false);
 });

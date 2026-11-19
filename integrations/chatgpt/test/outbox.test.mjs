@@ -134,6 +134,36 @@ test('a late 410 cannot stop a newly activated subscription with the same versio
   assert.equal((await f.store.read()).subscriptions['sub-a'].active, true);
 });
 
+test('a stale lease 410 cannot stop the same activation after a reclaimed delivery succeeds', async () => {
+  const staleResponse = gate(); let attempts = 0;
+  const f = fixture({ send: async () => {
+    if (++attempts === 1) { staleResponse.enter(); await staleResponse.wait; return { status: 410 }; }
+    return { status: 202 };
+  } });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const stale = f.outbox.dispatchDue({ limit: 1 }); await staleResponse.entered;
+  f.advance(30_001); await f.outbox.dispatchDue({ limit: 1 });
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'accepted');
+  staleResponse.release(); await stale;
+  const state = await f.store.read();
+  assert.equal(state.subscriptions['sub-a'].active, true);
+  assert.equal(state.subscriptions['sub-a'].version, 1);
+  assert.equal(Object.values(state.jobs)[0].state, 'accepted');
+  assert.equal(Object.values(state.jobs)[0].responseStatus, 202);
+});
+
+test('a revoked stored OAuth grant prevents background delivery without retaining bearer tokens', async () => {
+  const f = fixture({ authorize: async principal => {
+    if (principal.oauthGrantId === 'revoked-grant') throw Object.assign(Error('revoked'), { status: 403 });
+  } });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].owner = { ...owner, oauthGrantId: 'active-grant', scopes: ['events:subscribe'] }; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].owner.oauthGrantId = 'revoked-grant'; });
+  await f.outbox.dispatchDue();
+  assert.equal(f.sent.length, 0);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'cancelled');
+});
+
 test('old activation jobs are cancelled before being claimed or sent', async () => {
   const f = fixture();
   await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });

@@ -48,10 +48,18 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       owner: sub.owner, sourceEventId: event.sourceEventId, sourceRevision: event.revision, sourceKind,
       envelope: value, state: 'queued', attempts: 0, createdAt: clock(), nextAttemptAt: clock() };
   }
-  async function finish(eventId, lease, update) {
+  async function finish(eventId, lease, update, stopSubscription) {
     await store.transaction(state => {
       const current = state.jobs?.[eventId];
-      if (current?.state === 'sending' && current.lease === lease) Object.assign(current, update, { updatedAt: clock(), lease: null, leaseUntil: null });
+      if (current?.state === 'sending' && current.lease === lease) {
+        Object.assign(current, update, { updatedAt: clock(), lease: null, leaseUntil: null });
+        const subscription = stopSubscription && state.subscriptions?.[current.subscriptionId];
+        if (subscription && subscription.version === stopSubscription.version && sameActivation(current, subscription)) {
+          subscription.active = false; subscription.stoppedAt = clock(); subscription.stopReason = 'callback_gone'; subscription.version++;
+          delete subscription.secret; delete subscription.previousSecret;
+          delete subscription.pendingToken; delete subscription.pendingUntil;
+        }
+      }
       else if (current?.lease === lease && update.state === 'accepted' && ['cancelled', 'abandoned'].includes(current.state)) {
         // Disconnect can stop future attempts, but cannot retract an HTTP
         // request already sent. Keep a late positive receipt without reopening.
@@ -117,15 +125,10 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       else if (disposition === 'retry') await finish(job.eventId, job.lease, { state: job.attempts >= maxAttempts ? 'failed' : 'retry',
         nextAttemptAt: clock() + Math.min(300000, 1000 * 2 ** job.attempts), responseStatus: response.status, reason: 'transient_callback_failure' });
       else {
-        await finish(job.eventId, job.lease, { state: 'failed', reason: disposition === 'gone' ? 'callback_gone' : 'callback_rejected', responseStatus: response.status });
-        if (disposition === 'gone') await store.transaction(state => {
-          const current = state.subscriptions[sub.id];
-          if (current?.version === sub.version && sameActivation(job, current)) {
-            current.active = false; current.stoppedAt = clock(); current.stopReason = 'callback_gone'; current.version++;
-            delete current.secret; delete current.previousSecret;
-            delete current.pendingToken; delete current.pendingUntil;
-          }
-        });
+        // Settle and stop atomically under the exact sending lease. A reclaimed
+        // worker's late 410 cannot deactivate a newer successful delivery.
+        await finish(job.eventId, job.lease, { state: 'failed', reason: disposition === 'gone' ? 'callback_gone' : 'callback_rejected', responseStatus: response.status },
+          disposition === 'gone' ? sub : undefined);
       }
     } catch (error) {
       const forbidden = error.status === 401 || error.status === 403 || ['BRIDGE_GRANT_REQUIRED', 'CALLBACK_ADDRESS_BLOCKED', 'CALLBACK_REDIRECT'].includes(error.code);
