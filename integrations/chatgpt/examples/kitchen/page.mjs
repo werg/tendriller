@@ -3,6 +3,7 @@ import { serveWorkerWebRtcConnections } from '@chronolog/peer-session/webrtc';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createAssistanceClient } from './client.mjs';
 import { visibleAssistanceStatus } from './projection.mjs';
+import { createLiveView } from './helpers/live-view.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => {
@@ -10,12 +11,13 @@ const configuration = await fetch(new URL('./configuration.json', import.meta.ur
   return response.json();
 });
 const storageKey = `tendriller-kitchen-${configuration.applicationId}:pending`;
-let worker, rtc, session, client, stopped, snapshot, busy = false;
+let worker, rtc, session, client, liveView, busy = false, operationRead = 0;
 const pending = () => JSON.parse(localStorage.getItem(storageKey) || 'null');
 function controls() {
   const unresolved = Boolean(pending());
   $('#ask').disabled = $('#select-step').disabled = !session || busy || unresolved;
-  $('#inspect').disabled = $('#retry').disabled = !session || busy || !unresolved;
+  $('#inspect').disabled = !session || busy || !(unresolved || localStorage.getItem(`${storageKey}:last-operation`));
+  $('#retry').disabled = !session || busy || !unresolved;
   $('#create-device').disabled = Boolean(session) || busy || unresolved;
   $('#connect').disabled = Boolean(session) || busy;
   $('#close').disabled = !session;
@@ -55,16 +57,27 @@ function render(value) {
   if (value.currentStep) $('#data-status').textContent = `Selected step: ${value.currentStep.text}. ${value.requests.length} request(s) in this history.`;
   else $('#data-status').textContent = `${value.requests.length} request(s) in this history. Choose a cooking step before asking.`;
 }
-async function refresh() {
-  snapshot = await session.query('kitchenContext', null);
-  render(snapshot.value);
+async function inspectOperation() {
+  const currentSession = session, read = ++operationRead;
   const record = await client.inspect();
+  if (session !== currentSession || read !== operationRead) return;
   if (record) {
     $('#operation').textContent = `Operation ${record.pending.operationId}: ${record.state?.status ?? 'outcome unknown'}${record.state?.outcome ? ` (${record.state.outcome})` : ''}. Peer retention is separate.`;
     if (record.state?.status === 'applied') await client.acknowledge();
+  } else {
+    const operationId = localStorage.getItem(`${storageKey}:last-operation`);
+    if (operationId) {
+      const state = await currentSession.operations.get(operationId);
+      if (session !== currentSession || read !== operationRead) return;
+      $('#operation').textContent = `Last operation ${operationId}: ${state?.status ?? 'not visible'}${state?.outcome ? ` (${state.outcome})` : ''}. Peer retention is separate.`;
+    }
   }
   controls();
-  return snapshot;
+}
+async function refresh() {
+  const result = await liveView.refresh();
+  await inspectOperation();
+  return result;
 }
 function waitFor(type) {
   return new Promise((resolve, reject) => {
@@ -107,27 +120,25 @@ $('#connect').onclick = async () => {
     window.tendril.signals.install(session.signals);
     client = createAssistanceClient(session, {
       loadPending: pending,
-      savePending(value) { localStorage.setItem(storageKey, JSON.stringify(value)); controls(); },
+      savePending(value) {
+        if (value) localStorage.setItem(`${storageKey}:last-operation`, value.operationId);
+        localStorage.setItem(storageKey, JSON.stringify(value)); controls();
+      },
     });
     session.participation.onStatus(status => {
       $('#connection').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}. Keep an authorized native participant running.`;
     });
     $('#editor').disabled = false;
-    stopped = new AbortController();
-    void (async () => {
-      try {
-        for await (const change of session.changes({ signal: stopped.signal })) {
-          if (change.kind === 'recovery') {
-            $('#recovery').hidden = false;
-            $('#recovery').textContent = 'Selected history changed. Inspect uncertain or abandoned commands before explicitly reapplying work.';
-          }
-          await refresh();
-        }
-      } catch (error) { if (!stopped.signal.aborted) report(error); }
-    })();
+    liveView = createLiveView(session, { query: 'kitchenContext', input: null,
+      onSnapshot(snapshot) { render(snapshot.value); void inspectOperation().catch(report); },
+      onRecovery() {
+        $('#recovery').hidden = false;
+        $('#recovery').textContent = 'Selected history changed. Inspect uncertain or abandoned commands before explicitly reapplying work.';
+      }, onError: report,
+    });
     await refresh();
   } catch (error) {
-    report(error); stopped?.abort();
+    report(error); liveView?.close();
     try { await session?.close(); } catch { /* Keep the original error. */ }
     rtc?.close(); worker?.terminate(); session = undefined;
     $('#editor').disabled = true;
@@ -159,7 +170,7 @@ $('#ask-form').onsubmit = event => {
 $('#inspect').onclick = () => refresh().catch(report);
 $('#retry').onclick = () => act(() => client.resume());
 $('#close').onclick = async () => {
-  stopped?.abort(); await session?.close(); rtc?.close(); worker?.terminate();
+  liveView?.close(); await session?.close(); rtc?.close(); worker?.terminate();
   session = undefined; $('#editor').disabled = true;
   $('#connection').textContent = 'Connection closed. Reload to reconnect the same device.';
   controls(); $('#create-device').disabled = $('#connect').disabled = true;
