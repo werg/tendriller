@@ -19,6 +19,7 @@ export function projectKitchen(events) {
       requests.set(p.requestId, { requestId: p.requestId, requestEventId: event.id,
         sourceOperationId: event.operationId, author: event.author, kind: p.kind,
         question: p.question, cookingStepId: p.cookingStepId, contextRevision: p.contextRevision,
+        capturedStepEventId: currentStep?.stepId === p.cookingStepId ? currentStep.eventId : null,
         expiresAtMs: p.expiresAtMs, answer: null, replies: [], conflicts: [], cancelled: false });
       continue;
     }
@@ -44,7 +45,8 @@ export function projectKitchen(events) {
     }
   }
   return { currentStep, requests: [...requests.values()].map(request => {
-    const changedStep = currentStep !== null && currentStep.stepId !== request.cookingStepId;
+    const changedStep = currentStep !== null && (currentStep.stepId !== request.cookingStepId ||
+      currentStep.eventId !== request.capturedStepEventId);
     const status = request.cancelled ? 'cancelled' : changedStep ? 'stale'
       : request.conflicts.length ? 'conflicting' : request.answer ? 'answered' : 'requested';
     return { ...request, status, currentStepId: currentStep?.stepId ?? null, changedStep };
