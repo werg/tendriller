@@ -207,3 +207,24 @@ test('recovery pauses persist before slow notification authorization and invalid
   assert.equal((await f.store.read()).subscriptions['sub-a'].pausedReason, 'recovery_review_required');
   assert.equal((await f.store.read()).subscriptions.recovery.recoveryNoticeError, 'RECOVERY_NOTICE_INVALID');
 });
+
+test('disconnect preserves a late webhook receipt while keeping the delivery stopped', async () => {
+  const delivery = gate();
+  const f = fixture({ send: async () => { delivery.enter(); await delivery.wait; return { status: 202 }; } });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await delivery.entered;
+  await f.store.transaction(state => {
+    delete state.subscriptions['sub-a'];
+    Object.assign(Object.values(state.jobs)[0], { state: 'cancelled', reason: 'unsubscribed' });
+  });
+  let job = (await f.outbox.status(owner, 'app-a')).jobs[0];
+  assert.equal(job.deliveryMayHaveOccurred, true);
+  delivery.release(); await dispatch;
+  job = (await f.outbox.status(owner, 'app-a')).jobs[0];
+  assert.equal(job.state, 'cancelled');
+  assert.equal(job.responseStatus, 202);
+  assert.equal(job.receiptAfterStop, true);
+  assert.equal(job.deliveryMayHaveOccurred, false);
+  assert.equal(typeof job.acceptedAt, 'number');
+  assert.equal((await f.store.read()).subscriptions['sub-a'], undefined);
+});

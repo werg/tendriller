@@ -52,6 +52,12 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
     await store.transaction(state => {
       const current = state.jobs?.[eventId];
       if (current?.state === 'sending' && current.lease === lease) Object.assign(current, update, { updatedAt: clock(), lease: null, leaseUntil: null });
+      else if (current?.lease === lease && update.state === 'accepted' && ['cancelled', 'abandoned'].includes(current.state)) {
+        // Disconnect can stop future attempts, but cannot retract an HTTP
+        // request already sent. Keep a late positive receipt without reopening.
+        Object.assign(current, { acceptedAt: update.acceptedAt, responseStatus: update.responseStatus,
+          receiptAfterStop: true, updatedAt: clock(), lease: null, leaseUntil: null });
+      }
     });
   }
   async function one(signal) {
@@ -98,6 +104,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
           return null;
         }
         current.leaseUntil = clock() + leaseMs;
+        current.lastDeliveryAttemptAt = clock();
         return subscription;
       });
       if (!sub) return true;
@@ -235,6 +242,8 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
         .sort((a, b) => b.createdAt - a.createdAt).slice(0, 100)
         .map(job => ({ eventId: job.eventId, sourceEventId: job.sourceEventId, state: job.state, attempts: job.attempts,
           reason: job.reason ?? null, acceptedAt: job.acceptedAt ?? null,
+          responseStatus: job.responseStatus ?? null, receiptAfterStop: job.receiptAfterStop === true,
+          deliveryMayHaveOccurred: job.lastDeliveryAttemptAt != null && job.acceptedAt == null,
           responseOperationId: job.responseOperationId ?? null, responseObservedAt: job.responseObservedAt ?? null }));
       return { subscriptions, jobs, receiptMeans: 'Webhook accepted is receipt only; inspect the application response operation separately.' };
     },
