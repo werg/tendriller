@@ -19,8 +19,22 @@ export interface RequestInput {readonly interactionId?:string;readonly kind:stri
 export interface SubmitOptions {readonly operationId?:string;readonly basedOn?:PeerRevision}
 export interface ClaimInput {readonly taskId:string;readonly slotId:string;readonly claimId?:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly expectedEpoch?:number;readonly taskVersion?:number}
 export interface ClaimFence {readonly taskId:string;readonly slotId:string;readonly claimEpoch:number;readonly generation:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly taskVersion?:number}
-export interface CollaborationOperation {
+export interface CollaborationIdentities {
+  readonly operationId:string;readonly interactionId?:string;readonly taskId?:string;readonly slotId?:string;
+  readonly claimId?:string;readonly resultId?:string;readonly actionId?:string;readonly threadId?:string;readonly messageId?:string;
+}
+export interface CollaborationSubmission<Identity extends keyof CollaborationIdentities=never> {
+  readonly command:string;readonly input:Readonly<Record<string,unknown>>;readonly source:Readonly<Record<string,unknown>>;
+  readonly basedOn?:PeerRevision;readonly identities:CollaborationIdentities&Readonly<Record<Identity,string>>;
+}
+/** Metadata is immutable even when the original transport error is extensible. */
+export interface CollaborationSubmissionFailure extends Error {
+  readonly operationReference:OperationReference;readonly operationIdentities:CollaborationIdentities;
+  readonly operationSubmission:CollaborationSubmission;
+}
+export interface CollaborationOperation<Identity extends keyof CollaborationIdentities=never> {
   readonly operationId:string;readonly reference:OperationReference;
+  readonly identities:CollaborationIdentities&Readonly<Record<Identity,string>>;readonly submission:CollaborationSubmission<Identity>;
   get():Promise<OperationState|null>;applied(options?:{signal?:AbortSignal}):Promise<AppliedResult>;
   shared(options?:{signal?:AbortSignal}):Promise<readonly SignedRetainedCoverage[]>;
 }
@@ -70,15 +84,15 @@ export declare function createCollaborationDefinition(options?:{id?:string;versi
 export type CollaborationSession = ApplicationSession|WorkerApplicationSession;
 export interface CollaborationClient<Session extends CollaborationSession=CollaborationSession> {
   readonly session:Session;readonly endpoint:ApplicationEndpointBinding|undefined;readonly runId:string;readonly source:Readonly<Record<string,unknown>>;
-  request(input:RequestInput,options?:SubmitOptions):Promise<CollaborationOperation>;
-  claim(input:ClaimInput,options?:SubmitOptions):Promise<CollaborationOperation>;
-  rebind(input:ClaimInput&{expectedEpoch:number},options?:SubmitOptions):Promise<CollaborationOperation>;
-  handoff(input:{taskId:string;slotId:string;actionId?:string;expectedEpoch:number;assignee:string;reason:string},options?:SubmitOptions):Promise<CollaborationOperation>;
-  result(input:ClaimFence&{resultId?:string;outcome?:'succeeded'|'failed';content:unknown},options?:SubmitOptions):Promise<CollaborationOperation>;
-  cancel(input:{taskId:string;actionId?:string;expectedVersion:number;reason:string},options?:SubmitOptions):Promise<CollaborationOperation>;
-  acknowledgeCancel(input:ClaimFence&{actionId?:string},options?:SubmitOptions):Promise<CollaborationOperation>;
-  finalize(input:{taskId:string;actionId?:string;expectedVersion:number;resultIds:readonly string[];content:unknown;allowPartial?:boolean},options?:SubmitOptions):Promise<CollaborationOperation>;
-  message(input:{threadId:string;messageId?:string;text:string;inReplyTo?:string},options?:SubmitOptions):Promise<CollaborationOperation>;
+  request(input:RequestInput,options?:SubmitOptions):Promise<CollaborationOperation<'interactionId'|'taskId'>>;
+  claim(input:ClaimInput,options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'claimId'>>;
+  rebind(input:ClaimInput&{expectedEpoch:number},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'claimId'>>;
+  handoff(input:{taskId:string;slotId:string;actionId?:string;expectedEpoch:number;assignee:string;reason:string},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'actionId'>>;
+  result(input:ClaimFence&{resultId?:string;outcome?:'succeeded'|'failed';content:unknown},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'resultId'>>;
+  cancel(input:{taskId:string;actionId?:string;expectedVersion:number;reason:string},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'actionId'>>;
+  acknowledgeCancel(input:ClaimFence&{actionId?:string},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'actionId'>>;
+  finalize(input:{taskId:string;actionId?:string;expectedVersion:number;resultIds:readonly string[];content:unknown;allowPartial?:boolean},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'actionId'>>;
+  message(input:{threadId:string;messageId?:string;text:string;inReplyTo?:string},options?:SubmitOptions):Promise<CollaborationOperation<'threadId'|'messageId'>>;
   inspect(taskId:string):Promise<CollaborationQuery<CollaborationTaskSnapshot>>;snapshot():Promise<CollaborationQuery<CollaborationSnapshot>>;
   waitForOutcome(taskId:string,options?:{signal?:AbortSignal}):Promise<CollaborationTaskSnapshot&{readonly revision:PeerRevision}>;
   inspectOperation(reference:OperationReference):Promise<{readonly state:OperationState;readonly attempt:SignedAttempt}|null>;

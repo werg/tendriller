@@ -8,6 +8,13 @@ declare const attached: WorkerApplicationSession;
 serveBrowserOwner({load:async()=>({profileId:'retained',openSession:async()=>({session:native})})});
 const nativeClient=createCollaborationClient({session:native});
 const attachedClient=createCollaborationClient({session:attached});
+const generated=await attachedClient.request({kind:'review',title:'Review',input:null,target:{kind:'signer',deviceId:'key'},slots:[]});
+const interactionId:string=generated.identities.interactionId;
+await attachedClient.waitForOutcome(interactionId);
+// @ts-expect-error generated identity metadata is immutable
+generated.identities.interactionId='replacement';
+// @ts-expect-error the exact submitted input is readonly
+generated.submission.input.interactionId='replacement';
 const snapshot=await attachedClient.snapshot();
 const reference=snapshot.value.tasks[0]?.operation;
 if(reference){const attempt:string=reference.attemptId;const history:string=reference.historyId;await nativeClient.inspectOperation(reference);void attempt;void history;}

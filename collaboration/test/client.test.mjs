@@ -19,6 +19,72 @@ test('uncertain submission retains the original signer reference before entering
   assert.equal(retained.reference.historyId,'history');
 });
 
+test('generated request identities and submitted input remain immutable across an uncertain boundary', async () => {
+  let release,entered,submitted,retained;
+  const waiting=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  const session={applicationId:'app',historyId:'history',deviceId:signer,query(){},async command(name,input,options){
+    submitted={name,input,options};assert.equal(retained.context.identities.interactionId,input.interactionId);
+    assert.ok(Object.isFrozen(input.slots[0]));entered();await gate;
+    return Object.freeze({async get(){return{status:'saved',operationId:options.operationId,attemptId:'1'.repeat(64),generation:'2'.repeat(64)};},
+      async applied(){return{status:'applied'};},async shared(){return[];}});
+  }};
+  const client=createCollaborationClient({session,store:{retainOperation(reference,context){retained={reference,context};}}});
+  const input={kind:'review',title:'Review',input:{proposal:1},target:{kind:'signer',deviceId:signer},slots:[{slotId:'main',eligibleSigners:[signer]}]};
+  const promise=client.request(input,{operationId:'original'});await waiting;
+  input.slots[0].eligibleSigners.push('b'.repeat(64));input.input.proposal=2;release();
+  const operation=await promise;
+  assert.match(operation.identities.interactionId,/^[0-9a-f-]{36}$/u);
+  assert.equal(operation.identities.taskId,operation.identities.interactionId);
+  assert.equal(operation.identities.operationId,'original');assert.equal(operation.submission.command,'collab.request');
+  assert.equal(operation.submission,retained.context);assert.equal(operation.submission.input,submitted.input);
+  assert.deepEqual(submitted.input.slots[0].eligibleSigners,[signer]);assert.equal(submitted.input.input,'{"proposal":1}');
+  assert.equal(operation.reference.attemptId,'1'.repeat(64));assert.ok(Object.isFrozen(operation));
+  assert.throws(()=>{operation.identities.interactionId='replacement';},TypeError);
+  assert.throws(()=>{operation.submission.input.slots[0].eligibleSigners.push('c'.repeat(64));},TypeError);
+});
+
+test('uncertain commands expose every generated identity even when a transport error is frozen', async () => {
+  const cases=[
+    ['request',{kind:'review',title:'Review',input:null,target:{kind:'signer',deviceId:signer},slots:[{slotId:'main',eligibleSigners:[signer]}]},'interactionId'],
+    ['claim',{taskId:'task',slotId:'main'},'claimId'],
+    ['rebind',{taskId:'task',slotId:'main',expectedEpoch:1},'claimId'],
+    ['handoff',{taskId:'task',slotId:'main',expectedEpoch:1,assignee:signer,reason:'Review'},'actionId'],
+    ['result',{taskId:'task',slotId:'main',claimEpoch:1,generation:'generation',content:{}},'resultId'],
+    ['cancel',{taskId:'task',expectedVersion:1,reason:'Stopped'},'actionId'],
+    ['acknowledgeCancel',{taskId:'task',slotId:'main',claimEpoch:1,generation:'generation'},'actionId'],
+    ['finalize',{taskId:'task',expectedVersion:1,resultIds:['result'],content:{}},'actionId'],
+    ['message',{threadId:'thread',text:'hello'},'messageId'],
+  ];
+  for(const [method,input,identity] of cases){
+    let retained,submitted;const lost=Object.freeze(Object.assign(Error('response lost'),{code:'TIMEOUT'}));
+    const client=createCollaborationClient({session:{applicationId:'app',historyId:'history',deviceId:signer,query(){},async command(name,value){
+      submitted=value;assert.equal(retained.context.identities[identity],value[identity]);throw lost;
+    }},store:{retainOperation(reference,context){retained={reference,context};}}});
+    await assert.rejects(client[method](input),error=>{
+      assert.equal(error.code,'TIMEOUT');assert.equal(error.cause,lost);
+      assert.equal(error.operationReference.historyId,'history');
+      assert.equal(error.operationIdentities.operationId,error.operationReference.operationId);
+      assert.equal(error.operationIdentities[identity],submitted[identity]);
+      assert.equal(error.operationSubmission,retained.context);assert.ok(Object.isFrozen(error.operationIdentities));
+      assert.throws(()=>{error.operationIdentities={};},TypeError);
+      assert.throws(()=>{error.operationSubmission.input[identity]='replacement';},TypeError);
+      return true;
+    });
+  }
+});
+
+test('a local post-save failure retains the signed attempt and generated identity', async () => {
+  let writes=0;
+  const session={applicationId:'app',historyId:'history',deviceId:signer,query(){},async command(name,input,options){
+    return{async get(){return{status:'saved',operationId:options.operationId,attemptId:'1'.repeat(64),generation:'2'.repeat(64)};}};
+  }};
+  const client=createCollaborationClient({session,store:{retainOperation(){if(++writes===2)throw Object.assign(Error('storage unavailable'),{code:'LOCAL_STORAGE_UNAVAILABLE'});}}});
+  await assert.rejects(client.message({threadId:'thread',text:'hello'},{operationId:'original'}),error=>{
+    assert.equal(error.code,'LOCAL_STORAGE_UNAVAILABLE');assert.equal(error.operationReference.attemptId,'1'.repeat(64));
+    assert.equal(error.operationIdentities.messageId,error.operationSubmission.input.messageId);return true;
+  });
+});
+
 test('operation inspection uses the original signer and retry verifies the signed attempt scope', async () => {
   const other='b'.repeat(64),attemptId='1'.repeat(64),generation='2'.repeat(64),calls=[],retried=[];
   const session={applicationId:'app',historyId:'verified-history',deviceId:signer,command(){},query(){},

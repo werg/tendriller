@@ -1,5 +1,27 @@
 import { canonicalJson, CollaborationError, identifier, operationReference, signerId } from './protocol.mjs';
 
+function immutableJson(value) {
+  const copy = JSON.parse(canonicalJson(value, 65536));
+  function freeze(item) {
+    if (item && typeof item === 'object') { for (const child of Object.values(item)) freeze(child); Object.freeze(item); }
+    return item;
+  }
+  return freeze(copy);
+}
+function submissionFailure(cause, reference, submission) {
+  const metadata = { operationReference: reference, operationIdentities: submission.identities, operationSubmission: submission };
+  // Preserve normal transport error identity/codes. Nonextensible errors and
+  // primitive rejections still retain their cause and the original identities.
+  const reusable = cause instanceof Error && Object.isExtensible(cause) &&
+    Object.keys(metadata).every(key => Object.getOwnPropertyDescriptor(cause, key)?.configurable !== false);
+  const error = reusable ? cause : new Error(typeof cause?.message === 'string' ? cause.message : String(cause), { cause });
+  if (!reusable) for (const key of ['name', 'code', 'scope', 'retrySafe', 'nextAction'])
+    if (cause?.[key] !== undefined) Object.defineProperty(error, key, { value: cause[key], enumerable: key !== 'name' });
+  Object.defineProperties(error, Object.fromEntries(Object.entries(metadata).map(([key, value]) =>
+    [key, { value, enumerable: true, writable: false, configurable: false }])));
+  return error;
+}
+
 /** Ordinary operations and journals remain owned by the supplied session. */
 export function createCollaborationClient({ session, endpoint = session?.endpoint, runId, store } = {}) {
   if (!session || typeof session.command !== 'function' || typeof session.query !== 'function') throw new CollaborationError('SESSION_REQUIRED');
@@ -15,22 +37,28 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
   function active() { if (detached) throw new CollaborationError('ENDPOINT_STALE'); }
   async function submit(name, input, options = {}) {
     active(); const operationId = identifier(options.operationId ?? crypto.randomUUID(), 'operation');
-    const reference = operationReference(session, operationId);
-    const retainedContext = JSON.parse(canonicalJson({ command: name, input,
-      ...(options.basedOn ? { basedOn: options.basedOn } : {}), source }, 65536));
-    // Reference persistence is before the first uncertain submission boundary.
-    store?.retainOperation(reference, retainedContext);
+    let reference = operationReference(session, operationId);
+    const identities = { operationId, ...Object.fromEntries([
+      'interactionId', 'taskId', 'slotId', 'claimId', 'resultId', 'actionId', 'threadId', 'messageId',
+    ].filter(key => input[key] !== undefined).map(key => [key, identifier(input[key], key)])),
+    ...(name === 'collab.request' ? { taskId: input.interactionId } : {}) };
+    const submission = immutableJson({ command: name, input, identities,
+      ...(options.basedOn ? { basedOn: options.basedOn } : {}), source });
     try {
-      const operation = await session.command(name, input, { ...options, operationId });
+      // Persist the generated identities and original immutable input before the
+      // first uncertain boundary. The owner receives that exact input snapshot.
+      store?.retainOperation(reference, submission);
+      const operation = await session.command(name, submission.input, { ...options, operationId,
+        ...(submission.basedOn ? { basedOn: submission.basedOn } : {}) });
       const saved = await operation.get().catch(() => null);
-      const fullReference = operationReference(session, operationId, saved);
-      store?.retainOperation(fullReference, retainedContext);
+      reference = operationReference(session, operationId, saved);
+      store?.retainOperation(reference, submission);
       // Avoid mutating a frozen public handle or manufacturing an applied outcome.
-      return Object.freeze({ operationId, reference: fullReference,
+      return Object.freeze({ operationId, reference, identities: submission.identities, submission,
         get: (...args) => operation.get(...args), applied: (...args) => operation.applied(...args),
         shared: (...args) => operation.shared(...args),
       });
-    } catch (error) { error.operationReference = reference; throw error; }
+    } catch (error) { throw submissionFailure(error, reference, submission); }
   }
   const fence = input => ({ ...input, runId: input.runId ?? currentRun,
     endpointIncarnation: input.endpointIncarnation ?? incarnation });
