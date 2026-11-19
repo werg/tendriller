@@ -9,13 +9,18 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run build:artifacts` | Build all four public archives |
 | `npm run dev` | Build assets and run the local account/page host |
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
+| `npm run test:chatgpt` | On Node 24: optional integration, deployment, callback and native-session checks; set the pinned public session package for zero-skip native coverage |
+| `npm run test:chatgpt:host` | After a build on Node 24: actual packed OAuth host and Node account/browser integration, using isolated synthetic browser accounts |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
 
 ## Boundaries
 
-Chronolog owns application execution, signing identity, local bytes, command attempts and replication. The Worker embeds only portable participant/control verification. It has no application extension registry, SQL executor or second data model. Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
+Chronolog owns application execution, signing identity, local bytes, command attempts and replication. The ordinary host path uses portable participant/control verification.
+The optional Cloudflare assistant uses the exact public events-only session and
+one trusted compiled application adapter. It has no arbitrary code loader or
+second data model. See [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
 
 The browser Chronolog participant is independent of database activation. Its protocol
 identity and verified control metadata use small browser-native storage; OPFS, database

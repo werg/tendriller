@@ -1,0 +1,56 @@
+name: ChatGPT integration
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatgpt-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: Qualified ChatGPT deployment bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+          # Qualify the source head, not GitHub's temporary PR merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          path: chronolog
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build exact public packages and qualify the deployment release
+        working-directory: core
+        shell: bash
+        run: |
+          node integrations/chatgpt/deploy/build-release.mjs \
+            --core-source "$GITHUB_WORKSPACE/core" \
+            --core-ref "$(git rev-parse HEAD)" \
+            --chronolog-source "$GITHUB_WORKSPACE/chronolog" \
+            --output "$RUNNER_TEMP/chatgpt-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tendriller-chatgpt-release
+          path: ${{ runner.temp }}/chatgpt-release/release/
+          include-hidden-files: true
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chatgpt-integration-qualification
+          path: ${{ runner.temp }}/chatgpt-release/build/logs/
+          include-hidden-files: true
+          if-no-files-found: ignore

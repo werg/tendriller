@@ -5,11 +5,14 @@ import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expir
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
+import { integrationPageAccess } from './accounts/integration-access';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from './abuse/notices';
+import { AssistantWake, type AssistantWork } from './assistant-wake';
+import { assistantEnabled, assistantRequest, runAssistantDelivery } from './assistant';
 import { requireWritesOpen } from './service-state';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
@@ -46,6 +49,11 @@ export class Tendril extends DurableObject<Env> {
   private transactions: Transactions;
   private alarms: DeadlineAlarm;
   private handlingAlarm = false;
+  private assistantTail: Promise<unknown> = Promise.resolve();
+  private readonly assistantWork = new AssistantWake({
+    read: () => this.db.get<AssistantWork | null>('assistant_work', null),
+    write: value => this.db.set('assistant_work', value),
+  }, () => this.now());
   contentOperations = new Map<string, Promise<unknown>>();
   private ownerClaimTail: Promise<void> = Promise.resolve();
   /** Test hook: milliseconds added to the clock. */
@@ -104,6 +112,19 @@ export class Tendril extends DurableObject<Env> {
     await admitPageTraffic(this.env, this.tid, this.db.get<string | null>("owner_account", null));
   }
 
+  serializeAssistant<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.assistantTail.then(work);
+    this.assistantTail = result.catch(() => {});
+    return result;
+  }
+
+  hasDeferredAssistantWork(): boolean { return this.assistantWork.deferred(); }
+
+  async wakeAssistant(): Promise<void> {
+    const due = this.assistantWork.notify();
+    await this.alarms.ensure(Math.max(Date.now() + 1, due - this.skew));
+  }
+
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const kind = url.pathname.split("/")[1];
@@ -154,6 +175,13 @@ export class Tendril extends DurableObject<Env> {
           files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
+      if (kind === 'assistant') {
+        const original = new URL(req.headers.get('x-assistant-url') ?? '');
+        const headers = new Headers(req.headers);
+        headers.delete('x-assistant-url');
+        return await assistantRequest(this, new Request(original, { method: req.method, headers, body: req.body, signal: req.signal }));
+      }
+      if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
           name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
@@ -645,6 +673,10 @@ export class Tendril extends DurableObject<Env> {
     if (peerDue !== null) times.push(peerDue);
     const relayDue = nextRelayDeadline(this);
     if (relayDue !== null) times.push(relayDue);
+    if (assistantEnabled(this)) {
+      const assistantDue = this.assistantWork.deadline();
+      if (assistantDue !== null) times.push(assistantDue);
+    }
     if (lifetimeChangePending(this)) times.push(now + 5000);
     else if (expires !== null) times.push(expires);
     return this.alarms.ensure(Math.max(Math.min(...times) - this.skew, Date.now() + 1));
@@ -663,6 +695,10 @@ export class Tendril extends DurableObject<Env> {
       if (due !== null && due <= this.now() && !lifetimeChangePending(this)) { await this.destroy(); return; }
       expirePeers(this);
       await expireRelays(this);
+      if (assistantEnabled(this)) try { await this.assistantWork.run(observe => runAssistantDelivery(this, observe)); }
+      catch (error) {
+        console.error('Assistant delivery deferred', error instanceof Error ? error.name : 'Error');
+      }
       if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
       const expires = this.expiresAt();
       if (expires !== null && expires <= this.now() && !lifetimeChangePending(this)) await this.destroy();

@@ -66,13 +66,17 @@ and recovery choices, not a silent identity reset.
 ## An existing ChatGPT conversation
 
 A user saying “connect this app to this conversation” has asked for an additional
-host integration. Neither OAuth ownership nor the Tendriller MCP endpoint provides
-that handoff. The MCP endpoint administers host/control operations; application
-tools execute in the owned Chronolog session.
+host integration. The ordinary Tendriller MCP endpoint administers host/control
+operations; application tools execute in the owned Chronolog session. The
+optional [Cloudflare assistant](CLOUDFLARE_ASSISTANT.md) adds same-origin
+OAuth-protected application tools, explicit MCP Events subscriptions and a
+mounted assistance card. Use its route table and
+`get_integration_options` to establish the actual available capabilities.
 
-This release does not provide or qualify a universal ChatGPT conversation wake
-adapter. Establish whether the actual agent host has a supported mechanism before
-promising replies after its current turn/process ends. The
+These routes do not provide or qualify a universal ChatGPT conversation wake
+adapter. OAuth ownership alone does not subscribe a conversation. Establish
+whether the actual agent host supports the selected route before promising
+replies after its current turn/process ends. The
 [resuming-agent cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/connect-resuming-agent/COOKBOOK.md)
 requires a real host admission/wake mechanism and probes across turn completion.
 Its historical bridge links are not an active implementation to install.
