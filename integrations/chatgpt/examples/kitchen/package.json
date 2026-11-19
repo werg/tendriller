@@ -1,0 +1,15 @@
+{
+  "name": "tendriller-kitchen-assistance",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "create": "node setup.mjs create",
+    "init": "node setup.mjs init",
+    "enroll": "node setup.mjs enroll",
+    "bridge:key": "node setup.mjs bridge-key",
+    "enroll:bridge": "node setup.mjs enroll-bridge",
+    "build": "node build.mjs",
+    "peer": "node session.mjs"
+  }
+}
