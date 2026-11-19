@@ -104,6 +104,8 @@ export declare function consumerCursor(scope:ConsumerScope,sequence:number):Cons
 export declare function validateConsumerCursor(cursor:unknown,scope:ConsumerScope,options?:{retainedFrom?:number}):ConsumerCursor;
 export interface ParticipantPresence {readonly expiresAt:number;readonly phase?:string;readonly [key:string]:unknown}
 export interface ParticipantEntry extends RecipientEntry {
+  /** Verified reader membership; it does not authorize execution or recipient selection. */
+  readonly canRead?:boolean;
   readonly kind?:'person'|'agent';readonly label?:string;readonly deviceLabel?:string;readonly viewLabel?:string;
   readonly route?:string;readonly presence?:ParticipantPresence|null;
 }

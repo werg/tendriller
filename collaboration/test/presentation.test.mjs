@@ -15,6 +15,10 @@ test('participant counts use stable identities and distinct endpoint incarnation
 test('fresh presence cannot restore revoked or missing application authority',()=>{
   const base={kind:'agent',deviceId:'a'.repeat(64),presence:{expiresAt:200,phase:'reachable'}};
   assert.equal(participantModel([{...base,authorized:false}],{now:100}).participants[0].canRequest,false);
+  assert.equal(participantModel([{...base,authorized:false}],{now:100}).participants[0].availability,'not-enrolled');
+  const reader=participantModel([{...base,canRead:true,authorized:false}],{now:100}).participants[0];
+  assert.equal(reader.availability,'read-only');assert.equal(reader.canRequest,false);
+  assert.equal(participantModel([{...base,canRead:true,authorized:false,revoked:true}],{now:100}).participants[0].availability,'revoked');
   assert.equal(participantModel([{...base,authorized:true,revoked:true}],{now:100}).participants[0].availability,'revoked');
   assert.equal(participantModel([{...base,authorized:true}],{now:300}).participants[0].availability,'unknown');
   assert.equal(participantModel([{...base,authorized:true}],{now:100}).participants[0].availability,'on-demand');

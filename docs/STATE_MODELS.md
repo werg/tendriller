@@ -257,7 +257,7 @@ the events starter:
 | --- | --- |
 | Create this browser's identity deliberately | `createBrowserIdentity({ workerUrl, profileId })` returns only the public key under the exclusive profile fence |
 | Enroll the verified owner's browser | Stop the native owner; run `npm run enroll -- PUBLIC_KEY` from the SQL directory; then start `npm run peer` |
-| Attach the existing enrolled device | `openBrowserOwner({ workerUrl, profileId, applicationId, definitionId, definitionVersion, context })` returns a SharedWorker or fenced elected-owner facade |
+| Attach the existing enrolled device | `openBrowserOwner({ workerUrl, profileId, applicationId, definitionId, definitionVersion, requiresDedicatedWorker: true, context })` returns a fenced elected-owner facade for synchronous OPFS SQL |
 | Install runtime access | Install `createApplicationBackend({ id: session.applicationId, session })` and `session.signals` as in the first-app page |
 | Leave one view | `attachment.detach()` closes only that view's requests, streams and captured reads |
 
@@ -266,6 +266,11 @@ opens no SQL engine for protocol-only attachment or signals. On final owner
 shutdown it closes the session database handles before releasing the external
 OPFS pool. A fresh browser receives epoch keys over authenticated encrypted
 participation; page configuration never supplies a plaintext key.
+
+The qualified Chromium build exposes the required synchronous OPFS APIs in a
+dedicated Worker, not SharedWorker. `requiresDedicatedWorker: true` selects that
+route before opening storage. An explicitly forced shared mode fails with
+`OWNER_STORAGE_UNSUPPORTED`; it must not silently choose a different database.
 
 The native SQL peer also uses the private supervisor. Ordinary CLI calls attach
 to a running `npm run peer`; deliberate one-off setup/publication calls use

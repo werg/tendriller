@@ -141,7 +141,11 @@ Do not await a top-level configuration fetch before installing the owner service
 The page calls `openBrowserOwner` from
 `@tendriller/core/collaboration/browser`, supplying the worker URL, retained
 profile, immutable application/definition identity and its view/document context.
-This uses a SharedWorker when available, with a fenced dedicated-Worker fallback.
+Events applications use SharedWorker when available, with a fenced dedicated
+Worker fallback. SQL/WASM applications pass `requiresDedicatedWorker: true` to
+select the dedicated route required by their synchronous OPFS storage. See the
+matching [SQL composition](STATE_MODELS.md); forcing an incompatible shared mode
+fails before opening storage.
 All attached views share the signing journal. The tutorial uses the encrypted
 Worker-native relay so an owner's connectivity does not depend on a particular
 page's RTC helper. Applications may deliberately compose a different qualified

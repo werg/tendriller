@@ -11,7 +11,7 @@ export function participantModel(entries, { selfEndpoint, now = Date.now() } = {
   const participants = unique.map(entry => {
     const presence = entry.presence && entry.presence.expiresAt > now ? entry.presence : null;
     const route = entry.route ?? 'unknown';
-    const availability = entry.revoked ? 'revoked' : !entry.authorized ? 'not-enrolled'
+    const availability = entry.revoked ? 'revoked' : !entry.authorized ? entry.canRead === true ? 'read-only' : 'not-enrolled'
       : !presence ? 'unknown' : presence.phase === 'catching-up' ? 'catching-up'
         : entry.kind === 'agent' && !['native-loop','configured-trigger'].includes(route) ? 'on-demand' : presence.phase ?? 'reachable';
     return { ...entry, presence, availability, thisView: sameEndpoint(entry.endpoint,selfEndpoint),

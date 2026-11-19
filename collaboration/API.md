@@ -63,3 +63,6 @@ Panel updates retain controls by signer/binding/endpoint incarnation, preserving
 the existing recipient's focus during presence updates and reorder. An explicit
 incarnation change replaces the stale control; revocation disables selection.
 Repeated advertisements of the same endpoint do not increase participant counts.
+Verified reader membership (`canRead: true` with `authorized: false`) is displayed
+as read-only and cannot be selected to execute a request. Expiring presence cannot
+restore revoked rights or turn an unenrolled participant into a reader.

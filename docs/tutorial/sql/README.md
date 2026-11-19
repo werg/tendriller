@@ -20,7 +20,11 @@ a separate browser UI or claim that installing an events archive qualifies SQL.
 
 The native peer runs a private supervisor. Normal CLI invocations attach to it;
 use `--mode own` for an explicit one-off command while the owner is stopped.
-Browser documents use `openBrowserOwner` against this directory's bundled
-`worker.mjs`. SharedWorker or a fenced elected Worker opens one SQL store, and
-detaching a document does not close sibling views. The lazy WASM/VFS lifetime
-is owned by that worker, with database handles closed before pool cleanup.
+Browser documents use `openBrowserOwner` with `requiresDedicatedWorker: true`
+against this directory's bundled `worker.mjs`. Synchronous OPFS APIs are not
+available in SharedWorker in the qualified browser. Automatic mode therefore
+elects a dedicated Worker under an exclusive Web Lock; forcing shared mode
+returns `OWNER_STORAGE_UNSUPPORTED` before opening storage. All documents attach
+to that one SQL owner, and detaching a document does not close sibling views.
+The lazy WASM/VFS lifetime belongs to the owner, with database handles closed
+before pool cleanup.
