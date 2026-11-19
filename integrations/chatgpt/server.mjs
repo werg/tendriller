@@ -44,10 +44,15 @@ async function bodyJson(request, maximum) {
 
 export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
   authorizeAccountAccess, resource, lifecycle, workspaceAgent, management, onSubscriptionsChanged = () => {},
-  allowedOrigins = [], maxRequestBytes = 262144, maxOperations = 10000, maxProfiles = 10000, clock = Date.now } = {}) {
+  allowedOrigins = [], maxRequestBytes = 262144, maxOperations = 10000, maxProfiles = 10000,
+  requestsPerMinute = 120, clock = Date.now } = {}) {
   if (!auth?.authenticate || !bridge || !consent || !store || typeof authorizeAccountAccess !== 'function')
     fail('SERVER_CONFIGURATION_REQUIRED', 'MCP requires authentication, current account access, explicit consent and an enrolled bridge');
+  if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1024 || maxRequestBytes > 12 * 1024 * 1024 ||
+      ![maxOperations, maxProfiles, requestsPerMinute].every(value => Number.isSafeInteger(value) && value > 0))
+    fail('SERVER_CONFIGURATION_REQUIRED', 'Configure positive bounded request and journal limits');
   const resourceUrl = new URL(resource), origins = new Set([resourceUrl.origin, ...allowedOrigins]);
+  const rateWindows = new Map();
   async function access(principal, applicationId, kind = 'read', name) {
     if (await authorizeAccountAccess(principal, applicationId) !== true) fail('ACCOUNT_ACCESS_DENIED', 'This account cannot access the application', { status: 403 });
     return consent.assertAccess(principal, { applicationId, kind, ...(name === undefined ? {} : { name }) });
@@ -206,6 +211,12 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     let principal;
     try { principal = await auth.authenticate(request); }
     catch (error) { return json(safeError(error), error.status ?? 401, { 'WWW-Authenticate': error.challenge ?? auth.challenge?.() ?? 'Bearer' }); }
+    const rateKey = digest([principal.issuer, principal.id]), now = clock();
+    for (const [key, window] of rateWindows) if (window.until <= now) rateWindows.delete(key);
+    const window = rateWindows.get(rateKey) ?? { count: 0, until: now + 60000 };
+    if (!rateWindows.has(rateKey) && rateWindows.size >= maxProfiles) return json({ error: 'rate_limit_capacity' }, 503);
+    window.count++; rateWindows.set(rateKey, window);
+    if (window.count > requestsPerMinute) return json({ error: 'rate_limited' }, 429, { 'Retry-After': String(Math.ceil((window.until - now) / 1000)) });
     if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405, { Allow: 'POST' });
     if (request.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json') return json({ error: 'unsupported_media_type' }, 415);
     let message;

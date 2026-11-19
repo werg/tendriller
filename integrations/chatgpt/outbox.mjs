@@ -243,6 +243,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       const subscriptions = Object.values(state.subscriptions ?? {}).filter(sub => sub.applicationId === applicationId && sameOwner(principal, sub.owner))
         .map(sub => ({ id: sub.id, name: sub.name, active: live(sub, clock()), expiresAt: sub.expiresAt ?? null,
           pausedReason: sub.pausedReason ?? null, observedAt: sub.observedAt ?? null, recoveryAt: sub.recoveryAt ?? null,
+          stopReason: sub.stopReason ?? null, observerError: sub.observerError ?? null, observerErrorAt: sub.observerErrorAt ?? null,
           recoveryRevision: structuredClone(sub.recoveryRevision ?? null),
           recoveryNoticeError: sub.recoveryNoticeError ?? null, recoveryNoticeQueuedAt: sub.recoveryNoticeQueuedAt ?? null }));
       const jobs = Object.values(state.jobs ?? {}).filter(job => job.applicationId === applicationId && sameOwner(principal, job.owner) &&
