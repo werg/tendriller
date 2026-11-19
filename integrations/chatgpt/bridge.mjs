@@ -131,7 +131,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
     const grants = authority.controls?.at(-1)?.payload?.grants;
     const grant = Array.isArray(grants) ? grants.find(value => value.publicKey === owned.session.deviceId) : undefined;
     if (grant?.reader !== true || (right === 'writer' && grant.writer !== true)) fail('BRIDGE_GRANT_REQUIRED', `A current ${right} device grant is required`);
-    return owned;
+    return { ...owned, grant };
   }
   function permitted(entry, description, kind, name) {
     text(name, `${kind} name`, 128);
@@ -222,8 +222,9 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
         queries: description.queries.filter(value => entry.queries.has(value.name)) }, maxResultBytes);
     },
     async getStatus(id) {
-      const { session } = await access(entryFor(id));
+      const { session, grant } = await access(entryFor(id));
       return bounded({ applicationId: id, deviceId: session.deviceId, status: session.status,
+        grant: Object.fromEntries(['reader', 'writer', 'coordinator', 'recovery', 'administrator', 'publisher'].map(name => [name, grant[name] === true])),
         participation: session.participation?.status ?? null }, maxResultBytes);
     },
     async readRevision(id) {
