@@ -88,6 +88,8 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
           expiresAt: now + Math.min(params.ttlMs ?? ttlMs, maxTtlMs),
           sourceCursor: (canReuse ? current.sourceCursor : baseline.cursor) ?? null,
           sourceRevision: (canReuse ? current.sourceRevision : baseline.revision) ?? null,
+          pausedReason: canReuse ? current.pausedReason ?? null : null,
+          recoveryRevision: canReuse ? current.recoveryRevision ?? null : null,
           previousSecret: canReuse && previous.secret !== secret ? { secret: previous.secret, expiresAt: now + 300000 } :
             canReuse && previous.previousSecret?.expiresAt > now ? previous.previousSecret : null,
         };
