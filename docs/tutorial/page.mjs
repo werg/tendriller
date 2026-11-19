@@ -225,7 +225,8 @@ async function prepareEvidence({ candidate, reviewed, operationId, signal }) {
     signal.throwIfAborted();
     if (pending) throw Error('Another operation became pending; inspect it before submitting evidence.');
     if (source.candidateId !== candidate.id || source.sha256 !== candidate.sha256 ||
-        source.reference.applicationId !== session.applicationId) throw Error('The reviewed source no longer matches this application and candidate.');
+        source.reference.applicationId !== session.applicationId || source.reference.historyId !== session.historyId)
+      throw Error('The reviewed source no longer matches this application, history and candidate.');
     const input = { text, source, capturedRevision };
     $('#operation-id').value = operationId; writeLocal('operation', operationId);
     savePending({ id: operationId, command: 'addEvidence', input, basedOn: candidate.context.revision });

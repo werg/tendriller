@@ -3,7 +3,8 @@ import { defineApplication, defineCommand, defineQuery, emit, program } from '@c
 const reference = { type: 'object', properties: {
   profile: { type: 'string', enum: ['peer-content-v1'] },
   applicationId: { type: 'string', minLength: 64, maxLength: 64 },
-  historyId: { type: 'string', minLength: 64, maxLength: 64 },
+  // Histories have bounded names (for example notes-<UUID>), not digest IDs.
+  historyId: { type: 'string', minLength: 1, maxLength: 128 },
   id: { type: 'string', minLength: 64, maxLength: 64 },
   epoch: { type: 'integer', minimum: 0 }, bytes: { type: 'integer', minimum: 1, maximum: 8388608 },
   mediaType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp'] },
@@ -36,7 +37,7 @@ export const definition = defineApplication({
       prepare({ text, source, capturedRevision }) {
         // The public input schema supports bounded strings, not arbitrary JSON
         // Schema regular expressions. Validate the digest format explicitly.
-        if (![source.sha256, source.reference.applicationId, source.reference.historyId, source.reference.id]
+        if (![source.sha256, source.reference.applicationId, source.reference.id]
           .every(value => /^[a-f0-9]{64}$/.test(value))) throw Error('EVIDENCE_SOURCE_INVALID');
         return program(emit('note', { text, source, capturedRevision }));
       },
