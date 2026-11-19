@@ -286,8 +286,14 @@ CHRONOLOG_SESSION_PACKAGE=/absolute/private/native-test-package npm run test:cha
 ```
 
 The [ChatGPT integration workflow](../../.github/workflows/chatgpt-integration.yml)
-uses Node 24, that pinned source, the extracted public artifact and the same
-test command. It retains logs, archive hash and provenance. The reference local
+uses Node 24 and the [release builder](deploy/README.md) to build clean exact
+source revisions, run the native-enabled integration suite with zero skips,
+exercise the packed host/account flow, and check runtime imports. Its
+`tendriller-chatgpt-release` artifact contains the complete release, pinned
+public packages, bridge template, deployment tools, hash manifest and host
+qualification report. `chatgpt-integration-qualification` retains the build and
+test logs. Installation and private configuration remain explicit operator
+steps; no generated private credentials enter either artifact. The reference local
 artifact built from that source had SHA-256
 `673a6ecdf6c6741721efbb250f711f3acf7fa9784624ad5bcbf6596e5a00996c`;
 record each actual build's hash instead of identifying tested bytes only by a
@@ -295,7 +301,8 @@ branch name. No production credentials or remote deployment are used by this gat
 
 | Check | Evidence | Explicit remaining boundary |
 | --- | --- | --- |
-| OAuth/consent | Real generated-key JWT checks, bounded JWKS behavior, ownership/isolation/revocation and management CSRF | A configured live identity-provider/account-linking flow |
+| OAuth/consent | Actual packed host and Node adapter with D1, signed tokens, browser handoff, current owner/grant checks, CSRF and encrypted restart state | Live GitHub/Google sign-in and actual ChatGPT account linking |
+| Deployment | Exact-source release builder, verified public packages, private credential generation, dedicated bridge staging and bounded preflight | Installing the services, DNS/HTTPS and configuring the actual client callback |
 | Bridge/native kitchen | Actual SQLite peers, signed control/attempts, authenticated in-process exchange, query/reply, exact retry and reopen | Deployed host, Internet RTC/relay and actual published browser behavior |
 | Outbox/subscriptions | Encrypted restart state, callback signing/challenge, authorization races, retry/lease fences and explicit recovery | Actual client callback and subscribed model turn |
 | Lifecycle | Real public SDK requests and native publisher signatures against synthetic signed host state | Human owner claim, deployed approval UI and production publication |
