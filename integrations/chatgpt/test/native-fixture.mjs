@@ -17,7 +17,7 @@ export async function loadNativePackage(packagePath = process.env.CHRONOLOG_SESS
 }
 
 /** Two real native stores, signed test authority, and a public control exchange. */
-export async function createNativeFixture(definition, { applicationId = 'a'.repeat(64), historyId = 'native-bridge-test' } = {}) {
+export async function createNativeFixture(definition, { applicationId = 'a'.repeat(64), historyId = 'native-bridge-test', publisher = false } = {}) {
   const { peer, native, packagePath } = await loadNativePackage();
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-native-'));
   const cleanup = []; let closed = false;
@@ -45,7 +45,8 @@ export async function createNativeFixture(definition, { applicationId = 'a'.repe
       executionManifestDigest: peer.bytesToHex(artifacts.executionManifestDigest), schemaDigest: null }, hostSigner);
     const control = await peer.signControlRevision({ applicationId, profile: descriptor.payload.profile,
       policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0, keyDigest: await peer.bytesDigest(epochKey), recoveryFloor: null,
-      grants: devices.map(device => peer.participantGrant(device.identity.publicKey, { administrator: true, dataRole: 'member' })) }, hostSigner);
+      grants: devices.map((device, index) => peer.participantGrant(device.identity.publicKey, {
+        administrator: true, dataRole: 'member', publisher: publisher && index === 0 })) }, hostSigner);
     const registry = await peer.createGenerationRegistry({ store: new peer.MemoryBytesStore(), descriptor, controls: [control], signer: hostSigner });
     const select = async (device, base, transitionId) => {
       const bundle = await registry.read();
@@ -55,9 +56,25 @@ export async function createNativeFixture(definition, { applicationId = 'a'.repe
         base, transitionId, reason: base === null ? 'create' : 'takeover' }, device.identity));
     };
     await select(devices[0], null, 'initial');
+    const publications = await peer.createPublicationRegistry({ store: new peer.MemoryBytesStore(), authority: () => registry.read() });
     const exchange = async request => {
-      assert.equal(request.facet, 'control'); assert.equal(request.action, 'read');
-      return peer.createParticipantResponse(request, await registry.read());
+      let result;
+      if (request.facet === 'control' && request.action === 'read') result = await registry.read();
+      else if (request.facet === 'publication' && request.action === 'read') {
+        const saved = await publications.read();
+        const selected = request.payload.id ? saved.find(value => value.id === request.payload.id) : saved.at(-1);
+        result = selected ? { publication: selected, version: selected.payload.revision + 1 } : null;
+      } else if (request.facet === 'publication' && request.action === 'publish') {
+        const { publication, assets } = request.payload;
+        for (const file of publication.payload.files) {
+          const asset = assets.find(value => value.hash === file.hash);
+          assert(asset, 'A publication must contain every referenced asset');
+          await peer.verifyPublicationAsset(file, Buffer.from(asset.bytes, 'base64'));
+        }
+        const selected = await publications.publish(publication);
+        result = { publication: selected, version: selected.payload.revision + 1 };
+      } else throw Error('Unexpected native test control request');
+      return peer.createParticipantResponse(request, result);
     };
     const open = async (index, resume = false) => {
       if (closed) throw Error('Native test fixture is closed');
@@ -69,6 +86,6 @@ export async function createNativeFixture(definition, { applicationId = 'a'.repe
       return { session, control: session.connectControlParticipant({ exchange }) };
     };
     const track = resource => { cleanup.push(() => resource.close()); return resource; };
-    return { peer, native, packagePath, directory, paths, devices, descriptor, registry, exchange, open, select, track, close };
+    return { peer, native, packagePath, directory, paths, devices, descriptor, registry, publications, exchange, open, select, track, close };
   } catch (error) { await close(); throw error; }
 }
