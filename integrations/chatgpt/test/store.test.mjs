@@ -45,3 +45,29 @@ test('multiple store connections preserve updates and no encryption key is gener
     assert.deepEqual(await a.read(), { a: 1, b: 2 });
   } finally { await a.close(); await b.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('private assets stay outside the metadata record and share atomic admission and a byte budget', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tendriller-blobs-'));
+  const path = join(dir, 'state.sqlite'), key = randomBytes(32), bytes = Buffer.from('private-reviewed-asset');
+  for (const persistent of [false, true]) {
+    let store = persistent ? openDeliveryStore({ path, key, maxBlobBytes: bytes.length }) : createMemoryStore({}, { maxBlobBytes: bytes.length });
+    try {
+      await assert.rejects(store.transaction((state, blobs) => { blobs.put('asset:1', bytes); state.review = 'wrong'; throw Error('rollback'); }), /rollback/);
+      assert.equal(await store.readBlob('asset:1'), null); assert.deepEqual(await store.read(), {});
+      await store.transaction((state, blobs) => { blobs.put('asset:1', bytes); state.review = { asset: 'asset:1' }; });
+      await store.transaction((_state, blobs) => blobs.put('asset:1', bytes));
+      await assert.rejects(store.transaction((state, blobs) => { blobs.put('asset:2', bytes); state.review = 'wrong'; }), { code: 'STORE_BLOB_CAPACITY' });
+      await assert.rejects(store.transaction((_state, blobs) => blobs.put('asset:1', Buffer.from('changed'))), { code: 'STORE_BLOB_CONFLICT' });
+      assert.deepEqual(await store.read(), { review: { asset: 'asset:1' } });
+      assert.deepEqual(await store.readBlob('asset:1'), bytes);
+      if (persistent) {
+        await store.close(); assert.equal((await readFile(path)).includes(bytes), false);
+        store = openDeliveryStore({ path, key, maxBlobBytes: bytes.length });
+        assert.deepEqual(await store.readBlob('asset:1'), bytes);
+        await store.transaction(state => { state.cursor = 'advanced'; });
+        assert.equal(JSON.stringify(await store.read()).includes(bytes.toString()), false);
+      }
+    } finally { await store.close(); }
+  }
+  await rm(dir, { recursive: true, force: true });
+});
