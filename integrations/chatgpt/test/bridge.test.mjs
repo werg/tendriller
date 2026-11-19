@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createNativeSessionOpener, createSessionBridge } from '../bridge.mjs';
 import { createNativeFixture, loadNativePackage } from './native-fixture.mjs';
+import { selectedTail } from '../subscriptions.mjs';
 
 const id = 'a'.repeat(64), deviceId = 'b'.repeat(64), generation = 'c'.repeat(64);
 const revision = { applicationId: id, historyId: 'bridge-test', generation,
@@ -81,6 +82,32 @@ test('command passes original retry identity and native revision unchanged, retu
   await assert.rejects(f.bridge.command(id, 'say', 'different', { operationId: 'once' }), /OPERATION_CONFLICT/);
   await assert.rejects(f.bridge.command(id, 'say', 'hello', { operationId: 'other', basedOn: { ...revision, applicationId: '0'.repeat(64) } }), { code: 'BRIDGE_REVISION_SCOPE_MISMATCH' });
   assert.equal((await f.bridge.operation(id, 'once')).operationId, 'once');
+  await f.bridge.close();
+});
+
+test('trusted command callbacks reauthorize before submission and confirm only a native saved identity', async () => {
+  const f = fixture(), order = [], original = f.session.command;
+  f.session.command = async (...args) => {
+    order.push('native-command'); const operation = await original(...args);
+    return { get: async () => { order.push('native-state'); return operation.get(); } };
+  };
+  const options = { operationId: 'once', beforeSubmit: async () => { order.push('authorization'); },
+    onSaved: async () => { order.push('confirmed'); } };
+  await f.bridge.command(id, 'say', 'hello', options);
+  assert.deepEqual(order, ['authorization', 'native-command', 'confirmed', 'native-state']);
+  order.length = 0;
+  await assert.rejects(f.bridge.command(id, 'say', 'hello', { ...options,
+    beforeSubmit: async () => { throw Error('CONSENT_REVOKED'); } }), /CONSENT_REVOKED/);
+  assert.deepEqual(order, []);
+  await assert.rejects(f.bridge.command(id, 'say', 'different', options), /OPERATION_CONFLICT/);
+  assert.deepEqual(order, ['authorization', 'native-command']);
+  order.length = 0;
+  await assert.rejects(f.bridge.command(id, 'say', 'retained', { ...options, operationId: 'lost-reply',
+    onSaved: async () => { throw Error('JOURNAL_REPLY_LOST'); } }), /JOURNAL_REPLY_LOST/);
+  assert.equal((await f.bridge.operation(id, 'lost-reply')).status, 'saved');
+  order.length = 0;
+  await f.bridge.command(id, 'say', 'retained', { ...options, operationId: 'lost-reply' });
+  assert.deepEqual(order, ['authorization', 'native-command', 'confirmed', 'native-state']);
   await f.bridge.close();
 });
 
@@ -197,6 +224,18 @@ test('native opener resumes the existing device and composes maintained particip
   await owned.session.close();
 });
 
+test('closing a bridge aborts the initial public host authority request', { timeout: 2000 }, async () => {
+  let enter;
+  const started = new Promise(resolve => { enter = resolve; });
+  const openSession = createNativeSessionOpener({ definition: {}, devicePath: '/private/existing.sqlite', pinnedDescriptor: {},
+    host: { peers: { exchange() {}, application({ signal } = {}) {
+      enter(); return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    } } }, loadModules: async () => ({}) });
+  const bridge = createSessionBridge({ applications: [{ id, openSession }] });
+  const rejected = assert.rejects(bridge.getStatus(id), { code: 'BRIDGE_CLOSED' });
+  await started; await bridge.close(); await rejected;
+});
+
 // Run against the exact, independently packed public artifact, not source-private
 // modules. Its optional path is explicit because this repository does not vendor
 // a native session package or pretend the prerelease is available from npm.
@@ -228,6 +267,16 @@ test('real native peers preserve signed attempts across bridge restart and selec
       assert.equal(first.value.length, 1);
       assert.equal(first.value[0].author, a.session.deviceId);
       const saved = await a.session.operations.inspect('once');
+      const inspected = await bridge.inspectOperation(id, 'once');
+      assert.deepEqual(inspected.state, saved.state);
+      assert.equal(inspected.deviceId, a.session.deviceId);
+      assert.equal(inspected.identity.command, 'say');
+      assert.equal(inspected.identity.author, a.session.deviceId);
+      assert.equal(inspected.identity.attemptId, saved.attempt.id);
+      assert.equal(inspected.identity.coreDigest, saved.attempt.payload.header.coreDigest);
+      assert.equal(JSON.stringify(inspected).includes('ciphertext'), false);
+      const firstRevision = await bridge.readRevision(id);
+      bridge.assertSelection(id, firstRevision);
       await bridge.command(id, 'say', 'retained request', { operationId: 'once' });
       assert.deepEqual((await a.session.operations.inspect('once')).attempt, saved.attempt);
       assert.equal((await bridge.query(id, 'messages', null)).value.length, 1);
@@ -246,6 +295,8 @@ test('real native peers preserve signed attempts across bridge restart and selec
       await b.session.adopt(await registry.read());
       const recoveredLink = await peer.connectApplications(a.session, b.session); cleanup.push(() => recoveredLink.close());
       await recoveredLink.synchronize();
+      assert.throws(() => bridge.assertSelection(id, firstRevision), { code: 'APPLICATION_VIEW_RECOVERED' });
+      bridge.assertSelection(id, await bridge.readRevision(id));
       assert.equal((await bridge.verifySource(id, tail.sourceEventId, before.revision)).selected, false);
       assert.equal(await bridge.getEvent(id, tail.sourceEventId), null);
       assert.equal((await bridge.operation(id, 'tail')).status, 'abandoned');
@@ -256,4 +307,39 @@ test('real native peers preserve signed attempts across bridge restart and selec
       for (const close of cleanup.reverse()) await close();
       await fixture.close();
     }
+  });
+
+test('real native cursor pages filtered history beyond 128 transactions and reaches the selected tail',
+  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
+    const { peer } = await loadNativePackage();
+    const definition = peer.defineApplication({ id: 'bridge-pagination', version: '1', commands: {
+      record: peer.defineCommand({ description: 'Record a test fact', input: { type: 'string' },
+        prepare: value => peer.program(peer.emit(value === 'hidden' ? 'ignored' : 'assistant', { value })) }),
+    }, queries: {} });
+    const native = await createNativeFixture(definition);
+    let bridge;
+    try {
+      const owned = await native.open(0);
+      bridge = createSessionBridge({ applications: [{ id, openSession: async () => owned, eventTopics: ['assistant'],
+        eventProjection: event => ({ name: 'assistant.help_requested', data: { request_id: event.operationId } }) }] });
+      for (let index = 0; index < 130; index++) {
+        const operation = await owned.session.command('record', index < 128 ? 'hidden' : String(index), { operationId: 'record-' + index });
+        await operation.applied({ signal: AbortSignal.timeout(5000) });
+      }
+      const view = await owned.session.readView();
+      try {
+        const nativeBatch = view.readEvents({ topics: ['assistant'], limit: 128 });
+        assert.equal(typeof nativeBatch.cursor, 'string');
+        assert.equal(Object.hasOwn(nativeBatch, 'scannedThrough'), false, 'scannedThrough belongs to the browser adapter, not the native session');
+        assert.equal(nativeBatch.events.length, 0); assert.equal(nativeBatch.hasMore, true);
+      } finally { view.release(); }
+      const first = await bridge.readEvents(id), second = await bridge.readEvents(id, { cursor: first.cursor });
+      assert.equal(first.events.length, 0); assert.equal(first.hasMore, true);
+      assert.deepEqual(second.events.map(event => event.sourceOperationId), ['record-128', 'record-129']);
+      assert.equal(second.hasMore, false); assert.notEqual(first.cursor, second.cursor);
+      const tail = await selectedTail(bridge, id);
+      assert.equal(tail.cursor, second.cursor);
+      assert.equal((await bridge.readEvents(id, { cursor: tail.cursor })).events.length, 0);
+      assert.equal((await bridge.getEvent(id, second.events[1].sourceEventId)).event.operationId, 'record-129');
+    } finally { await bridge?.close(); await native.close(); }
   });

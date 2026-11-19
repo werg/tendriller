@@ -57,6 +57,16 @@ reports the real native device, session and participation status.
 `command(id,name,input,{operationId,basedOn?})` returns the saved/current native
 operation state immediately; it does not imply application or retained sharing.
 `operation(id,operationId)` reads that same device's retained operation state.
+`inspectOperation(id,operationId)` additionally returns a bounded `identity`
+from the actual native signed attempt header: command, command version, author,
+operation/attempt IDs, generation, based-on revision and core digest. It does not
+return ciphertext or claim that the header exposes the original command input.
+The remote caller must bind its own input journal only after native exact-input
+validation succeeds. Trusted `command` options `beforeSubmit()` and `onSaved()`
+run after native grant/input checks and after native save, respectively. Use them
+to recheck current account consent and confirm the saved journal entry before
+reading status. An unconfirmed entry requires exact retry, not disclosure of an
+unrelated operation that happens to share its ID.
 Use a stable caller-owned operation ID and native revision object for exact
 retries. Cancellation or a lost HTTP reply never authorizes a new operation ID.
 `close()` aborts owned lifetimes and closes all opened native sessions.
@@ -77,6 +87,16 @@ Generation changes invalidate a native event cursor with
 event sequence. Reconcile selected history and preserve recovery evidence before
 resuming. Applied events may later be excluded by explicit recovery; external
 webhook acceptance is a separate fact and is not proof of application finality.
+The pinned native batch calls its progress field `cursor`. The separate
+`@chronolog/peer-session/tendriller` browser adapter translates that field to
+`scannedThrough` and stringifies revisions; do not use that adapter's shape here.
+
+`readRevision(id)` refreshes native authority and returns a coherent selected
+revision without reading event content. `assertSelection(id,revision)` is a
+synchronous generation fence on that already-open session. After asynchronous
+authorization and source lookup, call it after the last storage/lease await and
+immediately before invoking an external send. It is not an authorization check
+and cannot retract an external request that has already begun.
 
 `observe(id,{cursor?,signal?})` yields `kind: 'events'` batches with explicit pull
 backpressure. Finish the atomic outbox/cursor transaction before requesting the
