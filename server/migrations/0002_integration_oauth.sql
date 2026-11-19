@@ -64,3 +64,8 @@ CREATE INDEX integration_oauth_codes_grant ON integration_oauth_codes(grant_id);
 CREATE INDEX integration_oauth_refresh_grant ON integration_oauth_refresh(grant_id);
 CREATE INDEX integration_oauth_access_grant ON integration_oauth_access(grant_id);
 CREATE INDEX integration_oauth_handoffs_account ON integration_oauth_handoffs(account_id, expires_at);
+CREATE INDEX integration_oauth_intents_expiry ON integration_oauth_intents(expires_at);
+CREATE INDEX integration_oauth_handoffs_expiry ON integration_oauth_handoffs(expires_at);
+CREATE INDEX integration_oauth_access_expiry ON integration_oauth_access(expires_at);
+CREATE INDEX integration_oauth_grants_expiry ON integration_oauth_grants(expires_at);
+CREATE INDEX integration_oauth_grants_revoked ON integration_oauth_grants(revoked_at);

@@ -16,9 +16,17 @@ export function decisionForm(token: string, button: string): string {
   return `<form method="post"><input type="hidden" name="intent" value="${escapeHtml(token)}"><div class="actions"><button type="submit" name="decision" value="allow">${escapeHtml(button)}</button><button class="secondary" type="submit" name="decision" value="deny">Cancel</button></div></form>`;
 }
 
+export async function bridgeStatus(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
+  const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
+  const bridge = await bridgeIdentity(req, config, env);
+  await bodyObject(req, []);
+  return oauthJson({ bridgeId: bridge.id, resource: config.resource, applicationIds: bridge.applicationIds,
+    managementRedirectUris: bridge.managementRedirectUris, authorizationServerReady: true });
+}
+
 export async function accountAccess(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
   const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
-  const bridge = await bridgeIdentity(req, config);
+  const bridge = await bridgeIdentity(req, config, env);
   const input = await bodyObject(req, ['issuer', 'subject', 'applicationId', 'pageId', 'grantId'], ['issuer', 'subject']);
   const subject = text(input.subject, 'subject', 512), issuer = text(input.issuer, 'issuer', 2048);
   const scoped = input.applicationId !== undefined || input.pageId !== undefined;
@@ -88,7 +96,7 @@ export async function managementLogin(req: Request, env: Env, config: OAuthConfi
 
 export async function managementExchange(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
   const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
-  const bridge = await bridgeIdentity(req, config);
+  const bridge = await bridgeIdentity(req, config, env);
   const input = await bodyObject(req, ['code', 'redirect_uri', 'code_verifier']);
   const code = text(input.code, 'handoff code', 128), uri = text(input.redirect_uri, 'callback', 2048);
   if (!bridge.managementRedirectUris.includes(uri)) reject('invalid_grant', 'Invalid management handoff');

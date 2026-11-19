@@ -25,7 +25,9 @@ function configured(overrides: Partial<Env> = {}): Env {
   OAUTH_SIGNING_JWK: JSON.stringify({ ...privateJwk, kid: 'signing-1', alg: 'ES256' }), ...overrides };
 }
 function request(path: string, settings: Env = configured(), init: RequestInit = {}) {
-  return route(new Request(ISSUER + path, init), settings);
+  const headers = new Headers(init.headers), bytes = crypto.getRandomValues(new Uint8Array(2));
+  if (!headers.has('CF-Connecting-IP')) headers.set('CF-Connecting-IP', `198.18.${bytes[0]}.${bytes[1]}`);
+  return route(new Request(ISSUER + path, { ...init, headers }), settings);
 }
 
 it('first-party OAuth stays disabled until explicitly configured and remains on the service origin', async () => {
@@ -177,4 +179,177 @@ it('handoff denial, changed session, hostile origin and logout cannot produce a 
   const { location } = await handoff(f);
   await env.ACCOUNTS.prepare('DELETE FROM sessions WHERE hash=?').bind(await sha256Hex(f.raw)).run();
   expect((await jsonPost('/oauth/management/exchange', { code: location.searchParams.get('code'), redirect_uri: MANAGEMENT, code_verifier: verifier }, f.settings)).status).toBe(400);
+});
+
+function serviceForm(path: string, input: Record<string, string>, settings: Env, authorization?: string) {
+  return request(path, settings, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(authorization ? { Authorization: authorization } : {}) },
+    body: new URLSearchParams(input) });
+}
+function decodePart(value: string) { return JSON.parse(atob(value.replace(/-/g, '+').replace(/_/g, '/'))); }
+async function authorization(f: Awaited<ReturnType<typeof hostFixture>>, overrides: Record<string, string> = {}, decision = 'allow') {
+  const verifier = 'verifier-' + 'v'.repeat(43), state = 'state-' + crypto.randomUUID();
+  const params = new URLSearchParams({ response_type: 'code', client_id: 'chatgpt', redirect_uri: REDIRECT, resource: RESOURCE,
+    scope: 'applications:read events:subscribe', code_challenge_method: 'S256', code_challenge: await challengeFor(verifier), state, ...overrides });
+  const response = await request('/oauth/authorize?' + params, f.settings, { headers: { Cookie: f.cookie } });
+  expect(response.status).toBe(200);
+  const html = await response.text(), token = /name="intent" value="([^"]+)"/u.exec(html)![1];
+  expect(html).toContain('Allow these permissions'); expect(html).toContain('Individual applications still need explicit connection permission');
+  const result = await formPost('/oauth/authorize', { intent: token, decision }, f.settings, f.cookie);
+  expect(result.status).toBe(303);
+  const location = new URL(result.headers.get('Location')!);
+  expect(location.searchParams.get('iss')).toBe(ISSUER); expect(location.searchParams.get('state')).toBe(state);
+  return { code: location.searchParams.get('code'), error: location.searchParams.get('error'), verifier, token };
+}
+async function tokens(f: Awaited<ReturnType<typeof hostFixture>>) {
+  const approved = await authorization(f);
+  const response = await serviceForm('/oauth/token', { client_id: 'chatgpt', grant_type: 'authorization_code', resource: RESOURCE,
+    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier }, f.settings);
+  expect(response.status).toBe(200);
+  const result = await response.json() as { access_token: string; refresh_token: string; expires_in: number; scope: string };
+  return { ...result, approved, grantId: decodePart(result.access_token.split('.')[1]).sid as string };
+}
+async function introspection(token: string, settings: Env) {
+  const response = await serviceForm('/oauth/introspect', { token }, settings, 'Bearer ' + BRIDGE_SECRET);
+  expect(response.status).toBe(200); return response.json() as Promise<Record<string, unknown>>;
+}
+
+it('authorization code flow uses the actual browser account, exact audience and real asymmetric JWT', async () => {
+  const f = await hostFixture(), issued = await tokens(f), [header, payload, signature] = issued.access_token.split('.');
+  const claims = decodePart(payload);
+  expect(decodePart(header)).toEqual({ typ: 'at+jwt', alg: 'ES256', kid: 'signing-1' });
+  expect(claims).toMatchObject({ iss: ISSUER, sub: f.subject, aud: RESOURCE, client_id: 'chatgpt', scope: 'applications:read events:subscribe', sid: issued.grantId });
+  expect(claims.exp - claims.iat).toBe(300); expect(issued.expires_in).toBeGreaterThan(0); expect(issued.expires_in).toBeLessThanOrEqual(300);
+  const key = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  const bytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
+  expect(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytes, new TextEncoder().encode(header + '.' + payload))).toBe(true);
+  expect(await introspection(issued.access_token, f.settings)).toMatchObject({ active: true, sub: f.subject, sid: issued.grantId, aud: RESOURCE });
+  const lookup = await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, applicationId: f.page.application.id, pageId: f.page.id, grantId: issued.grantId }, f.settings);
+  expect(await lookup.json()).toMatchObject({ access: true, owner: true, oauthAuthorized: true, scopes: ['applications:read', 'events:subscribe'] });
+  const rows = await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_access WHERE grant_id=?').bind(issued.grantId).all();
+  expect(JSON.stringify(rows.results)).not.toContain(issued.access_token);
+  expect(rows.results[0]).toMatchObject({ hash: await sha256Hex(issued.access_token) });
+});
+
+it('authorization rejects unregistered redirects, duplicate parameters, missing S256 and excessive scopes', async () => {
+  const f = await hostFixture(), base = { response_type: 'code', client_id: 'chatgpt', redirect_uri: REDIRECT, resource: RESOURCE,
+    scope: 'applications:read', code_challenge_method: 'S256', code_challenge: await challengeFor('v'.repeat(43)), state: 'same-state' };
+  const anonymous = await request('/oauth/authorize?' + new URLSearchParams(base), f.settings);
+  expect(anonymous.status).toBe(303); expect(anonymous.headers.get('Location')).toMatch(/^\/auth\?return_to=/u);
+  const unregistered = await request('/oauth/authorize?' + new URLSearchParams({ ...base, redirect_uri: 'https://attacker.example/callback' }), f.settings);
+  expect(unregistered.status).toBe(400); expect(unregistered.headers.has('Location')).toBe(false);
+  const duplicate = await request('/oauth/authorize?' + new URLSearchParams(base) + '&client_id=chatgpt', f.settings);
+  expect(duplicate.status).toBe(400); expect(duplicate.headers.has('Location')).toBe(false);
+  for (const [override, error] of [[{ code_challenge_method: 'plain' }, 'invalid_request'], [{ scope: 'pages:publish' }, 'invalid_scope'],
+    [{ resource: 'https://other.example/mcp' }, 'invalid_target'], [{ response_type: 'token' }, 'unsupported_response_type']] as const) {
+    const response = await request('/oauth/authorize?' + new URLSearchParams({ ...base, ...override }), f.settings);
+    expect(response.status).toBe(303);
+    const location = new URL(response.headers.get('Location')!);
+    expect(location.searchParams.get('error')).toBe(error); expect(location.searchParams.get('iss')).toBe(ISSUER);
+    expect(location.searchParams.get('state')).toBe('same-state'); expect(location.searchParams.has('code')).toBe(false);
+  }
+  const denied = await authorization(f, {}, 'deny'); expect(denied.error).toBe('access_denied'); expect(denied.code).toBeNull();
+});
+
+it('code redemption binds PKCE, redirect and resource; reusing an exchanged code revokes its tokens', async () => {
+  const f = await hostFixture(), approved = await authorization(f);
+  const input = { grant_type: 'authorization_code', client_id: 'chatgpt', resource: RESOURCE, redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier };
+  for (const change of [{ resource: 'https://other.example/mcp' }, { redirect_uri: 'https://attacker.example/cb' }, { code_verifier: 'wrong'.repeat(12) }])
+    expect((await serviceForm('/oauth/token', { ...input, ...change }, f.settings)).status).toBe(400);
+  const valid = await serviceForm('/oauth/token', input, f.settings); expect(valid.status).toBe(200);
+  const issued = await valid.json() as { access_token: string };
+  expect((await introspection(issued.access_token, f.settings)).active).toBe(true);
+  expect((await serviceForm('/oauth/token', { ...input, code_verifier: 'wrong'.repeat(12) }, f.settings)).status).toBe(400);
+  expect((await introspection(issued.access_token, f.settings)).active).toBe(true);
+  expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(400);
+  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+});
+
+it('refresh rotates one-use tokens, permits narrower scopes and revokes the entire grant on replay', async () => {
+  const f = await hostFixture(), issued = await tokens(f);
+  const input = { grant_type: 'refresh_token', client_id: 'chatgpt', resource: RESOURCE, refresh_token: issued.refresh_token };
+  expect((await serviceForm('/oauth/token', { ...input, scope: 'pages:publish' }, f.settings)).status).toBe(400);
+  const refreshed = await serviceForm('/oauth/token', { ...input, scope: 'applications:read' }, f.settings); expect(refreshed.status).toBe(200);
+  const renewed = await refreshed.json() as { access_token: string; refresh_token: string; scope: string };
+  expect(renewed.refresh_token).not.toBe(issued.refresh_token); expect(renewed.access_token).not.toBe(issued.access_token);
+  expect(renewed.scope).toBe('applications:read'); expect((await introspection(renewed.access_token, f.settings)).active).toBe(true);
+  expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(400);
+  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+  expect(await introspection(renewed.access_token, f.settings)).toEqual({ active: false });
+  expect((await serviceForm('/oauth/token', { ...input, refresh_token: renewed.refresh_token }, f.settings)).status).toBe(400);
+});
+
+it('concurrent refresh claims cannot create two usable replacements', async () => {
+  const f = await hostFixture(), issued = await tokens(f), input = { grant_type: 'refresh_token', client_id: 'chatgpt', resource: RESOURCE, refresh_token: issued.refresh_token };
+  const results = await Promise.all([serviceForm('/oauth/token', input, f.settings), serviceForm('/oauth/token', input, f.settings)]);
+  expect(results.filter(response => response.status === 200).length).toBeLessThanOrEqual(1);
+  expect(results.some(response => response.status === 400)).toBe(true);
+  for (const response of results) if (response.status === 200) {
+    const value = await response.json() as { access_token: string };
+    expect(await introspection(value.access_token, f.settings)).toEqual({ active: false });
+  }
+  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+});
+
+it('token revocation is idempotent and exact; another active grant does not restore it', async () => {
+  const f = await hostFixture(), first = await tokens(f), second = await tokens(f);
+  const input = { client_id: 'chatgpt', token: first.refresh_token, token_type_hint: 'refresh_token' };
+  expect((await serviceForm('/oauth/revoke', input, f.settings)).status).toBe(200);
+  expect((await serviceForm('/oauth/revoke', input, f.settings)).status).toBe(200);
+  expect(await introspection(first.access_token, f.settings)).toEqual({ active: false });
+  expect((await introspection(second.access_token, f.settings)).active).toBe(true);
+  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, grantId: first.grantId }, f.settings)).json()).toMatchObject({ oauthAuthorized: false });
+  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, grantId: second.grantId }, f.settings)).json()).toMatchObject({ oauthAuthorized: true });
+  await env.ACCOUNTS.prepare('UPDATE accounts SET deleting_at=? WHERE id=?').bind(Date.now(), f.subject).run();
+  expect(await introspection(second.access_token, f.settings)).toEqual({ active: false });
+  expect((await serviceForm('/oauth/token', { grant_type: 'refresh_token', client_id: 'chatgpt', resource: RESOURCE, refresh_token: second.refresh_token }, f.settings)).status).toBe(400);
+});
+
+it('confidential clients require their registered Basic secret as well as PKCE', async () => {
+  const f = await hostFixture(), secret = 'client-private-' + 's'.repeat(43), value = JSON.parse(f.settings.OAUTH_CONFIG_JSON!);
+  Object.assign(value.clients[0], { tokenEndpointAuthMethod: 'client_secret_basic', clientSecretSha256: await sha256Hex(secret) });
+  f.settings.OAUTH_CONFIG_JSON = JSON.stringify(value);
+  const approved = await authorization(f), input = { grant_type: 'authorization_code', client_id: 'chatgpt', resource: RESOURCE,
+    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier };
+  expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(401);
+  expect((await serviceForm('/oauth/token', { ...input, client_secret: secret }, f.settings)).status).toBe(401);
+  expect((await serviceForm('/oauth/token', input, f.settings, 'Basic ' + btoa('chatgpt:wrong'))).status).toBe(401);
+  expect((await serviceForm('/oauth/token', input, f.settings, 'Basic ' + btoa('chatgpt:' + encodeURIComponent(secret)))).status).toBe(200);
+});
+
+it('browser grant management revokes only the authenticated account and requires its current form', async () => {
+  const f = await hostFixture(), other = await hostFixture(), issued = await tokens(f), foreign = await tokens(other);
+  const page = await request('/oauth/connections', f.settings, { headers: { Cookie: f.cookie } });
+  const html = await page.text(), token = /name="intent" value="([^"]+)"/u.exec(html)![1];
+  expect(html).toContain(issued.grantId); expect(html).not.toContain(foreign.grantId);
+  expect((await formPost('/oauth/connections', { intent: token, grant_id: issued.grantId }, f.settings, f.cookie, 'https://attacker.example')).status).toBe(403);
+  expect((await formPost('/oauth/connections', { intent: token, grant_id: foreign.grantId }, f.settings, f.cookie)).status).toBe(303);
+  expect((await introspection(foreign.access_token, other.settings)).active).toBe(true);
+  const again = await request('/oauth/connections', f.settings, { headers: { Cookie: f.cookie } });
+  const next = /name="intent" value="([^"]+)"/u.exec(await again.text())![1];
+  expect((await formPost('/oauth/connections', { intent: next, grant_id: issued.grantId }, f.settings, f.cookie)).status).toBe(303);
+  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+  expect((await formPost('/oauth/connections', { intent: next, grant_id: issued.grantId }, f.settings, f.cookie)).status).toBe(403);
+});
+
+it('RS256 signing and retained public keys support configured key rotation without publishing private material', async () => {
+  const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+  const signing = await crypto.subtle.exportKey('jwk', pair.privateKey) as JsonWebKey;
+  const settings = configured({ OAUTH_SIGNING_JWK: JSON.stringify({ ...signing, kid: 'rsa-2', alg: 'RS256' }),
+    OAUTH_PUBLIC_JWKS: JSON.stringify({ keys: [{ ...publicJwk, kid: 'signing-1', alg: 'ES256' }] }) });
+  const config = (await oauthConfig(settings))!, token = await signAccessToken(config, { sub: 'test', aud: RESOURCE });
+  const [header, payload, signature] = token.split('.'); expect(decodePart(header).alg).toBe('RS256');
+  const bytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
+  expect(await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pair.publicKey, bytes, new TextEncoder().encode(header + '.' + payload))).toBe(true);
+  const jwks = await (await request('/oauth/jwks', settings)).json() as { keys: { kid: string; d?: string }[] };
+  expect(jwks.keys.map(key => key.kid)).toEqual(['rsa-2', 'signing-1']); expect(jwks.keys.every(key => key.d === undefined)).toBe(true);
+});
+
+it('authenticated bridge preflight returns only its exact deployment settings without a user identity', async () => {
+  const f = await hostFixture();
+  expect((await jsonPost('/oauth/bridge-status', {}, f.settings, 'x'.repeat(64))).status).toBe(401);
+  expect((await jsonPost('/oauth/bridge-status', { subject: f.subject }, f.settings)).status).toBe(400);
+  const response = await jsonPost('/oauth/bridge-status', {}, f.settings);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ bridgeId: 'node-bridge', resource: RESOURCE, applicationIds: [f.page.application.id],
+    managementRedirectUris: [MANAGEMENT], authorizationServerReady: true });
 });

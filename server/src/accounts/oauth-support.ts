@@ -17,7 +17,7 @@ export function oauthJson(value: unknown, status = 200, headers: HeadersInit = {
 }
 export function oauthError(error: unknown): Response {
   if (error instanceof OAuthFailure) return oauthJson({ error: error.code, error_description: error.message }, error.status,
-    error.code === 'invalid_client' ? { 'WWW-Authenticate': 'Basic realm="Tendriller OAuth"' } : {});
+    { ...(error.code === 'invalid_client' ? { 'WWW-Authenticate': 'Basic realm="Tendriller OAuth"' } : {}), ...(error.status === 429 ? { 'Retry-After': '60' } : {}) });
   if (error instanceof HttpError && [408, 413].includes(error.status))
     return oauthJson({ error: 'invalid_request', error_description: 'OAuth request exceeds the configured limit' }, error.status);
   // Never include an exception, request body, signing key, code or token in diagnostics.
@@ -139,8 +139,18 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
       if (typeof privateJwk.d !== 'string') throw Error('Private signing key is required');
       const privateKey = await crypto.subtle.importKey('jwk', privateJwk as unknown as JsonWebKey,
         active.alg === 'ES256' ? { name: 'ECDSA', namedCurve: 'P-256' } : { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+      const modulusLength = (privateKey.algorithm as { modulusLength?: number }).modulusLength;
+      if (active.alg === 'RS256' && (!Number.isSafeInteger(modulusLength) || modulusLength! < 2048)) throw Error('RSA key is too short');
       const publicKeys = [active, ...list(previous ? object(JSON.parse(previous)).keys : [], 4).map(value => publicKey(value))];
       unique(publicKeys.map(key => key.kid));
+      const imported = await Promise.all(publicKeys.map(key => crypto.subtle.importKey('jwk', key,
+        key.alg === 'ES256' ? { name: 'ECDSA', namedCurve: 'P-256' } : { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify'])));
+      if (imported.some((key, index) => publicKeys[index].alg === 'RS256' && ((key.algorithm as { modulusLength?: number }).modulusLength ?? 0) < 2048))
+        throw Error('Retained RSA key is too short');
+      const signingAlgorithm = active.alg === 'ES256' ? { name: 'ECDSA', hash: 'SHA-256' } : 'RSASSA-PKCS1-v1_5';
+      const probe = new TextEncoder().encode('tendriller-oauth-configuration-v1');
+      const proof = await crypto.subtle.sign(signingAlgorithm, privateKey, probe);
+      if (!await crypto.subtle.verify(signingAlgorithm, imported[0], proof, probe)) throw Error('Signing key does not match the published JWKS');
       return { issuer, resource, clients, bridges, accessTokenTtlSeconds: Number(accessTokenTtlSeconds), grantTtlSeconds: Number(grantTtlSeconds),
         privateKey, publicKeys, kid: active.kid, algorithm: active.alg };
     })();
@@ -176,11 +186,18 @@ export async function form(req: Request): Promise<URLSearchParams> {
   catch (error) { if (error instanceof HttpError) throw error; return reject('invalid_request', 'Invalid UTF-8 form'); }
   return checkedParameters(new URLSearchParams(decoded));
 }
-export async function bridgeIdentity(req: Request, config: OAuthConfig): Promise<OAuthBridge> {
+export async function bridgeIdentity(req: Request, config: OAuthConfig, env?: Env): Promise<OAuthBridge> {
+  const denied = async (): Promise<never> => {
+    if (env?.FAILED_AUTH_RATE && !(await env.FAILED_AUTH_RATE.limit({ key: 'integration-oauth:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
+      return reject('temporarily_unavailable', 'Too many failed integration requests', 429);
+    return reject('invalid_client', 'Invalid integration service credential', 401);
+  };
   const token = /^Bearer ([A-Za-z0-9_-]{43,256})$/u.exec(req.headers.get('Authorization') ?? '')?.[1];
-  if (!token) reject('invalid_client', 'A configured integration service credential is required', 401);
+  if (!token) return denied();
   const hash = await sha256Hex(token!), bridge = config.bridges.find(value => safeEqual(value.secretSha256, hash));
-  if (!bridge) reject('invalid_client', 'Invalid integration service credential', 401);
+  if (!bridge) return denied();
+  if (env?.ACCOUNT_RATE && !(await env.ACCOUNT_RATE.limit({ key: 'integration-oauth:' + bridge.id })).success)
+    return reject('temporarily_unavailable', 'Integration request rate limit reached', 429);
   return bridge!;
 }
 export async function signAccessToken(config: OAuthConfig, claims: Record<string, unknown>): Promise<string> {
