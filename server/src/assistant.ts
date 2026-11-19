@@ -135,7 +135,8 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   const reference = () => ({ applicationId, deviceId: selectedDevice || existing?.device_id, operationId,
     generation: existing?.source_generation ?? selectedGeneration,
     ...(existing?.reference ? JSON.parse(existing.reference) : {}), agentBindingId: consumer.id,
-    providerBindingId: providerBinding || existing?.provider_binding_id });
+    providerBindingId: providerBinding || existing?.provider_binding_id,
+    ...(existing ? { sourceContext: JSON.parse(existing.context) } : {}) });
   for (;;) {
     const admitted = await withSelectedAssistantGeneration(t, async (generation, canUseDevice) => {
       if (!generation) throw new HttpError(409, 'application_generation_missing');
@@ -177,7 +178,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
         applicationId, generation, kind, name, input: params.input,
         providerBindingId: adapter.bindingId, connectionEpoch: adapter.connectionEpoch,
         caller: { account: principal.account, agentBindingId: consumer.id, bindingRevision: consumer.revision,
-          verification: consumer.verification, context: { evidence: 'caller-asserted', ...context } },
+          verification: consumer.verification, context: existing ? JSON.parse(existing.context) : { evidence: 'caller-asserted', ...context } },
         ...(operationId ? { operationId, ...(params.basedOn !== undefined ? { basedOn: params.basedOn } : {}) } : {}),
         ...(original ? { originalOperationId: original.operation_id, originalAuthor: original.device_id } : {}),
       }, deadline, consumer.id) };
@@ -196,10 +197,14 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
     return json({ value });
   });
   const state = isPlainObject(value) && isPlainObject(value.state) ? value.state : isPlainObject(value) ? value : null;
+  const nativeReference = isPlainObject(value) && isPlainObject(value.operationReference) ? value.operationReference : null;
+  if (nativeReference && (nativeReference.applicationId !== applicationId || nativeReference.deviceId !== selectedDevice || nativeReference.operationId !== operationId))
+    throw new HttpError(502, 'invalid_adapter_operation_reference');
   if (state && (state.operationId !== operationId || state.author !== undefined && state.author !== selectedDevice))
     throw new HttpError(502, 'invalid_adapter_operation_reference');
   if (state?.attemptId && typeof state.attemptId === 'string') {
     const retained = { attemptId: state.attemptId, generation: state.generation, deviceId: selectedDevice,
+      historyId: nativeReference?.historyId ?? null,
       ...(isPlainObject(value) && isPlainObject(value.attempt) && isPlainObject(value.attempt.payload) && isPlainObject(value.attempt.payload.header) ?
         { controlRevision: value.attempt.payload.header.controlRevision } : {}) };
     t.db.run('UPDATE assistant_operation_context SET reference=? WHERE operation_id=?', JSON.stringify(retained), operationId);

@@ -83,8 +83,11 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
         operationId, ...(basedOn !== undefined ? { basedOn } : {}),
         ...(kind === 'reapply' ? { originalOperationId: message.originalOperationId, originalAuthor: message.originalAuthor } : {}),
       } : {}) };
-      const value = await tools.call(kind, args, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]),
+      const raw = await tools.call(kind, args, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]),
         ...(caller ? { caller: Object.freeze(structuredClone(caller)) } : {}) });
+      const value = raw && (write || journal) ? { ...raw, operationReference: {
+        applicationId: session.applicationId, historyId: session.historyId ?? null, deviceId: session.deviceId, operationId,
+      } } : raw;
       if (generation !== session.status.generation) throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
       if (socket === transport) send({ type: 'result', id, value: value ?? null });
     } catch (cause) {
@@ -122,7 +125,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
           }, { once: true });
           transport.addEventListener('close', ev => done(ev.code), { once: true });
           transport.addEventListener('message', ev => {
-            if (transport !== socket || typeof ev.data !== 'string' || ev.data.length > LIMIT) return;
+            if (transport !== socket || typeof ev.data !== 'string' || ev.data.length > LIMIT || new TextEncoder().encode(ev.data).byteLength > LIMIT) return;
             let message;
             try { message = JSON.parse(ev.data); } catch { return; }
             if (message.type === 'call') void onCall(message, transport, connected.signal);

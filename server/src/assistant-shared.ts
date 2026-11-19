@@ -45,7 +45,7 @@ export const mcpEventDefinition = {
   inputSchema: { type: 'object', properties: { application_id: { type: 'string', pattern: APP_ID.source },
     event: { type: 'string', pattern: APP_NAME.source } }, required: ['application_id', 'event'], additionalProperties: false },
   payloadSchema: { type: 'object', properties: { applicationId: { type: 'string' }, event: { type: 'string' },
-    sourceEventId: { type: 'string' }, generation: { type: 'string' }, payload: {} },
+    sourceEventId: { type: 'string' }, generation: { type: 'string' }, payload: {}, export: { type: 'object' } },
     required: ['applicationId', 'event', 'sourceEventId', 'generation', 'payload'], additionalProperties: false },
 };
 type IndexRow = { application_id: string; page_id: string; label: string };

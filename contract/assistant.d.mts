@@ -13,6 +13,7 @@ export interface AssistantInboxCursor {
 }
 interface AssistantSession {
   readonly applicationId: string;
+  readonly historyId?: string;
   readonly deviceId: string;
   readonly status: { readonly generation: string };
   readonly signal: AbortSignal;

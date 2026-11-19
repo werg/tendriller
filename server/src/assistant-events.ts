@@ -19,10 +19,16 @@ type EventRow = { seq: number; source_id: string; generation: string; name: stri
 type Watcher = { id: string; grant_id: string; client_id: string; name: string; url: string; secret: string; previous_secret: string | null; rotate_until: number | null; verified_at: number; expires_at: number };
 type Job = EventRow & Watcher & { attempts: number; event_seq: number; watcher_id: string; block_reason: string | null; binding_id: string | null };
 type InboxFloor = { generation: string; through: number };
-const toMessage = (item: EventRow, applicationId: string) => ({
+const toMessage = (t: Tendril, item: EventRow, applicationId: string) => ({
   name: MCP_APPLICATION_EVENT, timestamp: new Date(item.created_at).toISOString(),
-  data: { applicationId, event: item.name, sourceEventId: item.source_id, generation: item.generation, payload: JSON.parse(item.payload) },
+  data: { applicationId, event: item.name, sourceEventId: item.source_id, generation: item.generation, payload: JSON.parse(item.payload),
+    export: exportEvidence(t, item.seq) },
 });
+function exportEvidence(t: Tendril, sequence: number) {
+  const source = t.db.one<{ deviceId: string; providerBindingId: string; exportVersion: string; context: string }>(
+    'SELECT device_id AS deviceId,provider_binding_id AS providerBindingId,export_version AS exportVersion,context FROM assistant_export_source WHERE event_seq=?', sequence);
+  return { schemaVersion: 1, evidence: 'approved-exporter-assertion', ...(source ? { ...source, context: JSON.parse(source.context) } : {}) };
+}
 
 function callbackTarget(t: Tendril, input: unknown) {
   const value = string(input, 4096);
@@ -149,8 +155,7 @@ export async function assistantInbox(t: Tendril, approved: Connection, params: R
     const page = events.slice(0, Number(limit));
     return { generation, oldest: oldest ?? null, next: { ...scope, sequence: page.at(-1)?.seq ?? sequence }, resetRequired: false,
       hasMore: events.length > Number(limit), truncated: !cursor && floor > 0,
-      events: page.filter(item => names.includes(item.name)).map(item => ({ sequence: item.seq, ...toMessage(item, approved.applicationId),
-        provenance: { evidence: 'approved-exporter-assertion', ...t.db.one('SELECT device_id AS deviceId,provider_binding_id AS providerBindingId,export_version AS exportVersion,context FROM assistant_export_source WHERE event_seq=?', item.seq) } })) };
+      events: page.filter(item => names.includes(item.name)).map(item => ({ sequence: item.seq, ...toMessage(t, item, approved.applicationId) })) };
   });
 }
 
@@ -220,6 +225,11 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
       connection(t)?.version !== approved.version || !consumerCurrent(t, consumer))
     throw new HttpError(403, 'connection_changed');
   t.transaction(() => {
+    const live = t.db.one<Watcher>('SELECT * FROM assistant_watchers WHERE id=?', id);
+    if (JSON.stringify(live) !== JSON.stringify(existing)) throw new HttpError(409, 'subscription_changed', 'Retry this subscription with the same parameters.');
+    if (t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_watchers WHERE expires_at>? AND id<>?', t.now(), id)!.n >= MAX_WATCHERS ||
+        t.db.one<{ n: number }>(`SELECT COUNT(*) AS n FROM assistant_watchers w JOIN assistant_watcher_bindings b ON b.watcher_id=w.id
+        WHERE b.binding_id=? AND w.expires_at>? AND w.id<>?`, consumer.id, t.now(), id)!.n >= 4) throw new HttpError(429, 'subscription_capacity');
     if (existing && existing.expires_at <= now) closeWatcher(t, id, 'expired');
     t.db.run(`DELETE FROM assistant_watchers WHERE expires_at<=?
       AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE watcher_id=assistant_watchers.id)`, now);
@@ -275,7 +285,11 @@ export function assistantDeliveryStatus(t: Tendril, principal: Principal) {
     outcome,attempts,updated_at AS updatedAt FROM assistant_receipts r WHERE client_id=? AND
     EXISTS(SELECT 1 FROM assistant_watcher_bindings b WHERE b.watcher_id=r.watcher_id AND b.binding_id=?)
     ORDER BY seq DESC LIMIT 25`, principal.client, principal.consumer!.id);
-  return { pending, recent };
+  return { pending: pending.map(value => ({ ...value, deliveryState: Number(value.attempts) ? 'retrying' : 'pending' })),
+    recent: recent.map(value => ({ ...value, deliveryState: value.outcome === 'accepted' ? 'delivered'
+      : value.outcome === 'retry_exhausted' || value.outcome === 'revoked' && Number(value.attempts) > 0 ? 'outcome-unknown'
+      : value.outcome === 'expired' ? 'expired' : value.outcome === 'revoked' || value.outcome === 'authorization_ended' ? 'revoked' : 'failed' })),
+    establishes: 'Provider delivery evidence only; task handling and signed application completion are separate.' };
 }
 
 export async function runAssistantDelivery(t: Tendril) {
@@ -286,7 +300,14 @@ export async function runAssistantDelivery(t: Tendril) {
   // A crash leaves the original job eligible again once the lease expires.
   const lease = crypto.randomUUID();
   const jobs = t.transaction(() => {
-    const due = t.db.all<Job>(joinedJobs + ' WHERE j.due<=? ORDER BY j.due LIMIT 4', now);
+    const candidates = t.db.all<Job>(joinedJobs + ' WHERE j.due<=? ORDER BY j.due LIMIT 256', now);
+    const due: Job[] = [], seen = new Set<string>();
+    for (const candidate of candidates) {
+      const lane = candidate.binding_id ?? candidate.client_id;
+      if (!seen.has(lane)) { seen.add(lane); due.push(candidate); }
+      if (due.length === 4) break;
+    }
+    for (const candidate of candidates) { if (due.length === 4) break; if (!due.includes(candidate)) due.push(candidate); }
     for (const job of due) t.db.run('UPDATE assistant_jobs SET lease=?,due=? WHERE event_seq=? AND watcher_id=?',
       lease, now + LEASE_MS, job.event_seq, job.watcher_id);
     return due;
@@ -342,7 +363,7 @@ export async function runAssistantDelivery(t: Tendril) {
       try { url = callbackTarget(t, job.url); }
       catch { defer(job, 'callback_origin_unavailable'); return; }
       const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.generation, job.source_id, job.name]));
-      const body = JSON.stringify({ eventId, ...toMessage(job, approved.applicationId), cursor: null });
+      const body = JSON.stringify({ eventId, ...toMessage(t, job, approved.applicationId), cursor: null });
       const { pending } = await withSelectedAssistantGeneration(t, async generation => {
         if (!current(job)) return { pending: null };
         if (job.binding_id && !job.binding_id.startsWith('bridge_') && !t.db.one("SELECT 1 FROM assistant_consumers WHERE id=? AND status='active'", job.binding_id)) {
