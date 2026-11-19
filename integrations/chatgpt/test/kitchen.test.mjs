@@ -2,6 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { projectKitchen, visibleAssistanceStatus, kitchenEventProjection } from '../examples/kitchen/projection.mjs';
 import { createAssistanceClient } from '../examples/kitchen/client.mjs';
+import { createPendingStorage } from '../examples/kitchen/pending-storage.mjs';
+
+function pendingFixture() {
+  const values = new Map(); let tail = Promise.resolve();
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  const locks = { request(name, options, action) {
+    assert.equal(options.mode, 'exclusive');
+    const result = tail.then(action); tail = result.catch(() => {}); return result;
+  } };
+  const open = () => createPendingStorage({ key: 'application:pending', storage, locks, now: () => 100 });
+  return { open, storage, locks };
+}
 
 const event = (id, payload, author = 'cook') => ({ id, topic: 'assistant', payload, author,
   operationId: `op-${id}`, authorTimestampMs: 200 });
@@ -55,11 +67,12 @@ test('egress sends request metadata and never reply text or a self-triggering re
 });
 
 test('uncertain submit survives restart with its exact operation and input', async () => {
-  let pending = null, saved = null, calls = [], fail = true;
+  let saved = null, calls = [], fail = true;
+  const pendingStorage = pendingFixture().open();
   const session = { operations: { async get() { return saved; } },
     async command(name, input, options) { calls.push({ name, input, options }); if (fail) throw Error('response lost'); return {}; },
     async retry(id) { calls.push({ retry: id }); return {}; } };
-  const options = { savePending: async value => { pending = structuredClone(value); }, loadPending: async () => pending,
+  const options = { pendingStorage,
     now: () => 100, randomId: (() => { let id = 0; return () => `id-${++id}`; })() };
   const client = createAssistanceClient(session, options);
   await assert.rejects(client.request({ question: 'Help', cookingStepId: 's1', contextRevision: 'r1' }), /response lost/);
@@ -75,7 +88,66 @@ test('uncertain submit survives restart with its exact operation and input', asy
   await assert.rejects(client.acknowledge(), /UNCERTAIN/);
   saved = { status: 'applied', outcome: 'accepted' };
   await client.acknowledge();
-  assert.equal(pending, null);
+  assert.equal(pendingStorage.load(), null);
+});
+
+test('separate tabs atomically reserve one pending operation and can retry it exactly', async () => {
+  const f = pendingFixture(), calls = [], options = { now: () => 100 };
+  const session = { command: async (...args) => { calls.push(args); return {}; }, operations: { get: async () => null } };
+  const one = createAssistanceClient(session, { ...options, pendingStorage: f.open(), randomId: () => 'one' });
+  const two = createAssistanceClient(session, { ...options, pendingStorage: f.open(), randomId: () => 'two' });
+  const results = await Promise.allSettled([
+    one.selectStep({ stepId: 's1', text: 'Prepare' }), two.selectStep({ stepId: 's2', text: 'Serve' }),
+  ]);
+  assert.equal(results.filter(value => value.status === 'fulfilled').length, 1);
+  assert.match(results.find(value => value.status === 'rejected').reason.message, /UNRESOLVED/);
+  assert.equal(calls.length, 1); assert.equal(f.open().load().operationId, 'one');
+  await two.resume(); assert.deepEqual(calls[1], calls[0]);
+});
+
+test('a late acknowledge cannot clear a newer tab reservation', async () => {
+  const storage = pendingFixture().open(); let finish;
+  const nativeState = new Promise(resolve => { finish = resolve; });
+  await storage.reserve({ command: 'setCookingStep', input: { stepId: 's1', text: 'Prepare' }, operationId: 'old' });
+  const client = createAssistanceClient({ operations: { get: async () => nativeState } }, { pendingStorage: storage });
+  const acknowledging = client.acknowledge();
+  await Promise.resolve(); // The old operation has been captured before its native read.
+  await storage.clear('old');
+  await storage.reserve({ command: 'setCookingStep', input: { stepId: 's2', text: 'Serve' }, operationId: 'new' });
+  finish({ status: 'applied' }); await acknowledging;
+  assert.equal(storage.load().operationId, 'new');
+});
+
+test('terminal resolution requires review, retains its exact reference, and never reapplies', async () => {
+  const storage = pendingFixture().open(), pending = { command: 'setCookingStep', input: { stepId: 's1', text: 'Prepare' }, operationId: 'old' };
+  await storage.reserve(pending); let status = 'saved', sends = 0;
+  const client = createAssistanceClient({ operations: { get: async () => ({ status }) },
+    command: async () => { sends++; }, retry: async () => { sends++; } }, { pendingStorage: storage });
+  await assert.rejects(client.resolve({ operationId: 'old' }), /CONFIRMATION_REQUIRED/);
+  await assert.rejects(client.resolve({ operationId: 'old', confirmed: true }), /UNCERTAIN/);
+  status = 'abandoned';
+  await assert.rejects(client.resume(), /EXPLICIT_REAPPLICATION/);
+  await client.resolve({ operationId: 'old', confirmed: true });
+  assert.equal(storage.load(), null); assert.equal(sends, 0);
+  assert.deepEqual(storage.resolved(), [{ pending, status: 'abandoned', resolvedAt: 100 }]);
+  assert.equal(storage.lastOperationId(), 'old');
+  await storage.reserve({ ...pending, operationId: 'new' });
+  assert.equal(await storage.resolve('old', 'needsReapply'), false);
+  assert.equal(storage.load().operationId, 'new');
+});
+
+test('invalid trimmed input and unavailable atomic storage never create a pending command', async () => {
+  const f = pendingFixture(), pendingStorage = f.open(); let sends = 0;
+  const session = { command: async () => { sends++; } }, client = createAssistanceClient(session, { pendingStorage });
+  for (const input of [{ stepId: ' ', text: 'Prepare' }, { stepId: 's1', text: '\n ' }]) {
+    assert.throws(() => client.selectStep(input), /INPUT_INVALID/);
+  }
+  await assert.rejects(client.request({ question: ' \n', cookingStepId: 's1', contextRevision: 'r1' }), /INPUT_INVALID/);
+  await assert.rejects(client.request({ question: 'Help', cookingStepId: 's1', contextRevision: 'r1', kind: 'unknown' }), /INPUT_INVALID/);
+  assert.equal(pendingStorage.load(), null); assert.equal(sends, 0);
+  const unavailable = createAssistanceClient(session, { pendingStorage: createPendingStorage({ key: 'other', storage: f.storage, locks: null }) });
+  await assert.rejects(unavailable.selectStep({ stepId: 's1', text: 'Prepare' }), /CROSS_TAB_LOCK_UNAVAILABLE/);
+  assert.equal(sends, 0);
 });
 
 test('actual native kitchen definition correlates a second-device response and survives reopen',

@@ -118,9 +118,21 @@ answer does not change inventory, make a purchase, grant a role, or publish code
 
 The client stores its operation reference before the first submission. A lost
 response leaves the same command, inputs and operation ID available for inspect
-and exact retry after reload. An abandoned attempt requires deliberate
-reapplication after reviewing the new selected history. The example does not
-automatically manufacture a replacement attempt.
+and exact retry after reload. Its storage adapter uses an exclusive Web Lock
+around one atomic localStorage record, so tabs sharing the same application key
+cannot overwrite each other's pending slot. Acknowledge clears only the inspected
+operation ID. If Web Locks or durable browser storage are unavailable, submission
+fails before sending; use a supported browser or an authorized native participant.
+Blank/oversized input is rejected before retention.
+
+For an `abandoned` or `needsReapply` attempt, **Review and release abandoned
+operation** asks for explicit confirmation, retains the exact original reference
+under **Released operation references**, and clears only that blocking slot.
+Inspect the old native operation from that list. This action never submits a
+replacement; review the current history before deliberately starting new work.
+Uncertain operations remain reserved for inspection and exact retry. Resolution
+history is bounded to 100 records; export and review retained references before
+deliberately archiving them if that limit is reached.
 
 Application `applied`, peer `shared`, webhook accepted and assistant replied are
 different observations. The page renders replies from `session.changes()` and a

@@ -2,6 +2,7 @@ import { connectApplicationWorker } from '@chronolog/peer-session/browser';
 import { serveWorkerWebRtcConnections } from '@chronolog/peer-session/webrtc';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createAssistanceClient } from './client.mjs';
+import { createPendingStorage } from './pending-storage.mjs';
 import { visibleAssistanceStatus } from './projection.mjs';
 import { createLiveView } from './helpers/live-view.mjs';
 
@@ -11,13 +12,16 @@ const configuration = await fetch(new URL('./configuration.json', import.meta.ur
   return response.json();
 });
 const storageKey = `tendriller-kitchen-${configuration.applicationId}:pending`;
+const pendingStorage = createPendingStorage({ key: storageKey });
 let worker, rtc, session, client, liveView, busy = false, operationRead = 0;
-const pending = () => JSON.parse(localStorage.getItem(storageKey) || 'null');
+let terminalOperationId;
+const pending = () => pendingStorage.load();
 function controls() {
   const unresolved = Boolean(pending());
   $('#ask').disabled = $('#select-step').disabled = !session || busy || unresolved;
-  $('#inspect').disabled = !session || busy || !(unresolved || localStorage.getItem(`${storageKey}:last-operation`));
+  $('#inspect').disabled = !session || busy || !(unresolved || pendingStorage.lastOperationId());
   $('#retry').disabled = !session || busy || !unresolved;
+  $('#resolve').disabled = !session || busy || !terminalOperationId || pending()?.operationId !== terminalOperationId;
   $('#create-device').disabled = Boolean(session) || busy || unresolved;
   $('#connect').disabled = Boolean(session) || busy;
   $('#close').disabled = !session;
@@ -62,16 +66,30 @@ async function inspectOperation() {
   const record = await client.inspect();
   if (session !== currentSession || read !== operationRead) return;
   if (record) {
+    terminalOperationId = ['abandoned', 'needsReapply'].includes(record.state?.status) ? record.pending.operationId : undefined;
     $('#operation').textContent = `Operation ${record.pending.operationId}: ${record.state?.status ?? 'outcome unknown'}${record.state?.outcome ? ` (${record.state.outcome})` : ''}. Peer retention is separate.`;
-    if (record.state?.status === 'applied') await client.acknowledge();
+    if (record.state?.status === 'applied') await client.acknowledge(record.pending.operationId);
   } else {
-    const operationId = localStorage.getItem(`${storageKey}:last-operation`);
+    terminalOperationId = undefined;
+    const operationId = pendingStorage.lastOperationId();
     if (operationId) {
       const state = await currentSession.operations.get(operationId);
       if (session !== currentSession || read !== operationRead) return;
       $('#operation').textContent = `Last operation ${operationId}: ${state?.status ?? 'not visible'}${state?.outcome ? ` (${state.outcome})` : ''}. Peer retention is separate.`;
     }
   }
+  $('#resolved-operations').replaceChildren(...pendingStorage.resolved().map(value => {
+    const item = node('p', `${value.pending.operationId}: ${value.status}; released after review. `);
+    const inspect = node('button', 'Inspect original operation', 'secondary');
+    inspect.onclick = async () => {
+      const currentSession = session;
+      try {
+        const state = await currentSession.operations.get(value.pending.operationId);
+        if (session === currentSession) $('#operation').textContent = `Original operation ${value.pending.operationId}: ${state?.status ?? 'not visible'}. No reapplication was requested.`;
+      } catch (error) { report(error); }
+    };
+    item.append(inspect); return item;
+  }));
   controls();
 }
 async function refresh() {
@@ -118,13 +136,7 @@ $('#connect').onclick = async () => {
     if (!window.tendril) throw Error('Open the signed published page to connect this application.');
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
-    client = createAssistanceClient(session, {
-      loadPending: pending,
-      savePending(value) {
-        if (value) localStorage.setItem(`${storageKey}:last-operation`, value.operationId);
-        localStorage.setItem(storageKey, JSON.stringify(value)); controls();
-      },
-    });
+    client = createAssistanceClient(session, { pendingStorage });
     session.participation.onStatus(status => {
       $('#connection').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}. Keep an authorized native participant running.`;
     });
@@ -155,7 +167,7 @@ async function act(action) {
       $('#result').textContent = `Application outcome: ${state.outcome}. Check the original operation after any later recovery.`;
     }
     await refresh();
-  } catch (error) { report(Error(`${error.message} Inspect or retry the original operation; keep its identity.`)); }
+  } catch (error) { report(Error(pending() ? `${error.message} Inspect or retry the original operation; keep its identity.` : error.message)); }
   finally { busy = false; controls(); }
 }
 $('#step-form').onsubmit = event => { event.preventDefault(); void act(() => client.selectStep({ stepId: $('#step-id').value.trim(), text: $('#step-text').value.trim() })); };
@@ -169,6 +181,22 @@ $('#ask-form').onsubmit = event => {
 };
 $('#inspect').onclick = () => refresh().catch(report);
 $('#retry').onclick = () => act(() => client.resume());
+$('#resolve').onclick = async () => {
+  busy = true; controls();
+  try {
+    const record = await client.inspect();
+    if (!record || !['abandoned', 'needsReapply'].includes(record.state?.status)) throw Error('Inspect the current operation before resolving it.');
+    if (!window.confirm(`Release the blocked slot for ${record.pending.operationId} (${record.state.status})? Its original reference will be retained. Nothing will be reapplied; review the current history before starting new work.`)) return;
+    await client.resolve({ operationId: record.pending.operationId, confirmed: true });
+    $('#result').textContent = 'Original operation retained for inspection. The slot is available; review the current history before starting new work.';
+    await refresh();
+  } catch (error) { report(error); }
+  finally { busy = false; controls(); }
+};
+window.addEventListener('storage', event => {
+  if (event.key !== storageKey) return;
+  controls(); if (client) void inspectOperation().catch(report);
+});
 $('#close').onclick = async () => {
   liveView?.close(); await session?.close(); rtc?.close(); worker?.terminate();
   session = undefined; $('#editor').disabled = true;
