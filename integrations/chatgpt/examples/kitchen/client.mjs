@@ -12,6 +12,8 @@ export function createAssistanceClient(session, { savePending, loadPending, now 
     return { operationId, operation };
   }
   return {
+    selectStep({ stepId, text }) { return submit('setCookingStep', { stepId, text }, randomId()); },
+    cancel(requestId) { return submit('cancelAssistance', { requestId }, randomId()); },
     async request({ question, kind = 'recipe_help', cookingStepId, contextRevision, ttlMs = 900000 }) {
       if (!Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > 86400000) throw Error('ASSISTANCE_TTL_INVALID');
       if (await loadPending()) throw Error('ASSISTANCE_PENDING_OPERATION_UNRESOLVED');
