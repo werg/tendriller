@@ -1,24 +1,33 @@
 /** Retain the operation reference before invoking a command. The session owns signed attempts. */
-export function createAssistanceClient(session, { savePending, loadPending, now = Date.now,
+export function createAssistanceClient(session, { pendingStorage, now = Date.now,
   randomId = () => globalThis.crypto.randomUUID() } = {}) {
-  if (typeof savePending !== 'function' || typeof loadPending !== 'function') throw Error('ASSISTANCE_PENDING_STORAGE_REQUIRED');
+  if (!['load', 'reserve', 'clear', 'resolve'].every(name => typeof pendingStorage?.[name] === 'function')) throw Error('ASSISTANCE_PENDING_STORAGE_REQUIRED');
+  const loadPending = () => pendingStorage.load();
+  function text(value, maximum) {
+    if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) throw Error('ASSISTANCE_INPUT_INVALID');
+    return value.trim();
+  }
   async function submit(command, input, operationId) {
-    const existing = await loadPending();
     const pending = { command, input, operationId };
-    if (existing && JSON.stringify(existing) !== JSON.stringify(pending)) throw Error('ASSISTANCE_PENDING_OPERATION_UNRESOLVED');
-    await savePending(pending);
+    await pendingStorage.reserve(pending);
     // Do not wait indefinitely for application/retention in the user gesture.
     const operation = await session.command(command, input, { operationId });
     return { operationId, operation };
   }
   return {
-    selectStep({ stepId, text }) { return submit('setCookingStep', { stepId, text }, randomId()); },
-    cancel(requestId) { return submit('cancelAssistance', { requestId }, randomId()); },
-    async request({ question, kind = 'recipe_help', cookingStepId, contextRevision, ttlMs = 900000 }) {
+    selectStep({ stepId, text: description }) {
+      return submit('setCookingStep', { stepId: text(stepId, 128), text: text(description, 1000) }, randomId());
+    },
+    cancel(requestId) { return submit('cancelAssistance', { requestId: text(requestId, 128) }, randomId()); },
+    async request({ question, kind = 'recipe_help', cookingStepId, cookingStepEventId, contextRevision, ttlMs = 900000 }) {
       if (!Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > 86400000) throw Error('ASSISTANCE_TTL_INVALID');
-      if (await loadPending()) throw Error('ASSISTANCE_PENDING_OPERATION_UNRESOLVED');
+      question = text(question, 4000); cookingStepId = text(cookingStepId, 128); contextRevision = text(contextRevision, 16384);
+      cookingStepEventId = text(cookingStepEventId, 256);
+      if (!['recipe_help', 'inventory_review', 'general'].includes(kind)) throw Error('ASSISTANCE_INPUT_INVALID');
+      const expiresAtMs = now() + ttlMs;
+      if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs < 1 || expiresAtMs > 8640000000000000) throw Error('ASSISTANCE_TTL_INVALID');
       const requestId = randomId(), operationId = randomId();
-      const input = { requestId, kind, question, cookingStepId, contextRevision, expiresAtMs: now() + ttlMs };
+      const input = { requestId, kind, question, cookingStepId, cookingStepEventId, contextRevision, expiresAtMs };
       return { requestId, ...await submit('requestAssistance', input, operationId) };
     },
     async inspect() {
@@ -37,13 +46,23 @@ export function createAssistanceClient(session, { savePending, loadPending, now 
       const operation = await session.retry(pending.operationId);
       return { operationId: pending.operationId, operation };
     },
-    async acknowledge() {
+    async acknowledge(operationId) {
       const pending = await loadPending();
       if (!pending) return;
+      if (operationId !== undefined && pending.operationId !== operationId) return;
       const state = await session.operations.get(pending.operationId);
       if (state?.status !== 'applied') throw Error('ASSISTANCE_OUTCOME_UNCERTAIN');
-      await savePending(null);
+      await pendingStorage.clear(pending.operationId);
       return state;
+    },
+    async resolve({ operationId, confirmed } = {}) {
+      if (confirmed !== true) throw Error('ASSISTANCE_RESOLUTION_CONFIRMATION_REQUIRED');
+      const pending = await loadPending();
+      if (!pending || pending.operationId !== operationId) throw Error('ASSISTANCE_PENDING_OPERATION_CHANGED');
+      const state = await session.operations.get(operationId);
+      if (!['abandoned', 'needsReapply'].includes(state?.status)) throw Error('ASSISTANCE_OUTCOME_UNCERTAIN');
+      if (!await pendingStorage.resolve(operationId, state.status)) throw Error('ASSISTANCE_PENDING_OPERATION_CHANGED');
+      return { operationId, state };
     },
   };
 }

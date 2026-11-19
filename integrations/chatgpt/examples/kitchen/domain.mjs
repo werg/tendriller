@@ -1,5 +1,5 @@
 import { defineApplication, defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
-import { projectKitchen } from './projection.mjs';
+import { projectKitchen, summarizeKitchen, boundAssistance } from './projection.mjs';
 
 const id = { type: 'string', minLength: 1, maxLength: 128 };
 const revision = { type: 'string', minLength: 1, maxLength: 16384 };
@@ -21,13 +21,14 @@ function readKitchen(view) {
 
 // This is a NEW application definition. A UI release cannot replace the
 // immutable definition of an already configured kitchen application.
-export const definition = defineApplication({ id: 'kitchen-assistance', version: '1',
+export const definition = defineApplication({ id: 'kitchen-assistance', version: '2',
   commands: {
     setCookingStep: command('Select the current cooking step; previous answers remain visible as stale.',
       object({ stepId: id, text: { type: 'string', minLength: 1, maxLength: 1000 } }), 'step.selected'),
     requestAssistance: command('Retain one explicit request for help. Preserve operationId on uncertain replies.', object({
       requestId: id, kind: { type: 'string', enum: ['recipe_help', 'inventory_review', 'general'] },
       question: { type: 'string', minLength: 1, maxLength: 4000 }, cookingStepId: id, contextRevision: revision,
+      cookingStepEventId: { type: 'string', minLength: 1, maxLength: 256 },
       expiresAtMs: { type: 'integer', minimum: 1, maximum: 8640000000000000 },
     }), 'help.requested'),
     replyToAssistance: command('Retain a response tied to an immutable request event; the query labels stale or conflicting facts.', object({
@@ -40,11 +41,11 @@ export const definition = defineApplication({ id: 'kitchen-assistance', version:
       object({ requestId: id }), 'help.cancelled'),
   },
   queries: {
-    kitchenContext: defineQuery({ description: 'Read the current step and selected-history assistance requests.',
-      input: { type: 'null' }, read: readKitchen }),
-    assistanceStatus: defineQuery({ description: 'Read one request, canonical response, stale replies, conflicts and expiry timestamp.',
+    kitchenContext: defineQuery({ description: 'Read the current step and at most 20 compact recent-request summaries; use assistanceStatus for details.',
+      input: { type: 'null' }, read(view) { return summarizeKitchen(readKitchen(view)); } }),
+    assistanceStatus: defineQuery({ description: 'Read one request, canonical response, bounded recent replies/conflicts, total counts and expiry timestamp.',
       input: object({ requestId: id }), read(view, { requestId }) {
-        return readKitchen(view).requests.find(request => request.requestId === requestId) ?? null;
+        return boundAssistance(readKitchen(view).requests.find(request => request.requestId === requestId));
       } }),
   },
 });

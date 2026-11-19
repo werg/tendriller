@@ -16,8 +16,12 @@
 <form id="ask-form"><label for="question">What would you like help with?</label><textarea id="question" maxlength="4000" placeholder="How can I tell when this is ready?" required></textarea><button id="ask">Ask assistant</button></form>
 </fieldset><p id="operation" role="status">No command submitted in this browser.</p>
 <button id="inspect" class="secondary" disabled>Inspect saved operation</button><button id="retry" class="secondary" disabled>Retry original operation</button>
+<button id="resolve" class="secondary" disabled>Review and release abandoned operation</button>
+<details><summary>Released operation references</summary><div id="resolved-operations"></div></details>
 <p id="result" role="status"></p></section>
 <section><h2>Requests and answers</h2><p id="data-status">No selected-history read yet.</p><div id="requests"></div>
+<form id="request-lookup"><label for="request-id">Find an older request by ID</label><input id="request-id" maxlength="128" required><button class="secondary">Read request</button></form>
+<div id="request-details" aria-live="polite"></div>
 <small>“Requested” means the application retained the request. A webhook receipt, assistant response, applied command, and peer retention are separate observations. This page does not infer delivery from a successful write.</small></section>
 <footer><p>No microphone or camera is started by this example. An enrolled native participant must remain available for shared work. If a chat cannot receive background events, copy the request reference and ask it to read the current state through the connected tools.</p></footer>
 <script type="module" src="./page.mjs"></script></html>

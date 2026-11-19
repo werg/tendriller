@@ -5,6 +5,7 @@ import { bytesDigest, bytesToHex, describeApplication, eventExecutionManifest,
   executionManifestArtifacts, participantGrant, signTransitionRequest, verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { definition } from './domain.mjs';
+import { createEnrollmentManager } from './enrollment.mjs';
 import { devicePath, bridgeDevicePath, project, readPrivate, savePrivate } from './local.mjs';
 
 export async function createBridgeDevice() {
@@ -80,24 +81,18 @@ export async function initializeProject() {
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
-export async function enrollBrowser(publicKey) {
+export async function enrollBrowser(publicKey, action = 'enroll', reviewDigest) {
   if (!/^[a-f0-9]{64}$/.test(publicKey ?? '')) throw Error('Copy the 64-character public key displayed by your own browser.');
   const { host } = await project(), descriptor = await readPrivate('descriptor.json');
-  const info = await host.info();
-  if (typeof info.owner_account_id !== 'string') {
-    throw Error('This host must expose authenticated info.owner_account_id; update the host before using this tutorial enrollment.');
-  }
-  const savedName = `enroll-${publicKey}.json`;
-  const previous = await readPrivate(savedName, true);
-  if (previous) {
-    // Lost replies resend the exact signed request, grants and account binding.
-    await host.peers.selectGeneration(previous.request, { control: previous.control });
-    await verifyAuthorityBundle(await host.peers.application(), descriptor);
-    return { enrolled: publicKey, next: 'Run npm run peer, then click Connect existing device in the page.' };
-  }
-  const authority = await host.peers.application();
-  const verified = await verifyAuthorityBundle(authority, descriptor);
-  if (verified.grant(publicKey)) throw Error('This device already has a grant. Inspect its current rights instead of replacing them.');
+  const manager = createEnrollmentManager({ host, descriptor, read: readPrivate, save: savePrivate,
+    prepare: input => prepareEnrollment({ ...input, descriptor }) });
+  if (action === 'review') return manager.review(publicKey);
+  if (action === 'approve') return manager.approve(publicKey, reviewDigest);
+  if (action !== 'enroll') throw Error('Unknown enrollment action.');
+  return manager.enroll(publicKey);
+}
+
+async function prepareEnrollment({ publicKey, ownerAccountId, bundle: authority, verified, descriptor }) {
   const device = await openNativeDevice({ path: devicePath });
   let session;
   try {
@@ -112,7 +107,7 @@ export async function enrollBrowser(publicKey) {
     const grant = { ...participantGrant(publicKey), coordinator: false, recovery: false };
     const control = { epoch: current.epoch, keyDigest: current.keyDigest,
       grants: [...current.grants, grant], recoveryFloor: current.recoveryFloor,
-      accounts: [{ publicKey, accountId: info.owner_account_id }] };
+      accounts: [{ publicKey, accountId: ownerAccountId }] };
     const request = await signTransitionRequest({
       applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
       policy: descriptor.payload.policy, transitionId: `enroll-${randomUUID()}`,
@@ -120,10 +115,7 @@ export async function enrollBrowser(publicKey) {
       requester: device.identity.publicKey, controlRevision: current.revision + 1,
       reason: 'control-change', base,
     }, device.identity);
-    await savePrivate(savedName, { request, control });
-    await host.peers.selectGeneration(request, { control });
-    await verifyAuthorityBundle(await host.peers.application(), descriptor);
-    return { enrolled: publicKey, next: 'Run npm run peer, then click Connect existing device in the page.' };
+    return { request, control };
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
@@ -133,8 +125,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const result = action === 'create' ? await createProject(...args)
       : action === 'init' ? await initializeProject()
         : ['enroll', 'enroll-bridge'].includes(action) ? await enrollBrowser(args[0])
+          : action === 'enroll-review' ? await enrollBrowser(args[0], 'review')
+            : action === 'enroll-approve' ? await enrollBrowser(args[0], 'approve', args[1])
           : action === 'bridge-key' ? await createBridgeDevice()
-          : (() => { throw Error('Use create, init, enroll, bridge-key, or enroll-bridge. See README.md.'); })();
+          : (() => { throw Error('Use create, init, enroll, enroll-review, enroll-approve, bridge-key, or enroll-bridge. See README.md.'); })();
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
 }

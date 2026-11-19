@@ -144,7 +144,8 @@ test('native kitchen request traverses authenticated MCP and durable signed deli
       const context = await page.session.query('kitchenContext', null);
       const question = 'Should I lower the heat before adding cream?';
       await applyPage('requestAssistance', { requestId: 'help-1', kind: 'recipe_help', question,
-        cookingStepId: 'cream-step', contextRevision: JSON.stringify(context.revision), expiresAtMs: Date.now() + 900000 }, 'request-help-1');
+        cookingStepId: 'cream-step', cookingStepEventId: context.value.currentStep.eventId,
+        contextRevision: JSON.stringify(context.revision), expiresAtMs: Date.now() + 900000 }, 'request-help-1');
       for (const subscriptionId of [help.id, inventory.id]) {
         const before = (await store.read()).subscriptions[subscriptionId];
         const batch = await bridge.readEvents(applicationId, { cursor: before.sourceCursor, limit: 128 });

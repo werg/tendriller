@@ -7,6 +7,8 @@ the maintained [first-app tutorial](../../../../docs/tutorial/README.md).
 The fixture does not change an existing kitchen's immutable application
 definition. Create a new application or use a separately supported evolution
 procedure when adopting these commands in an existing project.
+The current fixture definition is version 2: requests require the original
+`cookingStepEventId`. Republishing this page cannot upgrade a version 1 domain.
 
 ## Run the application
 
@@ -32,6 +34,10 @@ npm run peer
 Only `page/` is publishable. `.tendriller/` contains credentials, the creator's
 signer, epoch keys and saved signed transitions. Keep it private and retain it
 across restarts. The native creator peer must stay available for coordination.
+Setup records are write-once: each is flushed to a private temporary file before
+atomic installation without replacement. Interrupted temporary files are never
+read as completed setup. Retrying checks the completed bytes exactly; it does
+not rotate a signer, epoch key or saved transition.
 Stop it before another CLI process opens the same creator device store. A page
 preview on another origin is intentionally unable to use the published browser
 session; use the actual signed page for connected testing.
@@ -78,6 +84,25 @@ Chronolog grants, and the destination subscription remain independent
 prerequisites. Use the integration's configuration and diagnostics for those
 layers. Enrollment by itself does not subscribe any ChatGPT conversation.
 
+If another enrollment advances authority before a saved request ever commits,
+`enroll` reports `reviewRequired` and sends no replacement. Review a new signed
+request against the current generation, including all grants, account binding
+and selected prefix, then approve that exact digest:
+
+```sh
+npm run enroll:review -- VERIFIED_PUBLIC_KEY
+# Inspect the full returned review. Stop if its key, account, grants or prefix differ from your intent.
+npm run enroll:approve -- VERIFIED_PUBLIC_KEY EXACT_REVIEW_DIGEST
+```
+
+This works for browser and bridge enrollments. A changed generation or owner
+invalidates an unapproved review. The reviewed replacement link is saved before
+the first send; retrying `enroll` after a lost reply follows that exact request.
+Original requests and reviews are never overwritten. A committed transition
+always retains exact replay, even after later controls; replay cannot restore a
+subsequently revoked grant. The result reports the currently verified grant
+separately from historical transition commitment.
+
 ## Read and answer a request
 
 The canonical native query is:
@@ -102,6 +127,20 @@ native `basedOn` is a structured revision captured by the fresh read. Preserve
 those distinct values. Do not serialize the native revision into the native
 `basedOn` parameter.
 
+When creating a request, copy both `cookingStepId` and `cookingStepEventId` from
+the same `kitchenContext` snapshot (`currentStep.stepId` and
+`currentStep.eventId`). If the step changes before the request is ordered, its
+original event binding makes the answer visibly stale even when the step name
+is reused. The projection never substitutes the newer step event.
+
+`kitchenContext` returns the current step, total request count and the latest 20
+compact request summaries. It excludes full questions, context revisions and
+answers. Open **Read request and answer**, or enter an older request ID, to query
+`assistanceStatus`. That query preserves the full question and canonical answer,
+up to 8 recent replies and 32 conflict references, plus totals and truncation
+flags. Older facts remain in native history; the bounded page result does not
+erase or declare them resolved.
+
 The domain records facts. Its query chooses the first valid response, keeps
 additional answers and duplicate request IDs visible as conflicts, and labels a
 changed cooking step as stale. It also records late response evidence from the
@@ -118,9 +157,21 @@ answer does not change inventory, make a purchase, grant a role, or publish code
 
 The client stores its operation reference before the first submission. A lost
 response leaves the same command, inputs and operation ID available for inspect
-and exact retry after reload. An abandoned attempt requires deliberate
-reapplication after reviewing the new selected history. The example does not
-automatically manufacture a replacement attempt.
+and exact retry after reload. Its storage adapter uses an exclusive Web Lock
+around one atomic localStorage record, so tabs sharing the same application key
+cannot overwrite each other's pending slot. Acknowledge clears only the inspected
+operation ID. If Web Locks or durable browser storage are unavailable, submission
+fails before sending; use a supported browser or an authorized native participant.
+Blank/oversized input is rejected before retention.
+
+For an `abandoned` or `needsReapply` attempt, **Review and release abandoned
+operation** asks for explicit confirmation, retains the exact original reference
+under **Released operation references**, and clears only that blocking slot.
+Inspect the old native operation from that list. This action never submits a
+replacement; review the current history before deliberately starting new work.
+Uncertain operations remain reserved for inspection and exact retry. Resolution
+history is bounded to 100 records; export and review retained references before
+deliberately archiving them if that limit is reached.
 
 Application `applied`, peer `shared`, webhook accepted and assistant replied are
 different observations. The page renders replies from `session.changes()` and a

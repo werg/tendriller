@@ -163,8 +163,8 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     }),
     tool('request_assistance', 'Submit the declared kitchen request command. Keep operationId and all request fields unchanged after an uncertain result.', shape({ ...op,
       requestId: string(), kind: { type: 'string', enum: ['recipe_help', 'inventory_review', 'general'] }, question: string(4000),
-      cookingStepId: string(), contextRevision: string(16384), expiresAtMs: { type: 'integer', minimum: 1, maximum: 8640000000000000 },
-    }, ['applicationId', 'operationId', 'requestId', 'kind', 'question', 'cookingStepId', 'contextRevision', 'expiresAtMs']), ['applications:write'], (principal, args) => {
+      cookingStepId: string(), cookingStepEventId: string(256), contextRevision: string(16384), expiresAtMs: { type: 'integer', minimum: 1, maximum: 8640000000000000 },
+    }, ['applicationId', 'operationId', 'requestId', 'kind', 'question', 'cookingStepId', 'cookingStepEventId', 'contextRevision', 'expiresAtMs']), ['applications:write'], (principal, args) => {
       const { applicationId, operationId, basedOn, ...input } = args; return command(principal, applicationId, 'requestAssistance', input, { operationId, ...(basedOn ? { basedOn } : {}) });
     }, { readOnly: false }),
     tool('reply_to_assistance', 'Post one answer to the immutable request event via a declared Chronolog command. It does not change inventory or purchase anything.', shape({ ...op,

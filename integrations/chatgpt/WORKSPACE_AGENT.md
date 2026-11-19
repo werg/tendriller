@@ -66,6 +66,10 @@ a crashed sender's bounded lease expires. The adapter checks current lease and
 state after asynchronous authorization immediately before provider I/O. A valid
 late acceptance receipt remains evidence even after its original lease expires;
 it cannot make a recovered source current again or regress an observed run.
+After asynchronous consent, the adapter rereads the native source. The bridge's
+synchronous `assertSelection(applicationId, revision)` fences that read after
+the final durable lease lookup, immediately before starting the provider request.
+Recovery while consent or storage is awaited therefore prevents new egress.
 
 The journal defaults to at most 10,000 operations (`maxOperations`, configurable
 from 1 to 100,000). At capacity, new operations fail before provider I/O while

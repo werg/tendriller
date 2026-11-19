@@ -19,7 +19,9 @@ export function projectKitchen(events) {
       requests.set(p.requestId, { requestId: p.requestId, requestEventId: event.id,
         sourceOperationId: event.operationId, author: event.author, kind: p.kind,
         question: p.question, cookingStepId: p.cookingStepId, contextRevision: p.contextRevision,
-        capturedStepEventId: currentStep?.stepId === p.cookingStepId ? currentStep.eventId : null,
+        // Bind to the event observed by the requester, never to a newer step
+        // that happened to be selected before this request was ordered.
+        capturedStepEventId: p.cookingStepEventId ?? null,
         expiresAtMs: p.expiresAtMs, answer: null, replies: [], conflicts: [], cancelled: false });
       continue;
     }
@@ -45,12 +47,31 @@ export function projectKitchen(events) {
     }
   }
   return { currentStep, requests: [...requests.values()].map(request => {
-    const changedStep = currentStep !== null && (currentStep.stepId !== request.cookingStepId ||
+    const changedStep = currentStep === null || (currentStep.stepId !== request.cookingStepId ||
       currentStep.eventId !== request.capturedStepEventId);
     const status = request.cancelled ? 'cancelled' : changedStep ? 'stale'
       : request.conflicts.length ? 'conflicting' : request.answer ? 'answered' : 'requested';
     return { ...request, status, currentStepId: currentStep?.stepId ?? null, changedStep };
   }) };
+}
+
+/** The page's initial read stays small even when the retained history is long. */
+export function summarizeKitchen(value) {
+  const recent = value.requests.slice(-20);
+  return { currentStep: value.currentStep, requestCount: value.requests.length,
+    requestsTruncated: recent.length < value.requests.length,
+    requests: recent.map(request => ({ requestId: request.requestId, cookingStepId: request.cookingStepId,
+      questionPreview: request.question.slice(0, 240), questionTruncated: request.question.length > 240,
+      status: request.status, expiresAtMs: request.expiresAtMs, changedStep: request.changedStep,
+      answerAvailable: Boolean(request.answer), conflictCount: request.conflicts.length })) };
+}
+
+/** Canonical answer remains available; repeated/conflicting facts are bounded. */
+export function boundAssistance(request) {
+  if (!request) return null;
+  return { ...request, replies: request.replies.slice(-8), replyCount: request.replies.length,
+    repliesTruncated: request.replies.length > 8, conflicts: request.conflicts.slice(-32),
+    conflictCount: request.conflicts.length, conflictsTruncated: request.conflicts.length > 32 };
 }
 
 export function visibleAssistanceStatus(request, now = Date.now()) {
