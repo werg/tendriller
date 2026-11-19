@@ -4,6 +4,9 @@ This is a repeatable evaluation protocol for the journey from Tendriller's
 homepage to a working session-connected application. It addresses a specific
 failure: an agent can explain the architecture yet abandon the native application
 lifecycle when it cannot find concrete setup instructions.
+It also tests whether the agent treats provisioning and a connected process as
+part of the requested deliverable, and whether discovered capabilities become
+actual implementation choices instead of unused reading material.
 
 **This document is a test plan, not a passing test result.** Repository checks,
 link checks and existing application qualification do not establish that a fresh
@@ -48,6 +51,7 @@ useful evidence but is not an unassisted completion.
 | --- | --- |
 | Discover | Starting from the domain, the agent finds a task-oriented build route and the compatible public artifacts through published links. Record the URLs followed and any broken or inaccessible resource. |
 | Create and claim | The agent saves a private handle, gives the owner the page URL, waits for the real claim, and distinguishes claim from application configuration. |
+| Reuse | The agent uses the task/capability map and imports or adapts current session/helpers where appropriate. Record exact files used and whether historical contrib links were mistaken for current APIs. |
 | Define retained work | The authored application has a real checklist definition, declared commands and a coherent query/read path. Identify where an agent edits the model and UI for a different user request. |
 | Configure authority | The actual public definition and execution commitments are configured; device grants and account bindings are explicit. The first generation is selected using a retained signed creation transition before opening the session. No invented digest, fixture-only authority or copied private signer stands in for enrollment. |
 | Open and connect | Native and browser participants use the same application ID with their own authorized signing identities and persistent stores. The browser runs the session in its Worker. One participation controller owns connection/recovery behavior. Record actual session/participation status and selected transport. |
@@ -94,6 +98,7 @@ lossy recovery merely to obtain a green onboarding score.
 | Failure | Why the attempt does not pass |
 | --- | --- |
 | A FastAPI service, hosted database or another persistence stack replaces the session because setup was unclear. | The agent has bypassed the platform path under evaluation. An intentionally required external capability must be explained separately; it does not satisfy this checklist task's native-state criterion. |
+| The agent delivers a ZIP or local project and defers provisioning without attempting it. | The requested running application remains unbuilt. Record whether any real blocker was encountered or setup was simply treated as somebody else's prerequisite. |
 | The result is a static page, unconfigured application, or installed adapter with no observed peer exchange. | It demonstrates only an earlier checkpoint. |
 | The guide ends at undefined `session`, `authority`, `epochKeys`, `connectPeers` or an unknown `deployment.mjs`. | The first-app path still requires unprovided implementation knowledge. Record the exact unresolved variable/file and last successful step. |
 | The agent assumes page login or an API token is a publisher/device grant. | Host access and signed application authority remain separate. |
@@ -115,6 +120,7 @@ Keep a concise redacted report with these fields:
 | Discovery | Ordered entry URLs, failed reads, missing links/artifacts and the point where the agent first chose its implementation path. |
 | Human input | Every question/intervention and whether it concerned user intent, owner claim, legitimate authority, missing tool access or undocumented platform mechanics. |
 | Progress | First successful checkpoint, time to first observed shared command, total active work, and each unresolved stage. Record wall time separately from owner sign-in wait. |
+| First action and reuse | Time to the actual page creation/owner claim URL; the step at which a connected process was started; supplied modules imported/adapted; duplicated features and their stated reason. |
 | Behavior | Public application/device identities, command operation IDs and outcomes, coherent read evidence, same-device reopen, selected transport and publication receipt identity. Redact credentials and sensitive content. |
 | Artifacts | Authored application files and private build-record location, plus public-package provenance. Keep private bootstrap material out of any public report. |
 | Outcome | `complete`, `blocked`, `failed`, or `assisted`; exact reasons, first failing step, and whether the critical failure modes occurred. |
@@ -135,6 +141,7 @@ evidence from the cold-start evaluation:
 | --- | --- | --- |
 | `npm run check` | The configured contract, type, build, boundary, runtime, host, consumer and tools checks pass for that checkout. | A new agent can discover and compose an app from only the domain. |
 | `npm run check:release` | Core checks plus the configured browser gates pass. | A particular live service, owner sign-in or physical device is qualified. |
+| `npm run test:first-app -- --session-archive PATH` | The downloaded app runs against a packed host and real native/browser sessions, including exact retry and reopening. | An unaided agent naturally chooses that route or a temporary process survives the conversation. |
 | `node scripts/check-deployment.mjs https://SERVICE_HOST` | The script's public service, guide, automated-client and runtime probes succeed on that host. | Signed publication, device enrollment or application synchronization has been exercised by a fresh agent. |
 | [Three-repository qualification](RELEASE_COMPOSITION.md) | Recorded independent consumers compose the exact supplied core, Chronolog and cookbook artifacts under their stated scenarios. | The task-oriented entry path is comprehensible without maintainer help. |
 | This domain-only evaluation | The recorded agent attempt reaches or fails the concrete user outcome through naturally discovered resources. | Broader mobile, recovery, security or production guarantees outside its observed scenarios. |

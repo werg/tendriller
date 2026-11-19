@@ -4,12 +4,21 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 export const ONBOARDING_DOCS = Object.freeze([
-  'agent.md', 'docs/BUILD_AN_APP.md', 'docs/SESSION_BOOTSTRAP.md',
+  'agent.md', 'docs/CAPABILITIES.md', 'docs/AGENT_DELIVERY.md',
+  'docs/BUILD_AN_APP.md', 'docs/APP_PATTERNS.md', 'docs/AI_INPUT.md',
+  'docs/STATE_MODELS.md', 'docs/SESSION_BOOTSTRAP.md',
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md',
 ]);
 export const TUTORIAL_FILES = Object.freeze([
   '.gitignore', 'README.md', 'package.json', 'domain.mjs', 'setup.mjs',
   'session.mjs', 'local.mjs', 'build.mjs', 'index.html', 'page.mjs', 'worker.mjs',
+  'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
+  'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',
+  'media/inference-service.mjs', 'media/inference-protocol.mjs',
+  'media/inference-peer.mjs', 'media/provider-openai.mjs',
+  'sql/.gitignore', 'sql/README.md', 'sql/package.json', 'sql/local.mjs',
+  'sql/engine.mjs', 'sql/domain.mjs', 'sql/setup.mjs', 'sql/session.mjs',
+  'sql/demo.mjs', 'sql/worker.mjs',
 ]);
 export const TUTORIAL_DOWNLOAD = '/downloads/tendriller-first-app.tgz';
 

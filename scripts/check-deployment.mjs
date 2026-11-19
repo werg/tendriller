@@ -39,12 +39,45 @@ const guide = await (await get("/agent.md")).text();
 if (!guide.includes("Tendriller")) throw new Error("Agent guide is missing or incomplete");
 const landing = await (await get('/')).text();
 if (!landing.includes(`${base}/docs/BUILD_AN_APP.md`)) throw new Error('Homepage is missing the first-app entry point');
+const descriptor = await (await get('/api/service')).json();
+requireService(descriptor);
 const onboarding = await (await get('/.well-known/tendriller.json')).json();
 if (onboarding.start_here !== `${base}/docs/BUILD_AN_APP.md` ||
-    onboarding.starter !== `${base}/downloads/tendriller-first-app.tgz`)
+    onboarding.starter !== `${base}/downloads/tendriller-first-app.tgz` ||
+    onboarding.capabilities !== `${base}/.well-known/tendriller-capabilities.json`)
   throw new Error('Onboarding navigation must target this deployment');
-for (const path of ['/AGENTS.md', '/llms.txt', '/llms-full.txt', '/docs/BUILD_AN_APP.md',
-  '/docs/SESSION_BOOTSTRAP.md', '/docs/TROUBLESHOOTING.md']) {
+const capabilityResponse = await get('/.well-known/tendriller-capabilities.json');
+if (!capabilityResponse.headers.get('content-type')?.includes('application/json'))
+  throw new Error('Capability discovery must be readable JSON');
+const catalog = await capabilityResponse.json();
+if (catalog.schema_version !== 1 || catalog.contract !== descriptor.contract ||
+    catalog.core_release !== descriptor.core_release || catalog.device_permissions_probed !== false ||
+    catalog.guide !== `${base}/docs/CAPABILITIES.md` || catalog.starter !== onboarding.starter ||
+    !Array.isArray(catalog.capabilities))
+  throw new Error('Capability discovery must match this deployment without probing device permissions');
+const capabilityIds = new Set();
+const documents = new Set(['/AGENTS.md', '/llms.txt', '/llms-full.txt', '/docs/BUILD_AN_APP.md',
+  '/docs/CAPABILITIES.md', '/docs/SESSION_BOOTSTRAP.md', '/docs/TROUBLESHOOTING.md']);
+for (const entry of catalog.capabilities) {
+  if (typeof entry.id !== 'string' || capabilityIds.has(entry.id) ||
+      typeof entry.owner !== 'string' || !entry.owner || typeof entry.availability !== 'string' ||
+      !Array.isArray(entry.imports) || !entry.imports.length ||
+      !Array.isArray(entry.api) || !entry.api.length ||
+      !Array.isArray(entry.keywords) || !entry.keywords.length ||
+      typeof entry.example !== 'string' || !entry.example || typeof entry.boundary !== 'string' || !entry.boundary)
+    throw new Error('Capability discovery is missing unique task mappings, APIs or ownership boundaries');
+  capabilityIds.add(entry.id);
+  const guideUrl = new URL(entry.guide);
+  if (guideUrl.origin !== base || guideUrl.username || guideUrl.password || guideUrl.search || guideUrl.hash ||
+      !/^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(guideUrl.pathname))
+    throw new Error(`Capability ${entry.id} guide must target this deployment`);
+  documents.add(guideUrl.pathname);
+}
+for (const id of ['durable-state', 'sql-transactions', 'reactive-view', 'operation-state', 'signals',
+  'reviewed-evidence', 'camera', 'sensor-observation', 'voice', 'preview', 'credential-protected-inference',
+  'agent-runtime', 'signed-publication'])
+  if (!capabilityIds.has(id)) throw new Error(`Capability discovery is missing ${id}`);
+for (const path of documents) {
   const response = await get(path);
   if (!(response.headers.get('content-type') || '').match(/text\/(markdown|plain)/))
     throw new Error(`${path}: expected a readable public guide`);
@@ -56,7 +89,6 @@ if (!starter.headers.get('content-disposition')?.startsWith('attachment;'))
 const archive = new Uint8Array(await starter.arrayBuffer());
 if (archive[0] !== 0x1f || archive[1] !== 0x8b) throw new Error('First-app download is not a gzip archive');
 
-const descriptor = await (await get("/api/service")).json();
 // Browser Integrity Check can reject ordinary automated clients before this
 // Worker runs. Keep Python's default urllib user agent in the live smoke test.
 const automated = await get("/api/service", { "User-Agent": "Python-urllib/3.12" });
@@ -65,7 +97,6 @@ if (!(automated.headers.get("content-type") || "").includes("application/json"))
 }
 const automatedGuide = await (await get("/agent.md", { "User-Agent": "Python-urllib/3.12" })).text();
 if (!automatedGuide.includes("Tendriller")) throw new Error("Automated clients cannot read the agent guide");
-requireService(descriptor);
 if (!descriptor.limits?.participant) throw new Error('The service must advertise its filtered participant contract');
 const runtime = JSON.parse(readFileSync(new URL("../server/src/runtime-release.json",import.meta.url)));
 const manifest = await (await get(`/_tendril/runtime/${runtime.id}/manifest.json`)).json();

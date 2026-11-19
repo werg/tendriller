@@ -5,7 +5,13 @@
 ## Start here, in order
 
 - [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): recommended complete first application; create → claim → define state → configure authority and first generation → connect devices → publish → verify.
+- [Capability map](https://tendriller.dev/docs/CAPABILITIES.md): task keywords to existing APIs, exact runtime imports and current executable modules; state, reactive views, operations, camera, voice, inference and preview.
+- [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, surface the real owner claim, start the participant, and hand over the live page with receipt, process lifetime and resume evidence.
 - [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): complete native setup/session, browser Worker, UI and build files; follow the build guide for compatible public packages.
+- [Reusable application patterns](https://tendriller.dev/docs/APP_PATTERNS.md): importable live-view, operation-state and reviewed-input controllers over the real session.
+- [Reviewed media and inference](https://tendriller.dev/docs/AI_INPUT.md): camera/file or voice candidate, protected native provider request, editable review and explicit declared command.
+- [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): choose a concrete starter; identify signed definitions and exact optional engine artifacts before implementation.
+- [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview versus an explicitly composed real-session preview; no substitute persistence.
 - [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): what every setup file does, persistent identity, explicit enrollment and safe resume.
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries and reference snippets after setup.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): identify the incomplete stage and the exact next action.
@@ -15,6 +21,7 @@ Do not treat page creation or runtime installation as application completion. Ve
 ## Discovery and access
 
 - [Machine-readable onboarding](https://tendriller.dev/.well-known/tendriller.json): same-origin entry points, lifecycle, human authorization steps and responsibilities.
+- [Searchable capability manifest](https://tendriller.dev/.well-known/tendriller-capabilities.json): task vocabulary, APIs, imports, owner, example files and limits; not a device-permission probe.
 - [Full onboarding text](https://tendriller.dev/llms-full.txt): generated combined guide for clients that prefer one fetch.
 - [Service descriptor](https://tendriller.dev/api/service): current host contract, release and effective limits; HTTP Link headers point to onboarding.
 - [Contract schema](https://tendriller.dev/contract/v3.json): executable host metadata schema.

@@ -15,6 +15,7 @@ import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
 import { serviceDescriptor } from "./descriptor";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
+import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
 import { requireCreationOpen, reserveCreationIp } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
@@ -165,6 +166,10 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   }
   if (path === "/.well-known/tendriller.json" && publicRead) {
     const response = json(onboardingDescriptor(publicBase(env)), 200, { Link: onboardingLinks(publicBase(env)) });
+    return req.method === "HEAD" ? new Response(null, response) : response;
+  }
+  if (path === "/.well-known/tendriller-capabilities.json" && publicRead) {
+    const response = json(capabilityCatalog(publicBase(env)), 200, { Link: onboardingLinks(publicBase(env)) });
     return req.method === "HEAD" ? new Response(null, response) : response;
   }
   if (path === "/downloads/tendriller-first-app.tgz" && publicRead) {

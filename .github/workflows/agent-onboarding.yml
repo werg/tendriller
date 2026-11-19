@@ -54,3 +54,39 @@ jobs:
           path: core/.results/first-app*
           include-hidden-files: true
           if-no-files-found: ignore
+
+  sql-starter:
+    name: Guarded SQL starter from public artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          path: chronolog
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: core
+      - name: Build the exact native SQL engine for this runner
+        working-directory: chronolog
+        run: |
+          corepack pnpm install --frozen-lockfile
+          node tools/package-peer-session.mjs --sql-native
+      - run: npm run build:artifacts
+        working-directory: core
+      - name: Exercise SQL initialization, guarded writes and reopen
+        working-directory: core
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d014879e-sql.tgz" --sql-native-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sql-starter-qualification
+          path: core/.results/first-app-sql.json
+          include-hidden-files: true
+          if-no-files-found: ignore

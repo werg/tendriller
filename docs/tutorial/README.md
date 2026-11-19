@@ -34,8 +34,12 @@ opens its device store.
 
 The page exposes real connection/data state, local draft preservation, accepted
 versus rejected applied outcomes, operation inspection, exact retry and explicit
-close. Its localhost preview is clearly labeled layout-only. Follow the parent
-guide's deployed acceptance checks before reporting success.
+close. It also imports the supplied live-view, operation-state and reviewed-input
+helpers. Adapt these modules directly rather than rebuilding transport and state
+fetching around another backend. Its localhost preview is clearly labeled
+layout-only. Follow the parent guide's deployed acceptance checks before reporting
+success: deliver the running hosted application and explain which process must
+remain alive, as described in [Agent delivery](https://tendriller.dev/docs/AGENT_DELIVERY.md).
 
 | Source | Purpose |
 | --- | --- |
@@ -46,6 +50,33 @@ guide's deployed acceptance checks before reporting success.
 | `worker.mjs` | Browser device, owned session, authority and peer key acquisition |
 | `page.mjs`, `index.html` | Editable UI and public session facade |
 | `build.mjs` | Browser bundling and a public-only publication graph |
+| `helpers/` | Importable coherent views, operation observations and reviewed input |
+| `media/` | Camera/file and runtime voice controls; opt-in native inference participant |
+| `sql/` | Separate guarded SQL starter, exact engine setup and resumable transaction demo |
+
+## Extend the running application
+
+[Application patterns](https://tendriller.dev/docs/APP_PATTERNS.md) explains the
+helper interfaces and their ownership boundaries. These are application-owned
+source modules, not additional SDK exports or a second synchronization layer.
+
+The page's **Review a photo** controls work with manual review immediately. The
+optional **Analyze photo** path needs the native inference participant described
+in [Reviewed AI input](https://tendriller.dev/docs/AI_INPUT.md), an allowed browser
+device, an explicit request budget, and the owner's provider credentials. Run that
+participant instead of a second process opening the same native store. Analysis
+only suggests text; **Save reviewed observation** submits the reviewed command.
+OpenAI is the included provider and is named in the page's consent. Disclose a
+custom provider in the authored page before publishing that adaptation. Voice
+likewise supplies an editable draft, with typed input always available.
+
+For stock deductions or other guarded relational changes, follow
+[State models](https://tendriller.dev/docs/STATE_MODELS.md) and [the SQL starter](sql/README.md).
+It creates a separate application and needs the matching SQL-native engine
+archive. The events-only archive used above cannot run it. The SQL demo tests
+atomic two-bin transfers, rejection without partial changes, exact retry and
+reopen; its optional browser Worker is an integration source, not a second
+finished interface.
 
 The source uses public package exports and no qualification fixture imports.
 It is a small working composition to adapt, not a general automatic enrollment

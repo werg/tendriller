@@ -6,6 +6,9 @@ claim, initial authority/generation setup, a persistent native session, browser
 enrollment and verification. Agents starting from a domain should read
 [`/agent.md`](https://tendriller.dev/agent.md) or
 [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json).
+Deliver the [live page and connected participant](docs/AGENT_DELIVERY.md), starting
+provisioning early. The [capability map](docs/CAPABILITIES.md) leads directly to
+existing state, view, operation, camera, voice, reviewed-input and preview APIs.
 
 Tendriller hosts authenticated pages and participates in Chronolog through a filtered control transport. Each application uses one owned Chronolog session for commands, queries, applied views, operation state, live signals, replication and recovery. The host handles account access, signed membership and generation control, signed page-code publications, discovery and bounded connection introductions.
 
@@ -22,6 +25,11 @@ Open **Page options** on a published page to add it to your Home Screen. Support
 ## Start here
 
 - [Build an app](docs/BUILD_AN_APP.md): the recommended first working application, with complete tutorial files and checkpoints.
+- [Capabilities and reusable source](docs/CAPABILITIES.md): task keywords, exact imports, current helpers and their boundaries.
+- [Application patterns](docs/APP_PATTERNS.md): reactive coherent views, operation observation and explicitly reviewed input.
+- [Reviewed media and AI](docs/AI_INPUT.md): actual camera/file and voice controls, a credential-owning native inference participant, and a reviewed command.
+- [Events or SQL](docs/STATE_MODELS.md): concrete starters and the exact optional engine requirements for guarded transactions.
+- [Live delivery](docs/AGENT_DELIVERY.md): provisioning, process lifetime, conversation-handoff boundaries and evidence of completion.
 - [Session bootstrap](docs/SESSION_BOOTSTRAP.md): create and resume native identity, configure authority, enroll a browser and open the same application.
 - [Troubleshooting](docs/TROUBLESHOOTING.md): exact failing stages, safe retries and the next concrete action.
 - [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.

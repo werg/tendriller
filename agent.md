@@ -1,6 +1,13 @@
 # Build a Tendriller application
 
-**Start with [Build an app](docs/BUILD_AN_APP.md).** It takes you from a service
+**The deliverable is a running hosted application connected to the user's work.**
+Initiate provisioning, surface the concrete owner claim, configure the session,
+start the participant and publish as part of the task. Read
+[delivery and process lifetime](docs/AGENT_DELIVERY.md); source files alone do not
+establish the requested result.
+
+**Start with [Build an app](docs/BUILD_AN_APP.md)** and the
+[capability map](docs/CAPABILITIES.md). The guide takes you from a service
 domain to a small application with durable state, a native session, an enrolled
 browser Worker and a signed publication. Use its complete files first, then adapt
 the commands and UI to the user's task. The [session bootstrap](docs/SESSION_BOOTSTRAP.md)
@@ -11,14 +18,32 @@ explains the setup code. This page is the concise workflow and contract referenc
 1. Read that origin's `/api/service` for its contract/release and
    `/.well-known/tendriller.json` for the first-app guide and machine-readable route.
    `/llms.txt` is the ordered index; `/llms-full.txt` is the combined onboarding text.
+   Search `/.well-known/tendriller-capabilities.json` for the task's state, refresh,
+   media, voice and preview needs before implementing equivalent plumbing.
 2. Follow **create → claim → define state → configure authority and the first
    generation → connect devices → publish → verify** in the build guide.
-3. Ask for the owner's verified email when it is not known. The owner must open
-   the returned URL and complete sign-in. Do the remaining setup in the agent's
+3. Ask for the owner's verified email when it is not known. Create the real page
+   early and give its claim URL to the owner while preparing the application.
+   The owner must open it and complete sign-in. Do the remaining setup in the agent's
    supported runtime and preserve it so later invocations can resume.
 4. Finish only after a browser command is visible in a native read, a native
    command reaches the browser, reload retains state, and the selected signed
-   publication matches the built UI. Report any part you could not verify.
+   publication matches the built UI. Lead the handoff with the working page,
+   receipt and running process/resume details. Report any part you could not verify.
+
+## Reuse the supplied implementation
+
+Start from the downloadable source and actually import or adapt its session,
+reactive-view, operation-view, reviewed-input, camera and voice modules. The
+[pattern guide](docs/APP_PATTERNS.md) and [media/inference example](docs/AI_INPUT.md)
+identify those files. Record which current implementations you used; reading
+contrib cookbooks without applying their public APIs is not integration evidence.
+
+Use `tendril-preview ./page` as soon as the authored UI exists. Static preview
+checks layout. Live preview needs an actual authored bootstrap and real enrolled
+session; see [Preview](docs/tools/PREVIEW.md). Verify the tutorial's connected
+behavior on its published page, whose authentication and device origin are real.
+Neither a static preview nor an independent local database qualifies the hosted app.
 
 Use the supplied service origin throughout. Examples using `https://tendriller.dev`
 must target the requested host when working on staging or a self-hosted instance.
@@ -127,11 +152,14 @@ import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 const backend = createApplicationBackend({
   id: session.applicationId,
   session,
-  eventCommand: 'publishEvent', // An ordinary declared domain command, if provided.
 });
 tendril.application.install(backend);
 tendril.signals.install(session.signals);
 ```
+
+The optional `eventCommand` setting is only for an event-publication command
+actually declared by your domain. Shared Notes does not declare `publishEvent`;
+adding that name to its adapter would fail with `APPLICATION_EVENT_COMMAND_UNKNOWN`.
 
 `ready()` and `available` on the application binding describe installation. Use `session.status` and its subscriptions for actual connection, generation and recovery state. The session's `deviceId` is the signing identity; the page runtime creates no additional device credential.
 

@@ -20,21 +20,24 @@ const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
-  'native-only': { type: 'boolean' },
+  'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' },
 } });
-if (!values['session-archive']) throw Error('Usage: node scripts/test-first-app.mjs --session-archive /absolute/chronolog-peer-session-COMMIT.tgz [--native-only] [--report FILE] [--keep]');
+if (!values['session-archive']) throw Error('Usage: node scripts/test-first-app.mjs --session-archive /absolute/chronolog-peer-session-COMMIT.tgz [--native-only | --sql-native-only] [--report FILE] [--keep]');
+if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
+const sqlOnly = Boolean(values['sql-native-only']);
 const sessionArchive = resolve(values['session-archive']);
-const reportPath = resolve(values.report ?? join(root, '.results/first-app.json'));
+const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
 const directory = await mkdtemp(join(tmpdir(), 'tendriller-first-app-'));
 const app = join(directory, 'application');
 const SERVICE = 'https://service.localhost:8790';
 const execute = promisify(execFile);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const jsonFile = async path => JSON.parse(await readFile(path, 'utf8'));
-const report = { status: 'running', qualification: 'isolated-local-tutorial',
+const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql-tutorial' : 'isolated-local-tutorial',
   native_checks: 'running', browser_checks: 'not-run',
   limits: ['Synthetic local owner session; no OAuth provider tested.',
-    'Local Chromium and encrypted WebSocket relay; no Internet, native RTC or mobile qualification.',
+    sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
+      : 'Local Chromium and encrypted WebSocket relay; no Internet, native RTC or mobile qualification.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.'], steps: [] };
 let host, peer, browser, stage = 'preflight';
 
@@ -144,13 +147,17 @@ try {
   report.tutorial_sha256 = sha256(sourceBytes);
   const sourceArchive = join(directory, 'first-app.tgz'); await writeFile(sourceArchive, sourceBytes);
   await run('tar', ['-xzf', sourceArchive, '-C', app]);
-  const esbuild = await packDependency('esbuild');
-  const esbuildPlatform = await packDependency(`@esbuild/${process.platform}-${process.arch}`);
+  const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
+    await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
   await run('npm', ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund',
-    '--cache', join(directory, 'npm-cache'), archives.sdk, archives.tools, sessionArchive, esbuild, esbuildPlatform]);
+    '--cache', join(directory, 'npm-cache'), archives.sdk, archives.tools, sessionArchive, ...buildDependencies]);
   const sessionProof = await jsonFile(join(app, 'node_modules/@chronolog/peer-session/provenance.json'));
   assert.equal(sessionProof.dirty, false, 'Use a clean, explicitly selected public Chronolog archive.');
   report.chronolog = { source: sessionProof.source, dirty: sessionProof.dirty, sha256: sha256(await readFile(sessionArchive)) };
+  if (sqlOnly) {
+    assert.ok(sessionProof.sqlEngines?.includes('native'), '--sql-native-only requires a public Chronolog archive built with --sql-native.');
+    report.chronolog.native_engine = sessionProof.nativeEngine;
+  }
 
   const preload = join(directory, 'local-network.mjs');
   await writeFile(preload, `import { Agent, setGlobalDispatcher, WebSocket } from ${JSON.stringify(pathToFileURL(require.resolve('undici')).href)};
@@ -159,14 +166,22 @@ const dispatcher = createLocalDispatcher();
 setGlobalDispatcher(dispatcher);
 globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []) { super(url, { protocols, dispatcher }); } };
 `);
-  const node = async args => run(process.execPath, ['--import', preload, ...args]);
+  const project = sqlOnly ? join(app, 'sql') : app;
+  const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
   const cli = join(app, 'node_modules/@tendriller/tools/bin/tendril.mjs');
-  const cliJson = async args => JSON.parse(await node([cli, '--session', join(app, 'session.mjs'), ...args]));
+  const cliJson = async args => JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), ...args]));
   passed('domain-served tutorial and independently installed public packages');
+  if (sqlOnly) {
+    checkpoint('load the exact native SQL engine');
+    const engine = JSON.parse(await node(['engine.mjs']));
+    assert.equal(engine.available, true); assert.match(engine.executionManifestDigest, /^[a-f0-9]{64}$/);
+    report.sql_engine = engine;
+    passed('explicit native SQL capability and execution manifest');
+  }
 
   checkpoint('create, claim and initialize');
   await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
-  const handle = await jsonFile(join(app, '.tendriller/handle.json'));
+  const handle = await jsonFile(join(project, '.tendriller/handle.json'));
   const localPage = new URL(handle.page_url); localPage.port = '8790';
   const initialClaim = await fetch(localPage, { redirect: 'manual' });
   assert.equal(initialClaim.status, 302); await initialClaim.body?.cancel();
@@ -178,17 +193,48 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   assert.equal(redeem.status, 303); await redeem.body?.cancel();
   const initialized = JSON.parse(await node(['setup.mjs', 'init']));
   assert.equal(initialized.initialized, true);
-  assert.deepEqual((await cliJson(['query', 'notes', 'null'])).value, []);
-  const device = await jsonFile(join(app, '.tendriller/initialized.json'));
+  if (!sqlOnly) assert.deepEqual((await cliJson(['query', 'notes', 'null'])).value, []);
+  const device = await jsonFile(join(project, '.tendriller/initialized.json'));
   await node(['setup.mjs', 'init']);
-  assert.deepEqual(await jsonFile(join(app, '.tendriller/initialized.json')), device, 'Initialization retry preserves identity.');
+  assert.deepEqual(await jsonFile(join(project, '.tendriller/initialized.json')), device, 'Initialization retry preserves identity.');
+  report.application_id = handle.application.id; report.native_device_id = device.deviceId;
+  passed('owner claim, exact initialization retry, selected genesis and native reopen');
+
+  if (sqlOnly) {
+    const empty = await cliJson(['query', 'inventory', 'null']);
+    assert.deepEqual(empty.value.stock, []); assert.deepEqual(empty.value.transfers, []);
+    checkpoint('exercise guarded SQL transactions and exact demo retry');
+    const demo = JSON.parse(await node(['demo.mjs']));
+    assert.equal(demo.status, 'passed'); assert.deepEqual(demo.stock, { source: 7, destination: 3 });
+    assert.equal(demo.accepted, 'inventory-demo-transfer-v1'); assert.equal(demo.rejected, 'inventory-demo-rejected-v1');
+    const saved = ['demo-transfer.json', 'demo-rejection.json', 'schema.json', 'descriptor.json', 'genesis-request.json'];
+    const fingerprints = await Promise.all(saved.map(name => readFile(join(project, '.tendriller', name)).then(sha256)));
+    const retry = JSON.parse(await node(['demo.mjs']));
+    assert.deepEqual(retry, demo, 'SQL demo retry must use the retained original operation results.');
+    for (let i = 0; i < saved.length; i++)
+      assert.equal(sha256(await readFile(join(project, '.tendriller', saved[i]))), fingerprints[i], `SQL retry changed ${saved[i]}.`);
+    const retained = await cliJson(['query', 'inventory', 'null']);
+    assert.deepEqual(Object.fromEntries(retained.value.stock.map(row => [row.id, row.units])), { destination: 3, source: 7 });
+    assert.equal(retained.value.transfers.length, 1, 'Exact retry must not create another transfer receipt.');
+    assert.equal(retained.value.activity.filter(event => event.topic === 'inventory.transferred').length, 1);
+    assert.equal((await cliJson(['operation', demo.accepted])).state.outcome, 'accepted');
+    const rejected = (await cliJson(['operation', demo.rejected])).state;
+    assert.equal(rejected.outcome, 'rejected'); assert.equal(rejected.rejectionCode, 'assert:insufficient_stock');
+    assert.deepEqual(await jsonFile(join(project, '.tendriller/initialized.json')), device);
+    report.sql_demo = demo;
+    report.sql_retained = { stock: demo.stock, receipts: retained.value.transfers.length,
+      transfer_events: retained.value.activity.filter(event => event.topic === 'inventory.transferred').length };
+    passed('guarded SQL transfer accepted; rejected transfer leaves balances, receipts and effective events unchanged');
+    passed('exact SQL demo retry and coherent queries/outcomes after separate-process reopen');
+    report.status = 'partial'; report.native_checks = 'passed';
+    report.limits.push('Browser and published UI behavior omitted by --sql-native-only.');
+    console.log('First-app native SQL setup and transaction checks passed; browser SQL qualification remains untested.');
+  } else {
   assert.equal((await cliJson(['command', 'addNote', JSON.stringify({ text: 'Native setup and durable reopen' }),
     '--operation', 'native-setup-1'])).outcome, 'accepted');
   const retained = await cliJson(['query', 'notes', 'null']);
   assert.equal(retained.value.length, 1); assert.equal(retained.value[0].operationId, 'native-setup-1');
   passed('real native command and coherent query after process reopen');
-  report.application_id = handle.application.id; report.native_device_id = device.deviceId;
-  passed('owner claim, exact initialization retry, selected genesis and native reopen');
 
   checkpoint('build and sign the complete authored graph');
   await node(['build.mjs']);
@@ -218,9 +264,12 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     report.browser = await browser.version();
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } });
     const page = await context.newPage();
+    report.screenshots = {};
     await page.goto(SERVICE); await page.screenshot({ path: join(dirname(reportPath), 'first-app-homepage-desktop.png'), fullPage: true });
+    report.screenshots.homepage_desktop = 'first-app-homepage-desktop.png';
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: join(dirname(reportPath), 'first-app-homepage-mobile.png'), fullPage: true });
+    report.screenshots.homepage_narrow_viewport = 'first-app-homepage-mobile.png';
     await page.setViewportSize({ width: 1280, height: 960 });
     await context.addCookies([{ name: '__Host-tendriller', value: ownerToken,
       domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
@@ -235,26 +284,41 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     passed('independent browser signer and exact authorized enrollment retry');
 
     // Drive the same real native bootstrap without a second store owner. This is
-    // the agent side of the test; it adds no protocol, backend or fixture data.
-    await writeFile(join(app, 'test-peer.mjs'), `import {createInterface} from 'node:readline';
+    // the agent side of the test; it adds no protocol, backend or fixture state.
+    // Only the inference provider function is replaced, inside this private test
+    // process. Signals, encrypted content and reviewed commands remain real.
+    const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
+    await writeFile(join(app, 'test-peer.mjs'), `import assert from 'node:assert/strict';
+  import {createInterface} from 'node:readline';
   import {openSession} from './session.mjs';
+  import {servePeerInference} from './media/inference-service.mjs';
   const {session} = await openSession();
+  const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidencePng.toString('base64'))}, 'base64'));
+  let inferenceCalls = 0, inferenceSource = null;
+  const inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDevice)}], maxRequests: 2,
+    async infer({bytes, mediaType, source, signal}) {
+      signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
+      inferenceCalls++; inferenceSource = source;
+      return {text: 'Suggested fixture observation'};
+    },
+  });
   console.log(JSON.stringify({ready:true,deviceId:session.deviceId}));
   for await (const line of createInterface({input:process.stdin})) {
     const request=JSON.parse(line);
     try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
+      else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
       else if(request.action==='command') {
         const before=await session.query('notes',null);
         const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
         result=await operation.applied({signal:AbortSignal.timeout(30000)});
-      } else if(request.action==='close') {await session.close(); console.log(JSON.stringify({id:request.id,closed:true})); break;}
+      } else if(request.action==='close') {await inference.close(); await session.close(); console.log(JSON.stringify({id:request.id,closed:true})); break;}
       else throw Error('Unknown test action');
       console.log(JSON.stringify({id:request.id,result}));
     } catch(error) {console.log(JSON.stringify({id:request.id,error:error.message}));}
   }
-  await session.close();
+  await inference.close(); await session.close();
   `);
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -294,9 +358,12 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
     await page.locator('#note').fill('Created in the browser'); await page.locator('#submit').click();
     await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
+    await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
+    await expect(page.locator('#operation-status')).toContainText('peer retention receipt(s) observed', { timeout: 30_000 });
     assert.deepEqual((await peer.request('query')).value.map(note => note.text),
       ['Native setup and durable reopen', 'Created in the browser']);
     passed('browser command observed by the real native session through relay');
+    passed('public UI adapters expose actual operation outcome and separate retained coverage');
 
     checkpoint('cancel an applied waiter, reload and retry its original operation');
     await page.evaluate(() => {
@@ -315,6 +382,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     await expect(page.locator('#submit')).toBeDisabled();
     await page.locator('#retry').click();
     await expect(page.locator('#submit')).toBeEnabled({ timeout: 30_000 });
+    await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
     const afterRetry = (await peer.request('query')).value;
     assert.equal(afterRetry.filter(note => note.operationId === operation).length, 1);
     assert.equal(afterRetry.length, 3);
@@ -336,8 +404,66 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
     await expect(page.locator('#notes li')).toHaveCount(4, { timeout: 60_000 });
     passed('same native/browser identities and retained notes after both reopen');
-    report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = 4;
+
+    checkpoint('analyze immutable evidence through the authorized native peer');
+    const beforeMedia = (await peer.request('query')).value;
+    assert.equal((await peer.request('inference-status')).calls, 0);
+    await page.locator('#media-file').setInputFiles({ name: 'fixture-evidence.png', mimeType: 'image/png', buffer: evidencePng });
+    await page.locator('#media-share').check();
+    await page.locator('#media-analyze').click();
+    await expect(page.locator('#media-suggestion')).toContainText('Suggested fixture observation', { timeout: 60_000 });
+    assert.deepEqual((await peer.request('query')).value, beforeMedia, 'Analysis must not submit a domain note.');
+    const inferred = await peer.request('inference-status');
+    assert.equal(inferred.calls, 1); assert.equal(inferred.admitted, 1);
+    assert.equal(inferred.source.sha256, sha256(evidencePng));
+    passed('authenticated inference signals and encrypted immutable content without automatic domain submission');
+
+    checkpoint('commit the explicitly edited observation and reopen it');
+    await page.locator('#media-review').fill('Human-reviewed fixture observation');
+    // Responsive layout evidence from desktop Chromium, not physical-device
+    // qualification. The candidate, suggestion and explicit human edit are live.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.screenshot({ path: join(dirname(reportPath), 'first-app-starter-desktop.png'), fullPage: true });
+    report.screenshots.starter_review_desktop = 'first-app-starter-desktop.png';
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(dirname(reportPath), 'first-app-starter-mobile.png'), fullPage: true });
+    report.screenshots.starter_review_narrow_viewport = 'first-app-starter-mobile.png';
+    await page.setViewportSize({ width: 1280, height: 960 });
+    // Programmatic/provider text can bypass the textarea's maxlength. Reject it
+    // before saving a pending reference or dispatching the reviewed command.
+    await page.locator('#media-review').evaluate(element => { element.value = 'x'.repeat(2001); });
+    await page.locator('#media-commit').click();
+    await expect(page.locator('#media-result')).toContainText('2,000');
+    assert.deepEqual((await peer.request('query')).value, beforeMedia, 'Oversized reviewed text must not submit a note.');
+    assert.equal((await peer.request('inference-status')).calls, 1);
+    await page.locator('#media-review').fill('Human-reviewed fixture observation');
+    await page.locator('#media-commit').click();
+    await expect(page.locator('#media-result')).toContainText('Applied: accepted', { timeout: 30_000 });
+    const reviewedNotes = (await peer.request('query')).value;
+    assert.equal(reviewedNotes.length, 5);
+    const evidenceNote = reviewedNotes.at(-1);
+    assert.equal(evidenceNote.text, 'Human-reviewed fixture observation');
+    assert.equal(evidenceNote.author, browserDevice);
+    assert.equal(evidenceNote.source.candidateId, inferred.source.candidateId);
+    assert.equal(evidenceNote.source.sha256, sha256(evidencePng));
+    assert.equal(evidenceNote.source.reference.id, inferred.source.contentId);
+    assert.equal(evidenceNote.source.reference.applicationId, handle.application.id);
+    assert.equal(evidenceNote.source.reference.bytes, evidencePng.length);
+    assert.equal(evidenceNote.source.reference.mediaType, 'image/png');
+    await expect(page.locator('#notes li')).toHaveCount(5);
+    await page.reload(); await page.locator('#connect').click();
+    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
+    await expect(page.locator('#notes li')).toHaveCount(5, { timeout: 60_000 });
+    assert.deepEqual((await peer.request('query')).value.at(-1), evidenceNote);
+    assert.equal((await peer.request('inference-status')).calls, 1, 'Reload must not launch another provider request.');
+    report.media_inference = { provider: 'injected deterministic native test function', calls: inferred.calls,
+      candidate_id: evidenceNote.source.candidateId, sha256: evidenceNote.source.sha256,
+      content_id: evidenceNote.source.reference.id, operation_id: evidenceNote.operationId };
+    report.limits.push('Inference provider output is injected in the private native test process; no live provider, credential validity or billing tested.');
+    passed('human-edited evidence command retains exact source identity and survives browser reopen');
+    report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = 5;
     console.log('First-app native/browser integration passed. Synthetic local claim and relay limits are recorded in the report.');
+  }
   }
 } catch (error) {
   report.status = 'failed'; report.failed_stage = stage; report.error = error.message;

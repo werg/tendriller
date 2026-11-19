@@ -13,7 +13,7 @@ const INSTRUCTIONS = 'This host is a filtered Chronolog participant for signed c
   'Use applied() for a generation-scoped result and shared() for retained coverage. Explicit recovery can abandon a suffix. ' +
   'The host has no ordinary application command endpoint or event queue. Verify signed authority and publication ancestry in your session. ' +
   'Preserve the original operation identity and signed bytes on uncertain replies; code rollback is a newly signed release. ' +
-  'For a first application, call tendril_guide. Configure authority and select the initial generation before opening the session; page creation alone does not complete setup.';
+  'For a first application, call tendril_guide and follow its capability map. Deliver a live hosted page with a connected participant, verified publication and explicit process lifetime. Provisioning is part of the task. Configure authority and select the initial generation before opening the session; page creation alone does not complete setup.';
 export interface ToolRequest {
   method: string;
   rest: string;
@@ -33,7 +33,7 @@ export interface Tool {
 }
 
 const TOOLS: Tool[] = [...PEER_CONTROL_TOOLS, {
-  name: 'tendril_guide', description: 'Get the complete first-app guide, downloadable setup files, lifecycle and troubleshooting links for this service origin. Read this before configuring a new application.',
+  name: 'tendril_guide', description: 'Get the complete first-app guide, searchable capability map, current reusable source, live-app delivery checklist and troubleshooting links for this service origin. Read this before configuring a new application.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   call: () => ({ method: 'GET', rest: 'guide' }),
 }, {

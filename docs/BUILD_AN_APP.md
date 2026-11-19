@@ -1,6 +1,11 @@
 # Build your first Tendriller application
 
 **Start here when a user gives you a Tendriller domain and asks for an app.**
+The result is its live hosted page and connected participant. Provisioning,
+owner claim, enrollment and signed publication are part of the task; the starter
+download is an implementation input. Follow the
+[delivery checklist](AGENT_DELIVERY.md), and consult the compact
+[capability map](CAPABILITIES.md) before choosing application plumbing.
 Tendriller provides authenticated page hosting and the application control plane.
 Chronolog provides the application's retained state, commands, queries, operation
 journal and peer synchronization. Build the UI with ordinary HTML and JavaScript,
@@ -35,6 +40,9 @@ another persistence service.
 Use **Node 24**, npm, Git, curl and a SHA-256 checker. Public artifact downloads
 require no GitHub login. The first app uses the SQL-free event package. SQL,
 native RTC and WASM engines are optional later capabilities.
+For relational guards and multi-entity transactions, use the concrete
+[SQL alternative](STATE_MODELS.md); do not configure this events definition first
+and then attempt to replace its immutable authority.
 
 Replace the service origin with the domain the user gave you. Read its live
 descriptor before creating anything:
@@ -55,6 +63,13 @@ host does not yet serve this archive, copy `docs/tutorial/` from the matching
 This tutorial's enrollment command requires a host that exposes
 `owner_account_id` in authenticated agent `info()` responses. If that field is
 absent, the host needs the onboarding update; the tool reports that boundary.
+
+As soon as these packages are available, create the real page in step 2 and give
+its claim URL to the owner. Prepare the task's UI/domain while they sign in.
+Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
+[static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
+Keep the published page as the verification target for this tutorial's actual
+account, device enrollment and session.
 
 Get the SDK and tools from the host's advertised release, and check their hashes:
 
@@ -119,6 +134,9 @@ handle privately in `.tendriller/handle.json`. It prints only the page URL and
 next step. Give that URL to the owner, who opens it and signs in. Agent
 credentials cannot claim the page for them. An unclaimed page expires after
 24 hours; report a blocked claim explicitly.
+This is a real provisioning step to attempt now, rather than a prerequisite to
+defer until after delivering a local artifact. If it fails, retain the actual
+response and name its missing permission or capability.
 
 The handle has two distinct identities: the hosted page's ID/URL and
 `application.id`, which identifies the application independently of its page
@@ -198,8 +216,10 @@ npm run build
 
 The build produces a complete `page/` graph containing `index.html`, bundled
 page and Worker modules, their shared chunks, and `configuration.json`.
-Configuration contains only the application ID, page URL and pinned public
-descriptor. The build never copies the private handle, native database or
+Configuration contains only the application ID, page URL, initialized native
+device public key (`nativeDeviceId`) and pinned public descriptor. The native
+public key identifies the optional inference participant; it is not a credential.
+The build never copies the private handle, native database or
 initial epoch key into `page/`.
 
 The implementation is deliberately ordinary:
@@ -338,6 +358,13 @@ disposable presence/progress, event commands for retained facts, and a verified
 SQL capability when transactions and relational guards are needed. The
 [application contract](APPLICATION_BACKENDS.md) and
 [cookbooks](https://cookbooks.tendriller.dev/) explain those choices.
+
+Import the current [view and operation helpers](APP_PATTERNS.md), and use the
+[reviewed media/inference flow](AI_INPUT.md) when the task needs capture or AI
+suggestions. Reuse the optional runtime voice adapter and the camera controller's
+native acquisition plus runtime sensor tracking. These modules are supplied in
+the archive; an agent should not need to invent REST/SSE plumbing, a camera
+lifecycle or a voice stack to make the app useful.
 
 Define the domain before initial configuration: the descriptor binds the public
 definition, semantic version, schema and execution manifest. A UI publication

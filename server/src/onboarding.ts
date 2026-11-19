@@ -12,8 +12,12 @@ export function onboardingDescriptor(base: string) {
     start_here: url('/docs/BUILD_AN_APP.md'),
     agent_instructions: url('/agent.md'),
     starter: url('/downloads/tendriller-first-app.tgz'),
+    capabilities: url('/.well-known/tendriller-capabilities.json'),
     documentation: {
       index: url('/llms.txt'), full: url('/llms-full.txt'),
+      capabilities: url('/docs/CAPABILITIES.md'), delivery: url('/docs/AGENT_DELIVERY.md'),
+      patterns: url('/docs/APP_PATTERNS.md'), reviewed_input: url('/docs/AI_INPUT.md'),
+      state_models: url('/docs/STATE_MODELS.md'),
       bootstrap: url('/docs/SESSION_BOOTSTRAP.md'),
       troubleshooting: url('/docs/TROUBLESHOOTING.md'),
       application: url('/docs/APPLICATION_BACKENDS.md'),
@@ -34,6 +38,12 @@ export function onboardingDescriptor(base: string) {
       { id: 'publish', action: 'Publish the complete authored UI through an authorized signed Chronolog publication.' },
       { id: 'verify', action: 'Verify a browser command, a native query, reload persistence and the signed publication receipt.' },
     ],
+    delivery: {
+      primary: 'A live hosted application with verified native/browser exchange and its selected signed publication.',
+      start: 'Initiate provisioning and give the owner the claim URL early; setup is part of the app-building task.',
+      evidence: ['page_url', 'application_id', 'publication_receipt', 'bidirectional_command_observation', 'same-device_reopen', 'running_process_and_resume_instructions'],
+      blocked: 'Name the exact missing authorization, artifact or execution capability and finish the available setup. A ZIP, static preview or parallel backend is not the requested connected app.',
+    },
     authorization: {
       owner_claim: 'Human OAuth sign-in is required; an agent token cannot claim a page.',
       device_enrollment: 'Host access and signed device grants are independent. Grant only the rights the application needs.',

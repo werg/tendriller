@@ -3,6 +3,11 @@
 ## Build an application for a user
 
 Read [the agent entry point](agent.md), then follow [Build an app](docs/BUILD_AN_APP.md).
+Deliver the [running connected application](docs/AGENT_DELIVERY.md): start
+provisioning early, give the human the actual claim URL, start the participant,
+and finish with a verified live page and process/resume details. Treat setup as
+part of the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
+the current helper modules before implementing another application stack.
 The complete [session bootstrap](docs/SESSION_BOOTSTRAP.md) and tutorial files supply
 the native session and browser Worker; do not invent a `deployment.mjs` import.
 Start at the requested service origin's `/api/service` and
@@ -25,6 +30,8 @@ Completion means demonstrating a real command, an applied read from the other
 participant, persistence after reload, and the verified signed publication. State
 which process must remain running. An installed adapter or an HTML preview alone
 does not establish a working connected application.
+Report the actual native process lifetime. Page residency and MCP do not establish
+a supported handoff to, or future wake of, an existing ChatGPT conversation.
 
 ## Contribute to this repository
 

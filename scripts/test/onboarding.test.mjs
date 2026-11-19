@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -12,7 +12,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const publicRoot = join(root, 'server/public');
 const links = content => [...content.matchAll(/\[[^\]\n]*\]\(([^\s)]+)\)/g)].map(match => match[1]);
 const digest = value => createHash('sha256').update(value).digest('hex');
-const dynamicPaths = new Set(['/', '/api/service', '/.well-known/tendriller.json', '/contract/v3.json']);
+const dynamicPaths = new Set(['/', '/api/service', '/.well-known/tendriller.json',
+  '/.well-known/tendriller-capabilities.json', '/contract/v3.json']);
 
 test('the domain-only onboarding graph points to shipped public documents and the starter', () => {
   for (const path of ['AGENTS.md', 'llms.txt', ...ONBOARDING_DOCS]) {
@@ -47,30 +48,56 @@ test('the downloadable starter contains complete parseable source and no local p
   for (const path of TUTORIAL_FILES) {
     const archived = execFileSync('tar', ['-xOf', archive, path]);
     assert.equal(digest(archived), digest(readFileSync(join(root, 'docs/tutorial', path))), `Stale tutorial file: ${path}`);
-    if (path.endsWith('.mjs')) execFileSync(process.execPath, ['--check', join(root, 'docs/tutorial', path)]);
+    if (path.endsWith('.mjs')) {
+      execFileSync(process.execPath, ['--check', join(root, 'docs/tutorial', path)]);
+      // Nested helpers and optional providers must remain usable after the
+      // archive is extracted independently of this repository.
+      for (const [, relative] of archived.toString('utf8').matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)['"](\.[^'"]+)['"]/g)) {
+        const dependency = posix.normalize(posix.join(posix.dirname(path), relative));
+        assert(TUTORIAL_FILES.includes(dependency), `${path} imports an unshipped tutorial module: ${relative}`);
+      }
+    }
   }
-  assert(TUTORIAL_FILES.includes('session.mjs') && TUTORIAL_FILES.includes('local.mjs') && TUTORIAL_FILES.includes('worker.mjs'));
+  for (const path of ['session.mjs', 'local.mjs', 'worker.mjs',
+    'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
+    'media/panel.mjs', 'media/inference-client.mjs', 'media/inference-peer.mjs', 'media/provider-openai.mjs',
+    'sql/setup.mjs', 'sql/session.mjs', 'sql/engine.mjs', 'sql/domain.mjs', 'sql/demo.mjs', 'sql/worker.mjs'])
+    assert(TUTORIAL_FILES.includes(path), `The documented starter is missing ${path}`);
 });
 
-test('building a starter cannot include private identity, keys, generated UI or dependencies', () => {
+test('building a starter excludes nested private state, provider secrets, generated UI and dependencies', () => {
   const directory = mkdtempSync(join(tmpdir(), 'tendriller-onboarding-'));
+  const secret = 'NEVER_PUBLISH_THIS_PRIVATE_RECORD';
+  const providerKey = process.env.OPENAI_API_KEY;
   try {
     for (const path of [...ONBOARDING_DOCS, ...TUTORIAL_FILES.map(path => `docs/tutorial/${path}`)]) {
       mkdirSync(dirname(join(directory, path)), { recursive: true });
       cpSync(join(root, path), join(directory, path));
     }
-    for (const path of ['.tendriller/handle.json', '.tendriller/device.sqlite', '.tendriller/epoch.json', 'node_modules/secret.txt', 'page/config.mjs']) {
+    for (const path of ['.tendriller/handle.json', '.tendriller/device.sqlite', '.tendriller/epoch.json',
+      'node_modules/secret.txt', 'page/config.mjs', '.env',
+      'helpers/.env', 'media/.env', 'media/provider-local.mjs', 'media/provider-secrets.json',
+      'sql/.env', 'sql/.tendriller/handle.json', 'sql/.tendriller/device.sqlite', 'sql/.tendriller/initial-input.json',
+      'sql/node_modules/secret.txt', 'sql/page/config.mjs', 'sql/engine/local-build.wasm']) {
       const destination = join(directory, 'docs/tutorial', path);
       mkdirSync(dirname(destination), { recursive: true });
-      writeFileSync(destination, 'NEVER_PUBLISH_THIS_PRIVATE_RECORD');
+      writeFileSync(destination, secret);
     }
+    process.env.OPENAI_API_KEY = secret;
     const out = join(directory, 'public');
     mkdirSync(out);
     buildOnboardingAssets(directory, out);
     const archive = join(out, TUTORIAL_DOWNLOAD);
     const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' });
-    assert(!/\.tendriller|node_modules|page\/config/.test(entries));
+    assert.deepEqual(entries.trim().split('\n').sort(), [...TUTORIAL_FILES].sort());
+    assert(!/\.tendriller|node_modules|(?:^|\/)\.env|page\/config|provider-local|provider-secrets|local-build/.test(entries));
     const content = execFileSync('tar', ['-xOf', archive], { encoding: 'utf8' });
-    assert(!content.includes('NEVER_PUBLISH_THIS_PRIVATE_RECORD'));
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+    assert(!content.includes(secret), 'Source packaging must never substitute provider credentials or include private files.');
+    const provider = execFileSync('tar', ['-xOf', archive, 'media/provider-openai.mjs'], { encoding: 'utf8' });
+    assert(provider.includes('process.env.OPENAI_API_KEY'), 'The native provider reads its credential at execution time.');
+  } finally {
+    if (providerKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = providerKey;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

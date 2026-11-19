@@ -8,6 +8,7 @@ import { peerApi } from './peer-exchange';
 
 const guidePath = '/docs/BUILD_AN_APP.md';
 const descriptorPath = '/.well-known/tendriller.json';
+const capabilityPath = '/.well-known/tendriller-capabilities.json';
 const downloadPath = '/downloads/tendriller-first-app.tgz';
 const documents = [
   ['/agent.md', 'text/markdown'],
@@ -18,6 +19,12 @@ const documents = [
   ['/docs/SESSION_BOOTSTRAP.md', 'text/markdown'],
   ['/docs/TROUBLESHOOTING.md', 'text/markdown'],
   ['/docs/AGENT_ONBOARDING_TEST.md', 'text/markdown'],
+  ['/docs/CAPABILITIES.md', 'text/markdown'],
+  ['/docs/AGENT_DELIVERY.md', 'text/markdown'],
+  ['/docs/APP_PATTERNS.md', 'text/markdown'],
+  ['/docs/AI_INPUT.md', 'text/markdown'],
+  ['/docs/STATE_MODELS.md', 'text/markdown'],
+  ['/docs/tools/PREVIEW.md', 'text/markdown'],
 ] as const;
 
 function expectDiscoveryLinks(response: Response, origin = BASE) {
@@ -36,6 +43,7 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
     start_here: origin + guidePath,
     agent_instructions: origin + '/agent.md',
     starter: origin + downloadPath,
+    capabilities: origin + '/.well-known/tendriller-capabilities.json',
     documentation: {
       index: origin + '/llms.txt',
       full: origin + '/llms-full.txt',
@@ -48,7 +56,7 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       create_page: { method: 'POST', url: origin + '/api/tendrils', required: ['owner'] },
     },
   });
-  const navigation = [value.service, value.start_here, value.agent_instructions, value.starter,
+  const navigation = [value.service, value.start_here, value.agent_instructions, value.starter, value.capabilities,
     ...Object.values(value.documentation), value.interfaces.service_descriptor,
     value.interfaces.contract, value.interfaces.create_page.url];
   for (const target of navigation) {
@@ -67,6 +75,49 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
 }
 
 describe('public application onboarding', () => {
+  it('maps task language to real owners, imports, executable examples and explicit integration gaps', async () => {
+    const counts = () => env.ACCOUNTS.prepare('SELECT (SELECT COUNT(*) FROM accounts) AS accounts, (SELECT COUNT(*) FROM tendrils) AS pages').first();
+    const before = await counts();
+    const response = await req(capabilityPath, { anonymous: true });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toContain('application/json');
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expectDiscoveryLinks(response);
+    const catalog = await response.json() as Record<string, any>;
+    expect(catalog).toMatchObject({ schema_version: 1, contract: CONTRACT_VERSION,
+      core_release: CORE_RELEASE, device_permissions_probed: false, guide: BASE + '/docs/CAPABILITIES.md',
+      starter: BASE + downloadPath });
+    const entries = new Map<string, any>(catalog.capabilities.map((entry: any) => [entry.id, entry]));
+    expect(entries.size).toBe(catalog.capabilities.length);
+    for (const id of ['durable-state', 'sql-transactions', 'reactive-view', 'operation-state',
+      'signals', 'reviewed-evidence', 'camera', 'sensor-observation', 'voice', 'preview',
+      'credential-protected-inference', 'agent-runtime', 'signed-publication']) {
+      const entry = entries.get(id);
+      expect(entry, id).toBeTruthy();
+      expect(entry.imports.length, id).toBeGreaterThan(0);
+      expect(entry.keywords.length, id).toBeGreaterThan(0);
+      expect(entry.api.length, id).toBeGreaterThan(0);
+      expect(entry.owner.length, id).toBeGreaterThan(0);
+      expect(entry.example.length, id).toBeGreaterThan(0);
+      expect(entry.boundary.length, id).toBeGreaterThan(20);
+      expect(new URL(entry.guide).origin, id).toBe(BASE);
+      const guide = await req(entry.guide, { anonymous: true });
+      expect(guide.status, id).toBe(200); await guide.text();
+    }
+    expect(entries.get('voice').imports).toEqual(['@tendriller/runtime/voice']);
+    expect(entries.get('camera').api).toContain('navigator.mediaDevices.getUserMedia');
+    expect(entries.get('sensor-observation').api).toContain('tendril.sensors.stopAll');
+    expect(entries.get('agent-runtime').availability).toBe('host-integration-required');
+    expect(entries.get('credential-protected-inference').availability).toBe('example-requires-provider');
+    const head = await req(capabilityPath, { method: 'HEAD', anonymous: true });
+    expect(head.status).toBe(200); expect(await head.text()).toBe('');
+    expect(head.headers.get('Content-Type')).toBe(response.headers.get('Content-Type'));
+    expectDiscoveryLinks(head);
+    const write = await req(capabilityPath, { method: 'POST', anonymous: true, body: '{}' });
+    expect(write.status).toBeGreaterThanOrEqual(400); await write.text();
+    expect(await counts()).toEqual(before);
+  });
+
   it('links an anonymous homepage to the first-app route and machine-readable discovery', async () => {
     const response = await req('/', { anonymous: true });
     expect(response.status).toBe(200);
@@ -104,11 +155,13 @@ describe('public application onboarding', () => {
     expect(await counts()).toEqual(before);
 
     const secret = `test-onboarding-secret-${crypto.randomUUID()}`;
-    const result = await route(new Request(BASE + descriptorPath, {
-      headers: { Authorization: `Bearer ${secret}`, Cookie: `__Host-tendriller=${secret}` },
-    }), { ...env, GITHUB_CLIENT_SECRET: secret, BUDGET_WEBHOOK_SECRET: secret });
-    expect(result.status).toBe(200);
-    expect(await result.text()).not.toContain(secret);
+    for (const path of [descriptorPath, capabilityPath]) {
+      const result = await route(new Request(BASE + path, {
+        headers: { Authorization: `Bearer ${secret}`, Cookie: `__Host-tendriller=${secret}` },
+      }), { ...env, GITHUB_CLIENT_SECRET: secret, BUDGET_WEBHOOK_SECRET: secret });
+      expect(result.status, path).toBe(200);
+      expect(await result.text(), path).not.toContain(secret);
+    }
   });
 
   it.each(documents)('serves %s as read-only documentation with empty HEAD responses', async (path, type) => {
@@ -138,6 +191,14 @@ describe('public application onboarding', () => {
     expect(discovery.status).toBe(200);
     expectDiscoveryLinks(discovery, origin);
     expectDescriptor(await discovery.json(), origin);
+    const capabilities = await route(new Request(origin + capabilityPath), target);
+    expect(capabilities.status).toBe(200);
+    expectDiscoveryLinks(capabilities, origin);
+    const catalog = await capabilities.json() as Record<string, any>;
+    expect(catalog.guide).toBe(origin + '/docs/CAPABILITIES.md');
+    expect(catalog.starter).toBe(origin + downloadPath);
+    for (const entry of catalog.capabilities) expect(new URL(entry.guide).origin, entry.id).toBe(origin);
+    expect(JSON.stringify(catalog)).not.toContain(BASE);
     for (const path of ['/', '/agent.md', '/llms.txt', '/llms-full.txt', guidePath, '/AGENTS.md']) {
       const response = await route(new Request(origin + path), target);
       expect(response.status, path).toBe(200);
@@ -163,7 +224,10 @@ describe('public application onboarding', () => {
     expect(head.status).toBe(200);
     expect(head.headers.get('Content-Disposition')).toBe(response.headers.get('Content-Disposition'));
     expect(await head.arrayBuffer()).toHaveProperty('byteLength', 0);
-    for (const path of ['/docs/tutorial/index.html', '/docs/tutorial/page.mjs', '/docs/tutorial/worker.mjs', '/docs/tutorial/setup.mjs']) {
+    for (const path of ['/docs/tutorial/index.html', '/docs/tutorial/page.mjs', '/docs/tutorial/worker.mjs', '/docs/tutorial/setup.mjs',
+      '/docs/tutorial/helpers/live-view.mjs', '/docs/tutorial/media/inference-client.mjs',
+      '/docs/tutorial/media/provider-openai.mjs', '/docs/tutorial/media/.env',
+      '/docs/tutorial/sql/setup.mjs', '/docs/tutorial/sql/worker.mjs', '/docs/tutorial/sql/.tendriller/handle.json']) {
       const source = await req(path, { anonymous: true });
       expect(source.status, path).toBe(404);
       expect(await source.json()).toMatchObject({ error: { code: 'not_found' } });

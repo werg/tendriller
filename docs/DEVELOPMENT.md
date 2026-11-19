@@ -58,6 +58,10 @@ For a candidate spanning core, Chronolog, and cookbooks, use the [three-reposito
 The homepage, `agent.md`, `AGENTS.md`, ordered `llms.txt`, machine discovery at
 `/.well-known/tendriller.json`, CLI `guide` and MCP `tendril_guide` all lead to
 `docs/BUILD_AN_APP.md`. Discovery uses a separate document and HTTP Link headers;
+the task-oriented `/.well-known/tendriller-capabilities.json` points to actual
+imports, starter modules, guides and ownership boundaries. Neither catalog probes
+device permissions. `docs/AGENT_DELIVERY.md` defines completion as the live
+connected application with explicit process lifetime and resume evidence;
 the strict existing `/api/service` JSON contract remains unchanged. Staging and
 branch previews rewrite host documentation links to their own service origin.
 
@@ -78,7 +82,13 @@ public archives in a temporary consumer, and exercises owner claim, descriptor
 configuration, initial generation selection, native commands and process reopen,
 signed publication, browser enrollment, shared state and uncertain-command retry
 after reload. It records source/archive identities and results in
-`.results/first-app.json`, with desktop and mobile homepage screenshots. The
+`.results/first-app.json`, with desktop and narrow-viewport homepage and connected
+starter screenshots. The photo flow transports actual encrypted session content
+and signals to an authorized native test participant. It uses an injected
+deterministic provider, verifies analysis makes no domain write, then commits only
+the person's edited observation and reopens it. It does not call a live AI service.
+Helper tests also cover stale reads, cancellation, uncertain operation states,
+failed preparation, fixed reviewed values and explicit reapplication lineage. The
 `Agent onboarding` workflow runs it with a pinned Chronolog source commit and
 the repository's Playwright container. It needs no production credentials.
 
@@ -92,3 +102,12 @@ publication, and explicitly records a **partial** result with browser checks
 omitted. It does not qualify browser behavior. All modes use a synthetic local
 owner session and encrypted WebSocket relay; they do not qualify live OAuth,
 Internet connectivity, native RTC, mobile execution or unaided agent usability.
+
+The workflow also builds the pinned optional SQL-native engine on its Node 24
+runner and runs `test:first-app -- --session-archive /absolute/sql-archive.tgz
+--sql-native-only`. That mode records `.results/first-app-sql.json` and qualifies
+the separate SQL starter's setup, signed schema, guarded transfer, atomic
+rejection, exact retry and native process reopen. It reports native coverage
+explicitly and does not claim the supplied SQL browser Worker is qualified by
+that check. Engine archives must match the target Node/platform/architecture/libc
+requirements; an events-only archive cannot stand in for SQL.
