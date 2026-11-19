@@ -177,3 +177,30 @@ test('shutdown aborts a native control lookup before awaiting its blocked observ
     assert.equal(nativeAborted, true);
   } finally { await bridge.close(); await service.close(); }
 });
+
+test('an old account denial cannot disable a subsequently refreshed subscription', async () => {
+  const f = config(); let hold = false, held = false, release, entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  f.value.authorizeAccountAccess = async () => {
+    if (hold && !held) { held = true; entered(); await new Promise(resolve => { release = resolve; }); return false; }
+    return true;
+  };
+  const service = await createIntegration(f.value);
+  try {
+    const selection = { applicationId: APP, events: ['assistant.help_requested'] };
+    await service.consent.grant(principal, selection);
+    const input = { name: 'assistant.help_requested', arguments: { application_id: APP },
+      delivery: { mode: 'webhook', url: 'https://callback.example/event', secret: 'whsec_' + Buffer.alloc(32).toString('base64') } };
+    const first = await service.subscriptions.subscribe(principal, input);
+    await pause();
+    hold = true;
+    const oldRecheck = service.consent.grant(principal, selection);
+    await ready;
+    await service.subscriptions.subscribe(principal, input);
+    const refreshed = (await service.store.read()).subscriptions[first.id];
+    release(); await oldRecheck;
+    const current = (await service.store.read()).subscriptions[first.id];
+    assert.equal(current.active, true); assert.equal(current.version, refreshed.version);
+    assert.equal(current.secret, input.delivery.secret); assert.equal(current.stopReason, undefined);
+  } finally { release?.(); await service.close(); }
+});

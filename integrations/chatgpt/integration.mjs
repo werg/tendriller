@@ -63,7 +63,7 @@ export async function createIntegration(config = {}) {
           if (error.status === 401 || error.status === 403) {
             await store.transaction(state => {
               const current = state.subscriptions?.[sub.id];
-              if (current?.activationId !== sub.activationId) return;
+              if (current?.activationId !== sub.activationId || current.version !== sub.version) return;
               current.active = false; current.stopReason = 'authorization_revoked'; current.version++;
               delete current.secret; delete current.previousSecret;
               delete current.pendingToken; delete current.pendingUntil;
