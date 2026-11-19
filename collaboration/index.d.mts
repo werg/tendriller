@@ -20,7 +20,7 @@ export interface SubmitOptions {readonly operationId?:string;readonly basedOn?:P
 export interface ClaimInput {readonly taskId:string;readonly slotId:string;readonly claimId?:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly expectedEpoch?:number;readonly taskVersion?:number}
 export interface ClaimFence {readonly taskId:string;readonly slotId:string;readonly claimEpoch:number;readonly generation:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly taskVersion?:number}
 export interface CollaborationIdentities {
-  readonly operationId:string;readonly interactionId?:string;readonly taskId?:string;readonly slotId?:string;
+  readonly operationId:string;readonly localOperationId:string;readonly interactionId?:string;readonly taskId?:string;readonly slotId?:string;
   readonly claimId?:string;readonly resultId?:string;readonly actionId?:string;readonly threadId?:string;readonly messageId?:string;
 }
 export interface CollaborationSubmission<Identity extends keyof CollaborationIdentities=never> {
@@ -110,7 +110,7 @@ export interface RecipientEntry {
   readonly agentBindingId?:string;readonly endpoint?:EndpointReference;readonly capabilities?:readonly string[];
 }
 export declare function resolveRecipient<Entry extends RecipientEntry>(target:Target,entries:readonly Entry[],options?:{capability?:string}):Entry;
-export declare function operationReference(session:{applicationId?:string;id?:string;historyId:string;deviceId:string},operationId:string,state?:{operationId?:string;author?:string;attemptId?:string;generation?:string}|null):OperationReference;
+export declare function operationReference(session:{applicationId?:string;id?:string;historyId:string;deviceId:string;scopeOperationId?:(localOperationId:string)=>string},operationId:string,state?:{operationId?:string;author?:string;attemptId?:string;generation?:string}|null):OperationReference;
 export declare function prepareCollaborationCommand<Input>(endpoint:ApplicationEndpointBinding,name:string,input:Input,deviceId:string):Input;
 export interface ConsumerScope {readonly applicationId:string;readonly consumerId:string;readonly generation:string;readonly filterVersion:string}
 export interface ConsumerCursor extends ConsumerScope {readonly protocol:typeof COLLABORATION_PROTOCOL;readonly sequence:number}

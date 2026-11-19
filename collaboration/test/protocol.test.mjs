@@ -53,6 +53,8 @@ test('references bind verified session history and local stores separate histori
   assert.equal(ref.historyId,session.historyId);assert.ok(Object.isFrozen(ref));
   assert.throws(()=>operationReference({...session,historyId:undefined},'operation'),{code:'OPERATION_SCOPE_MISMATCH'});
   assert.throws(()=>operationReference(session,'operation',{operationId:'different'}),{code:'OPERATION_REFERENCE_CONFLICT'});
+  const scoped={...session,scopeOperationId(){throw Error('Must not scope an inspected foreign signer');}};
+  assert.equal(operationReference(scoped,'foreign-operation',{author:'b'.repeat(64),operationId:'foreign-operation'}).operationId,'foreign-operation');
   const shared=storage(),scope={storage:shared,applicationId:'app',profileId:'profile',viewId:'view'};
   const beforeAttachment=createViewStore(scope),bound=createViewStore({...scope,historyId:session.historyId});
   const other=createViewStore({...scope,historyId:'history: two/二'}),foreign={...ref,historyId:other.historyId};

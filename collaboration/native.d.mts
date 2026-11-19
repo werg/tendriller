@@ -40,13 +40,15 @@ export function createNativeSessionSupervisor(options: {
   maxClients?: number; maxClientsPerBinding?: number; maxBindings?: number; handshakeTimeoutMs?: number; signal?: AbortSignal;
 }): Promise<NativeSessionSupervisor>;
 export interface NativeAttachedSession { readonly signal: AbortSignal; detach(): Promise<void> }
+/** Stable authenticated binding namespace; the supervisor separately enforces it. */
+export interface NativeOperationScope { readonly scopeOperationId:(localOperationId:string)=>string }
 export function attachNativeSession<Session extends NativeAttachedSession>(options: {
   directory: string; token: string;
   connect(endpoint: NativeEndpoint, options: { applicationId: string; definitionId: string; definitionVersion: string;
     context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
   applicationId: string; definitionId: string; definitionVersion: string;
   context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal;
-}): Promise<{ session: Session; mode: 'attach'; detach(): Promise<void> }>;
+}): Promise<{ session: Session&NativeOperationScope; mode: 'attach'; detach(): Promise<void> }>;
 
 export interface NativeEffectRecord {
   effectId: string; payload: string; fence: unknown;

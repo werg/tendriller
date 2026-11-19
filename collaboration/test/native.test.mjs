@@ -8,6 +8,9 @@ import { createConnection } from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '../native.mjs';
+import { createCollaborationClient } from '../client.mjs';
+import { operationReference } from '../protocol.mjs';
+import { createViewStore } from '../local.mjs';
 import { p, native, browser, definition, peerModule, openRetainedOwner } from './native-fixture.mjs';
 
 async function fixture(t) {
@@ -78,6 +81,47 @@ test('two authenticated native clients share one signer, isolate identical local
   assert.equal(returning.session.deviceId, f.deviceId);
   assert.equal((await returning.session.operations.inspect('same-local-id')).state.attemptId, a.attemptId);
   assert.equal((await returning.session.query('notes', null)).value.length, 2);
+});
+
+test('native collaboration full references survive a lost response, reconnect and binding rotation', {timeout:20_000}, async t => {
+  const f=await fixture(t),token=createNativeAttachmentKey(),otherToken=createNativeAttachmentKey();
+  const supervisor=await createNativeSessionSupervisor({directory:f.ownerDirectory,profileId:'retained-main',openOwner:f.openOwner,
+    bindings:[{id:'reviewer',token},{id:'planner',token:otherToken}]});
+  t.after(()=>supervisor.close());
+  const first=await f.attach(token),other=await f.attach(otherToken);
+  t.after(()=>Promise.allSettled([first.detach(),other.detach()]));
+  const data=new Map(),storage={get length(){return data.size;},key:index=>[...data.keys()][index]??null,
+    getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)};
+  const store=createViewStore({storage,applicationId:first.session.applicationId,historyId:first.session.historyId,profileId:'retained-main',viewId:'first'});
+  const client=createCollaborationClient({session:first.session,store});
+  const before=operationReference(first.session,'same-local-id'),foreign=operationReference(other.session,'same-local-id');
+  assert.notEqual(before.operationId,foreign.operationId);
+  assert.equal(first.session.scopeOperationId(before.operationId),before.operationId);
+  assert.equal(Object.getOwnPropertyDescriptor(first.session,'scopeOperationId').writable,false);
+  const command=first.session.command.bind(first.session);let applied,uncertain;
+  first.session.command=async(...args)=>{const operation=await command(...args);applied=await operation.applied();
+    throw Object.assign(Error('saved response lost'),{code:'TIMEOUT'});};
+  await assert.rejects(client.request({kind:'review',title:'Native attached request',input:{proposal:1},
+    target:{kind:'signer',deviceId:f.deviceId},slots:[{slotId:'review',eligibleSigners:[f.deviceId]}]},
+  {operationId:'same-local-id'}),error=>{uncertain=error;return error.code==='TIMEOUT';});
+  first.session.command=command;
+  assert.deepEqual(uncertain.operationReference,before);assert.equal(before.operationId,applied.operationId);
+  assert.equal(uncertain.operationIdentities.localOperationId,'same-local-id');
+  assert.equal(store.pending().length,1);assert.equal(store.pending()[0].reference.operationId,applied.operationId);
+  const inspected=await client.inspectOperation(before);
+  const full=operationReference(first.session,before.operationId,inspected.state);
+  assert.equal(full.attemptId,applied.attemptId);assert.equal(full.historyId,first.session.historyId);
+  assert.equal(inspected.attempt.payload.header.author,f.deviceId);
+  await assert.rejects(createCollaborationClient({session:other.session}).retry(full),/OPERATION_BINDING_MISMATCH/);
+  const rotated=await supervisor.rotateBinding('reviewer');await assert.rejects(f.attach(token));
+  const resumed=await f.attach(rotated.token);t.after(()=>resumed.detach());
+  assert.equal(resumed.session.scopeOperationId('same-local-id'),before.operationId);
+  const returning=createCollaborationClient({session:resumed.session});
+  await returning.retry(full);
+  assert.equal((await returning.inspectOperation(full)).attempt.id,applied.attemptId);
+  const requests=(await resumed.session.query('requests',null)).value;
+  assert.equal(requests.length,1);assert.equal(requests[0].interactionId,uncertain.operationIdentities.interactionId);
+  assert.equal(f.opened(),1);
 });
 
 const nativeModule = new URL('../native.mjs', import.meta.url).href;

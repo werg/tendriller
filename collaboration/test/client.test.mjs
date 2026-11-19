@@ -85,6 +85,30 @@ test('a local post-save failure retains the signed attempt and generated identit
   });
 });
 
+test('native binding aliases are canonical before retention, submission, error and exact retry', async () => {
+  const canonical='native_'+'1'.repeat(64)+'_'+'2'.repeat(64),attemptId='3'.repeat(64),generation='4'.repeat(64);
+  let retained,submitted,retried=0,lose=true;
+  const session={applicationId:'app',historyId:'history',deviceId:signer,query(){},
+    scopeOperationId(value){assert.ok(['local-id',canonical].includes(value));return canonical;},
+    async command(name,input,options){assert.equal(retained.reference.operationId,canonical);submitted=options.operationId;
+      if(lose)throw Object.assign(Error('response lost'),{code:'TIMEOUT'});
+      return{async get(){return{status:'saved',operationId:canonical,attemptId,generation};},async applied(){},async shared(){}};
+    },
+    operations:{async inspect(operationId,{author}){assert.equal(operationId,canonical);assert.equal(author,signer);
+      return{state:{status:'saved',operationId,attemptId,generation},attempt:{id:attemptId,payload:{header:{applicationId:'app',author,operationId,generation}}}};
+    }},async retry(operationId){assert.equal(operationId,canonical);retried++;}};
+  const client=createCollaborationClient({session,store:{retainOperation(reference,context){retained={reference,context};}}});
+  let reference;
+  await assert.rejects(client.message({threadId:'thread',text:'hello'},{operationId:'local-id'}),error=>{
+    reference=error.operationReference;assert.equal(reference.operationId,canonical);
+    assert.equal(error.operationIdentities.localOperationId,'local-id');assert.equal(error.operationIdentities.operationId,canonical);return true;
+  });
+  assert.equal(submitted,canonical);await client.retry(reference);assert.equal(retried,1);
+  lose=false;const operation=await client.message({threadId:'thread',text:'hello'},{operationId:'local-id'});
+  assert.equal(operation.operationId,canonical);assert.equal(operation.reference.operationId,canonical);
+  assert.equal(operation.identities.localOperationId,'local-id');assert.equal(operation.reference.attemptId,attemptId);
+});
+
 test('operation inspection uses the original signer and retry verifies the signed attempt scope', async () => {
   const other='b'.repeat(64),attemptId='1'.repeat(64),generation='2'.repeat(64),calls=[],retried=[];
   const session={applicationId:'app',historyId:'verified-history',deviceId:signer,command(){},query(){},

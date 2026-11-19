@@ -1,10 +1,16 @@
 import type { ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createCollaborationClient, createViewStore, createEffectDispatcher, mountParticipantPanel, type ParticipantEntry } from '../index.mjs';
-import { createSqliteEffectJournal } from '../native.mjs';
+import { createSqliteEffectJournal, attachNativeSession } from '../native.mjs';
 import { serveBrowserOwner } from '../worker.mjs';
 declare const native: ApplicationSession;
 declare const attached: WorkerApplicationSession;
+const nativeAttachment=await attachNativeSession({directory:'private-owner',token:'credential',connect:connectApplicationOwner,
+  applicationId:'application',definitionId:'definition',definitionVersion:'1'});
+const canonicalOperation:string=nativeAttachment.session.scopeOperationId('local-operation');void canonicalOperation;
+// @ts-expect-error the supervisor binding namespace cannot be replaced
+nativeAttachment.session.scopeOperationId=()=> 'forged';
 serveBrowserOwner({load:async()=>({profileId:'retained',openSession:async()=>({session:native})})});
 const nativeClient=createCollaborationClient({session:native});
 const attachedClient=createCollaborationClient({session:attached});

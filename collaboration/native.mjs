@@ -138,15 +138,16 @@ function checkedPolicy(value = {}) {
   return structuredClone(value);
 }
 
+function scopedOperationId(applicationId, bindingId, value) {
+  const prefix = 'native_' + digest(applicationId + ':' + bindingId) + '_';
+  if (typeof value !== 'string' || value.length < 1 || value.length > 256) throw failure('OPERATION_ID_INVALID');
+  if (value.startsWith(prefix) && /^[a-f0-9]{64}$/u.test(value.slice(prefix.length))) return value;
+  if (value.startsWith('native_')) throw failure('OPERATION_BINDING_MISMATCH');
+  return prefix + digest(value);
+}
 function scopedOperations(frame, applicationId, bindingId, signer, policy) {
   if (!frame || typeof frame !== 'object' || !Array.isArray(frame.args)) return frame;
-  const prefix = 'native_' + digest(applicationId + ':' + bindingId) + '_';
-  const operation = value => {
-    if (typeof value !== 'string' || value.length < 1 || value.length > 256) throw failure('OPERATION_ID_INVALID');
-    if (value.startsWith(prefix) && /^[a-f0-9]{64}$/u.test(value.slice(prefix.length))) return value;
-    if (value.startsWith('native_')) throw failure('OPERATION_BINDING_MISMATCH');
-    return prefix + digest(value);
-  };
+  const operation = value => scopedOperationId(applicationId, bindingId, value);
   const args = [...frame.args];
   if (frame.method === 'command') args[2] = { ...args[2], operationId: operation(args[2]?.operationId) };
   else if (frame.method === 'reapply') {
@@ -343,6 +344,14 @@ export async function attachNativeSession({ directory: path, token, connect, app
     };
     session = await connect(endpoint, { applicationId, definitionId, definitionVersion, context, timeoutMs,
       signal: signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal });
+    const bindingId = session.endpoint?.identity?.agentBindingId;
+    if (session.applicationId !== applicationId || typeof bindingId !== 'string' || !bindingId)
+      throw failure('SUPERVISOR_BINDING_REQUIRED', 'The authenticated attachment must identify its approved operation namespace.');
+    // Resolve before the uncertain command boundary. This readonly convenience
+    // uses owner-authenticated metadata; the supervisor independently checks
+    // every incoming ID and rejects another binding's canonical namespace.
+    Object.defineProperty(session, 'scopeOperationId', { value: Object.freeze(value => scopedOperationId(applicationId, bindingId, value)),
+      writable: false, configurable: false });
     const detach = async () => {
       try { await session.detach(); } finally { signal?.removeEventListener('abort', abort); transport.close(); port?.close(); socket.end(); }
     };

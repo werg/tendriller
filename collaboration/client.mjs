@@ -36,9 +36,10 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
     ...context, evidence: endpoint ? 'owner-bound' : 'signer-context', contextEvidence: 'caller-asserted' };
   function active() { if (detached) throw new CollaborationError('ENDPOINT_STALE'); }
   async function submit(name, input, options = {}) {
-    active(); const operationId = identifier(options.operationId ?? crypto.randomUUID(), 'operation');
-    let reference = operationReference(session, operationId);
-    const identities = { operationId, ...Object.fromEntries([
+    active(); const localOperationId = identifier(options.operationId ?? crypto.randomUUID(), 'operation');
+    let reference = operationReference(session, localOperationId);
+    const operationId = reference.operationId;
+    const identities = { operationId, localOperationId, ...Object.fromEntries([
       'interactionId', 'taskId', 'slotId', 'claimId', 'resultId', 'actionId', 'threadId', 'messageId',
     ].filter(key => input[key] !== undefined).map(key => [key, identifier(input[key], key)])),
     ...(name === 'collab.request' ? { taskId: input.interactionId } : {}) };

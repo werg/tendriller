@@ -95,10 +95,16 @@ export function operationReference(session, operationId, state) {
   const applicationId = session.applicationId ?? session.id, historyId = session.historyId;
   if (typeof applicationId !== 'string' || !applicationId || typeof historyId !== 'string' || !historyId)
     throw new CollaborationError('OPERATION_SCOPE_MISMATCH', 'An attached application and verified history are required');
-  if (state?.operationId !== undefined && state.operationId !== operationId)
+  const author = signerId(state?.author ?? session.deviceId);
+  // A native attachment namespaces its own local IDs before submission; full
+  // canonical IDs are idempotent. An inspected foreign author keeps its actual
+  // signed ID instead of being mapped into this attachment's namespace.
+  const scopedId = author === session.deviceId && typeof session.scopeOperationId === 'function'
+    ? session.scopeOperationId(operationId) : operationId;
+  if (state?.operationId !== undefined && state.operationId !== scopedId)
     throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The saved state belongs to a different operation');
-  return Object.freeze({ applicationId, historyId, author: signerId(state?.author ?? session.deviceId),
-    operationId: identifier(operationId, 'operation'), ...(state?.attemptId ? { attemptId: state.attemptId } : {}),
+  return Object.freeze({ applicationId, historyId, author,
+    operationId: identifier(scopedId, 'operation'), ...(state?.attemptId ? { attemptId: state.attemptId } : {}),
     ...(state?.generation ? { generation: state.generation } : {}) });
 }
 /** Owner hook: replace every caller-supplied source, never merge authority claims. */
