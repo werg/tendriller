@@ -849,6 +849,57 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(afterLoss.bindingId).toBe(beforeLoss.bindingId);
     expect(afterLoss.selectionEpoch).toBe(beforeLoss.selectionEpoch);
     expect(afterLoss.connectionEpoch).toBeGreaterThan(beforeLoss.connectionEpoch);
+
+    // Simulate a command admitted under the pre-binding gateway, whose
+    // assistant_commands row has no assistant_operation_context counterpart.
+    // Its original signed operation already exists, but the provider's reply
+    // was lost before the caller could distinguish saved from applied.
+    const legacyClientId = 'pre-upgrade-reply-lost', legacyInput = 8;
+    const legacyNativeId = 'assistant_' + await sha256Hex(JSON.stringify([second.id, b.subject, legacyClientId]));
+    const legacyDigest = await sha256Hex(JSON.stringify(['count', legacyInput, null]));
+    const originalLegacy = await (await second.session.command('count', legacyInput, { operationId: legacyNativeId })).applied();
+    await inDO(b.page.id, t => {
+      t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)',
+        legacyNativeId, legacyDigest, second.session.deviceId);
+      expect(t.db.one('SELECT 1 FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toBeNull();
+    });
+    const legacyRequest = { applicationId: second.id, command: 'count', input: legacyInput, operationId: legacyClientId };
+    expect((await second.tool('inspect_application_operation', { applicationId: second.id,
+      operationId: legacyClientId })).result.structuredContent.code).toBe('legacy_operation_requires_original_command');
+    expect((await second.tool('call_application_command', { ...legacyRequest, input: 9 }))
+      .result.structuredContent.code).toBe('operation_id_conflict');
+    expect((await second.tool('call_application_command', { ...legacyRequest, context: { runId: 'forged-later' } }))
+      .result.structuredContent.code).toBe('operation_id_conflict');
+    const recoveredLegacy = (await second.tool('call_application_command', legacyRequest)).result.structuredContent;
+    expect(recoveredLegacy.operationReference).toMatchObject({ operationId: legacyNativeId, deviceId: second.session.deviceId,
+      generation: 'unverified-preupgrade', sourceContext: { evidence: 'pre-upgrade-admission', generationEvidence: 'not-retained' } });
+    expect(recoveredLegacy.operation.state.attemptId).toBe(originalLegacy.attemptId);
+    expect(recoveredLegacy.outcome).toBe('applied');
+    expect((await second.tool('inspect_application_operation', { applicationId: second.id,
+      operationId: legacyClientId })).result.structuredContent.operationReference.operationId).toBe(legacyNativeId);
+    expect((await second.tool('call_application_command', legacyRequest)).result.structuredContent.operationReference.operationId)
+      .toBe(legacyNativeId);
+    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
+      .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
+    await inDO(b.page.id, t => {
+      expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
+      expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
+      expect(t.db.one('SELECT 1 FROM assistant_commands WHERE operation_id=?',
+        'assistant_v2_' + '0'.repeat(64))).toBeNull();
+    });
+
+    // A legacy gateway admission without a native attempt cannot be silently
+    // treated as a new v2 operation (even if the signer is still online).
+    const missingClient = 'pre-upgrade-not-yet-saved';
+    const missingId = 'assistant_' + await sha256Hex(JSON.stringify([second.id, b.subject, missingClient]));
+    await inDO(b.page.id, t => t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)',
+      missingId, legacyDigest, second.session.deviceId));
+    const absent = (await second.tool('call_application_command', {
+      ...legacyRequest, operationId: missingClient })).result.structuredContent;
+    expect(absent).toMatchObject({ outcome: 'not-found', code: 'legacy_operation_not_found',
+      operationReference: { operationId: missingId, deviceId: second.session.deviceId } });
+    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
+      .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
   } finally {
     outbound.mockRestore();
     mounted?.close();
