@@ -93,16 +93,16 @@ npm install --save-dev --save-exact esbuild@0.28.2
 Chronolog's public session package is currently produced from exact source; do
 not assume `npm install @chronolog/peer-session` retrieves the required package.
 The source baseline for this tutorial is
-`d1cc92bc1f03d2558cc03124333493baad35ea32`. Build its ordinary events archive:
+`d3efeb6d75ac24bb9b44899f27d6940475ab55e9`. Build its ordinary events archive:
 
 ```sh
 git clone https://github.com/werg/chronolog-db.git ../chronolog-source
-git -C ../chronolog-source checkout --detach d1cc92bc1f03d2558cc03124333493baad35ea32
+git -C ../chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
 cd ../chronolog-source
 corepack pnpm install --frozen-lockfile --ignore-scripts
 node tools/package-peer-session.mjs
 cd ../shared-notes
-npm install --save-exact ../chronolog-source/artifacts/peer-session/chronolog-peer-session-d1cc92bc.tgz
+npm install --save-exact ../chronolog-source/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz
 ```
 
 Keep the archive's reported SHA-256, `provenance.json`, exact source SHA and the
