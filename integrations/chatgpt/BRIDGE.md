@@ -108,6 +108,13 @@ updates the revision that must be reviewed; ordinary progress within the same
 generation does not invalidate the approval. Controlled replacement bridges must
 implement `readRevision`, `assertSelection` and `verifySource.currentRevision`.
 
+`getStatus(id).grant` contains the freshly verified device's `reader`, `writer`,
+`coordinator`, `recovery`, `administrator` and `publisher` booleans. Online setup
+checks can require a writer when commands are enabled and reject privileged
+roles on a dedicated bridge without submitting a command. A missing reader
+grant still fails closed; status never returns a stale cached grant after a
+failed authority refresh.
+
 `observe(id,{cursor?,signal?})` yields `kind: 'events'` batches with explicit pull
 backpressure. Finish the atomic outbox/cursor transaction before requesting the
 next batch. A native recovery yields one `kind: 'recovery'` notice with

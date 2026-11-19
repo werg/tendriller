@@ -15,13 +15,15 @@ concurrency:
 
 jobs:
   integration:
-    name: Remote integration and real native session
+    name: Qualified ChatGPT deployment bundle
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           path: core
+          # Qualify the source head, not GitHub's temporary PR merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
@@ -30,31 +32,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci
-        working-directory: core
-      - name: Build and extract the pinned public events session
-        working-directory: chronolog
-        run: |
-          corepack pnpm install --frozen-lockfile --ignore-scripts
-          node tools/package-peer-session.mjs
-          mkdir -p "$RUNNER_TEMP/chronolog-peer-session" "$GITHUB_WORKSPACE/core/.results"
-          tar -xzf artifacts/peer-session/chronolog-peer-session-d014879e.tgz \
-            -C "$RUNNER_TEMP/chronolog-peer-session" --strip-components=1
-          test -f "$RUNNER_TEMP/chronolog-peer-session/native.mjs"
-          sha256sum artifacts/peer-session/chronolog-peer-session-d014879e.tgz \
-            > "$GITHUB_WORKSPACE/core/.results/chatgpt-chronolog-session.sha256"
-          cp "$RUNNER_TEMP/chronolog-peer-session/provenance.json" \
-            "$GITHUB_WORKSPACE/core/.results/chatgpt-chronolog-provenance.json"
-      - name: Test integration contracts and actual native peers
+      - name: Build exact public packages and qualify the deployment release
         working-directory: core
         shell: bash
-        env:
-          CHRONOLOG_SESSION_PACKAGE: ${{ runner.temp }}/chronolog-peer-session
-        run: npm run test:chatgpt 2>&1 | tee .results/chatgpt-tests.log
+        run: |
+          node integrations/chatgpt/deploy/build-release.mjs \
+            --core-source "$GITHUB_WORKSPACE/core" \
+            --core-ref "$(git rev-parse HEAD)" \
+            --chronolog-source "$GITHUB_WORKSPACE/chronolog" \
+            --output "$RUNNER_TEMP/chatgpt-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tendriller-chatgpt-release
+          path: ${{ runner.temp }}/chatgpt-release/release/
+          include-hidden-files: true
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: chatgpt-integration-qualification
-          path: core/.results/chatgpt-*
+          path: ${{ runner.temp }}/chatgpt-release/build/logs/
           include-hidden-files: true
           if-no-files-found: ignore

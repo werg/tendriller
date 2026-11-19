@@ -71,6 +71,20 @@ test('each access refreshes native authority; revocation and unavailable control
   await f.bridge.close();
 });
 
+test('status reports only the freshly verified device rights for read-only enrollment preflight', async () => {
+  const f = fixture();
+  assert.deepEqual((await f.bridge.getStatus(id)).grant, { reader: true, writer: true,
+    coordinator: false, recovery: false, administrator: false, publisher: false });
+  Object.assign(f.grant, { writer: false, coordinator: true, recovery: true, administrator: true, publisher: true, extra: 'never-export' });
+  const result = await f.bridge.getStatus(id);
+  assert.deepEqual(result.grant, { reader: true, writer: false, coordinator: true, recovery: true, administrator: true, publisher: true });
+  assert.equal(JSON.stringify(result).includes('never-export'), false);
+  assert.equal(f.calls.some(value => value.command), false);
+  f.grant.reader = false;
+  await assert.rejects(f.bridge.getStatus(id), { code: 'BRIDGE_GRANT_REQUIRED' });
+  await f.bridge.close();
+});
+
 test('command passes original retry identity and native revision unchanged, returning saved state', async () => {
   const f = fixture();
   const result = await f.bridge.command(id, 'say', 'hello', { operationId: 'once', basedOn: revision });
@@ -286,6 +300,8 @@ test('real native peers preserve signed attempts across bridge restart and selec
         eventProjection: event => ({ name: 'assistant.help_requested', data: { request_id: event.operationId } }),
       }] });
       let bridge = buildBridge(); cleanup.push(() => bridge.close());
+      assert.deepEqual((await bridge.getStatus(id)).grant, { reader: true, writer: true, coordinator: true,
+        recovery: true, administrator: true, publisher: false });
       const link = await peer.connectApplications(a.session, b.session); cleanup.push(() => link.close());
       await bridge.command(id, 'say', 'retained request', { operationId: 'once' });
       await a.session.operations.wait('once', { signal: AbortSignal.timeout(5000) });
