@@ -29,9 +29,12 @@ export async function activeGrant(env: Env, config: OAuthConfig, id: string, sub
   const row = await env.ACCOUNTS.prepare(`SELECT g.* FROM integration_oauth_grants g JOIN accounts a ON a.id=g.account_id
     WHERE g.id=? AND g.resource=? AND g.revoked_at IS NULL AND g.expires_at>?
       AND a.suspended_at IS NULL AND a.deleting_at IS NULL`).bind(id, config.resource, Date.now()).first<OAuthGrant>();
-  const client = row && config.clients.find(value => value.id === row.client_id);
-  if (!row || !client || subject !== undefined && row.account_id !== subject || scopesOf(row).some(scope => !client.scopes.includes(scope))) return null;
+  if (!row || subject !== undefined && row.account_id !== subject || !registeredGrant(config, row)) return null;
   return row;
+}
+export function registeredGrant(config: OAuthConfig, grant: Pick<OAuthGrant, 'client_id' | 'scope'>): boolean {
+  const client = config.clients.find(value => value.id === grant.client_id);
+  return !!client && scopesOf(grant).every(scope => client.scopes.includes(scope));
 }
 export async function revokeGrant(env: Env, id: string): Promise<void> {
   await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=?').bind(Date.now(), id).run();

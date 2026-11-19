@@ -33,7 +33,7 @@ interface VerifiedSnapshot {
 const snapshot = (t: Tendril): VerifiedSnapshot => t.db.cached('peer-generation:verified', () => ({}));
 interface HostState {
   pending: Promise<unknown>; store: BytesStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
-  registry?: GenerationRegistry; signer?: PeerIdentity;
+  registry?: GenerationRegistry; signer?: PeerIdentity; assistantGeneration?: string | null; assistantGrants?: Map<string, PeerGrant | null>;
 }
 const hosts = new WeakMap<Tendril, HostState>();
 function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
@@ -65,6 +65,8 @@ function host(t: Tendril): HostState {
         throw new HttpError(413, 'peer_control_storage_full', 'The bounded generation control store is full');
       const bytes = value.slice();
       await state!.check?.();
+      state!.assistantGeneration = undefined;
+      state!.assistantGrants = undefined;
       t.transaction(() => {
         state!.guard?.();
         t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, bytes.buffer);
@@ -378,5 +380,23 @@ export function withPeerControlAuthority<T>(t: Tendril, principal: Principal, wo
         checkAccess: () => freshAccess(t, principal),
       });
     } catch (error) { return peerControlError(error); }
+  });
+}
+
+/** Assistant ports check selected history without loading application execution code. */
+export function withSelectedAssistantGeneration<T>(t: Tendril, work: (generation: string | null, canUseDevice: (id: string, write: boolean) => Promise<boolean>) => T): Promise<T> {
+  return serial(t, async state => {
+    if (state.assistantGeneration === undefined)
+      state.assistantGeneration = (await readAuthority(t, state)).current?.id ?? null;
+    return work(state.assistantGeneration, async (id, write) => {
+      const grants = state.assistantGrants ??= new Map();
+      if (!grants.has(id)) {
+        const grant = (await readAuthority(t, state)).grant(id);
+        if (grants.size >= 12) grants.delete(grants.keys().next().value!);
+        grants.set(id, grant);
+      }
+      const grant = grants.get(id);
+      return !!(write ? grant?.writer : grant?.reader);
+    });
   });
 }

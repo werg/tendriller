@@ -7,30 +7,21 @@ const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMa
   entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
 const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog-db|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)|@chronolog\//;
 const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
-// The host admits its portable controls and the one explicitly trusted
-// assistant adapter. Other application code and native session entries stay out.
+// The host admits portable control verification. Executable application logic stays with its participants.
 const controlImports = new Map([
   ['server/src/peer-generations.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-control-identity.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-participant.ts', '@chronolog/peer-generation/participant'],
-  ['server/src/assistant-peer.mjs', '@chronolog/peer-session'],
-  ['server/src/assistant.ts', '../../integrations/chatgpt/worker-runtime.mjs'],
 ]);
 const controlArtifacts = new Set(['node_modules/@chronolog/peer-generation/control.mjs', 'node_modules/@chronolog/peer-generation/participant.mjs']);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
   if (!/\.(ts|mjs|mts)$/.test(path)) continue;
   for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g))
-    assert.ok(((controlImports.get(relative(root, path)) === match[1] ||
-      relative(root, path) === 'server/src/assistant-peer.mjs' && match[1] === '@chronolog/peer-session/websocket') || !application.test(match[1])) && !tooling.test(match[1]), `${relative(root, path)} imports application/tool implementation ${match[1]}`);
+    assert.ok(((controlImports.get(relative(root, path)) === match[1]) || !application.test(match[1])) && !tooling.test(match[1]), `${relative(root, path)} imports application/tool implementation ${match[1]}`);
 }
 const engine = JSON.parse(readFileSync(join(root, 'dist/engine/inputs.json')));
-const trustedAssistant = new Set([
-  'integrations/chatgpt/examples/kitchen/domain.mjs',
-  'integrations/chatgpt/examples/kitchen/projection.mjs',
-]);
-const sessionArtifact = /^node_modules\/@chronolog\/peer-session\/(?:index\.mjs|websocket\.mjs|chunks\/[a-z\d-]+\.mjs)$/i;
-for (const input of engine) assert.ok((controlArtifacts.has(input) || trustedAssistant.has(input) || sessionArtifact.test(input) || !application.test(input)) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
+for (const input of engine) assert.ok((controlArtifacts.has(input) || !application.test(input)) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
 const workerSource = readFileSync(join(root, 'dist/engine/worker.mjs'), 'utf8');
 for (const match of workerSource.matchAll(/(?:from\s*|import\s*\()\s*["'](node:[^"']+)/g))
   assert.ok(['node:crypto', 'node:net'].includes(match[1]), `Unexpected native Worker dependency ${match[1]}`);

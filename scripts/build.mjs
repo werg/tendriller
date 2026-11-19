@@ -97,7 +97,7 @@ export async function buildPublicArtifacts() {
   const runtimeExports = { "./kernel": { types: "./kernel.d.mts", import: "./assets/kernel.mjs" }, "./voice": { types: "./voice.d.mts", import: "./assets/voice.mjs" }, "./manifest": "./assets/manifest.json", "./assets/*": "./assets/*" };
   writeJson(join(runtime, "package.json"), { name: "@tendriller/runtime", version: CORE_RELEASE, type: "module", description: "Tendriller browser composition, sensors and explicit voice", exports: runtimeExports, files: ["assets", "kernel.d.mts", "voice.d.mts", "inputs.json", "build-metrics.json"], tendriller: { contract: CONTRACT_VERSION, runtime: id } });
   for (const file of readdirSync(join(root, "contract"))) if (/\.(mjs|mts|json)$/.test(file) && !["tsconfig.json", "engine.d.mts", "testing.d.mts"].includes(file)) copyFileSync(join(root, "contract", file), join(sdk, file));
-  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller page-host client and owned application session contract", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./browser": { types: "./browser.d.mts" }, "./voice": { types: "./voice.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./application": { types: "./application.d.mts", import: "./application.mjs" }, "./signals": { types: "./signals.d.mts", import: "./signals.mjs" }, "./peers": { types: "./peers.d.mts", import: "./peers.mjs" }, "./schema": "./v3.json" }, tendriller: { contract: CONTRACT_VERSION } });
+  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller page-host client and owned application session contract", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./browser": { types: "./browser.d.mts" }, "./voice": { types: "./voice.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./application": { types: "./application.d.mts", import: "./application.mjs" }, "./signals": { types: "./signals.d.mts", import: "./signals.mjs" }, "./peers": { types: "./peers.d.mts", import: "./peers.mjs" }, "./assistant": { types: "./assistant.d.mts", import: "./assistant.mjs" }, "./schema": "./v3.json" }, tendriller: { contract: CONTRACT_VERSION } });
   for (const [name, directory] of [["sdk", sdk], ["runtime", runtime]]) {
     const result = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", dist], { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))[0];
     const target = join(dist, `tendriller-${name}-${CORE_RELEASE}.tgz`);
@@ -105,7 +105,11 @@ export async function buildPublicArtifacts() {
     if (join(dist, result.filename) !== target) rmSync(join(dist, result.filename));
   }
   for (const name of ["agent.md", "AGENTS.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
-  copyFileSync(join(root, 'integrations/chatgpt/widget/index.html'), join(out, 'assistant-widget.html'));
+  const inboxSource = join(root, 'integrations/chatgpt/inbox');
+  const inbox = await build({ entryPoints: [join(inboxSource, 'app.mjs')], bundle: true, write: false, format: 'esm', minify: true });
+  writeFileSync(join(out, 'application-inbox.html'), readFileSync(join(inboxSource, 'template.html'), 'utf8')
+    .replace('<!-- APP -->', () => '<script type="module">' + inbox.outputFiles[0].text.replace(/<\/script/giu, '<\\/script') + '</script>'));
+
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
     for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path) && !path.startsWith(join(root, "docs/tutorial") + "/"))) {

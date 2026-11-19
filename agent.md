@@ -69,8 +69,8 @@ its own Worker and authorized device. The Tendriller host does not run an
 always-running agent; its MCP endpoint exposes host administration. For remote
 application tools, explicit supported event subscriptions, a mounted assistance
 card or a separate Workspace Agent route, use the optional
-[ChatGPT integration](docs/CHATGPT_INTEGRATION.md). It requires its own enrolled
-native process, account authorization and owner consent. It cannot wake an
+[ChatGPT integration](docs/CHATGPT_INTEGRATION.md). Attach `@tendriller/core/assistant` to the existing application participant and give
+the owner the real consent URL. Keep that participant available for remote calls. It cannot wake an
 arbitrary ordinary chat. Keep the selected participant/agent processes running
 and report their restart state. If that environment is unavailable, choose the
 guide's native-tool or manual-handoff fallback and name the exact prerequisite.

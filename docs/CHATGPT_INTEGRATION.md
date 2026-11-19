@@ -1,244 +1,78 @@
 # Connect a Tendriller application to ChatGPT
 
-The [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md) connects ChatGPT to the
-configured Tendriller page from the service's own `/mcp` endpoint. The
-page Durable Object opens its enrolled Chronolog peer only when a request or
-delivery needs it. Owner login, application consent, a live coordinator and
-a supported ChatGPT subscription remain separate prerequisites.
+An owner can expose selected queries, commands and events from any claimed
+Tendriller application through the service's account-linked MCP endpoint. The
+application's existing Chronolog participant handles its commands and queries.
+Follow the [Cloudflare setup](CLOUDFLARE_ASSISTANT.md) for enrollment, client
+registration and a complete participant SDK example.
 
-## Choose a route that fits the task
+| What you want to do | Route |
+| --- | --- |
+| Read or change an app from a tool-capable chat | Call `list_tendrils`, `describe_application` and the authorized query or command tool |
+| Wake a supported ChatGPT conversation after an event | Subscribe to the generic `application.event` with the chosen application and approved event name |
+| Keep an eye on activity in an open chat | Open the live inbox card. Choose **Check inbox in this chat** to prompt the chat |
+| Catch up in a chat with no subscription or mounted card | Ask it to use `read_application_events`, retaining its cursor for the next turn |
+| Run a separately published Workspace Agent | Use an operator-configured event receiver and its [published trigger](https://developers.openai.com/workspace-agents/trigger-runs) |
+| Connect an agent with its own execution loop | Use the same [public native session tools](AGENT_DELIVERY.md) |
 
-| Need | Implemented route | Required next action or fallback |
-| --- | --- | --- |
-| Read or change an app from a tool-capable chat | OAuth-protected remote MCP queries and commands | Link the account, approve exact application permissions, then inspect `describe_application` before calling a domain command. |
-| An app request should start work later | MCP Events subscriptions with durable delivery | Use a supported Work chat or dot, explicitly subscribe to an allowed event, and verify its callback. Keep the application coordinator available. |
-| Continue the current mounted UI interaction | Assistance card attached to `get_assistance_status` | Choose **Send to ChatGPT** in a compatible MCP Apps host; the card sends only the request reference on that gesture. |
-| The current chat has no event subscription feature | Manual request-reference handoff plus tools | Copy the application/request identifiers into the chat. Read current context through the linked tools before replying. |
-| The agent can run local processes | Native session tools or `tendril --session` | Keep that enrolled process available, or resume its exact device store on the next invocation. |
-| A configured published Workspace Agent should handle work | Optional fixed-channel Workspace Agent adapter | Configure its private access token and allowed event policy. This route has its own conversation and run receipt. |
-| Continuous voice, camera or low-latency media | Explicit native provider/session composition | Use [voice](HANDS_FREE.md) and [reviewed input](AI_INPUT.md). Event notifications carry no audio, image or video stream. |
-| Create a page or publish a reviewed UI | Optional lifecycle tools and existing publisher handoff | The human still claims the page; an enrolled publisher signs the exact reviewed graph. Large local graphs can use the CLI. |
+ChatGPT's [MCP Events support](https://developers.openai.com/plugins/build/mcp-events)
+is available in Work chats on the web, Work chats on desktop with Cloud
+selected, and dots. Workspace policy also applies. The
+[MCP Apps inbox card](https://developers.openai.com/plugins/build/chatgpt-ui)
+listens while mounted in a compatible host. It uses the host's follow-up
+capability on an explicit click. In a chat without background delivery, start
+a turn through the card or the chat composer. A published Workspace Agent
+trigger can maintain its own channel conversation.
 
-The provider's [MCP Events documentation](https://developers.openai.com/plugins/build/mcp-events)
-currently lists Work chats on the web, desktop Work chats with Cloud selected,
-and dots. Workspace controls still apply. Do not promise event delivery into an
-arbitrary ordinary conversation. The [UI bridge](https://developers.openai.com/plugins/build/chatgpt-ui)
-provides `ui/message` and a compatibility follow-up method only where that host
-capability is available. A normal hosted Tendriller page has no such chat bridge.
-These provider boundaries were checked on 19 November 2026; recheck them before
-promising support on another surface.
+## Find and use the app
 
-## Establish the connection
+The account must own the page and approve the exact application capabilities
+at `/connections`. The ChatGPT client links the account using the host's
+[OAuth issuer](INTEGRATION_OAUTH.md). OAuth controls client scopes. The page's
+connection controls its allowed operations. Chronolog controls which enrolled
+devices execute those operations.
 
-1. Complete the native application setup in [Build an app](BUILD_AN_APP.md),
-   including actual owner claim, signed definition, initial generation and
-   reachable peers. The [kitchen example](https://github.com/werg/tendriller/tree/master/integrations/chatgpt/examples/kitchen)
-   supplies a concrete request/reply domain, browser Worker and dedicated bridge
-   enrollment commands. A new HTML release cannot change an existing immutable
-   application definition.
-2. Follow the [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md) to configure
-   the exact Tendriller `/mcp` resource and register the callback shown by the
-   intended client. Provision the Worker’s dedicated device key as part of setup.
-3. Enroll that device with reader access and only the necessary writer access.
-   The page Durable Object retains the device. Keep publishing, administration,
-   recovery and coordination on their existing authorized devices. The reader
-   grant permits application history reads. Outbound event filters govern which
-   metadata is sent in notifications.
-4. Link the OAuth account in the client. The integration verifies issuer,
-   audience, signature, expiry and scopes. The host account adapter also
-   introspects the token and binds all application checks to that exact live
-   grant. Its stable profile ID binds the issuer/subject pair; it does not use
-   mutable email as identity.
-5. Have the authenticated owner review exact query, command and event names in
-   the optional `/connections` page or an equivalent trusted owner interface.
-   The Worker uses the existing Tendriller browser session. Signing in grants no app permissions.
-   Notification consent and detailed event-content consent are separate.
-6. Call `list_tendrils`, `get_application_status` and `describe_application`.
-   Verify an authorized query before submitting a command. If asynchronous work
-   is needed, explicitly subscribe in the selected supported chat and test one
-   request through to an applied reply in the page.
+- `list_tendrils` lists enabled connections for the linked account.
+- `describe_application` returns the approved schemas and adapter availability.
+- `query_application` returns the selected native view and its revision.
+- `call_application_command` requires an operation ID. Keep that ID and every
+  argument unchanged after a timeout or uncertain result. A saved attempt can
+  still be awaiting its applied outcome. Query current state to check it.
+  An uncertain write stays bound to its original Chronolog signer, even after
+  another approved participant takes over remote routing.
+- `read_application_events` reads the retained approved event projection.
+  `get_application_delivery` shows pending work and recent webhook receipts.
+  `open_application_inbox` opens a live mounted card when the host supports it.
 
-OAuth is a resource-server boundary, not a device grant. The included first-party
-adapter implements account mapping and owner lookup against current trusted host
-records. An external-provider integration must supply equivalent checks.
-Never replace them with an unconditional approval, token email,
-application ID supplied by the model, or possession of the host agent handle.
-See [authentication implementation](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/AUTH.md)
-and the provider's [OAuth requirements](https://developers.openai.com/plugins/build/auth)
-for exact issuer/resource metadata, PKCE and redirect configuration.
-
-The page Durable Object wakes for tool calls and delivery work. Keep the
-application's coordinator available so it can serve selected history and
-accept signed commands. For operators hosting a custom adapter outside
-Tendriller, the [standalone setup](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/deploy/README.md)
-documents its own process and preflight checks.
-
-## Discover and use the tools
-
-`tools/list` is authoritative for the configured service and current OAuth scopes.
-Optional lifecycle and Workspace Agent tools appear only when configured.
-Application schemas are further filtered by declared allowlists and connection
-consent. The same checks apply to widget tool calls.
-
-| Tools or protocol method | Purpose | OAuth scope |
-| --- | --- | --- |
-| `get_profile` | Stable opaque identity for this authenticated connection | Authenticated token |
-| `list_tendrils` | Configured applications this account may access, with connection status | `tendrils:list` |
-| `get_integration_options`, `get_application_status`, `describe_application` | Route choices, real native availability and permitted schemas | `applications:read` |
-| `query_application`, `get_kitchen_context`, `get_assistance_status` | Current coherent selected-history query | `applications:read` |
-| `get_event_details` | Allowed immutable source event, with separate content consent | `applications:read` |
-| `get_operation_status` | Original command submitted by this account through this integration | `applications:read` plus the original command's active consent |
-| `request_assistance`, `reply_to_assistance`, `call_application_command` | Declared application commands through the enrolled writer | `applications:write` |
-| `events/list`, `events/subscribe`, `events/unsubscribe`, `resume_event_delivery` | Explicit event delivery and reviewed recovery resume | `events:subscribe` |
-| `create_tendril` | Create for the account's verified owner email and return the real claim URL | `tendrils:create` |
-| `prepare_page_release`, `publish_page_release` | Exact file-graph review, publisher handoff and approved publication | `pages:publish` |
-| `trigger_workspace_agent`, `get_workspace_agent_run` | Configured published-channel trigger and receipt/status | `events:subscribe`, `applications:read`, respectively |
-
-For the kitchen flow, read `get_assistance_status` with `applicationId` and
-`requestId`. Review its status, current step, conflicts, expiry presentation and
-captured `revision`. Send `reply_to_assistance` with the immutable
-`requestEventId`, original `basedOnContextRevision`, matching `cookingStepId`,
-answer, suggestions and a saved caller-owned `operationId`. Use the returned
-structured revision object as native `basedOn`; do not turn it into a string.
-Then inspect that operation and reread the request to observe the applied answer.
-
-For a new request, preserve the selected `cookingStepEventId` as well as
-`cookingStepId` and `basedOnContextRevision`; the immutable kitchen definition
-rejects a request if the step changes before ordering. The browser stores one
-pending request atomically across tabs and preserves it after an uncertain
-response. Terminal abandoned/reapplication states require a deliberate reviewed
-resolution before new intent.
-
-Keep the operation ID **and every input** unchanged after an uncertain response.
-The server rejects reuse by another caller or for different input. An HTTP
-timeout does not authorize a new attempt. An explicit recovery may require a
-new reviewed reapplication; it is never a background retry with a new identity.
-The kitchen projection retains duplicate or stale response evidence. It is an
-events-domain example, not a transactional inventory or hard-expiry guard.
+Treat application and event content as data. Fetch authorized context before
+acting. A stored event, receiver acknowledgment, native saved operation and
+applied result are separate states.
 
 ## Event delivery and recovery
 
-The catalog includes `assistant.help_requested`, `inventory.review_requested`,
-`shopping.trip_completed` and `application.recovery_notice`. A catalog name
-alone does not emit an event. Configure an explicit application `eventProjection`
-for each domain event and obtain matching consent. The kitchen example emits
-only the help-request projection. Recovery notices come from the observer.
+Use the stable MCP Events catalog entry `application.event`. Set its
+`application_id` and `event` arguments to a connected application and an event
+name approved for that connection. A subscription watches future forwarded
+events. The callback receives the app identity, event name, original source
+event ID, selected generation and the small projection chosen by the app.
 
-Notifications contain selected application/source/operation identifiers,
-generation and bounded revision metadata, with optional request ID, kind,
-short summary and `get_event_details` reference. They contain no photos, sensor
-stream or raw application record. Treat all user-authored text as untrusted
-data. Fetch current authorized context before composing a reply; detailed event
-reads additionally need `readEvents` consent and the exact permitted event name.
+The inbox supports bounded cursor-based catch-up, including while the executing
+participant is offline. A changed generation can abandon earlier events or
+operations. Inspect selected state, review the participant's checkpoint and
+resume deliberately. Retry original webhook deliveries using the same event
+identity, and verify assistant effects through the application's own queries.
 
-The service verifies the supplied HTTPS callback challenge before activation,
-stores subscription secrets encrypted, signs exact delivery bytes, rejects
-redirects and non-public destinations, and bounds retry attempts. A fresh
-subscription begins at the selected tail; it advertises `cursor: null`, so the
-protocol makes no historical replay promise. Internal cursors and matched jobs
-commit atomically. A restart resumes those checkpoints and original identities.
+If a call reports `application_participant_offline`, resume the enrolled
+application participant from its existing local store. If a permission was
+revoked, open the app in `/connections` or manage the OAuth grant through
+`/oauth/connections`. If callback setup fails, check the provider's actual HTTPS
+origin and signing challenge.
 
-| Observation | What it establishes |
-| --- | --- |
-| Native `saved` | The signer retained the original command attempt locally. |
-| Native `applied` | The selected history contains an application outcome. |
-| Native `shared` | The native operation reports its retained peer coverage. |
-| Outbox queued/retry/failed | The notification's local delivery state and bounded attempts. |
-| Webhook `accepted` | The destination accepted the HTTP event; no assistant answer is implied. |
-| Assistant reply operation | A separate signed domain command, still subject to its own application state. |
+## Test the connected journey
 
-Recovery can remove a previously observed event or answer from selected history.
-The observer pauses delivery and retains the new `recoveryRevision`; it does not
-reset its cursor silently. After inspecting current status and pending work,
-call `resume_event_delivery` with that **exact** revision and choose:
-
-- `from_current`: start after the current selected tail and cancel old pending
-  domain deliveries for that subscription.
-- `replay_selected`: scan selected history explicitly; retain prior event IDs,
-  accepted receipts and attempt budgets instead of manufacturing fresh work.
-
-A recovery notice requires its own consent and subscription. The paused status
-remains available even if a notice cannot be queued. Subscription expiry/refresh
-does not erase a recovery review. Every send/retry checks current account access,
-consent, activation and actual selected-source presence. A request already sent
-outside the service cannot be recalled; its later receipt remains evidence.
-The event timestamp may use authenticated author metadata and is not a trusted
-wall clock.
-
-## Creation, publication and alternative agents
-
-`create_tendril` returns the actual claim URL. Only the human owner completes
-sign-in. Since host creation has no idempotency key, an uncertain creation is
-retained for reconciliation and never blindly repeated. Creation does not grant
-bridge access or configure the application.
-
-`prepare_page_release` retains the exact authored graph, hashes and review
-digest and returns an unsigned signing request. An existing authorized publisher
-obtains the private review bundle through a trusted owner interface, checks the
-actual asset bytes, and uses `signReviewedRelease` on its own native session.
-`publish_page_release` accepts that exact signed publication only when a real
-recorded approval callback also approves the review. No model field such as
-`approved: true` supplies that approval. See the
-[lifecycle handoff](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/LIFECYCLE.md).
-Use the existing CLI for large local bundles; the default remote request budget
-is 256 KiB, including base64 and JSON overhead.
-
-The optional [Workspace Agent adapter](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/WORKSPACE_AGENT.md)
-sends only selected-event identifiers to the operator-configured channel. Its
-stable retry key and conversation key survive restart. The provider's
-[published-channel API](https://developers.openai.com/workspace-agents/trigger-runs)
-returns acceptance and optional run status, not the assistant answer. Configure
-that agent to use the allowed MCP reply tool; observe the resulting application
-command separately. This does not target the user's arbitrary existing chat.
-
-For a local agent, reuse `createApplicationTools` or `serveApplicationToolLines`
-from the public native session package, or the [session CLI](tools/CLI.md).
-These remain useful when remote OAuth, subscriptions or widget hosting are
-unavailable. Resume an existing dedicated device; do not open one SQLite device
-store concurrently from several processes.
-
-## Diagnose the failing boundary
-
-| Symptom or reported code | Concrete next step |
-| --- | --- |
-| HTTP 401, `INSUFFICIENT_SCOPE` | Check configured issuer/audience/JWKS and use the client reauthorization flow for the exact scope. |
-| `ACCOUNT_ACCESS_DENIED` | Repair the trusted account-to-application mapping or select an account that currently has access. |
-| Connection missing, expired or revoked | The owner reviews the exact permissions again; reconnecting OAuth alone does not grant them. |
-| `BRIDGE_GRANT_REQUIRED` or unavailable native authority | Verify the dedicated device enrollment and current signed grants, resume its private store and restore control connectivity. |
-| Native session cannot apply or share | Inspect coordinator/peer availability and participation status. Keep the required native peer running; do not invent a second command engine. |
-| Unknown query/command or projection | Inspect the immutable definition, configured allowlist and owner consent. Add declarations only through a supported application setup/evolution path. |
-| Callback challenge, blocked address or redirect | Use the actual client-provided public HTTPS callback; inspect its categorized failure without bypassing address validation. |
-| Subscription inactive, callback gone, no supported chat surface | Refresh or explicitly resubscribe; otherwise use manual tools, mounted UI or a configured Workspace Agent. |
-| `SOURCE_NOT_SELECTED`, `APPLICATION_VIEW_RECOVERED`, recovery pause | Read current selected history and recovery status; review the exact recovery revision before choosing a resume strategy. |
-| `BRIDGE_EVENT_SCAN_LIMIT`, `SOURCE_BASELINE_LIMIT` | Absence was not established. Adjust a trusted bounded scan budget or narrow the application design; do not answer from stale cached content. |
-| `OPERATION_ID_CONFLICT` or uncertain command | Inspect the original operation and retained inputs. Preserve identity for exact retry; review any new intent separately. |
-| `OPERATION_IDENTITY_UNCONFIRMED` | Retry the original request with its exact operation ID and inputs; status is withheld until the native saved identity is verified. |
-| `HOST_ACCOUNT_MAPPING_INCOMPLETE`, OAuth configuration or migration 503 | Apply the additive OAuth migration and check the exact resource, bridge credential, application IDs and registered callbacks using preflight. |
-| Management sign-in expired or host logout | Open `/connections` again and complete Tendriller sign-in. Review any expired or revoked grants separately. |
-| `REQUEST_TOO_LARGE` | Reduce the bounded remote graph or use the public CLI; an operator may configure up to 12 MiB after considering host limits. |
-| Missing publication tool, publisher denial or changed release context | Configure the real approval lookup, use the enrolled publisher and prepare a new review for changed context. |
-| `STORE_DECRYPTION_FAILED`, journal/outbox capacity | Restore the matching private key/store or archive reviewed receipts deliberately. Do not clear pending identities to make a retry succeed. |
-| Webhook accepted or Workspace Agent completed but no answer | Read actual request/operation state and inspect the configured agent's permitted write-back tools. Receipt status is not a reply. |
-
-## Verification and completion
-
-The server test `integration-oauth.public.test.ts` covers the Worker route,
-including eviction, callback retry and signed reply. The separate Node 24 gate,
-`npm run test:chatgpt`, covers the shared and standalone integration APIs. Its tests
-exercise OAuth verification, consent, callbacks, durable delivery and recovery,
-MCP schemas, widget behavior, lifecycle handoff and Workspace Agent transport.
-Supplying the pinned public Chronolog package additionally runs real native
-SQLite stores, signed attempts, authenticated in-process peer exchange, exact
-retry, recovery and reopen. The
-[integration README](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/README.md)
-records how to build that artifact and what each check establishes.
-
-Synthetic account/control services, injected callbacks/provider transports and
-local widget tests do not qualify a live identity provider, Internet RTC/relay,
-mounted ChatGPT UI or subscribed model turn. Before calling a deployed connection
-complete, record the actual owner claim, configured account mapping, explicit
-bridge grant and consent, successful linked query, verified subscription, one
-source request, its delivery receipt, an assistant's correlated signed reply,
-the page's applied read, reload and revoked-access behavior. Identify the
-processes that remain running and preserve their restart state. Report the
-specific unverified step when a prerequisite is unavailable.
+On the same Worker, claim and connect two unrelated apps using their public
+SDK. Confirm account isolation, visible event filters, exact command retry,
+signed callback and persisted retry after eviction. Test the inbox card and
+the catch-up tool in their target client. For live acceptance, observe the
+actual assistant turn and signed applied reply rather than stopping at an HTTP
+delivery receipt.

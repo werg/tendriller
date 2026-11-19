@@ -24,8 +24,8 @@ the current browser without requesting permissions.
 | UI preview and headless browser interaction | `tendril-preview ./page`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
 | Inference using a protected provider credential | An explicitly enabled native participant with an allowed-device list and request budget | `media/inference-client.mjs`, `media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Agent-side tools and a connected process | The same owned session plus `createApplicationTools` / `serveApplicationToolLines` | [Delivery and process lifetime](AGENT_DELIVERY.md) |
-| Remote ChatGPT reads, writes and mounted assistance UI | Separate enrolled Node 24 bridge, OAuth and explicit connection consent | [ChatGPT routes and setup](CHATGPT_INTEGRATION.md) |
-| App-triggered assistant work | Verified MCP Events subscription in a supported surface, or a configured published Workspace Agent | [Delivery, recovery and fallbacks](CHATGPT_INTEGRATION.md#event-delivery-and-recovery) |
+| Remote ChatGPT reads, writes and mounted assistance UI | `@tendriller/core/assistant`, the existing participant, OAuth and owner consent | [ChatGPT routes and setup](CHATGPT_INTEGRATION.md) |
+| App-triggered assistant work | Verified MCP Events subscription, mounted inbox and explicit follow-up, or a published Workspace Agent trigger | [Delivery, recovery and fallbacks](CHATGPT_INTEGRATION.md#event-delivery-and-recovery) |
 | Hosted UI and signed publication | `createClient` from `@tendriller/core` and the authorized session publisher | [Build an app](BUILD_AN_APP.md) |
 
 The starter's helper modules are ordinary, importable application source. Adapt

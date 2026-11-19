@@ -25,18 +25,10 @@ opens its own public application session for commands, queries, emitted events,
 live signals, operations and explicit recovery. The CLI's session adapter can
 use the same application session.
 
-## Optional remote application MCP service
+## Account-linked application MCP endpoint
 
-The separate [ChatGPT integration](CHATGPT_INTEGRATION.md) runs an enrolled native
-participant and exposes authorized application tools at its own configured HTTPS
-MCP resource. It supplies OAuth protected-resource metadata, explicit connection
-consent, bounded queries/commands, durable MCP Events subscriptions, a mounted
-assistance card, and optional lifecycle and Workspace Agent adapters. It does not
-change `<agent_api>/mcp` or let the host execute domain code.
-
-Its `get_integration_options` reports configured routes and prerequisites;
-`describe_application` returns permitted domain schemas. Read `tools/list` for
-actual tools and scopes. Preserve operation IDs and native revision objects.
-Owner claim, account access, native grants, egress consent, subscriptions and
-publisher approval remain independent. The integration guide covers setup,
-manual/native fallbacks, exact retry, recovery and live acceptance evidence.
+The service's `/mcp` endpoint exposes owner-approved application functions.
+Enroll the existing participant with `@tendriller/core/assistant`. The same
+route serves all connected apps and supports MCP Events plus live and
+cursor-based inboxes. See [setup](CLOUDFLARE_ASSISTANT.md) and
+[ChatGPT routes](CHATGPT_INTEGRATION.md).

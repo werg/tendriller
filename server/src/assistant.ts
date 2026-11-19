@@ -1,134 +1,123 @@
-import { withWorkerAssistant } from '../../integrations/chatgpt/worker-runtime.mjs';
-import { activeGrant, ensureOAuthSchema } from './accounts/oauth-data';
-import { oauthConfig, OAUTH_SCOPES } from './accounts/oauth-support';
-import { inspectAccessToken } from './accounts/oauth-tokens';
-import { serviceSession } from './accounts/auth';
-import { selectedApplication } from './application';
-import { authenticateAgentToken, pagePolicy } from './access';
-import { withPeerControlAuthority } from './peer-generations';
-import { closePeerRelayRoutes } from './peer-relay';
-import { handlePeers } from './peers';
-import { HttpError, json } from './http';
-import { initializeAssistantDevice, openAssistantSession } from './assistant-peer.mjs';
+import { connection } from './assistant-admission';
+import { makeActivityTicket } from './assistant-activity';
+import { assistantDeliveryStatus, assistantInbox, changeAssistantSubscription } from './assistant-events';
+import { onlineAssistantAdapters, callAssistantAdapter } from './assistant-socket';
+import { MCP_APPLICATION_EVENT, REQUEST_LIMIT, assistantOAuth, requireScope, string, type Principal } from './assistant-shared';
+import { HttpError, json, readJson } from './http';
 import { requireWritesOpen } from './service-state';
+import { withSelectedAssistantGeneration } from './peer-generations';
+import { activeGrant } from './accounts/oauth-data';
+import { sha256Hex } from './ids';
 import type { Tendril } from './tendril';
 
-export function assistantEnabled(t: Tendril): boolean {
-  return !!t.env.ASSISTANT_PAGE_ID && t.env.ASSISTANT_PAGE_ID === t.tid && !t.db.get('disabled', false);
-}
-
-export async function withPageAssistant<T>(t: Tendril, work: Parameters<typeof withWorkerAssistant<T>>[2]): Promise<T> {
-  if (!assistantEnabled(t)) throw new HttpError(404, 'not_found');
-  const oauth = await oauthConfig(t.env);
-  if (!oauth || oauth.resource !== oauth.issuer + '/mcp' || !t.env.ASSISTANT_PAGE_TOKEN || !t.env.ASSISTANT_STORE_KEY)
-    throw new HttpError(503, 'assistant_unavailable');
-  await ensureOAuthSchema(t.env);
-  const { id: applicationId } = selectedApplication(t);
-  const metadataUrl = oauth.issuer + '/.well-known/oauth-protected-resource/mcp';
-  const challenge = (scopes: string[] = [], error?: string) =>
-    `Bearer resource_metadata="${metadataUrl}"${scopes.length ? `, scope="${scopes.join(' ')}"` : ''}${error ? `, error="${error}"` : ''}`;
-
-  let deviceId: string | undefined;
-  const bridgePrincipal = () => authenticateAgentToken(t, t.env.ASSISTANT_PAGE_TOKEN!);
-  const dependencies: Parameters<typeof withWorkerAssistant<T>>[1] = {
-    applicationId,
-    oauth,
-    auth: {
-      metadata: { resource: oauth.resource, authorization_servers: [oauth.issuer], scopes_supported: OAUTH_SCOPES,
-        bearer_methods_supported: ['header'] },
-      metadataUrl,
-      challenge,
-      async authenticate(request) {
-        const token = /^Bearer ([A-Za-z0-9_.-]{1,16384})$/i.exec(request.headers.get('Authorization') ?? '')?.[1];
-        const access = token ? await inspectAccessToken(t.env, oauth, token) : null;
-        if (!access) throw new HttpError(401, 'invalid_token');
-        if (t.env.AUTH_RATE && !(await t.env.AUTH_RATE.limit({ key: 'assistant:' + access.sub })).success)
-          throw new HttpError(429, 'rate_limited');
-        return { id: access.sub, issuer: access.iss, oauthGrantId: access.sid, scopes: access.scope.split(' ').filter(Boolean),
-          expiresAt: access.exp * 1000 };
-      },
-    },
-    async authenticateOwner(request) {
-      const session = await serviceSession(request, t.env);
-      return session && { id: session.accountId, issuer: oauth.issuer };
-    },
-    async authorizeOwner(principal, id) {
-      return id === applicationId && principal.issuer === oauth.issuer &&
-        principal.id === t.db.get<string | null>('owner_account', null) && await pagePolicy(t, principal.id) === 'active';
-    },
-    async authorizeAccountAccess(principal, id) {
-      if (id !== applicationId || principal.issuer !== oauth.issuer || !principal.oauthGrantId ||
-          principal.id !== t.db.get<string | null>('owner_account', null) ||
-          principal.expiresAt !== undefined && principal.expiresAt <= t.now() ||
-          await pagePolicy(t, principal.id) !== 'active') return false;
-      const grant = await activeGrant(t.env, oauth, principal.oauthGrantId, principal.id);
-      return !!grant && assistantEnabled(t) && principal.id === t.db.get<string | null>('owner_account', null);
-    },
-    async startCallback(generation, start) {
-      // Serialize initiation against local authority commits, but do not hold
-      // that serialization while waiting for a remote provider's response.
-      const { pending } = await withPeerControlAuthority(t, await bridgePrincipal(), async ({ authority }) => {
-        if (authority.current?.id !== generation)
-          throw Object.assign(new Error('APPLICATION_VIEW_RECOVERED'), { code: 'APPLICATION_VIEW_RECOVERED' });
-        const grant = deviceId ? authority.grant(deviceId) : null;
-        if (!grant?.reader || !assistantEnabled(t)) throw new HttpError(403, 'assistant_grant_required');
-        return { pending: start() };
-      });
-      return pending;
-    },
-    openSession(definition) {
-      async function principal() {
-        const actor = await bridgePrincipal();
-        if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'assistant_page_unavailable');
-        return actor;
-      }
-      return openAssistantSession(t, {
-        applicationId, definition, onDevice: publicKey => { deviceId = publicKey; },
-        async exchange(path, options) {
-          const url = new URL(path, 'https://tendril.internal/');
-          const request = new Request(url, { method: options.method, body: options.body === undefined ? undefined : JSON.stringify(options.body),
-            headers: { 'Content-Type': 'application/json' }, signal: options.signal });
-          const response = await handlePeers(t, request, url, path, await principal());
-          if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status, 'assistant_peer_exchange_failed'); }
-          return response.json();
-        },
-        async upgrade(url, protocols) {
-          return handlePeers(t, new Request(url, { headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', ') } }),
-            url, url.pathname.slice(1), await principal());
-        },
-      });
-    },
-  };
-  try { return await withWorkerAssistant(t, dependencies, work); }
-  finally { if (deviceId) closePeerRelayRoutes(t, deviceId); }
-}
-
-export async function runAssistantDelivery(t: Tendril, observe: boolean) {
-  if (!assistantEnabled(t) || await pagePolicy(t) !== 'active') return { more: false, nextDue: null };
-  await requireWritesOpen(t.env);
-  return t.serializeAssistant(() => withPageAssistant(t, assistant => assistant.drain({ observe })));
-}
-
 export async function assistantRequest(t: Tendril, req: Request): Promise<Response> {
-  const url = new URL(req.url);
-  if (!assistantEnabled(t)) throw new HttpError(404, 'not_found');
-  if (url.pathname === '/connections' && req.method === 'GET' && !await serviceSession(req, t.env))
-    return new Response(null, { status: 303, headers: { Location: '/auth?return_to=%2Fconnections' } });
-  if (req.method === 'POST') await requireWritesOpen(t.env);
-  return t.serializeAssistant(() => withPageAssistant(t, async assistant => {
-    const response = await assistant.handler(req);
-    // A direct user request can restart work suspended after bounded retries.
-    if (req.method === 'POST' && response.ok && t.hasDeferredAssistantWork()) await t.wakeAssistant();
-    return response;
-  }));
-}
-
-export async function assistantAgentAction(t: Tendril, action: 'device' | 'wake'): Promise<Response> {
-  if (!assistantEnabled(t) || !t.db.get('owner_account', null)) throw new HttpError(404, 'not_found');
-  if (action === 'device') {
-    const publicKey = await t.serializeAssistant(() => initializeAssistantDevice(t, true));
-    return json({ publicKey, applicationId: selectedApplication(t).id });
+  const { principal, applicationId, method, params } = await readJson<{
+    principal: Principal; applicationId: string; method: string; params: Record<string, unknown>;
+  }>(req, REQUEST_LIMIT + 2048);
+  const approved = connection(t);
+  if (!approved || t.db.get('disabled', false) || approved.applicationId !== applicationId || approved.owner !== principal.account ||
+    principal.expires <= Date.now()) throw new HttpError(404, 'application_not_connected');
+  const check = () => {
+    if (connection(t)?.version !== approved.version || t.db.get('disabled', false) || principal.expires <= Date.now())
+      throw new HttpError(403, 'connection_changed');
+  };
+  if (method === 'describe_application') {
+    requireScope(principal, 'applications:read');
+    const onlineParticipants = onlineAssistantAdapters(t).length;
+    return json({ value: { applicationId, pageId: t.tid, label: approved.label, online: onlineParticipants > 0, onlineParticipants,
+      queries: approved.queries, commands: approved.commands, events: approved.events,
+      eventDelivery: { webhook: MCP_APPLICATION_EVENT, catchUpTool: 'read_application_events', liveInboxTool: 'open_application_inbox' } } });
   }
-  if (await withPageAssistant(t, assistant => assistant.active())) await t.wakeAssistant();
-  return new Response(null, { status: 204 });
+  if (method === 'open_application_inbox') {
+    requireScope(principal, 'applications:read');
+    const metadata = await makeActivityTicket(t, principal, approved.inboxVersion);
+    check();
+    return json({ value: { applicationId, label: approved.label, pageId: t.tid }, metadata });
+  }
+  if (method === 'get_application_delivery') {
+    requireScope(principal, 'events:subscribe');
+    return json({ value: assistantDeliveryStatus(t, principal) });
+  }
+  if (method === 'read_application_events') {
+    requireScope(principal, 'applications:read');
+    return json({ value: await assistantInbox(t, approved, params) });
+  }
+  if (method === 'events/subscribe' || method === 'events/unsubscribe') {
+    // Revocation remains available during read-only service operation.
+    if (method === 'events/subscribe') await requireWritesOpen(t.env);
+    return json({ value: await t.serializeAssistant(() => changeAssistantSubscription(t, approved, principal, method, params, req.signal)) });
+  }
+
+  const isCommand = method === 'call_application_command';
+  if (!isCommand && method !== 'query_application') throw new HttpError(404, 'method_not_found');
+  requireScope(principal, isCommand ? 'applications:write' : 'applications:read');
+  const kind = isCommand ? 'command' : 'query';
+  const name = string(params[kind], 128);
+  if (!(isCommand ? approved.commands : approved.queries).some(item => item.name === name)) throw new HttpError(403, 'operation_not_approved');
+
+  // A request author cannot collide with an original local operation ID.
+  const clientOperationId = isCommand ? string(params.operationId, 200, /^[A-Za-z0-9_.:-]+$/u) : null;
+  const operationId = clientOperationId && 'assistant_' + await sha256Hex(JSON.stringify([applicationId, principal.account, clientOperationId]));
+  const inputHash = operationId && await sha256Hex(JSON.stringify([name, params.input, params.basedOn ?? null], (_key, value) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value));
+  const checkGrant = async () => {
+    const oauth = await assistantOAuth(t.env);
+    const grant = oauth && await activeGrant(t.env, oauth, principal.grant, principal.account);
+    if (!grant?.scope.split(' ').includes(isCommand ? 'applications:write' : 'applications:read'))
+      throw new HttpError(403, 'authorization_revoked');
+  };
+
+  const excluded = new Set<string>();
+  const deadline = AbortSignal.any([req.signal, AbortSignal.timeout(7000)]);
+  let response;
+  for (;;) {
+    const { generation, adapter, pending } = await withSelectedAssistantGeneration(t, async (generation, canUseDevice) => {
+      if (!generation) throw new HttpError(409, 'application_generation_missing');
+      if (isCommand) await requireWritesOpen(t.env);
+      check();
+      deadline.throwIfAborted();
+      const online = onlineAssistantAdapters(t).filter(candidate => !excluded.has(candidate.hash));
+      const candidates = [];
+      for (const candidate of online) {
+        if (await canUseDevice(candidate.deviceId, isCommand)) candidates.push(candidate);
+      }
+      check();
+      await checkGrant();
+      check();
+      deadline.throwIfAborted();
+      const existing = operationId && t.db.one<{ input_hash: string; device_id: string }>(
+        'SELECT input_hash,device_id FROM assistant_commands WHERE operation_id=?', operationId);
+      if (existing && existing.input_hash !== inputHash)
+        throw new HttpError(409, 'operation_id_conflict', 'This operation ID already identifies a different command or input.');
+      const adapter = existing ? candidates.find(candidate => candidate.deviceId === existing.device_id) : candidates[0];
+      if (!adapter) throw existing
+        ? new HttpError(503, 'application_operation_unresolved', 'Resume the original participant and retry the same operation ID. Its outcome may already be committed.')
+        : new HttpError(503, 'application_participant_offline', 'Start an enrolled application participant, then try again.');
+      if (operationId && !existing) {
+        if ((t.db.one<{ rowid: number }>('SELECT rowid FROM assistant_commands ORDER BY rowid DESC LIMIT 1')?.rowid ?? 0) >= 4096)
+          throw new HttpError(429, 'application_operation_capacity', 'This page reached its retained assistant command limit.');
+        t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)', operationId, inputHash, adapter.deviceId);
+      }
+      return { generation, adapter, pending: callAssistantAdapter(t, adapter.socket, {
+        applicationId, generation, kind, name, input: params.input,
+        ...(operationId ? { operationId, ...(params.basedOn !== undefined ? { basedOn: params.basedOn } : {}) } : {}),
+      }, deadline) };
+    });
+    try {
+      response = { generation, value: await pending };
+      break;
+    } catch (error) {
+      if (operationId || !(error instanceof HttpError) ||
+        !['application_participant_offline', 'application_call_timed_out'].includes(error.code) || deadline.aborted) throw error;
+      excluded.add(adapter.hash);
+    }
+  }
+  const { generation, value } = response;
+  await checkGrant();
+  return withSelectedAssistantGeneration(t, selected => {
+    check();
+    if (generation !== selected) throw new HttpError(409, 'application_generation_changed');
+    return json({ value: isCommand ? { operationId: clientOperationId, operation: value } : value });
+  });
 }

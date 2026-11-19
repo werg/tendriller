@@ -1,5 +1,5 @@
 /** Explicit page-host lifecycle and the filtered Chronolog participant transport. */
-import { assistantAgentAction } from './assistant';
+import { proposeAssistant } from './assistant-admission';
 import { changeLifetime } from './lifetime';
 import { PEER_ROUTE, handlePeers } from './peers';
 import { withUnconfiguredPeerApplication } from './peer-generations';
@@ -37,6 +37,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   if (!currentPrincipal(t, principal)) throw new HttpError(401, 'unauthorized');
   t.recordAccess();
   if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, principal);
+  if (rest === 'assistant/propose' && method === 'POST') return proposeAssistant(t, req, principal);
   if (rest === 'application') return handleApplication(t, req, principal);
   const matches = routes.filter(route => route.pattern.test(rest));
   if (!matches.length) throw new HttpError(404, 'not_found', `No host route ${rest || '/'}`);
@@ -66,8 +67,6 @@ export function tendrilMeta(t: Tendril) {
 route('GET', /^$/, async t => json(await tendrilInfo(t)));
 route('GET', /^service$/, t => json(serviceDescriptor(t)));
 route('GET', /^guide$/, t => json(onboardingDescriptor(publicBase(t.env))));
-route('POST', /^assistant\/(device|wake)$/, (t, _req, _url, _by, [action]) =>
-  assistantAgentAction(t, action === 'device' ? 'device' : 'wake'));
 route("PATCH", /^$/, async (t, req) => {
   const b = await readJson(req, 64 * 1024);
   if (b.name !== undefined) t.db.set("name", validName(b.name));

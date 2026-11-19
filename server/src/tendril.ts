@@ -11,8 +11,11 @@ import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from './abuse/notices';
-import { AssistantWake, type AssistantWork } from './assistant-wake';
-import { assistantEnabled, assistantRequest, runAssistantDelivery } from './assistant';
+import { isAssistantActivity, upgradeAssistantActivity } from './assistant-activity';
+import { assistantRequest } from './assistant';
+import { reviewAssistant } from './assistant-admission';
+import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgradeAssistantAdapter } from './assistant-socket';
+import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
@@ -50,10 +53,6 @@ export class Tendril extends DurableObject<Env> {
   private alarms: DeadlineAlarm;
   private handlingAlarm = false;
   private assistantTail: Promise<unknown> = Promise.resolve();
-  private readonly assistantWork = new AssistantWake({
-    read: () => this.db.get<AssistantWork | null>('assistant_work', null),
-    write: value => this.db.set('assistant_work', value),
-  }, () => this.now());
   contentOperations = new Map<string, Promise<unknown>>();
   private ownerClaimTail: Promise<void> = Promise.resolve();
   /** Test hook: milliseconds added to the clock. */
@@ -108,7 +107,7 @@ export class Tendril extends DurableObject<Env> {
 
   /** Agent/control admission precedes handling; page admission charges after authentication. */
   private async admitTraffic(kind: string): Promise<void> {
-    if (kind !== "agent") return;
+    if (kind !== "agent" && kind !== "assistant") return;
     await admitPageTraffic(this.env, this.tid, this.db.get<string | null>("owner_account", null));
   }
 
@@ -118,11 +117,8 @@ export class Tendril extends DurableObject<Env> {
     return result;
   }
 
-  hasDeferredAssistantWork(): boolean { return this.assistantWork.deferred(); }
-
-  async wakeAssistant(): Promise<void> {
-    const due = this.assistantWork.notify();
-    await this.alarms.ensure(Math.max(Date.now() + 1, due - this.skew));
+  async ensureAssistantDelivery(at: number): Promise<void> {
+    await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -175,12 +171,10 @@ export class Tendril extends DurableObject<Env> {
           files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
-      if (kind === 'assistant') {
-        const original = new URL(req.headers.get('x-assistant-url') ?? '');
-        const headers = new Headers(req.headers);
-        headers.delete('x-assistant-url');
-        return await assistantRequest(this, new Request(original, { method: req.method, headers, body: req.body, signal: req.signal }));
-      }
+      if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
+      if (kind === 'assistant-review') return await reviewAssistant(this, req);
+      if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
+      if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
@@ -220,6 +214,8 @@ export class Tendril extends DurableObject<Env> {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (isPublicationWatch(ws)) { ws.close(1008, "Publication watch is receive-only"); return; }
     if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
+    if (isAssistantAdapter(ws)) { await handleAssistantFrame(this, ws, message); return; }
+    if (isAssistantActivity(ws)) { ws.close(1008, 'Activity sockets receive notices only'); return; }
     // Relay packets have separate packet/byte/credit bounds. Their unchanged
     // local credentials are cached; cold or invalidated credentials need SQL.
     try { await this.admitTraffic("agent"); }
@@ -232,9 +228,11 @@ export class Tendril extends DurableObject<Env> {
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch {}
     if (isPeerSocket(ws)) closePeer(this, ws);
     if (isRelaySocket(ws)) closeRelay(this, ws);
+    if (isAssistantAdapter(ws)) closeAssistantAdapter(this, ws);
   }
   async webSocketError(ws: WebSocket): Promise<void> {
     if (isRelaySocket(ws)) { closeRelay(this, ws); return; }
+    if (isAssistantAdapter(ws)) { closeAssistantAdapter(this, ws); try { ws.close(1011); } catch {} return; }
     if (isPeerSocket(ws)) closePeer(this, ws);
     else try { ws.close(1011, "Participant transport failed"); } catch {}
   }
@@ -673,10 +671,8 @@ export class Tendril extends DurableObject<Env> {
     if (peerDue !== null) times.push(peerDue);
     const relayDue = nextRelayDeadline(this);
     if (relayDue !== null) times.push(relayDue);
-    if (assistantEnabled(this)) {
-      const assistantDue = this.assistantWork.deadline();
-      if (assistantDue !== null) times.push(assistantDue);
-    }
+    const assistantDue = nextAssistantDelivery(this);
+    if (assistantDue !== null) times.push(assistantDue);
     if (lifetimeChangePending(this)) times.push(now + 5000);
     else if (expires !== null) times.push(expires);
     return this.alarms.ensure(Math.max(Math.min(...times) - this.skew, Date.now() + 1));
@@ -695,10 +691,7 @@ export class Tendril extends DurableObject<Env> {
       if (due !== null && due <= this.now() && !lifetimeChangePending(this)) { await this.destroy(); return; }
       expirePeers(this);
       await expireRelays(this);
-      if (assistantEnabled(this)) try { await this.assistantWork.run(observe => runAssistantDelivery(this, observe)); }
-      catch (error) {
-        console.error('Assistant delivery deferred', error instanceof Error ? error.name : 'Error');
-      }
+      if (nextAssistantDelivery(this) !== null) await runAssistantDelivery(this);
       if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
       const expires = this.expiresAt();
       if (expires !== null && expires <= this.now() && !lifetimeChangePending(this)) await this.destroy();

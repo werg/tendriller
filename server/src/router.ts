@@ -1,3 +1,6 @@
+import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
+import { parseActivityTicket } from './assistant-activity';
+import { routeAssistant } from './assistant-gateway';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
 import { assertValid, schemaDocument } from "../../contract/index.mjs";
@@ -151,12 +154,9 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return withCors(await api(req, env, url));
   }
 
-  if (env.ASSISTANT_PAGE_ID && TENDRIL_ID_RE.test(env.ASSISTANT_PAGE_ID) &&
-      ['/mcp', '/connections', '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'].includes(path)) {
-    if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: 'assistant-ip:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
-      return errorResponse(429, 'rate_limited', 'Assistant traffic limit reached');
-    return forward(env, env.ASSISTANT_PAGE_ID, 'assistant', req, url, { 'x-assistant-url': url.href });
-  }
+  if (path === '/mcp' || path === '/connections' || path.startsWith('/connections/') ||
+    path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp')
+    return routeAssistant(req, env, url);
   if (path === '/.well-known/oauth-authorization-server' || path.startsWith('/oauth/')) return routeIntegrationOAuth(req, env, url);
   if (path === "/auth/page") return routePageAuth(req, env, url);
   if (path === "/report") return reportPage(req, env, url);
@@ -322,6 +322,19 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (m) {
       if (!TENDRIL_ID_RE.test(m[1])) return errorResponse(404, "not_found", "No such tendril");
       const agentRest = safeDecode(m[2] ?? "");
+      if (agentRest === 'assistant/activity') {
+        if (url.origin !== publicBase(env) || !await parseActivityTicket(env, req, m[1])) throw new HttpError(401, 'activity_ticket_expired');
+        return forward(env, m[1], 'assistant-activity', req, url, {});
+      }
+      if (agentRest === 'assistant/adapter') {
+        const protocols = req.headers.get('Sec-WebSocket-Protocol')?.split(',').map(item => item.trim()) ?? [];
+        if (!protocols.includes(ASSISTANT_PROTOCOL) || !protocols.some(item => ADAPTER_KEY.test(item)))
+          throw new HttpError(401, 'adapter_not_approved');
+        if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: 'assistant-adapter:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
+          throw new HttpError(429, 'rate_limited');
+        return forward(env, m[1], 'assistant-adapter', req, url, {});
+      }
+
       // Node's dependency-free WebSocket client cannot set Authorization. Keep the
       // private token in a TLS-protected subprotocol header, never in the URL.
       const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
