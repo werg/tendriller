@@ -3,6 +3,7 @@ import test from 'node:test';
 import * as core from '../../../contract/client.mjs';
 import { createLifecycleService, signReviewedRelease } from '../lifecycle.mjs';
 import { createNativeFixture, loadNativePackage } from './native-fixture.mjs';
+import { createMemoryStore } from '../store.mjs';
 
 const appId = 'a'.repeat(64), publisher = 'b'.repeat(64), principal = { id: 'owner', issuer: 'https://accounts.example' };
 const descriptor = { payload: { applicationId: appId, historyId: 'release-test', profile: 'peer-generation-v1',
@@ -10,12 +11,7 @@ const descriptor = { payload: { applicationId: appId, historyId: 'release-test',
 const input = { applicationId: appId, operationId: 'release-1', entry: 'index.html', files: [
   { path: 'index.html', type: 'text/html', bytesBase64: Buffer.from('<h1>Kitchen</h1>').toString('base64') },
 ] };
-function memoryStore() {
-  let value = {};
-  return { async read() { return structuredClone(value); }, async transaction(mutator) {
-    const next = structuredClone(value), result = mutator(next); value = next; return structuredClone(result);
-  } };
-}
+const memoryStore = createMemoryStore;
 function fixture(options = {}) {
   const store = memoryStore(), calls = [], publications = new Map();
   const authority = { descriptor: descriptor.payload, control: { payload: { revision: 0 } } };
@@ -59,6 +55,20 @@ test('release preparation returns a stable digest-bound unsigned publisher hando
   await assert.rejects(f.service.preparePageRelease(principal, { ...input, files: [{ ...input.files[0], bytesBase64: Buffer.from('changed').toString('base64') }] }), { code: 'LIFECYCLE_REVIEW_CONFLICT' });
   const reopened = createLifecycleService(f.config);
   assert.deepEqual(await reopened.preparePageRelease(principal, input), review);
+  const saved = (await f.store.read()).chatgptLifecycle.reviews[review.reviewId];
+  assert.equal(saved.assets[0].bytes, undefined);
+  assert.equal(JSON.stringify(saved).includes(input.files[0].bytesBase64), false);
+  assert.equal((await f.service.getReviewBundle(principal, { reviewId: review.reviewId })).assets[0].bytes, input.files[0].bytesBase64);
+});
+
+test('aggregate asset capacity rejects a new review atomically and exact retries remain available', async () => {
+  const store = createMemoryStore({}, { maxBlobBytes: 16 }), f = fixture({ store });
+  const first = await f.service.preparePageRelease(principal, input);
+  await assert.rejects(f.service.preparePageRelease(principal, { ...input, operationId: 'second-review' }), { code: 'STORE_BLOB_CAPACITY' });
+  assert.equal(Object.keys((await store.read()).chatgptLifecycle.reviews).length, 1);
+  assert.deepEqual(await f.service.preparePageRelease(principal, input), first);
+  await store.transaction(state => { state.cursor = 'unrelated-delivery'; });
+  assert.equal((await f.service.getReviewBundle(principal, { reviewId: first.reviewId })).assets[0].bytes, input.files[0].bytesBase64);
 });
 
 test('release rejects unsafe graphs, unclaimed pages and foreign application bindings', async () => {

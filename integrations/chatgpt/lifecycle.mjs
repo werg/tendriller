@@ -95,7 +95,7 @@ async function currentPublication(host, authority, peer) {
 export function createLifecycleService({ store, creation, applications = [], authorizePublication,
   maxBytes = 8 * 1024 * 1024, loadCore = () => import('@tendriller/core'),
   loadPeer = () => import('@chronolog/peer-session'), clock = Date.now } = {}) {
-  if (typeof store?.read !== 'function' || typeof store?.transaction !== 'function'
+  if (typeof store?.read !== 'function' || typeof store?.transaction !== 'function' || typeof store?.readBlob !== 'function'
     || !Array.isArray(applications) || applications.length > 128
     || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) fail('LIFECYCLE_CONFIGURATION_INVALID');
   if (authorizePublication !== undefined && typeof authorizePublication !== 'function') fail('LIFECYCLE_CONFIGURATION_INVALID');
@@ -115,6 +115,29 @@ export function createLifecycleService({ store, creation, applications = [], aut
   const limitedFetch = fetcher => (url, options = {}) => fetcher(url, { ...options, redirect: 'error',
     signal: AbortSignal.any([AbortSignal.timeout(30000), ...(options.signal ? [options.signal] : [])]) });
   const records = state => { state.chatgptLifecycle ??= { creations: {}, reviews: {} }; return state.chatgptLifecycle; };
+  const assetKey = (id, digest) => `${id}:${digest}`;
+  async function retainedAssets(record) {
+    // Upgrade an earlier private journal atomically when its review is used.
+    // The same aggregate budget applies; no metadata-only update copies assets.
+    if (record.assets.some(asset => typeof asset.bytes === 'string')) {
+      record = await store.transaction((state, blobs) => {
+        const saved = records(state).reviews[record.id];
+        saved.assets = saved.assets.map(asset => {
+          if (asset.blobKey) return asset;
+          const bytes = Buffer.from(asset.bytes, 'base64');
+          if (hash(bytes) !== asset.hash) fail('LIFECYCLE_ASSET_INVALID');
+          const blobKey = assetKey(saved.id, asset.hash); blobs.put(blobKey, bytes);
+          return { hash: asset.hash, blobKey };
+        });
+        return saved;
+      });
+    }
+    return Promise.all(record.assets.map(async asset => {
+      const bytes = await store.readBlob(asset.blobKey);
+      if (!bytes || hash(bytes) !== asset.hash) fail('LIFECYCLE_ASSET_UNAVAILABLE', 'Restore the encrypted reviewed asset before signing or publication');
+      return { hash: asset.hash, bytes: bytes.toString('base64') };
+    }));
+  }
   async function application(id) {
     const configuredApp = configured.get(id);
     if (!configuredApp) fail('LIFECYCLE_APPLICATION_UNAVAILABLE');
@@ -194,17 +217,20 @@ export function createLifecycleService({ store, creation, applications = [], aut
         profile: authority.descriptor.profile, controlRevision: authority.control.payload.revision,
         definitionDigest: authority.descriptor.definitionDigest, executionManifestDigest: authority.descriptor.executionManifestDigest,
         previous: selected?.publication.id ?? null, revision: selected ? selected.publication.payload.revision + 1 : 0 };
+      const { assets, ...packedMetadata } = packed;
       const record = { id, account, applicationId: input.applicationId, operationId: input.operationId, inputDigest,
-        ...packed, expected, status: 'awaiting_publisher_signature', createdAt: clock() };
+        ...packedMetadata, assets: assets.map(asset => ({ hash: asset.hash, blobKey: assetKey(id, asset.hash) })),
+        expected, status: 'awaiting_publisher_signature', createdAt: clock() };
       record.digest = hash(canonical({ format: 'tendriller-page-review-v1', ...expected,
         operationId: record.operationId, entry: record.entry, files: record.files }));
-      return store.transaction(state => {
+      return store.transaction((state, blobs) => {
         const reviews = records(state).reviews, previous = reviews[id];
         if (previous) {
           if (previous.inputDigest !== inputDigest || previous.digest !== record.digest) fail('LIFECYCLE_REVIEW_CONFLICT');
           return publicReview(previous);
         }
         if (Object.keys(reviews).length >= 256) fail('LIFECYCLE_JOURNAL_FULL');
+        for (const asset of assets) blobs.put(assetKey(id, asset.hash), Buffer.from(asset.bytes, 'base64'));
         reviews[id] = record; return publicReview(record);
       });
     },
@@ -214,7 +240,7 @@ export function createLifecycleService({ store, creation, applications = [], aut
       if (!record || record.account !== account) fail('LIFECYCLE_REVIEW_UNAVAILABLE');
       // Trusted publisher export / owner review only. Do not turn this into an
       // automatically invoked remote tool that echoes complete authored bytes.
-      return { ...publicReview(record), assets: structuredClone(record.assets),
+      return { ...publicReview(record), assets: await retainedAssets(record),
         ...(record.signedPublication ? { signedPublication: structuredClone(record.signedPublication) } : {}) };
     },
     async publishPageRelease(principal, input) {
@@ -243,7 +269,7 @@ export function createLifecycleService({ store, creation, applications = [], aut
         // An exact retry can name an earlier retained publication after later
         // releases. Verify its membership in selected ancestry, then recover the
         // original receipt instead of treating it as a new stale predecessor.
-        const receipt = alreadyPublished ? await host.peers.publication(signed.id) : await host.peers.publish(signed, record.assets);
+        const receipt = alreadyPublished ? await host.peers.publication(signed.id) : await host.peers.publish(signed, await retainedAssets(record));
         if (receipt?.publication?.id !== signed.id || canonical(receipt.publication) !== canonical(signed)
           || receipt.version !== signed.payload.revision + 1) fail('LIFECYCLE_PUBLICATION_RECEIPT_INVALID');
         await peer.verifyPublicationManifest(receipt.publication, authority);

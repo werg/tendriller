@@ -32,7 +32,7 @@ export async function createIntegration(config = {}) {
     const details = { component, code: String(error?.code ?? error?.name ?? 'UNAVAILABLE').slice(0, 128) };
     try { config.onError?.(details); } catch { /* diagnostics never override the original state */ }
   };
-  const store = config.store ?? openDeliveryStore({ path: config.storePath, key: config.storeKey });
+  const store = config.store ?? openDeliveryStore({ ...config.storeLimits, path: config.storePath, key: config.storeKey });
   let bridge;
   try {
     const auth = config.auth ?? createOAuthVerifier({ ...(config.oauth ?? {}), issuer: config.issuer, resource: config.resource,
