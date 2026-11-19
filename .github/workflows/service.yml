@@ -79,7 +79,7 @@ jobs:
     name: Public package artifacts
     # Retain independently checked package inputs promptly for paired consumers.
     # A newer PR commit may cancel the longer browser matrix; these are CI
-    # artifacts, while every deployment still requires the full check job.
+    # artifacts; deployments also require the full check, browser and native jobs.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -108,7 +108,7 @@ jobs:
 
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, browser]
+    needs: [check, browser, native-owner, artifacts]
     runs-on: ubuntu-latest
     environment: staging
     outputs:
@@ -155,7 +155,7 @@ jobs:
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, staging_acceptance]
+    needs: [check, staging_acceptance, native-owner, artifacts]
     runs-on: ubuntu-latest
     environment: production
     env:

@@ -112,7 +112,10 @@ test('native collaboration full references survive a lost response, reconnect an
   const full=operationReference(first.session,before.operationId,inspected.state);
   assert.equal(full.attemptId,applied.attemptId);assert.equal(full.historyId,first.session.historyId);
   assert.equal(inspected.attempt.payload.header.author,f.deviceId);
-  await assert.rejects(createCollaborationClient({session:other.session}).retry(full),/OPERATION_BINDING_MISMATCH/);
+  await assert.rejects(createCollaborationClient({session:other.session}).retry(full),{code:'OPERATION_BINDING_MISMATCH'});
+  assert.equal(other.session.signal.aborted,false,'A denied operation does not disconnect the authenticated sibling');
+  await assert.rejects(other.session.operations.inspect(full.operationId),{code:'OPERATION_BINDING_MISMATCH'});
+  assert.equal((await other.session.query('requests',null)).value.length,1);
   const rotated=await supervisor.rotateBinding('reviewer');await assert.rejects(f.attach(token));
   const resumed=await f.attach(rotated.token);t.after(()=>resumed.detach());
   assert.equal(resumed.session.scopeOperationId('same-local-id'),before.operationId);
@@ -210,7 +213,7 @@ test('revocation and key rotation persist independently; malformed clients do no
   const observed = await f.attach(observer.token), writing = await f.attach(writer.token);
   t.after(() => Promise.allSettled([observed.detach(), writing.detach()]));
   await assert.rejects(observed.session.command('add', 'forbidden', { operationId: 'denied' }), /APPLICATION_ATTACHMENT_FORBIDDEN/);
-  await assert.rejects(f.attach(createNativeAttachmentKey()));
+  await assert.rejects(f.attach(createNativeAttachmentKey()),{code:'SUPERVISOR_BINDING_REVOKED'});
   const malformed = createConnection(supervisor.socketPath); await once(malformed, 'connect');
   malformed.write(Buffer.from([0x7f, 0xff, 0xff, 0xff])); await once(malformed, 'close');
   assert.equal((await writing.session.query('notes', null)).value.length, 0);

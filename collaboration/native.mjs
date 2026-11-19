@@ -2,12 +2,13 @@ import { createServer, createConnection } from 'node:net';
 import { lstat, mkdir, open, readFile, rename, unlink, chmod } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { serialize, deserialize } from 'node:v8';
+import { serialize } from 'node:v8';
 import { MessageChannel } from 'node:worker_threads';
 import { canonicalJson, identifier } from './protocol.mjs';
+import { createNativeFrames as frames } from './native-transport.mjs';
 
 const PROTOCOL = 'tendriller.native-owner.v1';
-const MAX_FRAME = 1_100_000, MAX_QUEUE = 4_400_000, KEY = /^td_n_[a-f0-9]{64}$/u;
+const KEY = /^td_n_[a-f0-9]{64}$/u;
 const failure = (code, message = code) => Object.assign(new Error(message), { code });
 const digest = token => createHash('sha256').update(token).digest('hex');
 const bounded = (value, fallback, maximum) => {
@@ -73,48 +74,6 @@ async function ownerFence(root) {
     if (/locked|busy/iu.test(error.message)) throw failure('OWNER_BUSY', 'This retained profile already has a live supervisor. Attach to it.');
     throw error;
   }
-}
-
-/** Length framing preserves bytes, bigint and structured owner protocol values. */
-function frames(socket, onMessage, onFailure, { maxFrame = MAX_FRAME, maxQueue = MAX_QUEUE } = {}) {
-  let buffer = Buffer.alloc(0), closed = false, scheduled = false;
-  const fail = cause => { if (!closed) { closed = true; onFailure(cause); socket.destroy(); } };
-  function drain() {
-    scheduled = false;
-    try {
-      let count = 0;
-      while (buffer.length >= 4) {
-        const size = buffer.readUInt32BE(0);
-        if (!size || size > maxFrame) throw failure('SUPERVISOR_FRAME_LIMIT');
-        if (buffer.length < size + 4) break;
-        const value = deserialize(buffer.subarray(4, size + 4));
-        buffer = buffer.subarray(size + 4);
-        onMessage(value);
-        if (++count === 64 && buffer.length) {
-          socket.pause(); scheduled = true; setImmediate(() => { drain(); if (!closed) socket.resume(); }); break;
-        }
-      }
-    } catch (error) { fail(error); }
-  }
-  socket.on('data', chunk => {
-    if (closed) return;
-    if (buffer.length + chunk.length > maxQueue) { fail(failure('SUPERVISOR_BACKPRESSURE')); return; }
-    buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
-    if (!scheduled) drain();
-  });
-  socket.on('error', fail);
-  return {
-    send(value) {
-      if (closed || socket.destroyed) throw failure('OWNER_UNREACHABLE');
-      const payload = serialize(value);
-      if (payload.length > maxFrame || socket.writableLength + payload.length + 4 > maxQueue) {
-        const error = failure('SUPERVISOR_BACKPRESSURE'); fail(error); throw error;
-      }
-      const header = Buffer.allocUnsafe(4); header.writeUInt32BE(payload.length);
-      socket.write(Buffer.concat([header, payload]));
-    },
-    close() { closed = true; buffer = Buffer.alloc(0); },
-  };
 }
 
 function checkedPolicy(value = {}) {
@@ -235,7 +194,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     server = createServer(socket => {
       if (stopped || clients.size >= maxClients) { socket.destroy(); return; }
-      const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined };
+      const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined, snapshot: null, failed: false };
       clients.add(client);
       const timer = setTimeout(() => terminateClient(client), handshakeTimeoutMs);
       const transport = frames(socket, frame => {
@@ -250,8 +209,13 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
           client.bindingId = binding.id; client.revision = binding.revision; clearTimeout(timer);
           const channel = new MessageChannel(), endpoint = Object.assign(new EventTarget(), { postMessage() {} });
           client.port = channel.port2;
-          channel.port2.addEventListener('message', event => { try { transport.send({ type: 'frame', value: event.data }); } catch { terminateClient(client); } });
-          channel.port2.addEventListener('close', () => { socket.end(); });
+          channel.port2.addEventListener('message', event => {
+            if (client.failed) return;
+            const snapshot = event.data?.ready ?? event.data?.snapshot;
+            if (snapshot) client.snapshot = { status: snapshot.status, revision: snapshot.revision, participation: snapshot.participation };
+            try { transport.send({ type: 'frame', value: event.data }); } catch { terminateClient(client); }
+          });
+          channel.port2.addEventListener('close', () => { if (!client.failed) socket.end(); });
           channel.port2.start();
           client.detach = owner.attach(endpoint, { ...binding.policy, identity: {
             ...binding.policy.identity, deviceProfileId: profileId, agentBindingId: binding.id,
@@ -261,11 +225,22 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
           const current = records.get(client.bindingId);
           if (!current?.active || current.revision !== client.revision) throw failure('SUPERVISOR_BINDING_REVOKED');
           if (frame.type !== 'frame') throw failure('SUPERVISOR_PROTOCOL_INVALID');
-          client.port.postMessage(scopedOperations(frame.value, profile.applicationId, current.id, profile.deviceId, current.policy));
+          let scoped;
+          try { scoped = scopedOperations(frame.value, profile.applicationId, current.id, profile.deviceId, current.policy); }
+          catch (error) {
+            if (!client.snapshot || !Number.isSafeInteger(frame.value?.id) || frame.value.id < 1) throw error;
+            // A denied operation belongs to one RPC. Keep this authenticated
+            // attachment usable and report the precise, bounded rejection.
+            const code = error.code ?? 'SUPERVISOR_PROTOCOL_INVALID';
+            transport.send({ type: 'frame', value: { id: frame.value.id,
+              error: { name: 'Error', message: code, code }, snapshot: client.snapshot } });
+            return;
+          }
+          client.port.postMessage(scoped);
         }
       }, error => {
-        try { transport.send({ type: 'error', code: error.code ?? 'SUPERVISOR_PROTOCOL_INVALID' }); } catch {}
-        terminateClient(client);
+        client.failed = true; clearTimeout(timer); client.detach?.(); client.detach = undefined; client.port?.close();
+        return { type: 'error', code: error.code ?? 'SUPERVISOR_PROTOCOL_INVALID' };
       });
       socket.on('close', () => { clearTimeout(timer); transport.close(); client.detach?.(); client.port?.close(); clients.delete(client); });
     });

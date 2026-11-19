@@ -201,7 +201,8 @@ eight captured views per attachment, subject to owner totals of 512 requests,
 256 streams and 128 views. The SQL definition defaults to 32 frozen slots,
 eight active claims per signer, 64 results per slot and 4,096 requests. These
 limits may be reduced; increasing the domain limits requires a new qualified
-definition. Oversized application snapshots require querying one task instead.
+definition. Task lists and historical evidence use bounded pages; a snapshot
+reports incomplete sections and their continuations explicitly.
 
 The independent public consumer measures eight actual signers with 32 simultaneous
 local attachments and records its exact topology, timing samples and memory use.
@@ -215,6 +216,13 @@ unbounded durable queue. Named host tokens share their human owner's admission
 budget while retaining independently revocable routes.
 
 ## Version and release boundaries
+
+Implementation started from core `14d809d2f172fb5ba4f4d42b96770758cb422a21`,
+which had already merged the general-application MCP candidate in PR #62.
+This composition extends that generic gateway's event export and inbox with
+independent approved callers, explicit provider selection and scoped operation
+references. It does not introduce a second application execution service or
+merge the older divergent application stacks.
 
 Facade ABI, immutable application definition, publication, selected generation,
 and gateway/export schema are independent versions. Incompatible owners reject
