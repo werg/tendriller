@@ -60,20 +60,25 @@ export function createConsentService({ store, authorizeOwner, clock = Date.now }
     const now = clock();
     const expiresAt = input.expiresAt === undefined ? now + 30 * DAY : input.expiresAt;
     if (expiresAt !== null && (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 365 * DAY)) throw new ConsentError('invalid_consent', 'Connection expiry must be within one year or explicitly null', 400);
+    const snapshot = await store.read();
+    const expectedVersion = snapshot.chatgptConnections?.[id]?.version ?? 0;
     // Only the deployment's account/page authorization lookup can establish
     // ownership. OAuth scopes, publisher flags or model arguments cannot do so.
     if (!authorizeOwner || await authorizeOwner(principal, applicationId) !== true) throw new ConsentError('owner_authorization_required', 'The authenticated account must own this application before granting bridge consent');
+    const approvedAt = clock();
+    if (expiresAt !== null && expiresAt <= approvedAt) throw new ConsentError('invalid_consent', 'Connection consent expired while ownership was being verified', 400);
     return store.transaction(state => {
       state.chatgptConnections ??= {};
       const prior = state.chatgptConnections[id];
+      if ((prior?.version ?? 0) !== expectedVersion) throw new ConsentError('connection_changed', 'Connection changed while ownership was being verified; review the current permissions before retrying', 409);
       const connection = {
         id, owner, principalId: principal.id, issuer: principal.issuer ?? null,
         applicationId, queries, commands, events, readEvents, expiresAt,
-        createdAt: prior?.createdAt ?? now, updatedAt: now, revokedAt: null,
+        createdAt: prior?.createdAt ?? approvedAt, updatedAt: approvedAt, revokedAt: null,
         version: (prior?.version ?? 0) + 1,
       };
       state.chatgptConnections[id] = connection;
-      return publicConnection(connection, now);
+      return publicConnection(connection, approvedAt);
     });
   }
 

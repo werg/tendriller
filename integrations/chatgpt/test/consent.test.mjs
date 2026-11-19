@@ -106,6 +106,33 @@ test('expiry is checked on every read, with no automatic consent renewal', async
   assert.equal((await service.assertAccess(owner, { applicationId, kind: 'read' })).status, 'active');
 });
 
+test('disconnect wins over a replacement grant still awaiting ownership verification', async () => {
+  let release;
+  let begin;
+  let delay = false;
+  const started = new Promise(resolve => { begin = resolve; });
+  const pending = new Promise(resolve => { release = resolve; });
+  const { service } = fixture({ authorizeOwner: async () => {
+    if (delay) { begin(); await pending; }
+    return true;
+  } });
+  const initial = await service.grant(owner, selection);
+  delay = true;
+  const replacement = service.grant(owner, selection);
+  await started;
+  await service.revoke(owner, { id: initial.id });
+  release();
+  await assert.rejects(replacement, { code: 'connection_changed', status: 409 });
+  assert.equal((await service.list(owner))[0].status, 'revoked');
+});
+
+test('an explicit expiry cannot pass during owner verification and silently create a stale grant', async () => {
+  let current = now;
+  const { service } = fixture({ clock: () => current, authorizeOwner: () => { current += 1000; return true; } });
+  await assert.rejects(service.grant(owner, { ...selection, expiresAt: now + 1000 }), { code: 'invalid_consent' });
+  assert.deepEqual(await service.list(owner), []);
+});
+
 test('refuses wildcards, hidden privilege fields, unbounded grants and detail permission without events', async () => {
   const { service } = fixture();
   for (const input of [

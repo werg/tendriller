@@ -109,6 +109,8 @@ status. `revoke(principal,{id})` is owner-bound and idempotent. An account may
 always disconnect its own connection even if it no longer owns the application.
 Every tool and delivery must call `assertAccess` again so revocation takes effect
 before the next action. An HTTP request already sent cannot be recalled.
+Grant changes use a version check: disconnect or another consent change while
+ownership verification is pending prevents the older grant from activating.
 
 ### Browser management surface
 
