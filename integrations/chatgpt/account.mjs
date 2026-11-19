@@ -118,7 +118,7 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
           !Array.isArray(result.applicationIds) || [...mapped.keys()].some(id => !result.applicationIds.includes(id)) ||
           management && (!Array.isArray(result.managementRedirectUris) || !result.managementRedirectUris.includes(callback)))
         fail('HOST_ACCOUNT_MAPPING_INCOMPLETE', 'Register this exact bridge, MCP resource, application IDs and management callback in the account host', { status: 503 });
-      return { ready: true, issuer: origin, resource, bridgeId, applications: [...mapped.keys()],
+      return { ready: true, authorizationServerReady: true, issuer: origin, resource, bridgeId, applications: [...mapped.keys()],
         managementCallback: management ? callback : null, liveChatGptVerified: false };
     },
     async authorizeAccountAccess(principal, applicationId) {

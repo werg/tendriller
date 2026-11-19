@@ -8,6 +8,14 @@ explains which option to choose. The Tendriller host remains a filtered control,
 publication and introduction participant; this directory is not imported into
 the host or its browser runtime.
 
+For a deployment using Tendriller's existing GitHub/Google account login, use
+[the host account configuration](config.host-account.example.mjs) and the
+[deployment tools](deploy/README.md). This supplies the issuer, live account
+mapping, browser login handoff and permission-management UI. The optional
+[host OAuth service](../../docs/INTEGRATION_OAUTH.md) must be enabled with its
+additive account migration, registered client/bridge settings and signing key.
+The external-provider configuration below remains available for other issuers.
+
 ## Start with a real application and dedicated device
 
 Follow [Build an app](../../docs/BUILD_AN_APP.md) or the complete
@@ -44,6 +52,34 @@ npm --prefix integrations/chatgpt install --no-save --package-lock=false \
 
 Do not assume an unverified public npm release of the prerelease session package
 is compatible. Keep package provenance with the deployed service.
+
+### Use the Tendriller account host
+
+Copy [config.host-account.example.mjs](config.host-account.example.mjs) to a
+private deployment directory, or use the deployment preparation command. Supply
+the existing delivery and kitchen settings plus `TENDRILLER_HOST_ORIGIN`,
+`TENDRILLER_BRIDGE_ID`, `TENDRILLER_BRIDGE_SECRET` and
+`TENDRILLER_MANAGEMENT_CSRF_KEY`. The host registration binds the exact MCP
+resource, application IDs and `/connections/callback` URL. It also records the
+actual ChatGPT client ID and exact callback URI shown by that client.
+
+The service verifies the host's signed token and introspects its exact grant.
+It checks current account and page access again on protected operations and
+delivery. The owner opens `/connections`, follows the existing Tendriller login,
+approves the browser handoff and selects the exact application permissions.
+No access token or bridge credential is pasted into the browser. Logging out
+of the original host session invalidates its management tickets. OAuth grants
+and explicit application consent can each be revoked independently.
+
+For programmatic composition, set `hostAccount: {origin, bridgeId, bridgeSecret,
+csrfKey}` and add each application's actual `pageId` and explicit `allowedEvents`
+to the existing application configuration. This mode installs the account
+callbacks and management UI automatically; do not mix it with external `auth`
+or account callback overrides. Set `management: false` only when another trusted
+owner interface manages consent. Optional `lifecycle: {creation: true}` uses the
+host's current verified owner email while leaving the actual claim to the owner.
+
+### Use an external identity provider
 
 Copy [config.example.mjs](config.example.mjs) to a private deployment directory.
 It imports the actual kitchen session, local configuration and event projection;
@@ -194,6 +230,13 @@ cursors, delivery attempts, caller operation references, profile IDs and optiona
 creation/release bookkeeping. It does not become application state. The dedicated
 Chronolog device retains its signer, keys, native history and signed attempts.
 Back up both stores with their respective keys and preserve original identities.
+
+Reviewed publication bytes live in separate encrypted SQLite asset rows; the
+shared metadata record contains references. `storeLimits.maxBlobBytes` defaults
+to 64 MiB across retained assets and can be deliberately set up to 1 GiB. New
+review admission and asset writes commit together, and capacity errors preserve
+existing review/retry identities. Metadata-only delivery updates do not copy all
+authored asset bytes.
 
 New jobs and their cursor commit together. Delivery refresh/revocation is checked
 before sends, and recovery pauses require the exact reviewed `recoveryRevision`
