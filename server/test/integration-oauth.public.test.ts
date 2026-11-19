@@ -570,7 +570,9 @@ it('uses the page Worker for MCP, selected-event delivery and retry after evicti
       basedOnContextRevision: 'observed-first', cookingStepId: 'first',
     } });
     const replyResult = await reply.json() as { result?: { isError?: boolean; structuredContent?: unknown } };
-    expect(replyResult.result?.isError, JSON.stringify(replyResult)).toBe(false);
+    expect(replyResult.result?.structuredContent, JSON.stringify(replyResult)).toMatchObject({
+      operation: { status: 'applied', outcome: 'accepted' }, operationId: 'reply-to-slicing',
+    });
     await vi.waitFor(async () => {
       const status = await session.query('assistanceStatus', { requestId: 'help-apples' } as never);
       expect(JSON.stringify(status.value)).toContain('Cut the apples into thin wedges.');
