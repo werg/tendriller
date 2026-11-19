@@ -212,6 +212,10 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
           const current = state.jobs?.[job.eventId];
           if (current?.state !== 'sending' || current.lease !== job.lease || current.leaseUntil <= clock()) return null;
         }
+        if (subscription && revision) {
+          try { bridge.assertSelection(source.applicationId, revision); }
+          catch (error) { if (recovered(error)) return null; throw error; }
+        }
         const recipients = [];
         for (const sub of Object.values(state.subscriptions ?? {})) if (sub.active && sub.applicationId === observed.applicationId) {
           if (!sub.pausedReason || canonical(sub.recoveryRevision ?? null) !== canonical(revision)) {

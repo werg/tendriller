@@ -359,7 +359,9 @@ test('native enrollment preserves committed retries and reviews only obsolete un
       const original = await records.read(`enroll-${target}.json`);
       const beforeOwnerChange = sends.length;
       ownerAccountId = 'different-owner';
-      await assert.rejects(manager.enroll(target), /ENROLLMENT_OWNER_CHANGED/);
+      assert.equal((await manager.enroll(target)).reviewRequired, true);
+      const ownerReview = await manager.review(target);
+      assert.equal(ownerReview.review.ownerAccountId, 'different-owner');
       assert.equal(sends.length, beforeOwnerChange);
       ownerAccountId = 'owner-account';
       await assert.rejects(manager.review(target), /ORIGINAL_REQUEST_STILL_CURRENT/);

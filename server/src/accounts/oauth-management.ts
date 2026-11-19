@@ -1,7 +1,7 @@
 import type { Env } from '../env';
 import { sha256Hex, TENDRIL_ID_RE } from '../ids';
 import { servicePage } from './ui';
-import { activeAccount, activeGrant, authorizationRedirect, bodyObject, browserIdentity, consumeIntent, intent, postOnly, redirect, sameOrigin, scopesOf } from './oauth-data';
+import { activeAccount, authorizationRedirect, bodyObject, browserIdentity, consumeIntent, intent, postOnly, redirect, sameOrigin, scopesOf } from './oauth-data';
 import { bridgeIdentity, checkedChallenge, checkedParameters, checkVerifier, form, oauthJson, randomToken, reject, text, type OAuthConfig } from './oauth-support';
 
 export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
@@ -61,11 +61,24 @@ export async function accountAccess(req: Request, env: Env, config: OAuthConfig)
     ON i.provider=e.provider AND i.subject=e.subject JOIN accounts a ON a.id=i.account_id
     WHERE a.id=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL ORDER BY CASE WHEN lower(e.email)=lower(a.email) THEN 0 ELSE 1 END,e.email LIMIT 1`)
     .bind(subject).first<{ email: string }>() : null;
-  const stillActive = active && await activeAccount(env, subject) && await managementActive();
-  // The exact grant is the final read. It also checks current account state.
-  const grant = stillActive && grantId ? await activeGrant(env, config, grantId, subject) : null;
+  const now = Date.now();
+  const final = active ? await env.ACCOUNTS.prepare(`SELECT
+      (SELECT m.redirect_uri FROM integration_oauth_management_sessions m
+        JOIN sessions s ON s.hash=m.session_hash AND s.account_id=m.account_id
+        WHERE m.hash=? AND m.bridge_id=? AND m.account_id=a.id AND m.resource=? AND m.expires_at>? AND s.expires_at>?) AS management_uri,
+      (SELECT json_object('client_id', g.client_id, 'scope', g.scope) FROM integration_oauth_grants g
+        WHERE g.id=? AND g.resource=? AND g.account_id=a.id AND g.revoked_at IS NULL AND g.expires_at>?) AS grant_json
+    FROM accounts a WHERE a.id=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL`)
+    .bind(managementHash ?? null, bridge.id, config.resource, now, now, grantId ?? null, config.resource, now, subject)
+    .first<{ management_uri: string | null; grant_json: string | null }>() : null;
+  const stillActive = !!final && (managementHash === undefined || !!final.management_uri &&
+    bridge.managementRedirectUris.includes(final.management_uri));
+  const grant = final?.grant_json ? JSON.parse(final.grant_json) as { client_id: string; scope: string } : null;
+  const scopes = grant ? scopesOf(grant) : [];
+  const client = grant && config.clients.find(value => value.id === grant.client_id);
+  const oauthAuthorized = stillActive && !!client && scopes.every(scope => client.scopes.includes(scope));
   return oauthJson({ active: stillActive, access: stillActive && access, owner: stillActive && owner,
-    oauthAuthorized: stillActive && grant !== null, scopes: stillActive && grant ? scopesOf(grant) : [],
+    oauthAuthorized, scopes: oauthAuthorized ? scopes : [],
     ...(stillActive ? { account: { id: subject, issuer: config.issuer, ...(verified ? { email: verified.email } : {}) } } : {}),
     ...(scoped ? { applicationId: input.applicationId, pageId: input.pageId } : {}) });
 }

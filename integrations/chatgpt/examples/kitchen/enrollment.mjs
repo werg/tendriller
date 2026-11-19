@@ -44,14 +44,12 @@ export function createEnrollmentManager({ host, descriptor, read, save, prepare 
     return info.owner_account_id;
   }
   async function send(publicKey, record) {
-    let current = await authority();
-    if (!await committed(record, current)) {
-      const ownerAccountId = await account();
-      if (record.control?.accounts?.find(grant => grant.publicKey === publicKey)?.accountId !== ownerAccountId)
-        fail('ENROLLMENT_OWNER_CHANGED');
-      await host.peers.selectGeneration(record.request, { control: record.control });
-      current = await authority();
-    }
+    if (!await committed(record, await authority()) && boundOwner(publicKey, record) !== await account())
+      fail('ENROLLMENT_OWNER_CHANGED');
+    // Committed transitions replay their exact original request and cannot
+    // restore prior authority. Uncommitted requests need the current owner.
+    await host.peers.selectGeneration(record.request, { control: record.control });
+    const current = await authority();
     if (!await committed(record, current)) fail('ENROLLMENT_TRANSITION_NOT_OBSERVED');
     const grant = current.verified.grant(publicKey);
     const active = grant?.reader === true && grant?.writer === true;
@@ -60,13 +58,17 @@ export function createEnrollmentManager({ host, descriptor, read, save, prepare 
       currentGrant: grant, next: active ? 'Run npm run peer, then connect this existing device.'
         : 'The original transition committed, but current rights differ. Inspect current grants; an old retry does not restore revoked rights.' };
   }
-  function obsolete(record, current) {
-    return record.request.payload.expectedGeneration !== (current.verified.current?.id ?? null);
+  function boundOwner(publicKey, record) {
+    return record.control?.accounts?.find(grant => grant.publicKey === publicKey)?.accountId;
   }
-  async function requireReplacement(publicKey, record, current) {
+  function obsolete(publicKey, record, current, ownerAccountId) {
+    return record.request.payload.expectedGeneration !== (current.verified.current?.id ?? null) ||
+      boundOwner(publicKey, record) !== ownerAccountId;
+  }
+  async function requireReplacement(publicKey, record, current, ownerAccountId) {
     if (!record) fail('ENROLLMENT_ORIGINAL_REQUEST_REQUIRED');
     if (await committed(record, current)) fail('ENROLLMENT_ALREADY_COMMITTED_RETRY_ORIGINAL');
-    if (!obsolete(record, current)) fail('ENROLLMENT_ORIGINAL_REQUEST_STILL_CURRENT');
+    if (!obsolete(publicKey, record, current, ownerAccountId)) fail('ENROLLMENT_ORIGINAL_REQUEST_STILL_CURRENT');
     if (current.verified.grant(publicKey)) fail('ENROLLMENT_CURRENT_GRANT_REQUIRES_REVIEW');
   }
   const manager = {
@@ -75,7 +77,7 @@ export function createEnrollmentManager({ host, descriptor, read, save, prepare 
       let record = await retained(publicKey);
       if (record) {
         if (await committed(record, current)) return send(publicKey, record);
-        if (obsolete(record, current)) return { enrolled: null, reviewRequired: true,
+        if (obsolete(publicKey, record, current, await account())) return { enrolled: null, reviewRequired: true,
           publicKey, originalTransitionId: record.request.payload.transitionId,
           expectedGeneration: record.request.payload.expectedGeneration, currentGeneration: current.verified.current?.id ?? null,
           next: `Review a replacement with npm run enroll:review -- ${publicKey}. No new transition was submitted.` };
@@ -88,8 +90,8 @@ export function createEnrollmentManager({ host, descriptor, read, save, prepare 
     },
     async review(value) {
       const publicKey = key(value), current = await authority(), previous = await retained(publicKey);
-      await requireReplacement(publicKey, previous, current);
       const ownerAccountId = await account();
+      await requireReplacement(publicKey, previous, current, ownerAccountId);
       const record = await prepare({ publicKey, ownerAccountId, ...current });
       const review = { version: 1, applicationId: descriptor.payload.applicationId, publicKey, ownerAccountId,
         previousDigest: digest(previous), previousTransitionId: previous.request.payload.transitionId,
@@ -104,10 +106,11 @@ export function createEnrollmentManager({ host, descriptor, read, save, prepare 
       const previous = await retained(publicKey), replacement = { request: review.request, control: review.control };
       if (previous && digest(previous) === digest(replacement)) return manager.enroll(publicKey);
       const current = await authority();
-      await requireReplacement(publicKey, previous, current);
+      const ownerAccountId = await account();
+      await requireReplacement(publicKey, previous, current, ownerAccountId);
       if (review.previousDigest !== digest(previous)) fail('ENROLLMENT_REVIEW_SUPERSEDED');
-      if (review.ownerAccountId !== await account()) fail('ENROLLMENT_OWNER_CHANGED');
-      if (obsolete(replacement, current)) fail('ENROLLMENT_REVIEW_STALE');
+      if (review.ownerAccountId !== ownerAccountId) fail('ENROLLMENT_OWNER_CHANGED');
+      if (obsolete(publicKey, replacement, current, ownerAccountId)) fail('ENROLLMENT_REVIEW_STALE');
       // The reviewed replacement link is durable before its first send. A
       // crash resumes this exact proposal; the superseded record is untouched.
       await save(replacementName(publicKey, previous), { reviewDigest });
