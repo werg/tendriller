@@ -54,6 +54,28 @@ test('operation identity is bound to the owner and source even across adapter re
   assert.equal(f.sent.length, 1);
 });
 
+test('same subject from another issuer cannot read receipts or reuse the conversation', async () => {
+  const f = fixture(), one = { id: 'shared-subject', issuer: 'https://issuer.one' }, two = { id: 'shared-subject', issuer: 'https://issuer.two' };
+  await f.adapter.trigger(one, input);
+  await assert.rejects(f.adapter.trigger(two, input), /OPERATION_CONFLICT/);
+  await assert.rejects(f.adapter.status(two, { operationId: input.operationId }), /NOT_FOUND/);
+  await f.adapter.trigger(two, { ...input, operationId: 'trigger-two' });
+  assert.notEqual(JSON.parse(f.sent[0].init.body).conversation_key, JSON.parse(f.sent[1].init.body).conversation_key);
+  const owners = Object.values((await f.store.read()).workspaceAgentOperations).map(value => value.ownerId);
+  assert.deepEqual(owners, [JSON.stringify([one.issuer, one.id]), JSON.stringify([two.issuer, two.id])]);
+});
+
+test('journal capacity rejects new operations before provider I/O and preserves exact retries', async () => {
+  const f = fixture({ maxOperations: 1 });
+  await f.adapter.trigger(principal, input);
+  await assert.rejects(f.adapter.trigger(principal, { ...input, operationId: 'beyond-limit' }), /OPERATION_LIMIT/);
+  assert.equal(f.sent.length, 1);
+  assert.equal(Object.keys((await f.store.read()).workspaceAgentOperations).length, 1);
+  assert.equal((await f.adapter.trigger(principal, input)).state, 'accepted');
+  assert.equal(f.sent.length, 1);
+  assert.throws(() => createWorkspaceAgentAdapter({ ...f.options, maxOperations: 0 }), /CONFIGURATION_INVALID/);
+});
+
 test('concurrent calls recheck identity and use the persisted delivery lease', async () => {
   let enter, finish;
   const entered = new Promise(resolve => { enter = resolve; }), response = new Promise(resolve => { finish = resolve; });
@@ -108,6 +130,44 @@ test('crash lease and attempt budget prevent unbounded sends', async () => {
   f.setNow(10001);
   assert.equal((await createWorkspaceAgentAdapter(f.options).trigger(principal, input)).attempts, 2);
   await assert.rejects(f.adapter.trigger(principal, input), /RECONCILIATION_REQUIRED/);
+});
+
+test('lease/state is checked after slow authorization before any provider request', async () => {
+  const f = fixture();
+  f.options.authorize = async () => {
+    await f.store.transaction(state => {
+      const row = Object.values(state.workspaceAgentOperations ?? {})[0];
+      if (row?.state === 'sending') {
+        row.state = 'accepted'; row.conversationUrl = 'https://chatgpt.com/c/other-worker-receipt';
+        row.acceptedAt = 1001; delete row.leaseId; delete row.leaseUntil;
+      }
+    });
+    return true;
+  };
+  const result = await createWorkspaceAgentAdapter(f.options).trigger(principal, input);
+  assert.equal(result.state, 'accepted'); assert.equal(result.conversationUrl, 'https://chatgpt.com/c/other-worker-receipt');
+  assert.equal(f.sent.length, 0);
+});
+
+test('late accepted receipt survives an expired lease and a later uncertain attempt', async () => {
+  let entered, resolveFirst;
+  const waiting = new Promise(resolve => { entered = resolve; }), firstResponse = new Promise(resolve => { resolveFirst = resolve; });
+  let sends = 0;
+  const f = fixture({ timeoutMs: 10, fetchImpl: async () => {
+    sends++;
+    if (sends === 1) { entered(); return firstResponse; }
+    return new Response('', { status: 500 });
+  } });
+  const first = f.adapter.trigger(principal, input);
+  await waiting; f.setNow(10000);
+  assert.equal((await createWorkspaceAgentAdapter(f.options).trigger(principal, input)).state, 'uncertain');
+  f.setSelected(false);
+  await assert.rejects(f.adapter.trigger(principal, input), /SOURCE_NOT_SELECTED/);
+  resolveFirst(new Response(JSON.stringify({ conversation_url: 'https://chatgpt.com/c/late-accepted' }), { status: 202 }));
+  const result = await first;
+  assert.equal(result.state, 'accepted'); assert.equal(result.sourceCurrent, false); assert.equal(result.attempts, 2);
+  assert.equal((await f.adapter.trigger(principal, input)).conversationUrl, 'https://chatgpt.com/c/late-accepted');
+  assert.equal(sends, 2);
 });
 
 test('invalid accepted receipts and redirects remain uncertain and reveal no unsafe link', async () => {

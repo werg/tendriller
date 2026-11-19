@@ -51,15 +51,24 @@ function receipt(row) {
 /** Optional fixed-destination route; never a way to select arbitrary existing chats. */
 export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerId, accessToken, getAccessToken,
   fetchImpl = globalThis.fetch, clock = Date.now, trackRuns = true, timeoutMs = 15000,
-  maxAttempts = 5, retryWindowMs = 3600000 } = {}) {
+  maxAttempts = 5, retryWindowMs = 3600000, maxOperations = 10000 } = {}) {
   if (!store?.read || !store?.transaction || !bridge?.getEvent || typeof authorize !== 'function' ||
       typeof fetchImpl !== 'function' || !/^agtch_[A-Za-z0-9_-]{1,128}$/u.test(triggerId ?? '') ||
       (typeof accessToken !== 'string' && typeof getAccessToken !== 'function') ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
       !Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10 ||
+      !Number.isSafeInteger(maxOperations) || maxOperations < 1 || maxOperations > 100000 ||
       !Number.isSafeInteger(retryWindowMs) || retryWindowMs < timeoutMs || retryWindowMs > 86400000) fail('WORKSPACE_AGENT_CONFIGURATION_INVALID');
   const keyFor = operationId => hash(`workspace-agent-operation\0${operationId}`);
-  const owner = principal => text(principal?.id, 512, 'WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
+  const owner = principal => {
+    const subject = text(principal?.id, 512, 'WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
+    if (!subject.trim()) fail('WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
+    const issuer = principal.issuer === undefined ? '' : principal.issuer;
+    if (typeof issuer !== 'string' || issuer.length > 2048 || /[\u0000-\u001f\u007f]/u.test(issuer)) fail('WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
+    // Match OAuth/consent identity semantics: equal subjects from different
+    // issuers are different principals. Issuer comparison is exact, not URL-normalized.
+    return JSON.stringify([issuer, subject]);
+  };
   const permitted = async (principal, applicationId, name) => {
     if (await authorize(principal, applicationId, name) !== true) fail('WORKSPACE_AGENT_ACCESS_DENIED', 403);
   };
@@ -116,6 +125,7 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
         state.workspaceAgentOperations ??= {};
         const existing = state.workspaceAgentOperations[key];
         if (existing) { bind(existing, ownerId, input); return existing; }
+        if (Object.keys(state.workspaceAgentOperations).length >= maxOperations) fail('WORKSPACE_AGENT_OPERATION_LIMIT', 429);
         const created = { ...input, ownerId, triggerId, eventName: found.projection.name,
           conversationKey: `tendriller-${hash(JSON.stringify([triggerId, ownerId, input.applicationId]))}`,
           idempotencyKey: `tendriller-${hash(JSON.stringify([triggerId, ownerId, input.applicationId, input.sourceEventId, input.operationId]))}`,
@@ -127,21 +137,31 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
     // the provider. Recheck the selected source after any asynchronous setup.
     const bearer = await token();
     await permitted(principal, input.applicationId, found.projection.name);
-    const current = await source(principal, input.applicationId, input.sourceEventId);
-    if (!current || current.projection.name !== row.eventName) {
-      await change(key, value => { value.sourceCurrent = false; });
-      fail('WORKSPACE_AGENT_SOURCE_NOT_SELECTED', 409);
-    }
     const leaseId = randomUUID(), now = clock();
     row = await change(key, value => {
       if (value.state === 'accepted' || value.leaseUntil > now) return;
       if (value.attempts >= maxAttempts || now - value.createdAt > retryWindowMs) fail('WORKSPACE_AGENT_RECONCILIATION_REQUIRED', 409);
+      value.sendBaseState = value.state === 'sending' ? 'uncertain' : value.state;
       value.state = 'sending'; value.attempts++; value.sourceCurrent = true;
       value.lastAttemptAt = now; value.leaseId = leaseId; value.leaseUntil = now + timeoutMs + 5000;
       delete value.lastError;
     });
     if (row.leaseId !== leaseId || row.state === 'accepted') return receipt(row);
+    let dispatched = false;
     try {
+      const current = await source(principal, input.applicationId, input.sourceEventId);
+      if (!current || current.projection.name !== row.eventName) {
+        await change(key, value => { value.sourceCurrent = false; });
+        fail('WORKSPACE_AGENT_SOURCE_NOT_SELECTED', 409);
+      }
+      // An asynchronous grant/source check can outlive this lease or overlap
+      // another sender's accepted receipt. Re-read immediately before I/O.
+      row = await read(key);
+      bind(row, ownerId, input);
+      if (row.state === 'accepted' || row.leaseId !== leaseId || row.state !== 'sending') return receipt(row);
+      if (!row.sourceCurrent) fail('WORKSPACE_AGENT_SOURCE_NOT_SELECTED', 409);
+      if (row.leaseUntil <= clock()) fail('WORKSPACE_AGENT_LEASE_EXPIRED', 409);
+      dispatched = true;
       const response = await fetchImpl(`${ORIGIN}/v1/workspace_agents/${triggerId}/trigger`, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
         headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json', 'Idempotency-Key': row.idempotencyKey,
@@ -154,26 +174,41 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
           if (value.leaseId !== leaseId) return;
           value.state = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429 ? 'rejected' : 'uncertain';
           value.lastError = { code: 'WORKSPACE_AGENT_PROVIDER_HTTP', status: response.status, at: clock() };
-          delete value.leaseId; delete value.leaseUntil;
+          delete value.leaseId; delete value.leaseUntil; delete value.sendBaseState;
         });
       } else {
         const value = await boundedJson(response), url = conversationUrl(value.conversation_url);
         if (value.agent_trigger_run_id !== undefined && !/^apirun_[A-Za-z0-9_-]{1,200}$/u.test(value.agent_trigger_run_id)) fail('WORKSPACE_AGENT_RESPONSE_INVALID', 502);
         row = await change(key, record => {
-          if (record.leaseId !== leaseId) return;
-          record.state = 'accepted'; record.acceptedAt = clock(); record.conversationUrl = url;
-          if (value.agent_trigger_run_id) { record.runId = value.agent_trigger_run_id; record.runStatus = 'queued'; }
-          delete record.leaseId; delete record.leaseUntil; delete record.lastError;
+          bind(record, ownerId, input);
+          // A validated receipt is evidence of the original idempotent effect,
+          // even when it arrives after lease replacement, revocation or recovery.
+          // Retain it without reviving sourceCurrent or regressing run progress.
+          if (record.conversationUrl && record.conversationUrl !== url ||
+              record.runId && value.agent_trigger_run_id && record.runId !== value.agent_trigger_run_id) {
+            record.lastError = { code: 'WORKSPACE_AGENT_RECEIPT_CONFLICT', at: clock() }; return;
+          }
+          record.state = 'accepted'; record.acceptedAt ??= clock(); record.conversationUrl = url;
+          if (value.agent_trigger_run_id) { record.runId ??= value.agent_trigger_run_id; record.runStatus ??= 'queued'; }
+          delete record.leaseId; delete record.leaseUntil; delete record.sendBaseState; delete record.lastError;
         });
       }
     } catch (error) {
+      if (!dispatched) {
+        await change(key, value => {
+          if (value.leaseId !== leaseId || value.state !== 'sending') return;
+          value.state = value.sendBaseState ?? 'prepared';
+          delete value.leaseId; delete value.leaseUntil; delete value.sendBaseState;
+        });
+        throw error;
+      }
       // Even invalid 202 bodies may represent an accepted effect. Never turn
       // a missing receipt into a fresh identity, or record token-bearing errors.
       row = await change(key, value => {
         if (value.leaseId !== leaseId) return;
         value.state = 'uncertain'; value.lastError = {
           code: ['WORKSPACE_AGENT_RESPONSE_INVALID', 'WORKSPACE_AGENT_RESPONSE_TOO_LARGE'].includes(error.code) ? error.code : 'WORKSPACE_AGENT_PROVIDER_UNCERTAIN', at: clock() };
-        delete value.leaseId; delete value.leaseUntil;
+        delete value.leaseId; delete value.leaseUntil; delete value.sendBaseState;
       });
     }
     return receipt(row);
