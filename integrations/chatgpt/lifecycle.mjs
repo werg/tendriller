@@ -142,6 +142,7 @@ export function createLifecycleService({ store, creation, applications = [], aut
         const creations = records(state).creations, previous = creations[key];
         if (previous) {
           if (previous.digest !== digest) fail('LIFECYCLE_CREATION_CONFLICT');
+          if (previous.status === 'not_sent') { previous.status = 'creating'; return null; }
           return previous;
         }
         if (Object.keys(creations).length >= 128) fail('LIFECYCLE_JOURNAL_FULL');
@@ -150,12 +151,14 @@ export function createLifecycleService({ store, creation, applications = [], aut
       });
       if (existing?.status === 'created') return existing.result;
       if (existing) fail('LIFECYCLE_CREATION_UNCERTAIN', 'Inspect the host/account state before creating another page; the first response may have been lost', { requestId: input.requestId });
+      let attempted = false;
       try {
         const core = await loadCore();
         const fetch = limitedFetch(creation.fetch ?? globalThis.fetch);
         core.requireService(await core.describeService(creationOrigin, { fetch }));
         // Tendriller creation uses a verified owner email and expressly rejects
         // Authorization headers. Account authorization belongs to this service.
+        attempted = true;
         const handle = await core.createPage(creationOrigin, { name: input.name, owner: email, lifetime: 'ad_hoc' }, { fetch });
         if (https(handle.api, 'created page API').origin !== creationOrigin || !ID.test(handle.application?.id)) fail('LIFECYCLE_CREATED_HANDLE_INVALID');
         https(handle.page_url, 'owner claim URL');
@@ -165,6 +168,11 @@ export function createLifecycleService({ store, creation, applications = [], aut
         await store.transaction(state => { Object.assign(records(state).creations[key], { status: 'created', handle, result }); });
         return result;
       } catch (error) {
+        if (!attempted) {
+          await store.transaction(state => { records(state).creations[key].status = 'not_sent'; });
+          throw new LifecycleError('LIFECYCLE_CREATION_PRECHECK_FAILED', 'The service precheck failed before page creation was sent; retry the same request after restoring access',
+            { requestId: input.requestId, causeCode: error.code ?? error.name });
+        }
         await store.transaction(state => { records(state).creations[key].status = 'uncertain'; });
         throw new LifecycleError('LIFECYCLE_CREATION_UNCERTAIN', 'Creation did not produce a safely retained handle; inspect the host before another create',
           { requestId: input.requestId, causeCode: error.code ?? error.name });

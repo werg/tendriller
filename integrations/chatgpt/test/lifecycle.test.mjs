@@ -131,6 +131,21 @@ test('concrete public SDK creation retains private handle and never claims or bl
   assert.equal(sends, 1);
 });
 
+test('a failed read-only creation precheck can retry the same identity without inventing a lost POST', async () => {
+  let healthy = false, sends = 0;
+  const service = createLifecycleService({ store: memoryStore(), loadCore: async () => ({
+    describeService: async () => { if (!healthy) throw Error('HOST_UNAVAILABLE'); return {}; },
+    requireService() {}, createPage: async () => { sends++; return { id: 'newpage', application: { id: appId },
+      api: 'https://tendriller.example/api/t/newpage', page_url: 'https://newpage.pages.example/', token: 'private' }; },
+  }), creation: { origin: 'https://tendriller.example', ownerEmailForPrincipal: async () => 'owner@example.com' } });
+  const args = { requestId: 'precheck-once', name: 'Kitchen' };
+  await assert.rejects(service.createTendril(principal, args), { code: 'LIFECYCLE_CREATION_PRECHECK_FAILED' });
+  assert.equal(sends, 0);
+  healthy = true;
+  assert.equal((await service.createTendril(principal, args)).status, 'owner_claim_required');
+  assert.equal(sends, 1);
+});
+
 test('real enrolled publisher signs reviewed bytes; public host transport verifies ancestry and exact retries',
   { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
     const { peer } = await loadNativePackage();

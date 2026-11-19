@@ -30,6 +30,8 @@ Page creation has no host idempotency key. The service saves an attempt before
 sending and retains the returned handle before answering. A repeated successful
 request returns its saved result. An interrupted/uncertain request is not sent
 again automatically; inspect the host/account state before another creation.
+A read-only service precheck that fails before any creation POST is sent is
+recorded as `not_sent`; the same request identity can safely retry that precheck.
 
 `preparePageRelease(principal,{applicationId,operationId,entry,files})` takes a
 complete graph of `{path,type,bytesBase64}` files. It applies the CLI packer's
