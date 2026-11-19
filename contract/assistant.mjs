@@ -11,7 +11,8 @@ const delay = (ms, signal) => new Promise((resolve, reject) => {
 });
 const socketUrl = api => {
   const url = new URL(api + '/assistant/adapter');
-  if (url.protocol === 'https:') url.protocol = 'wss:';
+  if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash &&
+      /^\/api\/t\/[a-z2-7]{12}\/assistant\/adapter$/u.test(url.pathname)) url.protocol = 'wss:';
   else throw error('ASSISTANT_REQUIRES_HTTPS');
   return url.href;
 };
@@ -42,7 +43,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
   const url = socketUrl(api), stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, session.signal, ...(signal ? [signal] : [])]);
   const allowed = { query: new Set(queries), command: new Set(commands) };
-  const acknowledgements = new Map();
+  const acknowledgements = new Map(), waitingForOpen = new Set();
   let socket, active = 0;
   function send(message) {
     const data = JSON.stringify(message);
@@ -89,7 +90,12 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
           const abort = () => { try { transport.close(); } finally { done(1000); } };
           const timer = setTimeout(() => { if (transport.readyState !== 1) abort(); }, 7000);
           lifetime.addEventListener('abort', abort, { once: true });
-          transport.addEventListener('open', () => { clearTimeout(timer); failures = 0; onStatus({ state: 'connected' }); }, { once: true });
+          transport.addEventListener('open', () => {
+            clearTimeout(timer);
+            failures = 0;
+            for (const resolve of waitingForOpen) resolve();
+            onStatus({ state: 'connected' });
+          }, { once: true });
           transport.addEventListener('close', ev => done(ev.code), { once: true });
           transport.addEventListener('message', ev => {
             if (transport !== socket || typeof ev.data !== 'string' || ev.data.length > LIMIT) return;
@@ -120,6 +126,24 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
     get online() { return socket?.readyState === 1; },
     closed,
     close() { stop.abort(); return closed; },
+    async waitUntilOnline({ signal } = {}) {
+      if (socket?.readyState === 1) return;
+      const combined = signal ? AbortSignal.any([lifetime, signal]) : lifetime;
+      let opened, abort;
+      try {
+        combined.throwIfAborted();
+        await Promise.race([closed.then(() => { throw error('APPLICATION_ASSISTANT_OFFLINE'); }),
+          new Promise((resolve, reject) => {
+            opened = resolve;
+            abort = () => reject(combined.reason);
+            waitingForOpen.add(opened);
+            combined.addEventListener('abort', abort, { once: true });
+          })]);
+      } finally {
+        if (opened) waitingForOpen.delete(opened);
+        if (abort) combined.removeEventListener('abort', abort);
+      }
+    },
     async publish({ sourceEventId, name, generation, payload }) {
       if (typeof generation !== 'string' || generation !== session.status.generation)
         throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
@@ -152,7 +176,18 @@ export async function forwardApplicationEvents({ session, assistant, topics, pro
       finally { await view.release(); }
       for (const event of batch.events) {
         const projection = await project(event);
-        if (projection) await assistant.publish({ ...projection, sourceEventId: event.id, generation: batch.revision.generation });
+        if (projection) {
+          const value = { ...projection, sourceEventId: event.id, generation: batch.revision.generation };
+          for (let attempt = 0; ; attempt++) {
+            await assistant.waitUntilOnline({ signal: lifetime });
+            try { await assistant.publish(value); break; }
+            catch (cause) {
+              const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full'].includes(cause?.code);
+              if (!retryable || attempt >= 5) throw cause;
+              await delay(Math.min(8000, 500 * 2 ** attempt), lifetime);
+            }
+          }
+        }
       }
       if (batch.cursor !== cursor) { await checkpoint.save(batch.cursor); cursor = batch.cursor; }
       if (!batch.hasMore) break;

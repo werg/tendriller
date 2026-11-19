@@ -517,6 +517,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     return { adapter, session, eventName, gid, rpc, tool, id: f.page.application.id };
   }
   const sent: { id: string; body: string }[] = [];
+  let mounted: WebSocket | undefined;
   const secretBytes = new Uint8Array(32).fill(9), secret = 'whsec_' + btoa(String.fromCharCode(...secretBytes));
   const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const req = new Request(input, init);
@@ -538,8 +539,27 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       { applicationId: first.id, label: a.page.name, pageId: a.page.id },
     ]);
     expect((await first.tool('describe_application', { applicationId: second.id })).result.isError).toBe(true);
-    expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual([second.id + '.counter.changed']);
+    expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual(['application.event']);
     expect((await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.queries[0].name).toBe('notes');
+    const announcement = (await first.tool('open_application_inbox', { applicationId: first.id })).result;
+    expect(announcement.structuredContent).not.toHaveProperty('activity');
+    const proof = announcement._meta.activity.proof;
+    const mount = (pageId: string, token: string) => request('/api/t/' + pageId + '/assistant/activity', bind, { headers: {
+      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.application-activity.v1, td_watch.' + token,
+    } });
+    expect((await mount(b.page.id, proof)).status).toBe(401);
+    expect((await mount(a.page.id, proof.replace(/^[\w-]/u, proof[0] === 'A' ? 'B' : 'A'))).status).toBe(401);
+    const watched = await mount(a.page.id, proof);
+    expect(watched.status).toBe(101);
+    mounted = watched.webSocket!;
+    const notices: string[] = [];
+    mounted.addEventListener('message', event => { notices.push(String(event.data)); });
+    mounted.accept();
+    await inDO(a.page.id, t => {
+      expect(t.ctx.getWebSockets('application-mcp')).toHaveLength(1);
+      expect(t.ctx.getWebSockets('application-activity')).toHaveLength(1);
+      expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull();
+    });
     expect((await first.tool('query_application', { applicationId: first.id, query: 'readings', input: null })).result.isError).toBe(true);
     const write = { applicationId: first.id, command: 'addNote', operationId: 'reply-one', input: { text: 'Rope checked' } };
     expect((await first.tool('call_application_command', write)).result.isError).toBeUndefined();
@@ -548,7 +568,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
 
-    const watch = await first.rpc('events/subscribe', { name: first.id + '.note.added', arguments: { application_id: first.id },
+    const watch = await first.rpc('events/subscribe', { name: 'application.event', arguments: { application_id: first.id, event: 'note.added' },
       delivery: { mode: 'webhook', url: 'https://callback.example/events', secret } });
     expect(watch.result?.id, JSON.stringify(watch)).toMatch(/^sub_/);
     const view = await first.session.readView(), batch = view.readEvents({ topics: ['note'] });
@@ -557,6 +577,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, generation: batch.revision.generation, payload: { ready: true } };
     const sequence = await first.adapter.publish(emitted);
     expect(await first.adapter.publish(emitted)).toBe(sequence);
+    await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
     const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
     expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
     expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
@@ -565,17 +586,23 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(1);
     await evictDurableObject(stub(a.page.id));
-    await inDO(a.page.id, t => { Object.assign(t.env, settings); });
+    await inDO(a.page.id, t => {
+      Object.assign(t.env, settings);
+      expect(t.ctx.getWebSockets('application-mcp')).toHaveLength(1);
+      expect(t.ctx.getWebSockets('application-activity')).toHaveLength(1);
+    });
     await advance(a.page.id, 3000);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(2);
     expect(sent[1]).toEqual(sent[0]);
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
     await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull());
 
     await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), first.gid).run();
     expect((await first.rpc('initialize')).error).toBe('invalid_token');
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
   } finally {
+    mounted?.close();
     await Promise.all(adapters.map(item => item.close()));
     await Promise.all(sessions.map(item => item.close()));
     outbound.mockRestore();

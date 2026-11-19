@@ -1,10 +1,12 @@
 import { activeAdapter, connection } from './assistant-admission';
+import { makeActivityTicket } from './assistant-activity';
 import { assistantInbox, changeAssistantSubscription } from './assistant-events';
 import { assistantOnline, callAssistantAdapter } from './assistant-socket';
-import { APP_NAME, REQUEST_LIMIT, eventDefinition, requireScope, string, type Principal } from './assistant-shared';
+import { MCP_APPLICATION_EVENT, REQUEST_LIMIT, assistantOAuth, requireScope, string, type Principal } from './assistant-shared';
 import { HttpError, json, readJson } from './http';
 import { requireWritesOpen } from './service-state';
 import { withSelectedAssistantGeneration } from './peer-generations';
+import { activeGrant } from './accounts/oauth-data';
 import { sha256Hex } from './ids';
 import type { Tendril } from './tendril';
 
@@ -22,8 +24,14 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   if (method === 'describe_application') {
     requireScope(principal, 'applications:read');
     return json({ value: { applicationId, pageId: t.tid, label: approved.label, online: assistantOnline(t, approved.id),
-      queries: approved.queries, commands: approved.commands, events: approved.events.map(event => eventDefinition(applicationId, event)),
-      eventDelivery: { webhook: true, catchUpTool: 'read_application_events' } } });
+      queries: approved.queries, commands: approved.commands, events: approved.events,
+      eventDelivery: { webhook: MCP_APPLICATION_EVENT, catchUpTool: 'read_application_events', liveInboxTool: 'open_application_inbox' } } });
+  }
+  if (method === 'open_application_inbox') {
+    requireScope(principal, 'applications:read');
+    const metadata = await makeActivityTicket(t, principal, approved.version);
+    check();
+    return json({ value: { applicationId, label: approved.label, pageId: t.tid }, metadata });
   }
   if (method === 'read_application_events') {
     requireScope(principal, 'applications:read');
@@ -36,7 +44,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   if (!isCommand && method !== 'query_application') throw new HttpError(404, 'method_not_found');
   requireScope(principal, isCommand ? 'applications:write' : 'applications:read');
   const kind = isCommand ? 'command' : 'query';
-  const name = string(params[kind], 80, APP_NAME);
+  const name = string(params[kind], 128);
   if (!(isCommand ? approved.commands : approved.queries).some(item => item.name === name)) throw new HttpError(403, 'operation_not_approved');
 
   // A request author cannot collide with an original local operation ID.
@@ -50,6 +58,10 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
       ...(operationId ? { operationId, ...(params.basedOn !== undefined ? { basedOn: params.basedOn } : {}) } : {}) }, req.signal) };
   });
   const value = await pending;
+  const oauth = await assistantOAuth(t.env);
+  const grant = oauth && await activeGrant(t.env, oauth, principal.grant, principal.account);
+  if (!grant?.scope.split(' ').includes(isCommand ? 'applications:write' : 'applications:read'))
+    throw new HttpError(403, 'authorization_revoked');
   return withSelectedAssistantGeneration(t, selected => {
     check();
     if (generation !== selected) throw new HttpError(409, 'application_generation_changed');

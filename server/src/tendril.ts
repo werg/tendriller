@@ -11,6 +11,7 @@ import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from './abuse/notices';
+import { isAssistantActivity, upgradeAssistantActivity } from './assistant-activity';
 import { assistantRequest } from './assistant';
 import { reviewAssistant } from './assistant-admission';
 import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgradeAssistantAdapter } from './assistant-socket';
@@ -106,7 +107,7 @@ export class Tendril extends DurableObject<Env> {
 
   /** Agent/control admission precedes handling; page admission charges after authentication. */
   private async admitTraffic(kind: string): Promise<void> {
-    if (kind !== "agent") return;
+    if (kind !== "agent" && kind !== "assistant") return;
     await admitPageTraffic(this.env, this.tid, this.db.get<string | null>("owner_account", null));
   }
 
@@ -114,6 +115,10 @@ export class Tendril extends DurableObject<Env> {
     const result = this.assistantTail.then(work);
     this.assistantTail = result.catch(() => {});
     return result;
+  }
+
+  async ensureAssistantDelivery(at: number): Promise<void> {
+    await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -169,6 +174,7 @@ export class Tendril extends DurableObject<Env> {
       if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
       if (kind === 'assistant-review') return await reviewAssistant(this, req);
       if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
+      if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
@@ -209,6 +215,7 @@ export class Tendril extends DurableObject<Env> {
     if (isPublicationWatch(ws)) { ws.close(1008, "Publication watch is receive-only"); return; }
     if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
     if (isAssistantAdapter(ws)) { await handleAssistantFrame(this, ws, message); return; }
+    if (isAssistantActivity(ws)) { ws.close(1008, 'Activity sockets receive notices only'); return; }
     // Relay packets have separate packet/byte/credit bounds. Their unchanged
     // local credentials are cached; cold or invalidated credentials need SQL.
     try { await this.admitTraffic("agent"); }

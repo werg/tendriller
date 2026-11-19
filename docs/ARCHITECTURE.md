@@ -38,8 +38,8 @@ A publication pins its browser runtime graph. Open tabs retain their exact code 
 
 `@tendriller/core` exports the host SDK, application/signals contracts and participant transport. `@tendriller/runtime` exports kernel, optional voice, manifest and exact assets. `@tendriller/engine` exports the Worker, Durable Object classes, account schema and test fixture. `@tendriller/tools` exports preview, packing and public-session helpers with two executables.
 
-The Worker embeds Chronolog's portable control and participant graph. The optional
-same-origin MCP route adds the pinned events-only session and the trusted kitchen
-adapter. It opens the session only inside a bounded invocation of the selected
-page's existing Durable Object. The ordinary host keeps its control-only signer
-and does not execute authored page code. See [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). The kernel imports no domain UI, voice engine or Node tools. Tools consume the built public artifacts; core does not fetch contrib. Provenance records exact source commits, clean/dirty state and archive hashes.
+The Worker embeds Chronolog's portable control and participant graph. The
+same-origin MCP endpoint checks account and per-page permissions, then uses a
+hibernatable inbound socket to reach the existing application participant.
+Each page Durable Object retains its subscriptions and wake state. Application
+code executes on the enrolled peer. See [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). The kernel imports no domain UI, voice engine or Node tools. Tools consume the built public artifacts; core does not fetch contrib. Provenance records exact source commits, clean/dirty state and archive hashes.

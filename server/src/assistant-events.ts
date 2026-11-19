@@ -1,7 +1,9 @@
 import { callbackUrl, deliveryDisposition, signedHeaders, verifyCallback, webhookKey } from '../../integrations/chatgpt/webhook-data.mjs';
+import { notifyAssistantActivity } from './assistant-activity';
 import { activeAdapter, connection, type Adapter, type Connection } from './assistant-admission';
-import { APP_ID, EVENT_LIMIT, assistantOAuth, fields, requireScope, string, type Principal } from './assistant-shared';
+import { APP_ID, EVENT_LIMIT, MCP_APPLICATION_EVENT, assistantOAuth, fields, requireScope, string, type Principal } from './assistant-shared';
 import { activeGrant } from './accounts/oauth-data';
+import { admitPageTraffic } from './traffic-budget';
 import { pagePolicy } from './access';
 import { HttpError, readBody } from './http';
 import { sha256Hex } from './ids';
@@ -14,8 +16,8 @@ type EventRow = { seq: number; source_id: string; generation: string; name: stri
 type Watcher = { id: string; grant_id: string; name: string; url: string; secret: string; expires_at: number };
 type Job = EventRow & Watcher & { attempts: number; event_seq: number; watcher_id: string };
 const toMessage = (item: EventRow, applicationId: string) => ({
-  name: applicationId + '.' + item.name, timestamp: new Date(item.created_at).toISOString(),
-  data: { applicationId, sourceEventId: item.source_id, generation: item.generation, payload: JSON.parse(item.payload) },
+  name: MCP_APPLICATION_EVENT, timestamp: new Date(item.created_at).toISOString(),
+  data: { applicationId, event: item.name, sourceEventId: item.source_id, generation: item.generation, payload: JSON.parse(item.payload) },
 });
 
 function callbackTarget(t: Tendril, input: unknown) {
@@ -63,8 +65,10 @@ export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: R
   const name = string(body.name, 80), sourceId = string(body.sourceEventId, 256);
   const generation = string(body.generation, 64, APP_ID), payload = JSON.stringify(body.payload);
   if (new TextEncoder().encode(payload).byteLength > EVENT_LIMIT) throw new HttpError(413, 'event_too_large');
-  if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'forbidden');
-  return withSelectedAssistantGeneration(t, selected => {
+  // The socket is already approved. D1 checks happen on connection and egress;
+  // the hot ingest path uses local revocation and the regional traffic budget.
+  await admitPageTraffic(t.env, t.tid, connection(t)?.owner ?? null);
+  const retained = await withSelectedAssistantGeneration(t, selected => {
     if (selected !== generation) throw new HttpError(409, 'event_generation_changed');
     if (activeAdapter(t)?.id !== adapter.id || !connection(t)?.events.some(event => event.name === name))
       throw new HttpError(403, 'event_not_approved');
@@ -72,7 +76,8 @@ export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: R
       'SELECT seq,payload FROM assistant_events WHERE generation=? AND source_id=? AND name=?', generation, sourceId, name);
     if (prior) {
       if (prior.payload !== payload) throw new HttpError(409, 'event_identity_conflict');
-      return prior.seq;
+      const pending = t.db.one<{ due: number }>('SELECT MIN(due) AS due FROM assistant_jobs WHERE event_seq=?', prior.seq);
+      return { seq: prior.seq, due: pending?.due ?? null };
     }
     const now = t.now(), watchers = t.db.all<{ id: string }>('SELECT id FROM assistant_watchers WHERE name=? AND expires_at>?', name, now);
     if (watchers.length && (t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs')!.n + watchers.length > JOB_LIMIT))
@@ -84,10 +89,14 @@ export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: R
         t.db.run('INSERT INTO assistant_jobs(event_seq,watcher_id,due) VALUES(?,?,?)', seq, watcher.id, now + 50);
       if (seq > RETENTION)
         t.db.run('DELETE FROM assistant_events WHERE seq<=? AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE event_seq=assistant_events.seq)', seq - RETENTION);
-      if (watchers.length) t.scheduleAlarm();
-      return seq;
+      t.afterCommit(() => notifyAssistantActivity(t));
+      return { seq, due: watchers.length ? now + 50 : null };
     });
   });
+  // A duplicate retries arming the original job if the first acknowledgment
+  // was lost after the commit. Acknowledged events already have a durable wake.
+  if (retained.due !== null) await t.ensureAssistantDelivery(retained.due);
+  return retained.seq;
 }
 
 export async function assistantInbox(t: Tendril, approved: Connection, params: Record<string, unknown>) {
@@ -111,9 +120,9 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
   requireScope(principal, 'events:subscribe');
   const subscribing = method === 'events/subscribe';
   fields(params, ['name', 'arguments', 'delivery', ...(subscribing ? ['cursor', 'ttlMs'] : [])], ['name', 'arguments', 'delivery']);
-  const args = fields(params.arguments, ['application_id']);
+  const args = fields(params.arguments, ['application_id', 'event']);
   if (args.application_id !== approved.applicationId) throw new HttpError(404, 'application_not_connected');
-  const event = approved.events.find(item => approved.applicationId + '.' + item.name === params.name);
+  const event = params.name === MCP_APPLICATION_EVENT && approved.events.find(item => item.name === args.event);
   if (!event) throw new HttpError(403, 'event_not_approved');
   const delivery = fields(params.delivery, subscribing ? ['mode', 'url', 'secret'] : ['mode', 'url']);
   if (delivery.mode !== 'webhook') throw new HttpError(400, 'unsupported_delivery');
@@ -152,7 +161,7 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
       { rpcCode: -32015, reason: (error as { data?: { reason?: string } }).data?.reason ?? 'challenge_failed' });
   }
   const oauth = await assistantOAuth(t.env);
-  if (!oauth || !await activeGrant(t.env, oauth, principal.grant, principal.account) || connection(t)?.version !== approved.version)
+  if (!oauth || !(await activeGrant(t.env, oauth, principal.grant, principal.account))?.scope.split(' ').includes('events:subscribe') || connection(t)?.version !== approved.version)
     throw new HttpError(403, 'connection_changed');
   t.transaction(() => {
     t.db.run('DELETE FROM assistant_jobs WHERE watcher_id IN(SELECT id FROM assistant_watchers WHERE expires_at<=?)', now);
@@ -177,16 +186,17 @@ export async function runAssistantDelivery(t: Tendril) {
   const oauth = await assistantOAuth(t.env);
   // Retain signed event identity through bounded, durable retries.
   const allowed = !!oauth && !!activeAdapter(t) && await pagePolicy(t) === 'active';
-  const grants = new Map<string, boolean>();
-  for (const job of jobs) {
+  const grants = new Map<string, ReturnType<typeof activeGrant>>();
+  await Promise.all(jobs.map(async job => {
     let retry = false;
     try {
       if (allowed && job.expires_at > now) {
-        if (!grants.has(job.grant_id)) {
-          const grant = await activeGrant(t.env, oauth!, job.grant_id, approved.owner);
-          grants.set(job.grant_id, !!grant?.scope.split(' ').includes('events:subscribe'));
+        let grant = grants.get(job.grant_id);
+        if (!grant) {
+          grant = activeGrant(t.env, oauth!, job.grant_id, approved.owner);
+          grants.set(job.grant_id, grant);
         }
-        if (grants.get(job.grant_id)) {
+        if ((await grant)?.scope.split(' ').includes('events:subscribe')) {
           const secret = await unseal(t, job.watcher_id, job.secret);
           const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.generation, job.source_id, job.name]));
           const body = JSON.stringify({ eventId, ...toMessage(job, approved.applicationId), cursor: null });
@@ -214,7 +224,7 @@ export async function runAssistantDelivery(t: Tendril) {
       }
     } catch (error) { retry = !(error instanceof HttpError && error.status === 400); }
     if (retry && job.attempts < 7) t.db.run('UPDATE assistant_jobs SET attempts=attempts+1,due=? WHERE event_seq=? AND watcher_id=?',
-      now + Math.min(300_000, 2000 * 2 ** job.attempts), job.event_seq, job.watcher_id);
+      t.now() + Math.min(300_000, 2000 * 2 ** job.attempts), job.event_seq, job.watcher_id);
     else t.db.run('DELETE FROM assistant_jobs WHERE event_seq=? AND watcher_id=?', job.event_seq, job.watcher_id);
-  }
+  }));
 }

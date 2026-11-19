@@ -403,3 +403,10 @@ mobile suspension.
 For exact API composition and ownership rules, continue to
 [Session bootstrap](SESSION_BOOTSTRAP.md). For command syntax, use
 [CLI](tools/CLI.md), `tendril --help`, and `tendril guide --server YOUR_ORIGIN`.
+
+## Expose an application to an assistant
+
+After the application has a working enrolled participant, use
+`@tendriller/core/assistant` to expose selected queries, commands and events.
+Give the owner the actual review URL and verify one applied writeback through
+the same service origin. See [Connect any application](CLOUDFLARE_ASSISTANT.md).

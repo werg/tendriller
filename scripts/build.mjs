@@ -105,6 +105,11 @@ export async function buildPublicArtifacts() {
     if (join(dist, result.filename) !== target) rmSync(join(dist, result.filename));
   }
   for (const name of ["agent.md", "AGENTS.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
+  const inboxSource = join(root, 'integrations/chatgpt/inbox');
+  const inbox = await build({ entryPoints: [join(inboxSource, 'app.mjs')], bundle: true, write: false, format: 'esm', minify: true });
+  writeFileSync(join(out, 'application-inbox.html'), readFileSync(join(inboxSource, 'template.html'), 'utf8')
+    .replace('<!-- APP -->', () => '<script type="module">' + inbox.outputFiles[0].text.replace(/<\/script/giu, '<\\/script') + '</script>'));
+
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
     for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path) && !path.startsWith(join(root, "docs/tutorial") + "/"))) {

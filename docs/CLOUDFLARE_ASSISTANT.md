@@ -1,58 +1,126 @@
-# Connect ChatGPT through the Tendriller Worker
+# Connect any Tendriller application to an assistant
 
-The existing service origin serves `/mcp`, protected resource metadata and
-`/connections`. The selected page's existing `Tendril` Durable Object owns the
-bridge device and encrypted delivery journal. The page's control participant
-continues to use its original control-only signer. The bridge has its own signed
-Chronolog grant and uses the application's selected history.
+Tendriller exposes application tools at the service's `/mcp` endpoint. Each page
+owns its approved connection, event inbox, subscriptions and delivery jobs in
+its existing Durable Object. Application code and state stay with the enrolled
+Chronolog participants. The same endpoint serves multiple owners and application
+definitions, including applications that use SQL.
 
-## Enable the kitchen application
+## Prepare the service once
 
-The bundled application adapter is kitchen version 2. Its executable definition
-is deployment-trusted code and opens only against the matching signed Chronolog
-descriptor. An uploaded publication cannot install an executable host adapter.
-The Worker exposes one configured kitchen page per deployment.
+Apply account migrations `0002_integration_oauth.sql` and
+`0003_assistant_connections.sql`. Configure the exact service origin plus
+`/mcp` as the OAuth resource. Register each intended client with its actual
+callback and authentication method, and install `OAUTH_SIGNING_JWK`.
+The normal tool scopes are `tendrils:list`, `applications:read`,
+`applications:write` and `events:subscribe`. Use `bridges: []` for this route.
+See [OAuth setup](INTEGRATION_OAUTH.md).
 
-1. Create and claim the kitchen page using the [kitchen setup](https://github.com/werg/tendriller/tree/master/integrations/chatgpt/examples/kitchen). Keep its native coordinator available and publish the browser UI normally. The same coordinator serves browser and assistant peers.
-2. Apply the existing additive account OAuth migration. Use the exact service origin plus `/mcp` for `OAUTH_CONFIG_JSON.resource`. Register the actual ChatGPT callback and secret method. For the Worker route, the OAuth `bridges` array can be empty. Install the normal `OAUTH_SIGNING_JWK` secret. [OAuth details](INTEGRATION_OAUTH.md)
-3. Set `ASSISTANT_PAGE_ID` to the claimed page ID. Set `ASSISTANT_PAGE_TOKEN` to a dedicated agent token for this page and `ASSISTANT_STORE_KEY` to 32 random bytes encoded in base64. Keep both values in the Worker's secrets. Set `ASSISTANT_CALLBACK_ORIGINS` to the exact approved HTTPS callback origins, separated by whitespace. An empty allowlist permits query and command tools while declining webhook subscriptions.
-4. Call `POST /api/t/{pageId}/assistant/device` with the page agent token. Save the returned public key. Run `npm run enroll -- PUBLIC_KEY` from the kitchen project to grant that worker device reader/writer access. The installed bridge needs neither coordination nor recovery, publishing or administration rights. Repeating device provisioning returns the original public key.
-5. Start the existing kitchen coordinator with `TENDRILLER_WORKER_ASSISTANT=1 npm run peer`. It posts an authenticated wake after observing a changed request count or selected generation. On restart it sends an initial snapshot notice and the Worker resumes from its retained cursor. It sends no event payload.
-6. Sign in at `/connections` on the same service origin. Approve the exact allowed queries, commands and events. Register `/mcp` in the intended ChatGPT client, confirm a read, and subscribe only in a supported chat. Verify a real page request produces one correlated reply.
+Set `ASSISTANT_STORE_KEY` to 32 random bytes encoded as base64. It encrypts
+webhook signing secrets and provides a separate derived signing key for live
+inbox tickets. Keep the key available across deployments. Set
+`ASSISTANT_CALLBACK_ORIGINS` to a whitespace-separated list of exact HTTPS
+origins operated by approved callback providers. HTTPS redirects are blocked.
+A deployment with no allowed callback origins can still offer tools and the
+live inbox. These are service-wide settings.
 
-## Wake, delivery and retries
+## Enroll an application
 
-An assistant invocation briefly opens one peer connection to the selected
-coordinator, synchronizes verified history, performs its bounded work and
-closes its relay. Subscribe verification and OAuth metadata can use the Worker
-without a permanently running assistant connection. A delivery wake coalesces
-with notices already queued. Each pass reads from a retained cursor, persists
-the cursor and generated delivery jobs together, and sends at most four due
-callbacks. The bridge keeps the same callback event identity on retry. The
-page's existing alarm schedules continuation and retry work. A page with no
-assistant work adds no assistant timer, peer advertisement or polling request.
+1. Follow [Build an app](BUILD_AN_APP.md) through owner claim, signed definition,
+   selected generation and a working application participant. Keep that
+   participant available according to [Agent delivery](AGENT_DELIVERY.md).
+2. Use the public helper below from the participant's private setup process.
+   Save the adapter key in that participant's private store and reuse it on
+   restart. The proposal's commands and queries must exist in the signed native
+   definition. Describe what each exported event will contain so the owner can
+   review the outbound data.
+3. Give the owner the returned `reviewUrl`. They sign in and choose the exact
+   queries, commands and events to expose. Their review is required again when
+   replacing the adapter credential or changing its proposal.
+4. Attach the adapter to the application's existing Chronolog session.
+   Connect the intended client to the service `/mcp` and authorize it. Call
+   `list_tendrils`, `describe_application` and one approved query. Test a real
+   input and applied writeback before handing the connection to the owner.
 
-Webhook destination origins are operator allowlisted. The Worker refuses
-redirects and checks current page access, the exact OAuth grant, connection
-consent and selected Chronolog history before each delivery. The callback
-receives bounded event metadata. Owners can choose whether detailed read tools
-may reveal application content. Failed peer scans back off and pause after
-eight consecutive failures. A new notice or successful MCP POST can resume
-retained work. Existing subscriptions and their initial cursor survive object
-eviction. An unreachable coordinator delays synchronization and delivery until
-it is reachable again.
+```js
+import { createApplicationTools } from '@chronolog/peer-session';
+import {
+  createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant,
+  forwardApplicationEvents,
+} from '@tendriller/core/assistant';
 
-The relay sockets opened by an invocation are closed when it returns. Incoming
-page requests and existing hibernatable relay sockets retain their normal
-lifecycle. Revocation is checked on future calls and deliveries, and page
-deletion removes durable bridge state with the page.
+// Run setup once with the existing private host handle. Retain key privately.
+const key = await loadAssistantKey() ?? createAssistantKey();
+await saveAssistantKey(key);
+const exposed = { queries: ['notes'], commands: ['addNote'] };
+const proposal = await proposeApplicationAssistant({
+  api: handle.api, token: handle.token, key, label: 'Shared notes', ...exposed,
+  events: [{ name: 'note.added', description: 'A note was retained. The event includes its ID only.' }],
+});
+console.log(proposal.reviewUrl);
 
-## Staging checks
+// Start this part after the owner approves access, inside the running app peer.
+const assistant = connectApplicationAssistant({
+  api: handle.api, key, session, tools: createApplicationTools(session), ...exposed,
+  onStatus: status => console.log(status),
+});
+await assistant.waitUntilOnline();
 
-Use a configured staging page and a separate OAuth registration. Compare the
-same page with the integration disabled and then enabled during a fixed idle
-window. Record Worker and Durable Object requests, elapsed duration, SQL rows
-and alarms. Include a cold MCP read, a burst of wake notices, a callback
-failure followed by eviction before retry, and an actual ChatGPT reply in the
-intended client. The local Worker tests exercise registration, selected event
-delivery and restart behavior using a simulated callback receiver.
+// Optional. Use an atomic private checkpoint file or equivalent durable store.
+await forwardApplicationEvents({
+  session, assistant, topics: ['note'], checkpoint,
+  project: event => ({ name: 'note.added', payload: { noteId: event.id } }),
+});
+```
+
+The sample assumes your existing `handle`, open `session` and private key/file
+helpers. The checkpoint implements `load()` and `save(cursor)`. A missing
+checkpoint begins at the first selected event. To send only future activity,
+initialize it at the current selected tail using the same topic filter. The
+helper advances the checkpoint after the host acknowledges all events in a
+batch. A recovered history requires explicit review of what to resume.
+Stop the adapter using `assistant.close()` or by closing its parent session.
+The SDK scopes remote commands and queries again before calling the native tool.
+
+## MCP Events and other clients
+
+For native background delivery, subscribe to `application.event` using the
+`application_id` and exact `event` name returned by `describe_application`.
+This stable MCP catalog works for newly connected apps without adding tools
+or event types to the plugin. The provider verifies its callback by challenge.
+A fresh subscription starts with future emissions. Each queued delivery uses a
+stable event ID and exact body across retries, and is fenced by the selected
+Chronolog generation and current account grant. A receipt establishes delivery
+to the provider. Confirm the resulting signed writeback in application history.
+
+A tool-capable chat without background subscriptions can call
+`read_application_events` on the next turn. Keep its returned `next` cursor and
+generation, check `truncated`, and preserve context if the generation changes.
+Compatible MCP Apps hosts can mount `open_application_inbox` to show new activity
+over an inbound WebSocket. The card sends a follow-up to the same chat when the
+person chooses **Check inbox in this chat**. The mounted card's ticket is
+short-lived. Background processing is available through a supported subscribed
+chat or a separately published agent with its own trigger. See the
+[ChatGPT routes](CHATGPT_INTEGRATION.md).
+
+## Cost and verification
+
+- Account discovery reads an indexed account table without waking page objects.
+  A call routes to the one requested page. The host runs no app code.
+- Inbound application and live inbox sockets use the Durable Object Hibernation
+  API. There is no keepalive request, outbound bridge socket, polling loop or
+  scheduled assistant job during idle periods.
+- Each explicitly forwarded event writes one inbox record and queues jobs only
+  for matching active subscriptions. Delivery shares the page's existing alarm.
+  It batches up to four due deliveries and backs off on transient errors.
+- The inbox holds the newest 256 accepted events per page plus records needed
+  for outstanding delivery. There are eight subscriptions, at most 256 queued
+  deliveries and four mounted live inboxes per page. When the queue is full,
+  the emitter receives an explicit error and can retry its exact source event.
+  Disconnecting the application removes its event inbox and subscriptions.
+- Verify a real client subscription, a user-initiated inbox follow-up, retry
+  after eviction and an applied native writeback. For deployment billing, compare
+  the same test page with and without the integration over a fixed idle window.
+  Record Durable Object requests, duration, alarm invocations and SQL rows.
+
+See [Cloudflare Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).

@@ -14,7 +14,7 @@ export type Rpc = { id: string | number | null; method: string; params: Record<s
 export type Principal = { account: string; grant: string; scopes: string[]; expires: number };
 export type Operation = { name: string; description: string; input: unknown };
 export type EventDefinition = { name: string; description: string };
-export type Catalogue = { applicationId: string; pageId: string; label: string; events: EventDefinition[] };
+export type Catalogue = { applicationId: string; pageId: string; label: string };
 
 export async function assistantOAuth(env: Env) {
   const oauth = await oauthConfig(env);
@@ -37,23 +37,24 @@ export function requireScope(principal: Principal, scope: string) {
   if (!principal.scopes.includes(scope)) throw new HttpError(403, 'insufficient_scope');
 }
 
-export function eventDefinition(applicationId: string, event: EventDefinition) {
-  return { name: applicationId + '.' + event.name, description: event.description, delivery: ['webhook'],
-    inputSchema: { type: 'object', properties: { application_id: { const: applicationId, type: 'string' } },
-      required: ['application_id'], additionalProperties: false },
-    payloadSchema: { type: 'object', properties: { applicationId: { const: applicationId, type: 'string' },
-      sourceEventId: { type: 'string' }, generation: { type: 'string' }, payload: {} },
-    required: ['applicationId', 'sourceEventId', 'generation', 'payload'], additionalProperties: false } };
-}
-
-type IndexRow = { application_id: string; page_id: string; label: string; exposed_events: string };
+export const MCP_APPLICATION_EVENT = 'application.event';
+export const mcpEventDefinition = {
+  name: MCP_APPLICATION_EVENT, description: 'An approved event from one connected application. Use describe_application to find its event names.',
+  delivery: ['webhook'],
+  inputSchema: { type: 'object', properties: { application_id: { type: 'string', pattern: APP_ID.source },
+    event: { type: 'string', pattern: APP_NAME.source } }, required: ['application_id', 'event'], additionalProperties: false },
+  payloadSchema: { type: 'object', properties: { applicationId: { type: 'string' }, event: { type: 'string' },
+    sourceEventId: { type: 'string' }, generation: { type: 'string' }, payload: {} },
+    required: ['applicationId', 'event', 'sourceEventId', 'generation', 'payload'], additionalProperties: false },
+};
+type IndexRow = { application_id: string; page_id: string; label: string };
 const fromRow = (row: IndexRow): Catalogue => ({
-  applicationId: row.application_id, pageId: row.page_id, label: row.label, events: JSON.parse(row.exposed_events),
+  applicationId: row.application_id, pageId: row.page_id, label: row.label,
 });
 
 /** One indexed query. Discovery never fans out to dormant pages. */
 export async function listConnected(env: Env, account: string): Promise<Catalogue[]> {
-  const rows = await env.ACCOUNTS.prepare(`SELECT c.application_id,c.page_id,c.label,c.exposed_events
+  const rows = await env.ACCOUNTS.prepare(`SELECT c.application_id,c.page_id,c.label
     FROM assistant_connections c JOIN tendrils t ON t.id=c.page_id
     WHERE c.owner_account=? AND c.enabled=1 AND t.owner_account=c.owner_account AND t.state='active'
     ORDER BY c.page_id LIMIT 20`).bind(account).all<IndexRow>();
@@ -61,7 +62,7 @@ export async function listConnected(env: Env, account: string): Promise<Catalogu
 }
 
 export async function resolveConnection(env: Env, account: string, applicationId: string): Promise<Catalogue> {
-  const row = await env.ACCOUNTS.prepare(`SELECT c.application_id,c.page_id,c.label,c.exposed_events
+  const row = await env.ACCOUNTS.prepare(`SELECT c.application_id,c.page_id,c.label
     FROM assistant_connections c JOIN tendrils t ON t.id=c.page_id
     WHERE c.application_id=? AND c.owner_account=? AND c.enabled=1 AND t.owner_account=c.owner_account AND t.state='active'`)
     .bind(applicationId, account).first<IndexRow>();

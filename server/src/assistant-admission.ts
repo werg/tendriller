@@ -76,7 +76,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   if (!item || item.owner !== browser.id || browser.id !== t.db.get('owner_account', null) || await pagePolicy(t, browser.id) !== 'active')
     throw new HttpError(404, 'application_not_found');
   const current = connection(t);
-  const csrf = await sha256Hex(JSON.stringify([browser.sessionHash, item.id, t.tid, 'application-mcp-consent']));
+  const csrf = await sha256Hex(JSON.stringify([browser.sessionHash, item.id, current?.version, t.tid, 'application-mcp-consent']));
   if (req.method === 'GET') {
     const page = servicePage('Assistant connection',
     `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Connection enabled. Review this proposal to change access.' : 'Choose what the assistant may access.'}</p>
@@ -93,12 +93,13 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 8192, 3000)));
   if (!safeEqual(form.get('csrf') ?? '', csrf)) throw new HttpError(403, 'invalid_confirmation');
   return t.serializeAssistant(async () => {
-    if (proposal(t)?.id !== item.id || t.db.get('owner_account', null) !== browser.id)
+    if (proposal(t)?.id !== item.id || connection(t)?.version !== current?.version || t.db.get('owner_account', null) !== browser.id)
       throw new HttpError(409, 'proposal_changed');
     if (form.get('action') === 'revoke') {
       t.db.del('assistant_connection');
       resetAssistantConnection(t);
-      await t.env.ACCOUNTS.prepare("UPDATE assistant_connections SET enabled=0,exposed_events='[]' WHERE page_id=?").bind(t.tid).run();
+      closeAssistantConnections(t);
+      await t.env.ACCOUNTS.prepare("UPDATE assistant_connections SET enabled=0 WHERE page_id=?").bind(t.tid).run();
     } else if (form.get('action') === 'approve') {
       await requireWritesOpen(t.env);
       if (!currentPrincipal(t, item.agent)) throw new HttpError(409, 'adapter_agent_revoked');
@@ -107,16 +108,23 @@ export async function reviewAssistant(t: Tendril, req: Request) {
         events: names(form.getAll('events'), item.events) };
       if (!approved.queries.length && !approved.commands.length && !approved.events.length) throw new HttpError(400, 'no_permissions_selected');
       initializeAssistantTables(t);
-      await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=?,exposed_events=? WHERE page_id=? AND owner_account=?')
-        .bind(approved.label, JSON.stringify(approved.events), t.tid, browser.id).run();
+      await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=? WHERE page_id=? AND owner_account=?')
+        .bind(approved.label, t.tid, browser.id).run();
       t.transaction(() => {
         resetAssistantConnection(t);
         t.db.set('assistant_connection', approved);
         t.db.set('assistant_adapter', { id: item.id, agent: item.agent, hash: item.adapterHash });
+        t.afterCommit(() => closeAssistantConnections(t));
       });
     } else throw new HttpError(400, 'invalid_action');
     return redirect(returnTo);
   });
+}
+
+function closeAssistantConnections(t: Tendril) {
+  for (const tag of ['application-mcp', 'application-activity']) {
+    for (const ws of t.ctx.getWebSockets(tag)) { try { ws.close(4003, 'Application connection changed'); } catch { /* Already closed */ } }
+  }
 }
 
 function resetAssistantConnection(t: Tendril) {
@@ -125,7 +133,7 @@ function resetAssistantConnection(t: Tendril) {
     t.db.run('DELETE FROM assistant_watchers');
     t.db.run('DELETE FROM assistant_events');
   }
-  for (const ws of t.ctx.getWebSockets('application-mcp')) ws.close(4003, 'Application connection changed');
+
 }
 
 function initializeAssistantTables(t: Tendril) {

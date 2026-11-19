@@ -10,6 +10,7 @@ export interface AssistantParticipant {
   readonly online: boolean;
   readonly closed: Promise<void>;
   close(): Promise<void>;
+  waitUntilOnline(options?: { signal?: AbortSignal }): Promise<void>;
   publish(event: { sourceEventId: string; name: string; generation: string; payload: unknown }): Promise<number>;
 }
 export function createAssistantKey(): string;

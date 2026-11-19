@@ -1,7 +1,7 @@
 const PROTOCOL = '2026-01-26';
 
 /** Minimal MCP Apps client for this resource; it sends no user message on mount. */
-export function createWidgetBridge({ window: win, timeoutMs = 10000 } = {}) {
+export function createWidgetBridge({ window: win, timeoutMs = 10000, onClose = () => {} } = {}) {
   if (!win) throw Error('WIDGET_WINDOW_REQUIRED');
   let nextId = 0, mode = 'unavailable', hostOrigin, capabilities = {}, closed = false;
   const pending = new Map(), listeners = { input: new Set(), result: new Set() };
@@ -45,10 +45,12 @@ export function createWidgetBridge({ window: win, timeoutMs = 10000 } = {}) {
   win.addEventListener('message', receive);
   win.addEventListener('openai:set_globals', legacyGlobals);
   function close() {
+    if (closed) return;
     closed = true; mode = 'unavailable';
     win.removeEventListener('message', receive); win.removeEventListener('openai:set_globals', legacyGlobals);
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(Error('WIDGET_CLOSED')); }
     pending.clear(); listeners.input.clear(); listeners.result.clear();
+    onClose();
   }
   return {
     async connect() {

@@ -70,8 +70,8 @@ host integration. The ordinary Tendriller MCP endpoint administers host/control
 operations; application tools execute in the owned Chronolog session. The
 optional [Cloudflare assistant](CLOUDFLARE_ASSISTANT.md) adds same-origin
 OAuth-protected application tools, explicit MCP Events subscriptions and a
-mounted assistance card. Use its route table and
-`get_integration_options` to establish the actual available capabilities.
+live inbox card. Use its route table and
+`describe_application` to establish the connection's capabilities.
 
 These routes do not provide or qualify a universal ChatGPT conversation wake
 adapter. OAuth ownership alone does not subscribe a conversation. Establish

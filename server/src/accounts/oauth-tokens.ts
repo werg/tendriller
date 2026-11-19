@@ -1,6 +1,6 @@
 import type { Env } from '../env';
 import { safeEqual, sha256Hex } from '../ids';
-import { activeGrant, cleanup, postOnly, revokeGrant, type OAuthGrant } from './oauth-data';
+import { activeGrant, cleanup, postOnly, registeredGrant, revokeGrant, type OAuthGrant } from './oauth-data';
 import { requestedScopes } from './oauth-authorization';
 import { bridgeIdentity, checkVerifier, form, oauthJson, randomToken, reject, signAccessToken, text, type OAuthClient, type OAuthConfig } from './oauth-support';
 
@@ -110,13 +110,20 @@ export async function tokenEndpoint(req: Request, env: Env, config: OAuthConfig)
 
 export async function inspectAccessToken(env: Env, config: OAuthConfig, token: string) {
   const hash = await sha256Hex(text(token, 'access token', 16384));
-  const access = await env.ACCOUNTS.prepare('SELECT grant_id,jti,scope,created_at,expires_at FROM integration_oauth_access WHERE hash=? AND expires_at>?')
-    .bind(hash, Date.now()).first<{ grant_id: string; jti: string; scope: string; created_at: number; expires_at: number }>();
-  const grant = access && await activeGrant(env, config, access.grant_id);
-  if (!access || !grant) return null;
-  return { active: true, token_type: 'Bearer', sub: grant.account_id, iss: config.issuer, aud: config.resource,
-    scope: access.scope, client_id: grant.client_id, iat: Math.floor(access.created_at / 1000), exp: Math.floor(access.expires_at / 1000),
-    jti: access.jti, sid: grant.id };
+  const now = Date.now();
+  const access = await env.ACCOUNTS.prepare(`SELECT tok.grant_id,tok.jti,tok.scope,tok.created_at,tok.expires_at,
+      g.account_id,g.client_id,g.scope AS grant_scope
+    FROM integration_oauth_access tok JOIN integration_oauth_grants g ON g.id=tok.grant_id
+    JOIN accounts a ON a.id=g.account_id
+    WHERE tok.hash=? AND tok.expires_at>? AND g.resource=? AND g.revoked_at IS NULL AND g.expires_at>?
+      AND a.suspended_at IS NULL AND a.deleting_at IS NULL`).bind(hash, now, config.resource, now)
+    .first<{ grant_id: string; jti: string; scope: string; created_at: number; expires_at: number;
+      account_id: string; client_id: string; grant_scope: string }>();
+  if (!access || !registeredGrant(config, { client_id: access.client_id, scope: access.grant_scope }) ||
+      !registeredGrant(config, access)) return null;
+  return { active: true, token_type: 'Bearer', sub: access.account_id, iss: config.issuer, aud: config.resource,
+    scope: access.scope, client_id: access.client_id, iat: Math.floor(access.created_at / 1000), exp: Math.floor(access.expires_at / 1000),
+    jti: access.jti, sid: access.grant_id };
 }
 
 export async function introspect(req: Request, env: Env, config: OAuthConfig): Promise<Response> {

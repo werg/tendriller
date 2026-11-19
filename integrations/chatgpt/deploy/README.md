@@ -1,6 +1,6 @@
 # Deploy a standalone assistant adapter
 
-Tendriller-hosted kitchen applications use the [Cloudflare Worker setup](../../../docs/CLOUDFLARE_ASSISTANT.md). Use this standalone service when operating an external adapter.
+Tendriller-hosted applications use the [Cloudflare Worker setup](../../../docs/CLOUDFLARE_ASSISTANT.md). Use this standalone service when operating an external adapter.
 
 This route prepares a Linux systemd service behind Caddy, with a dedicated
 non-root bridge identity and persistent private stores. It uses the concrete

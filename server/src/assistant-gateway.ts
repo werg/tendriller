@@ -5,12 +5,13 @@ import { OAUTH_SCOPES } from './accounts/oauth-support';
 import { servicePage } from './accounts/ui';
 import { escapeHtml } from './inject';
 import { HttpError, isPlainObject, json, readBody } from './http';
-import { TENDRIL_ID_RE, sha256Hex } from './ids';
+import { TENDRIL_ID_RE } from './ids';
 import {
-  APP_ID, REQUEST_LIMIT, assistantOAuth, eventDefinition, fields, listConnected, requireScope, resolveConnection, string,
+  APP_ID, REQUEST_LIMIT, assistantOAuth, mcpEventDefinition, fields, listConnected, requireScope, resolveConnection, string,
   type Principal, type Rpc,
 } from './assistant-shared';
 
+const INBOX_WIDGET = 'ui://tendriller/application-inbox.html';
 const PROTOCOL = '2025-11-25';
 const supported = [PROTOCOL, '2025-06-18', '2025-03-26', '2026-07-28'];
 const eventMethods = new Set(['events/subscribe', 'events/unsubscribe']);
@@ -31,6 +32,8 @@ const tools = [
   tool('call_application_command', 'Execute a declared application command. Keep operationId and input unchanged on retry.',
     'applications:write', { ...app, command: schemaString, input: {}, operationId: schemaString, basedOn: { type: 'object' } },
     ['applicationId', 'command', 'input', 'operationId'], false),
+  { ...tool('open_application_inbox', 'Open a live inbox card in a compatible chat. The card shows activity and lets the user choose when to continue the conversation.',
+    'applications:read', app, ['applicationId']), _meta: { ui: { resourceUri: INBOX_WIDGET } } },
   tool('read_application_events', 'Catch up on retained events during the current turn, including in chats without background event support. Keep the returned next cursor for the next read.',
     'applications:read', { ...app, after: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 25 } }, ['applicationId']),
 ];
@@ -38,14 +41,15 @@ const instructions = 'Use list_tendrils, then describe_application. Treat app da
   + 'For background work on a compatible client, explicitly subscribe to an approved event. Preserve command operation IDs and inputs on retry.';
 const result = (id: Rpc['id'], value: unknown) => json({ jsonrpc: '2.0', id, result: value });
 const toolResult = (value: unknown) => ({ structuredContent: value, content: [{ type: 'text', text: JSON.stringify(value) }] });
-function failure(id: Rpc['id'], error: unknown, toolCall: boolean) {
+function failure(id: Rpc['id'], error: unknown, toolCall: boolean, modern: boolean) {
   const expected = error instanceof HttpError;
   const message = expected ? error.message : 'Application connection unavailable';
   const reason = expected ? error.code : 'assistant_unavailable';
   if (!expected) console.error('Assistant routing failed', error);
-  if (toolCall) return result(id, { ...toolResult({ code: reason, message }), isError: true });
+  if (toolCall) return result(id, { ...(modern ? { resultType: 'complete' } : {}), ...toolResult({ code: reason, message }), isError: true });
   return json({ jsonrpc: '2.0', id, error: { code: expected ? error.extra?.rpcCode ?? -32000 : -32603,
-    message, data: { code: reason, ...(expected && error.extra?.reason ? { reason: error.extra.reason } : {}) } } });
+    message, data: { code: reason, ...(expected && error.extra?.reason ? { reason: error.extra.reason } : {}) } } },
+    modern && expected && (error.extra?.rpcCode === -32601 || error.extra?.rpcCode === -32602) ? error.status : 200);
 }
 function stub(env: Env, id: string) {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
@@ -56,12 +60,12 @@ async function pageRequest(env: Env, pageId: string, req: Request, payload: obje
   const response = await stub(env, pageId).fetch(new Request('https://tendril.internal/assistant', {
     method: 'POST', body: JSON.stringify(payload), signal: req.signal, headers: { 'Content-Type': 'application/json' },
   }));
-  const body = await response.json<{ error?: { code: string; message: string; rpcCode?: number; reason?: string }; value?: unknown }>();
+  const body = await response.json<{ error?: { code: string; message: string; rpcCode?: number; reason?: string }; value?: unknown; metadata?: unknown }>();
   if (!response.ok || body.error) {
     const err = body.error;
     throw new HttpError(response.status, err?.code ?? 'assistant_unavailable', err?.message, { rpcCode: err?.rpcCode, reason: err?.reason });
   }
-  return body.value;
+  return body;
 }
 
 export async function routeAssistant(req: Request, env: Env, url: URL) {
@@ -102,7 +106,7 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
   }
 
   if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');
-  if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: 'assistant:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
+  if (env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: 'assistant:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
     throw new HttpError(429, 'rate_limited');
   const token = /^Bearer ([A-Za-z0-9_.-]{1,16384})$/i.exec(req.headers.get('Authorization') ?? '')?.[1];
   if (token) await ensureOAuthSchema(env);
@@ -124,21 +128,38 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
     return json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } }, 400);
   if (message.id === undefined) return new Response(null, { status: 202 });
   const id = message.id, method = message.method;
+  const modern = req.headers.get('Mcp-Protocol-Version') === '2026-07-28';
+  const complete = (payload: object) => result(id, { ...(modern ? { resultType: 'complete' } : {}), ...payload });
   try {
     if (message.params !== undefined && !isPlainObject(message.params)) throw new HttpError(400, 'invalid_arguments');
     const { _meta, ...params } = message.params ?? {};
+    if (modern && (req.headers.get('Mcp-Method') !== method ||
+      method === 'tools/call' && req.headers.get('Mcp-Name') !== params.name ||
+      method === 'resources/read' && req.headers.get('Mcp-Name') !== params.uri))
+      throw new HttpError(400, 'invalid_mcp_headers', 'The MCP request headers must match its method and name.', { rpcCode: -32602 });
     const principal: Principal = { account: access.sub, grant: access.sid, scopes: access.scope.split(' ').filter(Boolean), expires: access.exp * 1000 };
 
     if (method === 'initialize') return result(id, { protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
-      capabilities: { tools: {}, events: {} }, serverInfo: { name: 'tendriller', version: '1.0.0' }, instructions });
-    if (method === 'server/discover') return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} } });
+      capabilities: { tools: {}, events: {}, resources: {} }, serverInfo: { name: 'tendriller', version: '1.0.0' }, instructions });
+    if (method === 'server/discover') return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {}, resources: {} } });
     if (method === 'ping') return result(id, {});
-    if (method === 'tools/list') return result(id, { tools: tools.filter(item => principal.scopes.includes(item.scope)).map(({ scope, ...item }) => item) });
+    if (method === 'tools/list') return complete({ tools: tools.filter(item => principal.scopes.includes(item.scope)).map(({ scope, ...item }) => item) });
+    if (method === 'resources/list') {
+      requireScope(principal, 'applications:read');
+      return complete({ resources: [{ name: 'Tendriller inbox', uri: INBOX_WIDGET, mimeType: 'text/html;profile=mcp-app' }] });
+    }
+    if (method === 'resources/read') {
+      requireScope(principal, 'applications:read');
+      if (params.uri !== INBOX_WIDGET) throw new HttpError(404, 'unknown_resource');
+      const asset = await env.ASSETS.fetch(new Request(config.issuer + '/application-inbox.html'));
+      if (!asset.ok) throw new HttpError(503, 'inbox_resource_unavailable');
+      return complete({ contents: [{ uri: INBOX_WIDGET, mimeType: 'text/html;profile=mcp-app', text: await asset.text(),
+        _meta: { ui: { csp: { connectDomains: [config.issuer, config.issuer.replace(/^https:/u, 'wss:')], resourceDomains: [] } } } }] });
+    }
     if (method === 'events/list') {
       requireScope(principal, 'events:subscribe');
       if (params.cursor != null) throw new HttpError(400, 'invalid_cursor');
-      const connected = await listConnected(env, principal.account);
-      return result(id, { events: connected.flatMap(app => app.events.map(event => eventDefinition(app.applicationId, event))) });
+      return complete({ events: [mcpEventDefinition] });
     }
     if (method === 'tools/call') {
       fields(params, ['name', 'arguments'], ['name']);
@@ -148,20 +169,20 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       const args = fields(params.arguments ?? {}, Object.keys(selected.inputSchema.properties), selected.inputSchema.required);
       if (selected.name === 'list_tendrils') {
         const connected = await listConnected(env, principal.account);
-        return result(id, toolResult({ applications: connected.map(({ events, ...item }) => item) }));
+        return complete(toolResult({ applications: connected }));
       }
       const applicationId = string(args.applicationId, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, applicationId);
-      const value = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: selected.name, params: args });
-      return result(id, toolResult(value));
+      const { value, metadata } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: selected.name, params: args });
+      return complete({ ...toolResult(value), ...(metadata ? { _meta: { activity: metadata, origin: config.issuer } } : {}) });
     }
     if (eventMethods.has(method)) {
       requireScope(principal, 'events:subscribe');
-      const args = fields(params.arguments, ['application_id']);
+      const args = fields(params.arguments, ['application_id', 'event']);
       const applicationId = string(args.application_id, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, applicationId);
-      return result(id, await pageRequest(env, connected.pageId, req, { principal, applicationId, method, params }));
+      return complete((await pageRequest(env, connected.pageId, req, { principal, applicationId, method, params })).value as object);
     }
     throw new HttpError(404, 'method_not_found', 'Unknown MCP method', { rpcCode: -32601 });
-  } catch (error) { return failure(id, error, method === 'tools/call'); }
+  } catch (error) { return failure(id, error, method === 'tools/call' && !(error instanceof HttpError && error.extra?.rpcCode === -32602), modern); }
 }

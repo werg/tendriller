@@ -1,4 +1,5 @@
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
+import { parseActivityTicket } from './assistant-activity';
 import { routeAssistant } from './assistant-gateway';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
@@ -321,6 +322,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (m) {
       if (!TENDRIL_ID_RE.test(m[1])) return errorResponse(404, "not_found", "No such tendril");
       const agentRest = safeDecode(m[2] ?? "");
+      if (agentRest === 'assistant/activity') {
+        if (url.origin !== publicBase(env) || !await parseActivityTicket(env, req, m[1])) throw new HttpError(401, 'activity_ticket_expired');
+        return forward(env, m[1], 'assistant-activity', req, url, {});
+      }
       if (agentRest === 'assistant/adapter') {
         const protocols = req.headers.get('Sec-WebSocket-Protocol')?.split(',').map(item => item.trim()) ?? [];
         if (!protocols.includes(ASSISTANT_PROTOCOL) || !protocols.some(item => ADAPTER_KEY.test(item)))
