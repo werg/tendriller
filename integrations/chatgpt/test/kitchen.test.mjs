@@ -18,6 +18,10 @@ test('selected history correlates one response and labels changed steps without 
   assert.equal(changed.requests[0].status, 'stale');
   assert.equal(changed.requests[0].answer.answer, 'Check the texture.');
   assert.equal(projectKitchen([request]).requests[0].answer, null); // Recovery excludes the response.
+  const initialStep = event('step-original', { type: 'step.selected', stepId: 's1', text: 'Prepare' });
+  const changedSameId = event('step-updated', { type: 'step.selected', stepId: 's1', text: 'Different preparation' });
+  assert.equal(projectKitchen([initialStep, request, answer]).requests[0].status, 'answered');
+  assert.equal(projectKitchen([initialStep, request, answer, changedSameId]).requests[0].status, 'stale');
 });
 
 test('conflicting requests, context and additional responses remain visible', () => {
