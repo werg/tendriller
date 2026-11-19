@@ -15,7 +15,7 @@ export interface NativeEndpoint {
 }
 export interface NativeSessionOwner {
   readonly ownerInstanceId: string;
-  readonly session: { readonly applicationId: string; readonly deviceId: string; describe(): { id: string; version: string } };
+  readonly session: { readonly applicationId: string; readonly deviceId: string; readonly signal?: AbortSignal; describe(): { id: string; version: string } };
   attach(endpoint: NativeEndpoint, policy?: NativeAttachmentPolicy): () => void;
   endpoints(): readonly unknown[];
   close(): Promise<void>;

@@ -1,4 +1,4 @@
-# Use the owned application session from a terminal
+# Use the application session from a terminal
 
 `tendril` has one application path: the public Chronolog session opened by the
 application's own bootstrap module. Host lifecycle commands use the host's
@@ -38,53 +38,116 @@ transition request before sending it, then verify the selected authority before
 opening the session. `configureApplication` alone does not satisfy this step;
 the tutorial's initialization command performs both stages.
 
-## Supply the application composition
+## Choose attachment or ownership
 
-`--session /absolute/application.mjs` names a module exporting
-`openSession({ signal })`. It returns `{ session, control? }`. The optional
-control value is the result of `session.connectControlParticipant({ exchange })`.
-The tool closes the session after the action and when the invocation is
-interrupted. The session owns its signer store, transports, keyring and operation
-journal. A single invocation never silently creates a missing identity.
+`--session /absolute/application.mjs` names the application's public bootstrap.
+The supplied [Shared Notes bootstrap](https://tendriller.dev/docs/tutorial/session.mjs)
+exports both hooks. Start `npm run peer`, then use `--mode attach` from several
+terminals while that process keeps the same signer, journal and peer connections
+open. The CLI prefers attachment whenever the bootstrap exports `attachSession`.
+An unavailable owner never causes it to open a second signer.
 
-The following is a **composition outline**, not a runnable first-app starter.
-Its `deployment.mjs` import represents the setup outputs described in
-[Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md). Complete that setup
-before using the commands below. A deployment module provides verified cached authority, the domain
-definition, authorized keys, a host participant exchange and the configured peer
-connection composition:
+| Mode | Bootstrap hook | Lifetime |
+| --- | --- | --- |
+| `attach` | `attachSession({signal, profile, context})` | Uses an authenticated existing owner; exit or cancellation detaches only this client |
+| `own` | `openSession({signal, mode, profile})` | Acquires exclusive ownership of the retained profile and closes that ownership after the command |
+| `independent` | `openSession({signal, mode, profile})` | Requires an explicit `--profile` with a separately provisioned and enrolled device |
+
+`attachSession` returns `{session, detach?}`. Either that return object or the
+session must expose a local `detach()` method. `openSession` returns
+`{session, control?, close?}`; the optional `close()` also releases the owner's
+profile fence. The CLI calls the appropriate cleanup exactly once, including an
+interrupted invocation. A legacy bootstrap exporting only `openSession` retains
+its explicit owned behavior. `--run RUN_ID` supplies caller-asserted run context;
+it is not authorization to impersonate a participant.
+
+For the tutorial's default `main` profile:
+
+```sh
+# Persistent owner, in its own terminal:
+npm run peer
+
+# Independent attached invocations:
+npx tendril --session ./session.mjs --mode attach self
+npx tendril --session ./session.mjs --mode attach endpoints
+npx tendril --session ./session.mjs --mode attach doctor
+npx tendril --session ./session.mjs --mode attach --run review-1 query notes null
+```
+
+`self` exposes the actual application, signing device, attachment, owner
+incarnation and binding identity. `endpoints` lists authorized local endpoint
+metadata; `doctor` combines that provenance with definition, capabilities and
+session status. These observations do not turn presence into an authorization
+grant. A restricted binding may lack endpoint diagnostics.
+
+Initial publication before starting the peer uses `--mode own`. Administrative
+setup and enrollment still need exclusive ownership or a deliberately granted
+owner-administration attachment. Ordinary queries, commands, retries, events and
+signals work while the native peer runs. `--mode own` against a running supervisor
+returns `OWNER_BUSY` before opening its signing store.
+
+## Compose a native supervisor
+
+The maintained Node-only export is `@tendriller/core/collaboration/native`. It
+accepts the public Chronolog owner and facade factories without bundling another
+copy of Chronolog into the tools. The following outline composes already
+provisioned deployment values; the first-app bootstrap supplies a complete
+example:
 
 ```js
-import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { authority, definition, epochKeys, exchange, connectPeers } from './deployment.mjs';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+import { createNativeSessionSupervisor, attachNativeSession }
+  from '@tendriller/core/collaboration/native';
+import { directory, profileId, applicationId, definition, openRetainedSession,
+  readPrivateAttachmentKey } from './deployment.mjs';
 
-export async function openSession({ signal }) {
-  const device = await openNativeDevice({ path: './device.sqlite' });
-  const session = await openNativeApplication({ device, authority, definition, epochKeys });
-  try {
-    const control = session.connectControlParticipant({ exchange });
-    await connectPeers(session, { signal });
-    return { session, control };
-  } catch (error) {
-    await session.close();
-    throw error;
-  }
+// Run once in the long-lived native peer process. The callback executes only
+// after the exclusive profile fence has been acquired.
+const supervisor = await createNativeSessionSupervisor({
+  directory, profileId,
+  openOwner: async () => createApplicationOwner(await openRetainedSession()),
+});
+
+// Owner administration adds a distinct credential without replacing siblings.
+// Store the returned token in a private file and give it only to that client.
+const reviewer = await supervisor.createBinding({ id: 'reviewer', policy: {
+  capabilities: ['queries', 'events', 'operations', 'diagnostics'],
+  queries: ['notes'],
+}});
+
+// In the CLI's bootstrap module, running in a different process:
+export async function attachSession({ signal, context }) {
+  return attachNativeSession({ directory, token: await readPrivateAttachmentKey(),
+    applicationId, definitionId: definition.id, definitionVersion: definition.version,
+    connect: connectApplicationOwner, signal, context });
 }
 ```
 
-`deployment.mjs` is application setup, including enrollment and real routes; it
-is not supplied by these tools. Use the same definition and execution artifacts
-as the browser. Explicit device creation uses the native public API during
-provisioning, before normal command invocations. Reopen that same device during
-normal work; do not use `create: true` as a recovery strategy when a store or
-identity is missing. Browser execution belongs in its owned Worker.
+The directory is owned by the current OS user and mode `0700`; the Unix socket
+and retained metadata are mode `0600`. Only credential hashes are stored by the
+supervisor. `rotateBinding(id)` retains the stable binding identity and advances
+its credential revision. `revokeBinding(id)` disconnects only that binding's
+attachments; retained operations and sibling clients survive. Restart reads the
+same bindings and verifies the same application, definition and signing device.
+A lightweight SQLite lock is acquired before opening application data and is
+released by the kernel after a process crash. A successor removes a stale socket
+only while holding that lock. A delayed heartbeat never permits takeover.
 
-Before publishing, ensure that `openSession` returns its actual `control`
-participant and that the device has an explicit `publisher: true` grant.
-Page access, an agent bearer token and control administration do not by
-themselves confer publication or application data rights. See
-[troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md) for the next
-step when authority, device storage, participation or publication is blocked.
+Defaults are 32 clients overall, four per binding, 32 retained binding records,
+a three-second authentication deadline, 1.1 MB frames and 4.4 MB buffered bytes
+per socket. Owner request, stream and view quotas also apply independently to
+each attachment. Slow or malformed clients are disconnected locally. The module
+opens no TCP command port. A missing signer, incompatible definition, insecure
+path, unavailable owner or occupied profile produces an explicit error.
+
+`--profile NAME` selects a bootstrap-defined retained profile. In Shared Notes,
+a separately provisioned profile lives at
+`.tendriller/profiles/NAME/device.sqlite`; `npm run peer -- NAME` owns that profile.
+It needs its own enrolled key and grants. Copying a bearer token or inventing a
+profile name does not enroll an independent participant. Normal invocations never
+use `create: true`, replace a missing identity or merge two profiles' signing
+rights. Keep all credentials and native stores outside the publishable page.
 
 ## Inspect and submit domain work
 
@@ -97,7 +160,7 @@ tendril --session ./application.mjs operation claim-review-1
 tendril --session ./application.mjs retry claim-review-1
 ```
 
-Operation IDs are required and remain stable across exact retries. Commands wait
+Operation IDs are required and remain stable across exact retries. Native attachments namespace a short caller ID by the application and authenticated binding. Two distinct agents may safely use the same short ID; the result retains the actual signing device and full native operation ID. Rotating a credential preserves that namespace. Commands wait
 for applied execution by default. `--saved` returns after the exact attempt is
 saved; `--shared` additionally waits for retained coverage. A timeout leaves the
 original attempt available. Inspect it or retry that same identity. Applied and
@@ -143,7 +206,7 @@ and do not append application history.
 ```sh
 tendril --session ./application.mjs definition
 tendril --session ./application.mjs publication
-tendril --session ./application.mjs publish ./page --operation release-2026-11-17
+tendril --session ./application.mjs --mode own publish ./page --operation release-2026-11-17
 ```
 
 The complete authored graph is hashed and passed to the session's
@@ -162,6 +225,14 @@ supply `TENDRIL_API` and `TENDRIL_TOKEN`. `info`, `service`, `meta <json>`,
 `release`, `activity`, `link` and `token` operate on host metadata and access.
 `remove --yes` deletes hosted state. These routes do not carry domain commands.
 
+`token create reviewer --scopes '["host:read","participants:connect"]'` adds a
+separately scoped binding without invalidating existing agents. `token rotate
+reviewer` changes that credential while retaining its binding identity; `token
+remove reviewer` revokes it narrowly. Delegation cannot grant more authority than
+the caller holds. Named agents share their delegating account's discovery,
+invitation, relay and participant admission budgets; adding tokens does not
+multiply those quotas.
+
 Handles saved by older CLI builds may lack `application`. Retrieve the selected
 page's `application.id` with `info`; use that identity when composing the host
 client. Do not create a different application identity to fill the missing
@@ -169,3 +240,41 @@ local field.
 
 The default invocation timeout is 30 seconds. `watch` continues until interrupted
 unless `--timeout SECONDS` supplies a bound. `--pretty` formats the JSON result.
+
+## Retain irreversible provider effects separately
+
+`createEffectDispatcher` requires a durable journal outside the application's
+recoverable history. The native export supplies a concrete
+`createSqliteEffectJournal({path, applicationId, providerId})`. Its private SQLite
+file uses synchronous WAL commits, binds its scope permanently, and rejects use
+of an application database as its effect store. The dispatcher derives a stable
+provider idempotency key from application, provider and effect identity.
+
+```js
+import { createEffectDispatcher } from '@tendriller/core/collaboration';
+import { createSqliteEffectJournal } from '@tendriller/core/collaboration/native';
+
+const journal = await createSqliteEffectJournal({
+  path: '/private/my-agent/effects.sqlite',
+  applicationId, providerId: 'mail-provider',
+});
+const effects = createEffectDispatcher({ journal,
+  authorize: verifyCurrentClaimFence,
+  dispatch: ({ idempotencyKey, input }) => provider.send({ idempotencyKey, ...input }),
+  reconcile: (_effectId, record) => provider.findReceipt(record.idempotencyKey),
+});
+await effects.execute({ effectId, fence: reviewedClaimFence, input });
+```
+
+The journal commits `dispatching` before calling the provider. A timeout,
+process loss, missing receipt or failed post-journal authorization remains
+uncertain. Reopening or retrying the same effect first reconciles the original
+provider identity and never dispatches it again automatically. Completed receipts
+are terminal and cannot be silently replaced. Recovery of application history
+does not erase these records or prove an external action did not happen.
+
+`inspect(effectId)` and bounded `list({after, limit, status})` expose the retained
+state. The default capacity is 10,000 effect identities with 128 KiB records;
+a full journal refuses new effects instead of evicting duplicate protection.
+`close()` releases the SQLite connection. Network work belongs outside
+`transact()`; an asynchronous transaction callback is rejected.

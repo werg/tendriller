@@ -1,22 +1,37 @@
-// Operational commands use the application's public owned session. This module
+// Operational commands use the application's public session composition. This module
 // has no transport, signer, delivery queue, event checkpoint or data store.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
 
-export async function withSession(modulePath, run, { signal } = {}) {
-  if (!modulePath) throw Error('Supply --session with a module exporting openSession({ signal }). A page handle does not open a Chronolog session. Run tendril guide --server YOUR_SERVICE_ORIGIN and follow /docs/BUILD_AN_APP.md to configure authority, enroll the device and compose the session.');
+export async function withSession(modulePath, run, { signal, mode, profile, runId } = {}) {
+  if (!modulePath) throw Error('Supply --session with a module exporting attachSession({ signal }) or openSession({ signal }). A page handle does not open a Chronolog session. Run tendril guide --server YOUR_SERVICE_ORIGIN and follow /docs/BUILD_AN_APP.md to configure authority, enroll the device and compose the session.');
+  if (mode !== undefined && !['attach', 'own', 'independent'].includes(mode)) throw Error('Use --mode attach, own, or independent');
+  if (profile !== undefined && (typeof profile !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(profile))) throw Error('Use --profile with a retained profile name');
+  if (mode === 'independent' && !profile) throw Error('--mode independent requires --profile naming a separately provisioned device');
+  if (runId !== undefined && (typeof runId !== 'string' || !runId.length || runId.length > 128 || /[\u0000-\u001f]/u.test(runId))) throw Error('Use --run with a bounded run identity');
   signal?.throwIfAborted();
   const bootstrap = await import(pathToFileURL(resolve(modulePath)).href);
-  if (typeof bootstrap.openSession !== 'function') throw Error('The session module must export openSession({ signal })');
-  const owned = await bootstrap.openSession({ signal });
-  if (!owned?.session || typeof owned.session.close !== 'function') throw Error('openSession must return { session, control? }');
-  const abort = () => { void Promise.resolve(owned.session.close()).catch(() => {}); };
+  const selected = mode ?? (typeof bootstrap.attachSession === 'function' ? 'attach' : 'own');
+  const hook = selected === 'attach' ? bootstrap.attachSession : bootstrap.openSession;
+  if (typeof hook !== 'function') throw Error(selected === 'attach'
+    ? 'The session module must export attachSession({ signal, profile, context }). Attachment never falls back to opening a signer.'
+    : 'The session module must export openSession({ signal, mode, profile }) and acquire exclusive ownership of the selected retained profile.');
+  const owned = await hook({ signal, mode: selected, profile, ...(runId === undefined ? {} : { context: { runId } }) });
+  const dispose = selected === 'attach'
+    ? typeof owned?.detach === 'function' ? () => owned.detach() : typeof owned?.session?.detach === 'function' ? () => owned.session.detach() : undefined
+    : typeof owned?.close === 'function' ? () => owned.close() : typeof owned?.session?.close === 'function' ? () => owned.session.close() : undefined;
+  if (!owned?.session || !dispose) throw Error(selected === 'attach'
+    ? 'attachSession must return { session, detach? } with a local detach method; detaching must not stop the owner.'
+    : 'openSession must return { session, control?, close? }; close releases its exclusive profile ownership.');
+  let closing;
+  const close = () => closing ??= Promise.resolve().then(dispose);
+  const abort = () => { void close().catch(() => {}); };
   signal?.addEventListener('abort', abort, { once: true });
   try {
     signal?.throwIfAborted();
-    return await run(owned);
-  } finally { signal?.removeEventListener('abort', abort); await owned.session.close(); }
+    return await run({ ...owned, mode: selected });
+  } finally { signal?.removeEventListener('abort', abort); await close(); }
 }
 
 const required = (value, description) => {
@@ -40,6 +55,16 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   signal?.throwIfAborted();
   if (command === 'describe') return session.describe();
   if (command === 'status') return session.status;
+  if (command === 'self') return { mode: owned.mode ?? 'own', applicationId: session.applicationId,
+    historyId: session.historyId ?? null, deviceId: session.deviceId, endpoint: session.endpoint ?? null };
+  if (command === 'endpoints') {
+    if (typeof session.endpoints !== 'function') throw Error('Endpoint diagnostics require an attached application owner.');
+    return session.endpoints();
+  }
+  if (command === 'doctor') return { identity: await runSessionCommand(owned, 'self', []),
+    definition: session.describe(), status: session.status,
+    capabilities: session.endpoint?.capabilities ?? null,
+    ...(typeof session.endpoints === 'function' ? { endpoints: await session.endpoints() } : {}) };
   if (command === 'query') return session.query(required(args[0], 'a query name'), jsonInput(args[1] ?? '{}'));
   if (command === 'operation') return session.operations.inspect(required(args[0], 'an operation identity'));
   if (command === 'command' || command === 'reapply') {
@@ -71,7 +96,13 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   }
   if (command === 'recovery') {
     if (args[0] === 'inspect') return session.recovery.inspect();
-    const control = controlOf(owned), transitionId = required(options.transition, '--transition with a stable transition identity');
+    const transitionId = required(options.transition, '--transition with a stable transition identity');
+    if (owned.mode === 'attach') {
+      if (args[0] === 'takeover') return session.recovery.takeover({ transitionId, signal });
+      if (args[0] === 'handover') return session.recovery.handover({ transitionId, coordinator: required(args[1], 'the successor device identity'), signal });
+      throw Error('Use recovery inspect, takeover, or handover <coordinator>');
+    }
+    const control = controlOf(owned);
     if (args[0] === 'takeover') return session.recovery.takeover(control, { transitionId });
     if (args[0] === 'handover') return session.recovery.handover(control, { transitionId, coordinator: required(args[1], 'the successor device identity') });
     throw Error('Use recovery inspect, takeover, or handover <coordinator>');

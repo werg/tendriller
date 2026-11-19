@@ -174,6 +174,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
   const terminateClient = client => { client.detach?.(); client.detach = undefined; client.port?.close(); client.socket.destroy(); };
   const close = () => closing ??= (async () => {
     stopped = true; signal?.removeEventListener('abort', abort);
+    owner?.session?.signal?.removeEventListener('abort', abort);
     for (const client of clients) terminateClient(client);
     await changes.catch(() => {});
     if (server) await new Promise(resolve => server.close(() => resolve()));
@@ -220,6 +221,8 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
     await persist(records);
     owner = await openOwner({ signal, profileId });
     if (!owner?.session || typeof owner.attach !== 'function' || typeof owner.close !== 'function') throw failure('SUPERVISOR_OWNER_INVALID');
+    owner.session.signal?.throwIfAborted();
+    owner.session.signal?.addEventListener('abort', abort, { once: true });
     const description = owner.session.describe();
     const profile = { version: 1, profileId, applicationId: owner.session.applicationId, deviceId: owner.session.deviceId,
       definitionId: description.id, definitionVersion: description.version };

@@ -1,48 +1,81 @@
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { createPeerIntroductions } from '@tendriller/core/peers';
+import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
 import { definition } from './domain.mjs';
-import { devicePath, project, readPrivate } from './local.mjs';
+import { devicePath, privateDirectory, project, readPrivate, savePrivate } from './local.mjs';
 
-// This is the complete bootstrap consumed by tendril --session ./session.mjs.
-export async function openSession({ signal } = {}) {
+function paths(profile = 'main') {
+  if (!/^[A-Za-z0-9_-]{1,48}$/u.test(profile)) throw Error('Choose a retained native profile name.');
+  return { profile, directory: fileURLToPath(new URL(`owner-${profile}`, privateDirectory)),
+    device: profile === 'main' ? devicePath : fileURLToPath(new URL(`profiles/${profile}/device.sqlite`, privateDirectory)),
+    credential: `native-attachment-${profile}.json` };
+}
+
+// Normal terminal calls attach and never open the signing store. An unavailable
+// owner is an actionable error; the CLI does not fall back to another signer.
+export async function attachSession({ signal, profile = 'main', context } = {}) {
+  const selected = paths(profile), handle = await readPrivate('handle.json');
+  const binding = await readPrivate(selected.credential, true);
+  const token = process.env.TENDRIL_NATIVE_ATTACHMENT_KEY ?? binding?.token;
+  if (!token) throw Error('Start npm run peer for this retained profile, then attach again.');
+  return attachNativeSession({ directory: selected.directory, token, connect: connectApplicationOwner,
+    applicationId: handle.application.id, definitionId: definition.id, definitionVersion: definition.version, context, signal });
+}
+
+// Explicit ownership is used by the long-running peer and --mode own. The
+// supervisor's exclusive fence is acquired before opening any native device.
+export async function openSession({ signal, mode = 'own', profile = 'main' } = {}) {
   signal?.throwIfAborted();
-  const { host } = await project({ signal });
-  const authority = await host.peers.application();
-  await verifyAuthorityBundle(authority, await readPrivate('descriptor.json'));
-  const device = await openNativeDevice({ path: devicePath });
-  let session;
+  if (mode === 'independent' && profile === 'main') throw Error('Independent mode requires a separately provisioned and enrolled profile.');
+  const selected = paths(profile);
+  let binding = await readPrivate(selected.credential, true);
+  if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
+  let session, control;
+  const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
+    bindings: [binding], openOwner: async () => {
+      const { host } = await project({ signal });
+      const authority = await host.peers.application();
+      await verifyAuthorityBundle(authority, await readPrivate('descriptor.json'));
+      const device = await openNativeDevice({ path: selected.device });
+      try {
+        session = await openNativeApplication({ device, definition, authority });
+        const controlHost = { exchange: (message, options) => host.peers.exchange(message, options) };
+        control = session.connectControlParticipant(controlHost);
+        await session.participate({ control, ...createPeerIntroductions({
+          peers: host.peers, identity: session.deviceId,
+          openDirectConnection: async () => { throw Error('TUTORIAL_NATIVE_RTC_NOT_CONFIGURED'); },
+          openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
+        }) });
+        signal?.throwIfAborted();
+        return createApplicationOwner(session, { host: controlHost });
+      } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
+    } });
+  return { session, control, supervisor, close: () => supervisor.close() };
+}
+
+export async function runPeer({ signal, profile = 'main' } = {}) {
+  const owned = await openSession({ signal, profile });
   try {
-    session = await openNativeApplication({ device, definition, authority });
-    const control = session.connectControlParticipant({ exchange: (message, options) => host.peers.exchange(message, options) });
-    await session.participate({ control, ...createPeerIntroductions({
-      peers: host.peers, identity: session.deviceId,
-      // The smallest default archive has no native RTC implementation. The
-      // maintained adapter falls back to its authenticated encrypted relay.
-      openDirectConnection: async () => { throw Error('TUTORIAL_NATIVE_RTC_NOT_CONFIGURED'); },
-      openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-    }) });
-    signal?.throwIfAborted();
-    return { session, control };
-  } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
+    console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,
+      ownerInstanceId: owned.supervisor.ownerInstanceId, terminal: 'tendril --session ./session.mjs --mode attach self' }));
+    owned.session.participation.onStatus(status => console.log(JSON.stringify({ connection: status.phase, error: status.error })));
+    for await (const change of owned.session.changes({ signal })) {
+      const snapshot = await owned.session.query('notes', null);
+      console.log(JSON.stringify({ notes: snapshot.value.length, revision: snapshot.revision, change: change.kind }));
+    }
+  } finally { await owned.close(); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const stopped = new AbortController();
   const stop = () => stopped.abort();
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
-  let session;
-  try {
-    ({ session } = await openSession({ signal: stopped.signal }));
-    console.log('Native application peer running. Keep it open while using the page; Ctrl-C closes it.');
-    session.participation.onStatus(status => console.log(JSON.stringify({ connection: status.phase, error: status.error })));
-    for await (const change of session.changes({ signal: stopped.signal })) {
-      const snapshot = await session.query('notes', null);
-      console.log(JSON.stringify({ notes: snapshot.value.length, revision: snapshot.revision, change: change.kind }));
-    }
-  } catch (error) {
-    if (!stopped.signal.aborted) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
-  } finally { await session?.close(); }
+  try { await runPeer({ signal: stopped.signal, profile: process.argv[2] ?? 'main' }); }
+  catch (error) { if (!stopped.signal.aborted) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; } }
+  finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
 }

@@ -74,6 +74,72 @@ export async function openSession() { return { session: { async close() { await 
   assert.equal(await readFile(closed, 'utf8'), 'closed');
 });
 
+test('attachment is preferred, passes retained profile and context, and only detaches once on cancellation', async t => {
+  const root = await directory(t), path = join(root, 'attached.mjs'), calls = join(root, 'calls');
+  await writeFile(path, `import { appendFile } from 'node:fs/promises';
+export async function openSession() { throw Error('must not open another signer'); }
+export async function attachSession({mode,profile,context}) {
+  await appendFile(${JSON.stringify(calls)}, JSON.stringify({mode,profile,context})+'\\n');
+  return {session:{close(){throw Error('must not close the shared owner');}},
+    async detach(){await appendFile(${JSON.stringify(calls)}, 'detach\\n');}};
+}`);
+  const controller = new AbortController();
+  await withSession(path, async owned => {
+    assert.equal(owned.mode, 'attach'); controller.abort();
+    await Promise.resolve();
+  }, { signal: controller.signal, profile: 'retained-main', runId: 'review-run' });
+  assert.deepEqual((await readFile(calls, 'utf8')).trim().split('\n'), [
+    JSON.stringify({ mode: 'attach', profile: 'retained-main', context: { runId: 'review-run' } }), 'detach',
+  ]);
+});
+
+test('unreachable owner never causes a fallback signer; explicit ownership and independent profiles are deliberate', async t => {
+  const root = await directory(t), path = join(root, 'modes.mjs'), calls = join(root, 'calls');
+  await writeFile(path, `import { appendFile } from 'node:fs/promises';
+export async function attachSession(){throw Object.assign(Error('owner offline'),{code:'OWNER_UNREACHABLE'});}
+export async function openSession({mode,profile}) {
+  await appendFile(${JSON.stringify(calls)}, JSON.stringify({mode,profile})+'\\n');
+  return {session:{close(){throw Error('close must also release the profile fence');}},
+    async close(){await appendFile(${JSON.stringify(calls)}, 'release\\n');}};
+}`);
+  await assert.rejects(withSession(path, () => {}), error => error.code === 'OWNER_UNREACHABLE');
+  await assert.rejects(readFile(calls), { code: 'ENOENT' });
+  await assert.rejects(withSession(path, () => {}, { mode: 'independent' }), /requires --profile/);
+  await withSession(path, () => {}, { mode: 'own', profile: 'retained-main' });
+  await withSession(path, () => {}, { mode: 'independent', profile: 'enrolled-reviewer' });
+  assert.deepEqual((await readFile(calls, 'utf8')).trim().split('\n'), [
+    JSON.stringify({ mode: 'own', profile: 'retained-main' }), 'release',
+    JSON.stringify({ mode: 'independent', profile: 'enrolled-reviewer' }), 'release',
+  ]);
+  const legacy = join(root, 'legacy.mjs');
+  await writeFile(legacy, 'export function openSession(){throw Error("must not open");}');
+  await assert.rejects(withSession(legacy, () => {}, { mode: 'attach' }), /Attachment never falls back/);
+});
+
+test('self and endpoint diagnostics expose the actual attachment provenance', async () => {
+  const endpoint = { ownerInstanceId: 'owner', endpointId: 'endpoint', capabilities: ['queries'],
+    identity: { agentBindingId: 'agent' }, context: { runId: 'review' } };
+  const owned = { mode: 'attach', session: { applicationId: 'application', deviceId: 'signer', endpoint,
+    describe: () => ({ id: 'definition' }), status: { phase: 'ready' }, endpoints: async () => [endpoint] } };
+  assert.deepEqual(await runSessionCommand(owned, 'self', []), { mode: 'attach', applicationId: 'application',
+    historyId: null, deviceId: 'signer', endpoint });
+  const diagnostic = await runSessionCommand(owned, 'doctor', []);
+  assert.equal(diagnostic.identity.endpoint, endpoint); assert.deepEqual(diagnostic.capabilities, ['queries']);
+  assert.deepEqual(await runSessionCommand(owned, 'endpoints', []), [endpoint]);
+});
+
+test('attached recovery uses the owner administration facade without opening a control signer', async () => {
+  const calls = [], signal = new AbortController().signal;
+  const owned = { mode: 'attach', session: { recovery: {
+    takeover: async options => { calls.push(['takeover', options]); return null; },
+    handover: async options => { calls.push(['handover', options]); return null; },
+  } } };
+  await runSessionCommand(owned, 'recovery', ['takeover'], { transition: 'reviewed-1' }, { signal });
+  await runSessionCommand(owned, 'recovery', ['handover', 'successor'], { transition: 'reviewed-2' }, { signal });
+  assert.deepEqual(calls, [['takeover', { transitionId: 'reviewed-1', signal }],
+    ['handover', { transitionId: 'reviewed-2', coordinator: 'successor', signal }]]);
+});
+
 test('publication sends a complete signed graph through the owned control participant', async t => {
   const root = await directory(t);
   await writeFile(join(root, 'index.html'), '<main>authored</main>');
