@@ -6,7 +6,7 @@ import { createConsentService } from '../consent.mjs';
 
 const APP = 'a'.repeat(64), ISSUER = 'https://issuer.example';
 const ALL_SCOPES = ['tendrils:list', 'applications:read', 'applications:write', 'events:subscribe'];
-async function fixture({ scopes = ALL_SCOPES, readEvents = true, queryImpl } = {}) {
+async function fixture({ scopes = ALL_SCOPES, readEvents = true, queryImpl, commandImpl, inspectImpl } = {}) {
   const store = createMemoryStore(); let accountAllowed = true, queryCalls = 0, detailsCalls = 0, commands = 0;
   const consent = createConsentService({ store, authorizeOwner: async () => true });
   for (const id of ['alice', 'bob']) await consent.grant({ id, issuer: ISSUER }, { applicationId: APP,
@@ -24,8 +24,10 @@ async function fixture({ scopes = ALL_SCOPES, readEvents = true, queryImpl } = {
     getStatus: async () => ({ applicationId: APP, status: { phase: 'ready', generation: 'g1' } }),
     describeApplication: async () => ({ commands: [{ name: 'replyToAssistance' }, { name: 'dangerous' }], queries: [{ name: 'assistanceStatus' }, { name: 'private' }] }),
     query: async (...args) => { queryCalls++; return queryImpl ? queryImpl(...args) : { revision: { generation: 'g1' }, value: { requestId: 'r1', question: 'What next?', status: 'requested' } }; },
-    command: async () => { commands++; return { status: 'saved', operationId: 'op-1' }; },
+    command: async (...args) => { commands++; if (commandImpl) return commandImpl(...args);
+      await args[3].beforeSubmit?.(); await args[3].onSaved?.(); return { status: 'saved', operationId: args[3].operationId }; },
     operation: async () => ({ status: 'applied', shared: false }),
+    ...(inspectImpl ? { inspectOperation: inspectImpl } : {}),
     getEvent: async () => { detailsCalls++; return { revision: { generation: 'g1' }, event: { payload: { question: 'Private question' } }, projection: { name: 'assistant.help_requested' } }; },
   };
   const outbox = { status: async () => ({ subscriptions: [], jobs: [] }), noteReply: async () => {}, resume: async (_p, args) => ({ ...args, resumed: true }) };
@@ -92,6 +94,40 @@ test('command operation identities bind exact input and caller, and status canno
   assert.equal(f.counters().commands, 2);
   assert.equal((await f.call('get_operation_status', { applicationId: APP, operationId: 'op-1' }, { token: 'bob' })).structuredContent.code, 'OPERATION_NOT_FOUND');
   assert.equal((await f.call('get_operation_status', { applicationId: APP, operationId: 'op-1' })).structuredContent.operation.status, 'applied');
+});
+
+test('consent is rechecked after the native authority wait and before a command can submit', async () => {
+  let release, entered, submitted = false;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = await fixture({ commandImpl: async (_app, _name, _input, options) => {
+    entered(); await new Promise(resolve => { release = resolve; });
+    await options.beforeSubmit(); submitted = true; await options.onSaved(); return { status: 'saved' };
+  } });
+  const args = { applicationId: APP, operationId: 'blocked-command', command: 'replyToAssistance', input: { requestId: 'r1' } };
+  const pending = f.call('call_application_command', args); await ready;
+  const connection = (await f.consent.list({ id: 'alice', issuer: ISSUER }))[0];
+  await f.consent.revoke({ id: 'alice', issuer: ISSUER }, { id: connection.id });
+  release(); assert.equal((await pending).isError, true); assert.equal(submitted, false);
+});
+
+test('a rejected native collision cannot make an unrelated native operation visible through status', async () => {
+  const f = await fixture({ commandImpl: async () => { throw Object.assign(Error('Native input conflict'), { code: 'OPERATION_ID_CONFLICT' }); } });
+  const args = { applicationId: APP, operationId: 'existing-native-id', command: 'replyToAssistance', input: { requestId: 'r1' } };
+  assert.equal((await f.call('call_application_command', args)).isError, true);
+  assert.equal((await f.call('get_operation_status', { applicationId: APP, operationId: args.operationId })).structuredContent.code, 'OPERATION_IDENTITY_UNCONFIRMED');
+});
+
+test('a durably saved command remains inspectable after its response is lost, with signed header identity checked', async () => {
+  let matching = true;
+  const f = await fixture({ commandImpl: async (_app, _name, _input, options) => {
+    await options.beforeSubmit(); await options.onSaved(); throw Error('Lost operation response');
+  }, inspectImpl: async (_app, operationId) => ({ state: { status: 'applied' }, deviceId: 'bridge-device',
+    identity: { applicationId: APP, operationId, command: matching ? 'replyToAssistance' : 'privateCommand', author: 'bridge-device' } }) });
+  const args = { applicationId: APP, operationId: 'saved-command', command: 'replyToAssistance', input: { requestId: 'r1' } };
+  assert.equal((await f.call('call_application_command', args)).isError, true);
+  assert.equal((await f.call('get_operation_status', { applicationId: APP, operationId: args.operationId })).structuredContent.operation.status, 'applied');
+  matching = false;
+  assert.equal((await f.call('get_operation_status', { applicationId: APP, operationId: args.operationId })).structuredContent.code, 'OPERATION_IDENTITY_MISMATCH');
 });
 
 test('tools and widget work without events; correlation metadata never changes account identity', async () => {

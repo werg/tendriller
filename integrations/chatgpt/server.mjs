@@ -73,9 +73,17 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
         fail('OPERATION_ID_CONFLICT', 'This operation ID already identifies a different command or caller', { status: 409 });
       if (!prior && Object.keys(state.commandOperations).length >= maxOperations)
         fail('OPERATION_JOURNAL_FULL', 'Operation metadata is at capacity; archive reviewed records before submitting new identities', { status: 503 });
-      state.commandOperations[key] ??= { owner, applicationId, operationId: options.operationId, name, inputHash, recordedAt: clock() };
+      state.commandOperations[key] ??= { owner, applicationId, operationId: options.operationId, name, inputHash, confirmed: false, recordedAt: clock() };
     });
-    const result = await bridge.command(applicationId, name, input, options);
+    const onSaved = () => store.transaction(state => {
+      const record = state.commandOperations?.[key];
+      if (!record || record.inputHash !== inputHash || canonical(record.owner) !== canonical(owner))
+        fail('OPERATION_ID_CONFLICT', 'The retained command identity changed before confirmation', { status: 409 });
+      record.confirmed = true; record.savedAt ??= clock();
+    });
+    const result = await bridge.command(applicationId, name, input, { ...options,
+      beforeSubmit: () => access(principal, applicationId, 'command', name), onSaved });
+    await onSaved();
     if (name === 'replyToAssistance') await outbox.noteReply(principal, applicationId, input.requestId, options.operationId);
     await access(principal, applicationId, 'command', name);
     return { operationId: options.operationId, operation: result };
@@ -138,8 +146,16 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     tool('get_operation_status', 'Inspect an original command submitted by this account through this integration; never create a replacement attempt.', shape({ ...app, operationId: string(256) }), ['applications:read'], async (principal, args) => {
       const record = (await store.read()).commandOperations?.[digest([args.applicationId, args.operationId])];
       if (!record || canonical(record.owner) !== canonical({ id: principal.id, issuer: principal.issuer })) fail('OPERATION_NOT_FOUND', 'No integration command with this identity belongs to this account', { status: 404 });
+      if (!record.confirmed) fail('OPERATION_IDENTITY_UNCONFIRMED', 'Retry the original command with its exact retained inputs to confirm its native identity before inspecting status', { status: 409 });
       await access(principal, args.applicationId, 'command', record.name);
-      const result = await bridge.operation(args.applicationId, args.operationId);
+      let result;
+      if (typeof bridge.inspectOperation === 'function') {
+        const inspected = await bridge.inspectOperation(args.applicationId, args.operationId);
+        if (inspected.state !== null && (!inspected.identity || inspected.identity.applicationId !== args.applicationId ||
+            inspected.identity.operationId !== args.operationId || inspected.identity.command !== record.name || inspected.identity.author !== inspected.deviceId))
+          fail('OPERATION_IDENTITY_MISMATCH', 'The native operation does not match the confirmed integration command', { status: 409 });
+        result = inspected.state;
+      } else result = await bridge.operation(args.applicationId, args.operationId);
       await access(principal, args.applicationId, 'command', record.name); return { ...args, operation: result };
     }),
     tool('request_assistance', 'Submit the declared kitchen request command. Keep operationId and all request fields unchanged after an uncertain result.', shape({ ...op,
