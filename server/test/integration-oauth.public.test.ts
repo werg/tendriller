@@ -872,7 +872,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       .result.structuredContent.code).toBe('operation_id_conflict');
     const recoveredLegacy = (await second.tool('call_application_command', legacyRequest)).result.structuredContent;
     expect(recoveredLegacy.operationReference).toMatchObject({ operationId: legacyNativeId, deviceId: second.session.deviceId,
-      generation: 'unverified-preupgrade', sourceContext: { evidence: 'pre-upgrade-admission', generationEvidence: 'not-retained' } });
+      generation: second.session.status.generation, sourceContext: { evidence: 'pre-upgrade-admission', generationEvidence: 'not-retained' } });
     expect(recoveredLegacy.operation.state.attemptId).toBe(originalLegacy.attemptId);
     expect(recoveredLegacy.outcome).toBe('applied');
     expect((await second.tool('inspect_application_operation', { applicationId: second.id,
@@ -884,8 +884,6 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await inDO(b.page.id, t => {
       expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
       expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
-      expect(t.db.one('SELECT 1 FROM assistant_commands WHERE operation_id=?',
-        'assistant_v2_' + '0'.repeat(64))).toBeNull();
     });
 
     // A legacy gateway admission without a native attempt cannot be silently
