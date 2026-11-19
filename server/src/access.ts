@@ -4,7 +4,10 @@ import type { Link, Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { safeEqual, sha256Hex } from "./ids";
 
-export interface AgentPrincipal { kind: "agent"; name: string; credentialHash: string }
+export const AGENT_SCOPES = ['host:read', 'host:manage', 'agents:delegate', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'] as const;
+export type AgentScope = typeof AGENT_SCOPES[number];
+export interface AgentBinding { id: string; scopes: AgentScope[]; revision: number }
+export interface AgentPrincipal { kind: "agent"; name: string; credentialHash: string; binding?: AgentBinding }
 export interface PagePrincipal {
   kind: "page"; name: string; role: Role; accountId: string | null; linkId: string;
   sessionHash: string | null;
@@ -14,10 +17,27 @@ export interface PageSession { account_id: string; role: Role; hash: string }
 export type AccessAction = 'agent.manage' | 'page.owner' | 'page.write';
 export function allows(principal: Principal, action: AccessAction): boolean {
   switch (action) {
-    case 'agent.manage': return principal.kind === 'agent';
+    case 'agent.manage': return principal.kind === 'agent' && hasAgentScope(principal, 'host:manage');
     case 'page.owner': return principal.kind === 'page' && principal.role === 'owner';
     case 'page.write': return principal.kind === 'page' && principal.role !== 'display';
   }
+}
+export function agentBinding(t: Tendril, name: string): AgentBinding | null {
+  return t.db.get<AgentBinding | null>('agent_binding:' + name, null);
+}
+export function hasAgentScope(principal: AgentPrincipal, scope: AgentScope): boolean {
+  // Principals without a binding are historical bootstrap credentials. New
+  // credentials always carry explicit scopes, including the initial owner key.
+  return !principal.binding || principal.binding.scopes.includes(scope);
+}
+export function requireAgentScope(principal: AgentPrincipal, scope: AgentScope): void {
+  if (!hasAgentScope(principal, scope)) throw new HttpError(403, 'agent_scope_required', `This agent binding requires ${scope}.`);
+}
+export function agentScopes(value: unknown, fallback: readonly AgentScope[] = AGENT_SCOPES): AgentScope[] {
+  if (value === undefined) return [...fallback];
+  if (!Array.isArray(value) || value.length > AGENT_SCOPES.length || !value.length || new Set(value).size !== value.length ||
+      value.some(scope => !AGENT_SCOPES.includes(scope))) throw new HttpError(400, 'invalid_agent_scopes');
+  return value as AgentScope[];
 }
 export function requireAccess(principal: Principal, action: AccessAction): void {
   if (!allows(principal, action)) throw new HttpError(403, 'forbidden');
@@ -34,7 +54,8 @@ export async function authenticateAgentToken(t: Tendril, token: string): Promise
   const hash = await sha256Hex(token);
   const row = localToken(t, hash);
   if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
-  return { kind: "agent", name: row.name, credentialHash: hash };
+  const binding = agentBinding(t, row.name);
+  return { kind: "agent", name: row.name, credentialHash: hash, ...(binding ? { binding } : {}) };
 }
 
 export async function authenticateAgent(t: Tendril, req: Request): Promise<AgentPrincipal> {
@@ -104,7 +125,9 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
 export function currentPrincipal(t: Tendril, principal: Principal, pageKey?: string): Principal | null {
   if (t.db.get("disabled", false)) return null;
   if (principal.kind === "page") return localPagePrincipal(t, principal, pageKey);
-  return localToken(t, principal.credentialHash)?.name === principal.name ? principal : null;
+  if (localToken(t, principal.credentialHash)?.name !== principal.name) return null;
+  const binding = agentBinding(t, principal.name);
+  return JSON.stringify(binding) === JSON.stringify(principal.binding ?? null) ? principal : null;
 }
 
 export async function authenticateLocalPage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {

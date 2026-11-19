@@ -2,6 +2,7 @@ import {
   validateParticipantRequest, createParticipantResponse, PARTICIPANT_LIMITS,
 } from '@chronolog/peer-generation/participant';
 import type { Principal } from './access';
+import { requireAgentScope } from './access';
 import type { Tendril } from './tendril';
 import { selectedApplication } from './application';
 import { HttpError, json, readJson } from './http';
@@ -21,6 +22,11 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
   try {
     const message = validateParticipantRequest(await readJson(req, Math.max(PARTICIPANT_LIMITS.bytes.control, PARTICIPANT_LIMITS.bytes.publication)));
     if (message.applicationId !== selection.id) throw new HttpError(409, 'peer_participant_scope_mismatch');
+    if (principal.kind === 'agent') {
+      requireAgentScope(principal, 'participants:connect');
+      if (message.facet === 'control' && message.action !== 'read') requireAgentScope(principal, 'control:write');
+      if (message.facet === 'publication' && message.action === 'publish') requireAgentScope(principal, 'publication:write');
+    }
     if ((message.action === 'definition' || message.action === 'read' && message.facet !== 'publication') &&
         (!message.payload || typeof message.payload !== 'object' || Array.isArray(message.payload) || Object.keys(message.payload).length))
       throw new HttpError(400, 'peer_participant_payload_invalid', 'Read requests carry no application data');
