@@ -504,7 +504,7 @@ it('uses the page Worker for MCP, selected-event delivery and retry after evicti
     const csrf = /name="csrf" value="([^"]+)"/.exec(await consent.text())?.[1];
     expect(csrf).toBeTruthy();
     const management = await formPost('/connections', { csrf: csrf!, action: 'grant',
-      applicationId: f.page.application.id, queries: 'kitchenContext', commands: 'requestAssistance', events: 'assistant.help_requested', days: '1' }, bind, f.cookie);
+      applicationId: f.page.application.id, queries: 'kitchenContext', commands: 'replyToAssistance', events: 'assistant.help_requested', days: '1' }, bind, f.cookie);
     expect(management.status, await management.clone().text()).toBe(303);
     const gid = 'assistant-' + crypto.randomUUID(), jti = 'jti-' + crypto.randomUUID();
     const token = await signAccessToken(oauth, { iss: ISSUER, aud: resource, sub: f.subject, sid: gid, jti,
@@ -563,6 +563,18 @@ it('uses the page Worker for MCP, selected-event delivery and retry after evicti
     await runAlarm(f.page.id);
     await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 12_000 });
     expect(sent[1]).toEqual(sent[0]);
+    const requestEventId = JSON.parse(sent[1].body).data.source_event_id;
+    const reply = await mcp('tools/call', { name: 'reply_to_assistance', arguments: {
+      applicationId: f.page.application.id, operationId: 'reply-to-slicing', requestId: 'help-apples',
+      requestEventId, answer: 'Cut the apples into thin wedges.', suggestedSteps: [],
+      basedOnContextRevision: 'observed-first', cookingStepId: 'first',
+    } });
+    const replyResult = await reply.json() as { result?: { isError?: boolean; structuredContent?: unknown } };
+    expect(replyResult.result?.isError, JSON.stringify(replyResult)).toBe(false);
+    await vi.waitFor(async () => {
+      const status = await session.query('assistanceStatus', { requestId: 'help-apples' } as never);
+      expect(JSON.stringify(status.value)).toContain('Cut the apples into thin wedges.');
+    }, { timeout: 8_000 });
     await inDO(f.page.id, t => expect(t.db.get('assistant_work', null)).toBeNull());
     expect((await (await deviceRequest()).json() as { publicKey: string }).publicKey).toBe(publicKey);
     await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), gid).run();

@@ -29,7 +29,7 @@ function envelope(sub, event, now) {
 }
 
 export function createOutbox({ store, bridge, authorize, send,
-  clock = Date.now, maxAttempts = 8, maxJobs = 100000, leaseMs = 30000 } = {}) {
+  clock = Date.now, sourceCursorLookup = false, maxAttempts = 8, maxJobs = 100000, leaseMs = 30000 } = {}) {
   if (!store || !bridge || typeof bridge.readRevision !== 'function' || typeof bridge.assertSelection !== 'function' || typeof authorize !== 'function')
     fail('OUTBOX_CONFIGURATION_REQUIRED', 'Outbox requires a real bridge with selected-generation fences and current authorization');
   const sending = new Map();
@@ -40,14 +40,15 @@ export function createOutbox({ store, bridge, authorize, send,
       if (!job || job.state !== 'sending' || job.lease !== lease || !live(sub, clock()) || !sameActivation(job, sub) || sub.pausedReason && job.sourceKind !== 'recovery') controller.abort();
     }
   };
-  function insert(state, sub, event, sourceKind = 'domain') {
+  function insert(state, sub, event, sourceKind = 'domain', sourceCursor) {
     const value = envelope(sub, event, clock());
     state.jobs ??= {};
     if (state.jobs[value.eventId]) return;
     if (Object.keys(state.jobs).length >= maxJobs) fail('OUTBOX_CAPACITY', 'Delivery journal is full; archive reviewed receipts before resuming observation');
     state.jobs[value.eventId] = { eventId: value.eventId, subscriptionId: sub.id, applicationId: sub.applicationId,
       activationId: sub.activationId ?? null,
-      owner: sub.owner, sourceEventId: event.sourceEventId, sourceRevision: event.revision, sourceKind,
+      owner: sub.owner, sourceEventId: event.sourceEventId,
+      ...(sourceCursor !== undefined ? { sourceCursor } : {}), sourceRevision: event.revision, sourceKind,
       envelope: value, state: 'queued', attempts: 0, createdAt: clock(), nextAttemptAt: clock() };
   }
   async function finish(eventId, lease, update, { stopSubscription, authorizedSubscription } = {}) {
@@ -103,7 +104,7 @@ export function createOutbox({ store, bridge, authorize, send,
       authorized = sub;
       let selectedRevision;
       if (job.sourceKind === 'domain') {
-        const source = await bridge.verifySource(job.applicationId, job.sourceEventId, job.sourceRevision);
+        const source = await bridge.verifySource(job.applicationId, job.sourceEventId, job.sourceRevision, sourceCursorLookup ? job.sourceCursor : undefined);
         if (!source.selected) { await finish(job.eventId, job.lease, { state: 'abandoned', reason: 'source_not_selected' }); return true; }
         selectedRevision = source.currentRevision;
       } else selectedRevision = await bridge.readRevision(job.applicationId);
@@ -144,7 +145,7 @@ export function createOutbox({ store, bridge, authorize, send,
             (subscription.pausedReason && job.sourceKind !== 'recovery'))
           fail('DELIVERY_LEASE_CHANGED', 'Delivery changed while connecting');
       };
-      const request = { body, prepareWrite, beforeWrite, headers: signedHeaders({ id: job.eventId, subscriptionId: sub.id, body, secrets, now: clock() }), signal: combined };
+      const request = { body, prepareWrite, beforeWrite, sourceGeneration: selectedRevision.generation, headers: signedHeaders({ id: job.eventId, subscriptionId: sub.id, body, secrets, now: clock() }), signal: combined };
       beforeWrite();
       const response = await send(sub.url, request);
       const disposition = deliveryDisposition(response.status);
@@ -185,7 +186,7 @@ export function createOutbox({ store, bridge, authorize, send,
         const current = state.subscriptions?.[subscriptionId];
         if (!live(current, clock()) || current.pausedReason || current.version !== sub.version ||
             canonical(current.sourceCursor ?? null) !== canonical(expectedCursor ?? null)) return false;
-        for (const event of events) insert(state, current, event);
+        for (const event of events) insert(state, current, event, 'domain', expectedCursor ?? null);
         current.sourceCursor = batch.cursor ?? null; current.sourceRevision = batch.revision;
         current.observedAt = clock(); return true;
       });

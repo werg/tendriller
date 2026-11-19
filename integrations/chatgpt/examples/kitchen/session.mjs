@@ -37,7 +37,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let session;
   try {
     const notify = process.env.TENDRILLER_WORKER_ASSISTANT === '1';
-    const host = notify ? (await project({ signal: stopped.signal })).host : null;
+    let host = notify ? (await project({ signal: stopped.signal })).host : null;
     let wakeMarker;
     ({ session } = await openSession({ signal: stopped.signal }));
     console.log('Native application peer running. Keep it open while using the page; Ctrl-C closes it.');
@@ -57,8 +57,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
             break;
           } catch (error) {
             if ([401, 403, 404].includes(error.status)) {
-              console.error('Assistant notice was refused. Check the configured page and its retained host handle.');
-              throw error;
+              console.error('Assistant notices paused for this run. Check the configured page and its retained host handle, then restart the peer. The kitchen session is still running.');
+              host = null;
+              break;
             }
             await delay(Math.min(60_000, 1000 * 2 ** Math.min(attempt, 6)), undefined, { signal: stopped.signal });
           }

@@ -1,3 +1,5 @@
+import { scopedDeadline } from './common.mjs';
+
 /** An enrolled native peer, independent from Tendriller's filtered HTTP host. */
 const ID = /^[a-f0-9]{64}$/u;
 const NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u;
@@ -144,12 +146,13 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
         hasMore: batch.hasMore, events }, maxResultBytes);
     } finally { await view.release(); }
   }
-  async function findEvent(id, sourceEventId, { maxBatches } = {}) {
+  async function findEvent(id, sourceEventId, { maxBatches, initialCursor, sourceGeneration } = {}) {
     text(sourceEventId, 'source event ID', 512);
     if (maxBatches !== undefined && (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 128)) fail('BRIDGE_INPUT_INVALID');
     const entry = entryFor(id), { session } = await access(entry), view = await session.readView();
     try {
-      let cursor;
+      let cursor = initialCursor ?? undefined;
+      if (sourceGeneration && sourceGeneration !== view.revision.generation) selected(session, { generation: sourceGeneration });
       // The captured native view is finite. A fixed prefix budget would make
       // every delivery retry fail for a perfectly valid older source. Bound
       // each page, yield to native recovery/close, and finish this selected view.
@@ -160,7 +163,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
         selected(session, batch.revision);
         const event = batch.events.find(value => value.id === sourceEventId && entry.topics.has(value.topic));
         const projection = event === undefined ? null : await project(entry, event, batch.revision);
-        if (projection !== null || !batch.hasMore) {
+        if (projection !== null || !batch.hasMore || initialCursor !== undefined) {
           await access(entry); selected(session, batch.revision);
           return { revision: batch.revision, found: projection === null ? null
             : bounded({ applicationId: id, revision: batch.revision, event, projection }, maxResultBytes) };
@@ -228,9 +231,10 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       const operation = await session.command(name, value, metadata);
       await onSaved?.();
       if (applyBudgetMs) {
-        const deadline = AbortSignal.any([lifetime.signal, AbortSignal.timeout(applyBudgetMs)]);
-        try { await operation.applied({ signal: deadline }); }
-        catch (error) { if (!deadline.aborted) throw error; }
+        const expiry = scopedDeadline(applyBudgetMs, lifetime.signal);
+        try { await operation.applied({ signal: expiry.signal }); }
+        catch (error) { if (!expiry.signal.aborted) throw error; }
+        finally { expiry.close(); }
       }
       return bounded(await operation.get(), maxResultBytes);
     },
@@ -255,11 +259,12 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
     },
     readEvents: read,
     async getEvent(id, sourceEventId, options) { return (await findEvent(id, sourceEventId, options)).found; },
-    async verifySource(id, sourceEventId, sourceRevision) {
+    async verifySource(id, sourceEventId, sourceRevision, sourceCursor) {
       if (!sourceRevision || sourceRevision.applicationId !== id || typeof sourceRevision.historyId !== 'string') {
         fail('BRIDGE_REVISION_SCOPE_MISMATCH');
       }
-      const result = await findEvent(id, sourceEventId);
+      const result = await findEvent(id, sourceEventId, sourceCursor === undefined ? {} :
+        { initialCursor: sourceCursor, sourceGeneration: sourceRevision.generation });
       if (result.revision.historyId !== sourceRevision.historyId) fail('BRIDGE_REVISION_SCOPE_MISMATCH');
       return { selected: result.found !== null, currentRevision: result.revision, sourceRevision };
     },

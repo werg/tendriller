@@ -68,9 +68,9 @@ and recovery choices, not a silent identity reset.
 A user saying “connect this app to this conversation” has asked for an additional
 host integration. The ordinary Tendriller MCP endpoint administers host/control
 operations; application tools execute in the owned Chronolog session. The
-optional [ChatGPT integration](CHATGPT_INTEGRATION.md) adds OAuth-protected native
-application tools, explicit MCP Events subscriptions, a mounted assistance card
-and a configured Workspace Agent route. Use its route table and
+optional [Cloudflare assistant](CLOUDFLARE_ASSISTANT.md) adds same-origin
+OAuth-protected application tools, explicit MCP Events subscriptions and a
+mounted assistance card. Use its route table and
 `get_integration_options` to establish the actual available capabilities.
 
 These routes do not provide or qualify a universal ChatGPT conversation wake

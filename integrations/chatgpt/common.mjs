@@ -16,6 +16,12 @@ export function abortable(promise, signal) {
     if (signal.aborted) aborted();
   });
 }
+export function scopedDeadline(ms, signal) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException('Operation timed out', 'TimeoutError')), ms);
+  return { signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+    close() { clearTimeout(timer); } };
+}
 export function object(value, label = 'value') {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(value)))

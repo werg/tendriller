@@ -9,12 +9,12 @@ import { callbackUrl } from './webhook-data.mjs';
 import { definition } from './examples/kitchen/domain.mjs';
 import { kitchenEventProjection } from './examples/kitchen/projection.mjs';
 import { widgetResource } from './widget/metadata.mjs';
-import { fail } from './common.mjs';
+import { fail, scopedDeadline } from './common.mjs';
 
 /** Deployment-trusted code supplies the executable definition. Verify its immutable
  * commitments when opening the enrolled session before reading or writing history. */
 export async function withWorkerAssistant(t, deps, work) {
-  const { applicationId, oauth, auth, authorizeAccountAccess, authorizeOwner, authenticateOwner, openSession } = deps;
+  const { applicationId, oauth, auth, authorizeAccountAccess, authorizeOwner, authenticateOwner, openSession, startCallback } = deps;
   const queries = ['kitchenContext', 'assistanceStatus'];
   const commands = ['requestAssistance', 'replyToAssistance'];
   const events = ['assistant.help_requested', 'application.recovery_notice'];
@@ -28,35 +28,40 @@ export async function withWorkerAssistant(t, deps, work) {
     if (url.origin !== value || url.protocol !== 'https:') throw Error('ASSISTANT_CALLBACK_ORIGIN_INVALID');
     return url.origin;
   }));
-  async function send(target, { body, headers, signal, prepareWrite, beforeWrite }) {
+  async function send(target, { body, headers, signal, prepareWrite, beforeWrite, sourceGeneration }) {
     const url = new URL(callbackUrl(target));
     if (!origins.has(url.origin)) fail('CALLBACK_ADDRESS_BLOCKED', 'Callback must use a configured provider origin', { status: 403 });
-    const deadline = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
-    if (prepareWrite) await prepareWrite();
-    deadline.throwIfAborted();
-    beforeWrite?.();
-    const response = await fetch(url.href, { method: 'POST', redirect: 'manual', body, headers, signal: deadline });
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      fail('CALLBACK_REDIRECT', 'Webhook redirects are unavailable', { status: 403 });
-    }
-    if (beforeWrite) {
-      await response.body?.cancel();
-      return { status: response.status, body: '' };
-    }
-    const reader = response.body?.getReader(), decoder = new TextDecoder();
-    let value = '', bytes = 0;
-    if (reader) try {
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
-        if (bytes > 8192) fail('CALLBACK_RESPONSE_TOO_LARGE', 'Callback response exceeds 8 KiB');
-        value += decoder.decode(chunk.value, { stream: true });
+    const expiry = scopedDeadline(5000, signal), deadline = expiry.signal;
+    try {
+      if (prepareWrite) await prepareWrite();
+      const start = () => {
+        deadline.throwIfAborted();
+        beforeWrite?.();
+        return fetch(url.href, { method: 'POST', redirect: 'manual', body, headers, signal: deadline });
+      };
+      const response = await (sourceGeneration ? startCallback(sourceGeneration, start) : start());
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel();
+        fail('CALLBACK_REDIRECT', 'Webhook redirects are unavailable', { status: 403 });
       }
-      value += decoder.decode();
-    } finally { await reader.cancel(); }
-    return { status: response.status, body: value };
+      if (beforeWrite) {
+        await response.body?.cancel();
+        return { status: response.status, body: '' };
+      }
+      const reader = response.body?.getReader(), decoder = new TextDecoder();
+      let value = '', bytes = 0;
+      if (reader) try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 8192) fail('CALLBACK_RESPONSE_TOO_LARGE', 'Callback response exceeds 8 KiB');
+          value += decoder.decode(chunk.value, { stream: true });
+        }
+        value += decoder.decode();
+      } finally { await reader.cancel(); }
+      return { status: response.status, body: value };
+    } finally { expiry.close(); }
   }
   const consent = createConsentService({ store, authorizeOwner, clock });
   const authorize = async (principal, id, event) => {
@@ -67,7 +72,7 @@ export async function withWorkerAssistant(t, deps, work) {
   const subscriptions = createSubscriptions({ store, authorize, send, clock, maxPerOwner: 8,
     captureCursor: id => selectedTail(bridge, id), applicationIds: async principal =>
       await authorizeAccountAccess(principal, applicationId) ? [applicationId] : [] });
-  const outbox = createOutbox({ store, bridge, authorize, send, clock, maxJobs: 128 });
+  const outbox = createOutbox({ store, bridge, authorize, send, clock, sourceCursorLookup: true, maxJobs: 128 });
   const management = createConsentManagementHandler({ service: consent, authenticate: authenticateOwner,
     applicationsForPrincipal: async principal => await authorizeOwner(principal, applicationId)
       ? [{ applicationId, label, queries, commands, events, allowEventDetails: true }] : [],
@@ -80,7 +85,12 @@ export async function withWorkerAssistant(t, deps, work) {
       return widgetResource(await response.text());
     } });
   try {
-    return await work({ handler, drain: createDeliveryDrain({ subscriptions, bridge, outbox, store, authorize, clock }),
+    return await work({ handler, async drain({ observe }) {
+      const expiry = scopedDeadline(20_000);
+      try {
+        return await createDeliveryDrain({ subscriptions, bridge, outbox, store, authorize, clock })({ observe, signal: expiry.signal });
+      } finally { expiry.close(); }
+    },
       active: async () => (await subscriptions.active()).some(sub => !sub.pausedReason) });
   } finally {
     await bridge.close();

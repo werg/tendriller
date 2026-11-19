@@ -306,4 +306,4 @@ window.addEventListener('pagehide', () => { void close().catch(() => {}); }, { o
 if (location.origin !== new URL(configuration.page_url).origin) {
   busy(true);
   $('#connection').textContent = 'Layout preview. Open the published page to enroll and connect its real application session.';
-}
+} else busy(false);

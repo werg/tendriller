@@ -7,7 +7,15 @@ import { INFERENCE_TOPICS as topics, sha256 } from '../../docs/tutorial/media/in
 
 const applicationId = 'a'.repeat(64), browser = 'b'.repeat(64), native = 'c'.repeat(64), stranger = 'd'.repeat(64);
 const flush = () => new Promise(resolve => setImmediate(resolve));
-async function until(predicate) { for (let i = 0; i < 300; i++) { if (predicate()) return; await flush(); } assert.fail('Expected observable result did not arrive.'); }
+async function until(predicate) {
+  const deadline = performance.now() + 1_000;
+  while (!predicate()) {
+    assert.ok(performance.now() < deadline, 'Expected observable result did not arrive.');
+    // Web Crypto runs off-thread. Yield by elapsed time rather than counting
+    // immediate callbacks, which can all finish before a digest is scheduled.
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
 // Transport/content fixtures preserve public API shapes. Cryptographic peer

@@ -5,6 +5,7 @@ import { inspectAccessToken } from './accounts/oauth-tokens';
 import { serviceSession } from './accounts/auth';
 import { selectedApplication } from './application';
 import { authenticateAgentToken, pagePolicy } from './access';
+import { withPeerControlAuthority } from './peer-generations';
 import { closePeerRelayRoutes } from './peer-relay';
 import { handlePeers } from './peers';
 import { HttpError, json } from './http';
@@ -28,7 +29,8 @@ export async function withPageAssistant<T>(t: Tendril, work: Parameters<typeof w
     `Bearer resource_metadata="${metadataUrl}"${scopes.length ? `, scope="${scopes.join(' ')}"` : ''}${error ? `, error="${error}"` : ''}`;
 
   let deviceId: string | undefined;
-  try { return await withWorkerAssistant(t, {
+  const bridgePrincipal = () => authenticateAgentToken(t, t.env.ASSISTANT_PAGE_TOKEN!);
+  const dependencies: Parameters<typeof withWorkerAssistant<T>>[1] = {
     applicationId,
     oauth,
     auth: {
@@ -59,11 +61,24 @@ export async function withPageAssistant<T>(t: Tendril, work: Parameters<typeof w
           principal.id !== t.db.get<string | null>('owner_account', null) ||
           principal.expiresAt !== undefined && principal.expiresAt <= t.now() ||
           await pagePolicy(t, principal.id) !== 'active') return false;
-      return !!await activeGrant(t.env, oauth, principal.oauthGrantId, principal.id);
+      const grant = await activeGrant(t.env, oauth, principal.oauthGrantId, principal.id);
+      return !!grant && assistantEnabled(t) && principal.id === t.db.get<string | null>('owner_account', null);
+    },
+    async startCallback(generation, start) {
+      // Serialize initiation against local authority commits, but do not hold
+      // that serialization while waiting for a remote provider's response.
+      const { pending } = await withPeerControlAuthority(t, await bridgePrincipal(), async ({ authority }) => {
+        if (authority.current?.id !== generation)
+          throw Object.assign(new Error('APPLICATION_VIEW_RECOVERED'), { code: 'APPLICATION_VIEW_RECOVERED' });
+        const grant = deviceId ? authority.grant(deviceId) : null;
+        if (!grant?.reader || !assistantEnabled(t)) throw new HttpError(403, 'assistant_grant_required');
+        return { pending: start() };
+      });
+      return pending;
     },
     openSession(definition) {
       async function principal() {
-        const actor = await authenticateAgentToken(t, t.env.ASSISTANT_PAGE_TOKEN!);
+        const actor = await bridgePrincipal();
         if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'assistant_page_unavailable');
         return actor;
       }
@@ -83,13 +98,15 @@ export async function withPageAssistant<T>(t: Tendril, work: Parameters<typeof w
         },
       });
     },
-  }, work); } finally { if (deviceId) closePeerRelayRoutes(t, deviceId); }
+  };
+  try { return await withWorkerAssistant(t, dependencies, work); }
+  finally { if (deviceId) closePeerRelayRoutes(t, deviceId); }
 }
 
 export async function runAssistantDelivery(t: Tendril, observe: boolean) {
   if (!assistantEnabled(t) || await pagePolicy(t) !== 'active') return { more: false, nextDue: null };
   await requireWritesOpen(t.env);
-  return t.serializeAssistant(() => withPageAssistant(t, assistant => assistant.drain({ observe, signal: AbortSignal.timeout(20_000) })));
+  return t.serializeAssistant(() => withPageAssistant(t, assistant => assistant.drain({ observe })));
 }
 
 export async function assistantRequest(t: Tendril, req: Request): Promise<Response> {

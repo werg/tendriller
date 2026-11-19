@@ -20,6 +20,7 @@ export function withWorkerAssistant<T>(t: Tendril, dependencies: {
   authenticateOwner(request: Request): Promise<Principal | null>;
   authorizeAccountAccess(principal: Principal, applicationId: string): Promise<boolean>;
   authorizeOwner(principal: Principal, applicationId: string): Promise<boolean>;
+  startCallback(generation: string, send: () => Promise<Response>): Promise<Response>;
   openSession(definition: unknown): (options?: { signal?: AbortSignal }) => Promise<unknown>;
 }, work: (assistant: {
   handler(request: Request): Promise<Response>;
