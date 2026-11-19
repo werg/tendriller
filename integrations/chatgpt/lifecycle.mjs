@@ -81,7 +81,7 @@ async function currentPublication(host, authority, peer) {
     await peer.verifyPublicationManifest(item.publication, authority);
     if (item.publication.payload.previous === null) {
       if (item.publication.payload.revision !== 0) fail('LIFECYCLE_PUBLICATION_CHAIN_INVALID');
-      return head;
+      return { ...head, ancestryIds: [...seen] };
     }
     expectedId = item.publication.payload.previous;
     const previous = await host.peers.publication(expectedId);
@@ -200,6 +200,15 @@ export function createLifecycleService({ store, creation, applications = [], aut
         reviews[id] = record; return publicReview(record);
       });
     },
+    async getReviewBundle(principal, input) {
+      const account = owner(principal); fields(input, ['reviewId']);
+      const record = (await store.read()).chatgptLifecycle?.reviews?.[input.reviewId];
+      if (!record || record.account !== account) fail('LIFECYCLE_REVIEW_UNAVAILABLE');
+      // Trusted publisher export / owner review only. Do not turn this into an
+      // automatically invoked remote tool that echoes complete authored bytes.
+      return { ...publicReview(record), assets: structuredClone(record.assets),
+        ...(record.signedPublication ? { signedPublication: structuredClone(record.signedPublication) } : {}) };
+    },
     async publishPageRelease(principal, input) {
       const account = owner(principal); fields(input, ['reviewId', 'reviewDigest', 'signedPublication']);
       const record = (await store.read()).chatgptLifecycle?.reviews?.[input.reviewId];
@@ -210,7 +219,8 @@ export function createLifecycleService({ store, creation, applications = [], aut
       const { host, peer, authority } = await application(record.applicationId);
       await peer.verifyPublicationManifest(signed, authority);
       const selected = await currentPublication(host, authority, peer);
-      if (selected?.publication.id !== signed.id) await peer.authorizePublication(signed, authority, selected?.publication ?? null);
+      const alreadyPublished = selected?.ancestryIds.includes(signed.id) === true;
+      if (!alreadyPublished) await peer.authorizePublication(signed, authority, selected?.publication ?? null);
       if (await authorizePublication(principal, { ...publicReview(record), signedPublicationId: signed.id, publisher: signed.payload.author }) !== true) {
         fail('LIFECYCLE_PUBLICATION_APPROVAL_REQUIRED', 'The owner has not approved this exact review and publisher signature');
       }
@@ -222,7 +232,10 @@ export function createLifecycleService({ store, creation, applications = [], aut
       });
       if (previous) return previous;
       try {
-        const receipt = await host.peers.publish(signed, record.assets);
+        // An exact retry can name an earlier retained publication after later
+        // releases. Verify its membership in selected ancestry, then recover the
+        // original receipt instead of treating it as a new stale predecessor.
+        const receipt = alreadyPublished ? await host.peers.publication(signed.id) : await host.peers.publish(signed, record.assets);
         if (receipt?.publication?.id !== signed.id || canonical(receipt.publication) !== canonical(signed)
           || receipt.version !== signed.payload.revision + 1) fail('LIFECYCLE_PUBLICATION_RECEIPT_INVALID');
         await peer.verifyPublicationManifest(receipt.publication, authority);
@@ -240,10 +253,30 @@ export function createLifecycleService({ store, creation, applications = [], aut
 /** Run on the user's existing publisher device; never exposed as a remote tool. */
 export async function signReviewedRelease(review, { session, control }) {
   if (!review?.unsigned || session?.applicationId !== review.applicationId || typeof control?.preparePublication !== 'function') fail('LIFECYCLE_SIGNING_SESSION_INVALID');
+  if (review.operationId !== review.signingRequest?.operationId || review.applicationId !== review.expected?.applicationId
+    || review.reviewDigest !== hash(canonical({ format: 'tendriller-page-review-v1', ...review.expected,
+      operationId: review.operationId, entry: review.signingRequest.entry, files: review.signingRequest.files }))) fail('LIFECYCLE_REVIEW_MISMATCH');
+  if (!Array.isArray(review.assets) || !review.assets.length || review.assets.length > 128) fail('LIFECYCLE_REVIEW_ASSETS_REQUIRED', 'Export and review the actual authored bytes before signing');
+  const assets = new Map();
+  for (const asset of review.assets) {
+    if (!asset || !ID.test(asset.hash) || assets.has(asset.hash)) fail('LIFECYCLE_ASSET_INVALID');
+    assets.set(asset.hash, asset.bytes);
+  }
+  const actual = graph({ entry: review.signingRequest.entry, files: review.signingRequest.files.map(file => ({
+    path: file.path, type: file.type, bytesBase64: assets.get(file.hash),
+  })) }, 8 * 1024 * 1024);
+  if (canonical(actual.files) !== canonical(review.signingRequest.files) || actual.assets.length !== assets.size) fail('LIFECYCLE_REVIEW_MISMATCH', 'The exported authored bytes differ from the reviewed manifest');
   const authority = await control.application();
   const grant = authority.controls.at(-1)?.payload.grants.find(value => value.publicKey === session.deviceId);
   if (grant?.publisher !== true) fail('LIFECYCLE_PUBLISHER_GRANT_REQUIRED');
   const current = await control.publication();
+  // A lost response after publication can be reconciled from the verified
+  // selected signed manifest without producing a replacement signature.
+  if (current?.publication?.payload.operationId === review.operationId && current.publication.payload.author === session.deviceId) {
+    assertSignedMatches({ expected: review.expected, operationId: review.operationId,
+      entry: review.signingRequest.entry, files: review.signingRequest.files }, current.publication);
+    return current.publication;
+  }
   if (authority.descriptor.payload.applicationId !== review.expected.applicationId
     || authority.controls.at(-1).payload.revision !== review.expected.controlRevision
     || (current?.publication.id ?? null) !== review.expected.previous) fail('LIFECYCLE_SIGNING_CONTEXT_CHANGED', 'Review a new operation against the current publication/control context');

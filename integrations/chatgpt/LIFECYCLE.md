@@ -46,14 +46,24 @@ application session:
 
 ```js
 import { signReviewedRelease } from './lifecycle.mjs';
+// Trusted account-authorized export; do not echo all asset bytes to ordinary MCP.
+const bundle = await lifecycle.getReviewBundle(principal, { reviewId });
+// Inspect the authored bytes in bundle.assets and the exact review digest.
 const owned = await openSession(); // Existing publisher device, no new signer.
 try {
-  const signedPublication = await signReviewedRelease(review, owned);
+  const signedPublication = await signReviewedRelease(bundle, owned);
   // Save these exact signed bytes before returning them to the integration.
 } finally { await owned.session.close(); }
 ```
 
 The helper uses the actual session-owned `control.preparePublication` journal.
+A metadata-only handoff is insufficient: it recomputes the review digest and
+every supplied asset hash before signing. `getReviewBundle` verifies the original
+review owner and is intended for an explicitly authorized publisher export or
+owner approval UI. The deployment checks current account access before that
+export. The ordinary prepare tool returns hashes and context without echoing the
+entire asset graph. If publication was already attempted, the private export also
+contains the original saved signature for exact reconciliation.
 A reader/writer or host account is not a publisher. Missing publisher rights or
 changed publication/control context stop the handoff. The ordinary CLI remains
 available for directly publishing reviewed local files:
@@ -69,6 +79,8 @@ public `host.peers.publish` transport. The host remains the final account,
 publisher and publication-head authority. The bridge never receives a signing
 key. Lost replies retain the signed attempt for exact retry; a stale predecessor
 requires a newly reviewed publication instead of silently changing the intent.
+An exact old publication can still recover its original receipt after a newer
+release; its signed identity must be present in verified selected code ancestry.
 
 `capabilities` reports which optional tools can be exposed. With no creation
 configuration creation is unavailable. With no trusted approval callback,
@@ -78,3 +90,11 @@ The encrypted store contains private creation handles, authored release bytes,
 review metadata and receipts. It is not application history or a command engine.
 The bounded journals refuse new records when full rather than deleting uncertain
 work. Retention and private review/handle export are operator responsibilities.
+
+Run `node --test integrations/chatgpt/test/lifecycle.test.mjs`. With
+`CHRONOLOG_SESSION_PACKAGE` set as documented in [BRIDGE.md](BRIDGE.md), an
+additional real native test prepares through an enrolled publisher's saved
+signing journal, rejects a nonpublisher, verifies assets through the public host
+transport, publishes two signed releases, checks ancestry, and retries the old
+exact release. This uses a synthetic signed control/publication registry; it does
+not claim a deployment, owner login, or public Internet qualification.

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as core from '../../../contract/client.mjs';
 import { createLifecycleService, signReviewedRelease } from '../lifecycle.mjs';
+import { createNativeFixture, loadNativePackage } from './native-fixture.mjs';
 
 const appId = 'a'.repeat(64), publisher = 'b'.repeat(64), principal = { id: 'owner', issuer: 'https://accounts.example' };
 const descriptor = { payload: { applicationId: appId, historyId: 'release-test', profile: 'peer-generation-v1',
@@ -99,7 +100,7 @@ test('lost publication replies preserve exact signed retry bytes', async () => {
   await assert.rejects(f.service.publishPageRelease(principal, publish), { code: 'LIFECYCLE_PUBLICATION_UNCERTAIN' });
   const receipt = await f.service.publishPageRelease(principal, publish);
   assert.equal(receipt.publication.id, publish.signedPublication.id);
-  assert.deepEqual(f.calls[0], f.calls[1]);
+  assert.equal(f.calls.length, 1, 'The host-retained signed receipt reconciles the lost reply');
 });
 
 test('concrete public SDK creation retains private handle and never claims or blindly recreates', async () => {
@@ -129,3 +130,51 @@ test('concrete public SDK creation retains private handle and never claims or bl
   for (let i = 0; i < 2; i++) await assert.rejects(uncertain.createTendril(principal, { requestId: 'uncertain', name: 'Kitchen' }), { code: 'LIFECYCLE_CREATION_UNCERTAIN' });
   assert.equal(sends, 1);
 });
+
+test('real enrolled publisher signs reviewed bytes; public host transport verifies ancestry and exact retries',
+  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
+    const { peer } = await loadNativePackage();
+    const definition = peer.defineApplication({ id: 'publication-test', version: '1', commands: {}, queries: {} });
+    const native = await createNativeFixture(definition, { applicationId: appId, publisher: true });
+    try {
+      const enrolled = await native.open(0), nonPublisher = await native.open(1), store = memoryStore(), requests = [];
+      const fetch = async (url, options) => {
+        requests.push({ url, options });
+        assert.equal(new Headers(options.headers).get('Authorization'), 'Bearer private-test-token');
+        if (String(url).endsWith('/peers/participant')) return Response.json(await native.exchange(JSON.parse(options.body)));
+        assert.equal(String(url), 'https://tendriller.example/api/t/page');
+        return Response.json({ application: { id: appId }, owner_account_id: principal.id });
+      };
+      const service = createLifecycleService({ store, loadCore: async () => core, loadPeer: async () => peer,
+        applications: [{ id: appId, handle: { api: 'https://tendriller.example/api/t/page', token: 'private-test-token', application: { id: appId } },
+          pinnedDescriptor: native.descriptor, ownerAccountId: principal.id, fetch }],
+        authorizePublication: async (account, review) => account.id === principal.id && /^[a-f0-9]{64}$/u.test(review.reviewDigest),
+      });
+      const review = await service.preparePageRelease(principal, input);
+      const bundle = await service.getReviewBundle(principal, { reviewId: review.reviewId });
+      assert.equal((await native.publications.read()).length, 0);
+      await assert.rejects(service.getReviewBundle({ id: 'other' }, { reviewId: review.reviewId }), { code: 'LIFECYCLE_REVIEW_UNAVAILABLE' });
+      await assert.rejects(signReviewedRelease(review, enrolled), { code: 'LIFECYCLE_REVIEW_ASSETS_REQUIRED' });
+      await assert.rejects(signReviewedRelease(bundle, nonPublisher), { code: 'LIFECYCLE_PUBLISHER_GRANT_REQUIRED' });
+      await assert.rejects(signReviewedRelease({ ...review, reviewDigest: '0'.repeat(64) }, enrolled), { code: 'LIFECYCLE_REVIEW_MISMATCH' });
+      const signed = await signReviewedRelease(bundle, enrolled);
+      assert.equal(signed.payload.author, enrolled.session.deviceId);
+      assert.deepEqual(await signReviewedRelease(bundle, enrolled), signed, 'The native journal retains an exact signing retry');
+      const publish = { reviewId: review.reviewId, reviewDigest: review.reviewDigest, signedPublication: signed };
+      await assert.rejects(service.publishPageRelease(principal, { ...publish, signedPublication: { ...signed, signature: '0'.repeat(128) } }));
+      const receipt = await service.publishPageRelease(principal, publish);
+      assert.equal(receipt.publication.id, signed.id);
+      assert.equal(receipt.version, 1);
+      assert.equal((await enrolled.control.publication()).publication.id, signed.id);
+      assert.deepEqual(await signReviewedRelease(bundle, enrolled), signed, 'A lost signing response after publication returns the selected exact signature');
+      const next = await service.preparePageRelease(principal, { ...input, operationId: 'release-2',
+        files: [{ ...input.files[0], bytesBase64: Buffer.from('<h1>Kitchen two</h1>').toString('base64') }] });
+      const nextSigned = await signReviewedRelease(await service.getReviewBundle(principal, { reviewId: next.reviewId }), enrolled);
+      await service.publishPageRelease(principal, { reviewId: next.reviewId, reviewDigest: next.reviewDigest, signedPublication: nextSigned });
+      assert.equal((await enrolled.control.publication()).publication.id, nextSigned.id);
+      assert.deepEqual(await service.publishPageRelease(principal, publish), receipt, 'An old exact retry retains its own receipt after a newer release');
+      assert.equal((await native.publications.read()).length, 2);
+      assert.equal(requests.filter(request => request.options.method === 'POST' && JSON.parse(request.options.body).action === 'publish').length, 2);
+      assert.equal((await native.registry.read()).controls[0].payload.grants.find(grant => grant.publicKey === nonPublisher.session.deviceId).publisher, false);
+    } finally { await native.close(); }
+  });
