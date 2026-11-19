@@ -1,10 +1,56 @@
 # Authentication and connection consent
 
-This integration consumes access tokens from a separately configured OAuth 2.1
-authorization server. It does not replace Tendriller account sign-in, issue
-Chronolog device identities, or turn OAuth scopes into application grants.
+This integration accepts OAuth access tokens and checks current Tendriller
+account access separately from application consent and native device authority.
+The included Tendriller host authorization server uses the host's existing
+GitHub/Google login. An external OAuth provider remains an optional alternative.
+Neither route issues Chronolog device identities or turns scopes into native
+application grants.
 
-## Configure the authorization provider
+## Use the Tendriller account host
+
+Use [config.host-account.example.mjs](config.host-account.example.mjs) or the
+[deployment preparation tools](deploy/README.md) for the first-party route.
+The [host OAuth guide](../../docs/INTEGRATION_OAUTH.md) describes the additive
+account migration, private signing key, predefined client registration and
+separate bridge credential. Register the exact callback shown by the intended
+ChatGPT connector and the Node service's exact `/connections/callback` URL.
+The OAuth client and the service bridge have different credentials and duties.
+
+`createIntegration({resource, applications, storePath, storeKey, hostAccount})`
+composes the included account adapter and owner browser handoff. `hostAccount`
+contains the exact host `origin`, registered `bridgeId`, private `bridgeSecret`
+and a random `csrfKey` of at least 32 bytes. Each application supplies its actual
+`pageId`, immutable application ID, dedicated session opener and permission
+allowlists. The factory rejects mixing this mode with external authentication
+or account callback overrides.
+
+The adapter checks JWT signatures against the host's public JWKS, introspects
+each access token, and binds the principal to that exact OAuth grant. Before
+protected operations and event delivery it checks current account/page access
+and the same grant again. Another active grant cannot replace a revoked one.
+Background subscriptions retain only the trusted grant ID and scopes, never
+the bearer token.
+
+`/connections/login` sends the browser through the real host login and an
+explicit Continue/Cancel decision. The one-use exchange requires the private
+bridge credential, S256 proof and exact registered callback. The Node service
+uses an opaque secure cookie and encrypted session state. Its management ticket
+is bound to the original host browser session and is rechecked on every owner
+action. Host logout or account suspension invalidates that ticket. Node logout
+clears its own session. OAuth grants remain independently revocable at the
+host's `/oauth/connections` page.
+
+Signing in grants no application permissions. The owner still reviews the exact
+queries, commands, events and optional event-detail access on `/connections`.
+The host checks current page ownership against its account database and page
+Durable Object; the Node mapping comes from the actual page handle and immutable
+application descriptor. A supplied email or application ID cannot establish
+ownership. `integration.account.checkHostConfiguration()` provides a read-only
+check of the registered resource, bridge, application allowlist and callback;
+it does not claim a linked ChatGPT client or owner consent.
+
+## Configure an external authorization provider
 
 Use the deployment's existing identity provider. Configure an authorization-code
 flow with PKCE `S256` and an exact resource audience for the MCP endpoint. Publish
@@ -54,8 +100,9 @@ embedded/untrusted key URLs, duplicate JSON members/key IDs, expired tokens,
 wrong issuers/audiences, and incompatible key types are rejected.
 
 `authenticate()` returns only the stable subject, issuer, scopes and expiration.
-Account-to-application lookup must still validate that identity against Tendriller
-account access. Neither an email nor a user-supplied page URL establishes access.
+For this external-provider route, the supplied account-to-application lookup
+must validate that identity against Tendriller account access. Neither an email
+nor a user-supplied page URL establishes access.
 Return a persisted opaque profile ID from a designated authenticated profile tool;
 never generate a different ID for each token or use mutable email as identity.
 
@@ -65,7 +112,8 @@ an error result with `_meta['mcp/www_authenticate']`. Do not return tokens or ra
 provider errors to the model. JWT expiry is checked on each invocation. Immediate
 application disconnect must revoke local consent and/or device grants rather
 than wait for token expiry; provider-level immediate JWT revocation needs a
-provider introspection/denylist layer in front of this verifier.
+provider introspection/denylist layer in front of this verifier. The included
+host account adapter already supplies that layer for the first-party route.
 
 ## Explicit application connections
 
@@ -115,7 +163,9 @@ ownership verification is pending prevents the older grant from activating.
 ### Browser management surface
 
 `createConsentManagementHandler` provides an optional `/connections` HTML page
-and grant/disconnect form endpoint. Supply an exact public HTTPS `origin`, a
+and grant/disconnect form endpoint. The `hostAccount` factory configuration
+supplies its authenticated browser session and current owner catalog. For an
+external account integration, supply an exact public HTTPS `origin`, a
 random `csrfKey` of at least 32 bytes, the consent `service`, a real authenticated
 account-session callback `authenticate(request)`, and
 `applicationsForPrincipal(principal)`. The latter must return an authorized
@@ -127,7 +177,8 @@ request, a signed five-minute CSRF token bound to issuer/subject, the live
 application catalog, and ownership. It rejects unknown fields, oversized forms,
 and unlisted permissions. Responses are non-cacheable, forbid framing, and use
 no JavaScript. The injected session must itself enforce the deployment's normal
-secure account-cookie/login policy; this helper does not create a login session.
+secure account-cookie/login policy. The standalone consent helper does not
+create a login session; the first-party account browser supplies one.
 
 An unconfigured deployment can use `renderConnectionsHtml(principal)` as a
 read-only status view. It has no mutation controls without CSRF context. Do not
@@ -137,15 +188,17 @@ reviewable, explicit actions.
 
 ## Verification and deployment boundary
 
-Run `node --test integrations/chatgpt/test/auth.test.mjs
-integrations/chatgpt/test/consent.test.mjs` for signature, claim, scope, cache,
-rotation, malformed-input, consent isolation/revocation and management-CSRF
-checks using generated local keys and a synthetic transactional store.
-Those tests do not establish a configured live provider, an account linking
-round-trip, public HTTPS deployment, or access to a real Chronolog application.
-All of those remain explicit deployment prerequisites.
+Run `npm run test:chatgpt` on Node 24 for signature, claim, scope, cache,
+rotation, current account/grant binding, browser handoff, real Node HTTP cookie
+handling, consent isolation/revocation and management-CSRF checks. The host's
+`server/test/integration-oauth.public.test.ts` additionally exercises real
+workerd, D1, WebCrypto and page authorization. These local tests use generated
+keys and synthetic browser accounts. They do not establish upstream
+GitHub/Google sign-in, public HTTPS deployment or a real ChatGPT account link.
+Complete those checks against the selected deployment before reporting a live
+connection.
 
 The current provider contract was checked against [OpenAI authentication
 documentation](https://developers.openai.com/plugins/build/auth) on 19 November
-2026. The implementation uses Node's built-in crypto and Fetch APIs and has no
-additional runtime dependencies.
+2026. The authentication implementation uses Node's built-in crypto and Fetch
+APIs and has no additional runtime dependencies.

@@ -48,33 +48,50 @@ promising support on another surface.
    It needs no publisher, administrator, recovery or coordinator grant. A native
    reader can read the application history; outbound topic filters do not create
    a narrower cryptographic grant.
-3. Configure the separate service using its
-   [deployment README](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/README.md).
-   Supply a real OAuth authorization server, fresh account-access and owner
-   lookups, private persistent storage, and declared application allowlists.
-   Run `node integrations/chatgpt/run.mjs --config /private/integration.config.mjs`
-   under an operator-owned process supervisor and expose its configured resource
-   through HTTPS. No production service is provisioned by checking out this code.
+3. Build and configure the separate service using its
+   [deployment tools](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/deploy/README.md).
+   The pinned release builder, private settings generator, dedicated-device
+   staging command and preflight make this a concrete setup path. Use the
+   [first-party host OAuth service](INTEGRATION_OAUTH.md) with Tendriller's
+   existing GitHub/Google login: apply the additive account migration and install
+   the generated client/bridge registration and signing key. Copy the exact
+   callback shown in the intended ChatGPT connector setup. The supplied Node
+   account adapter checks current accounts, page access and OAuth grants.
+   An external issuer and trusted custom account adapter remain available when
+   the deployment needs them.
 4. Link the OAuth account in the client. The integration verifies issuer,
-   audience, signature, expiry and scopes. Its stable profile ID binds the
-   issuer/subject pair; it does not use mutable email as identity. Tendriller
-   account access is checked separately through the configured trusted adapter.
+   audience, signature, expiry and scopes. The host account adapter also
+   introspects the token and binds all application checks to that exact live
+   grant. Its stable profile ID binds the issuer/subject pair; it does not use
+   mutable email as identity.
 5. Have the authenticated owner review exact query, command and event names in
    the optional `/connections` page or an equivalent trusted owner interface.
-   The page requires an existing browser login session and CSRF protection.
+   With the first-party configuration, `/connections/login` performs the
+   browser-bound handoff through the existing Tendriller login and installs a
+   secure, revocable management session. Signing in grants no app permissions.
    Notification consent and detailed event-content consent are separate.
 6. Call `list_tendrils`, `get_application_status` and `describe_application`.
    Verify an authorized query before submitting a command. If asynchronous work
    is needed, explicitly subscribe in the selected supported chat and test one
    request through to an applied reply in the page.
 
-OAuth is a resource-server boundary, not a device grant. The deployed service
-must implement the account mapping and owner lookup against current trusted
-account records. Never replace them with an unconditional approval, token email,
+OAuth is a resource-server boundary, not a device grant. The included first-party
+adapter implements account mapping and owner lookup against current trusted host
+records. An external-provider integration must supply equivalent checks.
+Never replace them with an unconditional approval, token email,
 application ID supplied by the model, or possession of the host agent handle.
 See [authentication implementation](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/AUTH.md)
 and the provider's [OAuth requirements](https://developers.openai.com/plugins/build/auth)
 for exact issuer/resource metadata, PKCE and redirect configuration.
+
+The generated systemd and Caddy files describe the remaining installation:
+the existing native coordinator remains a separate process, and the Node bridge
+uses its own enrolled reader/writer store. The release builder and preparation
+commands do not install or start production services. Local preflight verifies
+release hashes, runtime paths and private storage; online preflight additionally
+checks host registration, current native selection and least-privilege grants.
+It never submits a command, grants consent or sends an event. A successful
+preflight is readiness evidence, not a live ChatGPT round trip.
 
 ## Discover and use the tools
 
@@ -104,6 +121,13 @@ captured `revision`. Send `reply_to_assistance` with the immutable
 answer, suggestions and a saved caller-owned `operationId`. Use the returned
 structured revision object as native `basedOn`; do not turn it into a string.
 Then inspect that operation and reread the request to observe the applied answer.
+
+For a new request, preserve the selected `cookingStepEventId` as well as
+`cookingStepId` and `basedOnContextRevision`; the immutable kitchen definition
+rejects a request if the step changes before ordering. The browser stores one
+pending request atomically across tabs and preserves it after an uncertain
+response. Terminal abandoned/reapplication states require a deliberate reviewed
+resolution before new intent.
 
 Keep the operation ID **and every input** unchanged after an uncertain response.
 The server rejects reuse by another caller or for different input. An HTTP
@@ -208,6 +232,9 @@ store concurrently from several processes.
 | `SOURCE_NOT_SELECTED`, `APPLICATION_VIEW_RECOVERED`, recovery pause | Read current selected history and recovery status; review the exact recovery revision before choosing a resume strategy. |
 | `BRIDGE_EVENT_SCAN_LIMIT`, `SOURCE_BASELINE_LIMIT` | Absence was not established. Adjust a trusted bounded scan budget or narrow the application design; do not answer from stale cached content. |
 | `OPERATION_ID_CONFLICT` or uncertain command | Inspect the original operation and retained inputs. Preserve identity for exact retry; review any new intent separately. |
+| `OPERATION_IDENTITY_UNCONFIRMED` | Retry the original request with its exact operation ID and inputs; status is withheld until the native saved identity is verified. |
+| `HOST_ACCOUNT_MAPPING_INCOMPLETE`, OAuth configuration or migration 503 | Apply the additive OAuth migration and check the exact resource, bridge credential, application IDs and registered callbacks using preflight. |
+| Management sign-in expired or host logout | Start `/connections/login` again. A new browser session does not replace revoked OAuth grants or application consent. |
 | `REQUEST_TOO_LARGE` | Reduce the bounded remote graph or use the public CLI; an operator may configure up to 12 MiB after considering host limits. |
 | Missing publication tool, publisher denial or changed release context | Configure the real approval lookup, use the enrolled publisher and prepare a new review for changed context. |
 | `STORE_DECRYPTION_FAILED`, journal/outbox capacity | Restore the matching private key/store or archive reviewed receipts deliberately. Do not clear pending identities to make a retry succeed. |

@@ -1,7 +1,7 @@
 # First-party integration OAuth and current account access
 
 The Tendriller account host can serve as the authorization server for its
-[optional ChatGPT integration](../integrations/chatgpt/README.md). It uses the
+[optional ChatGPT integration](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/README.md). It uses the
 existing GitHub/Google browser login and the same current account and page
 ownership records. The Node integration can use the included host account
 adapter instead of requiring a separate identity provider or account database.
@@ -187,7 +187,7 @@ registration, Client ID Metadata Documents, OIDC ID tokens, UserInfo or
 enterprise email-domain verification. Configure the intended connector with
 its actual client registration. If that surface requires additional identity
 features, use a compatible external provider through the integration's
-[external issuer interface](../integrations/chatgpt/AUTH.md).
+[external issuer interface](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/AUTH.md).
 
 ## Current account and page authority
 

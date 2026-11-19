@@ -89,9 +89,15 @@ configuration creation is unavailable. With no trusted approval callback,
 publication is unavailable; preparing a signing handoff remains possible.
 
 The encrypted store contains private creation handles, authored release bytes,
-review metadata and receipts. It is not application history or a command engine.
-The bounded journals refuse new records when full rather than deleting uncertain
-work. Retention and private review/handle export are operator responsibilities.
+review metadata and receipts. Authored assets occupy separately encrypted,
+immutable blob rows; shared bookkeeping retains only hashes and blob references.
+Asset writes and review metadata commit in the same SQLite transaction. The
+default total asset quota is 64 MiB, configurable through
+`storeLimits.maxBlobBytes` up to 1 GiB. Quota failure leaves no partial review or
+asset writes. Existing inline reviews migrate when used. The store is not
+application history or a command engine. Bounded journals refuse new records
+when full rather than deleting uncertain work. Retention and private
+review/handle export are operator responsibilities.
 
 Run `node --test integrations/chatgpt/test/lifecycle.test.mjs`. With
 `CHRONOLOG_SESSION_PACKAGE` set as documented in [BRIDGE.md](BRIDGE.md), an
