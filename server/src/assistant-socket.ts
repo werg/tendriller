@@ -6,9 +6,10 @@ import { HttpError } from './http';
 import { safeEqual, sha256Hex } from './ids';
 import { withSelectedAssistantGeneration } from './peer-generations';
 import { ingestAssistantEvent } from './assistant-events';
+import { providerBindingId } from './assistant-bindings';
 
-type Attachment = { tag: typeof ASSISTANT_SOCKET_TAG; adapterHash: string; deviceId: string };
-type Inflight = { socket: WebSocket; resolve: (value: unknown) => void; reject: (error: Error) => void };
+type Attachment = { tag: typeof ASSISTANT_SOCKET_TAG; adapterHash: string; deviceId: string; connectionEpoch: number };
+type Inflight = { socket: WebSocket; consumerId: string; resolve: (value: unknown) => void; reject: (error: Error) => void };
 const inflight = new WeakMap<Tendril, Map<string, Inflight>>();
 const invalid = () => new HttpError(502, 'invalid_adapter_response');
 const offline = () => new HttpError(503, 'application_participant_offline', 'Start the enrolled application participant, then try again.');
@@ -37,12 +38,14 @@ export async function upgradeAssistantAdapter(t: Tendril, req: Request) {
     if (!previous) t.db.run('INSERT INTO assistant_devices(adapter_hash,device_id) VALUES(?,?)', adapterHash, deviceId);
   });
   if (!allowed()) throw new HttpError(403, 'forbidden');
+  const connectionEpoch = t.db.get<number>('assistant_adapter_epoch:' + adapterHash, 0) + 1;
+  t.db.set('assistant_adapter_epoch:' + adapterHash, connectionEpoch);
   const [client, server] = Object.values(new WebSocketPair());
   for (const ws of t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG)) {
     if (attachment(ws)?.adapterHash === adapterHash) ws.close(4000, 'Replaced by reconnected participant');
   }
   t.ctx.acceptWebSocket(server, [ASSISTANT_SOCKET_TAG]);
-  server.serializeAttachment({ tag: ASSISTANT_SOCKET_TAG, adapterHash, deviceId } satisfies Attachment);
+  server.serializeAttachment({ tag: ASSISTANT_SOCKET_TAG, adapterHash, deviceId, connectionEpoch } satisfies Attachment);
   return new Response(null, { status: 101, headers: { 'Sec-WebSocket-Protocol': ASSISTANT_PROTOCOL }, webSocket: client });
 }
 
@@ -53,6 +56,9 @@ export function closeAssistantAdapter(t: Tendril, socket: WebSocket) {
 export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame: string | ArrayBuffer) {
   const attached = attachment(socket);
   if (!attached || !activeAdapters(t).includes(attached.adapterHash)) { socket.close(4003, 'Application grant revoked'); return; }
+  if (attached.connectionEpoch !== t.db.get('assistant_adapter_epoch:' + attached.adapterHash, 0)) {
+    socket.close(4000, 'Provider connection superseded'); return;
+  }
   if (typeof frame !== 'string' || frame.length > REQUEST_LIMIT || new TextEncoder().encode(frame).byteLength > REQUEST_LIMIT) {
     socket.close(1009, 'Application frame too large'); return;
   }
@@ -85,19 +91,23 @@ export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame:
   }
 }
 
-export function onlineAssistantAdapters(t: Tendril): { hash: string; deviceId: string; socket: WebSocket }[] {
+export function onlineAssistantAdapters(t: Tendril): { hash: string; bindingId: string; deviceId: string; connectionEpoch: number; socket: WebSocket }[] {
   const sockets = t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG);
   return activeAdapters(t).flatMap(hash => {
-    const socket = sockets.find(ws => ws.readyState === WebSocket.READY_STATE_OPEN && attachment(ws)?.adapterHash === hash);
-    return socket ? [{ hash, deviceId: attachment(socket)!.deviceId, socket }] : [];
+    const socket = sockets.find(ws => ws.readyState === WebSocket.READY_STATE_OPEN && attachment(ws)?.adapterHash === hash &&
+      attachment(ws)?.connectionEpoch === t.db.get('assistant_adapter_epoch:' + hash, 0));
+    return socket ? [{ hash, bindingId: providerBindingId(hash), deviceId: attachment(socket)!.deviceId,
+      connectionEpoch: attachment(socket)!.connectionEpoch, socket }] : [];
   });
 }
 
-export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal): Promise<unknown> {
+export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal, consumerId = 'bridge'): Promise<unknown> {
   if (ws.readyState !== WebSocket.READY_STATE_OPEN) throw offline();
   let pending = inflight.get(t);
   if (!pending) inflight.set(t, pending = new Map());
   if (pending.size >= 8) throw new HttpError(429, 'application_busy');
+  if ([...pending.values()].filter(value => value.consumerId === consumerId).length >= 2)
+    throw new HttpError(429, 'agent_binding_busy', 'This binding already has two active calls; other bindings retain admission capacity.');
   const id = crypto.randomUUID();
   const message = JSON.stringify({ type: 'call', id, ...input });
   if (new TextEncoder().encode(message).byteLength > REQUEST_LIMIT) throw new HttpError(413, 'too_large');
@@ -105,7 +115,7 @@ export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: obj
   try {
     signal.throwIfAborted();
     return await new Promise((resolve, reject) => {
-      pending.set(id, { socket: ws, resolve, reject });
+      pending.set(id, { socket: ws, consumerId, resolve, reject });
       abort = () => reject(new HttpError(408, 'application_call_cancelled'));
       signal.addEventListener('abort', abort, { once: true });
       timer = setTimeout(() => reject(new HttpError(504, 'application_call_timed_out',

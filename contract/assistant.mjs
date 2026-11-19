@@ -27,6 +27,13 @@ export function createAssistantKey() {
   return 'td_a_' + hex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
+/** Retain this proof before registration. Passing the same bindingId rotates
+ * credentials without changing the independently approved agent identity. */
+export function createApplicationAgentKey(bindingId = crypto.randomUUID()) {
+  if (!/^[a-f0-9-]{36}$/u.test(bindingId)) throw error('INVALID_AGENT_BINDING_ID');
+  return 'td_c_' + bindingId + '.' + hex(crypto.getRandomValues(new Uint8Array(32)));
+}
+
 export async function proposeApplicationAssistant({ api, token, key, backupKeys = [], label, queries = [], commands = [], events = [], signal, fetcher = fetch }) {
   const keys = [key, ...backupKeys];
   if (keys.length > 3 || keys.some(value => !keyFormat.test(value)) || new Set(keys).size !== keys.length)
@@ -61,16 +68,23 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
     socket.send(data);
   }
   async function onCall(message, transport, connection) {
-    const { id, kind, name, input, operationId, basedOn, generation } = message;
+    const { id, kind, name, input, operationId, basedOn, generation, caller } = message;
     if (active >= 8) { send({ type: 'result', id, error: 'APPLICATION_ASSISTANT_BUSY' }); return; }
     active++;
     try {
-      if (message.applicationId !== session.applicationId || !Object.hasOwn(allowed, kind) || !allowed[kind].has(name))
+      const journal = ['operation', 'retry', 'wait'].includes(kind), write = kind === 'command' || kind === 'reapply';
+      if (message.applicationId !== session.applicationId || !(journal || write || kind === 'query') ||
+          !(kind === 'query' ? allowed.query : allowed.command).has(name))
         throw error('APPLICATION_ASSISTANT_OPERATION_NOT_ALLOWED');
       if (generation !== session.status.generation) throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
-      const value = await tools.call(kind, { name, input, ...(kind === 'command' ? {
+      if (caller && (typeof caller.agentBindingId !== 'string' || typeof caller.bindingRevision !== 'number' ||
+          !['approved-binding', 'oauth-client'].includes(caller.verification))) throw error('APPLICATION_ASSISTANT_CALLER_INVALID');
+      const args = journal ? { operationId } : { name, input, ...(write ? {
         operationId, ...(basedOn !== undefined ? { basedOn } : {}),
-      } : {}) }, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]) });
+        ...(kind === 'reapply' ? { originalOperationId: message.originalOperationId, originalAuthor: message.originalAuthor } : {}),
+      } : {}) };
+      const value = await tools.call(kind, args, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]),
+        ...(caller ? { caller: Object.freeze(structuredClone(caller)) } : {}) });
       if (generation !== session.status.generation) throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
       if (socket === transport) send({ type: 'result', id, value: value ?? null });
     } catch (cause) {
@@ -155,7 +169,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
         if (abort) combined.removeEventListener('abort', abort);
       }
     },
-    async publish({ sourceEventId, name, generation, payload }) {
+    async publish({ sourceEventId, name, generation, payload, context }) {
       if (typeof generation !== 'string' || generation !== session.status.generation)
         throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
       if (acknowledgements.size >= 16) throw error('APPLICATION_ASSISTANT_BACKLOG');
@@ -165,7 +179,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
         return await new Promise((resolve, reject) => {
           acknowledgements.set(id, response => response.error ? reject(error(response.error)) : resolve(response.sequence));
           timer = setTimeout(() => reject(error('APPLICATION_ASSISTANT_ACK_TIMEOUT')), 5000);
-          send({ type: 'event', id, sourceEventId, name, generation, payload });
+          send({ type: 'event', id, sourceEventId, name, generation, payload, ...(context ? { context } : {}) });
         });
       } finally { clearTimeout(timer); acknowledgements.delete(id); }
     },
