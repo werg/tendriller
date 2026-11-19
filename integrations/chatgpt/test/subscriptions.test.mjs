@@ -93,3 +93,19 @@ test('expired subscriptions cannot bypass quota, and unknown unsubscribes do not
     delivery: { mode: 'webhook', url: `https://unused.example/${i}` } });
   assert.equal(Object.keys((await f.store.read()).subscriptions).length, count);
 });
+
+test('refresh preserves recovery review across expiry, while a fresh activation cancels old pending jobs', async () => {
+  const f = fixture(), input = request(), first = await f.service.subscribe(owner, { ...input, ttlMs: 100 });
+  const activation = (await f.store.read()).subscriptions[first.id].activationId;
+  await f.store.transaction(state => {
+    Object.assign(state.subscriptions[first.id], { pausedReason: 'recovery_review_required', recoveryRevision: { generation: 'g2' }, recoveryVersion: 2, recoveryNoticeError: 'OUTBOX_CAPACITY' });
+  });
+  f.advance(101); await f.service.subscribe(owner, input);
+  const refreshed = (await f.store.read()).subscriptions[first.id];
+  assert.equal(refreshed.activationId, activation); assert.equal(refreshed.pausedReason, 'recovery_review_required');
+  assert.equal(refreshed.recoveryNoticeError, 'OUTBOX_CAPACITY'); assert.equal(f.captures(), 1);
+  const fresh = fixture(), old = await fresh.service.subscribe(owner, { ...input, ttlMs: 10 });
+  await fresh.store.transaction(state => { state.jobs = { pending: { subscriptionId: old.id, state: 'queued' } }; });
+  fresh.advance(11); await fresh.service.subscribe(owner, input);
+  assert.equal((await fresh.store.read()).jobs.pending.state, 'cancelled');
+});

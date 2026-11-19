@@ -71,7 +71,7 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
       const previous = await store.transaction(state => {
         state.subscriptions ??= {};
         for (const [key, item] of Object.entries(state.subscriptions))
-          if ((!item.active || item.expiresAt <= clock()) && !(item.pendingUntil > clock())) delete state.subscriptions[key];
+          if ((!item.active || item.expiresAt <= clock()) && !item.pausedReason && !(item.pendingUntil > clock())) delete state.subscriptions[key];
         const current = state.subscriptions[id];
         if (current?.pendingUntil > clock()) fail('SUBSCRIPTION_PENDING', 'Subscription verification is already pending', { status: 409 });
         const count = Object.values(state.subscriptions).filter(item => item.id !== id &&
@@ -85,11 +85,12 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
       try {
         await authorize(owner, applicationId, params.name);
         const secret = params.delivery.secret, canReuse = previous?.active && previous.expiresAt > clock();
+        const mustReview = Boolean(previous?.pausedReason);
         const cachedVerification = canReuse && previous.secret === secret && previous.verifiedAt > clock() - 300000;
         if (!cachedVerification) await verifyCallback({ subscriptionId: id, url, secret, send, now: clock(), signal });
         // Internal crash recovery uses the selected tail; cursor:null promises
         // no protocol replay. Refresh must preserve any concurrently advanced cursor.
-        const baseline = canReuse ? null : await captureCursor(applicationId);
+        const baseline = canReuse || mustReview ? null : await captureCursor(applicationId);
         await authorize(owner, applicationId, params.name);
         const now = clock();
         const sub = await store.transaction(state => {
@@ -98,15 +99,23 @@ export function createSubscriptions({ store, authorize, captureCursor, applicati
             fail('SUBSCRIPTION_CHANGED', 'Subscription changed while authorization or callback verification was in progress; refresh explicitly', { status: 409 });
           const replacement = { id, owner, applicationId, name: params.name, arguments: bounded(params.arguments), url, secret,
             active: true, version: (current.version ?? 0) + 1, createdAt: canReuse ? previous.createdAt : now,
+            activationId: canReuse || mustReview ? current.activationId ?? randomUUID() : randomUUID(),
             verifiedAt: cachedVerification ? previous.verifiedAt : now,
             expiresAt: now + Math.min(params.ttlMs ?? ttlMs, maxTtlMs),
-            sourceCursor: (canReuse ? current.sourceCursor : baseline.cursor) ?? null,
-            sourceRevision: (canReuse ? current.sourceRevision : baseline.revision) ?? null,
-            pausedReason: canReuse ? current.pausedReason ?? null : null,
-            recoveryRevision: canReuse ? current.recoveryRevision ?? null : null,
+            sourceCursor: (canReuse || mustReview ? current.sourceCursor : baseline.cursor) ?? null,
+            sourceRevision: (canReuse || mustReview ? current.sourceRevision : baseline.revision) ?? null,
+            pausedReason: current.pausedReason ?? null,
+            recoveryRevision: current.recoveryRevision ?? null,
+            recoveryVersion: current.recoveryVersion ?? 0,
+            recoveryAt: current.recoveryAt ?? null,
+            recoveryNoticeError: current.recoveryNoticeError ?? null,
+            recoveryNoticeQueuedAt: current.recoveryNoticeQueuedAt ?? null,
             previousSecret: canReuse && previous.secret !== secret ? { secret: previous.secret, expiresAt: now + 300000 } :
               canReuse && previous.previousSecret?.expiresAt > now ? previous.previousSecret : null,
           };
+          if (!canReuse && !mustReview) for (const job of Object.values(state.jobs ?? {}))
+            if (job.subscriptionId === id && ['queued', 'retry', 'sending'].includes(job.state))
+              Object.assign(job, { state: 'cancelled', reason: 'subscription_reactivated', updatedAt: now });
           state.subscriptions[id] = replacement; return replacement;
         });
         changed(); return result(sub);
