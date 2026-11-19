@@ -68,6 +68,31 @@ microphone, focus, navigation, and speech stay under the receiving view's contro
 
 ## Compose the public modules
 
+Choose the owner route before opening the profile. Events applications can use
+the default `openBrowserOwner` selection, which prefers SharedWorker and otherwise
+elects a dedicated Worker using an exclusive Web Lock. The SQL/WASM engine's
+synchronous OPFS storage requires a dedicated Worker in the qualified Chromium
+build. Declare that requirement explicitly:
+
+```js
+import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
+
+const attachment = await openBrowserOwner({
+  workerUrl, profileId, applicationId,
+  definitionId: definition.id, definitionVersion: definition.version,
+  requiresDedicatedWorker: true,
+  context: { viewId, documentPath: location.pathname },
+});
+```
+
+Automatic selection then uses the elected route even if SharedWorker exists.
+Forcing `mode: 'shared'` with this requirement fails with
+`OWNER_STORAGE_UNSUPPORTED` before opening a worker or signing store. This is an
+engine capability choice; all views still attach to one fenced signer and journal.
+The worker must call `serveBrowserOwner({ load: async ({ signal }) => ... })`
+synchronously and perform asynchronous configuration inside `load`, so its root
+message listeners exist before the first attachment arrives.
+
 Create a new SQL application with `createCollaborationDefinition` as its immutable
 definition. Use the exact native/WASM engine manifest and normal signed authority
 bootstrap described in [State models](STATE_MODELS.md). The definition's explicit
@@ -160,7 +185,9 @@ definition. Oversized application snapshots require querying one task instead.
 The independent public consumer measures eight actual signers with 32 simultaneous
 local attachments and records its exact topology, timing samples and memory use.
 This is a local qualification profile, not an Internet latency promise. The
-browser suite separately exercises actual SharedWorker and elected-owner modes.
+events browser suite separately exercises actual SharedWorker and elected-owner
+modes. The SQL/WASM browser consumer qualifies dedicated elected ownership and
+explicitly rejects unsupported SharedWorker storage.
 Signal queues, encrypted fallback frames, native IPC and gateway deliveries have
 independent bounds so a slow client cannot turn disposable progress into an
 unbounded durable queue. Named host tokens share their human owner's admission

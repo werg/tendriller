@@ -89,6 +89,41 @@ async function packDependency(name) {
   return join(directory, result[0].filename);
 }
 
+// SharedWorker traffic is not attributed to the owning Page by Chromium. Capture
+// bounded network failures from its own target without retaining headers, bodies,
+// tokens or query strings, so a failed public-consumer run is actionable.
+async function captureWorkerNetwork(browser) {
+  const cdp = await browser.newBrowserCDPSession(), requests = new Map();
+  let sequence = 0;
+  const record = value => {
+    report.worker_network_failures ??= [];
+    if (report.worker_network_failures.length < 20) report.worker_network_failures.push(value);
+  };
+  const endpoint = value => { try { const url = new URL(value); return url.origin + url.pathname; } catch { return 'unknown'; } };
+  cdp.on('Target.receivedMessageFromTarget', ({ sessionId, message }) => {
+    const event = JSON.parse(message), data = event.params;
+    if (event.method === 'Network.requestWillBeSent') {
+      if (requests.size >= 128) requests.delete(requests.keys().next().value);
+      requests.set(`${sessionId}:${data.requestId}`, endpoint(data.request.url));
+    } else if (event.method === 'Network.loadingFailed') {
+      const key = `${sessionId}:${data.requestId}`;
+      record({ endpoint: requests.get(key) ?? 'unknown', error: data.errorText,
+        ...(data.blockedReason ? { blockedReason: data.blockedReason } : {}) });
+      requests.delete(key);
+    } else if (event.method === 'Network.responseReceived' && data.response.status >= 400) {
+      record({ endpoint: endpoint(data.response.url), status: data.response.status });
+    } else if (event.method === 'Network.loadingFinished') requests.delete(`${sessionId}:${data.requestId}`);
+  });
+  cdp.on('Target.targetCreated', ({ targetInfo }) => {
+    if (!['worker', 'shared_worker'].includes(targetInfo.type)) return;
+    void (async () => {
+      const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: targetInfo.targetId, flatten: false });
+      await cdp.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id: ++sequence, method: 'Network.enable' }) });
+    })().catch(error => record({ diagnostic: 'Worker network capture unavailable', error: error.message.slice(0, 300) }));
+  });
+  await cdp.send('Target.setDiscoverTargets', { discover: true });
+}
+
 try {
   await mkdir(app);
   await mkdir(dirname(reportPath), { recursive: true });
@@ -263,7 +298,15 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1'] });
     report.browser = await browser.version();
+    await captureWorkerNetwork(browser);
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } });
+    context.on('requestfailed', request => {
+      report.browser_network_failures ??= [];
+      if (report.browser_network_failures.length < 20) {
+        const url = new URL(request.url());
+        report.browser_network_failures.push({ endpoint: url.origin + url.pathname, error: request.failure()?.errorText });
+      }
+    });
     page = await context.newPage();
     page.on('pageerror', error => {
       report.browser_errors ??= [];
@@ -313,6 +356,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
+      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status};
       else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
       else if(request.action==='command') {
         const before=await session.query('notes',null);
@@ -495,6 +539,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     } catch { /* Preserve the original test failure if the page has crashed. */ }
   }
   if (peer) report.native_inference_diagnostics = await peer.request('inference-status', {}, 5_000).catch(failure => ({ error: failure.message }));
+  if (peer) report.native_session_diagnostics = await peer.request('diagnostics', {}, 5_000).catch(failure => ({ error: failure.message }));
   if (error.stdout) process.stderr.write(error.stdout);
   if (error.stderr) process.stderr.write(error.stderr);
   throw error;
