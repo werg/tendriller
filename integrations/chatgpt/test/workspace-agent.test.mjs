@@ -13,7 +13,10 @@ function fixture(overrides = {}) {
   const bridge = { async getEvent(id, eventId) { return selected ? {
     applicationId: id, revision: { generation: 'g1' }, event: { id: eventId, operationId: 'request-1', payload: { question: 'PRIVATE QUESTION', photo: 'PRIVATE IMAGE' } },
     projection: { name: 'assistant.help_requested', data: { request_id: 'request-1', summary: 'UNTRUSTED INSTRUCTIONS' } },
-  } : null; } };
+  } : null; }, assertSelection(id, revision) {
+    assert.equal(id, applicationId);
+    if (!selected || revision?.generation !== 'g1') throw Object.assign(Error('APPLICATION_VIEW_RECOVERED'), { code: 'APPLICATION_VIEW_RECOVERED' });
+  } };
   const options = { store, bridge, triggerId: 'agtch_fixed', accessToken: 'private-token', authorize: async () => allowed,
     clock: () => now, fetchImpl: async (url, init) => {
       sent.push({ url, init });
@@ -114,7 +117,7 @@ test('lost acceptance retries the original input and key, and recovery blocks ne
 
 test('revocation is checked before reading and again before the provider request', async () => {
   const f = fixture(); f.setAllowed(false);
-  let reads = 0; f.options.bridge = { getEvent: async () => { reads++; return null; } };
+  let reads = 0; f.options.bridge = { ...f.bridge, getEvent: async () => { reads++; return null; } };
   await assert.rejects(createWorkspaceAgentAdapter(f.options).trigger(principal, input), /ACCESS_DENIED/);
   assert.equal(reads, 0); assert.equal(f.sent.length, 0);
   const g = fixture(); g.options.getAccessToken = async () => { g.setAllowed(false); return 'private-token'; };
@@ -147,6 +150,34 @@ test('lease/state is checked after slow authorization before any provider reques
   const result = await createWorkspaceAgentAdapter(f.options).trigger(principal, input);
   assert.equal(result.state, 'accepted'); assert.equal(result.conversationUrl, 'https://chatgpt.com/c/other-worker-receipt');
   assert.equal(f.sent.length, 0);
+});
+
+test('recovery during final asynchronous consent is reread before provider egress', async () => {
+  const f = fixture();
+  f.options.authorize = async () => {
+    const record = Object.values((await f.store.read()).workspaceAgentOperations ?? {})[0];
+    if (record?.state === 'sending') f.setSelected(false);
+    return true;
+  };
+  await assert.rejects(createWorkspaceAgentAdapter(f.options).trigger(principal, input), /SOURCE_NOT_SELECTED/);
+  assert.equal(f.sent.length, 0);
+  const row = Object.values((await f.store.read()).workspaceAgentOperations)[0];
+  assert.equal(row.sourceCurrent, false); assert.equal(row.state, 'prepared');
+  assert.equal(row.leaseId, undefined);
+});
+
+test('native revision fence blocks recovery during the final durable lease read', async () => {
+  const f = fixture(), read = f.store.read;
+  f.store.read = async () => {
+    const state = await read();
+    if (Object.values(state.workspaceAgentOperations ?? {})[0]?.state === 'sending') f.setSelected(false);
+    return state;
+  };
+  await assert.rejects(f.adapter.trigger(principal, input), /APPLICATION_VIEW_RECOVERED/);
+  assert.equal(f.sent.length, 0);
+  const row = Object.values((await read()).workspaceAgentOperations)[0];
+  assert.equal(row.sourceCurrent, false); assert.equal(row.state, 'prepared');
+  assert.equal(row.leaseId, undefined);
 });
 
 test('late accepted receipt survives an expired lease and a later uncertain attempt', async () => {

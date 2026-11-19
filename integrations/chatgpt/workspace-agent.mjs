@@ -52,7 +52,7 @@ function receipt(row) {
 export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerId, accessToken, getAccessToken,
   fetchImpl = globalThis.fetch, clock = Date.now, trackRuns = true, timeoutMs = 15000,
   maxAttempts = 5, retryWindowMs = 3600000, maxOperations = 10000 } = {}) {
-  if (!store?.read || !store?.transaction || !bridge?.getEvent || typeof authorize !== 'function' ||
+  if (!store?.read || !store?.transaction || !bridge?.getEvent || typeof bridge.assertSelection !== 'function' || typeof authorize !== 'function' ||
       typeof fetchImpl !== 'function' || !/^agtch_[A-Za-z0-9_-]{1,128}$/u.test(triggerId ?? '') ||
       (typeof accessToken !== 'string' && typeof getAccessToken !== 'function') ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
@@ -85,13 +85,23 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
     if (!row) fail('WORKSPACE_AGENT_OPERATION_NOT_FOUND', 404);
     mutation(row); return row;
   });
+  function validSource(found, applicationId, sourceEventId) {
+    if (found.applicationId !== applicationId || found.event?.id !== sourceEventId ||
+        !/^[a-z][a-z0-9_.-]{0,127}$/u.test(found.projection?.name ?? '')) fail('WORKSPACE_AGENT_SOURCE_INVALID');
+    return found;
+  }
   async function source(principal, applicationId, sourceEventId) {
     const found = await bridge.getEvent(applicationId, sourceEventId);
     if (!found) return null;
-    if (found.applicationId !== applicationId || found.event?.id !== sourceEventId ||
-        !/^[a-z][a-z0-9_.-]{0,127}$/u.test(found.projection?.name ?? '')) fail('WORKSPACE_AGENT_SOURCE_INVALID');
+    validSource(found, applicationId, sourceEventId);
     await permitted(principal, applicationId, found.projection.name);
-    return found;
+    // Consent/account lookup can suspend while native recovery changes the
+    // selected history. Never use the pre-authorization read as current evidence.
+    const current = await bridge.getEvent(applicationId, sourceEventId);
+    if (!current) return null;
+    validSource(current, applicationId, sourceEventId);
+    if (current.projection.name !== found.projection.name) fail('WORKSPACE_AGENT_SOURCE_CHANGED', 409);
+    return current;
   }
   function bind(row, ownerId, input) {
     if (row.ownerId !== ownerId || row.applicationId !== input.applicationId ||
@@ -161,6 +171,9 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
       if (row.state === 'accepted' || row.leaseId !== leaseId || row.state !== 'sending') return receipt(row);
       if (!row.sourceCurrent) fail('WORKSPACE_AGENT_SOURCE_NOT_SELECTED', 409);
       if (row.leaseUntil <= clock()) fail('WORKSPACE_AGENT_LEASE_EXPIRED', 409);
+      // This is synchronous on the already-open native session. There must be
+      // no await between this revision fence and initiating provider I/O.
+      bridge.assertSelection(input.applicationId, current.revision);
       dispatched = true;
       const response = await fetchImpl(`${ORIGIN}/v1/workspace_agents/${triggerId}/trigger`, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
@@ -197,6 +210,7 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
       if (!dispatched) {
         await change(key, value => {
           if (value.leaseId !== leaseId || value.state !== 'sending') return;
+          if (error.code === 'APPLICATION_VIEW_RECOVERED') value.sourceCurrent = false;
           value.state = value.sendBaseState ?? 'prepared';
           delete value.leaseId; delete value.leaseUntil; delete value.sendBaseState;
         });
