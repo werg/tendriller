@@ -79,8 +79,8 @@ test('recovery pauses notifications until explicit resume and records the select
   await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
   await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
   await f.outbox.dispatchDue(); assert.equal(f.sent.length, 0);
-  await assert.rejects(f.outbox.resume({ ...owner, id: 'other' }, { subscriptionId: 'sub-a', strategy: 'from_current' }), /not found/);
-  await f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current' });
+  await assert.rejects(f.outbox.resume({ ...owner, id: 'other' }, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } }), /not found/);
+  await f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } });
   const state = await f.store.read();
   assert.equal(state.subscriptions['sub-a'].sourceCursor, 'new-tail');
   assert.equal(Object.values(state.jobs)[0].reason, 'reviewed_start_from_current');
@@ -148,7 +148,7 @@ test('a newer recovery pause cannot be cleared by an older resume still scanning
   const f = fixture(), scanning = gate();
   await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
   f.bridge.readEvents = async () => { scanning.enter(); await scanning.wait; return { cursor: 'g2-tail', revision: { generation: 'g2' }, hasMore: false }; };
-  const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current' });
+  const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } });
   await scanning.entered;
   await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g3' } });
   scanning.release();
@@ -164,7 +164,7 @@ test('expiry, revocation and unsubscribe during recovery review prevent resumpti
     const f = fixture(), scanning = gate();
     await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
     f.bridge.readEvents = async () => { scanning.enter(); await scanning.wait; return { cursor: 'tail', revision, hasMore: false }; };
-    const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current' });
+    const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } });
     await scanning.entered;
     if (change === 'expiry') f.advance(10_000_000);
     if (change === 'revocation') f.allow(false);
@@ -227,4 +227,22 @@ test('disconnect preserves a late webhook receipt while keeping the delivery sto
   assert.equal(job.deliveryMayHaveOccurred, false);
   assert.equal(typeof job.acceptedAt, 'number');
   assert.equal((await f.store.read()).subscriptions['sub-a'], undefined);
+});
+
+test('a repeated approval for an older recovery cannot acknowledge a newer recovery', async () => {
+  const f = fixture();
+  const first = { generation: 'g2', point: { sequence: 3 } };
+  const second = { generation: 'g3', point: { sequence: 4 } };
+  await f.outbox.pauseForRecovery('sub-a', { revision: first });
+  const request = { subscriptionId: 'sub-a', strategy: 'replay_selected', recoveryRevision: first };
+  await f.outbox.resume(owner, request);
+  await f.outbox.pauseForRecovery('sub-a', { revision: second });
+  await assert.rejects(f.outbox.resume(owner, request), { code: 'RECOVERY_CHANGED', status: 409 });
+  await assert.rejects(f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'replay_selected' }), { code: 'RECOVERY_CHANGED', status: 409 });
+  await assert.rejects(f.outbox.resume(owner, { ...request, recoveryRevision: { generation: 'g3' } }), { code: 'RECOVERY_CHANGED', status: 409 });
+  const status = await f.outbox.status(owner, 'app-a');
+  assert.deepEqual(status.subscriptions[0].recoveryRevision, second);
+  assert.equal(status.subscriptions[0].pausedReason, 'recovery_review_required');
+  await f.outbox.resume(owner, { ...request, recoveryRevision: { point: { sequence: 4 }, generation: 'g3' } });
+  assert.equal((await f.outbox.status(owner, 'app-a')).subscriptions[0].pausedReason, null);
 });

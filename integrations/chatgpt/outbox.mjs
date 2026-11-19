@@ -208,10 +208,17 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       }
       return { paused: true, recoveryNoticeFailures: failures };
     },
-    async resume(principal, { subscriptionId, strategy }) {
+    async resume(principal, { subscriptionId, strategy, recoveryRevision }) {
       if (!['from_current', 'replay_selected'].includes(strategy)) fail('INVALID_RECOVERY_STRATEGY', 'Choose from_current or replay_selected after reviewing recovery');
       const sub = (await store.read()).subscriptions?.[subscriptionId];
       if (!sub || !sameOwner(principal, sub.owner)) fail('SUBSCRIPTION_NOT_FOUND', 'Subscription not found', { status: 404 });
+      let reviewed;
+      try {
+        if (!recoveryRevision || typeof recoveryRevision !== 'object' || Array.isArray(recoveryRevision)) throw Error('Missing reviewed revision');
+        reviewed = bounded(recoveryRevision, 16384);
+      } catch { fail('RECOVERY_CHANGED', 'Supply the exact recovery revision from the current subscription status', { status: 409 }); }
+      if (canonical(reviewed) !== canonical(sub.recoveryRevision ?? null))
+        fail('RECOVERY_CHANGED', 'The reviewed recovery revision is no longer current; review the current subscription status', { status: 409 });
       if (!live(sub, clock())) fail('SUBSCRIPTION_INACTIVE', 'Refresh the subscription before resuming');
       if (!sub.pausedReason) fail('RECOVERY_REVIEW_NOT_REQUIRED', 'This subscription is not paused for recovery');
       await authorize(sub.owner, sub.applicationId, sub.name);
@@ -221,7 +228,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
         const current = state.subscriptions?.[subscriptionId];
         if (!live(current, clock()) || !sameActivation(sub, current) || current.version !== sub.version ||
             current.recoveryVersion !== sub.recoveryVersion || current.pausedReason !== sub.pausedReason ||
-            canonical(current.recoveryRevision ?? null) !== canonical(sub.recoveryRevision ?? null))
+            canonical(current.recoveryRevision ?? null) !== canonical(reviewed))
           fail('SUBSCRIPTION_CHANGED', 'Subscription changed during recovery review', { status: 409 });
         Object.assign(current, { pausedReason: null, sourceCursor: baseline.cursor, sourceRevision: baseline.revision,
           resumedAt: clock(), resumeStrategy: strategy, version: current.version + 1 });
@@ -236,6 +243,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       const subscriptions = Object.values(state.subscriptions ?? {}).filter(sub => sub.applicationId === applicationId && sameOwner(principal, sub.owner))
         .map(sub => ({ id: sub.id, name: sub.name, active: live(sub, clock()), expiresAt: sub.expiresAt ?? null,
           pausedReason: sub.pausedReason ?? null, observedAt: sub.observedAt ?? null, recoveryAt: sub.recoveryAt ?? null,
+          recoveryRevision: structuredClone(sub.recoveryRevision ?? null),
           recoveryNoticeError: sub.recoveryNoticeError ?? null, recoveryNoticeQueuedAt: sub.recoveryNoticeQueuedAt ?? null }));
       const jobs = Object.values(state.jobs ?? {}).filter(job => job.applicationId === applicationId && sameOwner(principal, job.owner) &&
         (requestId === undefined || job.envelope.data.request_id === requestId))
