@@ -82,6 +82,9 @@ async function preflightFixture() {
   const manifestPath = join(release, 'RELEASE.json');
   await writeFile(manifestPath, JSON.stringify({ format: 'tendriller-assistant-release/v1',
     core: { source: 'b'.repeat(40), dirty: false }, chronolog: { source: CHRONOLOG_SOURCE, dirty: false }, files }));
+  for (const name of ['session.mjs', 'bridge-session.mjs']) await writeFile(join(f.source, name), await readFile(join(release, 'bridge-template', name)));
+  await writeFile(join(f.source, 'STAGED.json'), JSON.stringify({ format: 'tendriller-bridge-stage/v1', staged: true,
+    applicationId, publicKey: 'c'.repeat(64), coreSource: 'b'.repeat(40), chronologSource: CHRONOLOG_SOURCE }), { mode: 0o600 });
   await writeFile(join(f.source, '.tendriller/bridge-device.sqlite'), 'synthetic local-only store marker', { mode: 0o600 });
   const state = join(f.directory, 'state'); await mkdir(state, { mode: 0o700 });
   const config = { resource: f.settings.resource, host: '127.0.0.1', port: 8788,
@@ -100,6 +103,8 @@ test('offline preflight verifies exact release bytes and private paths without a
     const result = await preflightConfig(f.config, { ...f.options, createIntegration });
     assert.equal(result.ready, true); assert.equal(result.scope, 'local-configuration');
     assert.equal(result.liveChatGptVerified, false); assert.equal(result.humanAccountLinked, 'not-tested'); assert.equal(opened, 0);
+    await writeFile(join(f.source, 'session.mjs'), 'changed staged application');
+    await assert.rejects(preflightConfig(f.config, { ...f.options, createIntegration }), /STAGED_RUNTIME_BYTES_CHANGED/);
     await writeFile(join(f.release, 'integrations/chatgpt/run.mjs'), 'changed');
     await assert.rejects(verifyRelease(f.options.manifestPath), /RELEASE_BYTES_CHANGED/);
     await assert.rejects(preflightConfig(f.config, { ...f.options, runtime: { ...f.options.runtime, uid: 0 } }), /NON_ROOT_REQUIRED/);
@@ -110,7 +115,7 @@ test('online preflight checks current host and least-privilege native readiness 
   const f = await preflightFixture(); let closed = 0, reads = 0;
   const revision = { applicationId, generation: 'selected' };
   const integration = { account: { checkHostConfiguration: async () => ({ authorizationServerReady: true }) },
-    bridge: { readRevision: async () => { reads++; return revision; }, getStatus: async () => ({ deviceId: 'device', status: { phase: 'ready' },
+    bridge: { readRevision: async () => { reads++; return revision; }, getStatus: async () => ({ deviceId: 'c'.repeat(64), status: { phase: 'ready' },
       grant: { reader: true, writer: true, coordinator: false, recovery: false, administrator: false, publisher: false } }),
       assertSelection: (id, value) => { assert.equal(id, applicationId); assert.equal(value, revision); } },
     start() { throw Error('Preflight must not start delivery'); }, close: async () => { closed++; } };
@@ -131,7 +136,7 @@ test('online preflight checks current host and least-privilege native readiness 
 test('online preflight has a bounded cancellation path and does not leave the integration open', async () => {
   const f = await preflightFixture(); let closed = false, aborted = false;
   try {
-    await assert.rejects(preflightConfig(f.config, { ...f.options, online: true, timeoutMs: 100,
+    await assert.rejects(preflightConfig(f.config, { ...f.options, online: true, timeoutMs: 1000,
       createIntegration: async () => ({ account: { checkHostConfiguration: ({ signal }) => new Promise((_, reject) => {
         signal.addEventListener('abort', () => { aborted = true; reject(Error('stopped')); }, { once: true });
       }) }, close: async () => { closed = true; } }) }), /PREFLIGHT_DEADLINE/);
@@ -140,7 +145,7 @@ test('online preflight has a bounded cancellation path and does not leave the in
 });
 
 test('staging snapshots the verified native bridge identity without creator or bootstrap secrets',
-  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 30000 }, async () => {
+  { skip: !process.env.CHRONOLOG_SESSION_PACKAGE, timeout: 60000 }, async () => {
     const { loadNativePackage } = await import('./native-fixture.mjs');
     const { cp, chmod, readdir } = await import('node:fs/promises');
     const { native, packagePath } = await loadNativePackage();

@@ -29,13 +29,29 @@ export async function verifyRelease(manifestPath, { signal } = {}) {
   return { coreSource: manifest.core.source, chronologSource: manifest.chronolog.source, files: Object.keys(manifest.files).length };
 }
 
+export async function verifyStagedRuntime(kitchenDirectory, manifestPath, { signal } = {}) {
+  absolutePath(kitchenDirectory); await verifyRelease(manifestPath, { signal });
+  const manifest = await json(manifestPath), recordPath = join(kitchenDirectory, 'STAGED.json');
+  await privateFile(recordPath); const record = await json(recordPath);
+  if (record.format !== 'tendriller-bridge-stage/v1' || record.staged !== true ||
+      record.coreSource !== manifest.core.source || record.chronologSource !== manifest.chronolog.source ||
+      !/^[a-f0-9]{64}$/u.test(record.publicKey ?? '')) fail('DEPLOYMENT_STAGED_PROVENANCE_INVALID');
+  for (const [name, expected] of Object.entries(manifest.files)) {
+    if (!name.startsWith('bridge-template/')) continue;
+    signal?.throwIfAborted();
+    const path = join(kitchenDirectory, name.slice('bridge-template/'.length)), info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || createHash('sha256').update(await readFile(path)).digest('hex') !== expected) fail('DEPLOYMENT_STAGED_RUNTIME_BYTES_CHANGED');
+  }
+  return record;
+}
+
 /** Readiness only: no command, consent, subscription, callback or provider trigger. */
 export async function preflightConfig(config, { online = false, timeoutMs = 60000,
   kitchenDirectory = process.env.TENDRILLER_KITCHEN_DIR, manifestPath = process.env.TENDRILLER_RELEASE_MANIFEST,
   runtime = { node: process.versions.node, platform: process.platform, uid: process.getuid?.() },
   createIntegration = async value => (await import('../integration.mjs')).createIntegration(value) } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60000) fail('DEPLOYMENT_PREFLIGHT_DEADLINE_INVALID');
-  const started = performance.now(), checks = [], controller = new AbortController(); let integration, timer;
+  const started = performance.now(), checks = [], controller = new AbortController(); let integration, timer, staged;
   const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
     controller.abort(); reject(Object.assign(Error('DEPLOYMENT_PREFLIGHT_DEADLINE'), { code: 'DEPLOYMENT_PREFLIGHT_DEADLINE' }));
   }, timeoutMs - Math.min(5000, Math.floor(timeoutMs / 4))); });
@@ -71,13 +87,14 @@ export async function preflightConfig(config, { online = false, timeoutMs = 6000
     await check('private-storage', async () => {
       absolutePath(config.storePath); await writablePrivateDirectory(dirname(config.storePath));
       absolutePath(kitchenDirectory); const directory = join(kitchenDirectory, '.tendriller');
+      staged = await verifyStagedRuntime(kitchenDirectory, manifestPath, { signal: controller.signal });
       await writablePrivateDirectory(directory);
       for (const name of ['handle.json', 'descriptor.json', 'bridge-device.sqlite']) await privateFile(join(directory, name));
       try { await lstat(join(directory, 'device.sqlite')); fail('DEPLOYMENT_CREATOR_STORE_PRESENT'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       const handle = await json(join(directory, 'handle.json')), descriptor = await json(join(directory, 'descriptor.json'));
       const app = config.applications.find(value => value.id === descriptor.payload?.applicationId);
-      if (!app || handle.application?.id !== app.id || handle.id !== app.pageId ||
+      if (!app || staged.applicationId !== app.id || handle.application?.id !== app.id || handle.id !== app.pageId ||
           new URL(handle.api).origin !== new URL(config.hostAccount.origin).origin) fail('DEPLOYMENT_APPLICATION_SCOPE_MISMATCH');
       return { dedicatedBridgeStore: true, applicationId: app.id };
     });
@@ -101,6 +118,7 @@ export async function preflightConfig(config, { online = false, timeoutMs = 6000
         if (!grant?.reader || app.allowedCommands.length > 0 && !grant.writer ||
             ['coordinator', 'recovery', 'administrator', 'publisher'].some(name => grant[name])) fail('DEPLOYMENT_DEDICATED_BRIDGE_GRANT_REQUIRED');
         if (result.status?.phase !== 'ready') fail('DEPLOYMENT_NATIVE_PEER_NOT_READY');
+        if (app.id === staged.applicationId && result.deviceId !== staged.publicKey) fail('DEPLOYMENT_BRIDGE_IDENTITY_MISMATCH');
         integration.bridge.assertSelection(app.id, revision);
         return { applicationId: app.id, deviceId: result.deviceId, generation: revision.generation, phase: result.status.phase,
           reader: true, writer: grant.writer === true, privileged: false };
@@ -127,9 +145,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const hardDeadline = setTimeout(() => { console.error('DEPLOYMENT_PREFLIGHT_DEADLINE'); process.exit(1); }, 60000);
   let completed = false;
   try {
+    if (process.platform !== 'linux' || Number(process.versions.node.split('.')[0]) < 24 || process.getuid?.() === 0) fail('DEPLOYMENT_LINUX_NODE24_NON_ROOT_REQUIRED');
     const { values } = parseArgs({ options: { config: { type: 'string' }, env: { type: 'string' }, online: { type: 'boolean', default: false } } });
     absolutePath(values.config); await privateFile(values.config);
     if (values.env) { absolutePath(values.env); await loadEnvironment(values.env); }
+    // Verify copied runtime bytes before configuration imports the application.
+    await verifyStagedRuntime(process.env.TENDRILLER_KITCHEN_DIR, process.env.TENDRILLER_RELEASE_MANIFEST);
     const { default: config } = await import(pathToFileURL(values.config).href);
     console.log(JSON.stringify(await preflightConfig(config, { online: values.online, timeoutMs: 50000 })));
     completed = true;
