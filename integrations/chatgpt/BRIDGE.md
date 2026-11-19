@@ -64,7 +64,10 @@ retries. Cancellation or a lost HTTP reply never authorizes a new operation ID.
 `readEvents(id,{cursor?,limit?})` captures and releases a native read view and
 returns `{applicationId,revision,cursor,hasMore,events}`. Each projected event has
 `name`, `data`, `sourceEventId`, `sourceOperationId`, `sourceAuthor`,
-`sourceAttemptId` and `revision`. Provenance is copied from the verified history,
+`sourceAttemptId` and `revision`, plus `sourceTimestampMs` when the native author
+timestamp is representable. This timestamp is authenticated author metadata,
+not a trusted server wall clock or proof of when a remote action completed.
+Provenance is copied from the verified history,
 never from the application payload. Limits bound projection and batch bytes.
 An event batch can be empty while its cursor advances: the native limit counts
 scanned transactions. Persist the returned cursor atomically with outbound jobs.

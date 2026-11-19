@@ -153,8 +153,12 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       || !NAME.test(projection.name) || !projection.data || typeof projection.data !== 'object' || Array.isArray(projection.data)) {
       fail('BRIDGE_EVENT_PROJECTION_INVALID');
     }
+    const sourceTimestampMs = typeof event.authorTimestampMs === 'string' && /^[0-9]{1,16}$/u.test(event.authorTimestampMs)
+      ? Number(event.authorTimestampMs) : NaN;
     return bounded({ name: projection.name, data: projection.data, sourceEventId: event.id,
       sourceOperationId: event.operationId, sourceAuthor: event.author, sourceAttemptId: event.attemptId,
+      // Authenticated author metadata is not a trusted server wall clock.
+      ...(Number.isSafeInteger(sourceTimestampMs) && sourceTimestampMs <= 8.64e15 ? { sourceTimestampMs } : {}),
       revision }, maxEventBytes, 'BRIDGE_EVENT_TOO_LARGE');
   }
   async function read(id, options = {}) {
@@ -270,6 +274,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
           try { batch = await read(id, { ...(cursor === undefined ? {} : { cursor }), limit }); }
           catch (error) {
             if (error?.code !== 'APPLICATION_VIEW_RECOVERED' && error?.message !== 'APPLICATION_VIEW_RECOVERED') throw error;
+            await access(entry);
             const revision = error.revision ?? session.revision;
             const notices = await session.inspectRecovery();
             yield bounded({ kind: 'recovery', applicationId: id, revision,
