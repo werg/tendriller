@@ -43,7 +43,7 @@ async function bodyJson(request, maximum) {
 }
 
 export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
-  authorizeAccountAccess, resource, lifecycle, workspaceAgent, management, onSubscriptionsChanged = () => {},
+  authorizeAccountAccess, resource, lifecycle, workspaceAgent, management, managementPath = '/connections', onSubscriptionsChanged = () => {},
   allowedOrigins = [], maxRequestBytes = 262144, maxOperations = 10000, maxProfiles = 10000,
   requestsPerMinute = 120, clock = Date.now } = {}) {
   if (!auth?.authenticate || !bridge || !consent || !store || typeof authorizeAccountAccess !== 'function')
@@ -205,7 +205,7 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     if (url.pathname === new URL(auth.metadataUrl ?? '/.well-known/oauth-protected-resource', resource).pathname && request.method === 'GET') return json(auth.metadata);
     if (url.pathname === '/.well-known/oauth-protected-resource' && request.method === 'GET') return json(auth.metadata);
     if (url.pathname === '/health' && request.method === 'GET') return json({ service: 'tendriller-assistant', ready: true, liveChatGptVerified: false });
-    if (management && url.pathname === '/connections') return management(request);
+    if (management && url.pathname === managementPath) return management(request);
     if (url.pathname !== resourceUrl.pathname) return json({ error: 'not_found' }, 404);
     if (request.headers.has('Origin') && !origins.has(request.headers.get('Origin'))) return json({ error: 'origin_not_allowed' }, 403);
     let principal;

@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const required = name => {
   const value = process.env[name];
-  if (!value) throw Error(`Required deployment setting: ${name}`);
+  if (!value) throw Object.assign(Error(`Required deployment setting: ${name}`), { code: `MISSING_${name}` });
   return value;
 };
 const kitchen = resolve(required('TENDRILLER_KITCHEN_DIR'));

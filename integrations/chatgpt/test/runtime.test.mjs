@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createIntegration } from '../integration.mjs';
 import { startHttpService } from '../run.mjs';
 import { createMemoryStore } from '../store.mjs';
+import { createSessionBridge } from '../bridge.mjs';
 
 const APP = 'a'.repeat(64), principal = { id: 'owner', issuer: 'https://issuer.example', scopes: ['tendrils:list', 'applications:read', 'applications:write', 'events:subscribe'] };
 const revision = { applicationId: APP, generation: 'g1' };
@@ -94,4 +95,85 @@ test('per-principal rate limits apply before MCP work without exposing credentia
     const limited = await service.handler(request()); assert.equal(limited.status, 429);
     assert.ok(Number(limited.headers.get('Retry-After')) > 0); assert.doesNotMatch(await limited.text(), /fixture/);
   } finally { await service.close(); }
+});
+
+test('configured journal limits are enforced and zero cannot silently become a default', async () => {
+  const f = config(); f.value.bridge.command = async () => ({ state: 'saved' });
+  const service = await createIntegration({ ...f.value, maxOperations: 1 });
+  try {
+    await service.consent.grant(principal, { applicationId: APP, commands: ['replyToAssistance'] });
+    const call = async operationId => (await (await service.handler(new Request(f.value.resource, {
+      method: 'POST', headers: { Authorization: 'Bearer fixture', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_application_command',
+        arguments: { applicationId: APP, operationId, command: 'replyToAssistance', input: { requestId: 'r1' } } } }),
+    }))).json()).result;
+    assert.equal((await call('op-1')).isError, undefined);
+    assert.equal((await call('op-2')).structuredContent.code, 'OPERATION_JOURNAL_FULL');
+    assert.equal(Object.keys((await service.store.read()).commandOperations).length, 1);
+  } finally { await service.close(); }
+  await assert.rejects(createIntegration({ ...config().value, maxProfiles: 0 }), /positive bounded/);
+});
+
+test('an explicitly configured management path reaches the authenticated consent UI', async () => {
+  const f = config(), service = await createIntegration({ ...f.value, management: {
+    path: '/settings/connections', authenticate: async () => principal,
+    applicationsForPrincipal: async () => [{ applicationId: APP, queries: ['assistanceStatus'], commands: [], events: [] }], csrfKey: Buffer.alloc(32),
+  } });
+  try {
+    const response = await service.handler(new Request('https://integration.example/settings/connections'));
+    assert.equal(response.status, 200); const html = await response.text(); assert.match(html, /Connect ChatGPT/);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
+    const saved = await service.handler(new Request('https://integration.example/settings/connections', {
+      method: 'POST', headers: { Origin: 'https://integration.example', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf, action: 'grant', applicationId: APP, queries: 'assistanceStatus', days: '30' }),
+    }));
+    assert.equal(saved.status, 303); assert.equal(saved.headers.get('Location'), '/settings/connections');
+    assert.equal((await service.handler(new Request('https://integration.example/connections'))).status, 404);
+  } finally { await service.close(); }
+});
+
+test('disconnect invalidates an in-flight subscription refresh even if consent is subsequently regranted', async () => {
+  const f = config(); let hold = false, release, entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  f.value.delivery.send = async (_url, { body }) => {
+    const payload = JSON.parse(body);
+    if (hold) { entered(); await new Promise(resolve => { release = resolve; }); }
+    return { status: 200, body: JSON.stringify({ challenge: payload.challenge }) };
+  };
+  const service = await createIntegration(f.value);
+  try {
+    const selection = { applicationId: APP, events: ['assistant.help_requested'] };
+    const consent = await service.consent.grant(principal, selection);
+    const input = { name: 'assistant.help_requested', arguments: { application_id: APP },
+      delivery: { mode: 'webhook', url: 'https://callback.example/event', secret: 'whsec_' + Buffer.alloc(32).toString('base64') } };
+    await service.subscriptions.subscribe(principal, input);
+    hold = true;
+    const pending = service.subscriptions.subscribe(principal, { ...input, delivery: { ...input.delivery, secret: 'whsec_' + Buffer.alloc(32, 1).toString('base64') } });
+    await ready; await service.consent.revoke(principal, { id: consent.id });
+    await service.consent.grant(principal, selection); release();
+    await assert.rejects(pending, /changed while/);
+    assert.equal((await service.subscriptions.active()).length, 0);
+  } finally { await service.close(); }
+});
+
+test('shutdown aborts a native control lookup before awaiting its blocked observer', async () => {
+  const f = config(); let entered, nativeAborted = false;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const bridge = createSessionBridge({ applications: [{ id: APP, allowedQueries: [], allowedCommands: [], eventTopics: [],
+    openSession: async () => ({ session: { applicationId: APP, deviceId: 'b'.repeat(64), close: async () => {} },
+      control: { application: async ({ signal }) => new Promise((_resolve, reject) => {
+        entered(); signal.addEventListener('abort', () => { nativeAborted = true; reject(signal.reason); }, { once: true });
+      }) },
+    }),
+  }] });
+  const service = await createIntegration({ ...f.value, bridge });
+  try {
+    await service.consent.grant(principal, { applicationId: APP, events: ['assistant.help_requested'] });
+    await service.store.transaction(state => { state.subscriptions = { sub: { id: 'sub', applicationId: APP, owner: principal,
+      active: true, version: 1, activationId: 'activation', name: 'assistant.help_requested', sourceCursor: null, expiresAt: Date.now() + 60000 } }; });
+    service.start(); await ready;
+    let timer;
+    await Promise.race([service.close(), new Promise((_resolve, reject) => { timer = setTimeout(() => reject(Error('Shutdown stayed blocked in native control')), 1000); })]).finally(() => clearTimeout(timer));
+    assert.equal(nativeAborted, true);
+  } finally { await bridge.close(); await service.close(); }
 });

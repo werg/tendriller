@@ -66,6 +66,7 @@ export async function createIntegration(config = {}) {
               if (current?.activationId !== sub.activationId) return;
               current.active = false; current.stopReason = 'authorization_revoked'; current.version++;
               delete current.secret; delete current.previousSecret;
+              delete current.pendingToken; delete current.pendingUntil;
               for (const job of Object.values(state.jobs ?? {})) if (job.subscriptionId === sub.id && ['queued', 'retry', 'sending'].includes(job.state))
                 Object.assign(job, { state: 'cancelled', reason: 'authorization_revoked', updatedAt: clock() });
             });
@@ -86,17 +87,20 @@ export async function createIntegration(config = {}) {
     const lifecycle = config.lifecycle ? createLifecycleService({ ...config.lifecycle, store, clock,
       ...(publicationApproval ? { authorizePublication: async (principal, review) => {
         await authorized(principal, review.applicationId, null);
-        return await publicationApproval(principal, review) === true;
+        if (await publicationApproval(principal, review) !== true) return false;
+        await authorized(principal, review.applicationId, null); return true;
       } } : {}),
     }) : undefined;
     const workspaceAgent = config.workspaceAgent ? createWorkspaceAgentAdapter({ ...config.workspaceAgent,
       store, bridge, authorize: authorized, clock }) : undefined;
     const handler = createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
       authorizeAccountAccess: config.authorizeAccountAccess, resource: config.resource, lifecycle, workspaceAgent,
-      management, clock, onSubscriptionsChanged: changed,
+      management, managementPath: config.management?.path ?? '/connections', clock, onSubscriptionsChanged: changed,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
-      ...(config.maxRequestBytes ? { maxRequestBytes: config.maxRequestBytes } : {}),
-      ...(config.requestsPerMinute ? { requestsPerMinute: config.requestsPerMinute } : {}),
+      ...(config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {}),
+      ...(config.requestsPerMinute !== undefined ? { requestsPerMinute: config.requestsPerMinute } : {}),
+      ...(config.maxOperations !== undefined ? { maxOperations: config.maxOperations } : {}),
+      ...(config.maxProfiles !== undefined ? { maxProfiles: config.maxProfiles } : {}),
     });
     async function observationFailure(id, error) {
       await store.transaction(state => {
@@ -108,6 +112,7 @@ export async function createIntegration(config = {}) {
     async function reconcile() {
       await recheckSubscriptions();
       const active = new Map((await subscriptions.active()).filter(sub => !sub.pausedReason).map(sub => [sub.id, sub]));
+      if (lifetime.signal.aborted) return;
       for (const [id, watcher] of watchers) {
         const sub = active.get(id);
         if (!sub || watcher.version !== sub.version || watcher.activationId !== sub.activationId) watcher.controller.abort();
@@ -150,9 +155,12 @@ export async function createIntegration(config = {}) {
       async close() {
         if (closed) return; closed = true; detach(); lifetime.abort(); wakeUp();
         for (const watcher of watchers.values()) watcher.controller.abort();
-        await loop;
-        await Promise.allSettled([...watchers.values()].map(watcher => watcher.task));
-        await bridge.close(); await store.close();
+        // Native control reads use the bridge's own lifetime signal. Abort that
+        // owner before awaiting observers which may be blocked in such a read.
+        const results = await Promise.allSettled([bridge.close(), loop, ...[...watchers.values()].map(watcher => watcher.task)]);
+        await store.close();
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed) throw failed.reason;
       },
     };
   } catch (error) { await bridge?.close?.(); await store.close(); throw error; }
