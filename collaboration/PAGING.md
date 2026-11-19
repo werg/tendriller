@@ -102,6 +102,15 @@ The continuation always starts after its last included record. Inner raw SQL rea
 fetch at most eight journal records at a time, so a captured Worker view does not
 first construct an oversized transport response before applying the outer budget.
 
+Pages also account for the facade's structured-clone costs: primitive values,
+UTF-8 property names and array indexes count even when their JSON representation
+is short. Task pages reserve at most 28,000 nodes and 512 KiB under that accounting;
+each evidence page reserves 14,000 nodes and 192 KiB. The three snapshot sections
+together leave 9,536 nodes and 128 KiB for cursors, revisions and the outer response
+within the owner's 65,536-node / 1 MiB frame. Dense legal arrays therefore shorten
+a page without losing its next item or making a named query fail at transport.
+Individual task inspection uses the same task budget plus one evidence page.
+
 The legacy snapshot is an explicitly incomplete preview when any subsection has
 `hasMore: true`. Its three continuations lead to `tasks`, `results` and `messages`
 respectively. A growing journal no longer fails at an arbitrary 10,000-row total.
@@ -113,3 +122,22 @@ An attachment restricted to approved named queries cannot turn a captured view
 into unrestricted SQL; use its approved named queries instead. An unrestricted
 query-only attachment can capture SQL without receiving the separate events grant.
 Releasing a view remains permitted cleanup after any read denial.
+
+## Raw-program admission and readable history
+
+The SQL schema enforces the payload shape required by the public projections,
+including for a writer submitting a raw change program. JSON-bearing fields are
+encoded JSON strings with their declared byte bounds; an object-valued `input`,
+`content` or `source` cannot be admitted and later break `JSON.parse` during a read.
+The row envelope and each decoded JSON document allow at most 4,096 nodes and 24
+nested levels, matching command preparation, and reject nonfinite numeric atoms.
+Required projected fields also retain their declared scalar types and bounds.
+
+Duplicate object keys are rejected at every depth because SQLite and JavaScript
+otherwise select different occurrences. Validation uses decoded key identities
+and actual tree-parent relationships, so punctuation within a legitimate key does
+not create false nesting. Every encoded document has its own unique validation
+identity, including when the surrounding invalid envelope repeats a field.
+Failures report `collab_json_fields`, `collab_json_structure` or `collab_envelope`
+through the deterministic assertion outcome. The malformed attempt cannot add a
+row, change a current claim or poison another participant's next read.

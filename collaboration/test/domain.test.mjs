@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { describeApplication, PEER_GENERATION_CAPABILITIES } from '@chronolog/peer-session';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createCollaborationDefinition } from '../domain.mjs';
+import { captureCollaborationReader } from '../paging.mjs';
+import { checkOwnerFrame } from '../browser-transport.mjs';
 
 const A='a'.repeat(64),B='b'.repeat(64),C='c'.repeat(64),G='1'.repeat(64),G2='2'.repeat(64),APP='7'.repeat(64),HISTORY='verified-domain-history';
 function harness() {
@@ -38,6 +43,52 @@ function request(h,slots=[{slotId:'main',eligibleSigners:[B,C]}],responsePolicy=
 const claim=(claimId='claim-b',expectedEpoch=0)=>({taskId:'task',slotId:'main',claimId,runId:'run-b',endpointIncarnation:'view-b',expectedEpoch,taskVersion:1});
 const result=(resultId='result-b',claimEpoch=1,generation=G)=>({taskId:'task',slotId:'main',resultId,claimEpoch,taskVersion:1,generation,
   runId:'run-b',endpointIncarnation:'view-b',outcome:'succeeded',content:'{"answer":42}'});
+const rawRequest=()=>({kind:'review',title:'Raw request',input:'null',target:JSON.stringify({kind:'signer',deviceId:B}),
+  source:'{}',context:'{}',slots:[{slotId:'main',eligibleSigners:[B]}],responsePolicy:'one'});
+function rawRecord(h,type,body,{author=A,taskId='task',slotId='',id=crypto.randomUUID()}={}){
+  const quoted=value=>`'${String(value).replaceAll("'","''")}'`;
+  const encoded=typeof body==='string'?body:JSON.stringify(body);
+  return h.raw(`INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,generation,attempt_id,body,chronolog_owner)
+    VALUES(${quoted(id)},(SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal),${quoted(type)},${quoted(taskId)},${quoted(slotId)},
+      lower(hex(chronolog_actor())),'${G}',chronolog_transaction_id(),${quoted(encoded)},1)`,author);
+}
+
+test('raw JSON fields must retain the encoded-string contract and projection envelope types',async()=>{
+  const h=harness();
+  for(const key of ['input','target','source','context'])
+    assert.throws(()=>rawRecord(h,'request',{...rawRequest(),[key]:{poison:true}}),/collab_json_fields/);
+  assert.throws(()=>rawRecord(h,'request',{...rawRequest(),kind:{poison:true}}),/collab_envelope/);
+  assert.throws(()=>rawRecord(h,'message',{messageId:'raw',text:'Safe text',source:{poison:true}}),/collab_json_fields/);
+  assert.throws(()=>rawRecord(h,'message',{messageId:{poison:true},text:'Safe text',source:'{}'}),/collab_envelope/);
+  request(h);h.execute('collab.claim',claim(),B);
+  const {taskId,slotId,...content}=result('raw');
+  assert.throws(()=>rawRecord(h,'result',{...content,disposition:'accepted',content:{poison:true}},{author:B,slotId}),/collab_json_fields/);
+  h.execute('collab.result',result(),B);
+  assert.throws(()=>rawRecord(h,'finalize',{expectedVersion:3,resultIds:['result-b'],allowPartial:false,content:{poison:true}}),/collab_json_fields/);
+  const current=await h.snapshot();assert.equal(current.task.version,3);assert.equal(current.results.length,1);assert.deepEqual(current.results[0].content,{answer:42});h.db.close();
+});
+
+test('raw JSON structure rejects duplicate decoded keys, excessive ancestry or nodes and nonfinite atoms',async()=>{
+  const h=harness(),nested=(levels,value=null)=>{while(levels--)value={'key.with[punctuation]':value};return value;};
+  for(const input of [JSON.stringify(nested(25)), '{"x":1,"\\u0078":2}', '{"numeric":1e999}'])
+    assert.throws(()=>rawRecord(h,'request',{...rawRequest(),input}),/collab_json_structure/);
+  for(const extra of [nested(25),Array(4096).fill(0)])
+    assert.throws(()=>rawRecord(h,'request',{...rawRequest(),extra}),/collab_json_structure/);
+  const body=JSON.stringify(rawRequest());
+  assert.throws(()=>rawRecord(h,'request',body.replace('"input":"null"','"input":"null","input":{"poison":true}')),/collab_json_structure/);
+  const encodedNested=JSON.stringify(JSON.stringify(nested(16)));
+  assert.throws(()=>rawRecord(h,'request',body.replace('"input":"null"',`"input":${encodedNested},"input":${encodedNested}`)),/collab_json_structure/);
+  assert.throws(()=>rawRecord(h,'request',body.replace('"input":"null"','"input":"null","extra":1e999')),/collab_json_structure/);
+  rawRecord(h,'request',{...rawRequest(),input:JSON.stringify(nested(24)),source:'{"literal.key[0]":true}'});
+  const rawClaim=JSON.stringify({epoch:1,taskVersion:1,runId:'run-b',endpointIncarnation:'view-b'});
+  assert.throws(()=>rawRecord(h,'claim',rawClaim.replace('"epoch":1','"epoch":1,"epoch":2'),{author:B,slotId:'main'}),/collab_json_structure/);
+  h.execute('collab.claim',claim(),B);
+  const {taskId,slotId,...content}=result('duplicate-disposition');
+  const rawResult=JSON.stringify({...content,disposition:'accepted'}).replace('"disposition":"accepted"','"disposition":"accepted","disposition":"superseded"');
+  assert.throws(()=>rawRecord(h,'result',rawResult,{author:B,slotId}),/collab_json_structure/);
+  const current=await h.snapshot();assert.equal(current.task.version,2);assert.equal(current.claims[0].claimEpoch,1);
+  checkOwnerFrame({id:1,value:{revision:h.view.revision,value:current},snapshot:{}});h.db.close();
+});
 
 test('one guarded claim wins and raw updates/deletes/inserts cannot bypass the schema',async()=>{
   const h=harness();request(h);h.execute('collab.claim',claim(),B);
@@ -193,4 +244,52 @@ test('thread pages cannot cross threads or accept unscoped cursors and preserve 
   await assert.rejects(h.definition.queries['collab.thread'].read(h.view,{threadId:'other',cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
   await assert.rejects(h.definition.queries['collab.messages'].read(h.view,{threadId:'selected',cursor:first.page.nextCursor}),{code:'CURSOR_RESET_REQUIRED'});
   await assert.rejects(h.definition.queries['collab.thread'].read(h.view,{threadId:'selected',cursor:'{"after":2}'}),{code:'CURSOR_RESET_REQUIRED'});h.db.close();
+});
+
+test('dense legal payloads page below real owner frame limits and retain complete continuations',async t=>{
+  const h=harness(),payload=JSON.stringify(Array(4095).fill(0));
+  for(let index=0;index<16;index++){
+    const taskId=`dense-${index}`;
+    h.execute('collab.request',{interactionId:taskId,...rawRequest(),input:payload},A);
+    h.execute('collab.claim',{...claim(`dense-claim-${index}`),taskId},B);
+    h.execute('collab.result',{...result(`dense-result-${index}`),taskId,content:payload},B);
+  }
+  for(let index=0;index<20;index++)h.execute('collab.message',{threadId:'dense-thread',messageId:`dense-message-${index}`,
+    text:'A dense but valid signer assertion',source:JSON.stringify(Array(1023).fill(0))},A);
+  const direct=await h.definition.queries['collab.tasks'].read(h.view,{limit:32});
+  assert.ok(direct.tasks.length>0&&direct.tasks.length<16);assert.equal(direct.page.hasMore,true);
+  assert.equal(direct.page.total,16);checkOwnerFrame({id:1,value:{revision:h.view.revision,value:direct},snapshot:{}});
+
+  const lifetime=new AbortController(),description=describeApplication(h.definition),root=new MessageChannel();
+  let released=0,client,reader;
+  const session={applicationId:APP,historyId:HISTORY,storageId:'dense-paging',deviceId:A,signal:lifetime.signal,
+    get revision(){return h.view.revision;},status:{phase:'ready',database:'ready',role:'coordinator',generation:G,coordinator:A,connectedPeers:0},
+    signals:{delivery:'neighbors'},describe:()=>({...description,capabilities:{...PEER_GENERATION_CAPABILITIES,sql:true}}),
+    onStatus(listener){listener(this.status);return()=>{};},onRecovery:()=>()=>{},
+    async query(name,input){return{revision:h.view.revision,value:await h.definition.queries[name].read(h.view,input)};},
+    async readView(){return{revision:structuredClone(h.view.revision),query:(...args)=>h.view.query(...args),release(){released++;}};},
+    async close(){if(!lifetime.signal.aborted)lifetime.abort(Error('fixture closed'));},
+  };
+  const owner=createApplicationOwner(session);owner.attach(root.port1);
+  t.after(async()=>{await reader?.close();await client?.detach();await owner.close();root.port1.close();root.port2.close();h.db.close();});
+  client=await connectApplicationOwner(root.port2,{applicationId:APP,definitionId:description.id,definitionVersion:description.version,timeoutMs:2000});
+  // This is the actual public server/client validator over MessagePorts, not a
+  // copy of its limits. A too-large named-query reply rejects this call.
+  const preview=await client.query('collab.snapshot',null);
+  for(const subsection of ['tasks','results','messages'])assert.equal(preview.value.pages[subsection].hasMore,true);
+  checkOwnerFrame({id:1,value:preview,snapshot:{}});
+  const named=await client.query('collab.tasks',{limit:32});assert.equal(named.value.page.returned,direct.page.returned);
+  reader=await captureCollaborationReader(client);
+  for(const [method,key,total,options] of [['tasks','tasks',16,{limit:32}],['results','results',16,{limit:64}],['messages','messages',20,{limit:64}]]){
+    const values=[];let cursor;
+    do{
+      const page=await reader[method]({...options,...(cursor?{cursor}:{})});
+      assert.equal(page.value.page.total,total);assert.ok(page.value[key].length>0);
+      checkOwnerFrame({id:1,value:page,snapshot:{}});values.push(...page.value[key]);cursor=page.value.page.nextCursor;
+    }while(cursor);
+    const identity=key==='tasks'?'taskId':key==='results'?'resultId':'messageId';
+    assert.equal(values.length,total);assert.equal(new Set(values.map(value=>value[identity])).size,total);
+  }
+  await reader.close();assert.equal(released,1);assert.equal(lifetime.signal.aborted,false);
+  assert.equal(owner.endpoints().length,1);
 });

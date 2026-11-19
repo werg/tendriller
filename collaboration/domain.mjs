@@ -43,6 +43,29 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     WHEN ${validClaim} AND NOT (${closed}) AND NOT (${previousAccepted}) THEN 'accepted'
     ELSE 'superseded' END`;
   const assert = (predicate, code) => `SELECT chronolog_assert(COALESCE((${predicate}),0),'${code}');`;
+  const stringField = (key, maximum, minimum = 1) => `json_type(NEW.body,'$.${key}')='text' AND length(${body(key)}) BETWEEN ${minimum} AND ${maximum}`;
+  const integerField = (key, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => `json_type(NEW.body,'$.${key}')='integer' AND ${body(key)} BETWEEN ${minimum} AND ${maximum}`;
+  const fenceFields = `${integerField('claimEpoch', 1)} AND ${stringField('generation', 64, 64)}
+    AND ${body('generation')} NOT GLOB '*[^0-9a-f]*' AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}`;
+  const encodedJson = (key, maximum) => `json_type(NEW.body,'$.${key}')='text' AND json_valid(${body(key)})
+    AND length(CAST(${body(key)} AS BLOB))<=${maximum}`;
+  const documentFields = `(NEW.type='request' AND key IN ('input','target','source','context'))
+    OR (NEW.type IN ('result','finalize') AND key='content') OR (NEW.type='message' AND key='source')`;
+  // SQLite reads the first duplicate object key; JSON.parse reads the last.
+  // Validate decoded parent/key pairs and ancestry, never punctuation in fullkey.
+  // Each document has the same complexity bound as canonicalJson preparation.
+  const jsonStructure = `(WITH RECURSIVE
+    documents(name,value) AS (SELECT 'envelope',NEW.body UNION ALL
+      SELECT CAST(id AS TEXT),value FROM json_each(NEW.body) WHERE ${documentFields}),
+    tree(document,id,parent,key,type,atom) AS MATERIALIZED (
+      SELECT d.name,t.id,t.parent,t.key,t.type,t.atom FROM documents d,json_tree(d.value) t),
+    depths(document,id,depth) AS (
+      SELECT document,id,0 FROM tree WHERE parent IS NULL UNION ALL
+      SELECT t.document,t.id,d.depth+1 FROM tree t JOIN depths d ON t.document=d.document AND t.parent=d.id WHERE d.depth<=24)
+    SELECT NOT EXISTS (SELECT 1 FROM tree GROUP BY document HAVING COUNT(*)>4096)
+      AND NOT EXISTS (SELECT 1 FROM depths WHERE depth>24)
+      AND NOT EXISTS (SELECT 1 FROM tree WHERE parent IS NOT NULL GROUP BY document,parent,key HAVING COUNT(*)>1)
+      AND NOT EXISTS (SELECT 1 FROM tree WHERE type='real' AND (atom>1.7976931348623157e308 OR atom< -1.7976931348623157e308)))`;
   const schema = [
     `CREATE TABLE collab_journal (
       id TEXT PRIMARY KEY NOT NULL CHECK(length(id) BETWEEN 1 AND 512),
@@ -66,6 +89,25 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       ${assert(`NEW.generation=${generation}`, 'collab_generation')}
       ${assert('NEW.attempt_id IS chronolog_transaction_id()', 'collab_attempt')}
       ${assert('NEW.sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal)', 'collab_sequence')}
+      ${assert(`NEW.sequence<=${Number.MAX_SAFE_INTEGER} AND json_type(NEW.body)='object' AND CASE NEW.type
+        WHEN 'request' THEN ${stringField('kind', 128)} AND ${stringField('title', 256)}
+        WHEN 'claim' THEN ${integerField('epoch', 1)} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}
+        WHEN 'rebind' THEN ${integerField('epoch', 1)} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}
+        WHEN 'handoff' THEN ${integerField('epoch', 1)} AND ${stringField('reason', 1000)}
+        WHEN 'result' THEN ${fenceFields} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('resultId', 160)}
+        WHEN 'cancel' THEN ${integerField('expectedVersion')} AND ${stringField('reason', 1000)}
+        WHEN 'ackCancel' THEN ${fenceFields}
+        WHEN 'finalize' THEN ${integerField('expectedVersion')} AND json_type(NEW.body,'$.allowPartial') IN ('true','false')
+          AND NOT EXISTS (SELECT 1 FROM json_each(NEW.body,'$.resultIds') WHERE type<>'text' OR length(value) NOT BETWEEN 1 AND 160)
+        WHEN 'message' THEN ${stringField('text', 4000)} AND ${stringField('messageId', 160)}
+          AND (json_type(NEW.body,'$.inReplyTo') IS NULL OR (${stringField('inReplyTo', 160)}))
+        ELSE 0 END`, 'collab_envelope')}
+      ${assert(`CASE NEW.type
+        WHEN 'request' THEN ${encodedJson('input', limits.payloadBytes)} AND ${encodedJson('target', 2048)} AND ${encodedJson('source', 2048)} AND ${encodedJson('context', 2048)}
+        WHEN 'result' THEN ${encodedJson('content', limits.payloadBytes)}
+        WHEN 'finalize' THEN ${encodedJson('content', limits.payloadBytes)}
+        WHEN 'message' THEN ${encodedJson('source', 2048)} ELSE 1 END`, 'collab_json_fields')}
+      ${assert(jsonStructure, 'collab_json_structure')}
       ${assert(`NEW.type IN ('request','message') OR EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id AND type='request')`, 'collab_task_missing')}
       ${assert(`NEW.type NOT IN ('claim','rebind','handoff','result','ackCancel') OR EXISTS
         (SELECT 1 FROM collab_journal r, json_each(r.body,'$.slots') s WHERE r.type='request'
@@ -80,6 +122,8 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       ${assert(`NOT EXISTS (SELECT 1 FROM json_each(NEW.body,'$.slots') s WHERE
         COALESCE(json_type(s.value,'$.slotId'),'')<>'text' OR length(json_extract(s.value,'$.slotId')) NOT BETWEEN 1 AND 160
         OR COALESCE(json_type(s.value,'$.eligibleSigners'),'')<>'array' OR json_array_length(s.value,'$.eligibleSigners') NOT BETWEEN 1 AND 32
+        OR (json_type(s.value,'$.label') IS NOT NULL AND (json_type(s.value,'$.label')<>'text' OR length(json_extract(s.value,'$.label')) NOT BETWEEN 1 AND 128))
+        OR (json_type(s.value,'$.agentBindingId') IS NOT NULL AND (json_type(s.value,'$.agentBindingId')<>'text' OR length(json_extract(s.value,'$.agentBindingId')) NOT BETWEEN 1 AND 160))
         OR EXISTS(SELECT 1 FROM json_each(s.value,'$.eligibleSigners') e WHERE e.type<>'text' OR length(e.value)<>64 OR e.value GLOB '*[^0-9a-f]*'))`, 'collab_eligibility')}
       ${assert(`json_valid(${body('input')}) AND length(CAST(${body('input')} AS BLOB))<=${limits.payloadBytes}
         AND json_valid(${body('target')}) AND json_valid(${body('source')}) AND json_valid(${body('context')})

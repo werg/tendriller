@@ -1,7 +1,12 @@
 import { canonicalJson, CollaborationError, identifier, signerId } from './protocol.mjs';
 
 const CURSOR_PROTOCOL = 'tendriller.collaboration.page.v1';
-const RECORD_BATCH = 8, TASK_BYTES = 384 * 1024, EVIDENCE_BYTES = 128 * 1024;
+const RECORD_BATCH = 8;
+// The facade counts primitive values and array-index keys as well as UTF-8
+// strings. These budgets compose below 1 MiB / 65,536 nodes even in snapshot(),
+// reserving 128 KiB and 9,536 nodes for outer response/revision/cursor metadata.
+const TASK_BUDGET = { json: 384 * 1024, bytes: 512 * 1024, nodes: 28_000 };
+const EVIDENCE_BUDGET = { json: 128 * 1024, bytes: 192 * 1024, nodes: 14_000 };
 const encoder = new TextEncoder();
 const recordsSql = `SELECT j.id,j.sequence,j.type,j.task_id,j.slot_id,j.author,j.generation,j.body,
   lower(hex(j.attempt_id)),t.operation_id,lower(hex(t.author_id)),lower(hex(p.application_id)),lower(hex(g.generation)),t.outcome
@@ -76,6 +81,24 @@ function messageRecord(record) {
     author: record.author, generation: record.generation, operation: record.operation };
 }
 
+function sizeOf(value) {
+  let nodes = 0, bytes = 0, deepest = 0;
+  function visit(item, depth) {
+    nodes++; deepest = Math.max(deepest, depth);
+    if (typeof item === 'string') bytes += encoder.encode(item).length;
+    else if (item === null || item === undefined || typeof item === 'number' || typeof item === 'boolean') bytes += 8;
+    else if (typeof item === 'object') {
+      for (const [key, child] of Object.entries(item)) { bytes += encoder.encode(key).length; visit(child, depth + 1); }
+    } else throw new CollaborationError('PROVENANCE_UNAVAILABLE', 'The selected record contains an unsupported projected value');
+  }
+  visit(value, 0);
+  return { json: encoder.encode(JSON.stringify(value)).length + 1, bytes, nodes, deepest };
+}
+function within(size, budget) {
+  // Four levels remain for facade and named-query envelopes around a page item.
+  return size.json <= budget.json && size.bytes <= budget.bytes && size.nodes <= budget.nodes && size.deepest <= 28;
+}
+
 function pageScope(view, query, filter, options, defaultLimit, maximum) {
   const revision = revisionOf(view), limit = options.limit ?? defaultLimit;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > maximum) throw new CollaborationError('INVALID_PAGE_OPTIONS');
@@ -90,17 +113,20 @@ function pageScope(view, query, filter, options, defaultLimit, maximum) {
   }
   return { scope, limit, after };
 }
-async function page(view, query, filter, options, { where, parameters, defaultLimit, maximum, bytes, map }) {
+async function page(view, query, filter, options, { where, parameters, defaultLimit, maximum, budget, map }) {
   const { scope, limit, after } = pageScope(view, query, filter, options, defaultLimit, maximum);
-  const total = await count(view, where, parameters), values = []; let used = 2, last = after, hasMore = false;
+  const total = await count(view, where, parameters), values = [];
+  let used = { json: 2, bytes: 0, nodes: 0, deepest: 0 }, last = after, hasMore = false;
   for await (const record of records(view, where, parameters, after)) {
     if (values.length === limit) { hasMore = true; break; }
-    const value = await map(record), size = encoder.encode(JSON.stringify(value)).length + 1;
-    if (used + size > bytes) {
+    const value = await map(record), size = sizeOf(value);
+    const next = { json: used.json + size.json, bytes: used.bytes + size.bytes,
+      nodes: used.nodes + size.nodes, deepest: Math.max(used.deepest, size.deepest) };
+    if (!within(next, budget)) {
       if (!values.length) throw new CollaborationError('PAGE_ITEM_TOO_LARGE', 'The selected record exceeds the bounded read contract', { query, recordId: record.id });
       hasMore = true; break;
     }
-    used += size; values.push(value); last = record.sequence;
+    used = next; values.push(value); last = record.sequence;
   }
   return { values, page: { nextCursor: hasMore ? JSON.stringify({ ...scope, after: last }) : null,
     hasMore, total, returned: values.length, limit, revision: scope.revision } };
@@ -132,8 +158,8 @@ async function currentTask(view, request) {
     const completed = accepted.some(record => record.slotId === slot.slotId);
     const acknowledgement = acknowledgements.find(record => record.slotId === slot.slotId && record.body.claimEpoch === claim.body.epoch);
     claims.push({ taskId, slotId: slot.slotId, claimEpoch: claim.body.epoch, taskVersion: 1,
-      claimant: claim.type === 'handoff' ? claim.body.assignee : claim.author, runId: claim.body.runId ?? null,
-      endpointIncarnation: claim.body.endpointIncarnation ?? null, generation: claim.generation, operation: claim.operation,
+      claimant: claim.type === 'handoff' ? claim.body.assignee : claim.author, runId: claim.type === 'handoff' ? null : claim.body.runId,
+      endpointIncarnation: claim.type === 'handoff' ? null : claim.body.endpointIncarnation, generation: claim.generation, operation: claim.operation,
       acknowledgement: acknowledgement?.operation ?? null,
       status: completed ? 'completed' : cancel ? acknowledgement || claim.type === 'handoff' ? 'cancelled' : 'cancelRequested' :
         claim.type === 'handoff' ? 'offered' : claim.generation !== revision.generation ? 'needsReview' : 'active' });
@@ -159,7 +185,7 @@ export async function readCollaborationTasks(view, input = {}) {
   if (filter.state !== 'all') where.push(`${filter.state === 'open' ? 'NOT ' : ''}EXISTS
     (SELECT 1 FROM collab_journal e WHERE e.task_id=j.task_id AND e.type IN ('cancel','finalize'))`);
   const result = await page(view, 'collab.tasks', filter, options, { where: where.join(' AND '), parameters,
-    defaultLimit: 8, maximum: 32, bytes: TASK_BYTES, map: request => currentTask(view, request) });
+    defaultLimit: 8, maximum: 32, budget: TASK_BUDGET, map: request => currentTask(view, request) });
   return { tasks: result.values.map(value => value.task), claims: result.values.flatMap(value => value.claims),
     acceptedResults: result.values.flatMap(value => value.acceptedResults), page: result.page };
 }
@@ -176,7 +202,7 @@ export async function readCollaborationResults(view, input = {}) {
     filter.disposition = options.disposition; where.push("json_extract(j.body,'$.disposition')=?"); parameters.push(filter.disposition);
   }
   const result = await page(view, 'collab.results', filter, options, { where: where.join(' AND '), parameters,
-    defaultLimit: 16, maximum: 64, bytes: EVIDENCE_BYTES, map: record => resultRecord(record) });
+    defaultLimit: 16, maximum: 64, budget: EVIDENCE_BUDGET, map: record => resultRecord(record) });
   return { results: result.values, page: result.page };
 }
 async function messages(view, input, query, required) {
@@ -184,7 +210,7 @@ async function messages(view, input, query, required) {
   const filter = {}, where = ["j.type='message'"], parameters = [];
   if (required || options.threadId !== undefined) { filter.threadId = domainId(options.threadId); where.push('j.task_id=?'); parameters.push(filter.threadId); }
   const result = await page(view, query, filter, options, { where: where.join(' AND '), parameters,
-    defaultLimit: 20, maximum: 64, bytes: EVIDENCE_BYTES, map: messageRecord });
+    defaultLimit: 20, maximum: 64, budget: EVIDENCE_BUDGET, map: messageRecord });
   return { messages: result.values, page: result.page };
 }
 export const readCollaborationMessages = (view, input = {}) => messages(view, input, 'collab.messages', false);
@@ -194,6 +220,7 @@ export async function readCollaborationTask(view, taskId) {
   domainId(taskId);
   const requests = await selected(view, "j.type='request' AND j.task_id=?", [taskId], 1);
   const state = requests.length ? await currentTask(view, requests[0]) : { task: null, claims: [], acceptedResults: [] };
+  if (!within(sizeOf(state), TASK_BUDGET)) throw new CollaborationError('PAGE_ITEM_TOO_LARGE', 'The current task exceeds the bounded read contract', { taskId });
   const evidence = await readCollaborationResults(view, { taskId });
   return { ...state, results: evidence.results, resultsPage: evidence.page };
 }
