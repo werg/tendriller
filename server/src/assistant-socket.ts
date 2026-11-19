@@ -1,33 +1,48 @@
 import type { Tendril } from './tendril';
-import { activeAdapter, connection } from './assistant-admission';
+import { activeAdapters } from './assistant-admission';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL, ASSISTANT_SOCKET_TAG, REQUEST_LIMIT, fields } from './assistant-shared';
 import { pagePolicy } from './access';
 import { HttpError } from './http';
 import { safeEqual, sha256Hex } from './ids';
+import { withSelectedAssistantGeneration } from './peer-generations';
 import { ingestAssistantEvent } from './assistant-events';
 
-type Attachment = { tag: typeof ASSISTANT_SOCKET_TAG; connectionId: string };
+type Attachment = { tag: typeof ASSISTANT_SOCKET_TAG; adapterHash: string; deviceId: string };
 type Inflight = { socket: WebSocket; resolve: (value: unknown) => void; reject: (error: Error) => void };
 const inflight = new WeakMap<Tendril, Map<string, Inflight>>();
 const invalid = () => new HttpError(502, 'invalid_adapter_response');
 const offline = () => new HttpError(503, 'application_participant_offline', 'Start the enrolled application participant, then try again.');
 
+const attachment = (ws: WebSocket) => ws.deserializeAttachment() as Attachment | null;
+
 export function isAssistantAdapter(ws: WebSocket): boolean {
-  return (ws.deserializeAttachment() as Attachment | null)?.tag === ASSISTANT_SOCKET_TAG;
+  return attachment(ws)?.tag === ASSISTANT_SOCKET_TAG;
 }
 
 export async function upgradeAssistantAdapter(t: Tendril, req: Request) {
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket')
     throw new HttpError(426, 'websocket_required');
   const protocols = req.headers.get('Sec-WebSocket-Protocol')?.split(',').map(s => s.trim()) ?? [];
-  const credential = protocols.find(token => ADAPTER_KEY.test(token)), adapter = activeAdapter(t);
-  if (!protocols.includes(ASSISTANT_PROTOCOL) || !credential || !adapter || !safeEqual(await sha256Hex(credential), adapter.hash))
-    throw new HttpError(401, 'adapter_not_approved');
-  if (await pagePolicy(t) !== 'active' || activeAdapter(t)?.id !== adapter.id) throw new HttpError(403, 'forbidden');
+  const credential = protocols.find(token => ADAPTER_KEY.test(token));
+  const deviceId = protocols.find(token => /^td_device_[a-f0-9]{64}$/u.test(token))?.slice('td_device_'.length);
+  if (!protocols.includes(ASSISTANT_PROTOCOL) || !credential || !deviceId) throw new HttpError(401, 'adapter_not_approved');
+  const adapterHash = await sha256Hex(credential), allowed = () => activeAdapters(t).some(hash => safeEqual(hash, adapterHash));
+  if (!allowed()) throw new HttpError(401, 'adapter_not_approved');
+  if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'forbidden');
+  await withSelectedAssistantGeneration(t, async (_generation, canUseDevice) => {
+    if (!await canUseDevice(deviceId, false) && !await canUseDevice(deviceId, true) || !allowed())
+      throw new HttpError(403, 'adapter_device_not_enrolled');
+    const previous = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', adapterHash);
+    if (previous && previous.device_id !== deviceId) throw new HttpError(409, 'adapter_device_changed', 'Use this credential with its original Chronolog device.');
+    if (!previous) t.db.run('INSERT INTO assistant_devices(adapter_hash,device_id) VALUES(?,?)', adapterHash, deviceId);
+  });
+  if (!allowed()) throw new HttpError(403, 'forbidden');
   const [client, server] = Object.values(new WebSocketPair());
-  for (const ws of t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG)) ws.close(4000, 'Replaced by reconnected participant');
+  for (const ws of t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG)) {
+    if (attachment(ws)?.adapterHash === adapterHash) ws.close(4000, 'Replaced by reconnected participant');
+  }
   t.ctx.acceptWebSocket(server, [ASSISTANT_SOCKET_TAG]);
-  server.serializeAttachment({ tag: ASSISTANT_SOCKET_TAG, connectionId: adapter.id } satisfies Attachment);
+  server.serializeAttachment({ tag: ASSISTANT_SOCKET_TAG, adapterHash, deviceId } satisfies Attachment);
   return new Response(null, { status: 101, headers: { 'Sec-WebSocket-Protocol': ASSISTANT_PROTOCOL }, webSocket: client });
 }
 
@@ -36,9 +51,8 @@ export function closeAssistantAdapter(t: Tendril, socket: WebSocket) {
 }
 
 export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame: string | ArrayBuffer) {
-  const attached = socket.deserializeAttachment() as Attachment | null;
-  const adapter = activeAdapter(t);
-  if (!adapter || adapter.id !== attached?.connectionId) { socket.close(4003, 'Application grant revoked'); return; }
+  const attached = attachment(socket);
+  if (!attached || !activeAdapters(t).includes(attached.adapterHash)) { socket.close(4003, 'Application grant revoked'); return; }
   if (typeof frame !== 'string' || frame.length > REQUEST_LIMIT || new TextEncoder().encode(frame).byteLength > REQUEST_LIMIT) {
     socket.close(1009, 'Application frame too large'); return;
   }
@@ -63,7 +77,7 @@ export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame:
   if (body.type !== 'event') { socket.close(1008, 'Unsupported application frame'); return; }
   // Events share the page work queue with grant changes and outbox dispatch.
   try {
-    const sequence = await t.serializeAssistant(() => ingestAssistantEvent(t, adapter, body));
+    const sequence = await t.serializeAssistant(() => ingestAssistantEvent(t, attached.adapterHash, attached.deviceId, body));
     socket.send(JSON.stringify({ type: 'ack', id: body.id, sequence }));
   } catch (error) {
     try { socket.send(JSON.stringify({ type: 'ack', id: body.id,
@@ -71,16 +85,16 @@ export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame:
   }
 }
 
-export function assistantOnline(t: Tendril, id: string): boolean {
-  return t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG).some(ws =>
-    ws.readyState === WebSocket.READY_STATE_OPEN && (ws.deserializeAttachment() as Attachment | null)?.connectionId === id);
+export function onlineAssistantAdapters(t: Tendril): { hash: string; deviceId: string; socket: WebSocket }[] {
+  const sockets = t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG);
+  return activeAdapters(t).flatMap(hash => {
+    const socket = sockets.find(ws => ws.readyState === WebSocket.READY_STATE_OPEN && attachment(ws)?.adapterHash === hash);
+    return socket ? [{ hash, deviceId: attachment(socket)!.deviceId, socket }] : [];
+  });
 }
 
-export async function callAssistantAdapter(t: Tendril, input: object, signal: AbortSignal): Promise<unknown> {
-  const adapter = activeAdapter(t);
-  const ws = t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG).find(socket =>
-    socket.readyState === WebSocket.READY_STATE_OPEN && (socket.deserializeAttachment() as Attachment | null)?.connectionId === adapter?.id);
-  if (!ws || !adapter || !connection(t)) throw offline();
+export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal): Promise<unknown> {
+  if (ws.readyState !== WebSocket.READY_STATE_OPEN) throw offline();
   let pending = inflight.get(t);
   if (!pending) inflight.set(t, pending = new Map());
   if (pending.size >= 8) throw new HttpError(429, 'application_busy');

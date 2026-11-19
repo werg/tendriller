@@ -63,8 +63,9 @@ send.addEventListener('click', async () => {
   send.disabled = true;
   try {
     // App payloads are never embedded in messages sent to the model.
-    await bridge.sendMessage('Check my Tendriller inbox with read_application_events for applicationId ' + application +
+    const delivery = await bridge.sendMessage('Check my Tendriller inbox with read_application_events for applicationId ' + application +
       '. Continue from the last cursor if you have one. Summarize new activity for me.');
+    if (delivery?.isError) throw Error('Inbox follow-up rejected');
     status.textContent = 'Inbox request sent to this chat.';
   } catch { status.textContent = 'The chat did not confirm receipt. Check the conversation before trying again.'; }
   finally { send.disabled = false; submitting = false; }

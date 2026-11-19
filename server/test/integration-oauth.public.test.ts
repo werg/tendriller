@@ -8,6 +8,8 @@ import { challengeFor } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
 import { bytesDigest, bytesToHex, createApplicationTools, describeApplication, eventExecutionManifest, executionManifestArtifacts, MemoryBytesStore,
   openApplicationDevice, openPeerApplication, participantGrant, signTransitionRequest } from '@chronolog/peer-session';
+import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
+import { resolveConnection } from '../src/assistant-shared';
 import { createPeersClient } from '../../contract/peers.mjs';
 import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
 import { connectApplicationAssistant, createAssistantKey, forwardApplicationEvents, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
@@ -98,8 +100,8 @@ it.each(['wildcard redirect', 'unsupported scope', 'duplicate client', 'private 
     const body = await response.text(); expect(body).not.toContain(privateJwk.d); expect(body).not.toContain('admin:*');
   });
 
-async function hostFixture() {
-  const page = await create(), subject = await inDO(page.id, t => t.db.get<string>('owner_account', ''));
+async function hostFixture(applicationId?: string) {
+  const page = await create(applicationId ? { application: { id: applicationId } } : {}), subject = await inDO(page.id, t => t.db.get<string>('owner_account', ''));
   const raw = 'browser-' + crypto.randomUUID(), now = Date.now();
   await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
     .bind(await sha256Hex(raw), subject, now, now + 3600000).run();
@@ -423,7 +425,8 @@ const notes = defineApplication({
     prepare: ({ text }) => program(emit('note', { text })),
   }) },
   queries: { notes: defineQuery({ description: 'Read retained notes.', input: { type: 'null' },
-    read: (view: ApplicationReadView) => view.readEvents({ topics: ['note'] }).events.map(event => event.payload) }) },
+    read: (view: ApplicationReadView) => view.readEvents({ topics: ['note'] }).events.map(event => event.payload) }),
+    privateNotes: defineQuery({ description: 'Read private note status.', input: { type: 'null' }, read: () => true }) },
 });
 const counter = defineApplication({
   id: 'counter-mcp-integration', version: '1',
@@ -464,12 +467,20 @@ it('serves unrelated native applications through one MCP endpoint and retains in
         if (!res.ok) throw Error(path + ': ' + res.status + ': ' + await res.text());
         return res.json();
       },
+      socket: (raw, protocols) => {
+        const url = new URL(raw);
+        return testPeerSocket(() => request(url.pathname + url.search, bind, { headers: {
+          ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', '),
+        } }), traffic, 'relay');
+      },
     });
     const device = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+    const backupDevice = f === a ? await openApplicationDevice({ store: new MemoryBytesStore(), create: true }) : null;
     const epoch = crypto.getRandomValues(new Uint8Array(32)), manifest = await executionManifestArtifacts(await eventExecutionManifest());
     const base = await peers.configureApplication({ historyId: 'generic-mcp-test', definition: describeApplication(definition),
       schema: null, executionManifestDigest: bytesToHex(manifest.executionManifestDigest), schemaAdministrator: device.identity.publicKey,
-      epoch: 0, keyDigest: await bytesDigest(epoch), members: [{ grant: participantGrant(device.identity.publicKey, { administrator: true }) }],
+      epoch: 0, keyDigest: await bytesDigest(epoch), members: [{ grant: participantGrant(device.identity.publicKey, { administrator: true }) },
+        ...(backupDevice ? [{ grant: participantGrant(backupDevice.identity.publicKey) }] : [])],
     });
     const descriptor = base.descriptor.payload;
     await peers.selectGeneration(await signTransitionRequest({ applicationId: descriptor.applicationId, profile: descriptor.profile,
@@ -478,28 +489,57 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     }, device.identity));
     const session = await openPeerApplication({ device, definition, authority: await peers.application(), epochKeys: new Map([[0, epoch]]) });
     sessions.push(session);
-    const key = createAssistantKey(), reviewPath = '/connections/' + f.page.id;
-    const blueprints = { queries: [query], commands: [command], events: [{ name: eventName, description: 'An approved app event.' }] };
-    const proposal = await proposeApplicationAssistant({ api: f.page.api, token: f.page.token, key, label: f.page.name,
+    const key = createAssistantKey(), backupKey = createAssistantKey(), reviewPath = '/connections/' + f.page.id;
+    const extraQuery = f === a ? ['privateNotes'] : [];
+    const blueprints = { queries: [query, ...extraQuery], commands: [command],
+      events: [{ name: eventName, description: 'An approved app event.' }] };
+    const proposal = await proposeApplicationAssistant({ api: f.page.api, token: f.page.token, key,
+      backupKeys: backupDevice ? [backupKey] : [], label: f.page.name,
       ...blueprints, fetcher: (url, init) => request(new URL(String(url)).pathname, bind, init) });
     expect(proposal.approved).toBe(false);
     expect(proposal.reviewUrl).toBe(ISSUER + reviewPath);
     expect((await request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } })).status).toBe(404);
-    const upgrade = () => request(pagePath + '/assistant/adapter', bind, { headers: {
-      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.application-mcp.v1, ' + key,
+    const upgrade = (protocols: string[]) => request(pagePath + '/assistant/adapter', bind, { headers: {
+      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', '),
     } });
-    expect((await upgrade()).status).toBe(401);
-    const review = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
-    expect(review.status).toBe(200);
-    const csrf = /name="csrf" value="([^"]+)"/.exec(await review.text())?.[1] ?? '';
-    const form = { csrf, action: 'approve', queries: query, commands: command, events: eventName };
-    expect((await formPost(reviewPath, form, bind, f.cookie, 'https://evil.example')).status).toBe(403);
-    expect((await formPost(reviewPath, form, bind, f.cookie)).status).toBe(303);
-    const start = () => connectApplicationAssistant({ api: f.page.api, key, session, tools: createApplicationTools(session),
-      ...blueprints, openSocket: () => testPeerSocket(upgrade, traffic, 'rendezvous') as unknown as globalThis.WebSocket });
+    expect((await upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.deviceId])).status).toBe(401);
+    const review = async (queries: string[], origin = ISSUER) => {
+      const page = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
+      expect(page.status).toBe(200);
+      const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())?.[1] ?? '';
+      const form = new URLSearchParams({ csrf, action: 'approve', commands: command, events: eventName });
+      for (const name of queries) form.append('queries', name);
+      return request(reviewPath, bind, { method: 'POST', headers: { Origin: origin, Cookie: f.cookie }, body: form });
+    };
+    expect((await review(blueprints.queries, 'https://evil.example')).status).toBe(403);
+    expect((await review(blueprints.queries)).status).toBe(303);
+    const start = (whichKey = key, peer = session) => {
+      const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createApplicationTools(peer),
+        ...blueprints, openSocket: (_url, protocols) => testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous') as unknown as globalThis.WebSocket });
+      adapters.push(adapter);
+      return adapter;
+    };
     const adapter = start();
-    adapters.push(adapter);
     await vi.waitFor(() => expect(adapter.online).toBe(true));
+    const startBackup = async () => {
+      if (!backupDevice) throw Error('No backup configured');
+      const backup = await openPeerApplication({ device: backupDevice, definition, authority: await peers.application(), epochKeys: new Map([[0, epoch]]) });
+      sessions.push(backup);
+      expect((await upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + backup.deviceId])).status).toBe(409);
+      const channel = 'backup:' + crypto.randomUUID();
+      const firstRelay = peers.relay(channel, session.deviceId, { remotePeerId: backup.deviceId });
+      const secondRelay = peers.relay(channel, backup.deviceId, { remotePeerId: session.deviceId });
+      const [left, right] = await Promise.all([firstRelay, secondRelay].map(relay =>
+        openWebSocketConnection(relay as Parameters<typeof openWebSocketConnection>[0], { ready: relay.ready })));
+      const [primary, replica] = await Promise.all([
+        session.connectPeer({ connection: left, peerIdentity: backup.deviceId }),
+        backup.connectPeer({ connection: right, peerIdentity: session.deviceId }),
+      ]);
+      await Promise.all([primary.synchronize(), replica.synchronize()]);
+      const standby = start(backupKey, backup);
+      await vi.waitFor(() => expect(standby.online).toBe(true));
+      return { standby, backup };
+    };
     const gid = crypto.randomUUID(), jti = crypto.randomUUID();
     const bearer = await signAccessToken(oauth, { iss: ISSUER, aud: resource, sub: f.subject, sid: gid, jti, scope: scopes,
       exp: Math.floor((now + 300_000) / 1000) });
@@ -514,13 +554,13 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       return res.json<any>();
     };
     const tool = (name: string, args: Record<string, unknown> = {}) => rpc('tools/call', { name, arguments: args });
-    return { adapter, session, eventName, gid, rpc, tool, id: f.page.application.id };
+    return { adapter, session, eventName, gid, rpc, tool, review, startBackup, id: f.page.application.id };
   }
   const sent: { id: string; body: string }[] = [];
   let mounted: WebSocket | undefined;
   const secrets = [new Uint8Array(32).fill(9), new Uint8Array(32).fill(10)];
   const [secret, rotatedSecret] = secrets.map(bytes => 'whsec_' + btoa(String.fromCharCode(...bytes)));
-  let verifications = 0;
+  let verifications = 0, rejectCallback = false;
   const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const req = new Request(input, init);
     expect(req.url).toBe('https://callback.example/events');
@@ -537,7 +577,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     }
     expect(req.headers.get('webhook-signature')).toBe(sent.length === 0 ? signatures[0] : [signatures[1], signatures[0]].join(' '));
     sent.push({ id, body });
-    return new Response(null, { status: sent.length === 1 ? 503 : 204 });
+    return new Response(null, { status: sent.length === 1 || rejectCallback ? 503 : 204 });
   });
   try {
     const anonymous = async (method: string, params = {}) => request('/mcp', bind, { method: 'POST',
@@ -615,9 +655,22 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
     expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
 
+    // A deployment with OAuth temporarily unavailable preserves existing jobs.
+    await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
     await advance(a.page.id, 100);
     await runAlarm(a.page.id);
+    expect(sent).toHaveLength(0);
+    await inDO(a.page.id, t => {
+      Object.assign(t.env, settings);
+      expect(t.db.one('SELECT block_reason,attempts FROM assistant_jobs')).toMatchObject({ block_reason: 'oauth_unavailable', attempts: 0 });
+      t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
+    });
+    await runAlarm(a.page.id);
     expect(sent).toHaveLength(1);
+    expect((await first.review(['notes'])).status).toBe(303);
+    expect(first.adapter.online).toBe(true);
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'privateNotes', input: null })).result.structuredContent.code)
+      .toBe('operation_not_approved');
     expect((await subscribe(rotatedSecret)).result.id).toBe(watch.result.id);
     expect(verifications).toBe(2);
     await evictDurableObject(stub(a.page.id));
@@ -633,20 +686,71 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
     await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull());
 
-    expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
+    const accepted = (await first.tool('get_application_delivery', { applicationId: first.id })).result.structuredContent;
+    expect(accepted.recent).toMatchObject([{ outcome: 'accepted', attempts: 2, sourceEventId: emitted.sourceEventId }]);
+
+    // Keep an old event pinned by a webhook while the visible inbox moves on.
+    const later = { ...emitted, sourceEventId: 'pinned-after-retry' };
+    const pinned = await first.adapter.publish(later);
+    await inDO(a.page.id, t => {
+      t.transaction(() => {
+        for (let i = 0; i < 258; i++)
+          t.db.run('INSERT INTO assistant_events(source_id,generation,name,payload,created_at) VALUES(?,?,?,?,?)',
+            'retention-fixture-' + i, later.generation, later.name, '{}', t.now());
+      });
+    });
+    await first.adapter.publish({ ...later, sourceEventId: 'new-inbox-tail' });
+    const gap = (await first.tool('read_application_events', { applicationId: first.id, after: pinned, limit: 1 })).result.structuredContent;
+    expect(gap.truncated).toBe(true);
+    expect(gap.events[0].sequence).toBeGreaterThan(pinned + 1);
+    await inDO(a.page.id, t => expect(t.db.one('SELECT seq FROM assistant_events WHERE seq=?', pinned)).toBeTruthy());
+
+    rejectCallback = true;
+    await inDO(a.page.id, t => t.db.run('UPDATE assistant_jobs SET attempts=7,due=? WHERE event_seq=?', t.now() - 1, pinned));
+    await runAlarm(a.page.id);
+    const failed = (await first.tool('get_application_delivery', { applicationId: first.id })).result.structuredContent;
+    expect(failed.recent).toEqual(expect.arrayContaining([expect.objectContaining({ sourceEventId: later.sourceEventId, outcome: 'retry_exhausted', attempts: 8 })]));
+
+    await env.ACCOUNTS.prepare("UPDATE service_state SET mode='read_only' WHERE id=1").run();
+    try {
+      expect((await subscribe(rotatedSecret)).error.data.code).toBe('read_only');
+      // Access withdrawal remains available during a service pause.
+      expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
+    } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
     expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
     await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_watchers')).toBeNull());
+
+    const { standby } = await first.startBackup();
     await first.adapter.close();
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.code).toBe('application_participant_offline');
-    expect((await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent.events).toHaveLength(1);
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value)
+      .toMatchObject([{ text: 'Rope checked' }]);
+    expect((await first.tool('call_application_command', write)).result.structuredContent.code).toBe('application_operation_unresolved');
+    expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.isError)
+      .toBeUndefined();
+    await vi.waitFor(async () => expect((await createApplicationTools(first.session).call('query', { name: 'notes', input: null }) as { value: unknown }).value)
+      .toMatchObject([{ text: 'Rope checked' }, { text: 'Backup checked' }]), { timeout: 5000 });
+
+    // Model an internal request that was admitted by the gateway, then
+    // waited behind another page operation until its OAuth grant was revoked.
     await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), first.gid).run();
+    const stale = await stub(a.page.id).fetch(new Request('https://tendril.internal/assistant', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ applicationId: first.id, method: 'call_application_command',
+        params: { ...write, operationId: 'queued-revocation' },
+        principal: { account: a.subject, grant: first.gid, client: 'chatgpt', scopes: scopes.split(' '), expires: Date.now() + 10_000 },
+      }),
+    }));
+    expect(stale.status).toBe(403);
+    expect(await stale.json()).toMatchObject({ error: { code: 'authorization_revoked' } });
+    await inDO(a.page.id, t => expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands')).toEqual({ n: 2 }));
+    await standby.close();
     expect((await first.rpc('initialize')).error).toBe('invalid_token');
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
   } finally {
+    outbound.mockRestore();
     mounted?.close();
     await Promise.all(adapters.map(item => item.close()));
     await Promise.all(sessions.map(item => item.close()));
-    outbound.mockRestore();
     await inDO(a.page.id, t => { Object.assign(t.env, restore); });
     await inDO(b.page.id, t => { Object.assign(t.env, restore); });
   }
@@ -693,4 +797,20 @@ it('uses an operator-pinned client metadata document for public PKCE without fet
       params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
     expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [] } } });
   } finally { outbound.mockRestore(); }
+});
+
+it('reserves application routing only for enabled pages in the same account', async () => {
+  const applicationId = await sha256Hex('shared-app-id-' + crypto.randomUUID());
+  const [a, b] = await Promise.all([hostFixture(applicationId), hostFixture(applicationId)]);
+  const add = (pageId: string, account: string, enabled: number) => env.ACCOUNTS
+    .prepare('INSERT INTO assistant_connections(page_id,application_id,owner_account,label,enabled) VALUES(?,?,?,?,?)')
+    .bind(pageId, applicationId, account, 'Connections test', enabled).run();
+  const pendingPage = await create({ claim: false, application: { id: applicationId } });
+  await add(pendingPage.id, a.subject, 0);
+  await add(a.page.id, a.subject, 1);
+  await add(b.page.id, b.subject, 1);
+  expect((await resolveConnection(env, a.subject, applicationId)).pageId).toBe(a.page.id);
+  expect((await resolveConnection(env, b.subject, applicationId)).pageId).toBe(b.page.id);
+  await expect(env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1 WHERE page_id=?').bind(pendingPage.id).run())
+    .rejects.toThrow(/UNIQUE constraint failed/);
 });

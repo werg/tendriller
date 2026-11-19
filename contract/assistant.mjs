@@ -27,13 +27,16 @@ export function createAssistantKey() {
   return 'td_a_' + hex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-export async function proposeApplicationAssistant({ api, token, key, label, queries = [], commands = [], events = [], signal, fetcher = fetch }) {
-  if (!keyFormat.test(key)) throw error('INVALID_ASSISTANT_KEY');
+export async function proposeApplicationAssistant({ api, token, key, backupKeys = [], label, queries = [], commands = [], events = [], signal, fetcher = fetch }) {
+  const keys = [key, ...backupKeys];
+  if (keys.length > 3 || keys.some(value => !keyFormat.test(value)) || new Set(keys).size !== keys.length)
+    throw error('INVALID_ASSISTANT_KEY');
   socketUrl(api);
-  const adapterHash = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key))));
+  const adapterHashes = await Promise.all(keys.map(async value =>
+    hex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))));
   const response = await fetcher(api + '/assistant/propose', {
     method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, adapterHash, queries, commands, events }), signal, redirect: 'manual',
+    body: JSON.stringify({ label, adapterHashes, queries, commands, events }), signal, redirect: 'manual',
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
@@ -83,7 +86,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
     while (!lifetime.aborted) {
       let transport, terminal = false, openedAt = 0;
       try {
-        transport = openSocket(url, [PROTOCOL, key]);
+        transport = openSocket(url, [PROTOCOL, key, 'td_device_' + session.deviceId]);
         socket = transport;
         const connected = new AbortController();
         const code = await new Promise(resolve => {
@@ -170,7 +173,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
 }
 
 /** Advance the native cursor only after the host retains each projected event. */
-export async function forwardApplicationEvents({ session, assistant, topics, project, checkpoint, signal }) {
+export async function forwardApplicationEvents({ session, assistant, topics, project, checkpoint, signal, onSkipped = () => {} }) {
   const lifetime = AbortSignal.any([session.signal, ...(signal ? [signal] : [])]);
   let cursor = await checkpoint.load();
   for await (const change of session.changes({ signal: lifetime })) {
@@ -190,7 +193,11 @@ export async function forwardApplicationEvents({ session, assistant, topics, pro
             await assistant.waitUntilOnline({ signal: lifetime });
             try { await assistant.publish(value); break; }
             catch (cause) {
-              const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full', 'page_rate_limited', 'account_rate_limited'].includes(cause?.code);
+              if (cause?.code === 'event_not_approved') {
+                onSkipped({ name: value.name, sourceEventId: value.sourceEventId });
+                break;
+              }
+              const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full', 'application_event_unavailable', 'page_rate_limited', 'account_rate_limited'].includes(cause?.code);
               if (!retryable || attempt >= 5) throw cause;
               await delay(Math.min(8000, 500 * 2 ** attempt), lifetime);
             }

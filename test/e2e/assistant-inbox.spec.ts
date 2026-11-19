@@ -26,7 +26,7 @@ test('the mounted inbox shows socket activity and prompts its host only after a 
         }, origin);
         if (event.data?.method === 'ui/message') {
           prompts.push(event.data.params);
-          source.postMessage({ jsonrpc: '2.0', id: event.data.id, result: {} }, origin);
+          source.postMessage({ jsonrpc: '2.0', id: event.data.id, result: { isError: prompts.length > 1 } }, origin);
         }
       });
     } else {
@@ -60,4 +60,7 @@ test('the mounted inbox shows socket activity and prompts its host only after a 
   expect(prompts).toHaveLength(1);
   expect(prompts[0].content[0].text).toContain('read_application_events');
   expect(prompts[0].content[0].text).not.toContain(grant.proof);
+  await card.getByRole('button', { name: 'Check inbox in this chat' }).click();
+  await expect(card.getByRole('status')).toHaveText(/did not confirm receipt/);
+  expect(await page.evaluate(() => (window as any).prompts.length)).toBe(2);
 });

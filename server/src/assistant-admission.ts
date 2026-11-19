@@ -12,10 +12,10 @@ import { publicBase } from './urls';
 import { APP_NAME, assistantOAuth, fields, string, type EventDefinition, type Operation } from './assistant-shared';
 
 export type Proposal = {
-  id: string; owner: string; applicationId: string; label: string; adapterHash: string; agent: AgentPrincipal;
+  id: string; owner: string; applicationId: string; label: string; adapterHashes: string[]; agent: AgentPrincipal;
   queries: Operation[]; commands: Operation[]; events: EventDefinition[];
 };
-export type Connection = Pick<Proposal, 'id' | 'owner' | 'applicationId' | 'label' | 'queries' | 'commands' | 'events'> & { version: string };
+export type Connection = Pick<Proposal, 'id' | 'owner' | 'applicationId' | 'label' | 'queries' | 'commands' | 'events'> & { version: string; inboxVersion: string };
 export const proposal = (t: Tendril) => t.db.get<Proposal | null>('assistant_proposal', null);
 export const connection = (t: Tendril) => t.db.get<Connection | null>('assistant_connection', null);
 
@@ -34,8 +34,11 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
   if (!await assistantOAuth(t.env)) throw new HttpError(503, 'assistant_oauth_unavailable');
   const owner = t.db.get<string | null>('owner_account', null);
   if (!owner) throw new HttpError(409, 'claim_page_first');
-  const input = fields(await readJson(req, 16384), ['label', 'adapterHash', 'queries', 'commands', 'events']);
-  const label = string(input.label, 100), adapterHash = string(input.adapterHash, 64, /^[a-f0-9]{64}$/u);
+  const input = fields(await readJson(req, 16384), ['label', 'adapterHashes', 'queries', 'commands', 'events']);
+  const label = string(input.label, 100);
+  if (!Array.isArray(input.adapterHashes) || !input.adapterHashes.length || input.adapterHashes.length > 3 ||
+    new Set(input.adapterHashes).size !== input.adapterHashes.length) throw new HttpError(400, 'invalid_adapter_keys');
+  const adapterHashes = input.adapterHashes.map(hash => string(hash, 64, /^[a-f0-9]{64}$/u));
   const published = await exchangePeerControl(t, agent, 'definition') as { definition: { queries: Operation[]; commands: Operation[] } };
   const queries = names(input.queries, published.definition.queries), commands = names(input.commands, published.definition.commands);
   if (!Array.isArray(input.events) || input.events.length > 24) throw new HttpError(400, 'invalid_event_catalog');
@@ -47,7 +50,7 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
     throw new HttpError(400, 'invalid_exposure');
   const applicationId = selectedApplication(t).id;
   // A replacement is a new grant even when the published schemas look alike.
-  const id = await sha256Hex(JSON.stringify([owner, applicationId, agent.credentialHash, label, adapterHash, queries, commands, events]));
+  const id = await sha256Hex(JSON.stringify([owner, applicationId, agent.credentialHash, label, adapterHashes, queries, commands, events]));
   return t.serializeAssistant(async () => {
     if (owner !== t.db.get('owner_account', null) || !currentPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
     const previous = proposal(t);
@@ -55,7 +58,7 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
       await t.env.ACCOUNTS.prepare(`INSERT INTO assistant_connections(page_id,application_id,owner_account,label) VALUES(?,?,?,?)
         ON CONFLICT(page_id) DO UPDATE SET label=CASE WHEN enabled=0 THEN excluded.label ELSE label END`)
         .bind(t.tid, applicationId, owner, label).run();
-      t.db.set('assistant_proposal', { id, owner, applicationId, label, adapterHash, agent, queries, commands, events });
+      t.db.set('assistant_proposal', { id, owner, applicationId, label, adapterHashes, agent, queries, commands, events });
     }
     return json({ applicationId, proposed: id, approved: connection(t)?.id === id,
       reviewUrl: publicBase(t.env) + reviewPath(t.tid) });
@@ -80,7 +83,8 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   if (req.method === 'GET') {
     const selection = current?.id === item.id ? current : null;
     const page = servicePage('Assistant connection',
-    `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Changing permissions clears the inbox and existing subscriptions.' : 'Choose what the assistant may access.'}</p>
+    `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Removing an event stops its subscriptions and removes that event from the inbox.' : 'Choose what the assistant may access.'}</p>
+    <p>Participant keys ${item.adapterHashes.map(hash => '<code>' + hash.slice(0, 12) + '</code>').join(', ')}</p>
     <form method="post"><input type="hidden" name="csrf" value="${csrf}">
     ${options('queries', item.queries, selection?.queries)}${options('commands', item.commands, selection?.commands)}${options('events', item.events, selection?.events)}
     <button name="action" value="approve">Approve selected permissions</button>
@@ -99,37 +103,59 @@ export async function reviewAssistant(t: Tendril, req: Request) {
     if (form.get('action') === 'revoke') {
       t.transaction(() => {
         t.db.del('assistant_connection');
-        t.db.del('assistant_adapter');
+        t.db.del('assistant_adapters');
         resetAssistantConnection(t);
-        t.afterCommit(() => closeAssistantConnections(t));
+        t.afterCommit(() => closeAssistantConnections(t, []));
       });
       await t.env.ACCOUNTS.prepare("UPDATE assistant_connections SET enabled=0 WHERE page_id=?").bind(t.tid).run();
     } else if (form.get('action') === 'approve') {
       await requireWritesOpen(t.env);
       if (!currentPrincipal(t, item.agent)) throw new HttpError(409, 'adapter_agent_revoked');
-      const approved = { id: item.id, version: crypto.randomUUID(), owner: item.owner, applicationId: item.applicationId, label: item.label,
+      const version = crypto.randomUUID();
+      const approved = { id: item.id, version, inboxVersion: version, owner: item.owner, applicationId: item.applicationId, label: item.label,
         queries: names(form.getAll('queries'), item.queries), commands: names(form.getAll('commands'), item.commands),
         events: names(form.getAll('events'), item.events) };
       if (!approved.queries.length && !approved.commands.length && !approved.events.length) throw new HttpError(400, 'no_permissions_selected');
       if (current?.id === item.id && JSON.stringify([current.queries, current.commands, current.events]) ===
         JSON.stringify([approved.queries, approved.commands, approved.events])) return redirect(returnTo);
       initializeAssistantTables(t);
-      await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=? WHERE page_id=? AND owner_account=?')
-        .bind(approved.label, t.tid, browser.id).run();
+      try {
+        await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=? WHERE page_id=? AND owner_account=?')
+          .bind(approved.label, t.tid, browser.id).run();
+      } catch (error) {
+        const another = await t.env.ACCOUNTS.prepare(`SELECT page_id FROM assistant_connections
+          WHERE owner_account=? AND application_id=? AND enabled=1 AND page_id<>?`)
+          .bind(browser.id, approved.applicationId, t.tid).first();
+        if (another) throw new HttpError(409, 'application_already_connected', 'This account already connected a page with this application ID');
+        throw error;
+      }
+      const removed = (current?.events ?? []).filter(previous => !approved.events.some(event =>
+        event.name === previous.name && event.description === previous.description)).map(event => event.name);
+      const sameEvents = current && JSON.stringify(current.events) === JSON.stringify(approved.events);
+      if (sameEvents) approved.inboxVersion = current.inboxVersion;
       t.transaction(() => {
-        resetAssistantConnection(t);
+        for (const name of removed) {
+          t.db.run('DELETE FROM assistant_jobs WHERE watcher_id IN (SELECT id FROM assistant_watchers WHERE name=?)', name);
+          t.db.run('DELETE FROM assistant_watchers WHERE name=?', name);
+          t.db.run('DELETE FROM assistant_events WHERE name=?', name);
+          t.db.run('DELETE FROM assistant_receipts WHERE name=?', name);
+        }
         t.db.set('assistant_connection', approved);
-        t.db.set('assistant_adapter', { id: item.id, agent: item.agent, hash: item.adapterHash });
-        t.afterCommit(() => closeAssistantConnections(t));
+        t.db.set('assistant_adapters', { agent: item.agent, hashes: item.adapterHashes });
+        t.afterCommit(() => closeAssistantConnections(t, item.adapterHashes, Boolean(sameEvents)));
       });
     } else throw new HttpError(400, 'invalid_action');
     return redirect(returnTo);
   });
 }
 
-function closeAssistantConnections(t: Tendril) {
+function closeAssistantConnections(t: Tendril, keep: string[], keepInbox = false) {
   for (const tag of ['application-mcp', 'application-activity']) {
-    for (const ws of t.ctx.getWebSockets(tag)) { try { ws.close(4003, 'Application connection changed'); } catch { /* Already closed */ } }
+    if (tag === 'application-activity' && keepInbox) continue;
+    for (const ws of t.ctx.getWebSockets(tag)) {
+      if (tag === 'application-mcp' && keep.includes(ws.deserializeAttachment()?.adapterHash)) continue;
+      try { ws.close(4003, 'Application connection changed'); } catch { /* Already closed */ }
+    }
   }
 }
 
@@ -138,6 +164,7 @@ function resetAssistantConnection(t: Tendril) {
     t.db.run('DELETE FROM assistant_jobs');
     t.db.run('DELETE FROM assistant_watchers');
     t.db.run('DELETE FROM assistant_events');
+    t.db.run('DELETE FROM assistant_receipts');
   }
 }
 
@@ -146,20 +173,26 @@ function initializeAssistantTables(t: Tendril) {
   t.transaction(() => {
     t.db.run(`CREATE TABLE IF NOT EXISTS assistant_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL,
       generation TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(generation,source_id,name));
-      CREATE TABLE IF NOT EXISTS assistant_watchers(id TEXT PRIMARY KEY, grant_id TEXT NOT NULL, name TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS assistant_watchers(id TEXT PRIMARY KEY, grant_id TEXT NOT NULL, client_id TEXT NOT NULL, name TEXT NOT NULL,
       url TEXT NOT NULL, secret TEXT NOT NULL, previous_secret TEXT, rotate_until INTEGER,
       verified_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS assistant_jobs(event_seq INTEGER NOT NULL, watcher_id TEXT NOT NULL,
-      due INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(event_seq,watcher_id));
+      due INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease TEXT, block_reason TEXT, PRIMARY KEY(event_seq,watcher_id));
+      CREATE TABLE IF NOT EXISTS assistant_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT NOT NULL,
+      name TEXT NOT NULL, source_id TEXT NOT NULL, generation TEXT NOT NULL, watcher_id TEXT NOT NULL,
+      outcome TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS assistant_receipts_client ON assistant_receipts(client_id,seq DESC);
+      CREATE TABLE IF NOT EXISTS assistant_commands(operation_id TEXT PRIMARY KEY, input_hash TEXT NOT NULL,
+      device_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS assistant_devices(adapter_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS assistant_jobs_due ON assistant_jobs(due);`);
     t.db.set('assistant_tables', true);
   });
 }
 
-export type Adapter = { id: string; agent: AgentPrincipal; hash: string };
-export function activeAdapter(t: Tendril): Adapter | null {
-  if (t.db.get('disabled', false)) return null;
-  const approved = connection(t), adapter = t.db.get<Adapter | null>('assistant_adapter', null);
-  return approved && adapter && approved.id === adapter.id && approved.owner === t.db.get('owner_account', null) &&
-    currentPrincipal(t, adapter.agent) ? adapter : null;
+export function activeAdapters(t: Tendril): readonly string[] {
+  if (t.db.get('disabled', false)) return [];
+  const approved = connection(t), adapters = t.db.get<{ agent: AgentPrincipal; hashes: string[] } | null>('assistant_adapters', null);
+  return approved && adapters && approved.owner === t.db.get('owner_account', null) &&
+    currentPrincipal(t, adapters.agent) ? adapters.hashes : [];
 }

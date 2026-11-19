@@ -35,12 +35,16 @@ live inbox. These are service-wide settings.
    participant available according to [Agent delivery](AGENT_DELIVERY.md).
 2. Use the public helper below from the participant's private setup process.
    Save the adapter key in that participant's private store and reuse it on
-   restart. The proposal's commands and queries must exist in the signed native
+   restart. To enroll standby participants, generate a distinct key for
+   each and include up to two additional keys in `backupKeys` when proposing.
+   Give each already enrolled Chronolog device only its own adapter key. The proposal's commands and queries must exist in the signed native
    definition. Describe what each exported event will contain so the owner can
    review the outbound data.
 3. Give the owner the returned `reviewUrl`. They sign in and choose the exact
-   queries, commands and events to expose. Their review is required again when
-   replacing the adapter credential or changing its proposal.
+   queries, commands and events to expose. Editing permissions preserves access
+   and subscriptions for unchanged capabilities. Removing an event or changing
+   its declared projection removes that event's retained data and subscriptions.
+   Credential additions and replacements require owner review.
 4. Attach the adapter to the application's existing Chronolog session.
    Connect the intended client to the service `/mcp` and authorize it. Call
    `list_tendrils`, `describe_application` and one approved query. Test a real
@@ -83,6 +87,23 @@ checkpoint begins at the first selected event. To send only future activity,
 initialize it at the current selected tail using the same topic filter. The
 helper advances the checkpoint after the host acknowledges all events in a
 batch. A recovered history requires explicit review of what to resume.
+The Worker checks the approved adapter credential and its enrolled device
+against signed Chronolog grants. A lost participant can be bypassed for reads
+and new writes by choosing an eligible approved standby. Chronolog still needs
+an available coordination path for writes. For an attempted write, Tendriller
+retains its input digest and original signing device with the operation ID.
+Retries use that device. If it is unavailable, inspect the app's selected
+state or restore the original participant. A new ID starts independent work.
+The retained command index is bounded per page and survives connection edits.
+An OAuth revocation blocks each dispatch whose fresh authorization check occurs
+after revocation. Keep the original operation identity for a command already
+sent, since it can still apply.
+
+If a projection is declined by the owner, the helper advances past that
+projection and continues forwarding other events. Use `onSkipped` to report
+which event was declined. Use a separate checkpoint and deliberately choose
+where to begin on each forwarding device.
+
 Stop the adapter using `assistant.close()` or by closing its parent session.
 The SDK scopes remote commands and queries again before calling the native tool.
 
@@ -94,12 +115,18 @@ This stable MCP catalog works for newly connected apps without adding tools
 or event types to the plugin. The provider verifies its callback by challenge.
 A fresh subscription starts with future emissions. Each queued delivery uses a
 stable event ID and exact body across retries, and is fenced by the selected
-Chronolog generation and current account grant. A receipt establishes delivery
-to the provider. Confirm the resulting signed writeback in application history.
+Chronolog generation and current account grant. Temporary configuration,
+callback allowlist or encryption key outages defer jobs without consuming
+provider attempts. They resume on a later page alarm before subscription
+expiry. Use `get_application_delivery` to inspect pending work and recent
+terminal receipts, including expiry, rejected callbacks and exhausted retries.
+An accepted receipt establishes delivery to the provider. Confirm the resulting signed writeback in application history.
 
 A tool-capable chat without background subscriptions can call
 `read_application_events` on the next turn. Keep its returned `next` cursor and
 generation, check `truncated`, and preserve context if the generation changes.
+`truncated` tracks the visible inbox window even when an old event must remain
+stored for a pending webhook.
 Compatible MCP Apps hosts can mount `open_application_inbox` to show new activity
 over an inbound WebSocket. The card sends a follow-up to the same chat when the
 person chooses **Check inbox in this chat**. The mounted card's ticket is
@@ -116,7 +143,8 @@ chat or a separately published agent with its own trigger. See the
   scheduled assistant job during idle periods.
 - Each explicitly forwarded event writes one inbox record and queues jobs only
   for matching active subscriptions. Delivery shares the page's existing alarm.
-  It batches up to four due deliveries and backs off on transient errors.
+  It leases up to four due jobs in one pass, performs bounded callbacks outside
+  the page's assistant work queue, and backs off on transient errors.
 - The inbox holds the newest 256 accepted events per page plus records needed
   for outstanding delivery. There are eight subscriptions, at most 256 queued
   deliveries and four mounted live inboxes per page. When the queue is full,

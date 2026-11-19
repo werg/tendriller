@@ -691,7 +691,7 @@ export class Tendril extends DurableObject<Env> {
       if (due !== null && due <= this.now() && !lifetimeChangePending(this)) { await this.destroy(); return; }
       expirePeers(this);
       await expireRelays(this);
-      if (nextAssistantDelivery(this) !== null) await this.serializeAssistant(() => runAssistantDelivery(this));
+      if (nextAssistantDelivery(this) !== null) await runAssistantDelivery(this);
       if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
       const expires = this.expiresAt();
       if (expires !== null && expires <= this.now() && !lifetimeChangePending(this)) await this.destroy();

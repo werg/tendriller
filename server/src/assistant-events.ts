@@ -1,9 +1,10 @@
 import { callbackUrl, deliveryDisposition, signedHeaders, verifyCallback, webhookKey } from '../../integrations/chatgpt/webhook-data.mjs';
 import { notifyAssistantActivity } from './assistant-activity';
-import { activeAdapter, connection, type Adapter, type Connection } from './assistant-admission';
+import { activeAdapters, connection, type Connection } from './assistant-admission';
 import { APP_ID, EVENT_LIMIT, MCP_APPLICATION_EVENT, assistantOAuth, fields, requireScope, string, type Principal } from './assistant-shared';
-import { activeGrant } from './accounts/oauth-data';
+import { activeGrant, registeredGrant, type OAuthGrant } from './accounts/oauth-data';
 import { admitPageTraffic } from './traffic-budget';
+import { requireWritesOpen } from './service-state';
 import { pagePolicy } from './access';
 import { HttpError, readBody } from './http';
 import { sha256Hex } from './ids';
@@ -11,10 +12,12 @@ import { withSelectedAssistantGeneration } from './peer-generations';
 import type { Tendril } from './tendril';
 
 const RETENTION = 256, JOB_LIMIT = 256, MAX_WATCHERS = 8, CALLBACK_DEADLINE = 4000;
+const DEFER_MS = 15 * 60_000, LEASE_MS = 15_000, MAX_ATTEMPTS = 8;
 const DAY = 86_400_000;
 type EventRow = { seq: number; source_id: string; generation: string; name: string; payload: string; created_at: number };
-type Watcher = { id: string; grant_id: string; name: string; url: string; secret: string; previous_secret: string | null; rotate_until: number | null; verified_at: number; expires_at: number };
-type Job = EventRow & Watcher & { attempts: number; event_seq: number; watcher_id: string };
+type Watcher = { id: string; grant_id: string; client_id: string; name: string; url: string; secret: string; previous_secret: string | null; rotate_until: number | null; verified_at: number; expires_at: number };
+type Job = EventRow & Watcher & { attempts: number; event_seq: number; watcher_id: string; block_reason: string | null };
+type InboxFloor = { generation: string; through: number };
 const toMessage = (item: EventRow, applicationId: string) => ({
   name: MCP_APPLICATION_EVENT, timestamp: new Date(item.created_at).toISOString(),
   data: { applicationId, event: item.name, sourceEventId: item.source_id, generation: item.generation, payload: JSON.parse(item.payload) },
@@ -60,7 +63,7 @@ async function unseal(t: Tendril, id: string, sealed: string) {
     additionalData: new TextEncoder().encode(t.tid + ':' + id) }, await key(t), data.subarray(12)));
 }
 
-export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: Record<string, unknown>) {
+export async function ingestAssistantEvent(t: Tendril, adapterHash: string, deviceId: string, body: Record<string, unknown>) {
   fields(body, ['type', 'id', 'name', 'sourceEventId', 'generation', 'payload']);
   const name = string(body.name, 80), sourceId = string(body.sourceEventId, 256);
   const generation = string(body.generation, 64, APP_ID), payload = JSON.stringify(body.payload);
@@ -68,10 +71,11 @@ export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: R
   // The socket is already approved. D1 checks happen on connection and egress;
   // the hot ingest path uses local revocation and the regional traffic budget.
   await admitPageTraffic(t.env, t.tid, connection(t)?.owner ?? null);
-  const retained = await withSelectedAssistantGeneration(t, selected => {
+  const retained = await withSelectedAssistantGeneration(t, async (selected, canUseDevice) => {
     if (selected !== generation) throw new HttpError(409, 'event_generation_changed');
-    if (activeAdapter(t)?.id !== adapter.id || !connection(t)?.events.some(event => event.name === name))
-      throw new HttpError(403, 'event_not_approved');
+    if (!await canUseDevice(deviceId, false) || !activeAdapters(t).includes(adapterHash))
+      throw new HttpError(403, 'adapter_device_not_enrolled');
+    if (!connection(t)?.events.some(event => event.name === name)) throw new HttpError(403, 'event_not_approved');
     const prior = t.db.one<{ seq: number; payload: string }>(
       'SELECT seq,payload FROM assistant_events WHERE generation=? AND source_id=? AND name=?', generation, sourceId, name);
     if (prior) {
@@ -87,8 +91,13 @@ export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: R
         VALUES(?,?,?,?,?) RETURNING seq`, sourceId, generation, name, payload, now)!;
       for (const watcher of watchers)
         t.db.run('INSERT INTO assistant_jobs(event_seq,watcher_id,due) VALUES(?,?,?)', seq, watcher.id, now + 50);
-      if (seq > RETENTION)
-        t.db.run('DELETE FROM assistant_events WHERE seq<=? AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE event_seq=assistant_events.seq)', seq - RETENTION);
+      if (seq > RETENTION) {
+        const bound = seq - RETENTION, floor = inboxFloor(t, generation);
+        const retired = t.db.one<{ seq: number }>(`SELECT seq FROM assistant_events WHERE generation=? AND seq>? AND seq<=?
+          ORDER BY seq DESC LIMIT 1`, generation, floor, bound);
+        if (retired) t.db.set('assistant_inbox_floor', { generation, through: retired.seq });
+        t.db.run('DELETE FROM assistant_events WHERE seq<=? AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE event_seq=assistant_events.seq)', bound);
+      }
       t.afterCommit(() => notifyAssistantActivity(t));
       return { seq, due: watchers.length ? now + 50 : null };
     });
@@ -99,18 +108,25 @@ export async function ingestAssistantEvent(t: Tendril, adapter: Adapter, body: R
   return retained.seq;
 }
 
+function inboxFloor(t: Tendril, generation: string | null): number {
+  const floor = t.db.get<InboxFloor | null>('assistant_inbox_floor', null);
+  return floor?.generation === generation ? floor.through : 0;
+}
+
 export async function assistantInbox(t: Tendril, approved: Connection, params: Record<string, unknown>) {
   const cursor = params.after ?? 0, limit = params.limit ?? 20;
   if (!Number.isSafeInteger(cursor) || (cursor as number) < 0 || !Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > 25)
     throw new HttpError(400, 'invalid_cursor');
   return withSelectedAssistantGeneration(t, generation => {
     if (connection(t)?.version !== approved.version) throw new HttpError(403, 'connection_changed');
-    const oldest = t.db.one<{ seq: number }>('SELECT seq FROM assistant_events ORDER BY seq LIMIT 1')?.seq;
+    const floor = inboxFloor(t, generation);
+    const oldest = t.db.one<{ seq: number }>('SELECT seq FROM assistant_events WHERE generation=? AND seq>? ORDER BY seq LIMIT 1',
+      generation, floor)?.seq;
     const events = t.db.all<EventRow>('SELECT * FROM assistant_events WHERE seq>? AND generation=? ORDER BY seq LIMIT ?',
-      cursor, generation, Number(limit) + 1);
+      Math.max(Number(cursor), floor), generation, Number(limit) + 1);
     const page = events.slice(0, Number(limit));
-    return { generation, oldest: oldest ?? null, next: page.at(-1)?.seq ?? cursor, hasMore: events.length > Number(limit),
-      truncated: typeof oldest === 'number' && Number(cursor) > 0 && Number(cursor) < oldest - 1,
+    return { generation, oldest: oldest ?? null, next: page.at(-1)?.seq ?? Math.max(Number(cursor), floor),
+      hasMore: events.length > Number(limit), truncated: Number(cursor) < floor,
       events: page.map(item => ({ sequence: item.seq, ...toMessage(item, approved.applicationId) })) };
   });
 }
@@ -126,13 +142,16 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
   if (!event) throw new HttpError(403, 'event_not_approved');
   const delivery = fields(params.delivery, subscribing ? ['mode', 'url', 'secret'] : ['mode', 'url']);
   if (delivery.mode !== 'webhook') throw new HttpError(400, 'unsupported_delivery');
-  const url = callbackTarget(t, delivery.url);
+  let url: string;
+  if (subscribing) url = callbackTarget(t, delivery.url);
+  else {
+    try { url = callbackUrl(delivery.url); } catch { throw new HttpError(400, 'invalid_callback'); }
+  }
   const id = 'sub_' + await sha256Hex(JSON.stringify([approved.applicationId, principal.account, principal.client, event.name, url]));
   if (!subscribing) {
     if (connection(t)?.version !== approved.version) throw new HttpError(403, 'connection_changed');
     t.transaction(() => {
-      t.db.run('DELETE FROM assistant_jobs WHERE watcher_id=?', id);
-      t.db.run('DELETE FROM assistant_watchers WHERE id=?', id);
+      closeWatcher(t, id, 'unsubscribed');
     });
     return {};
   }
@@ -168,15 +187,17 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
     throw new HttpError(400, 'callback_verification_failed', 'Callback verification failed',
       { rpcCode: -32015, reason: (error as { data?: { reason?: string } }).data?.reason ?? 'challenge_failed' });
   }
+  await requireWritesOpen(t.env);
   if (!oauth || !(await activeGrant(t.env, oauth, principal.grant, principal.account))?.scope.split(' ').includes('events:subscribe') || connection(t)?.version !== approved.version)
     throw new HttpError(403, 'connection_changed');
   t.transaction(() => {
-    t.db.run('DELETE FROM assistant_jobs WHERE watcher_id IN(SELECT id FROM assistant_watchers WHERE expires_at<=?)', now);
-    t.db.run('DELETE FROM assistant_watchers WHERE expires_at<=?', now);
-    t.db.run(`INSERT INTO assistant_watchers(id,grant_id,name,url,secret,previous_secret,rotate_until,verified_at,expires_at)
-      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET grant_id=excluded.grant_id,secret=excluded.secret,
+    if (existing && existing.expires_at <= now) closeWatcher(t, id, 'expired');
+    t.db.run(`DELETE FROM assistant_watchers WHERE expires_at<=?
+      AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE watcher_id=assistant_watchers.id)`, now);
+    t.db.run(`INSERT INTO assistant_watchers(id,grant_id,client_id,name,url,secret,previous_secret,rotate_until,verified_at,expires_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET grant_id=excluded.grant_id,secret=excluded.secret,
       previous_secret=excluded.previous_secret,rotate_until=excluded.rotate_until,verified_at=excluded.verified_at,expires_at=excluded.expires_at`,
-      id, principal.grant, event.name, url, sealed, rotateUntil && rotateUntil > now ? previousSecret : null,
+      id, principal.grant, principal.client, event.name, url, sealed, rotateUntil && rotateUntil > now ? previousSecret : null,
       rotateUntil, cachedVerification ? existing!.verified_at : t.now(), expiry);
   });
   return { id, refreshBefore: new Date(expiry).toISOString(), cursor: null, truncated: false };
@@ -187,56 +208,123 @@ export function nextAssistantDelivery(t: Tendril): number | null {
   return t.db.one<{ due: number }>('SELECT due FROM assistant_jobs ORDER BY due LIMIT 1')?.due ?? null;
 }
 
+const joinedJobs = `SELECT e.*,w.*,j.event_seq,j.watcher_id,j.attempts,j.block_reason FROM assistant_jobs j
+  JOIN assistant_watchers w ON w.id=j.watcher_id JOIN assistant_events e ON e.seq=j.event_seq`;
+
+function finishDelivery(t: Tendril, job: Job, outcome: string, attempts = job.attempts) {
+  const receipt = t.db.one<{ seq: number }>(`INSERT INTO assistant_receipts(client_id,name,source_id,generation,watcher_id,outcome,attempts,updated_at)
+    VALUES(?,?,?,?,?,?,?,?) RETURNING seq`, job.client_id, job.name, job.source_id, job.generation, job.watcher_id, outcome, attempts, t.now())!;
+  if (receipt.seq > RETENTION)
+    t.db.run('DELETE FROM assistant_receipts WHERE seq<=?', receipt.seq - RETENTION);
+  t.db.run('DELETE FROM assistant_jobs WHERE event_seq=? AND watcher_id=?', job.event_seq, job.watcher_id);
+}
+
+function closeWatcher(t: Tendril, id: string, outcome: string) {
+  for (const job of t.db.all<Job>(joinedJobs + ' WHERE j.watcher_id=?', id)) finishDelivery(t, job, outcome);
+  t.db.run('DELETE FROM assistant_watchers WHERE id=?', id);
+}
+
+export function assistantDeliveryStatus(t: Tendril, principal: Principal) {
+  const pending = t.db.all(`SELECT j.watcher_id AS subscriptionId,e.source_id AS sourceEventId,e.name AS event,
+    e.generation AS generation,j.due AS nextAttemptAt,j.attempts,j.block_reason AS blockedReason
+    FROM assistant_jobs j JOIN assistant_watchers w ON w.id=j.watcher_id JOIN assistant_events e ON e.seq=j.event_seq
+    WHERE w.client_id=? ORDER BY j.due LIMIT 25`, principal.client);
+  const recent = t.db.all(`SELECT watcher_id AS subscriptionId,source_id AS sourceEventId,name AS event,generation,
+    outcome,attempts,updated_at AS updatedAt FROM assistant_receipts WHERE client_id=? ORDER BY seq DESC LIMIT 25`, principal.client);
+  return { pending, recent };
+}
+
 export async function runAssistantDelivery(t: Tendril) {
   const approved = connection(t), at = nextAssistantDelivery(t), now = t.now();
   if (!approved || at === null || at > now) return;
-  const jobs = t.db.all<Job>(`SELECT e.*,w.*,j.event_seq,j.watcher_id,j.attempts FROM assistant_jobs j
-    JOIN assistant_watchers w ON w.id=j.watcher_id JOIN assistant_events e ON e.seq=j.event_seq
-    WHERE j.due<=? ORDER BY j.due LIMIT 4`, now);
-  const oauth = await assistantOAuth(t.env);
-  // Retain signed event identity through bounded, durable retries.
-  const allowed = !!oauth && !!activeAdapter(t) && await pagePolicy(t) === 'active';
-  const grants = new Map<string, ReturnType<typeof activeGrant>>();
-  await Promise.all(jobs.map(async job => {
-    let retry = false;
+  // Reserve a short durable lease and release all serialization before I/O.
+  // A crash leaves the original job eligible again once the lease expires.
+  const lease = crypto.randomUUID();
+  const jobs = t.transaction(() => {
+    const due = t.db.all<Job>(joinedJobs + ' WHERE j.due<=? ORDER BY j.due LIMIT 4', now);
+    for (const job of due) t.db.run('UPDATE assistant_jobs SET lease=?,due=? WHERE event_seq=? AND watcher_id=?',
+      lease, now + LEASE_MS, job.event_seq, job.watcher_id);
+    return due;
+  });
+  const current = (job: Job) => t.db.one('SELECT lease FROM assistant_jobs WHERE event_seq=? AND watcher_id=? AND lease=?',
+    job.event_seq, job.watcher_id, lease) !== null;
+  const defer = (job: Job, reason: string, delay = DEFER_MS) => t.db.run(
+    'UPDATE assistant_jobs SET due=?,lease=NULL,block_reason=? WHERE event_seq=? AND watcher_id=? AND lease=?',
+    Math.min(t.now() + delay, job.expires_at), reason, job.event_seq, job.watcher_id, lease);
+  const finish = (job: Job, outcome: string, attempts = job.attempts) => {
+    if (current(job)) t.transaction(() => finishDelivery(t, job, outcome, attempts));
+  };
+  const configuration = await (async () => {
     try {
-      if (allowed && job.expires_at > now) {
-        let grant = grants.get(job.grant_id);
-        if (!grant) {
-          grant = activeGrant(t.env, oauth!, job.grant_id, approved.owner);
-          grants.set(job.grant_id, grant);
-        }
-        if ((await grant)?.scope.split(' ').includes('events:subscribe')) {
-          const secrets = [await unseal(t, job.watcher_id, job.secret)];
-          if (job.previous_secret && job.rotate_until && job.rotate_until > now)
-            secrets.push(await unseal(t, job.watcher_id, job.previous_secret));
-          const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.generation, job.source_id, job.name]));
-          const body = JSON.stringify({ eventId, ...toMessage(job, approved.applicationId), cursor: null });
-          const url = callbackTarget(t, job.url);
-          // The authority fence covers initiating egress, without retaining it
-          // over an external network response.
-          const { pending } = await withSelectedAssistantGeneration(t, generation => ({
-            pending: generation === job.generation && connection(t)?.version === approved.version && activeAdapter(t)
-              ? fetch(url, { method: 'POST', body, redirect: 'manual', signal: AbortSignal.timeout(CALLBACK_DEADLINE),
-                headers: signedHeaders({ id: eventId, subscriptionId: job.watcher_id, body, secrets, now }) }) : null,
-          }));
-          if (pending) {
-            const res = await pending;
-            await res.body?.cancel();
-            const outcome = deliveryDisposition(res.status);
-            retry = outcome === 'retry';
-            if (outcome === 'gone') {
-              t.transaction(() => {
-                t.db.run('DELETE FROM assistant_jobs WHERE watcher_id=?', job.watcher_id);
-                t.db.run('DELETE FROM assistant_watchers WHERE id=?', job.watcher_id);
-              });
-            }
-          }
-        }
+      const oauth = await assistantOAuth(t.env);
+      if (!oauth) return { blocked: 'oauth_unavailable' } as const;
+      if (!activeAdapters(t).length || await pagePolicy(t) !== 'active') return { blocked: 'page_unavailable' } as const;
+      return { oauth };
+    } catch { return { blocked: 'configuration_unavailable' } as const; }
+  })();
+  const grants = new Map<string, Promise<OAuthGrant | null>>();
+  await Promise.all(jobs.map(async job => {
+    if (job.expires_at <= t.now()) { finish(job, 'expired'); return; }
+    if (job.attempts >= MAX_ATTEMPTS) { finish(job, 'retry_exhausted'); return; }
+    if (!configuration.oauth) { defer(job, configuration.blocked); return; }
+    const oauth = configuration.oauth;
+    let attempts = job.attempts;
+    try {
+      let pendingGrant = grants.get(job.grant_id);
+      if (!pendingGrant) {
+        pendingGrant = t.env.ACCOUNTS.prepare('SELECT * FROM integration_oauth_grants WHERE id=? AND account_id=?')
+          .bind(job.grant_id, approved.owner).first<OAuthGrant>();
+        grants.set(job.grant_id, pendingGrant);
       }
-    } catch (error) { retry = !(error instanceof HttpError && error.status === 400); }
-    if (retry && job.attempts < 7) t.db.run('UPDATE assistant_jobs SET attempts=attempts+1,due=? WHERE event_seq=? AND watcher_id=?',
-      t.now() + Math.min(300_000, 2000 * 2 ** job.attempts), job.event_seq, job.watcher_id);
-    else t.db.run('DELETE FROM assistant_jobs WHERE event_seq=? AND watcher_id=?', job.event_seq, job.watcher_id);
+      const grant = await pendingGrant;
+      if (!grant || grant.revoked_at !== null || grant.expires_at <= Date.now()) { finish(job, 'authorization_ended'); return; }
+      if (grant.resource !== oauth.resource || !registeredGrant(oauth, grant)) { defer(job, 'oauth_unavailable'); return; }
+      if (!grant.scope.split(' ').includes('events:subscribe')) { finish(job, 'authorization_ended'); return; }
+
+      const secrets = await (async () => {
+        try {
+          const values = [await unseal(t, job.watcher_id, job.secret)];
+          if (job.previous_secret && job.rotate_until && job.rotate_until > t.now())
+            values.push(await unseal(t, job.watcher_id, job.previous_secret));
+          return values;
+        } catch { return null; }
+      })();
+      if (!secrets) { defer(job, 'delivery_key_unavailable'); return; }
+      let url: string;
+      try { url = callbackTarget(t, job.url); }
+      catch { defer(job, 'callback_origin_unavailable'); return; }
+      const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.generation, job.source_id, job.name]));
+      const body = JSON.stringify({ eventId, ...toMessage(job, approved.applicationId), cursor: null });
+      const { pending } = await withSelectedAssistantGeneration(t, async generation => {
+        if (!current(job)) return { pending: null };
+        if (generation !== job.generation) { finish(job, 'superseded'); return { pending: null }; }
+        const live = t.db.one<Watcher>('SELECT * FROM assistant_watchers WHERE id=?', job.watcher_id);
+        if (live?.grant_id !== job.grant_id || live.secret !== job.secret || connection(t)?.version !== approved.version) {
+          defer(job, 'subscription_changed', 100); return { pending: null };
+        }
+        if (live.expires_at <= t.now()) { finish(job, 'expired'); return { pending: null }; }
+        if (!activeAdapters(t).length) { defer(job, 'page_unavailable'); return { pending: null }; }
+        attempts++;
+        t.db.run('UPDATE assistant_jobs SET attempts=?,block_reason=NULL WHERE event_seq=? AND watcher_id=? AND lease=?',
+          attempts, job.event_seq, job.watcher_id, lease);
+        return { pending: fetch(url, { method: 'POST', body, redirect: 'manual', signal: AbortSignal.timeout(CALLBACK_DEADLINE),
+          headers: signedHeaders({ id: eventId, subscriptionId: job.watcher_id, body, secrets, now: t.now() }) }) };
+      });
+      if (!pending) return;
+      const res = await pending;
+      await res.body?.cancel();
+      const outcome = deliveryDisposition(res.status);
+      if (outcome === 'accepted') finish(job, 'accepted', attempts);
+      else if (outcome === 'gone') {
+        // Unsubscribe immediately, while preserving receipts for queued work.
+        if (current(job)) t.transaction(() => closeWatcher(t, job.watcher_id, 'callback_gone'));
+      } else if (outcome === 'failed') finish(job, 'callback_rejected', attempts);
+      else if (attempts >= MAX_ATTEMPTS) finish(job, 'retry_exhausted', attempts);
+      else defer(job, 'callback_retry', Math.min(300_000, 2000 * 2 ** (attempts - 1)));
+    } catch {
+      if (attempts >= MAX_ATTEMPTS) finish(job, 'retry_exhausted', attempts);
+      else defer(job, attempts === job.attempts ? 'authorization_unavailable' : 'callback_retry',
+        attempts === job.attempts ? DEFER_MS : Math.min(300_000, 2000 * 2 ** (attempts - 1)));
+    }
   }));
 }

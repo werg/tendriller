@@ -3,6 +3,7 @@ export interface AssistantEndpoint { api: string; key: string }
 export interface AssistantExposure { queries?: readonly string[]; commands?: readonly string[] }
 interface AssistantSession {
   readonly applicationId: string;
+  readonly deviceId: string;
   readonly status: { readonly generation: string };
   readonly signal: AbortSignal;
 }
@@ -15,7 +16,7 @@ export interface AssistantParticipant {
 }
 export function createAssistantKey(): string;
 export function proposeApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
-  token: string; label: string; events?: readonly AssistantEventDefinition[]; signal?: AbortSignal; fetcher?: typeof fetch;
+  token: string; backupKeys?: readonly string[]; label: string; events?: readonly AssistantEventDefinition[]; signal?: AbortSignal; fetcher?: typeof fetch;
 }): Promise<{ applicationId: string; proposed: string; approved: boolean; reviewUrl: string }>;
 export function connectApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
   session: AssistantSession;
@@ -35,6 +36,7 @@ export function forwardApplicationEvents<Event extends { readonly id: string }>(
   };
   assistant: AssistantParticipant; topics: readonly string[];
   project(event: Event): { name: string; payload: unknown } | null | Promise<{ name: string; payload: unknown } | null>;
+  onSkipped?: (event: { name: string; sourceEventId: string }) => void;
   checkpoint: { load(): string | undefined | Promise<string | undefined>; save(cursor: string): void | Promise<void> };
   signal?: AbortSignal;
 }): Promise<void>;
