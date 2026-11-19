@@ -27,8 +27,18 @@ export async function openBrowserSqlSpecimen(options: {
   const [log, sql, native] = await Promise.all([load('index.mjs'), load('sql.mjs'), load('sql-native.mjs')]);
   const source = 'test/e2e/specimens';
   const common = { bundle: true, platform: 'browser' as const, format: 'esm' as const, write: false,
-    minify: true, nodePaths: [resolve(consumer, 'node_modules')],
-    alias: { '@tendriller/core/peers': resolve('dist/sdk/peers.mjs') } };
+    minify: true,
+    // The workspace carries an events-only package for the host. Pin both
+    // browser bundles to the same SQL package used by the native fixture.
+    alias: {
+      '@tendriller/core/peers': resolve('dist/sdk/peers.mjs'),
+      '@chronolog/peer-session': resolve(packageRoot, 'index.mjs'),
+      '@chronolog/peer-session/browser': resolve(packageRoot, 'browser.mjs'),
+      '@chronolog/peer-session/worker': resolve(packageRoot, 'worker.mjs'),
+      '@chronolog/peer-session/sql': resolve(packageRoot, 'sql.mjs'),
+      '@chronolog/peer-session/sql-browser': resolve(packageRoot, 'sql-browser.mjs'),
+      '@chronolog/peer-session/websocket': resolve(packageRoot, 'websocket.mjs'),
+    } };
   const [worker, ui] = await Promise.all([
     build({ ...common, entryPoints: [`${source}/browser-sql-worker.mjs`] }),
     build({ ...common, entryPoints: [`${source}/browser-sql.mjs`] }),
