@@ -19,7 +19,7 @@ Do not install an assumed public npm release of `@chronolog/peer-session`.
 
 ```sh
 npm install /absolute/path/tendriller-core.tgz /absolute/path/tendriller-tools.tgz \
-  /absolute/path/chronolog-peer-session.tgz esbuild
+  /absolute/path/chronolog-peer-session.tgz esbuild@0.28.2
 npm run create -- https://YOUR_HOST owner@example.com "Kitchen assistance"
 # The human opens the printed claim URL and signs in as the designated owner.
 npm run init
@@ -83,6 +83,9 @@ Account linking, a verified owner mapping, an explicit connection consent, valid
 Chronolog grants, and the destination subscription remain independent
 prerequisites. Use the integration's configuration and diagnostics for those
 layers. Enrollment by itself does not subscribe any ChatGPT conversation.
+The [systemd deployment tools](../../deploy/README.md) package the dedicated
+bridge separately, retain the coordinator under a different service user, and
+check host/native readiness before account linking.
 
 If another enrollment advances authority before a saved request ever commits,
 `enroll` reports `reviewRequired` and sends no replacement. Review a new signed
