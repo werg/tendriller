@@ -19,6 +19,12 @@ function fixture(options = {}) {
   return { outbox, store, bridge, sent, advance: n => { now += n; }, select: v => { selected = v; }, allow: v => { allowed = v; } };
 }
 const batch = (event = source()) => ({ applicationId: 'app-a', revision, cursor: 'next', events: [event], hasMore: false });
+function gate() {
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const wait = new Promise(resolve => { release = resolve; });
+  return { enter, release, entered, wait };
+}
 
 test('jobs and cursor commit together, deduplicate immutable sources, never cross application filters', async () => {
   const f = fixture();
@@ -73,9 +79,170 @@ test('recovery pauses notifications until explicit resume and records the select
   await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
   await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
   await f.outbox.dispatchDue(); assert.equal(f.sent.length, 0);
-  await assert.rejects(f.outbox.resume({ ...owner, id: 'other' }, { subscriptionId: 'sub-a', strategy: 'from_current' }), /not found/);
-  await f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current' });
+  await assert.rejects(f.outbox.resume({ ...owner, id: 'other' }, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } }), /not found/);
+  await f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } });
   const state = await f.store.read();
   assert.equal(state.subscriptions['sub-a'].sourceCursor, 'new-tail');
   assert.equal(Object.values(state.jobs)[0].reason, 'reviewed_start_from_current');
+});
+
+test('a cancelled claim cannot send after another process recreates the same subscription', async () => {
+  const f = fixture(), checking = gate();
+  f.bridge.verifySource = async () => { checking.enter(); await checking.wait; return { selected: true }; };
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await checking.entered;
+  // A different worker has no access to this process's AbortControllers.
+  await f.store.transaction(state => {
+    Object.assign(Object.values(state.jobs)[0], { state: 'cancelled', reason: 'unsubscribed' });
+    state.subscriptions['sub-a'] = { ...subscription(), activationId: 'activation-new' };
+  });
+  checking.release(); await dispatch;
+  assert.equal(f.sent.length, 0);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'cancelled');
+});
+
+test('reclaimed leases invalidate old workers without disturbing the current delivery controller', async () => {
+  const firstCheck = gate(), secondSend = gate();
+  let checks = 0, deliveredSignal;
+  const f = fixture({ send: async (_url, { signal }) => { deliveredSignal = signal; secondSend.enter(); await secondSend.wait; return { status: 200 }; } });
+  f.bridge.verifySource = async () => {
+    if (++checks === 1) { firstCheck.enter(); await firstCheck.wait; }
+    return { selected: true };
+  };
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const stale = f.outbox.dispatchDue({ limit: 1 }); await firstCheck.entered;
+  f.advance(30_001);
+  const current = f.outbox.dispatchDue({ limit: 1 }); await secondSend.entered;
+  firstCheck.release(); await stale;
+  await f.store.transaction(state => { Object.values(state.jobs)[0].state = 'cancelled'; });
+  await f.outbox.cancelInactive();
+  assert.equal(deliveredSignal.aborted, true, 'The old worker must not remove the new controller');
+  secondSend.release(); await current;
+  assert.equal(checks, 2);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'cancelled');
+});
+
+test('a late 410 cannot stop a newly activated subscription with the same version', async () => {
+  const delivery = gate();
+  const f = fixture({ send: async () => { delivery.enter(); await delivery.wait; return { status: 410 }; } });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await delivery.entered;
+  await f.store.transaction(state => { state.subscriptions['sub-a'] = { ...subscription(), activationId: 'activation-new' }; });
+  delivery.release(); await dispatch;
+  assert.equal((await f.store.read()).subscriptions['sub-a'].active, true);
+});
+
+test('old activation jobs are cancelled before being claimed or sent', async () => {
+  const f = fixture();
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-old'; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  await f.store.transaction(state => { state.subscriptions['sub-a'].activationId = 'activation-new'; });
+  await f.outbox.dispatchDue();
+  assert.equal(f.sent.length, 0);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].reason, 'subscription_replaced');
+});
+
+test('a newer recovery pause cannot be cleared by an older resume still scanning history', async () => {
+  const f = fixture(), scanning = gate();
+  await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  f.bridge.readEvents = async () => { scanning.enter(); await scanning.wait; return { cursor: 'g2-tail', revision: { generation: 'g2' }, hasMore: false }; };
+  const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } });
+  await scanning.entered;
+  await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g3' } });
+  scanning.release();
+  await assert.rejects(resuming, { code: 'SUBSCRIPTION_CHANGED', status: 409 });
+  const sub = (await f.store.read()).subscriptions['sub-a'];
+  assert.equal(sub.pausedReason, 'recovery_review_required');
+  assert.equal(sub.recoveryRevision.generation, 'g3');
+  assert.equal(sub.sourceCursor, 'tail');
+});
+
+test('expiry, revocation and unsubscribe during recovery review prevent resumption', async () => {
+  for (const change of ['expiry', 'revocation', 'unsubscribe']) {
+    const f = fixture(), scanning = gate();
+    await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+    f.bridge.readEvents = async () => { scanning.enter(); await scanning.wait; return { cursor: 'tail', revision, hasMore: false }; };
+    const resuming = f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'from_current', recoveryRevision: { generation: 'g2' } });
+    await scanning.entered;
+    if (change === 'expiry') f.advance(10_000_000);
+    if (change === 'revocation') f.allow(false);
+    if (change === 'unsubscribe') await f.store.transaction(state => { delete state.subscriptions['sub-a']; });
+    scanning.release();
+    await assert.rejects(resuming, change === 'revocation' ? /revoked/ : { code: 'SUBSCRIPTION_CHANGED' });
+  }
+});
+
+test('a full recovery-notice queue cannot roll back the pause and reports a bounded status error', async () => {
+  const f = fixture({ maxJobs: 1 });
+  await f.store.transaction(state => { state.subscriptions.recovery = { ...subscription('recovery'), name: 'application.recovery_notice' }; });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const result = await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  assert.deepEqual(result, { paused: true, recoveryNoticeFailures: 1 });
+  const state = await f.store.read();
+  assert.equal(state.subscriptions['sub-a'].pausedReason, 'recovery_review_required');
+  assert.equal(state.subscriptions.recovery.pausedReason, 'recovery_review_required');
+  assert.equal(state.subscriptions.recovery.recoveryNoticeError, 'OUTBOX_CAPACITY');
+  assert.equal(Object.keys(state.jobs).length, 1);
+  await f.outbox.dispatchDue(); assert.equal(f.sent.length, 0);
+  const status = await f.outbox.status(owner, 'app-a');
+  assert.equal(status.subscriptions.find(sub => sub.id === 'recovery').recoveryNoticeError, 'OUTBOX_CAPACITY');
+  assert.doesNotMatch(JSON.stringify(status), /whsec_|callback\.example/);
+});
+
+test('recovery pauses persist before slow notification authorization and invalid projection', async () => {
+  const checking = gate(); let hold = false;
+  const f = fixture({ authorize: async () => { if (hold) { checking.enter(); await checking.wait; } } });
+  await f.store.transaction(state => { state.subscriptions.recovery = { ...subscription('recovery'), name: 'application.recovery_notice' }; });
+  hold = true;
+  const pausing = f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  await checking.entered;
+  assert.equal((await f.store.read()).subscriptions['sub-a'].pausedReason, 'recovery_review_required');
+  checking.release(); await pausing; hold = false;
+  const before = (await f.store.read()).subscriptions['sub-a'].version;
+  await f.outbox.pauseForRecovery('sub-a', { revision: { generation: 'g2' } });
+  assert.equal((await f.store.read()).subscriptions['sub-a'].version, before, 'Repeated identical notices must not invalidate review');
+  await f.outbox.pauseForRecovery('sub-a', { revision: { malformed: true } });
+  assert.equal((await f.store.read()).subscriptions['sub-a'].pausedReason, 'recovery_review_required');
+  assert.equal((await f.store.read()).subscriptions.recovery.recoveryNoticeError, 'RECOVERY_NOTICE_INVALID');
+});
+
+test('disconnect preserves a late webhook receipt while keeping the delivery stopped', async () => {
+  const delivery = gate();
+  const f = fixture({ send: async () => { delivery.enter(); await delivery.wait; return { status: 202 }; } });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await delivery.entered;
+  await f.store.transaction(state => {
+    delete state.subscriptions['sub-a'];
+    Object.assign(Object.values(state.jobs)[0], { state: 'cancelled', reason: 'unsubscribed' });
+  });
+  let job = (await f.outbox.status(owner, 'app-a')).jobs[0];
+  assert.equal(job.deliveryMayHaveOccurred, true);
+  delivery.release(); await dispatch;
+  job = (await f.outbox.status(owner, 'app-a')).jobs[0];
+  assert.equal(job.state, 'cancelled');
+  assert.equal(job.responseStatus, 202);
+  assert.equal(job.receiptAfterStop, true);
+  assert.equal(job.deliveryMayHaveOccurred, false);
+  assert.equal(typeof job.acceptedAt, 'number');
+  assert.equal((await f.store.read()).subscriptions['sub-a'], undefined);
+});
+
+test('a repeated approval for an older recovery cannot acknowledge a newer recovery', async () => {
+  const f = fixture();
+  const first = { generation: 'g2', point: { sequence: 3 } };
+  const second = { generation: 'g3', point: { sequence: 4 } };
+  await f.outbox.pauseForRecovery('sub-a', { revision: first });
+  const request = { subscriptionId: 'sub-a', strategy: 'replay_selected', recoveryRevision: first };
+  await f.outbox.resume(owner, request);
+  await f.outbox.pauseForRecovery('sub-a', { revision: second });
+  await assert.rejects(f.outbox.resume(owner, request), { code: 'RECOVERY_CHANGED', status: 409 });
+  await assert.rejects(f.outbox.resume(owner, { subscriptionId: 'sub-a', strategy: 'replay_selected' }), { code: 'RECOVERY_CHANGED', status: 409 });
+  await assert.rejects(f.outbox.resume(owner, { ...request, recoveryRevision: { generation: 'g3' } }), { code: 'RECOVERY_CHANGED', status: 409 });
+  const status = await f.outbox.status(owner, 'app-a');
+  assert.deepEqual(status.subscriptions[0].recoveryRevision, second);
+  assert.equal(status.subscriptions[0].pausedReason, 'recovery_review_required');
+  await f.outbox.resume(owner, { ...request, recoveryRevision: { point: { sequence: 4 }, generation: 'g3' } });
+  assert.equal((await f.outbox.status(owner, 'app-a')).subscriptions[0].pausedReason, null);
 });

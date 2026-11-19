@@ -6,6 +6,7 @@ import { signedHeaders, deliveryDisposition, createPublicWebhookTransport } from
 const pending = state => ['queued', 'retry', 'sending'].includes(state);
 const sameOwner = (a, b) => canonical(ownerIdentity(a)) === canonical(ownerIdentity(b));
 const live = (sub, now) => sub?.active && sub.expiresAt > now;
+const sameActivation = (job, sub) => (job.activationId ?? null) === (sub?.activationId ?? null);
 
 function envelope(sub, event, now) {
   const projected = event.data ?? {};
@@ -32,9 +33,9 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
   const sending = new Map();
   const cancelInactive = async () => {
     const state = await store.read();
-    for (const [eventId, controller] of sending) {
+    for (const [lease, { eventId, controller }] of sending) {
       const job = state.jobs?.[eventId], sub = state.subscriptions?.[job?.subscriptionId];
-      if (!job || !pending(job.state) || !live(sub, clock()) || sub.pausedReason && job.sourceKind !== 'recovery') controller.abort();
+      if (!job || job.state !== 'sending' || job.lease !== lease || !live(sub, clock()) || !sameActivation(job, sub) || sub.pausedReason && job.sourceKind !== 'recovery') controller.abort();
     }
   };
   function insert(state, sub, event, sourceKind = 'domain') {
@@ -43,6 +44,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
     if (state.jobs[value.eventId]) return;
     if (Object.keys(state.jobs).length >= maxJobs) fail('OUTBOX_CAPACITY', 'Delivery journal is full; archive reviewed receipts before resuming observation');
     state.jobs[value.eventId] = { eventId: value.eventId, subscriptionId: sub.id, applicationId: sub.applicationId,
+      activationId: sub.activationId ?? null,
       owner: sub.owner, sourceEventId: event.sourceEventId, sourceRevision: event.revision, sourceKind,
       envelope: value, state: 'queued', attempts: 0, createdAt: clock(), nextAttemptAt: clock() };
   }
@@ -50,6 +52,12 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
     await store.transaction(state => {
       const current = state.jobs?.[eventId];
       if (current?.state === 'sending' && current.lease === lease) Object.assign(current, update, { updatedAt: clock(), lease: null, leaseUntil: null });
+      else if (current?.lease === lease && update.state === 'accepted' && ['cancelled', 'abandoned'].includes(current.state)) {
+        // Disconnect can stop future attempts, but cannot retract an HTTP
+        // request already sent. Keep a late positive receipt without reopening.
+        Object.assign(current, { acceptedAt: update.acceptedAt, responseStatus: update.responseStatus,
+          receiptAfterStop: true, updatedAt: clock(), lease: null, leaseUntil: null });
+      }
     });
   }
   async function one(signal) {
@@ -57,8 +65,8 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       for (const candidate of Object.values(state.jobs ?? {})) {
         if (!pending(candidate.state)) continue;
         const sub = state.subscriptions?.[candidate.subscriptionId];
-        if (!live(sub, clock())) {
-          Object.assign(candidate, { state: 'cancelled', reason: sub?.active ? 'subscription_expired' : 'subscription_stopped', updatedAt: clock() }); continue;
+        if (!live(sub, clock()) || !sameActivation(candidate, sub)) {
+          Object.assign(candidate, { state: 'cancelled', reason: !sameActivation(candidate, sub) ? 'subscription_replaced' : sub?.active ? 'subscription_expired' : 'subscription_stopped', updatedAt: clock() }); continue;
         }
         if (sub.pausedReason && candidate.sourceKind !== 'recovery') continue;
         if (candidate.state === 'sending' && candidate.leaseUntil > clock() || candidate.nextAttemptAt > clock()) continue;
@@ -69,20 +77,37 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
       return null;
     });
     if (!job) return false;
-    const controller = new AbortController(); sending.set(job.eventId, controller);
+    const controller = new AbortController(); sending.set(job.lease, { eventId: job.eventId, controller });
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     try {
-      let sub = (await store.read()).subscriptions[job.subscriptionId];
+      let sub = (await store.read()).subscriptions?.[job.subscriptionId];
+      if (!live(sub, clock()) || !sameActivation(job, sub)) {
+        await finish(job.eventId, job.lease, { state: 'cancelled', reason: 'subscription_changed' }); return true;
+      }
       await authorize(sub.owner, sub.applicationId, sub.name);
       if (job.sourceKind === 'domain') {
         const source = await bridge.verifySource(job.applicationId, job.sourceEventId, job.sourceRevision);
         if (!source.selected) { await finish(job.eventId, job.lease, { state: 'abandoned', reason: 'source_not_selected' }); return true; }
       } else await bridge.getStatus(job.applicationId);
       await authorize(sub.owner, sub.applicationId, sub.name);
-      sub = (await store.read()).subscriptions[job.subscriptionId];
-      if (!live(sub, clock()) || sub.pausedReason && job.sourceKind !== 'recovery') {
-        await finish(job.eventId, job.lease, { state: 'cancelled', reason: 'subscription_changed' }); return true;
-      }
+      // Another process may have cancelled or reclaimed this job while source
+      // verification awaited I/O. Reacquire only this exact lease before egress.
+      sub = await store.transaction(state => {
+        const current = state.jobs?.[job.eventId], subscription = state.subscriptions?.[job.subscriptionId];
+        if (current?.state !== 'sending' || current.lease !== job.lease) return null;
+        if (!live(subscription, clock()) || !sameActivation(current, subscription)) {
+          Object.assign(current, { state: 'cancelled', reason: 'subscription_changed', updatedAt: clock(), lease: null, leaseUntil: null });
+          return null;
+        }
+        if (subscription.pausedReason && job.sourceKind !== 'recovery') {
+          Object.assign(current, { state: 'queued', reason: 'recovery_review_required', updatedAt: clock(), lease: null, leaseUntil: null });
+          return null;
+        }
+        current.leaseUntil = clock() + leaseMs;
+        current.lastDeliveryAttemptAt = clock();
+        return subscription;
+      });
+      if (!sub) return true;
       combined.throwIfAborted();
       const body = JSON.stringify(job.envelope);
       const secrets = [sub.secret, ...(sub.previousSecret?.expiresAt > clock() ? [sub.previousSecret.secret] : [])];
@@ -95,7 +120,11 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
         await finish(job.eventId, job.lease, { state: 'failed', reason: disposition === 'gone' ? 'callback_gone' : 'callback_rejected', responseStatus: response.status });
         if (disposition === 'gone') await store.transaction(state => {
           const current = state.subscriptions[sub.id];
-          if (current?.version === sub.version) { current.active = false; current.stoppedAt = clock(); current.stopReason = 'callback_gone'; current.version++; delete current.secret; delete current.previousSecret; }
+          if (current?.version === sub.version && sameActivation(job, current)) {
+            current.active = false; current.stoppedAt = clock(); current.stopReason = 'callback_gone'; current.version++;
+            delete current.secret; delete current.previousSecret;
+            delete current.pendingToken; delete current.pendingUntil;
+          }
         });
       }
     } catch (error) {
@@ -104,7 +133,7 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
         reason: forbidden ? 'authorization_or_destination_revoked' : combined.aborted ? 'delivery_interrupted' : 'delivery_unavailable',
         lastError: String(error.code ?? error.name ?? 'DELIVERY_FAILED').slice(0, 128),
         nextAttemptAt: clock() + Math.min(300000, 1000 * 2 ** job.attempts) });
-    } finally { sending.delete(job.eventId); }
+    } finally { sending.delete(job.lease); }
     return true;
   }
   return {
@@ -134,47 +163,95 @@ export function createOutbox({ store, bridge, authorize, send = createPublicWebh
     async pauseForRecovery(subscriptionId, notice) {
       const snapshot = await store.read(), observed = snapshot.subscriptions?.[subscriptionId];
       if (!observed?.active) return;
-      const recoveryId = 'recovery_' + digest([observed.applicationId, notice.revision]);
-      const recoverySubscribers = [];
-      for (const sub of Object.values(snapshot.subscriptions ?? {})) if (live(sub, clock()) && sub.applicationId === observed.applicationId && sub.name === 'application.recovery_notice') {
-        try { await authorize(sub.owner, sub.applicationId, sub.name); recoverySubscribers.push(sub.id); } catch { /* no egress without current consent */ }
-      }
-      await store.transaction(state => {
+      let revision, projectionError = null;
+      try { revision = bounded(notice?.revision, 16384); text(revision?.generation, 'selected generation', 256); }
+      catch { revision = null; projectionError = 'RECOVERY_NOTICE_INVALID'; }
+      const recoveryId = 'recovery_' + digest([observed.applicationId, revision]);
+      // Persist the fail-closed pause before any authorization I/O or outbox
+      // insertion. A full journal must never undo a recovery safety boundary.
+      const recoverySubscribers = await store.transaction(state => {
+        const recipients = [];
         for (const sub of Object.values(state.subscriptions ?? {})) if (sub.active && sub.applicationId === observed.applicationId) {
-          sub.pausedReason = 'recovery_review_required'; sub.recoveryRevision = notice.revision; sub.recoveryAt = clock();
-          if (recoverySubscribers.includes(sub.id)) insert(state, sub, { name: 'application.recovery_notice', sourceEventId: recoveryId,
-            revision: notice.revision, data: { summary: 'Selected application history changed. Review pending operations and choose how to resume notifications.' } }, 'recovery');
+          if (!sub.pausedReason || canonical(sub.recoveryRevision ?? null) !== canonical(revision)) {
+            sub.version = (sub.version ?? 0) + 1;
+            sub.recoveryVersion = (sub.recoveryVersion ?? 0) + 1;
+            sub.recoveryAt = clock();
+            sub.recoveryNoticeQueuedAt = null;
+            sub.recoveryNoticeError = projectionError;
+          }
+          sub.pausedReason = 'recovery_review_required'; sub.recoveryRevision = revision;
+          if (live(sub, clock()) && sub.name === 'application.recovery_notice') recipients.push(sub);
         }
+        return recipients;
       });
       await cancelInactive();
+      let failures = 0;
+      for (const recipient of recoverySubscribers) {
+        let errorCode = projectionError;
+        if (!errorCode) {
+          try { await authorize(recipient.owner, recipient.applicationId, recipient.name); }
+          catch { errorCode = 'RECOVERY_NOTICE_UNAUTHORIZED'; }
+        }
+        await store.transaction(state => {
+          const current = state.subscriptions?.[recipient.id];
+          if (!live(current, clock()) || !sameActivation(recipient, current) || !current.pausedReason || current.recoveryVersion !== recipient.recoveryVersion) return;
+          if (!errorCode) {
+            try {
+              insert(state, current, { name: 'application.recovery_notice', sourceEventId: recoveryId,
+                revision, data: { summary: 'Selected application history changed. Review pending operations and choose how to resume notifications.' } }, 'recovery');
+              current.recoveryNoticeQueuedAt = clock();
+            } catch (error) { errorCode = error.code === 'OUTBOX_CAPACITY' ? 'OUTBOX_CAPACITY' : 'RECOVERY_NOTICE_INVALID'; }
+          }
+          current.recoveryNoticeError = errorCode;
+          if (errorCode) failures++;
+        });
+      }
+      return { paused: true, recoveryNoticeFailures: failures };
     },
-    async resume(principal, { subscriptionId, strategy }) {
+    async resume(principal, { subscriptionId, strategy, recoveryRevision }) {
       if (!['from_current', 'replay_selected'].includes(strategy)) fail('INVALID_RECOVERY_STRATEGY', 'Choose from_current or replay_selected after reviewing recovery');
       const sub = (await store.read()).subscriptions?.[subscriptionId];
       if (!sub || !sameOwner(principal, sub.owner)) fail('SUBSCRIPTION_NOT_FOUND', 'Subscription not found', { status: 404 });
+      let reviewed;
+      try {
+        if (!recoveryRevision || typeof recoveryRevision !== 'object' || Array.isArray(recoveryRevision)) throw Error('Missing reviewed revision');
+        reviewed = bounded(recoveryRevision, 16384);
+      } catch { fail('RECOVERY_CHANGED', 'Supply the exact recovery revision from the current subscription status', { status: 409 }); }
+      if (canonical(reviewed) !== canonical(sub.recoveryRevision ?? null))
+        fail('RECOVERY_CHANGED', 'The reviewed recovery revision is no longer current; review the current subscription status', { status: 409 });
       if (!live(sub, clock())) fail('SUBSCRIPTION_INACTIVE', 'Refresh the subscription before resuming');
+      if (!sub.pausedReason) fail('RECOVERY_REVIEW_NOT_REQUIRED', 'This subscription is not paused for recovery');
       await authorize(sub.owner, sub.applicationId, sub.name);
       const baseline = strategy === 'from_current' ? await selectedTail(bridge, sub.applicationId) : { cursor: null, revision: sub.recoveryRevision };
+      await authorize(sub.owner, sub.applicationId, sub.name);
       await store.transaction(state => {
-        const current = state.subscriptions[subscriptionId];
-        if (current.version !== sub.version) fail('SUBSCRIPTION_CHANGED', 'Subscription changed during recovery review');
+        const current = state.subscriptions?.[subscriptionId];
+        if (!live(current, clock()) || !sameActivation(sub, current) || current.version !== sub.version ||
+            current.recoveryVersion !== sub.recoveryVersion || current.pausedReason !== sub.pausedReason ||
+            canonical(current.recoveryRevision ?? null) !== canonical(reviewed))
+          fail('SUBSCRIPTION_CHANGED', 'Subscription changed during recovery review', { status: 409 });
         Object.assign(current, { pausedReason: null, sourceCursor: baseline.cursor, sourceRevision: baseline.revision,
           resumedAt: clock(), resumeStrategy: strategy, version: current.version + 1 });
         if (strategy === 'from_current') for (const job of Object.values(state.jobs ?? {})) if (job.subscriptionId === subscriptionId && pending(job.state) && job.sourceKind === 'domain')
           Object.assign(job, { state: 'cancelled', reason: 'reviewed_start_from_current', updatedAt: clock() });
       });
+      await cancelInactive();
       return { subscriptionId, strategy, resumed: true };
     },
     async status(principal, applicationId, requestId) {
       const state = await store.read();
       const subscriptions = Object.values(state.subscriptions ?? {}).filter(sub => sub.applicationId === applicationId && sameOwner(principal, sub.owner))
         .map(sub => ({ id: sub.id, name: sub.name, active: live(sub, clock()), expiresAt: sub.expiresAt ?? null,
-          pausedReason: sub.pausedReason ?? null, observedAt: sub.observedAt ?? null, recoveryAt: sub.recoveryAt ?? null }));
+          pausedReason: sub.pausedReason ?? null, observedAt: sub.observedAt ?? null, recoveryAt: sub.recoveryAt ?? null,
+          recoveryRevision: structuredClone(sub.recoveryRevision ?? null),
+          recoveryNoticeError: sub.recoveryNoticeError ?? null, recoveryNoticeQueuedAt: sub.recoveryNoticeQueuedAt ?? null }));
       const jobs = Object.values(state.jobs ?? {}).filter(job => job.applicationId === applicationId && sameOwner(principal, job.owner) &&
         (requestId === undefined || job.envelope.data.request_id === requestId))
         .sort((a, b) => b.createdAt - a.createdAt).slice(0, 100)
         .map(job => ({ eventId: job.eventId, sourceEventId: job.sourceEventId, state: job.state, attempts: job.attempts,
           reason: job.reason ?? null, acceptedAt: job.acceptedAt ?? null,
+          responseStatus: job.responseStatus ?? null, receiptAfterStop: job.receiptAfterStop === true,
+          deliveryMayHaveOccurred: job.lastDeliveryAttemptAt != null && job.acceptedAt == null,
           responseOperationId: job.responseOperationId ?? null, responseObservedAt: job.responseObservedAt ?? null }));
       return { subscriptions, jobs, receiptMeans: 'Webhook accepted is receipt only; inspect the application response operation separately.' };
     },
