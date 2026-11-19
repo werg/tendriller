@@ -2,7 +2,7 @@ import { readFile, lstat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, resolve, relative, sep } from 'node:path';
 
-export const CHRONOLOG_SOURCE = 'f0b71005577dec3704f2363ddde3a78ad0eb0000';
+export const CHRONOLOG_SOURCE = '15412b3ec8da877091d48e88859ba261c0333916';
 export const fail = code => { throw Object.assign(Error(code), { code }); };
 export const json = async path => JSON.parse(await readFile(path, 'utf8'));
 export function absolutePath(value, code = 'DEPLOYMENT_PATH_INVALID') {

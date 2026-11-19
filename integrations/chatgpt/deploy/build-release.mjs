@@ -6,7 +6,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 
-export const CHRONOLOG_SOURCE = 'f0b71005577dec3704f2363ddde3a78ad0eb0000';
+export const CHRONOLOG_SOURCE = '15412b3ec8da877091d48e88859ba261c0333916';
 const SHA = /^[a-f0-9]{40}$/u, HASH = /^[a-f0-9]{64}$/u;
 const TEMPLATE_FILES = ['domain.mjs', 'projection.mjs', 'session.mjs', 'bridge-session.mjs', 'local.mjs', 'private-records.mjs'];
 const REQUIRED = ['integrations/chatgpt/run.mjs', 'integrations/chatgpt/integration.mjs',

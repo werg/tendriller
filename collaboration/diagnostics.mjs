@@ -37,7 +37,7 @@ const aliases = {
 };
 const scopeKeys = ['applicationId','historyId','deviceId','ownerInstanceId','endpointId','endpointIncarnation',
   'principalId','agentBindingId','deviceProfileId','viewId','runId','publicationId','generation','coordinator',
-  'interactionId','taskId','slotId','operationId','attemptId','consumerId'];
+  'interactionId','taskId','slotId','operationId','attemptId','author','consumerId','effectId','filterVersion','transportAttemptId'];
 const text = value => typeof value === 'string' && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : undefined;
 const pick = (value, keys) => Object.fromEntries(keys.flatMap(key => text(value?.[key]) === undefined ? [] : [[key,value[key]]]));
 const capabilitiesOf = value => Array.isArray(value) ? [...new Set(value.filter(item => typeof item === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(item)))].slice(0,32) : null;
