@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { projectKitchen, summarizeKitchen, boundAssistance, visibleAssistanceStatus, kitchenEventProjection } from '../examples/kitchen/projection.mjs';
 import { createAssistanceClient } from '../examples/kitchen/client.mjs';
 import { createPendingStorage } from '../examples/kitchen/pending-storage.mjs';
+import { createPrivateRecords } from '../examples/kitchen/private-records.mjs';
 
 function pendingFixture() {
   const values = new Map(); let tail = Promise.resolve();
@@ -174,6 +175,40 @@ test('invalid trimmed input and unavailable atomic storage never create a pendin
   const unavailable = createAssistanceClient(session, { pendingStorage: createPendingStorage({ key: 'other', storage: f.storage, locks: null }) });
   await assert.rejects(unavailable.selectStep({ stepId: 's1', text: 'Prepare' }), /CROSS_TAB_LOCK_UNAVAILABLE/);
   assert.equal(sends, 0);
+});
+
+test('setup records publish complete bytes once and preserve a concurrent winner', async () => {
+  const { mkdtemp, rm, stat, readdir } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const directory = await mkdtemp(join(tmpdir(), 'kitchen-records-'));
+  try {
+    const root = pathToFileURL(directory + '/'), records = createPrivateRecords(root);
+    const values = [{ transition: 'one', bytes: 'a'.repeat(100000) }, { transition: 'two', bytes: 'b'.repeat(100000) }];
+    const results = await Promise.allSettled(values.map(value => records.save('transition.json', value)));
+    assert.equal(results.filter(value => value.status === 'fulfilled').length, 1);
+    assert.match(results.find(value => value.status === 'rejected').reason.message, /Refusing to replace/);
+    const saved = await records.read('transition.json');
+    assert.deepEqual(saved, values[results.findIndex(value => value.status === 'fulfilled')]);
+    await records.save('transition.json', saved);
+    assert.equal((await stat(new URL('transition.json', root))).mode & 0o777, 0o600);
+    assert.deepEqual(await readdir(directory), ['transition.json']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('interrupted private temporary files cannot become partial final records', async () => {
+  const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const directory = await mkdtemp(join(tmpdir(), 'kitchen-interrupted-'));
+  try {
+    const root = pathToFileURL(directory + '/'), records = createPrivateRecords(root);
+    await writeFile(new URL('.genesis-request.json.interrupted.pending', root), '{"partial":', { mode: 0o600 });
+    assert.equal(await records.read('genesis-request.json', true), null);
+    await records.save('genesis-request.json', { transitionId: 'retained' });
+    assert.deepEqual(await records.read('genesis-request.json'), { transitionId: 'retained' });
+    await assert.rejects(records.save('../outside.json', {}), /Invalid private record name/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('actual native kitchen definition correlates a second-device response and survives reopen',

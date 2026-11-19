@@ -34,6 +34,10 @@ npm run peer
 Only `page/` is publishable. `.tendriller/` contains credentials, the creator's
 signer, epoch keys and saved signed transitions. Keep it private and retain it
 across restarts. The native creator peer must stay available for coordination.
+Setup records are write-once: each is flushed to a private temporary file before
+atomic installation without replacement. Interrupted temporary files are never
+read as completed setup. Retrying checks the completed bytes exactly; it does
+not rotate a signer, epoch key or saved transition.
 Stop it before another CLI process opens the same creator device store. A page
 preview on another origin is intentionally unable to use the published browser
 session; use the actual signed page for connected testing.
