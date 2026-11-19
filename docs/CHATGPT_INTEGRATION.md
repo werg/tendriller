@@ -13,6 +13,21 @@ an authenticated account, an enrolled reader, connection consent and a ChatGPT
 subscription are separate facts. A successful `/health` response proves only
 that the integration HTTP process can answer; it reports no live ChatGPT test.
 
+## Where the bridge runs
+
+The existing Cloudflare Worker handles accounts, OAuth issuance, and the page's
+current access checks. The optional assistant bridge is another enrolled
+Chronolog participant. It serves the MCP endpoint, retains its own signing
+identity and delivery journal, and keeps a peer connection to the application.
+It uses the same selected history as the browser and native coordinator.
+
+The qualified bridge uses Node 24 with a file-backed device and outbox. A
+Workers-native bridge would need a Chronolog device implementation backed by
+Durable Object storage, a restart-safe observer and scheduler, and a callback
+transport with the same destination and authorization checks. The Worker SQL
+binding provides storage for such a port. The packaged Node service is the
+current deployment path for the bridge.
+
 ## Choose a route that fits the task
 
 | Need | Implemented route | Required next action or fallback |

@@ -10,8 +10,8 @@ function originUrl(value) {
     fail('HOST_ACCOUNT_CONFIGURATION_INVALID', 'The account host must be an exact trusted HTTPS origin');
   return url;
 }
-async function responseObject(response) {
-  if (!response.ok || response.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') {
+async function responseObject(response, allowRejection = false) {
+  if ((!response.ok && !allowRejection) || response.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') {
     await response.body?.cancel();
     fail('HOST_ACCOUNT_UNAVAILABLE', 'The configured account host could not verify current authorization', { status: 503 });
   }
@@ -69,7 +69,17 @@ export function createTendrillerAccountAdapter({ origin, resource, bridgeId, bri
       signal?.throwIfAborted(); lifetime.signal.throwIfAborted();
       fail('HOST_ACCOUNT_UNAVAILABLE', 'Current account authorization could not be reached', { status: 503 });
     }
-    const result = await responseObject(response); signal?.throwIfAborted(); return result;
+    // Only this authenticated endpoint uses OAuth invalid_grant to report
+    // expired or already consumed browser handoffs. Other host errors still
+    // fail closed as unavailable.
+    const handoffRejected = path === '/oauth/management/exchange' && response.status === 400;
+    const result = await responseObject(response, handoffRejected);
+    signal?.throwIfAborted();
+    if (handoffRejected) {
+      if (result.error === 'invalid_grant') fail('HOST_LOGIN_INVALID', 'The sign-in handoff expired or was already used', { status: 403 });
+      fail('HOST_ACCOUNT_UNAVAILABLE', 'The account host could not complete sign-in', { status: 503 });
+    }
+    return result;
   }
   function validPrincipal(principal) {
     return principal?.issuer === origin && boundedText(principal.id) &&
