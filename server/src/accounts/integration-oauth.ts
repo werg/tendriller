@@ -4,12 +4,14 @@ import { accountAccess, bridgeStatus, managementExchange, managementLogin } from
 import { authorize } from './oauth-authorization';
 import { introspect, revoke, tokenEndpoint } from './oauth-tokens';
 import { oauthConnections } from './oauth-connections';
+import { ensureOAuthSchema } from './oauth-data';
 
 /** Optional first-party OAuth is isolated from upstream GitHub/Google sign-in. */
 export async function routeIntegrationOAuth(req: Request, env: Env, url: URL): Promise<Response> {
   try {
     const config = await oauthConfig(env);
     if (!config) return oauthJson({ error: 'not_found' }, 404);
+    await ensureOAuthSchema(env);
     if (url.href.length > 8192) reject('invalid_request', 'OAuth URL exceeds its limit', 414);
     if (url.pathname === '/.well-known/oauth-authorization-server' && req.method === 'GET') return oauthJson(metadata(config));
     if (url.pathname === '/oauth/jwks' && req.method === 'GET') return oauthJson({ keys: config.publicKeys });

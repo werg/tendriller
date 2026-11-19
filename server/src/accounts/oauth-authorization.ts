@@ -20,6 +20,8 @@ export function requestedScopes(raw: string | null, permitted: string[]): string
 }
 const policy = (config: OAuthConfig, client: OAuthClient) => sha256Hex(JSON.stringify({ client, resource: config.resource,
   accessTokenTtlSeconds: config.accessTokenTtlSeconds, grantTtlSeconds: config.grantTtlSeconds }));
+const lifetime = (seconds: number) => seconds % 86400 === 0 ? `${seconds / 86400} days` :
+  seconds % 3600 === 0 ? `${seconds / 3600} hours` : seconds % 60 === 0 ? `${seconds / 60} minutes` : `${seconds} seconds`;
 
 export async function authorize(req: Request, env: Env, config: OAuthConfig, url: URL): Promise<Response> {
   if (!['GET', 'POST'].includes(req.method)) return oauthJson({ error: 'invalid_request' }, 405, { Allow: 'GET, POST' });
@@ -47,7 +49,7 @@ export async function authorize(req: Request, env: Env, config: OAuthConfig, url
     return authorizationPage('Connect an integration', `<h1>Connect ${escapeHtml(client!.name)}</h1>
       <p>Continue as ${escapeHtml(browser.email ?? browser.id)}. This client is requesting access to <code>${escapeHtml(config.resource)}</code>.</p>
       <ul>${scope! ? scope!.split(' ').map(name => `<li>${escapeHtml(descriptions[name])} <small>(${escapeHtml(name)})</small></li>`).join('') : '<li>Identify your linked account</li>'}</ul>
-      <p>${client!.allowRefresh ? `Access tokens expire after ${config.accessTokenTtlSeconds} seconds. This authorization can renew access for up to ${Math.floor(config.grantTtlSeconds / 86400)} days, until you revoke it.` : `This authorization expires after ${config.accessTokenTtlSeconds} seconds and cannot renew itself.`}</p>
+      <p>${client!.allowRefresh ? `Access tokens expire after ${config.accessTokenTtlSeconds} seconds. This authorization can renew access for up to ${lifetime(config.grantTtlSeconds)}, until you revoke it.` : `This authorization expires after ${config.accessTokenTtlSeconds} seconds and cannot renew itself.`}</p>
       <p>Individual applications still need explicit connection permission. Your browser login, device signing identity and page-owner privileges are never given to this client.</p>
       ${decisionForm(token, 'Allow these permissions')}<p><a href="/oauth/connections">Review existing authorizations</a></p>`);
   }

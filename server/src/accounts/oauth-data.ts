@@ -4,6 +4,22 @@ import { sha256Hex } from '../ids';
 import { serviceSession } from './auth';
 import { object, oauthJson, randomToken, reject, type OAuthConfig } from './oauth-support';
 
+const schemaChecks = new WeakMap<Env, { until: number; task: Promise<void> }>();
+/** The optional migration must be present before advertising an operational issuer. */
+export async function ensureOAuthSchema(env: Env): Promise<void> {
+  let cached = schemaChecks.get(env);
+  if (!cached || cached.until <= Date.now()) {
+    const task = (async () => {
+      const result = await env.ACCOUNTS.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN (
+        'integration_oauth_intents','integration_oauth_grants','integration_oauth_codes','integration_oauth_refresh',
+        'integration_oauth_access','integration_oauth_handoffs','integration_oauth_management_sessions')`).first<{ n: number }>();
+      if (result?.n !== 7) reject('temporarily_unavailable', 'Apply optional account migration 0002_integration_oauth.sql before enabling integration OAuth', 503);
+    })();
+    cached = { until: Date.now() + 5000, task }; schemaChecks.set(env, cached);
+  }
+  return cached.task;
+}
+
 export interface OAuthGrant { id: string; account_id: string; client_id: string; resource: string; scope: string; created_at: number; expires_at: number; revoked_at: number | null }
 export const scopesOf = (grant: Pick<OAuthGrant, 'scope'>): string[] => grant.scope ? grant.scope.split(' ') : [];
 export async function activeAccount(env: Env, subject: string): Promise<boolean> {

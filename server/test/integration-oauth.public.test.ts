@@ -36,6 +36,21 @@ it('first-party OAuth stays disabled until explicitly configured and remains on 
   expect((await request('/.well-known/oauth-authorization-server', configured({ OAUTH_SIGNING_JWK: undefined }))).status).toBe(503);
 });
 
+it('enabled OAuth names its missing additive migration while the ordinary host still works with OAuth disabled', async () => {
+  const settings = configured();
+  await env.ACCOUNTS.prepare('ALTER TABLE integration_oauth_management_sessions RENAME TO temporarily_absent_management_sessions').run();
+  try {
+    const metadata = await request('/.well-known/oauth-authorization-server', settings);
+    expect(metadata.status).toBe(503); expect((await metadata.json() as { error_description: string }).error_description).toContain('0002_integration_oauth.sql');
+    expect((await jsonPost('/oauth/bridge-status', {}, settings)).status).toBe(503);
+    const disabled = { ...settings, OAUTH_CONFIG_JSON: undefined };
+    expect((await request('/.well-known/oauth-authorization-server', disabled)).status).toBe(404);
+    expect((await request('/api/service', disabled)).status).toBe(200);
+  } finally {
+    await env.ACCOUNTS.prepare('ALTER TABLE temporarily_absent_management_sessions RENAME TO integration_oauth_management_sessions').run();
+  }
+});
+
 it('discovery binds the exact resource issuer, PKCE and preconfigured client authentication', async () => {
   const response = await request('/.well-known/oauth-authorization-server');
   expect(response.status).toBe(200);
