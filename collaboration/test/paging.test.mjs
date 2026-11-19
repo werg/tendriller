@@ -62,3 +62,15 @@ test('owner cancellation fences pending SQL reads and bounded reader admission p
   await reader.close();assert.equal(f.counts().released,1);assert.equal(f.calls.length,9);
   assert.equal(f.counts().closed,0);assert.equal(f.counts().detached,0);
 });
+
+test('a rejected in-flight query preserves current cancellation while live-reader errors remain unchanged',async()=>{
+  for(const cancelled of [false,true]){
+    const reading=gate(),controller=new AbortController(),underlying=Object.assign(Error('APPLICATION_VIEW_RELEASED'),{code:'APPLICATION_VIEW_RELEASED'});
+    const f=fixture(async sql=>{if(sql==='SELECT 1')return{rows:[[1]]};reading.enter();await reading.wait;throw underlying;});
+    const reader=await captureCollaborationReader(f.session,{signal:controller.signal}),pending=reader.messages();
+    await reading.entered;
+    const reason=Error('reviewer observation stopped');if(cancelled)controller.abort(reason);
+    reading.release();await assert.rejects(pending,error=>error===(cancelled?reason:underlying));
+    await reader.close();assert.equal(f.counts().released,1);assert.equal(f.counts().closed,0);
+  }
+});
