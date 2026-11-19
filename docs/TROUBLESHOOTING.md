@@ -148,8 +148,8 @@ host traffic for a relay-backed session.
 The ordinary host MCP endpoint administers host controls; it does not run domain
 commands or wake an agent conversation. For application tools, subscribed events,
 mounted UI handoff and the optional Workspace Agent route, use the separate
-[ChatGPT integration guide](CHATGPT_INTEGRATION.md), including its setup and recovery steps
-and recovery procedure. State which native process or integration actually
+[ChatGPT setup and recovery guide](CHATGPT_INTEGRATION.md#troubleshoot-setup).
+State which native process or integration actually
 consumes the application work and how long it remains available. If a prerequisite
 is missing, report the completed checkpoint, exact missing artifact/authority,
 redacted error, preserved work and next action. Keep a separate persistence

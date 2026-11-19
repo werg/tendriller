@@ -16,6 +16,12 @@ For ChatGPT's Client ID Metadata Document flow, use the exact metadata URL
 shown in the plugin setup as the client `id`, set `metadataDocument: true` and
 `tokenEndpointAuthMethod: "none"`, and pin its exact redirect URI. Tendriller
 checks the public document when displaying the OAuth consent form.
+For Tendriller's public service, the registered client is
+`https://chatgpt.com/oauth/client.json` and the redirect is
+`https://chatgpt.com/connector_platform_oauth_redirect`. Use a separate resource
+and separate keys for each deployment. End users can follow the
+[ChatGPT setup walkthrough](CHATGPT_INTEGRATION.md#agent-walkthrough) without
+setting Worker secrets.
 The normal tool scopes are `tendrils:list`, `applications:read`,
 `applications:write` and `events:subscribe`. Use `bridges: []` for this route.
 See [OAuth setup](INTEGRATION_OAUTH.md).

@@ -6,6 +6,140 @@ application's existing Chronolog participant handles its commands and queries.
 Follow the [Cloudflare setup](CLOUDFLARE_ASSISTANT.md) for enrollment, client
 registration and a complete participant SDK example.
 
+## Choose how to install Tendriller
+
+One Tendriller plugin can access all the applications that a person chooses
+to connect. Each person links their own Tendriller account once per ChatGPT
+connection and approves what to share for each application.
+
+| Who will use it | Setup |
+| --- | --- |
+| You or a tester with permission to add custom servers | [Add the custom plugin once](#add-the-custom-plugin). |
+| Several people in one managed workspace | An authorized member [shares or publishes it to the workspace](#share-with-a-workspace). Members install the shared plugin and link their own accounts. |
+| Users across unrelated workspaces | The Tendriller publisher [submits one plugin to the public directory](#publish-to-the-public-directory). After approval and publication, give users its listing link. Each workspace's policies still apply. |
+
+## Agent walkthrough
+
+1. Ask whether the person has Tendriller available in their selected ChatGPT
+   workspace already. Give them the [Plugins page](https://chatgpt.com/plugins).
+   If it is available, send them directly to [link and verify](#link-and-verify).
+   If the workspace already shared a plugin, use its actual share link.
+2. For a new connection, test the service origin's protected resource metadata
+   at `/.well-known/oauth-protected-resource/mcp`. For the public service, use
+   [Tendriller MCP discovery](https://tendriller.dev/.well-known/oauth-protected-resource/mcp).
+   The resource must end in `/mcp`, and the issuer must match the selected
+   service origin. If discovery returns 404 or 503, report the host and status
+   to the operator before asking the person to try setup.
+3. Ask the person to complete [custom setup](#add-the-custom-plugin) if their
+   selected workspace allows it. Send one step and its deep link at a time.
+   If **Add custom MCP server** is missing after switching to the right
+   workspace on the web, send the [workspace admin guide](#share-with-a-workspace).
+4. Give them the **actual application review URL** from the participant setup.
+   Explain the requested queries, commands and event data before approval.
+   Guide them through the first read and write below. Ask the person to report
+   the error text or which step they reached. Keep passwords, cookies, OAuth
+   codes and tokens out of chat. The person completes sign-in and consents.
+
+## Add the custom plugin
+
+1. Open [ChatGPT Plugins](https://chatgpt.com/plugins) on the web and switch to
+   the workspace where you plan to use Tendriller. Select **+**, then
+   **Add custom MCP server**. [OpenAI's setup walkthrough](https://developers.openai.com/plugins/deploy/connect-chatgpt#add-the-mcp-server)
+2. Enter `Tendriller` as the name and `Read and update the Tendriller apps you
+   choose to connect` as the description. Under **Connection**, enter
+   `https://tendriller.dev/mcp`. For a staging test use
+   `https://staging.tendriller.dev/mcp` and give it a distinct name.
+3. Choose **OAuth**. If ChatGPT asks how to identify itself to the server,
+   choose **Client ID Metadata Document**. Use ChatGPT's managed client
+   metadata option when shown. The public production flow uses the
+   [ChatGPT metadata document](https://chatgpt.com/oauth/client.json) and
+   PKCE with no client secret. If the connection screen shows a different
+   callback or client ID, send those public values to the Tendriller operator
+   for review. [OpenAI's OAuth options](https://developers.openai.com/plugins/build/auth#client-registration)
+4. Review the connection notice, select **I understand and want to continue**
+   if you agree, and select **Create as a plugin**. Check that ChatGPT discovers
+   tools such as `list_tendrils` and `describe_application`. Install the plugin
+   if ChatGPT shows an **Install** button. [ChatGPT Plugins](https://chatgpt.com/plugins)
+
+## Link and verify
+
+1. Open a ChatGPT conversation in the same workspace. Type `@` and select
+   **Tendriller**. Ask “List my connected Tendriller apps.” When ChatGPT asks
+   you to connect, follow it to Tendriller. Sign in with your usual GitHub or
+   Google account and review the **Connect ChatGPT** permissions. Select
+   **Allow these permissions** if you agree. You should return to ChatGPT.
+   [Tendriller sign-in](https://tendriller.dev/auth)
+2. If your app is missing, ask the agent that runs it for its application
+   review link. Open that link and approve the capabilities you want to share.
+   Ask ChatGPT to list your apps again. The page must be claimed under the
+   same Tendriller account used in step 1. [Tendriller app connections](https://tendriller.dev/connections)
+3. Ask ChatGPT to read a known value from the app. If you intend to allow
+   updates, approve one harmless test change and verify the resulting value
+   appears on the Tendriller page. Application calls require an eligible
+   participant running the application's Chronolog session. [Participant setup](CLOUDFLARE_ASSISTANT.md#enroll-an-application)
+4. For background events, use a supported Work chat or dot and ask it to
+   subscribe to a named event you approved for this app. Trigger one distinct
+   event and check for a new assistant turn. The Tendriller operator must have
+   allowed the actual callback provider origin. With an open supported card,
+   use **Check inbox in this chat** to start a turn. In another chat, ask
+   “Read new events from my Tendriller app.” [OpenAI's event walkthrough](https://developers.openai.com/plugins/build/mcp-events)
+
+To remove ChatGPT's account access, revoke its authorization at
+[Connected integrations](https://tendriller.dev/oauth/connections). To change
+which operations are exposed for a particular app, use that app's
+[connection settings](https://tendriller.dev/connections).
+
+## Share with a workspace
+
+1. In the intended workspace, have an owner or someone with permission to
+   add custom MCP servers create and test Tendriller once. Ask the workspace
+   admin to check **Permissions & roles** for using plugins, adding custom
+   MCP servers, and sharing or publishing plugins. Policies apply to the
+   specific workspace and user role. [OpenAI's admin controls](https://learn.chatgpt.com/docs/enterprise/apps-and-connectors#choose-what-members-can-do-with-plugins)
+2. Open the Tendriller plugin details in [ChatGPT Plugins](https://chatgpt.com/plugins).
+   Use the available sharing control to grant access to the intended teammates
+   or groups, or publish it to the workspace's plugin directory if your role
+   allows it. Copy the resulting plugin link and verify a member can open it
+   from their own account. [OpenAI's plugin guide](https://learn.chatgpt.com/docs/plugins)
+3. Give members that link and the [link and verify steps](#link-and-verify).
+   Members install the shared entry and authorize with their own Tendriller
+   accounts. Each app's owner approves the app access separately.
+
+## Publish to the public directory
+
+The public listing is an operator task. A deployed MCP endpoint and a shared
+workspace plugin do not create a directory listing.
+
+1. Complete publisher verification under [OpenAI organization settings](https://platform.openai.com/settings/organization/general).
+   Use an organization owner or an account with Apps Management Write.
+2. Prepare a plugin ZIP pointing to the universal `https://tendriller.dev/mcp`
+   endpoint. Include the public name, logo, support contact, [privacy policy](https://tendriller.dev/privacy),
+   and [terms](https://tendriller.dev/terms). Prepare a dedicated reviewer account
+   and a seeded, connected Tendriller app with sample data, a walkthrough, and
+   separate read, write, and access-denied test cases. Use review credentials
+   only in OpenAI's review form. [Plugin packaging](https://developers.openai.com/plugins/build/plugins)
+3. Upload at [OpenAI Platform Plugins](https://platform.openai.com/plugins).
+   Verify the Tendriller domain when prompted, connect and scan the MCP server,
+   test OAuth using the connection's displayed metadata and redirect, and
+   complete **Review details**. [Submission walkthrough](https://developers.openai.com/plugins/deploy/submission)
+4. Submit for review. After approval, publish and give users the exact listing
+   link. Test installation and account linking as a user outside the publisher's
+   workspace. Until the listing is published, use the custom or workspace
+   setup above. [OpenAI review requirements](https://developers.openai.com/plugins/deploy/app-review)
+
+## Troubleshoot setup
+
+| Where it stops | What to do |
+| --- | --- |
+| The plugin is missing or custom setup is unavailable | Switch to the workspace where it was installed. Ask an admin for the shared plugin link or check the [workspace controls](https://learn.chatgpt.com/docs/enterprise/apps-and-connectors). |
+| ChatGPT cannot discover Tendriller | Check the full `/mcp` URL and the [public discovery response](https://tendriller.dev/.well-known/oauth-protected-resource/mcp). Give the operator the status and deployment origin. |
+| OAuth reports an unregistered client or callback | Copy the public client ID and exact callback from the MCP connection's management page. Compare them with the host's registration. [Callback guidance](https://developers.openai.com/plugins/build/auth#redirect-url) |
+| The account is linked but the app is missing | Verify you linked the owning Tendriller account and completed the participant's application review. [App connections](https://tendriller.dev/connections) |
+| A query or command says the participant is offline | Resume the enrolled participant with its existing saved device keys. [Participant recovery](AGENT_DELIVERY.md) |
+| A subscription is blocked or no chat turn starts | Verify Work or dot availability and workspace policy, then check the approved event, actual webhook origin, and delivery receipt. Use inbox catch-up while diagnosing. [Delivery recovery](#event-delivery-and-recovery) |
+
+## Interaction options
+
 | What you want to do | Route |
 | --- | --- |
 | Read or change an app from a tool-capable chat | Call `list_tendrils`, `describe_application` and the authorized query or command tool |

@@ -57,7 +57,7 @@ export async function authorize(req: Request, env: Env, config: OAuthConfig, url
       <ul>${scope! ? scope!.split(' ').map(name => `<li>${escapeHtml(descriptions[name])} <small>(${escapeHtml(name)})</small></li>`).join('') : '<li>Identify your linked account</li>'}</ul>
       <p>${client!.allowRefresh ? `Access tokens expire after ${config.accessTokenTtlSeconds} seconds. This authorization can renew access for up to ${lifetime(config.grantTtlSeconds)}, until you revoke it.` : `This authorization expires after ${config.accessTokenTtlSeconds} seconds and cannot renew itself.`}</p>
       <p>Individual applications still need explicit connection permission. Your browser login, device signing identity and page-owner privileges are never given to this client.</p>
-      ${decisionForm(token, 'Allow these permissions')}<p><a href="/oauth/connections">Review existing authorizations</a></p>`);
+      ${decisionForm(token, 'Allow these permissions')}<p><a href="/oauth/connections">Review existing authorizations</a></p>`, new URL(uri!).origin);
   }
   sameOrigin(req, config);
   const browser = await browserIdentity(req, env);

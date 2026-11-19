@@ -785,6 +785,9 @@ it('uses an operator-pinned client metadata document for public PKCE without fet
     valid = true;
     const review = await open();
     expect(review.status).toBe(200);
+    expect(review.headers.get('Content-Security-Policy')).toContain("form-action 'self' https://chatgpt.com;");
+    const connections = await request('/oauth/connections', settings, { headers: { Cookie: f.cookie } });
+    expect(connections.headers.get('Content-Security-Policy')).toContain("form-action 'self';");
     const intent = /name="intent" value="([^"]+)"/u.exec(await review.text())![1];
     const approved = await formPost('/oauth/authorize', { intent, decision: 'allow' }, settings, f.cookie);
     expect(approved.status).toBe(303);

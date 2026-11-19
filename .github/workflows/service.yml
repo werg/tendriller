@@ -121,7 +121,7 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         id: smoke
         run: |
-          node scripts/check-deployment.mjs https://staging.tendriller.dev
+          node scripts/check-deployment.mjs https://staging.tendriller.dev --assistant
           echo "deployed=true" >> "$GITHUB_OUTPUT"
 
   staging_acceptance:
@@ -164,4 +164,4 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: npx wrangler deploy --config server/wrangler.production.jsonc --durable-objects-code-update-mode immediate
       - if: steps.current.outputs.current == 'true'
-        run: node scripts/check-deployment.mjs https://tendriller.dev
+        run: node scripts/check-deployment.mjs https://tendriller.dev --assistant

@@ -13,7 +13,8 @@ const publicRoot = join(root, 'server/public');
 const links = content => [...content.matchAll(/\[[^\]\n]*\]\(([^\s)]+)\)/g)].map(match => match[1]);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const dynamicPaths = new Set(['/', '/api/service', '/.well-known/tendriller.json',
-  '/.well-known/tendriller-capabilities.json', '/contract/v3.json']);
+  '/.well-known/tendriller-capabilities.json', '/contract/v3.json',
+  '/.well-known/oauth-protected-resource/mcp', '/auth', '/connections', '/oauth/connections', '/privacy', '/terms']);
 
 test('the domain-only onboarding graph points to shipped public documents and the starter', () => {
   for (const path of ['AGENTS.md', 'llms.txt', ...ONBOARDING_DOCS]) {

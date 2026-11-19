@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { requireService } from "../contract/client.mjs";
 // Smoke check the public endpoints after each deployment.
 const base = process.argv[2];
-if (!base || !/^https:\/\/[a-z0-9.-]+$/.test(base)) {
-  throw new Error("Usage: node scripts/check-deployment.mjs https://service-host");
+const assistant = process.argv[3] === '--assistant';
+if (!base || !/^https:\/\/[a-z0-9.-]+$/.test(base) || (process.argv.length > 3 && !assistant)) {
+  throw new Error("Usage: node scripts/check-deployment.mjs https://service-host [--assistant]");
 }
 
 async function get(path, headers) {
@@ -101,5 +102,28 @@ if (!descriptor.limits?.participant) throw new Error('The service must advertise
 const runtime = JSON.parse(readFileSync(new URL("../server/src/runtime-release.json",import.meta.url)));
 const manifest = await (await get(`/_tendril/runtime/${runtime.id}/manifest.json`)).json();
 if(manifest.id!==runtime.id)throw Error("Runtime artifact mismatch");
+if (assistant) {
+  const [resource, issuer, keys] = await Promise.all([
+    get('/.well-known/oauth-protected-resource/mcp').then(response => response.json()),
+    get('/.well-known/oauth-authorization-server').then(response => response.json()),
+    get('/oauth/jwks').then(response => response.json()),
+  ]);
+  if (resource.resource !== `${base}/mcp` || resource.authorization_servers?.length !== 1 ||
+      resource.authorization_servers[0] !== base || issuer.issuer !== base ||
+      issuer.authorization_endpoint !== `${base}/oauth/authorize` || issuer.token_endpoint !== `${base}/oauth/token` ||
+      issuer.authorization_response_iss_parameter_supported !== true || issuer.client_id_metadata_document_supported !== true ||
+      !issuer.code_challenge_methods_supported?.includes('S256') || !issuer.token_endpoint_auth_methods_supported?.includes('none') ||
+      !keys.keys?.length || keys.keys.some(key => ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'].some(field => field in key)))
+    throw new Error('Assistant OAuth discovery does not match this deployment');
+  const call = (method, params) => fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(15_000),
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const catalog = await call('tools/list');
+  if (!catalog.ok || !(await catalog.json()).result?.tools?.some(tool => tool.name === 'get_application_delivery'))
+    throw new Error('Assistant tool discovery failed');
+  const protectedCall = await call('tools/call', { name: 'get_profile', arguments: {} });
+  if (protectedCall.status !== 401 || !protectedCall.headers.get('WWW-Authenticate')?.includes(`${base}/.well-known/oauth-protected-resource/mcp`))
+    throw new Error('Assistant tool access did not require an account grant');
+  console.log(`Assistant discovery and authorization smoke check passed: ${base}`);
+}
 console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} with the filtered participant transport`);
 console.log(`Deployment and agent onboarding smoke check passed: ${base}`);

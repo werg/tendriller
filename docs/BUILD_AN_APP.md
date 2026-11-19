@@ -409,4 +409,6 @@ For exact API composition and ownership rules, continue to
 After the application has a working enrolled participant, use
 `@tendriller/core/assistant` to expose selected queries, commands and events.
 Give the owner the actual review URL and verify one applied writeback through
-the same service origin. See [Connect any application](CLOUDFLARE_ASSISTANT.md).
+the same service origin. See [Connect any application](CLOUDFLARE_ASSISTANT.md#enroll-an-application)
+for participant setup and [guide a user through ChatGPT](CHATGPT_INTEGRATION.md#agent-walkthrough)
+for installation, account linking and workspace sharing.

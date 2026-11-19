@@ -1,4 +1,5 @@
 import { devices, expect, test, webkit, type Page } from '@playwright/test';
+import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createClient } from '../../dist/sdk/client.mjs';
 import { publishAssetGraph } from './publication-helpers';
@@ -67,6 +68,51 @@ function publish(peers: ReturnType<typeof client>['peers'], name: string) {
     'index.html': { type: 'text/html', body: `<!doctype html><html lang="en"><meta charset="utf-8"><title>Staging test</title><main><h1>${name}</h1></main></html>` },
   });
 }
+
+test('ChatGPT client can link and revoke its account through the live OAuth issuer', async ({ page }) => {
+  const clientId = 'https://chatgpt.com/oauth/client.json';
+  const redirectUri = 'https://chatgpt.com/connector_platform_oauth_redirect';
+  const resource = `${staging}/mcp`;
+  const verifier = randomBytes(32).toString('base64url');
+  const state = randomBytes(24).toString('base64url');
+  const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, resource, state,
+    response_type: 'code', scope: 'tendrils:list applications:read', code_challenge_method: 'S256',
+    code_challenge: createHash('sha256').update(verifier).digest('base64url') });
+  await page.goto(`${staging}/oauth/authorize?${params}`);
+  await expect(page.getByRole('heading', { name: 'Connect ChatGPT' })).toBeVisible();
+  let redirect = '';
+  await page.route(url => url.origin === staging && url.pathname === '/oauth/authorize', async route => {
+    const response = await route.fetch({ maxRedirects: 0 });
+    redirect = response.headers().location ?? '';
+    // Preserve the real browser's cross-origin form redirect without sending a
+    // synthetic account's authorization code to ChatGPT.
+    await route.fulfill({ response, headers: { ...response.headers(), location: redirectUri } });
+  });
+  await page.route(redirectUri, route => route.fulfill({ contentType: 'text/plain', body: 'Staging OAuth callback captured' }));
+  const returned = page.waitForURL(redirectUri);
+  await page.getByRole('button', { name: 'Allow these permissions' }).click();
+  await returned;
+  const callback = new URL(redirect);
+  expect(callback.origin + callback.pathname).toBe(redirectUri);
+  expect(callback.searchParams.get('state') === state && callback.searchParams.get('iss') === staging && callback.searchParams.has('code')).toBe(true);
+
+  const exchange = await page.request.post(`${staging}/oauth/token`, { form: {
+    grant_type: 'authorization_code', client_id: clientId, resource, redirect_uri: redirectUri,
+    code: callback.searchParams.get('code')!, code_verifier: verifier,
+  } });
+  expect(exchange.status()).toBe(200);
+  const { access_token: access } = await exchange.json();
+  const profile = () => page.request.post(resource, { headers: { Authorization: `Bearer ${access}` },
+    data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_profile', arguments: {} } } });
+  const linked = await profile();
+  expect(linked.status()).toBe(200);
+  expect((await linked.json()).result.structuredContent.id).toBeTruthy();
+
+  await page.goto(`${staging}/oauth/connections`);
+  await page.getByRole('button', { name: 'Revoke this authorization' }).click();
+  await expect(page.getByText(/Revoked or expired/)).toBeVisible();
+  expect((await profile()).status()).toBe(401);
+});
 
 test('owner claim, reconnect for pushed first publication and live invitations', async ({ page, browser }) => {
   const handle = await createPage('First publication');

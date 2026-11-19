@@ -5,9 +5,11 @@ import { activeAccount, authorizationRedirect, bodyObject, browserIdentity, cons
 import { bridgeIdentity, checkedChallenge, checkedParameters, checkVerifier, form, oauthJson, randomToken, reject, text, type OAuthConfig } from './oauth-support';
 
 export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
-export function authorizationPage(title: string, body: string): Response {
+export function authorizationPage(title: string, body: string, callbackOrigin?: string): Response {
   const response = servicePage(title, body);
-  response.headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  // Browsers also apply form-action to the redirect after the same-origin POST.
+  const formTargets = callbackOrigin ? `'self' ${callbackOrigin}` : "'self'";
+  response.headers.set('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action ${formTargets}; base-uri 'none'; frame-ancestors 'none'`);
   response.headers.set('Referrer-Policy', 'no-referrer');
   response.headers.set('X-Content-Type-Options', 'nosniff');
   return response;

@@ -31,6 +31,7 @@ Open **Page options** on a published page to add it to your Home Screen. Support
 - [Events or SQL](docs/STATE_MODELS.md): concrete starters and the exact optional engine requirements for guarded transactions.
 - [Live delivery](docs/AGENT_DELIVERY.md): provisioning, process lifetime, conversation-handoff boundaries and evidence of completion.
 - [Session bootstrap](docs/SESSION_BOOTSTRAP.md): create and resume native identity, configure authority, enroll a browser and open the same application.
+- [Connect ChatGPT](docs/CHATGPT_INTEGRATION.md): install Tendriller, share it in a workspace, and approve access to individual apps.
 - [Troubleshooting](docs/TROUBLESHOOTING.md): exact failing stages, safe retries and the next concrete action.
 - [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.
 - [Application contract](docs/APPLICATION_BACKENDS.md): commands, applied operations, coherent reads and explicit recovery.
