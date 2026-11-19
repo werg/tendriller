@@ -34,11 +34,17 @@ function envelope(sub, event, now) {
 }
 
 export function createOutbox({ store, bridge, authorize, send,
-  clock = Date.now, sourceCursorLookup = false, maxAttempts = 8, maxJobs = 100000, leaseMs = 30000 } = {}) {
+  clock = Date.now, sourceCursorLookup = false, maxAttempts = 8, maxJobs = 100000, leaseMs = 30000,
+  maxConcurrent = 4, maxConcurrentPerAccount = Math.min(2, maxConcurrent),
+  maxConcurrentPerConsumer = Math.min(2, maxConcurrentPerAccount) } = {}) {
   if (!store || !bridge || typeof bridge.readRevision !== 'function' || typeof bridge.assertSelection !== 'function' || typeof authorize !== 'function')
     fail('OUTBOX_CONFIGURATION_REQUIRED', 'Outbox requires a real bridge with selected-generation fences and current authorization');
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 16 || !Number.isSafeInteger(maxJobs) || maxJobs < 1 || maxJobs > 100000 ||
-      !Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 300000) fail('OUTBOX_CONFIGURATION_REQUIRED', 'Delivery bounds are outside the supported range');
+      !Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 300000 ||
+      !Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 32 ||
+      !Number.isSafeInteger(maxConcurrentPerAccount) || maxConcurrentPerAccount < 1 || maxConcurrentPerAccount > maxConcurrent ||
+      !Number.isSafeInteger(maxConcurrentPerConsumer) || maxConcurrentPerConsumer < 1 || maxConcurrentPerConsumer > maxConcurrentPerAccount)
+    fail('OUTBOX_CONFIGURATION_REQUIRED', 'Delivery bounds are outside the supported range');
   const sending = new Map();
   const cancelInactive = async () => {
     const state = await store.read();
@@ -85,6 +91,8 @@ export function createOutbox({ store, bridge, authorize, send,
   async function one(signal) {
     const job = await store.transaction(state => {
       const due = [], accountTurns = new Map(), consumerTurns = new Map();
+      const accountSending = new Map(), consumerSending = new Map(), subscriptionSending = new Set();
+      let active = 0;
       for (const candidate of Object.values(state.jobs ?? {})) {
         const account = digest(accountIdentity(candidate.owner)), consumer = consumerIdentity(candidate.owner).consumerId;
         accountTurns.set(account, Math.max(accountTurns.get(account) ?? 0, candidate.dispatchTurn ?? 0));
@@ -94,8 +102,13 @@ export function createOutbox({ store, bridge, authorize, send,
         if (!live(sub, clock()) || !sameActivation(candidate, sub)) {
           Object.assign(candidate, { state: 'cancelled', reason: !sameActivation(candidate, sub) ? 'subscription_replaced' : sub?.active ? 'subscription_expired' : 'subscription_stopped', updatedAt: clock() }); continue;
         }
+        if (candidate.state === 'sending' && candidate.leaseUntil > clock()) {
+          active++; accountSending.set(account, (accountSending.get(account) ?? 0) + 1);
+          consumerSending.set(consumer, (consumerSending.get(consumer) ?? 0) + 1);
+          subscriptionSending.add(candidate.subscriptionId); continue;
+        }
         if (sub.pausedReason && candidate.sourceKind !== 'recovery') continue;
-        if (candidate.state === 'sending' && candidate.leaseUntil > clock() || candidate.nextAttemptAt > clock()) continue;
+        if (candidate.nextAttemptAt > clock()) continue;
         if (candidate.attempts >= maxAttempts) { Object.assign(candidate, { state: 'failed', reason: 'retry_limit', updatedAt: clock() }); continue; }
         due.push(candidate);
       }
@@ -104,7 +117,12 @@ export function createOutbox({ store, bridge, authorize, send,
       const accountTurn = owner => accountTurns.get(digest(accountIdentity(owner))) ?? 0;
       const consumerTurn = owner => consumerTurns.get(consumerIdentity(owner).consumerId) ?? 0;
       due.sort((a, b) => accountTurn(a.owner) - accountTurn(b.owner) || consumerTurn(a.owner) - consumerTurn(b.owner) || a.createdAt - b.createdAt);
-      const candidate = due[0];
+      // Admission is inside the same durable transaction as the lease, so
+      // concurrent dispatch calls/processes cannot multiply account capacity.
+      if (active >= maxConcurrent) return null;
+      const candidate = due.find(item => !subscriptionSending.has(item.subscriptionId) &&
+        (accountSending.get(digest(accountIdentity(item.owner))) ?? 0) < maxConcurrentPerAccount &&
+        (consumerSending.get(consumerIdentity(item.owner).consumerId) ?? 0) < maxConcurrentPerConsumer);
       if (!candidate) return null;
       state.deliverySequence = (state.deliverySequence ?? 0) + 1;
       Object.assign(candidate, { state: 'sending', dispatchTurn: state.deliverySequence, lease: randomUUID(), leaseUntil: clock() + leaseMs, attempts: candidate.attempts + 1 });
@@ -231,8 +249,19 @@ export function createOutbox({ store, bridge, authorize, send,
     },
     async dispatchDue({ limit = 8, signal } = {}) {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) fail('DELIVERY_BATCH_LIMIT', 'Dispatch at most 128 deliveries per turn');
-      let processed = 0;
-      while (processed < limit && !signal?.aborted && await one(signal)) processed++;
+      let reserved = 0, processed = 0;
+      const worker = async () => {
+        while (reserved < limit && !signal?.aborted) {
+          reserved++;
+          if (!await one(signal)) { reserved--; return; }
+          processed++;
+        }
+      };
+      // A stalled callback occupies one bounded worker. Other consumers keep
+      // progressing, with one current lease per subscription to retain order.
+      const settled = await Promise.allSettled(Array.from({ length: Math.min(limit, maxConcurrent) }, worker));
+      const failed = settled.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
       return processed;
     },
     async pauseForExport(subscriptionId, notice, { subscription, job } = {}) {

@@ -339,6 +339,15 @@ does not mean that an assistant answered or a domain command applied. Admission
 allows two concurrent calls per consumer, eight per account and 32 overall.
 All bindings share the account's rate and subscription budgets. Durable dispatch
 turns alternate accounts and their consumers before draining older backlogs.
+Webhook delivery uses four workers by default, with at most two current leases
+per account, two per consumer and one per subscription. These limits are checked
+inside the durable lease transaction, including across simultaneous dispatcher
+instances. A slow callback occupies its own slot while another recipient can
+complete; callbacks for the same subscription do not run concurrently. Configure
+`outboxLimits.maxConcurrent` (1–32), `maxConcurrentPerAccount`, and
+`maxConcurrentPerConsumer` to reduce the relevant budgets. Account/consumer limits
+cannot exceed their parent budget. Each turn still admits at most its explicit
+delivery limit, and late responses retain the existing exact-lease receipt rules.
 The journal's finite capacity preserves terminal and uncertain receipts instead
 of silently evicting them.
 

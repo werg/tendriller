@@ -540,3 +540,53 @@ test('durable dispatch turns serve accounts and sibling consumers before drainin
   assert.equal((await f.outbox.status(consumer('sibling'), 'app-a')).jobs.length, 1);
   await f.outbox.dispatchDue(); assert.equal(f.sent.length, 5);
 });
+
+test('a stalled callback allows a healthy recipient to finish while its own subscription stays ordered', async () => {
+  const stalled=gate(),sent=[];
+  const f=fixture({send:async(url,{body})=>{
+    const id=JSON.parse(body).data.source_event_id;sent.push(id);
+    if(id==='slow-first'){stalled.enter();await stalled.wait;}
+    return{status:202};
+  }});
+  await f.outbox.ingest('sub-a',{...batch(),events:[source('slow-first'),source('slow-second')]},{expectedCursor:'tail'});
+  await f.outbox.ingest('sub-b',{...batch(source('healthy')),applicationId:'app-b'},{expectedCursor:'tail'});
+  const dispatch=f.outbox.dispatchDue({limit:3});await stalled.entered;
+  try{
+    await new Promise(resolve=>setImmediate(resolve));
+    const jobs=Object.values((await f.store.read()).jobs),find=id=>jobs.find(job=>job.sourceEventId===id);
+    assert.equal(find('healthy').state,'accepted','The healthy callback must settle before the stalled callback responds');
+    assert.equal(find('slow-first').state,'sending');assert.equal(find('slow-second').state,'queued');
+    assert.equal(find('slow-second').attempts,0);assert.deepEqual(sent,['slow-first','healthy']);
+  }finally{stalled.release();await dispatch;}
+  assert.equal(await dispatch,3);assert.deepEqual(sent,['slow-first','healthy','slow-second']);
+  const jobs=Object.values((await f.store.read()).jobs);
+  assert.ok(jobs.every(job=>job.state==='accepted'&&job.attempts===1&&job.responseStatus===202));
+});
+
+test('parallel dispatchers share durable global, account and consumer capacity', async () => {
+  const delivery=gate(),sent=[];
+  const send=async(url)=>{sent.push(url.split('/').at(-1));await delivery.wait;return{status:200};};
+  const limits={maxConcurrent:4,maxConcurrentPerAccount:2,maxConcurrentPerConsumer:1};
+  const f=fixture({...limits,send});
+  const entries=[['a-one','alice','a'],['a-two','alice','a'],['a-three','alice','a'],['a-sibling','alice','b'],
+    ['b-one','bob','c'],['b-two','bob','c'],['b-sibling','bob','d'],['c-one','carol','e']];
+  await f.store.transaction(state=>{state.subscriptions=Object.fromEntries(entries.map(([id,account,binding])=>
+    [id,{...subscription(id),owner:{...owner,id:account,agentBindingId:binding}}]));});
+  for(const [id] of entries)await f.outbox.ingest(id,batch(source(id)),{expectedCursor:'tail'});
+  const other=createOutbox({...limits,store:f.store,bridge:f.bridge,clock:()=>1000000,authorize:async()=>{},send});
+  const first=f.outbox.dispatchDue(),second=other.dispatchDue();
+  try{
+    await new Promise(resolve=>setImmediate(resolve));
+    const active=Object.values((await f.store.read()).jobs).filter(job=>job.state==='sending');
+    assert.equal(active.length,4);assert.equal(sent.length,4);
+    const accounts=new Map(),consumers=new Set();
+    for(const job of active){accounts.set(job.owner.id,(accounts.get(job.owner.id)??0)+1);
+      const consumer=job.owner.id+':'+job.owner.agentBindingId;assert.equal(consumers.has(consumer),false);consumers.add(consumer);}
+    assert.ok([...accounts.values()].every(value=>value<=2));assert.ok(accounts.size>=2);
+    assert.equal(await other.dispatchDue(),0,'A third call cannot multiply the persisted capacity');
+    assert.equal(sent.length,4);
+  }finally{delivery.release();await Promise.all([first,second]);}
+  const jobs=Object.values((await f.store.read()).jobs);
+  assert.equal(sent.length,entries.length);assert.equal(new Set(sent).size,entries.length);
+  assert.ok(jobs.every(job=>job.state==='accepted'&&job.attempts===1));
+});
