@@ -98,6 +98,16 @@ authorization and source lookup, call it after the last storage/lease await and
 immediately before invoking an external send. It is not an authorization check
 and cannot retract an external request that has already begun.
 
+The durable outbox uses these methods for both delivery and recovery review.
+Its final account/consent authorization precedes a fresh source lookup; the
+captured generation is checked synchronously after the lease transaction and
+immediately before invoking the callback transport. Resuming either recovery
+strategy refreshes the live native revision and checks the reviewed generation
+inside the durable transaction. A newer generation keeps delivery paused and
+updates the revision that must be reviewed; ordinary progress within the same
+generation does not invalidate the approval. Controlled replacement bridges must
+implement `readRevision`, `assertSelection` and `verifySource.currentRevision`.
+
 `observe(id,{cursor?,signal?})` yields `kind: 'events'` batches with explicit pull
 backpressure. Finish the atomic outbox/cursor transaction before requesting the
 next batch. A native recovery yields one `kind: 'recovery'` notice with
