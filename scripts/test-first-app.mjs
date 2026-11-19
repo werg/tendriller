@@ -39,7 +39,7 @@ const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql
     sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
       : 'Local Chromium and encrypted WebSocket relay; no Internet, native RTC or mobile qualification.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.'], steps: [] };
-let host, peer, browser, stage = 'preflight';
+let host, peer, browser, page, stage = 'preflight';
 
 // Every request, including a followed redirect or literal IP, is restricted to
 // loopback hosts. TLS relaxation never enters the tutorial, packages or page.
@@ -263,7 +263,11 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1'] });
     report.browser = await browser.version();
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } });
-    const page = await context.newPage();
+    page = await context.newPage();
+    page.on('pageerror', error => {
+      report.browser_errors ??= [];
+      if (report.browser_errors.length < 12) report.browser_errors.push(error.message);
+    });
     report.screenshots = {};
     await page.goto(SERVICE); await page.screenshot({ path: join(dirname(reportPath), 'first-app-homepage-desktop.png'), fullPage: true });
     report.screenshots.homepage_desktop = 'first-app-homepage-desktop.png';
@@ -336,11 +340,11 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
         const error = Error(`Native peer exited (${code}): ${stderr}`); readyReject(error);
         for (const held of waiting.values()) { clearTimeout(held.timer); held.reject(error); } waiting.clear();
       });
-      const client = { child, async request(action, input = {}) {
+      const client = { child, async request(action, input = {}, timeoutMs = 40_000) {
         if (child.exitCode !== null || child.signalCode !== null) throw Error(`Native peer is closed: ${stderr}`);
         const id = ++sequence;
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => { waiting.delete(id); reject(Error(`Native ${action} timed out: ${stderr}`)); }, 40_000);
+          const timer = setTimeout(() => { waiting.delete(id); reject(Error(`Native ${action} timed out: ${stderr}`)); }, timeoutMs);
           waiting.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ id, action, ...input }) + '\n');
         });
       } };
@@ -406,6 +410,10 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     passed('same native/browser identities and retained notes after both reopen');
 
     checkpoint('analyze immutable evidence through the authorized native peer');
+    // The reopened notes can be read from local storage before the new peer
+    // link exists. Ephemeral signals have no reconnect outbox: wait for the
+    // actual coordinator connection before this one deliberate request.
+    await expect(page.locator('#connection')).toContainText('Connection: following', { timeout: 60_000 });
     const beforeMedia = (await peer.request('query')).value;
     assert.equal((await peer.request('inference-status')).calls, 0);
     await page.locator('#media-file').setInputFiles({ name: 'fixture-evidence.png', mimeType: 'image/png', buffer: evidencePng });
@@ -469,6 +477,16 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   report.status = 'failed'; report.failed_stage = stage; report.error = error.message;
   if (report.native_checks === 'running') report.native_checks = 'failed';
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
+  if (page && !page.isClosed()) {
+    report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
+      'connection', 'data-status', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+    ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
+    try {
+      await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
+      report.screenshots ??= {}; report.screenshots.failure = 'first-app-failure.png';
+    } catch { /* Preserve the original test failure if the page has crashed. */ }
+  }
+  if (peer) report.native_inference_diagnostics = await peer.request('inference-status', {}, 5_000).catch(failure => ({ error: failure.message }));
   if (error.stdout) process.stderr.write(error.stdout);
   if (error.stderr) process.stderr.write(error.stderr);
   throw error;
