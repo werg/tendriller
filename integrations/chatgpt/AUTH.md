@@ -67,10 +67,78 @@ application disconnect must revoke local consent and/or device grants rather
 than wait for token expiry; provider-level immediate JWT revocation needs a
 provider introspection/denylist layer in front of this verifier.
 
+## Explicit application connections
+
+`createConsentService({store, authorizeOwner})` maintains only
+`state.chatgptConnections` in the injected encrypted delivery store. `store.read()`
+returns a snapshot; `store.transaction(mutator)` atomically commits a synchronous
+mutation. Reuse the same durable store on restart. The service never writes
+application history or device authority.
+
+The required `authorizeOwner(principal, applicationId)` callback must look up
+current ownership through Tendriller's account/page authorization. It must return
+the boolean `true` to allow a new or replacement grant. A missing callback denies
+grants. Do not implement this callback as a claim, scope, email, or page-URL check.
+
+```js
+const consent = createConsentService({ store, authorizeOwner });
+// Call only after the authenticated owner reviews this exact selection.
+await consent.grant(principal, {
+  applicationId,
+  queries: ['assistanceStatus'],
+  commands: ['replyToAssistance'],
+  events: ['assistant.help_requested'],
+  readEvents: false,
+});
+await consent.assertAccess(principal, {
+  applicationId, kind: 'command', name: 'replyToAssistance',
+});
+// Then enforce current account access, OAuth scopes AND live Chronolog grants.
+```
+
+There is one deterministic connection per issuer/subject/application. Re-granting
+replaces the full selection, preserving its identity and creation time. Grants
+expire in 30 days by default; callers can explicitly select a finite expiration
+within one year or `null` for no expiry. Scope names use exact matches; wildcards
+and undeclared privilege fields are refused. `event-details` requires both
+`readEvents: true` and the exact selected event name. Notification consent alone
+does not authorize reading detailed content.
+
+`list(principal)` returns that account's connections and active/expired/revoked
+status. `revoke(principal,{id})` is owner-bound and idempotent. An account may
+always disconnect its own connection even if it no longer owns the application.
+Every tool and delivery must call `assertAccess` again so revocation takes effect
+before the next action. An HTTP request already sent cannot be recalled.
+
+### Browser management surface
+
+`createConsentManagementHandler` provides an optional `/connections` HTML page
+and grant/disconnect form endpoint. Supply an exact public HTTPS `origin`, a
+random `csrfKey` of at least 32 bytes, the consent `service`, a real authenticated
+account-session callback `authenticate(request)`, and
+`applicationsForPrincipal(principal)`. The latter must return an authorized
+server-side catalog of `{applicationId,label,queries,commands,events,
+allowEventDetails}`; derive declared names from the application, not form inputs.
+
+The page selects no permissions automatically. Submission checks a same-origin
+request, a signed five-minute CSRF token bound to issuer/subject, the live
+application catalog, and ownership. It rejects unknown fields, oversized forms,
+and unlisted permissions. Responses are non-cacheable, forbid framing, and use
+no JavaScript. The injected session must itself enforce the deployment's normal
+secure account-cookie/login policy; this helper does not create a login session.
+
+An unconfigured deployment can use `renderConnectionsHtml(principal)` as a
+read-only status view. It has no mutation controls without CSRF context. Do not
+expose a generic MCP tool that silently grants new connections. Actual remote
+reader enrollment, outbound content consent and publisher permission must remain
+reviewable, explicit actions.
+
 ## Verification and deployment boundary
 
-Run `node --test integrations/chatgpt/test/auth.test.mjs` for signature, claim,
-scope, cache, rotation and malformed-input checks using generated local keys.
+Run `node --test integrations/chatgpt/test/auth.test.mjs
+integrations/chatgpt/test/consent.test.mjs` for signature, claim, scope, cache,
+rotation, malformed-input, consent isolation/revocation and management-CSRF
+checks using generated local keys and a synthetic transactional store.
 Those tests do not establish a configured live provider, an account linking
 round-trip, public HTTPS deployment, or access to a real Chronolog application.
 All of those remain explicit deployment prerequisites.
