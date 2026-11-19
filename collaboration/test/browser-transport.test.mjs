@@ -118,3 +118,28 @@ test('an unresponsive facade handshake times out without exposing its context to
     context: { viewId: 'private-timeout-context' }, timeoutMs: 150 }), /TIMEOUT/);
   assert.ok(!JSON.stringify(f.traffic).includes('private-timeout-context'));
 });
+
+test('synchronous pagehide release is scoped to one route and cannot be replayed against siblings or a new handshake', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const departing = await f.attach(), sibling = await f.attach();
+  await departing.send(1, 'before-navigation');
+  assert.equal(f.traffic.some(frame => frame.type === 'release'), false);
+  f.observer.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'release', ownerInstanceId: f.announcement.ownerInstanceId,
+    route: sibling.route, token: crypto.getRandomValues(new Uint8Array(32)) });
+  assert.equal((await sibling.send(1, 'unforgeable-release')).value, 'unforgeable-release');
+  assert.equal(departing.endpoint.relinquish(), undefined);
+  await until(() => f.bridge.routes === 1 && f.traffic.some(frame => frame.type === 'release'), 'synchronous scoped release');
+  const release = f.traffic.find(frame => frame.type === 'release');
+  f.observer.postMessage({ ...release, route: sibling.route });
+  f.observer.postMessage(release);
+  assert.equal((await sibling.send(2, 'sibling-stays-live')).value, 'sibling-stays-live');
+  const hello = f.traffic.find(frame => frame.type === 'hello' && frame.route === departing.route);
+  f.observer.postMessage(hello);
+  await until(() => f.bridge.routes === 2, 'fresh challenge after retired hello replay');
+  f.observer.postMessage(release);
+  await sibling.send(3, 'fresh-handshake-does-not-inherit-release');
+  assert.equal(f.bridge.routes, 2);
+  await until(() => f.bridge.routes === 1, 'unproved fresh handshake expiry');
+  const replacement = await f.attach(); f.observer.postMessage({ ...release, route: replacement.route });
+  assert.equal((await replacement.send(1, 'replacement-stays-live')).value, 'replacement-stays-live');
+});

@@ -1,5 +1,6 @@
-export const BROWSER_OWNER_PROTOCOL = 'tendriller/browser-owner/v2';
-export const ownerChannelName = profileId => `tendriller:owner:v2:${profileId}`;
+export const BROWSER_OWNER_PROTOCOL = 'tendriller/browser-owner/v3';
+export const ownerChannelName = profileId => `tendriller:owner:v3:${profileId}`;
+export const ownerWorkerName = profileId => `tendriller:${profileId}:v3`;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
 const MAX_BYTES = 1048576, MAX_WIRE_BYTES = 2 * MAX_BYTES, MAX_QUEUED_BYTES = 4 * MAX_BYTES;
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
@@ -134,16 +135,17 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
 }
 
 /** The elected owner binds private ports behind authenticated, replay-fenced routes. */
-export async function createBroadcastOwner(channel, owner, { profileId, timeoutMs = 30000, idleTimeoutMs = 60000, maxRoutes = 32 } = {}) {
+export async function createBroadcastOwner(channel, owner, { profileId, timeoutMs = 30000, idleTimeoutMs = 60000, maxRoutes = 32, onRoutesChanged } = {}) {
   if (!validId(profileId) || !validId(owner.ownerInstanceId) || !Number.isSafeInteger(maxRoutes) || maxRoutes < 1 || maxRoutes > 128 ||
       !Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000 ||
       !Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 100 || idleTimeoutMs > 120000) throw Error('OWNER_CONFIGURATION_INVALID');
   const pair = await keys(), routes = new Map(); let closed = false;
   const announcement = { protocol: BROWSER_OWNER_PROTOCOL, type: 'ready', profileId, ownerInstanceId: owner.ownerInstanceId, publicKey: pair.publicKey };
   const announce = () => { if (!closed) channel.postMessage(announcement); };
+  const routesChanged = () => { try { onRoutesChanged?.(routes.size); } catch { /* Observers do not control private routes. */ } };
   function retire(route) {
     const record = routes.get(route); if (!record) return;
-    record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.detach?.(); record.port?.close(); routes.delete(route);
+    record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.detach?.(); record.port?.close(); routes.delete(route); routesChanged();
   }
   function observeLiveness(record, route) {
     clearTimeout(record.idleTimer);
@@ -162,7 +164,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
     }
     if (routes.size >= maxRoutes) return;
     const record = { publicKey: data.publicKey.slice(), nonce: data.nonce.slice(), closed: false };
-    routes.set(data.route, record); record.timer = setTimeout(() => retire(data.route), timeoutMs); record.timer.unref?.();
+    routes.set(data.route, record); routesChanged(); record.timer = setTimeout(() => retire(data.route), timeoutMs); record.timer.unref?.();
     try {
       record.context = transcript(profileId, owner.ownerInstanceId, data.route, pair.publicKey, record.publicKey, record.nonce);
       const shared = await material(pair.privateKey, record.publicKey), base = await derive(shared, record.nonce, [...record.context, 'welcome']);
@@ -178,7 +180,8 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
   async function deliver(record, route, value) {
     record.lastReceived = performance.now();
     if (!record.port) {
-      if (value?.kind !== 'attach' || typeof value.facadeProtocol !== 'string') { retire(route); return; }
+      if (value?.kind !== 'attach' || typeof value.facadeProtocol !== 'string' || !(value.releaseToken instanceof Uint8Array) || value.releaseToken.length !== 32) { retire(route); return; }
+      record.releaseToken = value.releaseToken.slice();
       checkOwnerFrame(value.handshake);
       const ports = new MessageChannel(), endpoint = new EventTarget(); endpoint.postMessage = () => {};
       record.detach = owner.attach(endpoint); record.port = ports.port2; clearTimeout(record.timer); observeLiveness(record, route);
@@ -203,6 +206,14 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
     if (data.ownerInstanceId !== owner.ownerInstanceId || !validId(data.route)) return;
     if (data.type === 'hello') { void hello(data).catch(() => undefined); return; }
     const record = routes.get(data.route);
+    // A release capability is disclosed only when its page irrevocably leaves.
+    // It permits no command, cannot affect another route, and a fresh challenge
+    // never inherits a retired route's capability. Verification is synchronous
+    // so pagehide does not depend on crypto promises surviving document teardown.
+    if (data.type === 'release') {
+      if (record?.releaseToken && bytesEqual(record.releaseToken, data.token)) retire(data.route);
+      return;
+    }
     if (record?.key) record.receive(data, value => deliver(record, data.route, value).catch(() => retire(data.route)));
   };
   channel.addEventListener('message', receive);
@@ -244,7 +255,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       record.key = await derive(record.shared, challenge, [...record.context, 'session']);
       clearTimeout(handshakeTimer);
       queues(record, channel, ownerInstanceId, record.route, 'owner');
-      await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake });
+      await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake, releaseToken: record.releaseToken });
       record.lastReceived = performance.now(); pulse();
     } catch { replaced('OWNER_HANDSHAKE_INVALID'); }
     finally { if (record) record.welcoming = false; }
@@ -271,7 +282,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   return { postMessage(frame) {
     if (closed || record || !frame?.port || typeof frame.port.postMessage !== 'function') throw Error('OWNER_HANDSHAKE_INVALID');
     checkOwnerFrame(frame.handshake);
-    record = { route: crypto.randomUUID(), port: frame.port, facadeProtocol: frame.protocol, handshake: frame.handshake, closed: false };
+    record = { route: crypto.randomUUID(), port: frame.port, facadeProtocol: frame.protocol, handshake: frame.handshake, releaseToken: crypto.getRandomValues(new Uint8Array(32)), closed: false };
     record.port.addEventListener('message', ({ data }) => {
       try { if (!record.key) throw Error('OWNER_HANDSHAKE_INVALID'); void record.send({ kind: 'frame', frame: data }).catch(() => replaced('OWNER_UNREACHABLE')); }
       catch { replaced('OWNER_MESSAGE_LIMIT'); }
@@ -289,9 +300,16 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   }, addEventListener() {}, removeEventListener() {},
   suspend() { paused = true; clearTimeout(heartbeat); },
   resume() { if (closed) throw Error('ENDPOINT_STALE'); paused = false; if (record) record.lastReceived = performance.now(); pulse(); },
+  relinquish() {
+    if (closed) return;
+    // This capability is prepared before the facade opens. No Promise or key
+    // operation is needed in pagehide, including a follower's immediate reload.
+    try { if (record?.key) channel.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'release', ownerInstanceId, route: record.route, token: record.releaseToken }); }
+    catch { /* The normal route lease still bounds an interrupted release. */ }
+  },
   async close() {
-    if (closed) return; closed = true; clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
-    try { if (record?.key) await record.send({ kind: 'detach' }); } catch { /* An unavailable owner does not retain a caller. */ }
-    finally { if (record) { record.closed = true; record.port.close(); } }
+    if (closed) return;
+    this.relinquish(); closed = true; clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    if (record) { record.closed = true; record.port.close(); }
   } };
 }

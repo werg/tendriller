@@ -1,3 +1,4 @@
+import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 export interface BrowserOwnerOptions {workerUrl:string|URL;profileId:string;applicationId:string;definitionId:string;definitionVersion:string;context?:{viewId?:string;documentPath?:string;publicationId?:string;runId?:string};mode?:'auto'|'shared'|'elected';requiresDedicatedWorker?:boolean;signal?:AbortSignal;timeoutMs?:number;livenessTimeoutMs?:number;onOwnerReplaced?:(context:{previous:string;current?:string;reason?:string})=>void}
-export declare function openBrowserOwner(options:BrowserOwnerOptions):Promise<{readonly session:any;readonly mode:'shared'|'elected';suspend():Promise<void>;resume():Promise<any>;detach():Promise<void>}>;
+export declare function openBrowserOwner(options:BrowserOwnerOptions):Promise<{readonly session:WorkerApplicationSession;readonly mode:'shared'|'elected';suspend():Promise<void>;resume():Promise<WorkerApplicationSession>;detach():Promise<void>}>;
 export declare function createBrowserIdentity(options:Pick<BrowserOwnerOptions,'workerUrl'|'profileId'|'signal'|'timeoutMs'>):Promise<string>;

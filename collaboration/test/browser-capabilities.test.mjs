@@ -10,7 +10,7 @@ test('SQL storage selects the maintained dedicated route before a Worker or stor
   class Channel extends EventTarget {constructor(){super();channel=this;}postMessage(){}close(){closed++;}}
   class Dedicated extends EventTarget {
     constructor(){super();dedicated++;}
-    postMessage(){queueMicrotask(()=>channel.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_OWNER_PROTOCOL,type:'failure',code:'FIXTURE_ELECTED_ROUTE'}})));}
+    postMessage(data){queueMicrotask(()=>data.type==='retire'?this.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_OWNER_PROTOCOL,type:'retired',id:data.id}})):channel.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_OWNER_PROTOCOL,type:'failure',code:'FIXTURE_ELECTED_ROUTE'}})));}
     terminate(){}
   }
   const globals={navigator:{locks:{}},location:{origin:'https://app.example',href:'https://app.example/'},
