@@ -1,5 +1,5 @@
 import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/collaboration/browser';
-import { createViewStore } from '@tendriller/core/collaboration';
+import { createViewStore, operationReference } from '@tendriller/core/collaboration';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createLiveView } from './helpers/live-view.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
@@ -41,7 +41,8 @@ function savePending(value) {
   // reference cannot erase another view's pending command or draft.
   const previous = pending;
   if (value) {
-    const reference = { applicationId: session.applicationId, author: session.deviceId, operationId: value.id };
+    const reference = { applicationId: session.applicationId, historyId: session.historyId,
+      author: session.deviceId, operationId: value.id };
     const { reference: ignored, ...context } = value;
     viewStore.retainOperation(reference, context);
     pending = { ...value, reference };
@@ -50,6 +51,15 @@ function savePending(value) {
   $('#submit').disabled = Boolean(pending);
   $('#reapply').disabled = true;
   media?.setBlocked(Boolean(pending) || preparingSubmission);
+}
+function retainObservedReference(state) {
+  if (!state || pending?.id !== state.operationId) return;
+  const reference = operationReference(session, pending.id, state);
+  if (reference.author !== pending.reference.author || reference.historyId !== pending.reference.historyId)
+    throw Error('The observed operation does not belong to this retained signer and history.');
+  const { reference: ignored, ...context } = pending;
+  viewStore.retainOperation(reference, context);
+  pending = { ...pending, reference };
 }
 function beginSubmission() {
   if (pending || preparingSubmission) throw Error('Resolve the current submission before starting another operation.');
@@ -104,6 +114,7 @@ function observeOperation(id, operation) {
   operationView?.close(); observedOperation = id;
   operationView = createOperationView(session, { operationId: id, operation,
     onChange({ state, coverage, waitingForShared }) {
+      retainObservedReference(state);
       const label = !state ? 'No saved attempt visible; preserve the original input and ID.'
         : state.status === 'saved' ? 'Saved on this device; waiting for applied execution.'
         : state.status === 'applied' ? `Applied: ${state.outcome}${state.rejectionCode ? ` (${state.rejectionCode})` : ''}.`
@@ -131,8 +142,8 @@ $('#connect').addEventListener('click', async () => {
       onOwnerReplaced() { $('#connection').textContent = 'The session owner restarted. Reload to reconnect this retained device and inspect pending work.'; },
     });
     session = attachment.session; $('#device-key').value = session.deviceId;
-    if (pending?.reference && pending.reference.author !== session.deviceId)
-      throw Error('The retained operation belongs to a different signing profile. Reopen its original owner to inspect it.');
+    if (pending?.reference && (pending.reference.author !== session.deviceId || pending.reference.historyId !== session.historyId))
+      throw Error('The retained operation belongs to a different signer or history. Reopen its original owner to inspect it.');
     if (session.endpoint.context.viewId !== viewId) {
       const offeredDraft = $('#note').value;
       viewId = session.endpoint.context.viewId; sessionStorage.setItem(viewKey, viewId);
@@ -276,7 +287,9 @@ $('#inspect').addEventListener('click', async () => {
 $('#retry').addEventListener('click', async () => {
   try {
     const id = $('#operation-id').value;
-    if (!await session.operations.get(id) && pending?.id === id) {
+    const original = await session.operations.get(id);
+    retainObservedReference(original);
+    if (!original && pending?.id === id) {
       const options = { operationId: id, basedOn: pending.basedOn };
       // A first RPC can fail before its saved acknowledgment. Explicit retry
       // preserves the original input, revision and identity in that case too.
