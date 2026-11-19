@@ -10,7 +10,11 @@ export const CHRONOLOG_SOURCE = 'd014879ecb29714e80311d6101cfa8973953d5c4';
 const SHA = /^[a-f0-9]{40}$/u, HASH = /^[a-f0-9]{64}$/u;
 const TEMPLATE_FILES = ['domain.mjs', 'projection.mjs', 'session.mjs', 'bridge-session.mjs', 'local.mjs', 'private-records.mjs'];
 const REQUIRED = ['integrations/chatgpt/run.mjs', 'integrations/chatgpt/integration.mjs',
-  'integrations/chatgpt/config.host-account.example.mjs', 'bridge-template/session.mjs', 'bridge-template/bridge-session.mjs'];
+  'integrations/chatgpt/account.mjs', 'integrations/chatgpt/account-browser.mjs', 'integrations/chatgpt/config.host-account.example.mjs',
+  'integrations/chatgpt/deploy/prepare.mjs', 'integrations/chatgpt/deploy/preflight.mjs',
+  'integrations/chatgpt/deploy/stage-bridge.mjs', 'integrations/chatgpt/deploy/common.mjs',
+  'integrations/chatgpt/deploy/README.md', 'integrations/chatgpt/deploy/settings.example.json',
+  'bridge-template/session.mjs', 'bridge-template/bridge-session.mjs'];
 const fail = (code, message = code) => { throw Object.assign(Error(message), { code }); };
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const within = (parent, child) => { const path = relative(parent, child); return path === '' || path !== '..' && !path.startsWith('..' + sep) && !isAbsolute(path); };
