@@ -9,6 +9,8 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run build:artifacts` | Build all four public archives |
 | `npm run dev` | Build assets and run the local account/page host |
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
+| `npm run test:chatgpt` | On Node 24: optional integration, deployment, callback and native-session checks; set the pinned public session package for zero-skip native coverage |
+| `npm run test:chatgpt:host` | After a build on Node 24: actual packed OAuth host and Node account/browser integration, using isolated synthetic browser accounts |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |

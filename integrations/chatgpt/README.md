@@ -258,6 +258,17 @@ The root integration test command is separate from the core Node 22 gate:
 npm run test:chatgpt
 ```
 
+After `npm run build`, run `npm run test:chatgpt:host` on Node 24 to exercise
+the actual packaged Worker and Node account/browser adapter together. This gate
+applies both exported account migrations to isolated D1 storage and uses public
+page creation/claim, real PKCE codes and signed tokens, introspection, exact
+owner consent, encrypted-store reopen, refresh and revocation. It records
+`.results/chatgpt-host.json`, including exact archive/source identities and the
+boundaries not tested. The initial browser accounts are synthetic and the
+transport dispatches only to the local Worker; this is not live GitHub/Google
+login or a ChatGPT link. The script also accepts `--engine-archive` and `--report`
+for a selected public package and explicit report destination.
+
 Without `CHRONOLOG_SESSION_PACKAGE`, real native cases report explicit skips.
 Build the pinned public events artifact and extract its archive to enable them:
 
