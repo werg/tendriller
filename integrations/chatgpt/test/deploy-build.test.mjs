@@ -151,7 +151,7 @@ test('assembly uses exact public archives, locked runtime dependencies and a min
   assert.equal(JSON.parse(await readFile(join(destination, 'bridge-template/package.json'), 'utf8')).scripts, undefined);
   assert.equal(JSON.parse(await readFile(join(result.nativePackage, 'provenance.json'), 'utf8')).source, CHRONOLOG_SOURCE);
   for (const artifact of Object.values(result.archives)) assert.equal(await hashFile(join(destination, artifact.file)), artifact.sha256);
-  const checks = { nativeIntegration: { passed: true, tests: 3, skipped: 0 }, runtimeImports: true };
+  const checks = { nativeIntegration: { passed: true, tests: 3, skipped: 0 }, hostAccountIntegration: { passed: true }, runtimeImports: true };
   const manifest = await sealRelease(destination, { ...f, archives: result.archives, checks, toolchain: { node: process.version } });
   assert.deepEqual(Object.keys(manifest.files).sort(), (await files(destination)).filter(name => name !== 'RELEASE.json'));
   for (const [name, hash] of Object.entries(manifest.files)) assert.equal(bytesHash(await readFile(join(destination, name))), hash);
@@ -166,13 +166,14 @@ test('altered archives and unqualified native gates cannot produce a release man
   await coreArtifacts(f.core); await chronoArtifact(f.chronolog, { corrupt: true });
   await assert.rejects(assembleRelease({ ...f, destination: join(f.root, 'altered-native'), env: process.env }, { run: runtimeInstaller([]) }), { code: 'RELEASE_NATIVE_PACKAGE_CHANGED' });
   await assert.rejects(sealRelease(destination, { ...f, archives: {}, checks: { nativeIntegration: { passed: true, skipped: 1 }, runtimeImports: true } }), { code: 'RELEASE_QUALIFICATION_REQUIRED' });
+  await assert.rejects(sealRelease(destination, { ...f, archives: {}, checks: { nativeIntegration: { passed: true, skipped: 0 }, runtimeImports: true } }), { code: 'RELEASE_QUALIFICATION_REQUIRED' });
   await assert.rejects(lstat(join(destination, 'RELEASE.json')), { code: 'ENOENT' });
 });
 
 // The build commands are controlled here; real git clones, tar extraction,
 // archive digests and final runtime imports still execute. The full pinned
 // Chronolog/core build is a separate release qualification, never claimed here.
-function buildRunner(f, { skipped = 0 } = {}) {
+function buildRunner(f, { skipped = 0, hostReportPatch = {} } = {}) {
   const commands = [];
   const run = async (executable, args, options = {}) => {
     commands.push({ executable, args, cwd: options.cwd });
@@ -193,6 +194,14 @@ function buildRunner(f, { skipped = 0 } = {}) {
       assert.equal(options.env.NODE_OPTIONS, '--test-reporter=tap');
       assert.equal(JSON.parse(await readFile(join(options.env.CHRONOLOG_SESSION_PACKAGE, 'provenance.json'), 'utf8')).source, CHRONOLOG_SOURCE);
       output = `TAP version 13\n# tests 3\n# fail 0\n# cancelled 0\n# skipped ${skipped}\n# todo 0\n`; handled = true;
+    } else if (executable === 'npm' && args[0] === 'run' && args[1] === 'test:chatgpt:host') {
+      const archive = args[args.indexOf('--engine-archive') + 1], report = args[args.indexOf('--report') + 1];
+      assert.equal(archive.includes('/release.pending/archives/tendriller-engine-'), true);
+      await json(report, { status: 'passed', qualification: 'packed-worker-node-account-contract',
+        engine: { source: f.core.source, dirty: false, sha256: await hashFile(archive) },
+        node: { source: f.core.source, dirty: false }, steps: ['synthetic test-runner result'],
+        limits: ['Fixture orchestration only.'], ...hostReportPatch });
+      handled = true;
     } else if (executable === 'npm' && args[0] === '--version' || executable === 'corepack' && args[1] === '--version') {
       output = 'fixture-toolchain\n'; handled = true;
     }
@@ -209,6 +218,10 @@ test('release orchestration isolates builds and exposes output only after the re
     chronologSource: f.chronolog.directory, output }, { run: runner.run, onProgress: phase => progress.push(phase) });
   assert.equal(result.release, join(output, 'release')); assert.equal(result.tests, 3); assert.equal(result.liveChatGptVerified, false);
   assert.equal(progress.at(-1), 'release-ready');
+  const manifest = JSON.parse(await readFile(result.manifest, 'utf8'));
+  assert.equal(manifest.checks.hostAccountIntegration.passed, true);
+  assert.equal(manifest.checks.hostAccountIntegration.engineSha256, manifest.archives.engine.sha256);
+  assert.equal(JSON.parse(await readFile(join(result.release, manifest.checks.hostAccountIntegration.report), 'utf8')).status, 'passed');
   assert.deepEqual(await inspectSource(f.core.directory, f.core.source), f.core);
   await assert.rejects(lstat(join(output, 'release.pending')), { code: 'ENOENT' });
   assert.equal((await files(result.release)).some(path => path.includes('/.git/')), false);
@@ -225,5 +238,15 @@ test('a skipped native gate retains diagnostics but never publishes a ready rele
   await assert.rejects(lstat(join(output, 'release')), { code: 'ENOENT' });
   await assert.rejects(lstat(join(output, 'release.pending/RELEASE.json')), { code: 'ENOENT' });
   assert.match(await readFile(join(output, 'build/logs/native-integration-gate.log'), 'utf8'), /# skipped 1/);
+  assert.deepEqual(await inspectSource(f.core.directory, f.core.source), f.core);
+});
+
+test('an unsuccessful host account report cannot seal otherwise qualified release bytes', async t => {
+  const f = await fixture(t), runner = buildRunner(f, { hostReportPatch: { status: 'failed' } }), output = join(f.root, 'host-not-ready');
+  await assert.rejects(buildRelease({ coreSource: f.core.directory, coreRef: f.core.source,
+    chronologSource: f.chronolog.directory, output }, { run: runner.run }), { code: 'RELEASE_HOST_GATE_INCOMPLETE' });
+  await assert.rejects(lstat(join(output, 'release')), { code: 'ENOENT' });
+  await assert.rejects(lstat(join(output, 'release.pending/RELEASE.json')), { code: 'ENOENT' });
+  assert.equal(JSON.parse(await readFile(join(output, 'build/logs/host-account-report.json'), 'utf8')).status, 'failed');
   assert.deepEqual(await inspectSource(f.core.directory, f.core.source), f.core);
 });

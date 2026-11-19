@@ -167,7 +167,8 @@ export async function assembleRelease({ core, chronolog, destination, env }, { r
 
 export async function sealRelease(directory, { core, chronolog, archives, checks, toolchain }) {
   if (core.dirty !== false || chronolog.dirty !== false || chronolog.source !== CHRONOLOG_SOURCE ||
-      checks?.nativeIntegration?.passed !== true || checks.nativeIntegration.skipped !== 0 || checks.runtimeImports !== true)
+      checks?.nativeIntegration?.passed !== true || checks.nativeIntegration.skipped !== 0 ||
+      checks.hostAccountIntegration?.passed !== true || checks.runtimeImports !== true)
     fail('RELEASE_QUALIFICATION_REQUIRED');
   const files = {};
   for (const name of await regularFiles(directory)) {
@@ -229,11 +230,22 @@ export async function buildRelease({ coreSource, coreRef, chronologSource, outpu
   const count = name => Number([...report.matchAll(new RegExp('^# ' + name + ' ([0-9]+)$', 'gm'))].at(-1)?.[1] ?? NaN);
   if (!Number.isSafeInteger(count('tests')) || count('tests') < 1 || count('fail') !== 0 || count('cancelled') !== 0 || count('skipped') !== 0 || count('todo') !== 0)
     fail('RELEASE_NATIVE_GATE_INCOMPLETE', 'The native-enabled integration gate must pass without skips or pending tests.');
+  const hostReportPath = join(build, 'logs/host-account-report.json');
+  await step('host-account-integration-gate', 'npm', ['run', 'test:chatgpt:host', '--',
+    '--engine-archive', join(staging, assembled.archives.engine.file), '--report', hostReportPath], coreBuild.directory);
+  const hostReport = await json(hostReportPath);
+  if (hostReport.status !== 'passed' || hostReport.qualification !== 'packed-worker-node-account-contract' ||
+      hostReport.engine?.source !== core.source || hostReport.engine.dirty !== false ||
+      hostReport.engine.sha256 !== assembled.archives.engine.sha256 || hostReport.node?.source !== core.source || hostReport.node.dirty !== false)
+    fail('RELEASE_HOST_GATE_INCOMPLETE', 'The packaged host and Node account contract must pass against the exact clean release.');
+  await copyRegular(hostReportPath, join(staging, 'qualification/host-account.json'));
   await step('release-imports', process.execPath, ['--input-type=module', '--eval', IMPORT_SMOKE, staging], staging);
   await inspectSource(coreBuild.directory, core.source, { run, env }); await inspectSource(chronoBuild.directory, chronolog.source, { run, env });
   const toolchain = { node: process.version, platform: process.platform, architecture: process.arch,
     npm: (await run('npm', ['--version'], { env })).stdout.trim(), pnpm: (await run('corepack', ['pnpm', '--version'], { env, cwd: chronoBuild.directory })).stdout.trim() };
-  const checks = { nativeIntegration: { command: 'npm run test:chatgpt', passed: true, tests: count('tests'), skipped: 0 }, runtimeImports: true };
+  const checks = { nativeIntegration: { command: 'npm run test:chatgpt', passed: true, tests: count('tests'), skipped: 0 },
+    hostAccountIntegration: { command: 'npm run test:chatgpt:host', passed: true,
+      qualification: hostReport.qualification, report: 'qualification/host-account.json', engineSha256: hostReport.engine.sha256 }, runtimeImports: true };
   const manifest = await sealRelease(staging, { core, chronolog, archives: assembled.archives, checks, toolchain });
   await rename(staging, join(directory, 'release')); onProgress('release-ready');
   return { release: join(directory, 'release'), manifest: join(directory, 'release/RELEASE.json'), coreSource: core.source,
