@@ -109,8 +109,12 @@ to stop a waiting observer. No extra transport or coordinator retry loop exists.
 `getEvent(id,sourceEventId,{maxBatches?})` scans one coherent selected history and
 returns the real permitted source event plus its current projected summary. It
 returns `null` only after a complete scan; `BRIDGE_EVENT_SCAN_LIMIT` means absence
-was not established within the budget. The default budget scans 4,096 native
-transactions. Only an allowlisted topic with a non-null projection is exposed.
+was not established within an explicitly requested budget (up to 128 batches).
+By default the lookup completes the finite captured selected history in pages of
+128 transactions, yielding between pages so shutdown and native recovery can
+interrupt it. History size cannot permanently defeat every retry at the same
+4,096-transaction prefix. The view is released after success, failure or shutdown.
+Only an allowlisted topic with a non-null projection is exposed.
 The event details contain application data and require the caller's corresponding
 read/egress permission, separately from permission to send a summary.
 `verifySource(id,sourceEventId,sourceRevision)` returns `selected` plus the actual
