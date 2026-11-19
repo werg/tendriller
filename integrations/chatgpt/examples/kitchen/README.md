@@ -173,8 +173,10 @@ under **Released operation references**, and clears only that blocking slot.
 Inspect the old native operation from that list. This action never submits a
 replacement; review the current history before deliberately starting new work.
 Uncertain operations remain reserved for inspection and exact retry. Resolution
-history is bounded to 100 records; export and review retained references before
-deliberately archiving them if that limit is reached.
+history is bounded to 100 records. When the list fills, open **Released
+operation references**, download the archive, then select that file to verify
+and remove its matching entries. Keep the archive private. Entries added
+after the download stay in the list.
 
 Application `applied`, peer `shared`, webhook accepted and assistant replied are
 different observations. The page renders replies from `session.changes()` and a

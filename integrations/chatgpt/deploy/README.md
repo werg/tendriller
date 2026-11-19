@@ -170,6 +170,7 @@ Stage the dedicated bridge into a **new** destination, supplying the public key
 that was actually verified and enrolled:
 
 ```sh
+chmod 600 /absolute/private/configured-kitchen/.tendriller/bridge-device.sqlite
 node /ABSOLUTE/RELEASE/integrations/chatgpt/deploy/stage-bridge.mjs \
   --source /absolute/private/configured-kitchen \
   --release /ABSOLUTE/RELEASE \

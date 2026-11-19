@@ -31,8 +31,10 @@ export function createPrivateRecords(directory) {
           if (error.code !== 'EEXIST') throw error;
           if (await readFile(destination, 'utf8') !== text) throw Error(`Refusing to replace saved setup record ${name}; inspect the original setup.`);
         }
-        const parent = await open(directory, 'r');
-        try { await parent.sync(); } finally { await parent.close(); }
+        if (process.platform !== 'win32') {
+          const parent = await open(directory, 'r');
+          try { await parent.sync(); } finally { await parent.close(); }
+        }
         return value;
       } finally {
         await file?.close();

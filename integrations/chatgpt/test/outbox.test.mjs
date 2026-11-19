@@ -93,6 +93,35 @@ test('source selection is checked after the final asynchronous account authoriza
   assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'abandoned');
 });
 
+test('revocation during native source verification blocks the callback', async () => {
+  const verifying = gate(), f = fixture();
+  const verify = f.bridge.verifySource;
+  f.bridge.verifySource = async (...args) => { verifying.enter(); await verifying.wait; return verify(...args); };
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await verifying.entered;
+  f.allow(false); verifying.release(); await dispatch;
+  assert.equal(f.sent.length, 0);
+  assert.equal(Object.values((await f.store.read()).jobs)[0].state, 'cancelled');
+});
+
+test('a stale callback cannot pause a replacement lease or overwrite a newer pause', async () => {
+  const connecting = gate(), f = fixture({ send: async (_url, { beforeWrite }) => {
+    connecting.enter(); await connecting.wait;
+    beforeWrite();
+  } });
+  await f.outbox.ingest('sub-a', batch(), { expectedCursor: 'tail' });
+  const dispatch = f.outbox.dispatchDue({ limit: 1 }); await connecting.entered;
+  f.recover({ generation: 'g3' });
+  await f.store.transaction(state => {
+    const job = Object.values(state.jobs)[0];
+    job.lease = 'replacement-lease'; job.leaseUntil += 1000000;
+  });
+  connecting.release(); await dispatch;
+  const state = await f.store.read();
+  assert.equal(state.subscriptions['sub-a'].pausedReason, undefined);
+  assert.equal(Object.values(state.jobs)[0].lease, 'replacement-lease');
+});
+
 test('subscription refresh during authorization requeues under the new grant before any delivery', async () => {
   const checking = gate(); let hold = false;
   const f = fixture({ authorize: async () => { if (hold) { checking.enter(); await checking.wait; } } });

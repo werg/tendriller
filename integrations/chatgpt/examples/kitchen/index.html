@@ -17,7 +17,9 @@
 </fieldset><p id="operation" role="status">No command submitted in this browser.</p>
 <button id="inspect" class="secondary" disabled>Inspect saved operation</button><button id="retry" class="secondary" disabled>Retry original operation</button>
 <button id="resolve" class="secondary" disabled>Review and release abandoned operation</button>
-<details><summary>Released operation references</summary><div id="resolved-operations"></div></details>
+<details><summary>Released operation references</summary><div id="resolved-operations"></div>
+<button id="export-resolved" class="secondary">Download references</button>
+<label>Verify a downloaded archive to clear these references <input id="archive-resolved" type="file" accept=".json,application/json"></label></details>
 <p id="result" role="status"></p></section>
 <section><h2>Requests and answers</h2><p id="data-status">No selected-history read yet.</p><div id="requests"></div>
 <form id="request-lookup"><label for="request-id">Find an older request by ID</label><input id="request-id" maxlength="128" required><button class="secondary">Read request</button></form>

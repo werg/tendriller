@@ -1,7 +1,7 @@
 /** Retain the operation reference before invoking a command. The session owns signed attempts. */
 export function createAssistanceClient(session, { pendingStorage, now = Date.now,
   randomId = () => globalThis.crypto.randomUUID() } = {}) {
-  if (!['load', 'reserve', 'clear', 'resolve'].every(name => typeof pendingStorage?.[name] === 'function')) throw Error('ASSISTANCE_PENDING_STORAGE_REQUIRED');
+  if (!['load', 'reserve', 'clear', 'resolve', 'runCurrent'].every(name => typeof pendingStorage?.[name] === 'function')) throw Error('ASSISTANCE_PENDING_STORAGE_REQUIRED');
   const loadPending = () => pendingStorage.load();
   function text(value, maximum) {
     if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) throw Error('ASSISTANCE_INPUT_INVALID');
@@ -41,9 +41,10 @@ export function createAssistanceClient(session, { pendingStorage, now = Date.now
       if (state?.status === 'abandoned' || state?.status === 'needsReapply') throw Error('ASSISTANCE_EXPLICIT_REAPPLICATION_REQUIRED');
       // If no signed attempt exists, the first call may have failed before it
       // was saved. Reuse the original inputs/ID, never manufacture a new try.
-      if (!state) return submit(pending.command, pending.input, pending.operationId);
-      if (state.status === 'applied') return { operationId: pending.operationId, state };
-      const operation = await session.retry(pending.operationId);
+      if (state?.status === 'applied') return { operationId: pending.operationId, state };
+      const operation = await pendingStorage.runCurrent(pending, () => state
+        ? session.retry(pending.operationId)
+        : session.command(pending.command, pending.input, { operationId: pending.operationId }));
       return { operationId: pending.operationId, operation };
     },
     async acknowledge(operationId) {

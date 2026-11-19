@@ -16,9 +16,12 @@ export function createPendingStorage({ key, storage = globalThis.localStorage,
         !(value.pending === null || typeof value.pending?.operationId === 'string')) throw Error('ASSISTANCE_PENDING_RECORD_INVALID');
     return value;
   }
-  function change(mutate) {
+  function locked(action) {
     if (typeof locks?.request !== 'function') throw Error('ASSISTANCE_CROSS_TAB_LOCK_UNAVAILABLE');
-    return locks.request(`tendriller-pending:${key}`, { mode: 'exclusive' }, () => {
+    return locks.request(`tendriller-pending:${key}`, { mode: 'exclusive' }, action);
+  }
+  function change(mutate) {
+    return locked(() => {
       const record = read(), result = mutate(record);
       // localStorage installs this whole value atomically. A quota/write error
       // leaves the previous slot intact and occurs before any command send.
@@ -30,6 +33,28 @@ export function createPendingStorage({ key, storage = globalThis.localStorage,
     load() { return clone(read().pending); },
     lastOperationId() { return read().lastOperationId; },
     resolved() { return clone(read().resolved); },
+    exportResolved() { return { version: 1, key, resolved: clone(read().resolved) }; },
+    archiveResolved(archive) {
+      const count = archive?.resolved?.length;
+      if (archive?.version !== 1 || archive.key !== key || !Array.isArray(archive.resolved) || !count || count > maxResolved)
+        throw Error('ASSISTANCE_RESOLUTION_ARCHIVE_INVALID');
+      return change(record => {
+        if (JSON.stringify(record.resolved.slice(0, count)) !== JSON.stringify(archive.resolved))
+          throw Error('ASSISTANCE_RESOLUTION_ARCHIVE_CHANGED');
+        record.resolved.splice(0, count);
+        return count;
+      });
+    },
+    async runCurrent(pending, start) {
+      // Invoke under the same lock as release, then await outside it. A slow
+      // command must not prevent inspection or updates in another tab.
+      const { operation } = await locked(() => {
+        if (JSON.stringify(read().pending) !== JSON.stringify(pending))
+          throw Error('ASSISTANCE_PENDING_OPERATION_CHANGED');
+        return { operation: start() };
+      });
+      return operation;
+    },
     reserve(pending) {
       return change(record => {
         if (record.pending && JSON.stringify(record.pending) !== JSON.stringify(pending)) throw Error('ASSISTANCE_PENDING_OPERATION_UNRESOLVED');

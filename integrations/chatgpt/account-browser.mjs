@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { fail } from './common.mjs';
 
 const SESSION = '__Host-tendriller-integration', PENDING = '__Host-tendriller-integration-login';
@@ -6,10 +6,10 @@ const TOKEN = /^[A-Za-z0-9_-]{32,256}$/;
 const sha = value => createHash('sha256').update(value).digest('hex');
 const headers = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   'Content-Security-Policy': "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" };
-function cookie(request, name) {
+function cookie(request, name, pattern = TOKEN) {
   const values = (request.headers.get('Cookie') ?? '').split(';').map(part => part.trim()).filter(part => part.startsWith(name + '='));
   const value = values.length === 1 ? values[0].slice(name.length + 1) : null;
-  return value && TOKEN.test(value) ? value : null;
+  return value && pattern.test(value) ? value : null;
 }
 const setCookie = (name, value, age) => `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${age}`;
 function redirect(location, cookies = []) {
@@ -18,22 +18,39 @@ function redirect(location, cookies = []) {
   return result;
 }
 function records(state, now) {
-  const data = state.chatgptBrowser ??= { pending: {}, sessions: {} };
-  for (const collection of [data.pending, data.sessions]) for (const [id, value] of Object.entries(collection))
-    if (value.expiresAt <= now) delete collection[id];
+  const data = state.chatgptBrowser ??= { sessions: {} };
+  for (const [id, value] of Object.entries(data.sessions)) if (value.expiresAt <= now) delete data.sessions[id];
   return data;
 }
 
 /** One-time, browser-bound PKCE handoff from the actual Tendriller login. */
 export function createHostAccountBrowser({ origin, resourceOrigin, bridgeId, post, lookup, store, clock = Date.now,
-  managementPath = '/connections', sessionTtlMs = 3600000, maxPending = 256, maxSessions = 256 } = {}) {
+  managementPath = '/connections', sessionTtlMs = 3600000, maxSessions = 256 } = {}) {
   if (!store?.read || !store?.transaction || typeof post !== 'function' || typeof lookup !== 'function' ||
       typeof managementPath !== 'string' || !/^\/[A-Za-z0-9/_-]+$/.test(managementPath) || managementPath.endsWith('/') ||
-      managementPath.startsWith('//') || ![maxPending, maxSessions].every(value => Number.isSafeInteger(value) && value > 0 && value <= 10000) ||
+      managementPath.startsWith('//') || !Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 10000 ||
       !Number.isSafeInteger(sessionTtlMs) || sessionTtlMs < 60000 || sessionTtlMs > 86400000)
     fail('HOST_BROWSER_CONFIGURATION_INVALID', 'Configure a private browser-session store, local management path and bounded lifetimes');
   const paths = { login: `${managementPath}/login`, callback: `${managementPath}/callback`, logout: `${managementPath}/logout` };
   const callback = resourceOrigin + paths.callback, authenticated = new WeakMap();
+  // Pending login needs no durable reservation. A restart invalidates only
+  // in-flight logins. The account host consumes the actual login code once.
+  const loginKey = randomBytes(32);
+  function sealLogin(value) {
+    const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', loginKey, iv);
+    const body = Buffer.concat([cipher.update(JSON.stringify(value)), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64url');
+  }
+  function openLogin(request) {
+    const value = cookie(request, PENDING, /^[A-Za-z0-9_-]{100,512}$/u);
+    if (!value) return null;
+    try {
+      const bytes = Buffer.from(value, 'base64url');
+      const cipher = createDecipheriv('aes-256-gcm', loginKey, bytes.subarray(0, 12));
+      cipher.setAuthTag(bytes.subarray(12, 28));
+      return JSON.parse(Buffer.concat([cipher.update(bytes.subarray(28)), cipher.final()]).toString());
+    } catch { return null; }
+  }
   async function authenticateBrowserSession(request) {
     if (authenticated.has(request)) return authenticated.get(request);
     const task = (async () => {
@@ -60,13 +77,8 @@ export function createHostAccountBrowser({ origin, resourceOrigin, bridgeId, pos
         return null;
       }
       if (url.pathname === paths.login && request.method === 'GET') {
-        const state = randomBytes(32).toString('base64url'), binding = randomBytes(32).toString('base64url'), verifier = randomBytes(32).toString('base64url');
-        await store.transaction(value => {
-          const data = records(value, clock()), previousBinding = cookie(request, PENDING);
-          if (previousBinding) for (const [id, pending] of Object.entries(data.pending)) if (pending.bindingHash === sha(previousBinding)) delete data.pending[id];
-          if (Object.keys(data.pending).length >= maxPending) fail('HOST_LOGIN_CAPACITY', 'Pending login capacity reached; retry after existing attempts expire', { status: 503 });
-          data.pending[sha(state)] = { bindingHash: sha(binding), verifier, expiresAt: clock() + 300000 };
-        });
+        const state = randomBytes(32).toString('base64url'), verifier = randomBytes(32).toString('base64url');
+        const binding = sealLogin({ state, verifier, expiresAt: clock() + 300000 });
         const target = new URL('/oauth/management/login', origin);
         target.search = new URLSearchParams({ client_id: bridgeId, redirect_uri: callback, state, code_challenge_method: 'S256',
           code_challenge: createHash('sha256').update(verifier).digest('base64url') }).toString();
@@ -75,15 +87,9 @@ export function createHostAccountBrowser({ origin, resourceOrigin, bridgeId, pos
       if (url.pathname === paths.callback && request.method === 'GET') {
         if (url.search.length > 8192 || [...url.searchParams.keys()].some(key => !['code', 'state', 'iss', 'error'].includes(key) || url.searchParams.getAll(key).length !== 1))
           fail('HOST_LOGIN_INVALID', 'Invalid login handoff', { status: 400 });
-        const state = url.searchParams.get('state'), binding = cookie(request, PENDING);
-        if (!TOKEN.test(state ?? '') || !binding || url.searchParams.get('iss') !== origin)
-          fail('HOST_LOGIN_INVALID', 'Login was not started in this browser or used a different account host', { status: 403 });
-        const pending = await store.transaction(value => {
-          const data = records(value, clock()), item = data.pending[sha(state)];
-          if (!item || !timingSafeEqual(Buffer.from(item.bindingHash, 'hex'), Buffer.from(sha(binding), 'hex')))
-            fail('HOST_LOGIN_INVALID', 'Login expired, was already used, or belongs to another browser', { status: 403 });
-          delete data.pending[sha(state)]; return item;
-        });
+        const state = url.searchParams.get('state'), pending = openLogin(request);
+        if (!TOKEN.test(state ?? '') || pending?.state !== state || pending.expiresAt <= clock() || url.searchParams.get('iss') !== origin)
+          fail('HOST_LOGIN_INVALID', 'Login expired, belongs to another browser, or used a different account host', { status: 403 });
         if (url.searchParams.get('error')) return new Response(`<!doctype html><title>Sign-in cancelled</title><h1>Sign-in cancelled</h1><p>No connection permissions were changed.</p><a href="${paths.login}">Start sign-in again</a>`,
           { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': setCookie(PENDING, '', 0) } });
         const code = url.searchParams.get('code');

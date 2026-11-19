@@ -219,8 +219,33 @@ $('#resolve').onclick = async () => {
     await client.resolve({ operationId: record.pending.operationId, confirmed: true });
     $('#result').textContent = 'Original operation retained for inspection. The slot is available; review the current history before starting new work.';
     await refresh();
-  } catch (error) { report(error); }
+  } catch (error) {
+    if (error.message === 'ASSISTANCE_RESOLUTION_HISTORY_FULL') {
+      $('#resolved-operations').closest('details').open = true;
+      $('#result').textContent = 'Download and verify the existing released references, then release this operation again.';
+    } else report(error);
+  }
   finally { busy = false; controls(); }
+};
+$('#export-resolved').onclick = () => {
+  const blob = new Blob([JSON.stringify(pendingStorage.exportResolved(), null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob), download = node('a', 'Download operation references');
+  download.href = url; download.download = 'kitchen-operation-references.json';
+  download.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+$('#archive-resolved').onchange = async event => {
+  const input = event.currentTarget, file = input.files[0];
+  if (!file) return;
+  try {
+    if (file.size > 4 * 1024 * 1024) throw Error('The operation reference archive exceeds 4 MiB.');
+    const archive = JSON.parse(await file.text());
+    if (!window.confirm('Clear the references included in this downloaded archive? No operation will be retried or reapplied.')) return;
+    const count = await pendingStorage.archiveResolved(archive);
+    $('#result').textContent = `Archived ${count} operation references. Keep the downloaded file for future inspection.`;
+    if (client) await inspectOperation();
+  } catch (error) { report(error); }
+  finally { input.value = ''; }
 };
 window.addEventListener('storage', event => {
   if (event.key !== storageKey) return;

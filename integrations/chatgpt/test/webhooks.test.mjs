@@ -27,6 +27,26 @@ test('a redirect response cannot crash the process on subsequent socket failure'
   assert.doesNotThrow(() => response.emit('error', Error('late socket reset')));
 });
 
+test('selection is checked after the TLS handshake and before Node receives the body', async () => {
+  let socket, req, writes = 0;
+  const send = createPublicWebhookTransport({
+    requestImpl() {
+      req = new EventEmitter();
+      req.end = () => { writes++; };
+      req.destroy = error => req.emit('error', error);
+      socket = new EventEmitter();
+      return req;
+    },
+  });
+  const recovered = Error('APPLICATION_VIEW_RECOVERED');
+  const response = send('https://callback.example', { body: '{}', beforeWrite() { throw recovered; } });
+  req.emit('socket', socket);
+  assert.equal(writes, 0);
+  socket.emit('secureConnect');
+  await assert.rejects(response, error => error === recovered);
+  assert.equal(writes, 0);
+});
+
 test('socket lookup validates every DNS answer and returns exact checked addresses', async () => {
   const invoke = (lookup, all = false) => new Promise((resolve, reject) => lookup('callback.example', { all }, (error, address, family) => error ? reject(error) : resolve({ address, family })));
   const addresses = [{ address: '8.8.8.8', family: 4 }];

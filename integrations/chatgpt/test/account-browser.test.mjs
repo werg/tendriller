@@ -9,11 +9,14 @@ const SESSION = '__Host-tendriller-integration', PENDING = '__Host-tendriller-in
 const tokenCookie = (response, name) => response.headers.getSetCookie().find(value => value.startsWith(name + '=')).split(';')[0];
 function fixture(options = {}) {
   let now = Date.now(), active = true, exchanges = 0, expectedChallenge, failExchange = false;
+  const spent = new Set();
   const store = createMemoryStore();
   const browser = createHostAccountBrowser({ origin: HOST, resourceOrigin: ORIGIN, bridgeId: 'configured-bridge', store,
     clock: () => now, ...options,
     lookup: async principal => { assert.equal(principal.issuer, HOST); assert.equal(principal.managementSessionId, 'm'.repeat(43)); return { active }; },
     post: async (path, input) => {
+      if (spent.has(input.code_verifier)) throw Object.assign(Error('Host code consumed'), { status: 403 });
+      spent.add(input.code_verifier);
       exchanges++; assert.equal(path, '/oauth/management/exchange');
       assert.equal(input.redirect_uri, `${ORIGIN}/connections/callback`);
       assert.equal(createHash('sha256').update(input.code_verifier).digest('base64url'), expectedChallenge);
@@ -85,11 +88,14 @@ test('management logout is same-origin, sessions expire, and denial requires a d
   assert.equal(cancelled.status, 200); assert.equal(cancelled.headers.get('Location'), null); assert.match(await cancelled.text(), /Start sign-in again/);
 });
 
-test('login reservations are bounded, expire, and do not accept duplicate security parameters', async () => {
-  const f = fixture({ maxPending: 1 }), first = await f.begin();
-  assert.equal((await f.begin()).response.status, 503);
+test('unauthenticated starts consume no store capacity and expired or malformed handoffs fail', async () => {
+  const f = fixture(), first = await f.begin();
+  for (let i = 0; i < 260; i++) assert.equal((await f.begin()).response.status, 303);
+  assert.equal((await f.store.read()).chatgptBrowser, undefined);
   assert.equal((await f.browser.handleRequest(f.request(f.callbackPath(first) + '&state=duplicate', first.binding))).status, 400);
-  f.advance(300001); assert.equal((await f.begin()).response.status, 303);
+  f.advance(300001);
+  assert.equal((await f.browser.handleRequest(f.request(f.callbackPath(first), first.binding))).status, 403);
+  assert.equal((await f.begin()).response.status, 303);
   const unrelated = await f.browser.handleRequest(f.request('/mcp')); assert.equal(unrelated, null);
   const wrapper = f.browser.wrapManagement(async () => new Response('<body>Settings</body>', { headers: { 'Content-Type': 'text/html' } }));
   assert.match(await (await wrapper(f.request('/connections'))).text(), /action="\/connections\/logout"/);

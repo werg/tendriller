@@ -44,10 +44,14 @@ export function createEnrollmentManager({ host, descriptor, read, save, prepare 
     return info.owner_account_id;
   }
   async function send(publicKey, record) {
-    // Historical committed transitions replay their exact original request,
-    // including controls/account binding. This never resets current authority.
-    await host.peers.selectGeneration(record.request, { control: record.control });
-    const current = await authority();
+    let current = await authority();
+    if (!await committed(record, current)) {
+      const ownerAccountId = await account();
+      if (record.control?.accounts?.find(grant => grant.publicKey === publicKey)?.accountId !== ownerAccountId)
+        fail('ENROLLMENT_OWNER_CHANGED');
+      await host.peers.selectGeneration(record.request, { control: record.control });
+      current = await authority();
+    }
     if (!await committed(record, current)) fail('ENROLLMENT_TRANSITION_NOT_OBSERVED');
     const grant = current.verified.grant(publicKey);
     const active = grant?.reader === true && grant?.writer === true;

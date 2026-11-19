@@ -45,7 +45,7 @@ export function publicLookup(resolve = lookup) {
 
 export function createPublicWebhookTransport({ resolve, requestImpl = request, timeoutMs = 10000, maxResponseBytes = 8192 } = {}) {
   const checkedLookup = publicLookup(resolve);
-  return async function send(url, { body, headers, signal } = {}) {
+  return async function send(url, { body, headers, signal, prepareWrite, beforeWrite } = {}) {
     const target = new URL(callbackUrl(url));
     if (typeof body !== 'string' || Buffer.byteLength(body) > 262144)
       fail('EVENT_TOO_LARGE', 'Webhook body must be a string of at most 256 KiB');
@@ -73,7 +73,19 @@ export function createPublicWebhookTransport({ resolve, requestImpl = request, t
         });
         response.on('end', () => resolveResult({ status, body: Buffer.concat(chunks).toString('utf8') }));
       });
-      req.on('error', reject); req.end(body);
+      req.on('error', reject);
+      // Wait for authenticated TLS before checking the native selection and
+      // handing the event bytes to Node. DNS/connect must not queue an old event.
+      if (!beforeWrite) req.end(body);
+      else req.once('socket', socket => socket.once('secureConnect', async () => {
+        try {
+          combined.throwIfAborted();
+          if (prepareWrite) await prepareWrite();
+          combined.throwIfAborted();
+          beforeWrite();
+          req.end(body);
+        } catch (error) { req.destroy(error); reject(error); }
+      }));
     });
   };
 }

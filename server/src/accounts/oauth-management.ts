@@ -57,13 +57,13 @@ export async function accountAccess(req: Request, env: Env, config: OAuthConfig)
     } else if (![403, 404].includes(response.status)) { await response.body?.cancel(); reject('temporarily_unavailable', 'Current page access cannot be established', 503); }
     else await response.body?.cancel();
   }
-  // A different active OAuth grant never substitutes for a revoked subscriber's grant.
-  const grant = active && grantId ? await activeGrant(env, config, grantId, subject) : null;
   const verified = active && !scoped ? await env.ACCOUNTS.prepare(`SELECT e.email FROM identity_emails e JOIN identities i
     ON i.provider=e.provider AND i.subject=e.subject JOIN accounts a ON a.id=i.account_id
     WHERE a.id=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL ORDER BY CASE WHEN lower(e.email)=lower(a.email) THEN 0 ELSE 1 END,e.email LIMIT 1`)
     .bind(subject).first<{ email: string }>() : null;
   const stillActive = active && await activeAccount(env, subject) && await managementActive();
+  // The exact grant is the final read. It also checks current account state.
+  const grant = stillActive && grantId ? await activeGrant(env, config, grantId, subject) : null;
   return oauthJson({ active: stillActive, access: stillActive && access, owner: stillActive && owner,
     oauthAuthorized: stillActive && grant !== null, scopes: stillActive && grant ? scopesOf(grant) : [],
     ...(stillActive ? { account: { id: subject, issuer: config.issuer, ...(verified ? { email: verified.email } : {}) } } : {}),

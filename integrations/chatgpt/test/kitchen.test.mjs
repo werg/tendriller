@@ -93,6 +93,37 @@ test('context and single-request details stay bounded with long answer history',
   assert.ok(Buffer.byteLength(JSON.stringify(detail)) < 512 * 1024);
 });
 
+test('a cross-tab release cannot resurrect an operation during a retry lookup', async () => {
+  const storage = pendingFixture().open(), pending = { command: 'original', input: {}, operationId: 'old' };
+  await storage.reserve(pending);
+  let complete, observed, sends = 0;
+  const inspecting = new Promise(resolve => { observed = resolve; });
+  const lookup = new Promise(resolve => { complete = resolve; });
+  const client = createAssistanceClient({ operations: { get: () => { observed(); return lookup; } },
+    command: async () => { sends++; }, retry: async () => { sends++; } }, { pendingStorage: storage });
+  const retry = client.resume(); await inspecting;
+  await storage.resolve('old', 'abandoned');
+  complete(null);
+  await assert.rejects(retry, /PENDING_OPERATION_CHANGED/);
+  assert.equal(storage.load(), null); assert.equal(sends, 0);
+});
+
+test('verified archive export frees space without removing a later pending operation', async () => {
+  const f = pendingFixture();
+  const storage = createPendingStorage({ key: 'archive', storage: f.storage, locks: f.locks, maxResolved: 1 });
+  await storage.reserve({ operationId: 'old' });
+  await storage.resolve('old', 'abandoned');
+  const archive = storage.exportResolved();
+  await storage.reserve({ operationId: 'new' });
+  await assert.rejects(storage.resolve('new', 'needsReapply'), /HISTORY_FULL/);
+  const edited = structuredClone(archive); edited.resolved[0].status = 'needsReapply';
+  await assert.rejects(storage.archiveResolved(edited), /ARCHIVE_CHANGED/);
+  assert.equal(await storage.archiveResolved(archive), 1);
+  assert.equal(storage.load().operationId, 'new');
+  await storage.resolve('new', 'needsReapply');
+  assert.deepEqual(storage.resolved().map(value => value.pending.operationId), ['new']);
+});
+
 test('uncertain submit survives restart with its exact operation and input', async () => {
   let saved = null, calls = [], fail = true;
   const pendingStorage = pendingFixture().open();
@@ -287,8 +318,8 @@ test('native enrollment preserves committed retries and reviews only obsolete un
       const a = await fixture.open(0); await a.session.query('kitchenContext', null);
       const records = createPrivateRecords(pathToFileURL(directory + '/'));
       const keys = await Promise.all([1, 2, 3].map(() => peer.createPeerIdentity()));
-      let failure = 'before', target = keys[0].publicKey, sends = [], sequence = 0;
-      const host = { info: async () => ({ owner_account_id: 'owner-account' }), peers: {
+      let failure = 'before', target = keys[0].publicKey, sends = [], sequence = 0, ownerAccountId = 'owner-account';
+      const host = { info: async () => ({ owner_account_id: ownerAccountId }), peers: {
         application: () => registry.read(), async selectGeneration(request, { control }) {
           sends.push(structuredClone({ request, control }));
           const isTarget = control.accounts[0].publicKey === target;
@@ -326,6 +357,11 @@ test('native enrollment preserves committed retries and reviews only obsolete un
       let manager = createEnrollmentManager(options);
       await assert.rejects(manager.enroll(target), /lost before/);
       const original = await records.read(`enroll-${target}.json`);
+      const beforeOwnerChange = sends.length;
+      ownerAccountId = 'different-owner';
+      await assert.rejects(manager.enroll(target), /ENROLLMENT_OWNER_CHANGED/);
+      assert.equal(sends.length, beforeOwnerChange);
+      ownerAccountId = 'owner-account';
       await assert.rejects(manager.review(target), /ORIGINAL_REQUEST_STILL_CURRENT/);
       await manager.enroll(keys[1].publicKey);
       const beforeReview = sends.length;
