@@ -13,7 +13,7 @@ npm run create -- https://YOUR_HOST owner@example.com "Shared notes"
 # The owner opens the printed page URL and signs in.
 npm run init
 npm run build
-npx tendril --session ./session.mjs publish ./page --operation notes-release-1
+npx tendril --session ./session.mjs --mode own publish ./page --operation notes-release-1
 # In the published page, choose Set up this browser and verify its public key.
 npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
 npm run peer
@@ -29,8 +29,15 @@ the authenticated session's reader-to-reader key exchange.
 The browser can read/write notes but cannot administer, publish, coordinate or
 recover. Keep the native peer running for applied writes. This first-app policy
 can be expanded deliberately after reviewing the membership and availability
-requirements. Stop the native peer before running another CLI process that
-opens its device store.
+requirements. With the peer running, ordinary CLI commands attach to its
+owner automatically. Use `--mode own` only for deliberate standalone ownership
+while the peer is stopped; it takes the same exclusive fence.
+
+Several browser tabs attach to one profile owner. SharedWorker is preferred; the
+fallback uses an exclusive Web Lock and authenticated local routes. A tab closes
+its attachment, leaving the shared signer and sibling views intact. Drafts and
+pending references belong to each view; copying a draft is explicit. A duplicate
+live view ID receives a fresh ID. Reloading reopens the original signer journal.
 
 The page exposes real connection/data state, local draft preservation, accepted
 versus rejected applied outcomes, operation inspection, exact retry and explicit

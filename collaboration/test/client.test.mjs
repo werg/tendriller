@@ -4,6 +4,9 @@ import { createCollaborationClient } from '../client.mjs';
 import { createEffectDispatcher } from '../local.mjs';
 
 const signer = 'a'.repeat(64);
+test('a client cannot silently select a different run than its owner binding', () => {
+  assert.throws(()=>createCollaborationClient({session:{command(){},query(){}},endpoint:{context:{runId:'bound-run'}},runId:'other-run'}),{code:'RUN_SCOPE_MISMATCH'});
+});
 test('uncertain submission retains the original signer reference before entering the owner', async () => {
   let retained;
   const session = { applicationId:'app', deviceId:signer, query(){}, async command() {

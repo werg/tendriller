@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          ref: 0bc002753c6f5a1e2d3cb57505dd4405945ded1b
           path: chronolog
       - uses: actions/setup-node@v4
         with:

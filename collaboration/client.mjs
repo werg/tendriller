@@ -4,6 +4,8 @@ import { canonicalJson, CollaborationError, identifier, operationReference } fro
 export function createCollaborationClient({ session, endpoint = session?.endpoint, runId, store } = {}) {
   if (!session || typeof session.command !== 'function' || typeof session.query !== 'function') throw new CollaborationError('SESSION_REQUIRED');
   const context = endpoint?.context ?? {};
+  if (runId && context.runId && runId !== context.runId)
+    throw new CollaborationError('RUN_SCOPE_MISMATCH', 'Attach with the intended run identity before claiming work');
   const incarnation = endpoint?.endpointIncarnation ?? `native-${crypto.randomUUID()}`;
   const currentRun = runId ?? context.runId ?? `run-${crypto.randomUUID()}`;
   let detached = false;
@@ -14,13 +16,17 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
   async function submit(name, input, options = {}) {
     active(); const operationId = identifier(options.operationId ?? crypto.randomUUID(), 'operation');
     const reference = operationReference(session, operationId);
+    const retainedContext = JSON.parse(canonicalJson({ command: name, input,
+      ...(options.basedOn ? { basedOn: options.basedOn } : {}), source }, 65536));
     // Reference persistence is before the first uncertain submission boundary.
-    store?.retainOperation(reference, { command: name, input, ...(options.basedOn ? { basedOn: options.basedOn } : {}), source });
+    store?.retainOperation(reference, retainedContext);
     try {
       const operation = await session.command(name, input, { ...options, operationId });
       const saved = await operation.get().catch(() => null);
+      const fullReference = operationReference(session, operationId, saved);
+      store?.retainOperation(fullReference, retainedContext);
       // Avoid mutating a frozen public handle or manufacturing an applied outcome.
-      return Object.freeze({ operationId, reference: operationReference(session, operationId, saved),
+      return Object.freeze({ operationId, reference: fullReference,
         get: (...args) => operation.get(...args), applied: (...args) => operation.applied(...args),
         shared: (...args) => operation.shared(...args),
       });

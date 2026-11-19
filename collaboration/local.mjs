@@ -28,7 +28,10 @@ export function createViewStore({ storage, applicationId, profileId, viewId }) {
       const value = { reference, viewId, context };
       if (existing && canonicalJson(existing.context, 65536) !== canonicalJson(context, 65536))
         throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The original operation input must remain unchanged');
-      write(key, existing ?? value); return existing ?? value;
+      for (const field of ['attemptId','generation']) if (existing?.reference[field] && reference[field] && existing.reference[field] !== reference[field])
+        throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The original signed attempt must remain unchanged');
+      const retained = existing ? { ...existing, reference: { ...existing.reference, ...reference } } : value;
+      write(key, retained); return retained;
     },
     inspectOperation(reference) { return read(operationKey(reference)); },
     removeOperation(reference) { storage.removeItem(operationKey(reference)); },

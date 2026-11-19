@@ -169,7 +169,8 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   const project = sqlOnly ? join(app, 'sql') : app;
   const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
   const cli = join(app, 'node_modules/@tendriller/tools/bin/tendril.mjs');
-  const cliJson = async args => JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), ...args]));
+  // These setup/reopen probes deliberately run without a resident owner.
+  const cliJson = async args => JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'own', ...args]));
   passed('domain-served tutorial and independently installed public packages');
   if (sqlOnly) {
     checkpoint('load the exact native SQL engine');
@@ -296,7 +297,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   import {createInterface} from 'node:readline';
   import {openSession} from './session.mjs';
   import {servePeerInference} from './media/inference-service.mjs';
-  const {session} = await openSession();
+  const {session,supervisor} = await openSession();
   const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidencePng.toString('base64'))}, 'base64'));
   let inferenceCalls = 0, inferenceSource = null;
   const inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDevice)}], maxRequests: 2,
@@ -306,7 +307,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       return {text: 'Suggested fixture observation'};
     },
   });
-  console.log(JSON.stringify({ready:true,deviceId:session.deviceId}));
+  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
   for await (const line of createInterface({input:process.stdin})) {
     const request=JSON.parse(line);
     try {
@@ -354,9 +355,16 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
         timer = setTimeout(() => reject(Error(`Native peer did not open: ${stderr}`)), 40_000);
       })]).finally(() => clearTimeout(timer));
       assert.equal(metadata.deviceId, device.deviceId);
+      client.metadata = metadata;
       return client;
     }
     await startPeer();
+    const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
+    assert.equal(attached.deviceId, device.deviceId);
+    assert.equal(attached.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);
+    const attachedNotes = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'query', 'notes', 'null']));
+    assert.deepEqual(attachedNotes.value, (await peer.request('query')).value);
+    passed('separate CLI processes attach to the resident native owner without another signer/store');
     checkpoint('connect browser and exchange retained commands');
     await page.locator('#connect').click();
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });

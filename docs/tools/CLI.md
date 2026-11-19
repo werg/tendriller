@@ -41,7 +41,7 @@ the tutorial's initialization command performs both stages.
 ## Choose attachment or ownership
 
 `--session /absolute/application.mjs` names the application's public bootstrap.
-The supplied [Shared Notes bootstrap](https://tendriller.dev/docs/tutorial/session.mjs)
+The supplied [Shared Notes bootstrap](https://tendriller.dev/downloads/tendriller-first-app.tgz)
 exports both hooks. Start `npm run peer`, then use `--mode attach` from several
 terminals while that process keeps the same signer, journal and peer connections
 open. The CLI prefers attachment whenever the bootstrap exports `attachSession`.

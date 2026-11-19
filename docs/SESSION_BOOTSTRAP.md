@@ -126,16 +126,20 @@ step. A new account or device is not authorized merely because it can load HTML.
 
 ## Compose the browser facade
 
-The Worker opens `openBrowserDevice({ name })` for resume, reads and verifies
-authority, then opens `openBrowserApplication({ device, definition, authority })`.
-It attaches control and participation before calling
-`serveApplicationWorker(session, self, { host: control })`.
+The Worker calls `serveBrowserOwner` from
+`@tendriller/core/collaboration/worker`. The owner acquires an exclusive Web Lock
+**before** its `openSession` callback opens the retained device, verifies signed
+authority and opens `openBrowserApplication`. The callback returns its session
+and control participant. Browser identity creation is a separate explicit action.
 
-The page supplies RTC mechanics with `serveWorkerWebRtcConnections(worker)`,
-then uses `connectApplicationWorker(worker)`. The Worker calls
-`openWorkerWebRtcConnection(self, options)` when participation requests a direct
-connection. WebSocket fallback runs directly in that Worker. The page mounts the
-same session as the runtime backend:
+The page calls `openBrowserOwner` from
+`@tendriller/core/collaboration/browser`, supplying the worker URL, retained
+profile, immutable application/definition identity and its view/document context.
+This uses a SharedWorker when available, with a fenced dedicated-Worker fallback.
+All attached views share the signing journal. The tutorial uses the encrypted
+Worker-native relay so an owner's connectivity does not depend on a particular
+page's RTC helper. Applications may deliberately compose a different qualified
+transport without changing ownership. The page mounts the returned session:
 
 ```js
 const backend = createApplicationBackend({ id: session.applicationId, session });
@@ -146,6 +150,19 @@ tendril.signals.install(session.signals);
 The runtime's `application.available` and `application.ready()` describe backend
 installation. They do not imply connected peers, decryption keys, a usable
 selected generation or retained coverage. The starter exposes these separately.
+
+Detach closes only the attachment. `suspend()` and `resume()` bound streams across
+a suspended page lifetime; they do not revoke the signer or cancel durable work.
+A crashed fallback owner releases its actual Web Lock; a waiting worker can then
+reopen the same profile. Stale facades close and must reattach before inspecting
+their original operation references. No timeout grants ownership or silently
+reissues commands.
+
+Publication URLs remain immutable. Compatible authored documents can deliberately
+reuse one pinned `configuration.ownerWorkerUrl`. A new incompatible Worker cannot
+steal a profile from a running old owner: close its clients and restart deliberately,
+or use an explicitly enrolled separate profile. A UI publication does not migrate
+the immutable application definition or its journal.
 
 Device metadata opens immediately; actual durable data use opens the selected
 browser record backend and its exclusive ownership lock. Do not infer that all

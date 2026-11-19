@@ -44,6 +44,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:browser
+      - name: Qualify shared and elected application owners in Chromium
+        run: npm run test:collaboration:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collaboration-browser-evidence
+          path: .results/collaboration-browser.json
+          include-hidden-files: true
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -51,6 +60,19 @@ jobs:
           path: test-results/
           include-hidden-files: true
           if-no-files-found: ignore
+
+  native-owner:
+    name: Native owner attachment and crash recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:collaboration:native
 
   artifacts:
     name: Public package artifacts

@@ -13,6 +13,8 @@
 - [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): choose a concrete starter; identify signed definitions and exact optional engine artifacts before implementation.
 - [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview versus an explicitly composed real-session preview; no substitute persistence.
 - [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): what every setup file does, persistent identity, explicit enrollment and safe resume.
+- [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): one profile owner with many views/tools, addressed work, immutable SQL claims, frozen fan-in, independent drafts and recovery.
+- [Agent bindings](https://tendriller.dev/docs/AGENT_BINDINGS.md): scoped additive host credentials, approved consumers, explicit provider selection, targeted revocation and honest delivery evidence.
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries and reference snippets after setup.
 - [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md): optional enrolled remote bridge, tools, explicit supported event subscriptions, mounted UI, Workspace Agent route, exact retry and practical fallbacks.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): identify the incomplete stage and the exact next action.

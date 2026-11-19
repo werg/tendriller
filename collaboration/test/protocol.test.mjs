@@ -15,6 +15,9 @@ test('local drafts and references are independent even when two views inspect th
   assert.equal(a.pending().length,0);assert.equal(b.pending().length,1);
   assert.throws(()=>b.retainOperation(ref,{input:'edited'}),{code:'OPERATION_REFERENCE_CONFLICT'});
   assert.equal(b.inspectOperation(ref).context.input,'original');
+  b.retainOperation({...ref,attemptId:'first-attempt',generation:'first-generation'},{input:'original'});
+  assert.equal(b.inspectOperation(ref).reference.attemptId,'first-attempt');
+  assert.throws(()=>b.retainOperation({...ref,attemptId:'replacement'},{input:'original'}),{code:'OPERATION_REFERENCE_CONFLICT'});
 });
 test('owner attribution replaces caller source and full incarnation fences endpoint identity',()=>{
   const endpoint={ownerInstanceId:'owner',endpointId:'endpoint',endpointIncarnation:'incarnation',context:{runId:'real-run',documentPath:'board.html'}};
