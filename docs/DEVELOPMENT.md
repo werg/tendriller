@@ -17,7 +17,10 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 
 ## Boundaries
 
-Chronolog owns application execution, signing identity, local bytes, command attempts and replication. The Worker embeds only portable participant/control verification. It has no application extension registry, SQL executor or second data model. Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
+Chronolog owns application execution, signing identity, local bytes, command attempts and replication. The ordinary host path uses portable participant/control verification.
+The optional Cloudflare assistant uses the exact public events-only session and
+one trusted compiled application adapter. It has no arbitrary code loader or
+second data model. See [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
 
 The browser Chronolog participant is independent of database activation. Its protocol
 identity and verified control metadata use small browser-native storage; OPFS, database

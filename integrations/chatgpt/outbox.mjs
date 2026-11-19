@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { bounded, canonical, digest, fail, text } from './common.mjs';
 import { ownerIdentity, selectedTail } from './subscriptions.mjs';
-import { signedHeaders, deliveryDisposition, createPublicWebhookTransport } from './webhooks.mjs';
+import { signedHeaders, deliveryDisposition } from './webhook-data.mjs';
 
 const pending = state => ['queued', 'retry', 'sending'].includes(state);
 const sameOwner = (a, b) => canonical(ownerIdentity(a)) === canonical(ownerIdentity(b));
@@ -28,7 +28,7 @@ function envelope(sub, event, now) {
     timestamp: new Date(sourceTime).toISOString(), data, cursor: null }, 65536);
 }
 
-export function createOutbox({ store, bridge, authorize, send = createPublicWebhookTransport(),
+export function createOutbox({ store, bridge, authorize, send,
   clock = Date.now, maxAttempts = 8, maxJobs = 100000, leaseMs = 30000 } = {}) {
   if (!store || !bridge || typeof bridge.readRevision !== 'function' || typeof bridge.assertSelection !== 'function' || typeof authorize !== 'function')
     fail('OUTBOX_CONFIGURATION_REQUIRED', 'Outbox requires a real bridge with selected-generation fences and current authorization');

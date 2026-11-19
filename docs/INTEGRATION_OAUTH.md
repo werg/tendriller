@@ -1,5 +1,11 @@
 # First-party integration OAuth and current account access
 
+For the same-origin Worker MCP endpoint, use the
+[Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). It uses the normal
+Tendriller browser session and the issuer's exact issued-token and grant records.
+The separate-account adapter and handoff examples below describe the Node
+integration test harness and external resource servers.
+
 The Tendriller account host can serve as the authorization server for its
 [optional ChatGPT integration](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/README.md). It uses the
 existing GitHub/Google browser login and the same current account and page

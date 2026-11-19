@@ -1,8 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
-export const WIDGET_URI = 'ui://tendriller/assistance.html';
+import { widgetResource } from './metadata.mjs';
+export { WIDGET_URI } from './metadata.mjs';
 export async function createWidgetResource() {
-  return { uri: WIDGET_URI, mimeType: 'text/html;profile=mcp-app',
-    text: await readFile(new URL('./index.html', import.meta.url), 'utf8'),
-    _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } } } };
+  return widgetResource(await readFile(new URL('./index.html', import.meta.url), 'utf8'));
 }

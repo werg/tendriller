@@ -1,32 +1,10 @@
 # Connect a Tendriller application to ChatGPT
 
-Use the optional [ChatGPT integration source](https://github.com/werg/tendriller/tree/master/integrations/chatgpt)
-when a task needs remote application tools, an explicit subscribed event route,
-or a mounted assistance card. It runs as a separate Node 24 service with a
-dedicated enrolled Chronolog device. Application commands, operation attempts,
-queries and selected history remain in that native session. The ordinary
-[Tendriller host MCP](MCP.md) continues to expose host administration only.
-
-Start with `get_integration_options(applicationId)` on a configured connection.
-It reports the available routes and their prerequisites. A deployed service,
-an authenticated account, an enrolled reader, connection consent and a ChatGPT
-subscription are separate facts. A successful `/health` response proves only
-that the integration HTTP process can answer; it reports no live ChatGPT test.
-
-## Where the bridge runs
-
-The existing Cloudflare Worker handles accounts, OAuth issuance, and the page's
-current access checks. The optional assistant bridge is another enrolled
-Chronolog participant. It serves the MCP endpoint, retains its own signing
-identity and delivery journal, and keeps a peer connection to the application.
-It uses the same selected history as the browser and native coordinator.
-
-The qualified bridge uses Node 24 with a file-backed device and outbox. A
-Workers-native bridge would need a Chronolog device implementation backed by
-Durable Object storage, a restart-safe observer and scheduler, and a callback
-transport with the same destination and authorization checks. The Worker SQL
-binding provides storage for such a port. The packaged Node service is the
-current deployment path for the bridge.
+The [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md) connects ChatGPT to the
+configured Tendriller page from the service's own `/mcp` endpoint. The
+page Durable Object opens its enrolled Chronolog peer only when a request or
+delivery needs it. Owner login, application consent, a live coordinator and
+a supported ChatGPT subscription remain separate prerequisites.
 
 ## Choose a route that fits the task
 
@@ -63,17 +41,9 @@ promising support on another surface.
    It needs no publisher, administrator, recovery or coordinator grant. A native
    reader can read the application history; outbound topic filters do not create
    a narrower cryptographic grant.
-3. Build and configure the separate service using its
-   [deployment tools](https://github.com/werg/tendriller/blob/master/integrations/chatgpt/deploy/README.md).
-   The pinned release builder, private settings generator, dedicated-device
-   staging command and preflight make this a concrete setup path. Use the
-   [first-party host OAuth service](INTEGRATION_OAUTH.md) with Tendriller's
-   existing GitHub/Google login: apply the additive account migration and install
-   the generated client/bridge registration and signing key. Copy the exact
-   callback shown in the intended ChatGPT connector setup. The supplied Node
-   account adapter checks current accounts, page access and OAuth grants.
-   An external issuer and trusted custom account adapter remain available when
-   the deployment needs them.
+3. Follow the [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). Use the
+   [first-party OAuth service](INTEGRATION_OAUTH.md) with the same exact
+   Tendriller `/mcp` resource and the actual callback shown by the intended client.
 4. Link the OAuth account in the client. The integration verifies issuer,
    audience, signature, expiry and scopes. The host account adapter also
    introspects the token and binds all application checks to that exact live
@@ -81,9 +51,7 @@ promising support on another surface.
    mutable email as identity.
 5. Have the authenticated owner review exact query, command and event names in
    the optional `/connections` page or an equivalent trusted owner interface.
-   With the first-party configuration, `/connections/login` performs the
-   browser-bound handoff through the existing Tendriller login and installs a
-   secure, revocable management session. Signing in grants no app permissions.
+   The Worker uses the existing Tendriller browser session. Signing in grants no app permissions.
    Notification consent and detailed event-content consent are separate.
 6. Call `list_tendrils`, `get_application_status` and `describe_application`.
    Verify an authorized query before submitting a command. If asynchronous work

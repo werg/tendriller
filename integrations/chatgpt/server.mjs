@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { abortable, bounded, canonical, digest, fail, fields, IntegrationError, requireScope, validateArguments } from './common.mjs';
-import { WIDGET_URI, createWidgetResource } from './widget/resource.mjs';
+import { WIDGET_URI } from './widget/metadata.mjs';
 
 const string = (maxLength = 128) => ({ type: 'string', minLength: 1, maxLength });
 const shape = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -43,7 +43,7 @@ async function bodyJson(request, maximum) {
 }
 
 export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
-  authorizeAccountAccess, resource, lifecycle, workspaceAgent, management, managementPath = '/connections', onSubscriptionsChanged = () => {},
+  authorizeAccountAccess, resource, lifecycle, workspaceAgent, widget, management, managementPath = '/connections', onSubscriptionsChanged = () => {},
   allowedOrigins = [], maxRequestBytes = 262144, maxOperations = 10000, maxProfiles = 10000,
   requestsPerMinute = 120, clock = Date.now } = {}) {
   if (!auth?.authenticate || !bridge || !consent || !store || typeof authorizeAccountAccess !== 'function')
@@ -198,7 +198,7 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     if (method === 'ping') return {};
     if (method === 'tools/list') return { tools: tools.filter(item => item.scopes.every(scope => principal.scopes.includes(scope))).map(({ call, scopes, ...item }) => item) };
     if (method === 'resources/list') return { resources: [{ uri: WIDGET_URI, name: 'Tendriller assistance', mimeType: 'text/html;profile=mcp-app' }] };
-    if (method === 'resources/read') { fields(params, ['uri'], ['uri']); if (params.uri !== WIDGET_URI) fail('RESOURCE_NOT_FOUND', 'Unknown UI resource'); return { contents: [await createWidgetResource()] }; }
+    if (method === 'resources/read') { fields(params, ['uri'], ['uri']); if (params.uri !== WIDGET_URI || !widget) fail('RESOURCE_NOT_FOUND', 'Unknown UI resource'); return { contents: [await widget()] }; }
     if (method === 'events/list') { requireScope(principal, 'events:subscribe'); fields(params, ['cursor']); if (params.cursor != null) fail('INVALID_CURSOR', 'Event catalog has no further page'); return subscriptions.list(principal); }
     if (method === 'events/subscribe') { requireScope(principal, 'events:subscribe'); return subscriptions.subscribe(principal, params, { signal }); }
     if (method === 'events/unsubscribe') { requireScope(principal, 'events:subscribe'); return subscriptions.unsubscribe(principal, params); }

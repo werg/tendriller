@@ -31,7 +31,7 @@ function forward(env: Env, id: string, kind: string, req: Request, url: URL, hea
   const h = new Headers(req.headers);
   h.set("x-tendril-id", id);
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
-  const init: RequestInit = { method: req.method, headers: h, signal: req.signal };
+  const init: RequestInit = { method: req.method, headers: h, signal: req.signal, ...(kind === "assistant" ? { redirect: "manual" } : {}) };
   if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
   return stub(env, id).fetch(new Request(`https://tendril.internal/${kind}${url.search}`, init));
 }
@@ -151,6 +151,12 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return withCors(await api(req, env, url));
   }
 
+  if (env.ASSISTANT_PAGE_ID && TENDRIL_ID_RE.test(env.ASSISTANT_PAGE_ID) &&
+      ['/mcp', '/connections', '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'].includes(path)) {
+    if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: 'assistant-ip:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
+      return errorResponse(429, 'rate_limited', 'Assistant traffic limit reached');
+    return forward(env, env.ASSISTANT_PAGE_ID, 'assistant', req, url, { 'x-assistant-url': url.href });
+  }
   if (path === '/.well-known/oauth-authorization-server' || path.startsWith('/oauth/')) return routeIntegrationOAuth(req, env, url);
   if (path === "/auth/page") return routePageAuth(req, env, url);
   if (path === "/report") return reportPage(req, env, url);

@@ -5,8 +5,10 @@ import { createSessionBridge } from './bridge.mjs';
 import { createLifecycleService } from './lifecycle.mjs';
 import { createWorkspaceAgentAdapter } from './workspace-agent.mjs';
 import { createSubscriptions, selectedTail } from './subscriptions.mjs';
+import { createPublicWebhookTransport } from './webhooks.mjs';
 import { createOutbox } from './outbox.mjs';
 import { openDeliveryStore } from './store.mjs';
+import { createWidgetResource } from './widget/resource.mjs';
 import { createMcpHandler } from './server.mjs';
 import { fail, SCOPES } from './common.mjs';
 
@@ -61,9 +63,9 @@ export async function createIntegration(config = {}) {
         const ids = [];
         for (const item of bridge.listApplications()) if (await authorizeAccountAccess(principal, item.id) === true) ids.push(item.id);
         return ids;
-      }, ...(config.delivery?.send ? { send: config.delivery.send } : {}), ...(config.subscriptionLimits ?? {}) });
+      }, send: config.delivery?.send ?? createPublicWebhookTransport(), ...(config.subscriptionLimits ?? {}) });
     const outbox = createOutbox({ store, bridge, clock, authorize: authorized,
-      ...(config.delivery?.send ? { send: config.delivery.send } : {}), ...(config.outboxLimits ?? {}) });
+      send: config.delivery?.send ?? createPublicWebhookTransport(), ...(config.outboxLimits ?? {}) });
     async function recheckSubscriptions() {
       for (const sub of await subscriptions.active()) {
         try { await authorized(sub.owner, sub.applicationId, sub.name); }
@@ -115,7 +117,7 @@ export async function createIntegration(config = {}) {
       store, bridge, authorize: authorized, clock }) : undefined;
     const mcpHandler = createMcpHandler({ auth, bridge, consent, subscriptions, outbox, store,
       authorizeAccountAccess, resource: config.resource, lifecycle, workspaceAgent,
-      management, managementPath, clock, onSubscriptionsChanged: changed,
+      widget: createWidgetResource, management, managementPath, clock, onSubscriptionsChanged: changed,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
       ...(config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {}),
       ...(config.requestsPerMinute !== undefined ? { requestsPerMinute: config.requestsPerMinute } : {}),

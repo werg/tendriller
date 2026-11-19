@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { bounded, canonical, digest, fail, fields, text } from './common.mjs';
-import { callbackUrl, verifyCallback, webhookKey, createPublicWebhookTransport } from './webhooks.mjs';
+import { callbackUrl, verifyCallback, webhookKey } from './webhook-data.mjs';
 
 const descriptions = {
   'assistant.help_requested': 'A person explicitly requested help in the selected application. Fetch current authorized context before replying.',
@@ -37,7 +37,7 @@ export function subscriptionIdentity(principal, name, args, url) {
 }
 
 export function createSubscriptions({ store, authorize, captureCursor, applicationIds,
-  send = createPublicWebhookTransport(), clock = Date.now, ttlMs = 86400000,
+  send, clock = Date.now, ttlMs = 86400000,
   maxTtlMs = 604800000, maxPerOwner = 50, catalog = EVENT_CATALOG } = {}) {
   if (!store || typeof authorize !== 'function' || typeof captureCursor !== 'function' || typeof applicationIds !== 'function')
     fail('SUBSCRIPTION_CONFIGURATION_REQUIRED', 'Subscriptions require durable storage, account consent and a selected-history cursor reader');

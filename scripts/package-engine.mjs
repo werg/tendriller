@@ -42,7 +42,7 @@ if (!Array.isArray(testRateLimits) || !['PAGE_RATE', 'ACCOUNT_RATE'].every(name 
   throw Error('The public host test configuration is missing required traffic bindings');
 writeFileSync(join(engine, 'testing-ratelimits.json'), JSON.stringify({ ratelimits: testRateLimits }, null, 2) + '\n');
 await build({ entryPoints: [join(root, 'server/test/public-fixture.ts')], outfile: join(engine, 'testing.mjs'), bundle: true,
-  platform: 'neutral', format: 'esm', target: 'es2022', external: ['cloudflare:workers', 'cloudflare:test'], logLevel: 'warning' });
+  platform: 'neutral', format: 'esm', target: 'es2022', external: ['cloudflare:workers', 'cloudflare:test', 'node:crypto', 'node:net'], logLevel: 'warning' });
 copyFileSync(join(root, 'contract/testing.d.mts'), join(engine, 'testing.d.mts'));
 writeFileSync(join(engine, 'package.json'), JSON.stringify({
   name: '@tendriller/engine', version: CORE_RELEASE, type: 'module',

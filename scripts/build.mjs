@@ -105,6 +105,7 @@ export async function buildPublicArtifacts() {
     if (join(dist, result.filename) !== target) rmSync(join(dist, result.filename));
   }
   for (const name of ["agent.md", "AGENTS.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
+  copyFileSync(join(root, 'integrations/chatgpt/widget/index.html'), join(out, 'assistant-widget.html'));
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
     for (const source of filesUnder(join(root, directory)).filter(path => /\.(md|html)$/.test(path) && !path.startsWith(join(root, "docs/tutorial") + "/"))) {
@@ -120,7 +121,7 @@ export async function buildPublicArtifacts() {
 
 export async function buildEngine() {
   mkdirSync(join(dist, "engine"), { recursive: true });
-  const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], metafile: true, logLevel: "warning" });
+  const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers", "node:crypto", "node:net"], metafile: true, logLevel: "warning" });
   writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
 }
 export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createWidgetResource } from '../widget/resource.mjs';
 import { createMcpHandler } from '../server.mjs';
 import { createMemoryStore } from '../store.mjs';
 import { createConsentService } from '../consent.mjs';
@@ -31,7 +32,7 @@ async function fixture({ scopes = ALL_SCOPES, readEvents = true, queryImpl, comm
     getEvent: async () => { detailsCalls++; return { revision: { generation: 'g1' }, event: { payload: { question: 'Private question' } }, projection: { name: 'assistant.help_requested' } }; },
   };
   const outbox = { status: async () => ({ subscriptions: [], jobs: [] }), noteReply: async () => {}, resume: async (_p, args) => ({ ...args, resumed: true }) };
-  const handler = createMcpHandler({ auth, bridge, consent, outbox, store, resource: 'https://integration.example/mcp',
+  const handler = createMcpHandler({ widget: createWidgetResource, auth, bridge, consent, outbox, store, resource: 'https://integration.example/mcp',
     authorizeAccountAccess: async (_principal, id) => accountAllowed && id === APP,
     subscriptions: { list: async () => ({ events: [] }), subscribe: async (_p, params) => ({ name: params.name }), unsubscribe: async () => ({}) },
   });

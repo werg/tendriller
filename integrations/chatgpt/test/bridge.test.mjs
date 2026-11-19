@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createNativeSessionOpener, createSessionBridge } from '../bridge.mjs';
+import { createSessionBridge } from '../bridge.mjs';
+import { createNativeSessionOpener } from '../native-peer.mjs';
 import { createNativeFixture, loadNativePackage } from './native-fixture.mjs';
 import { selectedTail } from '../subscriptions.mjs';
 

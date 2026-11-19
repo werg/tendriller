@@ -108,17 +108,22 @@ export async function tokenEndpoint(req: Request, env: Env, config: OAuthConfig)
   return reject('unsupported_grant_type', 'Only authorization_code and configured refresh_token grants are supported');
 }
 
-export async function introspect(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
-  const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
-  await bridgeIdentity(req, config, env);
-  const params = await form(req), hash = await sha256Hex(text(params.get('token'), 'access token', 16384));
+export async function inspectAccessToken(env: Env, config: OAuthConfig, token: string) {
+  const hash = await sha256Hex(text(token, 'access token', 16384));
   const access = await env.ACCOUNTS.prepare('SELECT grant_id,jti,scope,created_at,expires_at FROM integration_oauth_access WHERE hash=? AND expires_at>?')
     .bind(hash, Date.now()).first<{ grant_id: string; jti: string; scope: string; created_at: number; expires_at: number }>();
   const grant = access && await activeGrant(env, config, access.grant_id);
-  if (!access || !grant) return oauthJson({ active: false });
-  return oauthJson({ active: true, token_type: 'Bearer', sub: grant.account_id, iss: config.issuer, aud: config.resource,
+  if (!access || !grant) return null;
+  return { active: true, token_type: 'Bearer', sub: grant.account_id, iss: config.issuer, aud: config.resource,
     scope: access.scope, client_id: grant.client_id, iat: Math.floor(access.created_at / 1000), exp: Math.floor(access.expires_at / 1000),
-    jti: access.jti, sid: grant.id });
+    jti: access.jti, sid: grant.id };
+}
+
+export async function introspect(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
+  const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
+  await bridgeIdentity(req, config, env);
+  const params = await form(req);
+  return oauthJson(await inspectAccessToken(env, config, text(params.get('token'), 'access token', 16384)) ?? { active: false });
 }
 
 export async function revoke(req: Request, env: Env, config: OAuthConfig): Promise<Response> {

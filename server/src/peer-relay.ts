@@ -86,6 +86,15 @@ function active(t: Tendril): WebSocket[] {
     return true;
   });
 }
+/** End only the bounded bridge invocation's relay, including its remote half. */
+export function closePeerRelayRoutes(t: Tendril, peerId: string): void {
+  const sessions = new Set(all(t).flatMap(socket => {
+    const value = attachment(socket);
+    return value && (value.peerId === peerId || value.remotePeerId === peerId) ? [value.session] : [];
+  }));
+  for (const session of sessions) closeSession(t, session, 1000, 'Assistant call complete');
+}
+
 export function nextRelayDeadline(t: Tendril): number | null {
   const times = all(t).flatMap(ws => {
     const value = attachment(ws);
