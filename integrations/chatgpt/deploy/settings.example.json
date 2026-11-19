@@ -15,6 +15,7 @@
     "name": "ChatGPT",
     "redirectUris": [],
     "scopes": ["tendrils:list", "applications:read", "applications:write", "events:subscribe"],
+    "tokenEndpointAuthMethod": "none",
     "allowRefresh": true
   }
 }

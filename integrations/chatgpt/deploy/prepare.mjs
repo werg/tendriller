@@ -31,14 +31,27 @@ export async function prepareDeployment(settings, output) {
   const resource = httpsUrl(settings.resource, { resource: true }), hostOrigin = httpsUrl(settings.hostOrigin, { origin: true });
   if (!/^[A-Za-z0-9_-]{1,128}$/u.test(settings.bridgeId ?? '')) fail('DEPLOYMENT_BRIDGE_ID_INVALID');
   const client = settings.oauthClient;
-  if (client && Object.keys(client).some(name => !['id', 'name', 'redirectUris', 'scopes', 'allowRefresh'].includes(name))) fail('DEPLOYMENT_CLIENT_SETTINGS_INVALID');
-  if (!client || typeof client.id !== 'string' || !client.id || client.id.length > 256 || /\s/u.test(client.id) ||
-      typeof client.name !== 'string' || !client.name || client.name.length > 160 ||
+  if (!client || typeof client !== 'object' || Array.isArray(client) || Object.keys(client).some(name =>
+    !['id', 'name', 'redirectUris', 'scopes', 'allowRefresh', 'tokenEndpointAuthMethod', 'clientSecretFile'].includes(name))) fail('DEPLOYMENT_CLIENT_SETTINGS_INVALID');
+  if (typeof client.id !== 'string' || !client.id || client.id.length > 256 || /[\s\u0000-\u001f\u007f]/u.test(client.id) ||
+      typeof client.name !== 'string' || !client.name || client.name.length > 160 || /[\u0000-\u001f\u007f]/u.test(client.name) ||
       !Array.isArray(client.redirectUris) || client.redirectUris.length < 1 || client.redirectUris.length > 8) fail('DEPLOYMENT_EXACT_CLIENT_REDIRECT_REQUIRED');
   const redirectUris = [...new Set(client.redirectUris.map(value => httpsUrl(value, { redirect: true })))];
   if (redirectUris.some(value => /REPLACE|YOUR_|PLACEHOLDER/iu.test(value))) fail('DEPLOYMENT_EXACT_CLIENT_REDIRECT_REQUIRED');
   if (!Array.isArray(client.scopes) || !client.scopes.length || client.scopes.some(value => !scopes.has(value)) ||
       client.allowRefresh !== undefined && typeof client.allowRefresh !== 'boolean') fail('DEPLOYMENT_CLIENT_SCOPES_REQUIRED');
+  const tokenEndpointAuthMethod = client.tokenEndpointAuthMethod ?? 'none';
+  if (!['none', 'client_secret_basic'].includes(tokenEndpointAuthMethod) ||
+      tokenEndpointAuthMethod === 'none' && client.clientSecretFile !== undefined) fail('DEPLOYMENT_CLIENT_AUTHENTICATION_INVALID');
+  let clientSecret;
+  if (tokenEndpointAuthMethod === 'client_secret_basic') {
+    if (client.clientSecretFile !== undefined) {
+      absolutePath(client.clientSecretFile); await privateFile(client.clientSecretFile);
+      // A single file terminator is not part of the secret; preserve every other character.
+      clientSecret = (await readFile(client.clientSecretFile, 'utf8')).replace(/\r?\n$/u, '');
+    } else clientSecret = randomBytes(32).toString('base64url');
+    if (clientSecret.length < 32 || clientSecret.length > 512 || /[\u0000-\u001f\u007f]/u.test(clientSecret)) fail('DEPLOYMENT_CLIENT_SECRET_INVALID');
+  }
   const handlePath = join(source, '.tendriller', 'handle.json'), descriptorPath = join(source, '.tendriller', 'descriptor.json');
   await privateFile(handlePath); await privateFile(descriptorPath);
   const handle = await json(handlePath), descriptor = await json(descriptorPath);
@@ -53,7 +66,9 @@ export async function prepareDeployment(settings, output) {
   if (!/^[A-Za-z0-9_-]{43,256}$/u.test(bridgeSecret)) fail('DEPLOYMENT_BRIDGE_SECRET_INVALID');
   const managementCallback = new URL('/connections/callback', resource).href;
   const oauth = { resource, clients: [{ id: client.id, name: client.name, redirectUris,
-    scopes: [...new Set(client.scopes)], tokenEndpointAuthMethod: 'none', allowRefresh: client.allowRefresh === true }],
+    scopes: [...new Set(client.scopes)], tokenEndpointAuthMethod,
+    ...(clientSecret === undefined ? {} : { clientSecretSha256: createHash('sha256').update(clientSecret).digest('hex') }),
+    allowRefresh: client.allowRefresh === true }],
     bridges: [{ id: settings.bridgeId, name: 'Tendriller retained assistant bridge',
       secretSha256: createHash('sha256').update(bridgeSecret).digest('hex'), applicationIds: [applicationId],
       managementRedirectUris: [managementCallback] }], accessTokenTtlSeconds: 300, grantTtlSeconds: 604800 };
@@ -73,6 +88,7 @@ export async function prepareDeployment(settings, output) {
   await put('private/service.env', Object.entries(environment).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join('\n') + '\n');
   await put('private/integration.config.mjs', `export { default } from ${JSON.stringify(pathToFileURL(join(release, 'integrations/chatgpt/config.host-account.example.mjs')).href)};\n`);
   await put('private/bridge-secret.txt', bridgeSecret + '\n');
+  if (clientSecret !== undefined) await put('private/oauth-client-secret.txt', clientSecret + '\n');
   await put('private/host-oauth-config.json', JSON.stringify(oauth, null, 2) + '\n');
   await put('private/host-signing-jwk.json', JSON.stringify(jwk, null, 2) + '\n');
   const cli = join(release, 'integrations/chatgpt');
@@ -86,9 +102,10 @@ export async function prepareDeployment(settings, output) {
   const deployment = { format: 'tendriller-assistant-deployment/v1', applicationId, pageId: handle.id,
     releaseDirectory: release, configurationDirectory: configuration, stateDirectory: state, coordinatorDirectory: coordinator,
     sourceKitchenDirectory: source, serviceUser, coordinatorUser, nodePath: node, resource, hostOrigin, bridgeId: settings.bridgeId,
-    managementCallback, clientId: client.id, clientRedirectUris: redirectUris, liveChatGptVerified: false };
+    managementCallback, clientId: client.id, clientRedirectUris: redirectUris, clientTokenEndpointAuthMethod: tokenEndpointAuthMethod,
+    liveChatGptVerified: false };
   await put('deployment.json', JSON.stringify(deployment, null, 2) + '\n');
-  await put('HANDOFF.md', `# Prepared Tendriller service\n\nThese files are prepared, not deployed. Live ChatGPT and Workspace acceptance remain unverified.\n\nApplication: \`${applicationId}\` · page: \`${handle.id}\`\n\nMCP resource: ${resource}\nHost issuer: ${hostOrigin}\nConnection management: ${new URL('/connections', resource).href}\nManagement callback: ${managementCallback}\nClient ID: \`${client.id}\`\nExact client redirect URIs:\n\n${redirectUris.map(value => '- ' + value).join('\n')}\n\n## Private installation\n\nFollow the deployment README in the release. Install the two services under distinct non-root users: \`${serviceUser}\` and \`${coordinatorUser}\`. Keep the creator project at \`${coordinator}\`, the dedicated bridge project at \`${state}/kitchen\`, and the encrypted delivery database at \`${state}/delivery/delivery.sqlite\`. Stop both source participants before moving their stores. Stage only the dedicated bridge store; the assistant service must never receive the creator signer.\n\nInstall the private environment/configuration under \`${configuration}\` with root ownership and read access only for the assistant service group. Preserve these generated keys with the delivery database across restart. Never rerun preparation as a key rotation.\n\nSet the selected host environment's OAUTH_CONFIG_JSON from \`private/host-oauth-config.json\` and OAUTH_SIGNING_JWK from \`private/host-signing-jwk.json\` using its secret manager. Merge other reviewed client/bridge entries deliberately if the host already has OAuth configuration; do not overwrite them blindly. The signing private JWK belongs only in the host's secret store, not on the Node bridge. The actual client callback URIs above must match the intended ChatGPT client.\n\nVerify the Caddy configuration, DNS and HTTPS before linking the resource. Caddy proxies only to loopback port 8788. Enable the coordinator before checking native readiness. Run preflight with \`--online\` while the assistant service is stopped; it briefly owns that same bridge device and closes it. Then start the assistant service. The owner must sign in at the management page and select exact application consent.\n\nRecord an actual subscription challenge, event receipt, assistant turn, signed reply and page read separately. A ready process, valid OAuth configuration or accepted webhook does not prove that journey.\n`);
+  await put('HANDOFF.md', `# Prepared Tendriller service\n\nThese files are prepared, not deployed. Live ChatGPT and Workspace acceptance remain unverified.\n\nApplication: \`${applicationId}\` · page: \`${handle.id}\`\n\nMCP resource: ${resource}\nHost issuer: ${hostOrigin}\nConnection management: ${new URL('/connections', resource).href}\nManagement callback: ${managementCallback}\nClient ID: \`${client.id}\`\nClient authentication: \`${tokenEndpointAuthMethod}\`\nExact client redirect URIs:\n\n${redirectUris.map(value => '- ' + value).join('\n')}\n\n## Private installation\n\nFollow the deployment README in the release. Install the two services under distinct non-root users: \`${serviceUser}\` and \`${coordinatorUser}\`. Keep the creator project at \`${coordinator}\`, the dedicated bridge project at \`${state}/kitchen\`, and the encrypted delivery database at \`${state}/delivery/delivery.sqlite\`. Stop both source participants before moving their stores. Stage only the dedicated bridge store; the assistant service must never receive the creator signer.\n\nInstall the private environment/configuration under \`${configuration}\` with root ownership and read access only for the assistant service group. Preserve these generated keys with the delivery database across restart. Never rerun preparation as a key rotation.\n\nSet the selected host environment's OAUTH_CONFIG_JSON from \`private/host-oauth-config.json\` and OAUTH_SIGNING_JWK from \`private/host-signing-jwk.json\` using its secret manager. Merge other reviewed client/bridge entries deliberately if the host already has OAuth configuration; do not overwrite them blindly. The signing private JWK belongs only in the host's secret store, not on the Node bridge. The actual client callback URIs above must match the intended ChatGPT client.${clientSecret === undefined ? '' : ' Supply the raw value from `private/oauth-client-secret.txt` only to that registered client during its secure setup. The host configuration contains only its SHA-256 digest; do not install the raw client secret in the Node service environment.'}\n\nVerify the Caddy configuration, DNS and HTTPS before linking the resource. Caddy proxies only to loopback port 8788. Enable the coordinator before checking native readiness. Run preflight with \`--online\` while the assistant service is stopped; it briefly owns that same bridge device and closes it. Then start the assistant service. The owner must sign in at the management page and select exact application consent.\n\nRecord an actual subscription challenge, event receipt, assistant turn, signed reply and page read separately. A ready process, valid OAuth configuration or accepted webhook does not prove that journey.\n`);
   await put('READY.json', JSON.stringify({ format: deployment.format, applicationId, resource, prepared: true, deployed: false }) + '\n');
   return { output, applicationId, resource, prepared: true, deployed: false, liveChatGptVerified: false };
 }

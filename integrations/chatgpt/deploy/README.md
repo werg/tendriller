@@ -71,9 +71,21 @@ the public HTTPS origin, including `/mcp` and `/connections`.
 Copy the **actual callback URI shown by the intended ChatGPT client** into
 `oauthClient.redirectUris`. The example intentionally contains an empty list;
 the generator refuses it, wildcard URIs and obvious placeholders. Select exact
-scopes. This route registers a public authorization-code/PKCE client with an
-optional finite refresh grant. It does not provide dynamic client registration
-or guess a callback URL.
+scopes and the authentication method used by that client. Both supported methods
+use authorization code with S256 PKCE and an optional finite refresh grant:
+
+- `oauthClient.tokenEndpointAuthMethod: "none"` (default) registers a public
+  client without a client secret.
+- `"client_secret_basic"` generates a distinct random client secret for secure
+  registration with a confidential client. To preserve an already registered
+  secret, set `oauthClient.clientSecretFile` to its absolute private file path.
+  The supplied secret must contain 32–512 characters without control characters;
+  a single trailing file newline is removed, and other characters are preserved.
+
+The generator refuses a secret file when the method is `none`. It does not
+provide dynamic client registration or guess a callback URL. Basic clients use
+HTTP Basic at the token endpoint, with OAuth form encoding of the client ID and
+secret; request-body `client_secret` is not supported by this host.
 
 ```sh
 node integrations/chatgpt/deploy/prepare.mjs \
@@ -90,12 +102,17 @@ The new output directory contains:
 | `private/host-oauth-config.json` | Exact client redirects/scopes and bridge hash/application/callback allowlists |
 | `private/host-signing-jwk.json` | A new RSA 3072-bit signing key with unique `kid`; install only in the host's secret store |
 | `private/bridge-secret.txt` | The bridge credential, for private administration only |
+| `private/oauth-client-secret.txt` | Present only for `client_secret_basic`; supply only to the intended registered ChatGPT client |
 | `systemd/*.service` | Distinct non-root coordinator and assistant services |
 | `Caddyfile` | HTTPS reverse proxy to loopback 8788 |
 | `HANDOFF.md`, `deployment.json`, `READY.json` | Concrete review/install instructions and preparation status, with no secret values |
 
 Files start mode 0600 and directories mode 0700. The generator refuses an
-existing output directory and never rotates keys on retry. Preserve the delivery
+existing output directory and never rotates keys on retry. The raw OAuth client
+secret is separate from the bridge credential: only its SHA-256 digest enters
+host configuration, and it never enters the Node environment, returned status or
+public handoff text. Install that raw secret only in the actual client setup.
+Preserve the delivery
 encryption key with the database. For an existing host OAuth configuration,
 merge other reviewed clients/bridges deliberately; the generated single-app
 configuration is not an instruction to replace unrelated registrations.

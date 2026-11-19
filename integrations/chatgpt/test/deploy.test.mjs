@@ -37,6 +37,8 @@ test('deployment preparation generates private exact-scope credentials and disti
     assert.deepEqual(oauth.bridges[0].managementRedirectUris, ['https://assistant.test/connections/callback']);
     assert.deepEqual(oauth.clients[0].redirectUris, f.settings.oauthClient.redirectUris);
     assert.equal(oauth.clients[0].tokenEndpointAuthMethod, 'none');
+    assert.equal(Object.hasOwn(oauth.clients[0], 'clientSecretSha256'), false);
+    await assert.rejects(stat(join(f.output, 'private/oauth-client-secret.txt')), { code: 'ENOENT' });
     const jwk = JSON.parse(await readFile(join(f.output, 'private/host-signing-jwk.json'), 'utf8'));
     assert.equal(jwk.alg, 'RS256'); assert.equal(createPrivateKey({ key: jwk, format: 'jwk' }).asymmetricKeyDetails.modulusLength, 3072);
     const environment = await readFile(join(f.output, 'private/service.env'), 'utf8');
@@ -51,6 +53,49 @@ test('deployment preparation generates private exact-scope credentials and disti
     assert.ok(!handoff.includes(secret)); assert.ok(!handoff.includes(jwk.d)); assert.ok(!JSON.stringify(result).includes(secret));
     await assert.rejects(prepareDeployment(f.settings, f.output), { code: 'EEXIST' });
     assert.equal(await readFile(join(f.output, 'private/service.env'), 'utf8'), environment);
+  } finally { await f.close(); }
+});
+
+test('basic client registration isolates the generated or supplied secret and retains only its digest in host configuration', async () => {
+  const f = await fixture();
+  try {
+    const supplied = 'preserve+this:client secret with punctuation ';
+    const clientSecretFile = join(f.directory, 'existing-client-secret.txt');
+    await writeFile(clientSecretFile, supplied + '\r\n', { mode: 0o600 });
+    for (const reuse of [false, true]) {
+      const output = join(f.directory, reuse ? 'supplied' : 'generated');
+      const result = await prepareDeployment({ ...f.settings, oauthClient: { ...f.settings.oauthClient,
+        tokenEndpointAuthMethod: 'client_secret_basic', ...(reuse ? { clientSecretFile } : {}) } }, output);
+      const secret = (await readFile(join(output, 'private/oauth-client-secret.txt'), 'utf8')).replace(/\n$/u, '');
+      if (reuse) assert.equal(secret, supplied); else assert.match(secret, /^[A-Za-z0-9_-]{43}$/u);
+      const text = await readFile(join(output, 'private/host-oauth-config.json'), 'utf8'), oauth = JSON.parse(text);
+      assert.equal(oauth.clients[0].tokenEndpointAuthMethod, 'client_secret_basic');
+      assert.equal(oauth.clients[0].clientSecretSha256, createHash('sha256').update(secret).digest('hex'));
+      assert.notEqual(oauth.clients[0].clientSecretSha256, oauth.bridges[0].secretSha256);
+      assert.ok(!text.includes(secret)); assert.ok(!JSON.stringify(result).includes(secret));
+      for (const name of ['private/service.env', 'private/integration.config.mjs', 'private/bridge-secret.txt',
+        'HANDOFF.md', 'deployment.json', 'READY.json']) assert.ok(!(await readFile(join(output, name), 'utf8')).includes(secret), name);
+      assert.match(await readFile(join(output, 'HANDOFF.md'), 'utf8'), /private\/oauth-client-secret.txt/);
+      assert.equal((await stat(join(output, 'private/oauth-client-secret.txt'))).mode & 0o777, 0o600);
+    }
+  } finally { await f.close(); }
+});
+
+test('preparation rejects mismatched authentication and out-of-bound supplied client secrets before creating output', async () => {
+  const f = await fixture();
+  try {
+    const clientSecretFile = join(f.directory, 'bad-client-secret.txt');
+    await writeFile(clientSecretFile, 'x'.repeat(32), { mode: 0o600 });
+    for (const oauthClient of [
+      { ...f.settings.oauthClient, tokenEndpointAuthMethod: 'client_secret_post' },
+      { ...f.settings.oauthClient, clientSecretFile },
+    ]) await assert.rejects(prepareDeployment({ ...f.settings, oauthClient }, f.output), /CLIENT_AUTHENTICATION_INVALID/);
+    for (const secret of ['x'.repeat(31), 'x'.repeat(513), 'x'.repeat(32) + '\n\n', 'x'.repeat(32) + '\u0000']) {
+      await writeFile(clientSecretFile, secret);
+      await assert.rejects(prepareDeployment({ ...f.settings, oauthClient: { ...f.settings.oauthClient,
+        tokenEndpointAuthMethod: 'client_secret_basic', clientSecretFile } }, f.output), /CLIENT_SECRET_INVALID/);
+    }
+    await assert.rejects(stat(f.output), { code: 'ENOENT' });
   } finally { await f.close(); }
 });
 
