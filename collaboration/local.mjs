@@ -55,22 +55,32 @@ export function createEffectDispatcher({ journal, dispatch, reconcile, authorize
           if (previous.payload !== payload || canonicalJson(previous.fence) !== canonicalJson(fence)) throw new CollaborationError('EFFECT_ID_CONFLICT');
           return { record: previous, value: { existing: true, record: previous } };
         }
-        const record = { effectId, payload, fence, status: 'dispatching' };
+        const record = { effectId, idempotencyKey: journal.idempotencyKey?.(effectId) ?? effectId, payload, fence, status: 'dispatching' };
         return { record, value: { existing: false, record } };
       });
       if (admitted.existing) {
         if (admitted.record.status === 'completed') return admitted.record;
         const receipt = reconcile ? await reconcile(effectId, admitted.record) : null;
-        if (receipt) return journal.transact(effectId, previous => ({ record: { ...previous, status: 'completed', receipt }, value: { ...previous, status: 'completed', receipt } }));
+        if (receipt) return journal.transact(effectId, previous => {
+          const record = previous.status === 'completed' ? previous : { ...previous, status: 'completed', receipt };
+          return { record, value: record };
+        });
         return { ...admitted.record, status: 'outcomeUnknown', nextAction: actionsForUnknown };
       }
       // Recheck after journaling. A failed check remains uncertain and never redispatches automatically.
       try {
         await authorize(fence);
-        const receipt = await dispatch({ effectId, idempotencyKey: effectId, fence, input });
-        return await journal.transact(effectId, previous => ({ record: { ...previous, status: 'completed', receipt }, value: { ...previous, status: 'completed', receipt } }));
+        const receipt = await dispatch({ effectId, idempotencyKey: admitted.record.idempotencyKey, fence, input });
+        return await journal.transact(effectId, previous => {
+          const record = previous.status === 'completed' ? previous : { ...previous, status: 'completed', receipt };
+          return { record, value: record };
+        });
       } catch (error) {
-        await journal.transact(effectId, previous => ({ record: { ...previous, status: 'outcomeUnknown', reason: String(error.code ?? error.name) }, value: null }));
+        const retained = await journal.transact(effectId, previous => {
+          const record = previous.status === 'completed' ? previous : { ...previous, status: 'outcomeUnknown', reason: String(error.code ?? error.name) };
+          return { record, value: record };
+        });
+        if (retained.status === 'completed') return retained;
         throw new CollaborationError('EFFECT_OUTCOME_UNKNOWN', 'Inspect the retained effect before any further dispatch', { effectId });
       }
     },

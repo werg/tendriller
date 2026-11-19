@@ -103,7 +103,9 @@ export function prepareCollaborationCommand(endpoint, name, input, deviceId) {
     ...Object.fromEntries(['viewId', 'documentPath', 'publicationId', 'runId'].filter(key => context[key] !== undefined)
       .map(key => [key, context[key]])) };
   if (name === 'collab.request' || name === 'collab.message') return { ...input, source: canonicalJson(source, 2048) };
-  if (['collab.claim', 'collab.rebind', 'collab.result', 'collab.acknowledgeCancel'].includes(name))
+  // Result/acknowledgement fences name the original claim, possibly delivered
+  // later by another attachment of the same signer. They are checked in SQL.
+  if (['collab.claim', 'collab.rebind'].includes(name))
     return { ...input, endpointIncarnation: endpoint.endpointIncarnation,
       ...(context.runId ? { runId: context.runId } : {}) };
   return input;

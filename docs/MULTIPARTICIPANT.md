@@ -13,6 +13,13 @@ cancellation, and aggregation. Schema triggers enforce the same guards for raw
 signed programs as for helper-generated commands. Verified execution identifies
 the actual signer and generation. Display names and caller context confer no rights.
 
+Live attachment identity is bound by the owner. In durable application history,
+endpoint, publication and run labels are **signer assertions**: an authorized
+writer can submit raw signed programs without the convenience facade. The public
+queries therefore label historical source metadata `signer-asserted` and replace
+its device ID with the verified execution author. They never promote a stored
+`owner-bound` label into independently verified historical evidence.
+
 | Identity | Meaning |
 | --- | --- |
 | Application / page | Shared history / hosted publication handle |

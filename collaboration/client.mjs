@@ -18,8 +18,9 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
     store?.retainOperation(reference, { command: name, input, ...(options.basedOn ? { basedOn: options.basedOn } : {}), source });
     try {
       const operation = await session.command(name, input, { ...options, operationId });
+      const saved = await operation.get().catch(() => null);
       // Avoid mutating a frozen public handle or manufacturing an applied outcome.
-      return Object.freeze({ reference,
+      return Object.freeze({ operationId, reference: operationReference(session, operationId, saved),
         get: (...args) => operation.get(...args), applied: (...args) => operation.applied(...args),
         shared: (...args) => operation.shared(...args),
       });
@@ -49,16 +50,20 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
     snapshot() { active(); return session.query('collab.snapshot', null); },
     async waitForOutcome(taskId, { signal } = {}) {
       active(); signal?.throwIfAborted();
-      const changes = session.changes({ signal })[Symbol.asyncIterator]();
+      const lifetime = new AbortController();
+      const observed = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+      const changes = session.changes({ signal: observed })[Symbol.asyncIterator]();
+      let next = changes.next(); void next.catch(() => {});
       try {
         for (;;) {
           const snapshot = await inspect(taskId), task = snapshot.value.task;
           if (!task) throw new CollaborationError('INTERACTION_UNAVAILABLE', 'The selected history does not contain this request', { taskId });
           if (['completed','cancelled','needsReview'].includes(task.status)) return { ...snapshot.value, revision: snapshot.revision };
-          const change = await changes.next();
+          const change = await next;
           if (change.done) throw new CollaborationError('OWNER_UNREACHABLE');
+          next = changes.next(); void next.catch(() => {});
         }
-      } finally { await changes.return?.(); }
+      } finally { lifetime.abort(); await changes.return?.(); }
     },
     async inspectOperation(reference) {
       active(); if(reference.applicationId !== session.applicationId) throw new CollaborationError('OPERATION_SCOPE_MISMATCH');

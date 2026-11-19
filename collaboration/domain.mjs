@@ -214,6 +214,15 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
 }
 
 function currentGeneration(view) { return typeof view.generation === 'string' ? view.generation : view.revision?.generation; }
+// A signed writer can submit a raw ChangeProgram, so stored labels cannot prove
+// which local attachment prepared it. Only the engine-authenticated author is
+// verified here. Live owner endpoint bindings have a separate, local boundary.
+function historicalSource(encoded, author) {
+  const asserted = JSON.parse(encoded);
+  const context = asserted && typeof asserted === 'object' && !Array.isArray(asserted) ? asserted : { assertion: asserted };
+  return { ...context, ...(context.deviceId && context.deviceId !== author ? { assertedDeviceId: context.deviceId } : {}),
+    deviceId: author, evidence: 'signer-asserted', contextEvidence: 'caller-asserted' };
+}
 async function readSnapshot(view, taskId) {
   const result = await view.query(`SELECT id,sequence,type,task_id,slot_id,author,generation,body FROM collab_journal
     ${taskId ? 'WHERE task_id=?' : ''} ORDER BY sequence LIMIT 10001`, taskId ? [taskId] : []);
@@ -229,7 +238,8 @@ async function readSnapshot(view, taskId) {
     const body = record.body;
     const task = {taskId:record.taskId,creator:record.author,generation:record.generation,taskVersion:1,version:entries.length,
       title:body.title,kind:body.kind,responsePolicy:body.responsePolicy,slots:body.slots,
-      ...Object.fromEntries(['input','target','source','context'].map(key => [key,JSON.parse(body[key])])),
+      ...Object.fromEntries(['input','target','context'].map(key => [key,JSON.parse(body[key])])),
+      source:historicalSource(body.source,record.author),
       status:finalized?'completed':cancel?'cancelRequested':'open',aggregate:finalized ? {
         ...finalized.body,content:JSON.parse(finalized.body.content),author:finalized.author,generation:finalized.generation,
         disposition: finalized.body.resultIds.length < body.slots.length && body.responsePolicy==='manual' ? 'partial' : 'complete',
@@ -254,6 +264,6 @@ async function readSnapshot(view, taskId) {
       ...entry.body,content:JSON.parse(entry.body.content),author:entry.author,operationRecord:entry.id});
   }
   for(const entry of events.filter(event=>event.type==='message'))messages.push({threadId:entry.taskId,...entry.body,
-    source:JSON.parse(entry.body.source),author:entry.author,generation:entry.generation});
+    source:historicalSource(entry.body.source,entry.author),author:entry.author,generation:entry.generation});
   return taskId ? {task:tasks[0]??null,claims,results} : {tasks,claims,results,messages};
 }

@@ -6,6 +6,7 @@ import { createCollaborationDefinition } from '../domain.mjs';
 const A='a'.repeat(64),B='b'.repeat(64),C='c'.repeat(64),G='1'.repeat(64),G2='2'.repeat(64);
 function harness() {
   const db=new DatabaseSync(':memory:');let author=A,generation=G;
+  db.exec('PRAGMA recursive_triggers=ON');
   db.function('chronolog_actor',()=>Buffer.from(author,'hex'));
   db.function('chronolog_transaction_id',()=>Buffer.alloc(32,1));
   db.function('chronolog_assert',(condition,code)=>{if(!condition)throw Error(code);return 1;});
@@ -18,7 +19,7 @@ function harness() {
     db.prepare(step.sql).run(...values);}}
   steps(definition.schema);db.exec('ALTER TABLE collab_journal ADD COLUMN chronolog_owner INTEGER');
   function execute(name,input,as=author){author=as;db.exec('BEGIN');try{steps(definition.commands[name].prepare(input));db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}}
-  const view={get generation(){return generation;},query(sql,parameters=[]){const statement=db.prepare(sql);statement.setReturnArrays(true);return{rows:statement.all(...parameters)};}};
+  const view={get generation(){return generation;},query(sql,parameters=[]){const statement=db.prepare(sql);return{rows:statement.all(...parameters).map(row=>Object.values(row))};}};
   return {db,definition,execute,view,setGeneration(value){generation=value;db.prepare('UPDATE chronolog_execution_context SET generation=?').run(Buffer.from(value,'hex'));},
     snapshot(taskId='task'){return definition.queries['collab.task'].read(view,{taskId});}};
 }
@@ -44,6 +45,15 @@ test('accepted result is idempotent but same identity with changed content confl
   const snapshot=await h.snapshot();assert.equal(snapshot.results.length,1);assert.equal(snapshot.results[0].disposition,'accepted');
   h.execute('collab.finalize',{taskId:'task',actionId:'done',expectedVersion:snapshot.task.version,resultIds:['result-b'],content:'{"summary":"ok"}',allowPartial:false},A);
   assert.equal((await h.snapshot()).task.status,'completed');h.db.close();
+});
+test('durable source labels remain signer assertions even when a writer claims owner evidence',async()=>{
+  const h=harness();
+  h.execute('collab.request',{interactionId:'task',kind:'review',title:'Attributed request',input:'null',
+    target:JSON.stringify({kind:'signer',deviceId:B}),source:JSON.stringify({deviceId:B,endpointId:'forged-endpoint',evidence:'owner-bound',contextEvidence:'owner-validated'}),
+    context:'{}',slots:[{slotId:'main',eligibleSigners:[B]}],responsePolicy:'one'},A);
+  const {task}=await h.snapshot();assert.equal(task.creator,A);assert.equal(task.source.deviceId,A);
+  assert.equal(task.source.assertedDeviceId,B);assert.equal(task.source.evidence,'signer-asserted');
+  assert.equal(task.source.contextEvidence,'caller-asserted');h.db.close();
 });
 test('handoff fences old worker and retains late evidence',async()=>{
   const h=harness();request(h);h.execute('collab.claim',claim(),B);
