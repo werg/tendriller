@@ -23,7 +23,11 @@ function validate(options){
 export async function openBrowserOwner(options){
   const url=validate(options),mode=options.mode??'auto';
   if(!['auto','shared','elected'].includes(mode))throw new CollaborationError('INVALID_OWNER_MODE');
-  const shared=mode!=='elected'&&typeof SharedWorker==='function';
+  if(options.requiresDedicatedWorker!==undefined&&typeof options.requiresDedicatedWorker!=='boolean')throw new CollaborationError('INVALID_OWNER_MODE');
+  if(mode==='shared'&&options.requiresDedicatedWorker)throw Object.assign(new CollaborationError('OWNER_STORAGE_UNSUPPORTED',
+    'This storage engine requires a dedicated Worker. Use auto or elected mode with the retained profile.'),
+  {nextAction:'Use mode: auto or elected with requiresDedicatedWorker: true; retain the existing profile.'});
+  const shared=mode!=='elected'&&!options.requiresDedicatedWorker&&typeof SharedWorker==='function';
   if(mode==='shared'&&!shared)throw new CollaborationError('OWNER_CAPABILITY_UNAVAILABLE','SharedWorker is unavailable');
   const id=crypto.randomUUID(),handshake={applicationId:options.applicationId,definitionId:options.definitionId,
     definitionVersion:options.definitionVersion,context:options.context??{},signal:options.signal,timeoutMs:options.timeoutMs};
