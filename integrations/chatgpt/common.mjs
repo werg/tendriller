@@ -1,0 +1,44 @@
+import { createHash } from 'node:crypto';
+
+export class IntegrationError extends Error {
+  constructor(code, message, { status = 400, rpcCode = -32602, data } = {}) {
+    super(message); this.name = 'IntegrationError';
+    Object.assign(this, { code, status, rpcCode, data });
+  }
+}
+export function fail(code, message, options) { throw new IntegrationError(code, message, options); }
+export function object(value, label = 'value') {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    fail('INVALID_INPUT', `${label} must be an object`);
+  return value;
+}
+export function fields(value, allowed, required = []) {
+  object(value);
+  if (Object.keys(value).some(key => !allowed.includes(key)) || required.some(key => !Object.hasOwn(value, key)))
+    fail('INVALID_INPUT', 'Missing required fields or unknown fields');
+  return value;
+}
+export function text(value, label, max = 512) {
+  if (typeof value !== 'string' || !value.length || value.length > max || /[\u0000-\u001f]/u.test(value))
+    fail('INVALID_INPUT', `${label} must be a bounded nonempty string`);
+  return value;
+}
+export function canonical(value) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  object(value);
+  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+}
+export function digest(value) { return createHash('sha256').update(canonical(value)).digest('hex'); }
+export function bounded(value, bytes = 65536) {
+  const serialized = canonical(value);
+  if (Buffer.byteLength(serialized) > bytes) fail('RESULT_TOO_LARGE', 'Result exceeds the configured byte limit');
+  return JSON.parse(serialized);
+}
+export function requireScope(principal, scope) {
+  if (!principal || !Array.isArray(principal.scopes) || !principal.scopes.includes(scope))
+    fail('INSUFFICIENT_SCOPE', `Required scope: ${scope}`, { status: 403, rpcCode: -32003 });
+}
+export const SCOPES = Object.freeze(['tendrils:list', 'applications:read', 'applications:write', 'events:subscribe', 'pages:publish']);
