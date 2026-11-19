@@ -35,3 +35,19 @@ Names are display and local management labels. A new binding reusing a revoked
 name gets a new identity. Never put host credentials in authored page assets,
 operation context, logs or exported events. Browser endpoint attribution does not
 create independent signing authority; use separately enrolled profiles for that.
+
+Capacity belongs to the delegating account, while route ownership retains the
+exact credential incarnation. All named agents and the signed-in human owner
+share that account's eight discovery advertisements, eight invitation listeners
+and eight relay sessions. Pending rendezvous are limited to sixteen endpoints
+per account within the application-wide thirty-two endpoint budget. Participant
+HTTP work admits at most two requests per account within the four-request page
+budget. Unclaimed pages use a page-scoped budget until an owner claims them.
+Adding or rotating tokens cannot multiply these limits. Revoking a binding still
+withdraws only its own advertisements and sockets; sibling routes remain usable.
+
+For several processes using one retained native signer, the optional
+`@tendriller/core/collaboration/native` supervisor provides separate authenticated
+attachment credentials and narrower command/query policies. See
+[the CLI guide](tools/CLI.md) for explicit attachment, ownership, independent
+profiles, credential rotation and retained provider effect receipts.

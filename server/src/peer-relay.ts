@@ -1,5 +1,5 @@
 import { PEER_RELAY_LIMITS as LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/relay.mjs';
-import { accountActive, currentPrincipal, pageAccessAllowed, type Principal } from './access';
+import { accountActive, pageAccessAllowed, participantIdentity, type Principal } from './access';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
@@ -43,10 +43,7 @@ function write(ws: WebSocket, value: Attachment): void {
 export const isRelaySocket = (ws: WebSocket): boolean => attachment(ws) !== null;
 const all = (t: Tendril) => t.ctx.getWebSockets('peer-relay');
 function owner(t: Tendril, principal: Principal): string {
-  const current = currentPrincipal(t, principal);
-  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
-    throw new HttpError(403, 'forbidden', 'Peer relay requires an authenticated participant');
-  return current.kind === 'agent' ? `agent:${current.credentialHash}` : `account:${current.accountId}`;
+  return participantIdentity(t, principal).route;
 }
 async function authorize(t: Tendril, principal: Principal): Promise<number> {
   const until = t.now() + LIMITS.authorizationMs;
@@ -189,7 +186,8 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
       !(value.peerId === peerId && value.remotePeerId === remotePeerId || value.peerId === remotePeerId && value.remotePeerId === peerId);
   })) throw new HttpError(409, 'peer_channel_full', 'A relay pairs exactly two endpoints with two distinct lanes');
   const sessionIds = new Set(sockets.map(ws => attachment(ws)!.session));
-  const ownedSessions = new Set(sockets.filter(ws => attachment(ws)!.owner === owned).map(ws => attachment(ws)!.session));
+  const budget = participantIdentity(t, principal).budget;
+  const ownedSessions = new Set(sockets.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).map(ws => attachment(ws)!.session));
   const first = existing.length ? attachment(existing[0])! : null;
   if (!first && sessionIds.size >= LIMITS.sessions || (!first || !ownedSessions.has(first.session)) && ownedSessions.size >= LIMITS.sessionsPerPrincipal)
     throw new HttpError(429, 'peer_quota', 'The bounded relay directory is full');

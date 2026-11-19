@@ -130,6 +130,21 @@ export function currentPrincipal(t: Tendril, principal: Principal, pageKey?: str
   return JSON.stringify(binding) === JSON.stringify(principal.binding ?? null) ? principal : null;
 }
 
+/** Route ownership retains the exact credential incarnation for narrow revocation.
+ * Capacity belongs to the human account (or the unclaimed page), so adding or
+ * rotating a named agent never multiplies its delegating principal's budget. */
+export function participantIdentity(t: Tendril, principal: Principal): { route: string; budget: string } {
+  const current = currentPrincipal(t, principal);
+  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
+    throw new HttpError(403, 'forbidden', 'Peer participation requires an authenticated participant');
+  if (current.kind === 'agent') {
+    requireAgentScope(current, 'participants:connect');
+    const owner = t.db.get<string | null>('owner_account', null);
+    return { route: `agent:${current.credentialHash}`, budget: owner ? `account:${owner}` : `page:${t.tid}` };
+  }
+  return { route: `account:${current.accountId}`, budget: `account:${current.accountId}` };
+}
+
 export async function authenticateLocalPage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
   const session = link.role === "display" ? null : await browserSession(t, req);
   const principal = localPagePrincipal(t, { role: link.role, accountId: session?.account_id ?? null,
