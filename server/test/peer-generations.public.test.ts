@@ -7,7 +7,7 @@ import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, gener
 import type { PeerApplicationConfiguration } from '../../contract/peer-controls.mjs';
 import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
-import { authenticateAgentToken } from '../src/access';
+import { authenticateAgentToken, type PagePrincipal, type Principal } from '../src/access';
 import { exchangePeerControl } from '../src/peer-generations';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { selectedApplication } from '../src/application';
@@ -350,30 +350,47 @@ it('bounds admitted control bodies before reading and releases slots after body 
     const principal = await authenticateAgentToken(t, h.token), controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
     const pending: Promise<unknown>[] = [], url = 'https://page.example/_tendril/peers/participant';
     const request = (operation: string) => new Request(url, { method: 'POST', body: JSON.stringify(participantMessage(selectedApplication(t).id, operation)) });
+    const guest = async (): Promise<PagePrincipal> => {
+      const account = crypto.randomUUID(), sessionHash = crypto.randomUUID(), link = await t.createLink('guest', 'independent body admission', null);
+      await t.env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, t.now(), `${account}@example.test`).run();
+      t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', account, link.id, t.now());
+      t.db.run('INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,?,?)', sessionHash, account, 'guest', t.now() + 86400_000);
+      return { kind: 'page', role: 'guest', name: account, accountId: account, linkId: link.id, sessionHash };
+    };
+    const second = await guest(), third = await guest();
+    const hold = (actor: Principal) => {
+      const body = new ReadableStream<Uint8Array>({ start(controller) { controllers.push(controller); } }, { highWaterMark: 0 });
+      const operation = handlePeerParticipant(t, new Request(url, { method: 'POST', body }), actor);
+      pending.push(operation); void operation.catch(() => {});
+    };
     let excessReads = 0;
+    const unread = () => new Request(url, { method: 'POST', body: new ReadableStream<Uint8Array>({ pull(controller) {
+      excessReads++; controller.enqueue(new TextEncoder().encode('{}')); controller.close();
+    } }, { highWaterMark: 0 }) });
     try {
-      for (let index = 0; index < 4; index++) {
-        const body = new ReadableStream<Uint8Array>({ start(controller) { controllers.push(controller); } }, { highWaterMark: 0 });
-        const operation = handlePeerParticipant(t, new Request(url, { method: 'POST', body }), principal);
-        pending.push(operation); void operation.catch(() => {});
-        if (index === 0) {
-          const available = await handlePeerParticipant(t, request('control/read'), principal);
-          expect(available.status).toBe(200);
-        }
-      }
-      const extra = new Request(url, { method: 'POST', body: new ReadableStream<Uint8Array>({ pull(controller) {
-        excessReads++; controller.enqueue(new TextEncoder().encode('{}')); controller.close();
-      } }, { highWaterMark: 0 }) });
-      await expect(handlePeerParticipant(t, extra, principal))
+      hold(principal);
+      expect((await handlePeerParticipant(t, request('control/read'), principal)).status).toBe(200);
+      hold(principal);
+      await expect(handlePeerParticipant(t, unread(), principal))
+        .rejects.toMatchObject({ status: 429, code: 'peer_principal_busy' });
+      expect(excessReads).toBe(0);
+      expect((await handlePeerParticipant(t, request('control/read'), second)).status).toBe(200);
+      hold(second); hold(second);
+      await expect(handlePeerParticipant(t, unread(), third))
         .rejects.toMatchObject({ status: 429, code: 'peer_participant_busy' });
       await expect(handlePeerParticipant(t, request('publication/definition'), principal))
         .rejects.toMatchObject({ status: 429, code: 'peer_participant_busy' });
       expect(excessReads).toBe(0);
+      controllers[0].error(new Error('test body stopped'));
+      await expect(pending[0]).rejects.toThrow('test body stopped');
+      expect((await handlePeerParticipant(t, request('control/read'), principal)).status).toBe(200);
+      expect((await handlePeerParticipant(t, request('control/read'), third)).status).toBe(200);
     } finally {
       for (const controller of controllers) { try { controller.error(new Error('test body stopped')); } catch { /* Already closed. */ } }
       await Promise.allSettled(pending);
     }
     expect((await handlePeerParticipant(t, request('control/read'), principal)).status).toBe(200);
+    expect((await handlePeerParticipant(t, request('control/read'), second)).status).toBe(200);
   });
 });
 

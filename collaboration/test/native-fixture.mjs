@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 const packageRoot = process.env.CHRONOLOG_SESSION_PACKAGE;
 export const peerModule = suffix => packageRoot ? pathToFileURL(join(resolve(packageRoot), suffix ? suffix + '.mjs' : 'index.mjs')).href :
-  '@chronolog/peer-session' + (suffix ? '/' + suffix : '');
+  import.meta.resolve('@chronolog/peer-session' + (suffix ? '/' + suffix : ''));
 export const p = await import(peerModule(''));
 export const native = await import(peerModule('native'));
 export const worker = await import(peerModule('worker'));
