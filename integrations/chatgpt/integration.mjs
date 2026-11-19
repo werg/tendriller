@@ -39,11 +39,11 @@ export async function createIntegration(config = {}) {
       jwksUri: config.jwksUri, scopesSupported: SCOPES });
     bridge = config.bridge ?? createSessionBridge({ applications: config.applications, ...(config.bridgeLimits ?? {}) });
     const originalConsent = createConsentService({ store, authorizeOwner: config.authorizeOwner, clock });
-    const lifetime = new AbortController(), watchers = new Map();
-    let started = false, closed = false, loop, wake;
+    const lifetime = new AbortController(), watchers = new Map(), sideTasks = new Set();
+    let started = false, closed = false, loop, wake, stopping;
     const wakeUp = () => wake?.();
     async function authorized(principal, applicationId, eventName) {
-      if (await config.authorizeAccountAccess(principal, applicationId) !== true)
+      if (await config.authorizeAccountAccess({ ...principal, requestSignal: lifetime.signal }, applicationId) !== true)
         fail('ACCOUNT_ACCESS_DENIED', 'Current account access to the application is required', { status: 403 });
       await originalConsent.assertAccess(principal, { applicationId, kind: eventName == null ? 'read' : 'event', ...(eventName == null ? {} : { name: eventName }) });
       return true;
@@ -75,7 +75,11 @@ export async function createIntegration(config = {}) {
       }
       await outbox.cancelInactive();
     }
-    const changed = () => { void recheckSubscriptions().catch(error => report('subscription_change', error)); wakeUp(); };
+    const changed = () => {
+      if (closed) return;
+      const task = recheckSubscriptions().catch(error => report('subscription_change', error));
+      sideTasks.add(task); void task.finally(() => sideTasks.delete(task)); wakeUp();
+    };
     const detach = subscriptions.onChange(changed);
     const consent = { ...originalConsent,
       async grant(principal, input) { const result = await originalConsent.grant(principal, input); await recheckSubscriptions(); wakeUp(); return result; },
@@ -139,8 +143,17 @@ export async function createIntegration(config = {}) {
         void watcher.task.catch(error => report('observer_shutdown', error));
       }
     }
+    function stop() {
+      if (!stopping) {
+        closed = true; detach(); lifetime.abort(); wakeUp();
+        for (const watcher of watchers.values()) watcher.controller.abort();
+        stopping = Promise.allSettled([bridge.close(), loop, ...sideTasks, ...[...watchers.values()].map(watcher => watcher.task)]);
+      }
+      return stopping;
+    }
     return {
       handler, auth, bridge, consent, subscriptions, outbox, store, lifecycle, workspaceAgent,
+      stop,
       start() {
         if (closed) fail('INTEGRATION_CLOSED', 'Integration is closed');
         if (started) return; started = true;
@@ -153,11 +166,9 @@ export async function createIntegration(config = {}) {
         })();
       },
       async close() {
-        if (closed) return; closed = true; detach(); lifetime.abort(); wakeUp();
-        for (const watcher of watchers.values()) watcher.controller.abort();
         // Native control reads use the bridge's own lifetime signal. Abort that
         // owner before awaiting observers which may be blocked in such a read.
-        const results = await Promise.allSettled([bridge.close(), loop, ...[...watchers.values()].map(watcher => watcher.task)]);
+        const results = await stop();
         await store.close();
         const failed = results.find(result => result.status === 'rejected');
         if (failed) throw failed.reason;

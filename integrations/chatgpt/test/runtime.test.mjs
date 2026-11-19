@@ -204,3 +204,45 @@ test('an old account denial cannot disable a subsequently refreshed subscription
     assert.equal(current.secret, input.delivery.secret); assert.equal(current.stopReason, undefined);
   } finally { release?.(); await service.close(); }
 });
+
+test('HTTP shutdown drains admitted requests before closing their shared dependencies', async () => {
+  const f = config(); let entered, release;
+  const ready = new Promise(resolve => { entered = resolve; });
+  f.value.authorizeAccountAccess = async () => { entered(); await new Promise(resolve => { release = resolve; }); return true; };
+  const service = await startHttpService({ ...f.value, port: 0 });
+  const pending = fetch(`http://127.0.0.1:${service.address.port}/mcp`, { method: 'POST',
+    headers: { Authorization: 'Bearer fixture', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_tendrils', arguments: {} } }) }).then(async response => response.json());
+  await ready;
+  const closing = service.close(); await pause(); assert.equal(f.closed(), false);
+  release(); const result = await pending; assert.equal(result.result.structuredContent.applications.length, 1);
+  await closing; assert.equal(f.closed(), true);
+});
+
+test('HTTP shutdown deadline aborts a pending account request before closing its store', async () => {
+  const f = config(); let entered, aborted = false;
+  const ready = new Promise(resolve => { entered = resolve; });
+  f.value.authorizeAccountAccess = async actor => new Promise((_resolve, reject) => {
+    entered(); actor.requestSignal.addEventListener('abort', () => { aborted = true; reject(actor.requestSignal.reason); }, { once: true });
+  });
+  const service = await startHttpService({ ...f.value, port: 0, shutdownTimeoutMs: 25 });
+  const pending = fetch(`http://127.0.0.1:${service.address.port}/mcp`, { method: 'POST',
+    headers: { Authorization: 'Bearer fixture', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_kitchen_context', arguments: { applicationId: APP } } }) }).catch(error => error);
+  await ready; await service.close(); await pending;
+  assert.equal(aborted, true); assert.equal(f.closed(), true);
+});
+
+test('HTTP shutdown deadline also releases a blocked native read before store closure', async () => {
+  const f = config(); let entered, rejectRead;
+  const ready = new Promise(resolve => { entered = resolve; });
+  f.value.bridge.getStatus = async () => new Promise((_resolve, reject) => { entered(); rejectRead = reject; });
+  const originalClose = f.value.bridge.close;
+  f.value.bridge.close = async () => { rejectRead?.(new DOMException('Native owner stopped', 'AbortError')); await originalClose(); };
+  const service = await startHttpService({ ...f.value, port: 0, shutdownTimeoutMs: 25 });
+  await service.integration.consent.grant(principal, { applicationId: APP, queries: ['assistanceStatus'] });
+  const pending = fetch(`http://127.0.0.1:${service.address.port}/mcp`, { method: 'POST',
+    headers: { Authorization: 'Bearer fixture', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_application_status', arguments: { applicationId: APP } } }) }).catch(error => error);
+  await ready; await service.close(); await pending; assert.equal(f.closed(), true);
+});

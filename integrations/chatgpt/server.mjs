@@ -54,8 +54,11 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
   const resourceUrl = new URL(resource), origins = new Set([resourceUrl.origin, ...allowedOrigins]);
   const rateWindows = new Map();
   async function access(principal, applicationId, kind = 'read', name) {
+    principal.requestSignal?.throwIfAborted();
     if (await authorizeAccountAccess(principal, applicationId) !== true) fail('ACCOUNT_ACCESS_DENIED', 'This account cannot access the application', { status: 403 });
-    return consent.assertAccess(principal, { applicationId, kind, ...(name === undefined ? {} : { name }) });
+    principal.requestSignal?.throwIfAborted();
+    const connection = await consent.assertAccess(principal, { applicationId, kind, ...(name === undefined ? {} : { name }) });
+    principal.requestSignal?.throwIfAborted(); return connection;
   }
   async function query(principal, applicationId, name, input) {
     await access(principal, applicationId, 'query', name);
@@ -225,7 +228,7 @@ export function createMcpHandler({ auth, bridge, consent, subscriptions, outbox,
     if (url.pathname !== resourceUrl.pathname) return json({ error: 'not_found' }, 404);
     if (request.headers.has('Origin') && !origins.has(request.headers.get('Origin'))) return json({ error: 'origin_not_allowed' }, 403);
     let principal;
-    try { principal = await auth.authenticate(request); }
+    try { principal = { ...await auth.authenticate(request), requestSignal: request.signal }; request.signal.throwIfAborted(); }
     catch (error) { return json(safeError(error), error.status ?? 401, { 'WWW-Authenticate': error.challenge ?? auth.challenge?.() ?? 'Bearer' }); }
     const rateKey = digest([principal.issuer, principal.id]), now = clock();
     for (const [key, window] of rateWindows) if (window.until <= now) rateWindows.delete(key);

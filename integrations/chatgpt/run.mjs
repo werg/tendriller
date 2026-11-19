@@ -1,18 +1,26 @@
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createIntegration } from './integration.mjs';
 
 /** A loopback HTTP listener intended to sit behind the configured HTTPS proxy. */
 export async function startHttpService(config) {
+  const shutdownTimeoutMs = config.shutdownTimeoutMs ?? 15000;
+  if (!Number.isSafeInteger(shutdownTimeoutMs) || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 60000)
+    throw Object.assign(Error('Configure a shutdown deadline of 1 to 60000 milliseconds'), { code: 'SHUTDOWN_CONFIGURATION_INVALID' });
   const integration = await createIntegration(config);
   const origin = new URL(config.resource).origin;
-  const server = createServer({ requestTimeout: 30000, headersTimeout: 10000, keepAliveTimeout: 5000 }, async (incoming, outgoing) => {
+  const active = new Set(); let draining = false;
+  const server = createServer({ requestTimeout: 30000, headersTimeout: 10000, keepAliveTimeout: 5000 }, (incoming, outgoing) => {
+    if (draining) { outgoing.writeHead(503, { Connection: 'close' }); outgoing.end(); return; }
     const cancelled = new AbortController();
     incoming.once('aborted', () => cancelled.abort());
     outgoing.once('close', () => { if (!outgoing.writableEnded) cancelled.abort(); });
-    try {
+    const pending = { cancelled, task: null };
+    active.add(pending);
+    pending.task = (async () => { try {
       const port = server.address()?.port;
       const validHosts = new Set([new URL(config.resource).host, `127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
       if (!validHosts.has(incoming.headers.host)) { outgoing.writeHead(421); outgoing.end(); return; }
@@ -21,13 +29,15 @@ export async function startHttpService(config) {
       const request = new Request(new URL(incoming.url, origin), { method: incoming.method, headers, signal: cancelled.signal,
         ...(['GET', 'HEAD'].includes(incoming.method) ? {} : { body: Readable.toWeb(incoming), duplex: 'half' }) });
       const response = await integration.handler(request);
+      cancelled.signal.throwIfAborted();
       outgoing.writeHead(response.status, Object.fromEntries(response.headers));
       if (!response.body) outgoing.end();
-      else Readable.fromWeb(response.body).on('error', () => outgoing.destroy()).pipe(outgoing);
+      else await pipeline(Readable.fromWeb(response.body), outgoing, { signal: cancelled.signal });
     } catch {
+      if (cancelled.signal.aborted || outgoing.destroyed) { outgoing.destroy(); return; }
       if (!outgoing.headersSent) outgoing.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       outgoing.end('{"error":"integration_unavailable"}');
-    }
+    } finally { active.delete(pending); } })();
   });
   server.maxConnections = 256;
   try {
@@ -37,8 +47,21 @@ export async function startHttpService(config) {
   let closing;
   return { integration, address: server.address(), close() {
     closing ??= (async () => {
+      draining = true;
       const stopped = new Promise((accept, reject) => server.close(error => error ? reject(error) : accept()));
-      server.closeIdleConnections(); await integration.close(); await stopped;
+      const deadline = setTimeout(() => {
+        for (const request of active) request.cancelled.abort(new DOMException('HTTP shutdown deadline reached', 'AbortError'));
+        server.closeAllConnections();
+        // Abort blocked native controls too, while retaining the metadata store
+        // until the admitted handlers have settled their durable identities.
+        void integration.stop();
+      }, shutdownTimeoutMs);
+      try {
+        server.closeIdleConnections(); await stopped;
+        // Cancellation-aware adapters settle before their shared store/native
+        // dependencies close. An already-saved operation can retain its receipt.
+        await Promise.allSettled([...active].map(request => request.task));
+      } finally { clearTimeout(deadline); await integration.close(); }
     })(); return closing;
   } };
 }
