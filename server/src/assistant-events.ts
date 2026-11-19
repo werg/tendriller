@@ -13,7 +13,7 @@ import type { Tendril } from './tendril';
 const RETENTION = 256, JOB_LIMIT = 256, MAX_WATCHERS = 8, CALLBACK_DEADLINE = 4000;
 const DAY = 86_400_000;
 type EventRow = { seq: number; source_id: string; generation: string; name: string; payload: string; created_at: number };
-type Watcher = { id: string; grant_id: string; name: string; url: string; secret: string; expires_at: number };
+type Watcher = { id: string; grant_id: string; name: string; url: string; secret: string; previous_secret: string | null; rotate_until: number | null; verified_at: number; expires_at: number };
 type Job = EventRow & Watcher & { attempts: number; event_seq: number; watcher_id: string };
 const toMessage = (item: EventRow, applicationId: string) => ({
   name: MCP_APPLICATION_EVENT, timestamp: new Date(item.created_at).toISOString(),
@@ -127,7 +127,7 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
   const delivery = fields(params.delivery, subscribing ? ['mode', 'url', 'secret'] : ['mode', 'url']);
   if (delivery.mode !== 'webhook') throw new HttpError(400, 'unsupported_delivery');
   const url = callbackTarget(t, delivery.url);
-  const id = 'sub_' + await sha256Hex(JSON.stringify([approved.applicationId, principal.account, principal.grant, event.name, url]));
+  const id = 'sub_' + await sha256Hex(JSON.stringify([approved.applicationId, principal.account, principal.client, event.name, url]));
   if (!subscribing) {
     if (connection(t)?.version !== approved.version) throw new HttpError(403, 'connection_changed');
     t.transaction(() => {
@@ -140,14 +140,22 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
     throw new HttpError(400, 'invalid_subscription');
   const secret = string(delivery.secret, 200);
   try { webhookKey(secret); } catch { throw new HttpError(400, 'invalid_webhook_secret'); }
-  const sealed = await seal(t, id, secret), now = t.now(), expiry = now + Math.min(Number(params.ttlMs ?? DAY), 7 * DAY);
+  const now = t.now(), expiry = now + Math.min(Number(params.ttlMs ?? DAY), 7 * DAY);
+  const oauth = await assistantOAuth(t.env);
+  const grant = oauth && await activeGrant(t.env, oauth, principal.grant, principal.account);
+  if (!grant?.scope.split(' ').includes('events:subscribe')) throw new HttpError(403, 'authorization_revoked');
   const existing = t.db.one<Watcher>('SELECT * FROM assistant_watchers WHERE id=?', id);
-  if (existing?.expires_at && existing.expires_at > now && await unseal(t, id, existing.secret) === secret &&
+  const previous = existing && existing.expires_at > now ? await unseal(t, id, existing.secret) : null;
+  if (existing && existing.grant_id === principal.grant && previous === secret &&
       existing.expires_at >= expiry - 60_000) return { id, refreshBefore: new Date(existing.expires_at).toISOString(), cursor: null, truncated: false };
+  const cachedVerification = !!existing && previous === secret && existing.verified_at > now - 300_000;
+  const sealed = existing && previous === secret ? existing.secret : await seal(t, id, secret);
+  const previousSecret = existing && previous !== null && previous !== secret ? existing.secret : existing?.previous_secret ?? null;
+  const rotateUntil = existing && previous !== null && previous !== secret ? now + 300_000 : existing?.rotate_until ?? null;
   const count = t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_watchers WHERE expires_at>? AND id<>?', now, id)!.n;
   if (count >= MAX_WATCHERS) throw new HttpError(429, 'subscription_capacity');
   try {
-    await verifyCallback({ subscriptionId: id, url, secret, now, signal,
+    if (!cachedVerification) await verifyCallback({ subscriptionId: id, url, secret, now, signal,
       send: async (_target: string, options: { body: string; headers: HeadersInit; signal?: AbortSignal }) => {
         const deadline = AbortSignal.timeout(CALLBACK_DEADLINE);
         const combined = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
@@ -160,14 +168,16 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
     throw new HttpError(400, 'callback_verification_failed', 'Callback verification failed',
       { rpcCode: -32015, reason: (error as { data?: { reason?: string } }).data?.reason ?? 'challenge_failed' });
   }
-  const oauth = await assistantOAuth(t.env);
   if (!oauth || !(await activeGrant(t.env, oauth, principal.grant, principal.account))?.scope.split(' ').includes('events:subscribe') || connection(t)?.version !== approved.version)
     throw new HttpError(403, 'connection_changed');
   t.transaction(() => {
     t.db.run('DELETE FROM assistant_jobs WHERE watcher_id IN(SELECT id FROM assistant_watchers WHERE expires_at<=?)', now);
     t.db.run('DELETE FROM assistant_watchers WHERE expires_at<=?', now);
-    t.db.run(`INSERT INTO assistant_watchers(id,grant_id,name,url,secret,expires_at) VALUES(?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires_at=excluded.expires_at`, id, principal.grant, event.name, url, sealed, expiry);
+    t.db.run(`INSERT INTO assistant_watchers(id,grant_id,name,url,secret,previous_secret,rotate_until,verified_at,expires_at)
+      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET grant_id=excluded.grant_id,secret=excluded.secret,
+      previous_secret=excluded.previous_secret,rotate_until=excluded.rotate_until,verified_at=excluded.verified_at,expires_at=excluded.expires_at`,
+      id, principal.grant, event.name, url, sealed, rotateUntil && rotateUntil > now ? previousSecret : null,
+      rotateUntil, cachedVerification ? existing!.verified_at : t.now(), expiry);
   });
   return { id, refreshBefore: new Date(expiry).toISOString(), cursor: null, truncated: false };
 }
@@ -197,7 +207,9 @@ export async function runAssistantDelivery(t: Tendril) {
           grants.set(job.grant_id, grant);
         }
         if ((await grant)?.scope.split(' ').includes('events:subscribe')) {
-          const secret = await unseal(t, job.watcher_id, job.secret);
+          const secrets = [await unseal(t, job.watcher_id, job.secret)];
+          if (job.previous_secret && job.rotate_until && job.rotate_until > now)
+            secrets.push(await unseal(t, job.watcher_id, job.previous_secret));
           const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.generation, job.source_id, job.name]));
           const body = JSON.stringify({ eventId, ...toMessage(job, approved.applicationId), cursor: null });
           const url = callbackTarget(t, job.url);
@@ -206,7 +218,7 @@ export async function runAssistantDelivery(t: Tendril) {
           const { pending } = await withSelectedAssistantGeneration(t, generation => ({
             pending: generation === job.generation && connection(t)?.version === approved.version && activeAdapter(t)
               ? fetch(url, { method: 'POST', body, redirect: 'manual', signal: AbortSignal.timeout(CALLBACK_DEADLINE),
-                headers: signedHeaders({ id: eventId, subscriptionId: job.watcher_id, body, secrets: [secret], now }) }) : null,
+                headers: signedHeaders({ id: eventId, subscriptionId: job.watcher_id, body, secrets, now }) }) : null,
           }));
           if (pending) {
             const res = await pending;

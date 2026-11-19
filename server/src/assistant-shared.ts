@@ -11,7 +11,7 @@ export const REQUEST_LIMIT = 64 * 1024;
 export const EVENT_LIMIT = 8 * 1024;
 
 export type Rpc = { id: string | number | null; method: string; params: Record<string, unknown> };
-export type Principal = { account: string; grant: string; scopes: string[]; expires: number };
+export type Principal = { account: string; grant: string; client: string; scopes: string[]; expires: number };
 export type Operation = { name: string; description: string; input: unknown };
 export type EventDefinition = { name: string; description: string };
 export type Catalogue = { applicationId: string; pageId: string; label: string };

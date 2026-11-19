@@ -3,6 +3,10 @@
 For the same-origin Worker MCP endpoint, use the
 [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). It uses the normal
 Tendriller browser session and the issuer's exact issued-token and grant records.
+A configured public OAuth client can opt into Client ID Metadata Documents with
+`metadataDocument: true`. Its ID is the exact operator-approved HTTPS document
+URL. The document must identify that URL, include the configured redirect, and
+support public PKCE token exchange.
 The separate-account adapter and handoff examples below describe the Node
 integration test harness and external resource servers.
 
@@ -51,10 +55,10 @@ consent, publish code, or establish a live ChatGPT connection.
    source does not deploy a Worker, apply a remote migration or configure
    ChatGPT.
 
-The public engine archive includes both SQL files. Existing consumers keep
+The public engine archive includes the account, OAuth and assistant connection migrations. Existing consumers keep
 `@tendriller/engine/accounts-schema`; the new
 `@tendriller/engine/integration-oauth-schema` export resolves the additive SQL.
-Both are included in the engine's provenance hashes. An external Worker
+`@tendriller/engine/assistant-connections-schema` exports the connection index. All are included in the engine provenance. An external Worker
 deployment must deliberately apply the second file before configuring OAuth.
 The repository's normal service and isolated branch-preview workflows already
 apply pending D1 migrations before deployment, including this additive file.

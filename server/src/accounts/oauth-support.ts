@@ -72,7 +72,7 @@ export function checkedChallenge(value: unknown, method: unknown): string {
 }
 export interface OAuthClient {
   id: string; name: string; redirectUris: string[]; scopes: string[];
-  tokenEndpointAuthMethod: 'none' | 'client_secret_basic'; clientSecretSha256?: string; allowRefresh: boolean;
+  tokenEndpointAuthMethod: 'none' | 'client_secret_basic'; clientSecretSha256?: string; allowRefresh: boolean; metadataDocument?: boolean;
 }
 export interface OAuthBridge { id: string; name: string; secretSha256: string; applicationIds: string[]; managementRedirectUris: string[] }
 type SigningJwk = JsonWebKey & { kid: string; alg: 'RS256' | 'ES256' };
@@ -106,7 +106,7 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
       const resource = exactHttps(input.resource);
       if (new URL(resource).search) throw Error('Resource must not contain a query');
       const clients = list(input.clients, 32).map(raw => {
-        const client = object(raw); members(client, ['id', 'name', 'redirectUris', 'scopes', 'tokenEndpointAuthMethod', 'clientSecretSha256', 'allowRefresh']);
+        const client = object(raw); members(client, ['id', 'name', 'redirectUris', 'scopes', 'tokenEndpointAuthMethod', 'clientSecretSha256', 'allowRefresh', 'metadataDocument']);
         const id = text(client.id, 'client ID', 256), name = String(client.name ?? id);
         if (!name.length || name.length > 160 || /[\u0000-\u001f\u007f]/u.test(name)) throw Error('Invalid client name');
         const redirectUris = unique(list(client.redirectUris, 8).map(exactHttps));
@@ -118,8 +118,16 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
         const clientSecretSha256 = client.clientSecretSha256;
         if (tokenEndpointAuthMethod === 'client_secret_basic' ? typeof clientSecretSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(clientSecretSha256) : clientSecretSha256 !== undefined)
           throw Error('Configure only the client authentication method in use');
+        if (client.metadataDocument !== undefined && typeof client.metadataDocument !== 'boolean')
+          throw Error('Invalid client metadata policy');
+        if (client.metadataDocument === true) {
+          const issuer = new URL(exactHttps(id));
+          if (tokenEndpointAuthMethod !== 'none' || issuer.pathname === '/' || issuer.search || issuer.port ||
+            redirectUris.some(uri => new URL(uri).origin !== issuer.origin))
+            throw Error('Use a public client and exact metadata/redirect URLs on the same approved origin');
+        }
         if (client.allowRefresh !== undefined && typeof client.allowRefresh !== 'boolean') throw Error('Invalid refresh policy');
-        return { id, name, redirectUris, scopes, tokenEndpointAuthMethod, clientSecretSha256, allowRefresh: client.allowRefresh === true } as OAuthClient;
+        return { id, name, redirectUris, scopes, tokenEndpointAuthMethod, clientSecretSha256, allowRefresh: client.allowRefresh === true, ...(client.metadataDocument === true ? { metadataDocument: true } : {}) } as OAuthClient;
       });
       if (!clients.length) throw Error('At least one explicit OAuth client is required');
       unique(clients.map(client => client.id));
@@ -167,7 +175,7 @@ export function metadata(config: OAuthConfig) {
     grant_types_supported: ['authorization_code', ...(config.clients.some(client => client.allowRefresh) ? ['refresh_token'] : [])],
     code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: [...new Set(config.clients.map(client => client.tokenEndpointAuthMethod))],
     scopes_supported: [...new Set(config.clients.flatMap(client => client.scopes))],
-    authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: false };
+    authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: config.clients.some(client => client.metadataDocument) };
 }
 export function checkedParameters(input: URLSearchParams): URLSearchParams {
   if ([...input].length > 32) reject('invalid_request', 'Too many OAuth parameters');

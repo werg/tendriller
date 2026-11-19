@@ -2,6 +2,12 @@ const PROTOCOL = 'tendriller.application-mcp.v1';
 const LIMIT = 64 * 1024;
 const keyFormat = /^td_a_[a-f0-9]{64}$/u;
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+const encodeValue = (_name, value) => {
+  if (typeof value === 'bigint') return { format: 'decimal-integer', value: value.toString() };
+  if (value instanceof Uint8Array) return { format: 'base64-bytes',
+    value: btoa(Array.from(value, byte => String.fromCharCode(byte)).join('')) };
+  return value;
+};
 const error = code => Object.assign(new Error(code), { code });
 const delay = (ms, signal) => new Promise((resolve, reject) => {
   if (signal.aborted) { reject(signal.reason); return; }
@@ -46,7 +52,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
   const acknowledgements = new Map(), waitingForOpen = new Set();
   let socket, active = 0;
   function send(message) {
-    const data = JSON.stringify(message);
+    const data = JSON.stringify(message, encodeValue);
     if (new TextEncoder().encode(data).byteLength > LIMIT) throw error('APPLICATION_ASSISTANT_FRAME_TOO_LARGE');
     if (socket?.readyState !== 1) throw error('APPLICATION_ASSISTANT_OFFLINE');
     socket.send(data);
@@ -63,7 +69,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
         operationId, ...(basedOn !== undefined ? { basedOn } : {}),
       } : {}) }, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]) });
       if (generation !== session.status.generation) throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
-      if (socket === transport) send({ type: 'result', id, value });
+      if (socket === transport) send({ type: 'result', id, value: value ?? null });
     } catch (cause) {
       if (socket === transport) {
         const code = typeof cause?.code === 'string' && /^[A-Za-z0-9_]{1,96}$/u.test(cause.code)
@@ -73,9 +79,9 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
     } finally { active--; }
   }
   async function run() {
-    let failures = 0;
+    let failures = 0, connectedBefore = false;
     while (!lifetime.aborted) {
-      let transport, terminal = false;
+      let transport, terminal = false, openedAt = 0;
       try {
         transport = openSocket(url, [PROTOCOL, key]);
         socket = transport;
@@ -92,7 +98,8 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
           lifetime.addEventListener('abort', abort, { once: true });
           transport.addEventListener('open', () => {
             clearTimeout(timer);
-            failures = 0;
+            connectedBefore = true;
+            openedAt = Date.now();
             for (const resolve of waitingForOpen) resolve();
             onStatus({ state: 'connected' });
           }, { once: true });
@@ -115,8 +122,9 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
       }
       if (lifetime.aborted || terminal) break;
       // Unapproved or misconfigured endpoints must not loop forever.
-      if (++failures >= 6) { onStatus({ state: 'disconnected', reason: 'retry_limit' }); break; }
-      const wait = Math.min(30_000, 1000 * 2 ** (failures - 1));
+      if (openedAt && Date.now() - openedAt >= 10_000) failures = 0;
+      if (++failures >= 6 && !connectedBefore) { onStatus({ state: 'disconnected', reason: 'retry_limit' }); break; }
+      const wait = Math.min(60_000, 1000 * 2 ** Math.min(failures - 1, 6)) + Math.floor(Math.random() * 250);
       onStatus({ state: 'reconnecting', retryInMs: wait });
       await delay(wait, lifetime).catch(() => {});
     }
@@ -182,7 +190,7 @@ export async function forwardApplicationEvents({ session, assistant, topics, pro
             await assistant.waitUntilOnline({ signal: lifetime });
             try { await assistant.publish(value); break; }
             catch (cause) {
-              const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full'].includes(cause?.code);
+              const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full', 'page_rate_limited', 'account_rate_limited'].includes(cause?.code);
               if (!retryable || attempt >= 5) throw cause;
               await delay(Math.min(8000, 500 * 2 ** attempt), lifetime);
             }

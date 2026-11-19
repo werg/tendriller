@@ -12,6 +12,10 @@ Apply account migrations `0002_integration_oauth.sql` and
 `0003_assistant_connections.sql`. Configure the exact service origin plus
 `/mcp` as the OAuth resource. Register each intended client with its actual
 callback and authentication method, and install `OAUTH_SIGNING_JWK`.
+For ChatGPT's Client ID Metadata Document flow, use the exact metadata URL
+shown in the plugin setup as the client `id`, set `metadataDocument: true` and
+`tokenEndpointAuthMethod: "none"`, and pin its exact redirect URI. Tendriller
+checks the public document when displaying the OAuth consent form.
 The normal tool scopes are `tendrils:list`, `applications:read`,
 `applications:write` and `events:subscribe`. Use `bridges: []` for this route.
 See [OAuth setup](INTEGRATION_OAUTH.md).

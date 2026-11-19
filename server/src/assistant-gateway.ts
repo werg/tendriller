@@ -5,7 +5,7 @@ import { OAUTH_SCOPES } from './accounts/oauth-support';
 import { servicePage } from './accounts/ui';
 import { escapeHtml } from './inject';
 import { HttpError, isPlainObject, json, readBody } from './http';
-import { TENDRIL_ID_RE } from './ids';
+import { TENDRIL_ID_RE, sha256Hex } from './ids';
 import {
   APP_ID, REQUEST_LIMIT, assistantOAuth, mcpEventDefinition, fields, listConnected, requireScope, resolveConnection, string,
   type Principal, type Rpc,
@@ -14,15 +14,18 @@ import {
 const INBOX_WIDGET = 'ui://tendriller/application-inbox.html';
 const PROTOCOL = '2025-11-25';
 const supported = [PROTOCOL, '2025-06-18', '2025-03-26', '2026-07-28'];
+const discoveryMethods = new Set(['initialize', 'server/discover', 'ping', 'tools/list', 'resources/list', 'resources/read', 'events/list']);
 const eventMethods = new Set(['events/subscribe', 'events/unsubscribe']);
 const schemaString = { type: 'string', minLength: 1 };
 const app = { applicationId: { type: 'string', pattern: '^[a-f0-9]{64}$' } };
-const tool = (name: string, description: string, scope: string, properties: object, required: string[], readOnlyHint = true) => ({
+const tool = (name: string, description: string, scope: string | null, properties: object, required: string[], readOnlyHint = true) => ({
   name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false },
-  securitySchemes: [{ type: 'oauth2', scopes: [scope] }],
+  securitySchemes: [{ type: 'oauth2', scopes: scope ? [scope] : [] }],
   annotations: { readOnlyHint, destructiveHint: !readOnlyHint, idempotentHint: true, openWorldHint: !readOnlyHint }, scope,
 });
 const tools = [
+  { ...tool('get_profile', 'Identify the account linked to this MCP connection.', null, {}, []),
+    _meta: { 'openai/profile': true }, outputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   tool('list_tendrils', 'List the applications this account has connected. Call describe_application for their current schemas.',
     'tendrils:list', {}, []),
   tool('describe_application', 'Get exact allowed commands, queries, events, and participant availability.',
@@ -108,13 +111,12 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
   if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');
   if (env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: 'assistant:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
     throw new HttpError(429, 'rate_limited');
-  const token = /^Bearer ([A-Za-z0-9_.-]{1,16384})$/i.exec(req.headers.get('Authorization') ?? '')?.[1];
-  if (token) await ensureOAuthSchema(env);
-  const access = token ? await inspectAccessToken(env, config, token) : null;
-  if (!access) return json({ error: 'invalid_token' }, 401, {
+  const authorization = req.headers.get('Authorization');
+  const challenge = () => json({ error: 'invalid_token' }, 401, {
     'WWW-Authenticate': `Bearer resource_metadata="${config.issuer}/.well-known/oauth-protected-resource/mcp"`,
   });
-  if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405, { Allow: 'POST' });
+  if (req.method !== 'POST') return authorization || req.method === 'GET'
+    ? json({ error: 'method_not_allowed' }, 405, { Allow: 'POST' }) : challenge();
   if (req.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json')
     return json({ error: 'unsupported_media_type' }, 415);
   let message;
@@ -126,6 +128,19 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
   if (!isPlainObject(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string' ||
     message.id !== undefined && message.id !== null && typeof message.id !== 'number' && typeof message.id !== 'string')
     return json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } }, 400);
+  let principal: Principal | null = null;
+  if (authorization !== null) {
+    const token = /^Bearer ([A-Za-z0-9_.-]{1,16384})$/i.exec(authorization)?.[1];
+    if (!token) return challenge();
+    await ensureOAuthSchema(env);
+    const access = await inspectAccessToken(env, config, token);
+    if (!access) return challenge();
+    principal = { account: access.sub, grant: access.sid, client: access.client_id, scopes: access.scope.split(' ').filter(Boolean), expires: access.exp * 1000 };
+  }
+  // Static discovery contains no page or account information, so clients can
+  // scan the integration before directing a person to authorize their account.
+  if (message.id === undefined && message.method === 'notifications/initialized') return new Response(null, { status: 202 });
+  if (!principal && !discoveryMethods.has(message.method)) return challenge();
   if (message.id === undefined) return new Response(null, { status: 202 });
   const id = message.id, method = message.method;
   const modern = req.headers.get('Mcp-Protocol-Version') === '2026-07-28';
@@ -137,19 +152,18 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       method === 'tools/call' && req.headers.get('Mcp-Name') !== params.name ||
       method === 'resources/read' && req.headers.get('Mcp-Name') !== params.uri))
       throw new HttpError(400, 'invalid_mcp_headers', 'The MCP request headers must match its method and name.', { rpcCode: -32602 });
-    const principal: Principal = { account: access.sub, grant: access.sid, scopes: access.scope.split(' ').filter(Boolean), expires: access.exp * 1000 };
 
     if (method === 'initialize') return result(id, { protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
       capabilities: { tools: {}, events: {}, resources: {} }, serverInfo: { name: 'tendriller', version: '1.0.0' }, instructions });
     if (method === 'server/discover') return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {}, resources: {} } });
     if (method === 'ping') return result(id, {});
-    if (method === 'tools/list') return complete({ tools: tools.filter(item => principal.scopes.includes(item.scope)).map(({ scope, ...item }) => item) });
+    if (method === 'tools/list') return complete({ tools: tools.filter(item => !item.scope || !principal || principal.scopes.includes(item.scope)).map(({ scope, ...item }) => item) });
     if (method === 'resources/list') {
-      requireScope(principal, 'applications:read');
+      if (principal) requireScope(principal, 'applications:read');
       return complete({ resources: [{ name: 'Tendriller inbox', uri: INBOX_WIDGET, mimeType: 'text/html;profile=mcp-app' }] });
     }
     if (method === 'resources/read') {
-      requireScope(principal, 'applications:read');
+      if (principal) requireScope(principal, 'applications:read');
       if (params.uri !== INBOX_WIDGET) throw new HttpError(404, 'unknown_resource');
       const asset = await env.ASSETS.fetch(new Request(config.issuer + '/application-inbox.html'));
       if (!asset.ok) throw new HttpError(503, 'inbox_resource_unavailable');
@@ -157,16 +171,20 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
         _meta: { ui: { csp: { connectDomains: [config.issuer, config.issuer.replace(/^https:/u, 'wss:')], resourceDomains: [] } } } }] });
     }
     if (method === 'events/list') {
-      requireScope(principal, 'events:subscribe');
+      if (principal) requireScope(principal, 'events:subscribe');
       if (params.cursor != null) throw new HttpError(400, 'invalid_cursor');
       return complete({ events: [mcpEventDefinition] });
     }
+    if (!principal) return challenge();
     if (method === 'tools/call') {
       fields(params, ['name', 'arguments'], ['name']);
       const selected = tools.find(candidate => candidate.name === params.name);
       if (!selected) throw new HttpError(404, 'unknown_tool');
-      requireScope(principal, selected.scope);
+      if (selected.scope) requireScope(principal, selected.scope);
       const args = fields(params.arguments ?? {}, Object.keys(selected.inputSchema.properties), selected.inputSchema.required);
+      if (selected.name === 'get_profile') return complete(toolResult({
+        id: 'profile_' + await sha256Hex(JSON.stringify([config.issuer, principal.account])),
+      }));
       if (selected.name === 'list_tendrils') {
         const connected = await listConnected(env, principal.account);
         return complete(toolResult({ applications: connected }));

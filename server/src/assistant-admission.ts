@@ -62,10 +62,10 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
   });
 }
 
-function options(group: string, entries: Array<{ name: string; description: string }>) {
+function options(group: string, entries: Array<{ name: string; description: string }>, previous: Array<{ name: string }> = []) {
   if (!entries.length) return '';
   return `<fieldset><legend>${group}</legend>${entries.map(item =>
-    `<p><label><input type="checkbox" name="${group}" value="${escapeHtml(item.name)}"> <strong>${escapeHtml(item.name)}</strong></label><br>${escapeHtml(item.description)}</p>`).join('')}</fieldset>`;
+    `<p><label><input type="checkbox" name="${group}" value="${escapeHtml(item.name)}"${previous.some(entry => entry.name === item.name) ? " checked" : ""}> <strong>${escapeHtml(item.name)}</strong></label><br>${escapeHtml(item.description)}</p>`).join('')}</fieldset>`;
 }
 
 export async function reviewAssistant(t: Tendril, req: Request) {
@@ -78,10 +78,11 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   const current = connection(t);
   const csrf = await sha256Hex(JSON.stringify([browser.sessionHash, item.id, current?.version, t.tid, 'application-mcp-consent']));
   if (req.method === 'GET') {
+    const selection = current?.id === item.id ? current : null;
     const page = servicePage('Assistant connection',
-    `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Connection enabled. Review this proposal to change access.' : 'Choose what the assistant may access.'}</p>
+    `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Changing permissions clears the inbox and existing subscriptions.' : 'Choose what the assistant may access.'}</p>
     <form method="post"><input type="hidden" name="csrf" value="${csrf}">
-    ${options('queries', item.queries)}${options('commands', item.commands)}${options('events', item.events)}
+    ${options('queries', item.queries, selection?.queries)}${options('commands', item.commands, selection?.commands)}${options('events', item.events, selection?.events)}
     <button name="action" value="approve">Approve selected permissions</button>
     ${current ? '<button name="action" value="revoke">Disconnect application</button>' : ''}</form>`);
     const headers = new Headers(page.headers);
@@ -96,9 +97,12 @@ export async function reviewAssistant(t: Tendril, req: Request) {
     if (proposal(t)?.id !== item.id || connection(t)?.version !== current?.version || t.db.get('owner_account', null) !== browser.id)
       throw new HttpError(409, 'proposal_changed');
     if (form.get('action') === 'revoke') {
-      t.db.del('assistant_connection');
-      resetAssistantConnection(t);
-      closeAssistantConnections(t);
+      t.transaction(() => {
+        t.db.del('assistant_connection');
+        t.db.del('assistant_adapter');
+        resetAssistantConnection(t);
+        t.afterCommit(() => closeAssistantConnections(t));
+      });
       await t.env.ACCOUNTS.prepare("UPDATE assistant_connections SET enabled=0 WHERE page_id=?").bind(t.tid).run();
     } else if (form.get('action') === 'approve') {
       await requireWritesOpen(t.env);
@@ -107,6 +111,8 @@ export async function reviewAssistant(t: Tendril, req: Request) {
         queries: names(form.getAll('queries'), item.queries), commands: names(form.getAll('commands'), item.commands),
         events: names(form.getAll('events'), item.events) };
       if (!approved.queries.length && !approved.commands.length && !approved.events.length) throw new HttpError(400, 'no_permissions_selected');
+      if (current?.id === item.id && JSON.stringify([current.queries, current.commands, current.events]) ===
+        JSON.stringify([approved.queries, approved.commands, approved.events])) return redirect(returnTo);
       initializeAssistantTables(t);
       await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=? WHERE page_id=? AND owner_account=?')
         .bind(approved.label, t.tid, browser.id).run();
@@ -133,7 +139,6 @@ function resetAssistantConnection(t: Tendril) {
     t.db.run('DELETE FROM assistant_watchers');
     t.db.run('DELETE FROM assistant_events');
   }
-
 }
 
 function initializeAssistantTables(t: Tendril) {
@@ -142,7 +147,8 @@ function initializeAssistantTables(t: Tendril) {
     t.db.run(`CREATE TABLE IF NOT EXISTS assistant_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL,
       generation TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(generation,source_id,name));
       CREATE TABLE IF NOT EXISTS assistant_watchers(id TEXT PRIMARY KEY, grant_id TEXT NOT NULL, name TEXT NOT NULL,
-      url TEXT NOT NULL, secret TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      url TEXT NOT NULL, secret TEXT NOT NULL, previous_secret TEXT, rotate_until INTEGER,
+      verified_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS assistant_jobs(event_seq INTEGER NOT NULL, watcher_id TEXT NOT NULL,
       due INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(event_seq,watcher_id));
       CREATE INDEX IF NOT EXISTS assistant_jobs_due ON assistant_jobs(due);`);

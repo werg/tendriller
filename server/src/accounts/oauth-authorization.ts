@@ -1,3 +1,4 @@
+import { validateClientMetadata } from './oauth-client-metadata';
 import type { Env } from '../env';
 import { sha256Hex } from '../ids';
 import { authorizationRedirect, browserIdentity, consumeIntent, intent, redirect, sameOrigin } from './oauth-data';
@@ -45,6 +46,11 @@ export async function authorize(req: Request, env: Env, config: OAuthConfig, url
     }
     const browser = await browserIdentity(req, env);
     if (!browser) return redirect('/auth?return_to=' + encodeURIComponent(url.pathname + url.search));
+    try { await validateClientMetadata(client!, uri!); }
+    catch (error) {
+      if (!(error instanceof OAuthFailure)) throw error;
+      return authorizationRedirect(config, uri!, state, { error: error.code, error_description: error.message });
+    }
     const token = await intent(env, browser, 'authorize', { clientId, uri, state, scope, challenge, resource: config.resource, policy: await policy(config, client!) });
     return authorizationPage('Connect an integration', `<h1>Connect ${escapeHtml(client!.name)}</h1>
       <p>Continue as ${escapeHtml(browser.email ?? browser.id)}. This client is requesting access to <code>${escapeHtml(config.resource)}</code>.</p>

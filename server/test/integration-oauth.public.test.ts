@@ -10,7 +10,7 @@ import { bytesDigest, bytesToHex, createApplicationTools, describeApplication, e
   openApplicationDevice, openPeerApplication, participantGrant, signTransitionRequest } from '@chronolog/peer-session';
 import { createPeersClient } from '../../contract/peers.mjs';
 import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
-import { connectApplicationAssistant, createAssistantKey, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
+import { connectApplicationAssistant, createAssistantKey, forwardApplicationEvents, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 import { advance, create, inDO, runAlarm, stub } from './helpers';
 
@@ -518,20 +518,33 @@ it('serves unrelated native applications through one MCP endpoint and retains in
   }
   const sent: { id: string; body: string }[] = [];
   let mounted: WebSocket | undefined;
-  const secretBytes = new Uint8Array(32).fill(9), secret = 'whsec_' + btoa(String.fromCharCode(...secretBytes));
+  const secrets = [new Uint8Array(32).fill(9), new Uint8Array(32).fill(10)];
+  const [secret, rotatedSecret] = secrets.map(bytes => 'whsec_' + btoa(String.fromCharCode(...bytes)));
+  let verifications = 0;
   const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const req = new Request(input, init);
     expect(req.url).toBe('https://callback.example/events');
     const body = await req.text(), value = JSON.parse(body), id = req.headers.get('webhook-id')!;
-    const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${req.headers.get('webhook-timestamp')}.${body}`));
-    expect(req.headers.get('webhook-signature')).toBe('v1,' + btoa(String.fromCharCode(...new Uint8Array(signature))));
+    const signatures = await Promise.all(secrets.map(async bytes => {
+      const key = await crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${req.headers.get('webhook-timestamp')}.${body}`));
+      return 'v1,' + btoa(String.fromCharCode(...new Uint8Array(signature)));
+    }));
     expect(req.headers.get('X-MCP-Subscription-Id')).toMatch(/^sub_/);
-    if (value.type === 'verification') return Response.json({ challenge: value.challenge });
+    if (value.type === 'verification') {
+      expect(req.headers.get('webhook-signature')).toBe(signatures[verifications++]);
+      return Response.json({ challenge: value.challenge });
+    }
+    expect(req.headers.get('webhook-signature')).toBe(sent.length === 0 ? signatures[0] : [signatures[1], signatures[0]].join(' '));
     sent.push({ id, body });
     return new Response(null, { status: sent.length === 1 ? 503 : 204 });
   });
   try {
+    const anonymous = async (method: string, params = {}) => request('/mcp', bind, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Mcp-Protocol-Version': '2026-07-28', 'Mcp-Method': method },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+    expect(await (await anonymous('tools/list')).json()).toMatchObject({ result: { resultType: 'complete' } });
+    expect((await anonymous('tools/call', { name: 'list_tendrils', arguments: {} })).status).toBe(401);
     const first = await open(a, notes, 'notes', 'addNote', 'note.added');
     const second = await open(b, counter, 'readings', 'count', 'counter.changed');
     expect((await first.rpc('initialize')).result.capabilities.events).toEqual({});
@@ -539,6 +552,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       { applicationId: first.id, label: a.page.name, pageId: a.page.id },
     ]);
     expect((await first.tool('describe_application', { applicationId: second.id })).result.isError).toBe(true);
+    expect((await first.tool('get_profile')).result.structuredContent.id).not.toEqual((await second.tool('get_profile')).result.structuredContent.id);
     expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual(['application.event']);
     expect((await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.queries[0].name).toBe('notes');
     const announcement = (await first.tool('open_application_inbox', { applicationId: first.id })).result;
@@ -568,9 +582,28 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
 
-    const watch = await first.rpc('events/subscribe', { name: 'application.event', arguments: { application_id: first.id, event: 'note.added' },
-      delivery: { mode: 'webhook', url: 'https://callback.example/events', secret } });
+    const capture = new AbortController();
+    const bareAlarm = await inDO(b.page.id, async t => t.ctx.storage.getAlarm());
+    const consumer = forwardApplicationEvents({
+      session: second.session, assistant: second.adapter, topics: ['reading'], signal: capture.signal,
+      checkpoint: { load: () => undefined, save: () => capture.abort() },
+      project: event => ({ name: second.eventName, payload: event.payload }),
+    });
+    await consumer.catch(error => { if (!capture.signal.aborted) throw error; });
+    expect((await second.tool('read_application_events', { applicationId: second.id })).result.structuredContent.events)
+      .toMatchObject([{ data: { payload: { value: 7 } } }]);
+    await inDO(b.page.id, async t => {
+      expect(await t.ctx.storage.getAlarm()).toBe(bareAlarm);
+      expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull();
+    });
+
+    const tuning = { name: 'application.event', arguments: { application_id: first.id, event: 'note.added' },
+      delivery: { mode: 'webhook', url: 'https://callback.example/events' } };
+    const subscribe = (secret: string) => first.rpc('events/subscribe', { ...tuning, delivery: { ...tuning.delivery, secret } });
+    const watch = await subscribe(secret);
     expect(watch.result?.id, JSON.stringify(watch)).toMatch(/^sub_/);
+    expect((await subscribe(secret)).result.id).toBe(watch.result.id);
+    expect(verifications).toBe(1);
     const view = await first.session.readView(), batch = view.readEvents({ topics: ['note'] });
     await view.release();
     expect(batch.events).toHaveLength(1);
@@ -585,6 +618,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await advance(a.page.id, 100);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(1);
+    expect((await subscribe(rotatedSecret)).result.id).toBe(watch.result.id);
+    expect(verifications).toBe(2);
     await evictDurableObject(stub(a.page.id));
     await inDO(a.page.id, t => {
       Object.assign(t.env, settings);
@@ -598,6 +633,12 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
     await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull());
 
+    expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
+    expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
+    await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_watchers')).toBeNull());
+    await first.adapter.close();
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.code).toBe('application_participant_offline');
+    expect((await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent.events).toHaveLength(1);
     await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), first.gid).run();
     expect((await first.rpc('initialize')).error).toBe('invalid_token');
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
@@ -610,3 +651,46 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await inDO(b.page.id, t => { Object.assign(t.env, restore); });
   }
 }, 30_000);
+
+it('uses an operator-pinned client metadata document for public PKCE without fetching caller-controlled URLs', async () => {
+  const f = await hostFixture(), id = 'https://chatgpt.com/oauth/client.json';
+  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({
+    resource: ISSUER + '/mcp', clients: [{
+      id, name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['tendrils:list'], metadataDocument: true,
+    }],
+  }) });
+  const redirect = { client_id: id, redirect_uri: REDIRECT, state: 'cimd-browser-state', resource: ISSUER + '/mcp',
+    scope: 'tendrils:list', response_type: 'code', code_challenge_method: 'S256',
+    code_challenge: await challengeFor('s'.repeat(43)) };
+  let valid = false;
+  const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    expect(String(input)).toBe(id);
+    expect(init?.redirect).toBe('manual');
+    return Response.json({ client_id: id, redirect_uris: valid ? [REDIRECT] : ['https://chatgpt.com/unregistered'],
+      token_endpoint_auth_methods_supported: ['private_key_jwt', 'none'], token_endpoint_auth_method: 'private_key_jwt' });
+  });
+  try {
+    const discovery = await request('/.well-known/oauth-authorization-server', settings);
+    expect(await discovery.json()).toMatchObject({ client_id_metadata_document_supported: true, token_endpoint_auth_methods_supported: ['none'] });
+    const open = (params = redirect) => request('/oauth/authorize?' + new URLSearchParams(params), settings, { headers: { Cookie: f.cookie } });
+    expect((await open({ ...redirect, client_id: 'https://unknown.example/client.json' })).status).toBe(400);
+    expect(outbound).not.toHaveBeenCalled();
+    const rejected = await open();
+    expect(rejected.status).toBe(303);
+    expect(new URL(rejected.headers.get('Location')!).searchParams.get('error')).toBe('invalid_client');
+    valid = true;
+    const review = await open();
+    expect(review.status).toBe(200);
+    const intent = /name="intent" value="([^"]+)"/u.exec(await review.text())![1];
+    const approved = await formPost('/oauth/authorize', { intent, decision: 'allow' }, settings, f.cookie);
+    expect(approved.status).toBe(303);
+    const code = new URL(approved.headers.get('Location')!).searchParams.get('code')!;
+    const response = await serviceForm('/oauth/token', { client_id: id, grant_type: 'authorization_code',
+      resource: ISSUER + '/mcp', redirect_uri: REDIRECT, code, code_verifier: 's'.repeat(43) }, settings);
+    expect(response.status).toBe(200);
+    const result = await response.json() as { access_token: string };
+    const listed = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
+    expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [] } } });
+  } finally { outbound.mockRestore(); }
+});
