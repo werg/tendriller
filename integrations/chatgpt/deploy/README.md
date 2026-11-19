@@ -37,6 +37,12 @@ output together.
 Source and dependency pins make the build repeatable; they are not a claim that
 different toolchains produce identical archive bytes.
 
+The integration workflow retains the downloadable `tendriller-chatgpt-release`
+artifact and a separate `chatgpt-integration-qualification` artifact. Select the
+run for the exact reviewed source and inspect its manifest and reports before
+installation. An uploaded artifact is build evidence; it does not record a
+public deployment or a live assistant conversation.
+
 The release contains the integration with its locked runtime dependencies and a
 minimal `bridge-template/` installed from the exact public archives. Neither
 contains private handles, native devices, delivery keys or a creator signer.
