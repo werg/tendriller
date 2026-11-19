@@ -1,0 +1,59 @@
+name: ChatGPT integration
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatgpt-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: Remote integration and real native session
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          path: chronolog
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: core
+      - name: Build and extract the pinned public events session
+        working-directory: chronolog
+        run: |
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+          node tools/package-peer-session.mjs
+          mkdir -p "$RUNNER_TEMP/chronolog-peer-session" "$GITHUB_WORKSPACE/core/.results"
+          tar -xzf artifacts/peer-session/chronolog-peer-session-d014879e.tgz \
+            -C "$RUNNER_TEMP/chronolog-peer-session" --strip-components=1
+          test -f "$RUNNER_TEMP/chronolog-peer-session/native.mjs"
+          sha256sum artifacts/peer-session/chronolog-peer-session-d014879e.tgz \
+            > "$GITHUB_WORKSPACE/core/.results/chatgpt-chronolog-session.sha256"
+          cp "$RUNNER_TEMP/chronolog-peer-session/provenance.json" \
+            "$GITHUB_WORKSPACE/core/.results/chatgpt-chronolog-provenance.json"
+      - name: Test integration contracts and actual native peers
+        working-directory: core
+        env:
+          CHRONOLOG_SESSION_PACKAGE: ${{ runner.temp }}/chronolog-peer-session
+        run: npm run test:chatgpt 2>&1 | tee .results/chatgpt-tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chatgpt-integration-qualification
+          path: core/.results/chatgpt-*
+          include-hidden-files: true
+          if-no-files-found: ignore
