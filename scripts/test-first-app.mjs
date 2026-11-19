@@ -2,7 +2,7 @@
 // The local host has synthetic account sessions; no OAuth provider or live service is used.
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
+import { connect as connectTls } from 'node:tls';
 import { parseArgs, promisify } from 'node:util';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { chromium, expect } from '@playwright/test';
@@ -87,6 +88,24 @@ async function packDependency(name) {
   const result = JSON.parse(await run('npm', ['pack', '--ignore-scripts', '--offline', '--json',
     '--cache', join(directory, 'npm-cache'), '--pack-destination', directory, path]));
   return join(directory, result[0].filename);
+}
+
+async function localCertificatePin() {
+  return new Promise((resolve, reject) => {
+    const socket = connectTls({ host: '127.0.0.1', port: 8790,
+      servername: 'service.localhost', rejectUnauthorized: false });
+    const finish = (error, value) => {
+      clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value);
+    };
+    const timer = setTimeout(() => finish(Error('Local fixture certificate was unavailable')), 5_000);
+    socket.once('error', error => finish(error));
+    socket.once('secureConnect', () => {
+      try {
+        const certificate = new X509Certificate(socket.getPeerCertificate().raw);
+        finish(null, createHash('sha256').update(certificate.publicKey.export({ type: 'spki', format: 'der' })).digest('base64'));
+      } catch (error) { finish(error); }
+    });
+  });
 }
 
 // SharedWorker traffic is not attributed to the owning Page by Chromium. Capture
@@ -295,11 +314,16 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   } else {
     report.browser_checks = 'running';
     checkpoint('launch browser');
+    // Context.ignoreHTTPSErrors does not cover subsequent SharedWorker fetches.
+    // Trust only this loopback fixture certificate across Chromium targets;
+    // never disable certificate verification globally or alter the public app.
+    const certificatePin = await localCertificatePin();
     browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1'] });
+      args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1',
+        `--ignore-certificate-errors-spki-list=${certificatePin}`] });
     report.browser = await browser.version();
     await captureWorkerNetwork(browser);
-    const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     context.on('requestfailed', request => {
       report.browser_network_failures ??= [];
       if (report.browser_network_failures.length < 20) {
