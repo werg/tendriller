@@ -14,6 +14,8 @@ const j = (alias, key) => `json_extract(${alias}.body,'$.${key}')`;
 const event = (type, description, input, prepare) => defineCommand({ description, input,
   prepare(value) { return prepare(value); } });
 const parse = (value, limit = 8192) => canonicalJson(JSON.parse(value), limit);
+// Colons are legal in identities; each tuple component needs its own boundary.
+const compositeRecordId = (type, ...parts) => `${type}:${parts.map(value => `${identifier(value).length}:${value}`).join('')}`;
 
 /** Shared immutable schema: every admitted signed raw program meets the same triggers. */
 export function createCollaborationDefinition({ id: definitionId = 'tendriller-collaboration', version = '1',
@@ -44,6 +46,11 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     ELSE 'superseded' END`;
   const assert = (predicate, code) => `SELECT chronolog_assert(COALESCE((${predicate}),0),'${code}');`;
   const stringField = (key, maximum, minimum = 1) => `json_type(NEW.body,'$.${key}')='text' AND length(${body(key)}) BETWEEN ${minimum} AND ${maximum}`;
+  // Match identifier() for durable domain IDs, including embedded-NUL rejection.
+  const identityValue = value => `typeof(${value})='text' AND length(${value}) BETWEEN 1 AND 160
+    AND length(CAST(${value} AS BLOB))=length(${value}) AND ${value} GLOB '[A-Za-z0-9]*'
+    AND ${value} NOT GLOB '*[^A-Za-z0-9_.:/-]*'`;
+  const identityField = key => `json_type(NEW.body,'$.${key}')='text' AND ${identityValue(body(key))}`;
   const integerField = (key, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => `json_type(NEW.body,'$.${key}')='integer' AND ${body(key)} BETWEEN ${minimum} AND ${maximum}`;
   const fenceFields = `${integerField('claimEpoch', 1)} AND ${stringField('generation', 64, 64)}
     AND ${body('generation')} NOT GLOB '*[^0-9a-f]*' AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}`;
@@ -89,18 +96,19 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       ${assert(`NEW.generation=${generation}`, 'collab_generation')}
       ${assert('NEW.attempt_id IS chronolog_transaction_id()', 'collab_attempt')}
       ${assert('NEW.sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal)', 'collab_sequence')}
+      ${assert(`(${identityValue('NEW.task_id')}) AND (NEW.slot_id='' OR (${identityValue('NEW.slot_id')}))`, 'collab_identity')}
       ${assert(`NEW.sequence<=${Number.MAX_SAFE_INTEGER} AND json_type(NEW.body)='object' AND CASE NEW.type
         WHEN 'request' THEN ${stringField('kind', 128)} AND ${stringField('title', 256)}
         WHEN 'claim' THEN ${integerField('epoch', 1)} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}
         WHEN 'rebind' THEN ${integerField('epoch', 1)} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}
         WHEN 'handoff' THEN ${integerField('epoch', 1)} AND ${stringField('reason', 1000)}
-        WHEN 'result' THEN ${fenceFields} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('resultId', 160)}
+        WHEN 'result' THEN ${fenceFields} AND ${integerField('taskVersion', 1, 1)} AND ${identityField('resultId')}
         WHEN 'cancel' THEN ${integerField('expectedVersion')} AND ${stringField('reason', 1000)}
         WHEN 'ackCancel' THEN ${fenceFields}
         WHEN 'finalize' THEN ${integerField('expectedVersion')} AND json_type(NEW.body,'$.allowPartial') IN ('true','false')
-          AND NOT EXISTS (SELECT 1 FROM json_each(NEW.body,'$.resultIds') WHERE type<>'text' OR length(value) NOT BETWEEN 1 AND 160)
-        WHEN 'message' THEN ${stringField('text', 4000)} AND ${stringField('messageId', 160)}
-          AND (json_type(NEW.body,'$.inReplyTo') IS NULL OR (${stringField('inReplyTo', 160)}))
+          AND NOT EXISTS (SELECT 1 FROM json_each(NEW.body,'$.resultIds') WHERE type<>'text' OR NOT (${identityValue('value')}))
+        WHEN 'message' THEN ${stringField('text', 4000)} AND ${identityField('messageId')}
+          AND (json_type(NEW.body,'$.inReplyTo') IS NULL OR (${identityField('inReplyTo')}))
         ELSE 0 END`, 'collab_envelope')}
       ${assert(`CASE NEW.type
         WHEN 'request' THEN ${encodedJson('input', limits.payloadBytes)} AND ${encodedJson('target', 2048)} AND ${encodedJson('source', 2048)} AND ${encodedJson('context', 2048)}
@@ -120,7 +128,7 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       ${assert(`${body('responsePolicy')} IN ('one','allSlots','firstAccepted','manual') AND (${body('responsePolicy')}<>'one' OR json_array_length(NEW.body,'$.slots')=1)`, 'collab_response_policy')}
       ${assert(`(SELECT COUNT(DISTINCT json_extract(value,'$.slotId')) FROM json_each(NEW.body,'$.slots'))=json_array_length(NEW.body,'$.slots')`, 'collab_duplicate_slot')}
       ${assert(`NOT EXISTS (SELECT 1 FROM json_each(NEW.body,'$.slots') s WHERE
-        COALESCE(json_type(s.value,'$.slotId'),'')<>'text' OR length(json_extract(s.value,'$.slotId')) NOT BETWEEN 1 AND 160
+        COALESCE(json_type(s.value,'$.slotId'),'')<>'text' OR NOT (${identityValue("json_extract(s.value,'$.slotId')")})
         OR COALESCE(json_type(s.value,'$.eligibleSigners'),'')<>'array' OR json_array_length(s.value,'$.eligibleSigners') NOT BETWEEN 1 AND 32
         OR (json_type(s.value,'$.label') IS NOT NULL AND (json_type(s.value,'$.label')<>'text' OR length(json_extract(s.value,'$.label')) NOT BETWEEN 1 AND 128))
         OR (json_type(s.value,'$.agentBindingId') IS NOT NULL AND (json_type(s.value,'$.agentBindingId')<>'text' OR length(json_extract(s.value,'$.agentBindingId')) NOT BETWEEN 1 AND 160))
@@ -257,7 +265,7 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       object({ taskId: id, slotId: id, actionId: id, expectedEpoch: integer, assignee: signer, reason: text(1000) }),
       ({ taskId,slotId,actionId,expectedEpoch,...value }) => { signerId(value.assignee); return insert('handoff', `handoff:${actionId}`,taskId,slotId,{...value,epoch:expectedEpoch+1}); }),
     'collab.result': event('result', 'Retain a result under its original complete claim fence; late work cannot overwrite an accepted result', resultInput,
-      ({taskId,slotId,...value}) => insert('result',`result:${taskId}:${value.resultId}`,taskId,slotId,{...value,content:parse(value.content,limits.payloadBytes)},{result:true})),
+      ({taskId,slotId,...value}) => insert('result',compositeRecordId('result',taskId,value.resultId),taskId,slotId,{...value,content:parse(value.content,limits.payloadBytes)},{result:true})),
     'collab.cancel': event('cancel','Request cancellation durably; existing external effects remain inspectable',
       object({taskId:id,actionId:id,expectedVersion:integer,reason:text(1000)}),
       ({taskId,actionId,...value}) => insert('cancel',`cancel:${actionId}`,taskId,'',value)),
@@ -269,6 +277,6 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       ({taskId,actionId,...value}) => insert('finalize',`finalize:${actionId}`,taskId,'',{...value,content:parse(value.content,limits.payloadBytes)})),
     'collab.message': event('message','Post a durable attributed thread message; observing a message grants no execution claim',
       object({threadId:id,messageId:id,text:text(4000),source:text(2048),inReplyTo:id},['threadId','messageId','text','source']),
-      ({threadId,messageId,...value}) => insert('message',`message:${threadId}:${messageId}`,threadId,'',{...value,messageId,source:parse(value.source,2048)})),
+      ({threadId,messageId,...value}) => insert('message',compositeRecordId('message',threadId,messageId),threadId,'',{...value,messageId,source:parse(value.source,2048)})),
   }, queries });
 }

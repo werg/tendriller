@@ -53,6 +53,65 @@ function rawRecord(h,type,body,{author=A,taskId='task',slotId='',id=crypto.rando
       lower(hex(chronolog_actor())),'${G}',chronolog_transaction_id(),${quoted(encoded)},1)`,author);
 }
 
+test('message tuple identities keep colon-containing threads independent and retain exact original records',async(t)=>{
+  const h=harness();t.after(()=>h.db.close());
+  const left={threadId:'a:b',messageId:'c',text:'First thread message',source:'{}'};
+  const right={threadId:'a',messageId:'b:c',text:'Second thread message',source:'{}'};
+  const first=h.execute('collab.message',left,A),second=h.execute('collab.message',right,A);
+  h.execute('collab.message',left,A);h.execute('collab.message',right,A);
+  for(const [input,operation] of [[left,first],[right,second]]){
+    const page=await h.definition.queries['collab.thread'].read(h.view,{threadId:input.threadId});
+    assert.equal(page.messages.length,1);assert.equal(page.messages[0].messageId,input.messageId);
+    assert.equal(page.messages[0].text,input.text);assert.deepEqual(page.messages[0].operation,operation);
+    assert.throws(()=>h.execute('collab.message',{...input,text:'Changed content'},A),/collab_identity_conflict/);
+  }
+  assert.equal(h.db.prepare("SELECT COUNT(DISTINCT id) AS count FROM collab_journal WHERE type='message'").get().count,2);
+});
+
+test('result tuple identities keep colon-containing tasks independent and preserve exact retry lineage',async(t)=>{
+  const h=harness();t.after(()=>h.db.close());
+  const pairs=[{taskId:'a:b',resultId:'c',content:'{"answer":"first"}'},{taskId:'a',resultId:'b:c',content:'{"answer":"second"}'}];
+  const originals=[];
+  for(const [index,value] of pairs.entries()){
+    h.execute('collab.request',{interactionId:value.taskId,...rawRequest()},A);
+    h.execute('collab.claim',{...claim(`claim-${index}`),taskId:value.taskId},B);
+    originals.push(h.execute('collab.result',{...result(),...value},B));
+  }
+  for(const [index,value] of pairs.entries()){
+    h.execute('collab.result',{...result(),...value},B);
+    const current=await h.snapshot(value.taskId);
+    assert.equal(current.results.length,1);assert.equal(current.results[0].resultId,value.resultId);
+    assert.equal(current.results[0].disposition,'accepted');assert.deepEqual(current.results[0].content,JSON.parse(value.content));
+    assert.deepEqual(current.results[0].operation,originals[index]);assert.equal(current.task.version,3);
+    assert.throws(()=>h.execute('collab.result',{...result(),...value,content:'{"answer":"changed"}'},B),/collab_identity_conflict/);
+  }
+  assert.equal(h.db.prepare("SELECT COUNT(DISTINCT id) AS count FROM collab_journal WHERE type='result'").get().count,2);
+});
+
+test('raw domain identities use the same alphabet as public helpers without restricting human content',async(t)=>{
+  const h=harness();t.after(()=>h.db.close());
+  for(const invalid of ['with spaces','-leading','trailing\n','caf\u00e9','a'.repeat(161)]){
+    assert.throws(()=>rawRecord(h,'request',rawRequest(),{taskId:invalid}),/collab_identity/);
+    assert.throws(()=>rawRecord(h,'message',{messageId:'message',text:'Readable message',source:'{}'},{taskId:invalid}),/collab_identity/);
+    assert.throws(()=>rawRecord(h,'request',{...rawRequest(),slots:[{slotId:invalid,eligibleSigners:[B]}]}),/collab_eligibility/);
+    assert.throws(()=>rawRecord(h,'message',{messageId:invalid,text:'Readable message',source:'{}'}),/collab_envelope/);
+  }
+  assert.throws(()=>rawRecord(h,'message',{messageId:'nul\u0000suffix',text:'Readable message',source:'{}'}),/collab_envelope/);
+  request(h);h.execute('collab.claim',claim(),B);
+  const {taskId,slotId,...content}=result('invalid result');
+  assert.throws(()=>rawRecord(h,'result',{...content,disposition:'accepted'},{author:B,slotId}),/collab_envelope/);
+  assert.throws(()=>rawRecord(h,'claim',{epoch:2,taskVersion:1,runId:'run-b',endpointIncarnation:'view-b'},{author:B,slotId:'bad slot'}));
+  assert.throws(()=>rawRecord(h,'message',{messageId:'reply',inReplyTo:'bad reply',text:'Readable reply',source:'{}'}));
+  const valid='Az09_.:/-';
+  rawRecord(h,'request',{...rawRequest(),kind:'Human kind with spaces',title:'A human title: caf\u00e9',slots:[{slotId:valid,label:'Human slot label / caf\u00e9',eligibleSigners:[B]}]},{taskId:valid});
+  const posted=rawRecord(h,'message',{messageId:valid,text:'Human content: spaces, caf\u00e9, and emoji \ud83d\ude42',source:'{}'},{taskId:valid});
+  rawRecord(h,'message',{messageId:'reply',inReplyTo:valid,text:'A human reply',source:'{}'},{taskId:valid});
+  const current=await h.snapshot(valid),thread=await h.definition.queries['collab.thread'].read(h.view,{threadId:valid});
+  assert.equal(current.task.slots[0].slotId,valid);assert.equal(current.task.slots[0].label,'Human slot label / caf\u00e9');
+  assert.equal(thread.messages.length,2);assert.deepEqual(thread.messages[0].operation,posted);
+  assert.equal(thread.messages[1].inReplyTo,valid);
+});
+
 test('raw JSON fields must retain the encoded-string contract and projection envelope types',async()=>{
   const h=harness();
   for(const key of ['input','target','source','context'])
