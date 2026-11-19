@@ -64,6 +64,26 @@ event sequence. Reconcile selected history and preserve recovery evidence before
 resuming. Applied events may later be excluded by explicit recovery; external
 webhook acceptance is a separate fact and is not proof of application finality.
 
+`observe(id,{cursor?,signal?})` yields `kind: 'events'` batches with explicit pull
+backpressure. Finish the atomic outbox/cursor transaction before requesting the
+next batch. A native recovery yields one `kind: 'recovery'` notice with
+`resetRequired: true`, then ends the iterator. Record that notice and reconcile
+outbound jobs before explicitly restarting the observer. Neither a process
+restart nor a recovery silently clears its checkpoint. Supply a shutdown signal
+to stop a waiting observer. No extra transport or coordinator retry loop exists.
+
+`getEvent(id,sourceEventId,{maxBatches?})` scans one coherent selected history and
+returns the real permitted source event plus its current projected summary. It
+returns `null` only after a complete scan; `BRIDGE_EVENT_SCAN_LIMIT` means absence
+was not established within the budget. The default budget scans 4,096 native
+transactions. Only an allowlisted topic with a non-null projection is exposed.
+The event details contain application data and require the caller's corresponding
+read/egress permission, separately from permission to send a summary.
+`verifySource(id,sourceEventId,sourceRevision)` returns `selected` plus the actual
+current revision, allowing an inherited event that remains in selected history.
+Call it before sending/retrying a durable notification. Recovery during an
+asynchronous projection is detected before returning an excluded generation.
+
 The current application definition is immutable after provisioning. Add new
 assistance declarations before configuring a new application, or use an explicit
 supported evolution path. Publishing new HTML does not replace a bound domain.

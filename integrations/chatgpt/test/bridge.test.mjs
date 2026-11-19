@@ -110,3 +110,61 @@ test('views release after projection failure, oversized egress and recovery; rec
   assert.equal(released, true);
   await f.bridge.close();
 });
+
+test('selected-history lookup distinguishes absent events and exhausted scan budgets', async () => {
+  const f = fixture();
+  const detail = await f.bridge.getEvent(id, 'source:0');
+  assert.equal(detail.event.payload.question, 'private');
+  assert.equal(detail.projection.data.request_id, 'request');
+  assert.equal((await f.bridge.verifySource(id, 'source:0', revision)).selected, true);
+  assert.equal(await f.bridge.getEvent(id, 'missing:0'), null);
+  assert.equal((await f.bridge.verifySource(id, 'missing:0', revision)).selected, false);
+  f.session.readView = async () => ({ readEvents: async () => ({ revision, cursor: 'more', events: [], hasMore: true }), release() {} });
+  await assert.rejects(f.bridge.getEvent(id, 'source:0', { maxBatches: 1 }), { code: 'BRIDGE_EVENT_SCAN_LIMIT' });
+  await f.bridge.close();
+});
+
+test('recovery racing projection cannot export excluded captured events', async () => {
+  let f;
+  f = fixture({ eventProjection: () => {
+    f.session.status = { ...f.session.status, generation: 'e'.repeat(64) };
+    return { name: 'assistant.help_requested', data: { request_id: 'request' } };
+  } });
+  await assert.rejects(f.bridge.readEvents(id), { code: 'APPLICATION_VIEW_RECOVERED' });
+  assert.equal(f.counts().releases, 1);
+  await f.bridge.close();
+});
+
+test('observer backpressure follows cursor commit; a recovery notice ends observation until explicit restart', async () => {
+  const f = fixture();
+  const notice = { generation: 'e'.repeat(64), unknownLoss: true };
+  f.session.changes = async function* () {
+    yield { kind: 'applied', revision };
+    yield { kind: 'recovery', revision: { ...revision, generation: notice.generation }, recovery: notice };
+  };
+  const iterator = f.bridge.observe(id)[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  assert.equal(first.value.kind, 'events');
+  assert.equal(first.value.cursor, 'cursor-1');
+  assert.equal(f.calls.filter(value => value.read).length, 1);
+  const next = await iterator.next();
+  assert.equal(next.value.kind, 'recovery');
+  assert.equal(next.value.previousCursor, 'cursor-1');
+  assert.equal(next.value.resetRequired, true);
+  assert.equal((await iterator.next()).done, true);
+  await f.bridge.close();
+});
+
+test('observer resumes stale cursor with recovery evidence, not silent replay', async () => {
+  const f = fixture();
+  f.session.changes = async function* () { yield { kind: 'applied', revision }; };
+  f.session.inspectRecovery = async () => [{ generation, unknownLoss: false }];
+  f.session.readView = async () => ({ readEvents: () => { throw Object.assign(Error('APPLICATION_VIEW_RECOVERED'), { revision }); }, release() {} });
+  const observed = [];
+  for await (const value of f.bridge.observe(id, { cursor: 'stale' })) observed.push(value);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].kind, 'recovery');
+  assert.equal(observed[0].previousCursor, 'stale');
+  assert.equal(observed[0].recovery.unknownLoss, false);
+  await f.bridge.close();
+});

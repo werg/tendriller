@@ -99,6 +99,25 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
     const declared = description[kind === 'commands' ? 'commands' : 'queries'];
     if (!Array.isArray(declared) || !declared.some(value => value.name === name)) fail('BRIDGE_OPERATION_UNDECLARED');
   }
+  function selected(session, revision) {
+    if (session.status.generation !== revision.generation) {
+      const error = new BridgeError('APPLICATION_VIEW_RECOVERED', 'The captured generation is no longer selected');
+      error.revision = session.revision ?? { generation: session.status.generation };
+      throw error;
+    }
+  }
+  async function project(entry, event, revision) {
+    if (!entry.topics.has(event.topic) || !entry.project) return null;
+    const projection = await entry.project(structuredClone(event), { revision: structuredClone(revision) });
+    if (projection === null || projection === undefined) return null;
+    if (!projection || typeof projection !== 'object' || Array.isArray(projection)
+      || !NAME.test(projection.name) || !projection.data || typeof projection.data !== 'object' || Array.isArray(projection.data)) {
+      fail('BRIDGE_EVENT_PROJECTION_INVALID');
+    }
+    return bounded({ name: projection.name, data: projection.data, sourceEventId: event.id,
+      sourceOperationId: event.operationId, sourceAuthor: event.author, sourceAttemptId: event.attemptId,
+      revision }, maxEventBytes, 'BRIDGE_EVENT_TOO_LARGE');
+  }
   async function read(id, options = {}) {
     const entry = entryFor(id), owned = await access(entry);
     const { cursor, limit = 128 } = options;
@@ -110,20 +129,35 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
         ...(cursor === undefined ? {} : { cursor }) });
       const events = [];
       for (const event of batch.events) {
-        if (!entry.topics.has(event.topic) || !entry.project) continue;
-        const projection = await entry.project(structuredClone(event), { revision: structuredClone(batch.revision) });
-        if (projection === null || projection === undefined) continue;
-        if (!projection || typeof projection !== 'object' || Array.isArray(projection)
-          || !NAME.test(projection.name) || !projection.data || typeof projection.data !== 'object' || Array.isArray(projection.data)) {
-          fail('BRIDGE_EVENT_PROJECTION_INVALID');
-        }
-        events.push(bounded({ name: projection.name, data: projection.data, sourceEventId: event.id,
-          sourceOperationId: event.operationId, sourceAuthor: event.author, sourceAttemptId: event.attemptId,
-          revision: batch.revision }, maxEventBytes, 'BRIDGE_EVENT_TOO_LARGE'));
+        const projection = await project(entry, event, batch.revision);
+        if (projection !== null) events.push(projection);
       }
       await access(entry);
+      selected(owned.session, batch.revision);
       return bounded({ applicationId: id, revision: batch.revision, cursor: batch.cursor,
         hasMore: batch.hasMore, events }, maxResultBytes);
+    } finally { await view.release(); }
+  }
+  async function findEvent(id, sourceEventId, { maxBatches = 32 } = {}) {
+    text(sourceEventId, 'source event ID', 512);
+    if (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 128) fail('BRIDGE_INPUT_INVALID');
+    const entry = entryFor(id), { session } = await access(entry), view = await session.readView();
+    try {
+      let cursor;
+      for (let scanned = 0; scanned < maxBatches; scanned++) {
+        const batch = await view.readEvents({ topics: [...entry.topics].sort(), limit: 128,
+          ...(cursor === undefined ? {} : { cursor }) });
+        const event = batch.events.find(value => value.id === sourceEventId && entry.topics.has(value.topic));
+        const projection = event === undefined ? null : await project(entry, event, batch.revision);
+        if (projection !== null || !batch.hasMore) {
+          await access(entry); selected(session, batch.revision);
+          return { revision: batch.revision, found: projection === null ? null
+            : bounded({ applicationId: id, revision: batch.revision, event, projection }, maxResultBytes) };
+        }
+        if (batch.cursor === cursor) fail('BRIDGE_EVENT_CURSOR_STALLED');
+        cursor = batch.cursor;
+      }
+      fail('BRIDGE_EVENT_SCAN_LIMIT', 'Selected event lookup exceeded its bounded scan; absence was not established');
     } finally { await view.release(); }
   }
   const bridge = {
@@ -147,6 +181,7 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       permitted(entry, session.describe(), 'queries', name);
       const result = await session.query(name, bounded(input, 64 * 1024, 'BRIDGE_INPUT_TOO_LARGE'));
       await access(entry);
+      selected(session, result.revision);
       return bounded(result, maxResultBytes);
     },
     async command(id, name, input, { operationId, basedOn } = {}) {
@@ -167,6 +202,54 @@ export function createSessionBridge({ applications, maxResultBytes = DEFAULT_RES
       return bounded(await session.operations.get(operationId), maxResultBytes);
     },
     readEvents: read,
+    async getEvent(id, sourceEventId, options) { return (await findEvent(id, sourceEventId, options)).found; },
+    async verifySource(id, sourceEventId, sourceRevision) {
+      if (!sourceRevision || sourceRevision.applicationId !== id || typeof sourceRevision.historyId !== 'string') {
+        fail('BRIDGE_REVISION_SCOPE_MISMATCH');
+      }
+      const result = await findEvent(id, sourceEventId);
+      if (result.revision.historyId !== sourceRevision.historyId) fail('BRIDGE_REVISION_SCOPE_MISMATCH');
+      return { selected: result.found !== null, currentRevision: result.revision, sourceRevision };
+    },
+    async *observe(id, { cursor: initialCursor, limit = 128, signal } = {}) {
+      const entry = entryFor(id), { session } = await access(entry);
+      const observation = signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
+      let cursor = initialCursor;
+      for await (const change of session.changes({ signal: observation })) {
+        observation.throwIfAborted();
+        if (change.kind === 'recovery') {
+          yield bounded({ kind: 'recovery', applicationId: id, revision: change.revision,
+            recovery: change.recovery, previousCursor: cursor ?? null, resetRequired: true }, maxResultBytes);
+          // The consumer must durably record/reconcile this notice and explicitly
+          // restart with its chosen cursor. Never reset an external side effect
+          // checkpoint merely because the native history changed.
+          return;
+        }
+        for (;;) {
+          let batch;
+          try { batch = await read(id, { ...(cursor === undefined ? {} : { cursor }), limit }); }
+          catch (error) {
+            if (error?.code !== 'APPLICATION_VIEW_RECOVERED' && error?.message !== 'APPLICATION_VIEW_RECOVERED') throw error;
+            const revision = error.revision ?? session.revision;
+            const notices = await session.inspectRecovery();
+            yield bounded({ kind: 'recovery', applicationId: id, revision,
+              recovery: notices.findLast(notice => notice.generation === revision?.generation) ?? null,
+              previousCursor: cursor ?? null, resetRequired: true }, maxResultBytes);
+            return;
+          }
+          observation.throwIfAborted();
+          if (batch.cursor === cursor) {
+            if (batch.hasMore) fail('BRIDGE_EVENT_CURSOR_STALLED');
+            break;
+          }
+          yield { kind: 'events', ...batch };
+          // Pulling the next batch is the consumer's acknowledgment that its
+          // outbox and cursor transaction completed. Restart supplies that cursor.
+          cursor = batch.cursor;
+          if (!batch.hasMore) break;
+        }
+      }
+    },
     close() {
       if (closing) return closing;
       closed = true; lifetime.abort(new BridgeError('BRIDGE_CLOSED'));
