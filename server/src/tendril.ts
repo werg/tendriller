@@ -20,6 +20,7 @@ import { reviewAssistant } from './assistant-admission';
 import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgradeAssistantAdapter } from './assistant-socket';
 import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
+import { requireHostApproval, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
 import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
@@ -285,31 +286,13 @@ export class Tendril extends DurableObject<Env> {
     if (!this.exists()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     const body = await readJson(req, 4096);
     const code = typeof body.code === "string" ? body.code.trim() : "";
-    const a = this.db.get<{ hash: string; expires_at: number; attempts: number; mode?: 'delegate'; name?: string; scopes?: AgentScope[] } | null>("adopt", null);
+    const a = this.db.get<HostApproval | null>("adopt", null);
     if (!a || a.expires_at <= this.now()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
-    const owner = this.db.get<string | null>('owner_account', null);
-    const localPolicy = () => {
-      if (!owner || !this.exists() || this.db.get('disabled', false) || this.db.get('owner_account', null) !== owner)
-        throw new HttpError(403, 'disabled', 'This tendril is unavailable');
-    };
-    const policy = async () => {
-      // One primary snapshot checks writes and the claimed page's current owner.
-      // Re-run after token hashing, immediately before consuming the code.
-      const row = await this.env.ACCOUNTS.prepare(`SELECT s.mode, t.state, t.owner_account,
-        a.id AS owner_id, a.suspended_at, a.deleting_at FROM service_state s
-        LEFT JOIN tendrils t ON t.id=? LEFT JOIN accounts a ON a.id=t.owner_account WHERE s.id=1`)
-        .bind(this.tid).first<{ mode: string; state: string | null; owner_account: string | null;
-          owner_id: string | null; suspended_at: number | null; deleting_at: number | null }>();
-      if (!row || !['open', 'creation_paused', 'read_only'].includes(row.mode))
-        throw new HttpError(503, 'unavailable', 'Service state is not initialized');
-      if (row.mode === 'read_only') throw new HttpError(503, 'read_only', 'Writes are temporarily paused');
-      localPolicy();
-      if (row.state !== 'active' || row.owner_account !== owner || row.owner_id !== owner ||
-        row.suspended_at !== null || row.deleting_at !== null)
-        throw new HttpError(403, 'disabled', 'This tendril is unavailable');
-    };
+    requireHostApproval(this, a);
+    // Re-run the bound owner/write policy after token hashing and before commit.
+    const policy = () => requireHostApprovalPolicy(this, a);
     const currentCode = () => {
-      localPolicy();
+      requireHostApproval(this, a);
       if (JSON.stringify(this.db.get('adopt', null)) !== JSON.stringify(a) || a.expires_at <= this.now())
         throw new HttpError(409, 'adoption_changed', 'The reviewed code changed or was already used. Ask the owner to inspect the named binding before issuing another code.');
     };
@@ -337,6 +320,10 @@ export class Tendril extends DurableObject<Env> {
       currentCode();
       if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
         throw new HttpError(409, 'adoption_application_mismatch');
+      if (a.mode === 'delegate') {
+        if (this.db.one('SELECT 1 FROM tokens WHERE name=?', a.name!)) throw new HttpError(409, 'agent_name_in_use');
+        if ((this.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+      }
       this.db.del('adopt');
       if (a.mode !== 'delegate') this.db.run('DELETE FROM tokens');
     }, policy);

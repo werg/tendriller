@@ -1,6 +1,6 @@
 import type { Tendril } from './tendril';
 import type { PagePrincipal } from './access';
-import { agentScopes } from './access';
+import { agentScopes, currentPrincipal } from './access';
 import { addActivity } from './activity';
 import { listVersions, pointers } from './files';
 import { escapeHtml } from './inject';
@@ -8,6 +8,7 @@ import { HttpError, readBody } from './http';
 import { sha256Hex, sixDigits } from './ids';
 import { ADOPT_CODE_TTL } from './limits';
 import { serviceStyle } from './accounts/ui';
+import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
 
 const text = (value: unknown) => escapeHtml(String(value ?? ''));
 
@@ -19,35 +20,55 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     if (!owner) throw new HttpError(403, 'forbidden', 'Only the signed-in owner can manage this page');
     if (!(req.headers.get('Content-Type') ?? '').startsWith('application/x-www-form-urlencoded'))
       throw new HttpError(415, 'unsupported_media_type', 'Expected a management form');
+    const binding = hostApprovalBinding(t, principal.accountId!);
+    const commit = async (write: () => void) => {
+      await requireHostApprovalPolicy(t, binding);
+      t.transaction(() => {
+        requireHostApprovalBinding(t, binding);
+        if (!currentPrincipal(t, principal, req.headers.get('x-tendril-key') ?? undefined))
+          throw new HttpError(401, 'unauthorized', 'The owner session changed. Sign in and review this action again.');
+        write();
+      });
+    };
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
     const action = form.get('action');
     if (action === 'delegate-agent') {
       const name = form.get('name')?.trim() ?? '';
       if (!/^[A-Za-z0-9_.@-]{1,64}$/.test(name)) throw new HttpError(400, 'invalid_agent_name', 'Choose a short agent name.');
       if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'Choose an agent name other than the fixed setup binding.');
-      if (t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(409, 'agent_name_in_use');
-      if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
       const selected = form.getAll('scopes'), scopes = agentScopes(selected.length ? selected : ['host:read', 'participants:connect']);
       const code = `${t.tid}-${sixDigits()}`, expires = t.now() + ADOPT_CODE_TTL;
-      t.db.set('adopt', { hash: await sha256Hex(code), expires_at: expires, attempts: 0, mode: 'delegate', name, scopes });
-      addActivity(t, { kind: 'agent_delegation', summary: `The owner approved an additional scoped agent: ${name}`, by: `owner:${principal.accountId}` });
+      const hash = await sha256Hex(code);
+      await commit(() => {
+        if (t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(409, 'agent_name_in_use');
+        if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+        t.db.set('adopt', { ...binding, hash, expires_at: expires, attempts: 0, mode: 'delegate', name, scopes } satisfies HostApproval);
+        addActivity(t, { kind: 'agent_delegation', summary: `The owner approved an additional scoped agent: ${name}`, by: `owner:${principal.accountId}` });
+      });
       message = `Give this one-time code to ${name}: ${code}. It expires in ten minutes. Existing agents keep their access.`;
     } else if (action === 'connect-agent') {
       const code = `${t.tid}-${sixDigits()}`, expires = t.now() + ADOPT_CODE_TTL;
-      t.db.set('adopt', { hash: await sha256Hex(code), expires_at: expires, attempts: 0 });
-      addActivity(t, { kind: 'adopt_code', summary: 'The owner created an agent connection code', by: `owner:${principal.accountId}` });
+      const hash = await sha256Hex(code);
+      await commit(() => {
+        t.db.set('adopt', { ...binding, hash, expires_at: expires, attempts: 0 } satisfies HostApproval);
+        addActivity(t, { kind: 'adopt_code', summary: 'The owner created an agent connection code', by: `owner:${principal.accountId}` });
+      });
       message = `Recovery code: ${code}. It expires in ten minutes. Using it replaces all existing agent credentials.`;
     } else if (action === 'disconnect-agent') {
       const name = form.get('agent') ?? '';
-      if (!t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found', 'No such agent');
-      t.db.run('DELETE FROM tokens WHERE name=?', name);
-      t.db.del('agent_binding:' + name);
-          message = `Disconnected ${name}.`;
+      await commit(() => {
+        if (!t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found', 'No such agent');
+        t.db.run('DELETE FROM tokens WHERE name=?', name);
+        t.db.del('agent_binding:' + name);
+      });
+      message = `Disconnected ${name}.`;
     } else if (action === 'approve-guest' || action === 'decline-guest') {
       const account = form.get('account') ?? '', link = form.get('link') ?? '';
-      if (!t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=0', account, link))
-        throw new HttpError(404, 'not_found', 'This guest request is no longer pending');
-      t.db.run('UPDATE guest_accounts SET approved=? WHERE account_id=? AND link_id=?', action === 'approve-guest' ? 1 : -1, account, link);
+      await commit(() => {
+        if (!t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=0', account, link))
+          throw new HttpError(404, 'not_found', 'This guest request is no longer pending');
+        t.db.run('UPDATE guest_accounts SET approved=? WHERE account_id=? AND link_id=?', action === 'approve-guest' ? 1 : -1, account, link);
+      });
       message = action === 'approve-guest' ? 'Guest access approved.' : 'Guest access declined.';
     } else throw new HttpError(400, 'bad_request', 'Unknown management action');
   } else if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method_not_allowed');
