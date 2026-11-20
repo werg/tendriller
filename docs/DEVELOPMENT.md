@@ -14,6 +14,9 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
+| `npm run test:agent:acceptance -- --help` | Maintained fresh-agent domain/MCP evaluation with private owner controls and independent observations |
+| `npm run test:idle:soak -- --config PRIVATE_JSON --state PRIVATE_DIRECTORY` | Actual 24/48h isolated staging residency and idle measurement; see [idle soak](IDLE_SOAK.md) |
+| `npm run test:idle:metrics -- --config PRIVATE_JSON --state PRIVATE_DIRECTORY --probe` | Read-only Cloudflare analytics schema/access probe, without application traffic |
 
 ## Boundaries
 
