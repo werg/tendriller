@@ -19,10 +19,10 @@ export function discoveryTiming(reads, installations) {
 export function mcpDiscovery(items, { origin, build, catalog }) {
   const servers = need(catalog?.data, 'mcp-discovery-catalog');
   if (!Array.isArray(servers) || servers.length !== 1 || servers[0].name !== 'tendriller') throw new MeasurementError('mcp-discovery-server', 'failed');
-  for (const tool of ['get_profile', 'tendril_guide']) need(servers[0].tools?.[tool], 'mcp-discovery-catalog-' + tool);
+  need(servers[0].tools?.tendril_guide, 'mcp-discovery-catalog-tendril_guide');
   const installations = installationItems(items);
-  const selected = ['get_profile', 'tendril_guide'].map(tool => need(items.find(i => i.type === 'mcpToolCall' &&
-    i.server === 'tendriller' && i.tool === tool && (tool !== 'tendril_guide' || i.arguments?.topic === 'build') && !i.result?.isError), 'mcp-discovery-' + tool));
+  const selected = [need(items.find(i => i.type === 'mcpToolCall' && i.server === 'tendriller' &&
+    i.tool === 'tendril_guide' && i.arguments?.topic === 'build' && !i.result?.isError), 'mcp-discovery-tendril_guide')];
   const reads = selected.map(event => {
     const blocks = event.result?.content?.filter(c => c.type === 'text');
     if (blocks?.length !== 1) throw new MeasurementError('mcp-discovery-content', 'failed');
@@ -43,6 +43,6 @@ export function mcpDiscovery(items, { origin, build, catalog }) {
     return { tool: event.tool, observedAt: event.completedAt, returnedOrigin: body.serviceOrigin, resultSha256: hash(blocks[0].text) };
   });
   const timing = discoveryTiming(selected, installations);
-  return { mode: 'mcp', source: 'Authenticated selected-origin get_profile and build guide, with returned readiness before install',
+  return { mode: 'mcp', source: 'Authenticated selected-origin build guide with returned readiness before install; get_profile is optional',
     selectedOrigin: origin, build, reads, installObserved: installations.length > 0, ...timing, catalogSha256: hash(JSON.stringify(servers[0].tools)) };
 }
