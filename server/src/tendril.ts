@@ -509,15 +509,21 @@ export class Tendril extends DurableObject<Env> {
       try {
         const lifetime = this.db.get('peer_generation_configuration', null) ? 'resident' : this.db.get('lifetime', 'ad_hoc');
         row = await this.env.ACCOUNTS.prepare(`UPDATE tendrils SET owner_account = ?, claimed_at = COALESCE(claimed_at, ?), lifetime = ?
-          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?) RETURNING id`)
-          .bind(accountId, this.now(), lifetime, this.tid, accountId).first();
+          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?)
+          AND (? IS NULL OR EXISTS(SELECT 1 FROM accounts a JOIN identities i ON i.account_id=a.id
+            JOIN identity_emails e ON e.provider=i.provider AND e.subject=i.subject
+            WHERE a.id=? AND lower(e.email)=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL)) RETURNING id`)
+          .bind(accountId, this.now(), lifetime, this.tid, accountId, intendedAccount, intendedAccount, expected).first();
       } catch (err) {
         if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
         if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
         if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
         throw err;
       }
-      if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
+      if (!row) {
+        if (intendedAccount) throw new HttpError(403,'owner_verification_required','The intended account must still be active and verify the original owner email before claim.');
+        throw new HttpError(409, "claimed", "This tendril was claimed already");
+      }
       this.transaction(() => {
         adoptPreparedPeerApplication(this, accountId);
         this.db.set("owner_account", accountId);

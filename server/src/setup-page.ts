@@ -53,8 +53,15 @@ export async function expireSetupReservation(t: Tendril): Promise<void> {
 export async function setupPage(t: Tendril, req: Request): Promise<Response> {
   if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
   const action = new URL(req.url).pathname, input = await readJson(req, 1024), id = req.headers.get('x-tendril-id') ?? '';
-  if (!['/setup/inspect','/setup/reserve','/setup/initialize'].includes(action) || !/^[a-z2-7]{12}$/.test(id) ||
+  if (!['/setup/allocation','/setup/inspect','/setup/reserve','/setup/initialize'].includes(action) || !/^[a-z2-7]{12}$/.test(id) ||
       typeof input.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(input.requestDigest)) throw new HttpError(400, 'invalid_setup_request');
+  if (action === '/setup/allocation') {
+    const known = t.db.get<SetupBinding|null>('account_setup',null) ?? reservation(t);
+    const occupied = t.exists() || !!t.db.one('SELECT 1 FROM meta LIMIT 1') || !!t.db.one('SELECT 1 FROM tokens LIMIT 1') ||
+      !!t.db.one('SELECT 1 FROM links LIMIT 1') || !!t.db.one('SELECT 1 FROM participant_records LIMIT 1');
+    return json({occupied,matches:!!known && known.page===id && known.digest===input.requestDigest && known.account_id===input.accountId &&
+      known.client_id===input.clientId && known.service_origin===input.serviceOrigin});
+  }
   const row = await readSetupRow(t.env, id);
   if (!row || row.request_digest !== input.requestDigest || row.service_origin !== publicBase(t.env)) throw new HttpError(409, 'reconciliation_required');
   let request;

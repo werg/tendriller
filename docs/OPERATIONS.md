@@ -12,6 +12,27 @@ There is one Worker entry and one set of Durable Object classes. Staging, produc
 
 ## Configuration
 
+Account-linked page setup requires both explicit additive account migrations
+`0004_account_setup.sql` and `0005_account_setup_recovery.sql`. The latter advances
+the account setup schema marker to revision 3 and records an independent
+allocation witness for each existing setup. It supports both earlier versions
+of migration 0004 without replacing retained witnesses. The engine publishes these as
+`@tendriller/engine/account-setup-schema` and
+`@tendriller/engine/account-setup-recovery-schema`. They do not migrate Durable
+Object data. Apply them through the selected deployment's normal D1 migration
+process before enabling this release's account-bound setup route; missing or
+incompatible setup storage fails closed.
+
+The detailed setup journal and allocation witnesses are bounded and are not
+automatically pruned. A missing or inconsistent record requires operator
+reconciliation, including after a page was deleted and its admission record
+expired. Do not delete witness rows to clear a quota or rebuild a missing
+journal from an owner's current login: the retained operation, original grant,
+credential commitment and allocation must agree. Restore a verified storage
+checkpoint when that evidence is missing. An interrupted initialization retries
+the same page and atomic initialization request; it never mints a replacement
+credential or charges a second allocation.
+
 Keep the service origin separate from every page origin. Each page must have its own hostname; placing all pages below one shared origin would merge browser storage and account-session boundaries. Configure the wildcard page route/certificate, OAuth callbacks, account database, file bucket and intended anti-abuse credentials explicitly.
 
 Store secrets in the platform's secret store. Agent bearer tokens and OAuth/page sessions are credentials; do not publish them in logs, code assets or example configuration. The runtime creates no second browser device secret. Chronolog device signing keys and epoch keys belong to the owned application store.

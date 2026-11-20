@@ -4,7 +4,7 @@ import { assistantOAuth, fields, requireScope, string } from './assistant-shared
 import { activeGrant, ensureOAuthSchema, scopesOf } from './accounts/oauth-data';
 import { inspectAccessToken } from './accounts/oauth-tokens';
 import { HttpError, json, readJson } from './http';
-import { newTendrilId } from './ids';
+import { sha256Hex } from './ids';
 import { checkCreationIp, requireCreationOpen } from './service-state';
 import { publicBase } from './urls';
 import { setupCredentialActive } from './setup-credential';
@@ -25,11 +25,19 @@ const HASH = /^[a-f0-9]{64}$/;
 const namespace = (origin: string, principal: Principal, operationId: string) => [origin, principal.account, principal.client, operationId];
 const query = 'service_origin=? AND account_id=? AND client_id=? AND operation_id=?';
 
+/** Stable in the authenticated namespace, never derived from mutable display or token values. */
+export async function accountSetupPageId(origin: string, account: string, client: string, operationId: string): Promise<string> {
+  const hash = await sha256Hex(JSON.stringify(['tendriller/account-setup/page/v1', origin, account, client, operationId]));
+  let bits = BigInt('0x' + hash.slice(0,15)), id = '';
+  for (let i=0; i<12; i++) { id = 'abcdefghijklmnopqrstuvwxyz234567'[Number(bits & 31n)] + id; bits >>= 5n; }
+  return id;
+}
+
 /** No runtime table creation or interpretation of an older/different journal. */
 export async function requireSetupSchema(env: Env): Promise<void> {
   try {
     const identity = await env.ACCOUNTS.prepare('SELECT id,revision FROM account_setup_schema').all<{ id: number; revision: number }>();
-    if (identity.results.length !== 1 || identity.results[0].id !== 1 || identity.results[0].revision !== 2) throw new Error('revision');
+    if (identity.results.length !== 1 || identity.results[0].id !== 1 || identity.results[0].revision !== 3) throw new Error('revision');
     const names = await env.ACCOUNTS.prepare('PRAGMA table_info(account_setups)').all<{ name: string; type: string }>();
     const expected = ['service_origin','account_id','client_id','operation_id','request_digest','credential_commitment','grant_id','intended_email',
       'page_id','application_id','request_json','creator_ip','creation_day','state','indexed','initialization_started','created_at','expires_at','updated_at','failure_code'];
@@ -40,7 +48,7 @@ export async function requireSetupSchema(env: Env): Promise<void> {
     if (fences.results.length !== fenceNames.length || fenceNames.some((name, index) => fences.results[index]?.name !== name)) throw new Error('allocation shape');
     const guards = await env.ACCOUNTS.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name IN ('account_setup_capacity','account_setup_charge')").first<{ n: number }>();
     if (guards?.n !== 2) throw new Error('guards');
-  } catch { throw new HttpError(503, 'setup_storage_unavailable', 'Apply required migration 0004_account_setup.sql to compatible account storage before creating account-bound pages.'); }
+  } catch { throw new HttpError(503, 'setup_storage_unavailable', 'Apply required account migrations 0004_account_setup.sql and 0005_account_setup_recovery.sql to compatible storage before account-bound setup.'); }
 }
 
 export async function requireSetupPrincipal(env: Env, principal: Principal): Promise<void> {
@@ -123,7 +131,10 @@ export async function inspectTendrilSetup(env: Env, principal: Principal, operat
   const row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...namespace(publicBase(env), principal, op)).first<SetupRow>();
   if (!row) {
     const allocation = await env.ACCOUNTS.prepare('SELECT * FROM account_setup_allocations WHERE ' + query).bind(...namespace(publicBase(env), principal, op)).first<Allocation>();
-    if (allocation) return result(allocation, 'reconciliation_required', 'setup_journal_missing');
+    if (allocation) {
+      await requireSetupPrincipal(env, principal);
+      return result(allocation, 'reconciliation_required', 'setup_journal_missing');
+    }
     throw new HttpError(404, 'setup_not_found', 'No setup with this operation ID belongs to this linked account and OAuth client.');
   }
   const inspected = await inspectRow(env, row);
@@ -136,6 +147,7 @@ export async function listTendrilSetups(env: Env, principal: Principal) {
     WHERE a.service_origin=? AND a.account_id=? AND a.client_id=? ORDER BY a.created_at DESC LIMIT 100`)
     .bind(publicBase(env), principal.account, principal.client).all<ResultRow>();
   // The bounded account view does not wake every page; inspect an exact operation to reconcile it.
+  await requireSetupPrincipal(env, principal);
   return { serviceOrigin: publicBase(env), setups: rows.results.map(row => !row.state ? result(row, 'reconciliation_required', 'setup_journal_missing')
     : result(row, row.expires_at <= Date.now() ? 'expired' : row.state)) };
 }
@@ -147,11 +159,15 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
   catch { throw new HttpError(400, 'invalid_setup_request'); }
   const origin = publicBase(env), digest = await setupRequestDigest(origin, input), key = namespace(origin, principal, input.operationId);
   let row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
-  if (!row) {
+  allocate: if (!row) {
     const allocation = await env.ACCOUNTS.prepare('SELECT * FROM account_setup_allocations WHERE ' + query).bind(...key).first<Allocation>();
     if (allocation) {
+      // A concurrent exact call may have completed allocation since the first read.
+      row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
+      if (row) break allocate;
       if (allocation.request_digest !== digest || allocation.credential_commitment !== input.credentialCommitment)
         throw new HttpError(409, 'setup_operation_conflict', 'The original allocation still reserves this operation and its exact request.');
+      await requireSetupPrincipal(env, principal);
       return result(allocation, 'reconciliation_required', 'setup_journal_missing');
     }
     await requireCreationOpen(env);
@@ -159,15 +175,40 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
     if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: ip })).success) throw new HttpError(429, 'rate_limited');
     const now = Date.now();
     await requireSetupPrincipal(env, principal);
+    const pageId = await accountSetupPageId(origin,principal.account,principal.client,input.operationId);
+    const probe = await env.TENDRIL.get(env.TENDRIL.idFromName(pageId)).fetch(new Request('https://tendril.internal/setup/allocation', {
+      method:'POST',headers:{'Content-Type':'application/json','x-tendril-id':pageId},
+      body:JSON.stringify({requestDigest:digest,accountId:principal.account,clientId:principal.client,serviceOrigin:origin}),
+    }));
+    const existing = await probe.json<{occupied?:boolean;matches?:boolean}>();
+    if (!probe.ok || existing.occupied !== false) {
+      row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
+      if (row) break allocate;
+      throw new HttpError(409,'reconciliation_required',existing.matches ? 'The original page exists without its allocation journal. Preserve it for reconciliation.' : 'The allocated page identity is occupied or cannot be verified. No replacement was created.');
+    }
+    const admissionProbe = await env.ADMISSION.get(env.ADMISSION.idFromName('global')).fetch(new Request('https://admission.internal/status',{
+      headers:{'x-tendril-id':pageId},
+    }));
+    const admissionState = await admissionProbe.json<{state?:string}>();
+    if (!admissionProbe.ok || admissionState.state !== 'absent') {
+      row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
+      if (row) break allocate;
+      throw new HttpError(409,'reconciliation_required','The page has retained admission evidence without its setup journal. Do not reserve or recreate it.');
+    }
     try {
       await env.ACCOUNTS.prepare(`INSERT OR IGNORE INTO account_setups(service_origin,account_id,client_id,operation_id,request_digest,
         credential_commitment,grant_id,intended_email,page_id,application_id,request_json,creator_ip,creation_day,state,created_at,expires_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)`)
-        .bind(...key, digest, input.credentialCommitment, principal.grant, email, newTendrilId(), input.applicationId, JSON.stringify(input), ip, day, now, now + DAY, now).run();
+        .bind(...key, digest, input.credentialCommitment, principal.grant, email, pageId, input.applicationId, JSON.stringify(input), ip, day, now, now + DAY, now).run();
     } catch (error) {
       const code = ['setup_ledger_full','setup_pending_full','setup_account_full','setup_creation_rate_limited','setup_binding_inactive','owner_verification_required','creation_paused','reconciliation_required'].find(code => String(error).includes(code));
+      if (String(error).includes('setup_journal_missing') || String(error).includes('setup_allocation_conflict'))
+        throw new HttpError(409,'reconciliation_required','This allocation has retained or conflicting evidence. No replacement page or quota charge was created.');
       if (code === 'reconciliation_required') throw new HttpError(409, code, 'The original allocation is retained but its operation journal is missing. Inspect it without creating a replacement.');
-      if (code) throw new HttpError(429, code, 'Setup capacity is full. Inspect retained operations or ask the operator for reviewed retirement; uncertain operation IDs are never discarded.');
+      if (code) throw new HttpError(code==='creation_paused'?503:['setup_binding_inactive','owner_verification_required'].includes(code)?403:429, code,
+        ['setup_binding_inactive','owner_verification_required','creation_paused'].includes(code)
+          ? 'Setup authorization, verification or readiness changed before allocation. Inspect this service and retain the original operation.'
+          : 'Setup capacity is full. Inspect retained operations or ask the operator for reviewed retirement; uncertain operation IDs are never discarded.');
       throw error;
     }
     row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
@@ -191,7 +232,12 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
     // A durable expiry journal and alarm precede global admission. An abandoned
     // pre-page reservation can therefore release capacity without another retry.
     await pageRequest(env, row, 'reserve');
-    const admission = await env.ADMISSION.get(env.ADMISSION.idFromName('global')).fetch(new Request('https://admission.internal/reserve', {
+    const admissionObject = env.ADMISSION.get(env.ADMISSION.idFromName('global'));
+    const statusResponse = await admissionObject.fetch(new Request('https://admission.internal/status',{headers:{'x-tendril-id':row.page_id}}));
+    const status = await statusResponse.json<{state?:string}>();
+    if (!statusResponse.ok || !['absent','reserved'].includes(status.state ?? ''))
+      return result(row,'reconciliation_required','setup_admission_retired');
+    const admission = await admissionObject.fetch(new Request('https://admission.internal/reserve', {
       method: 'POST', headers: { 'x-tendril-id': row.page_id, 'x-setup-expires-at': String(row.expires_at) },
     }));
     if (!admission.ok) return admission.status === 410 ? result(row, 'expired', 'setup_expired') : result(row, 'blocked', 'setup_admission_unavailable');

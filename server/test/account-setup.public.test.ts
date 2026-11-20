@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers';
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test';
 import type { Env } from '../src/env';
 import { route } from '../src/router';
+import { accountSetupPageId } from '../src/account-setup';
 import { oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
 import { advance, inDO, runAlarm, stub } from './helpers';
@@ -30,13 +31,17 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
     env.ACCOUNTS.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES(?,?,?,?,?,?)').bind(await sha256Hex(token),grant,jti,scope,now,now+300000),
   ]);
   const transport = env.TENDRIL;
-  let loseInitializationReply = false, pauseAfterAdmission = false, loseInitializationRequest = false, failReservationAlarm = false;
+  let loseInitializationReply = false, pauseAfterAdmission = false, loseInitializationRequest = false, failReservationAlarm = false, removeIdentityBeforeClaim = false;
   settings.TENDRIL = { idFromName: name => transport.idFromName(name), get(id) {
     const object = transport.get(id);
     return { async fetch(request: Request) {
       const pageId = request.headers.get('x-tendril-id');
       if (pageId) await inDO(pageId, t => { t.env.OAUTH_CONFIG_JSON = settings.OAUTH_CONFIG_JSON; t.env.OAUTH_SIGNING_JWK = signing; });
       if (loseInitializationRequest && new URL(request.url).pathname === '/setup/initialize') { loseInitializationRequest = false; throw new Error('LOST_INITIALIZATION_REQUEST'); }
+      if (removeIdentityBeforeClaim && new URL(request.url).pathname === '/claim/owner') {
+        removeIdentityBeforeClaim = false;
+        await env.ACCOUNTS.prepare('DELETE FROM identity_emails WHERE subject=?').bind(account).run();
+      }
       if (pageId && failReservationAlarm && new URL(request.url).pathname === '/setup/reserve') {
         failReservationAlarm = false;
         await inDO(pageId, t => {
@@ -54,7 +59,7 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
     const object = admission.get(id);
     return { async fetch(request: Request) {
       const response = await object.fetch(request);
-      if (pauseAfterAdmission) { pauseAfterAdmission = false; await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run(); }
+      if (pauseAfterAdmission && new URL(request.url).pathname === '/reserve') { pauseAfterAdmission = false; await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run(); }
       return response;
     } } as DurableObjectStub;
   } } as DurableObjectNamespace;
@@ -74,6 +79,7 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
   };
   return { account, client, grant, email, settings, token, ip, request, intent, prepare,
     loseReply: () => { loseInitializationReply = true; }, loseRequest: () => { loseInitializationRequest = true; },
+    removeIdentityBeforeClaim: () => { removeIdentityBeforeClaim = true; },
     failReservationAlarm: () => { failReservationAlarm = true; }, pauseAfterAdmission: () => { pauseAfterAdmission = true; } };
 }
 
@@ -244,7 +250,7 @@ it('fails closed on an incompatible account setup schema without synthesizing st
     const denied = await f.prepare(await f.intent()); expect(denied.response.status).toBe(503); expect(denied.body.error?.code).toBe('setup_storage_unavailable');
     expect(await env.ACCOUNTS.prepare('SELECT revision FROM account_setup_schema').first()).toEqual({revision:1});
     expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toBeNull();
-  } finally { await env.ACCOUNTS.prepare('UPDATE account_setup_schema SET revision=2').run(); }
+  } finally { await env.ACCOUNTS.prepare('UPDATE account_setup_schema SET revision=3').run(); }
 });
 
 it('requires verified identity before allocating and selects only currently verified email evidence', async () => {
@@ -330,4 +336,80 @@ it('advertises and exercises MCP setup tools only for the existing create permis
   const reply = (await call('tools/call',{name:'prepare_tendril_setup',arguments:setupRequest(intent)})).result;
   expect(reply.isError).not.toBe(true); expect(reply.structuredContent.state).toBe('ready');
   expect((await call('tools/call',{name:'inspect_tendril_setup',arguments:{operationId:intent.operationId}})).result.structuredContent.pageId).toBe(reply.structuredContent.pageId);
+});
+
+
+it('does not allocate a second page when a committed setup loses its D1 operation row', async () => {
+  for (const deleted of [false,true]) {
+    const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent);
+    if (deleted) {
+      await inDO(ready.body.pageId,t=>t.destroy());
+      // Released admission rows are eventually pruned; the independent witness must still fence reuse.
+      await runInDurableObject(env.ADMISSION.get(env.ADMISSION.idFromName('global')),(_instance,state)=>
+        state.storage.sql.exec('DELETE FROM creations WHERE id=?',ready.body.pageId).toArray());
+    }
+    await env.ACCOUNTS.prepare('DELETE FROM account_setups WHERE account_id=?').bind(f.account).run();
+    const resumed = await f.prepare(intent);
+    expect(resumed.body.error?.code ?? resumed.body.state).toBe('reconciliation_required');
+    const pages = await env.ACCOUNTS.prepare('SELECT id FROM tendrils WHERE creator_ip=?').bind(f.ip).all();
+    expect(pages.results).toEqual(deleted?[]:[{ id: ready.body.pageId }]);
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({ count:1 });
+    expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM account_setup_allocations WHERE account_id=?').bind(f.account).first()).toEqual({n:1});
+  }
+});
+
+it('fences a missing allocation witness and detects retained page identity after journal/index loss',async()=>{
+  for(const journalLost of [false,true]) {
+    const f=await fixture(),intent=await f.intent(),ready=await f.prepare(intent);
+    await env.ACCOUNTS.prepare('DELETE FROM account_setup_allocations WHERE account_id=?').bind(f.account).run();
+    if(journalLost) await env.ACCOUNTS.batch([
+      env.ACCOUNTS.prepare('DELETE FROM account_setups WHERE account_id=?').bind(f.account),
+      env.ACCOUNTS.prepare('DELETE FROM tendrils WHERE id=?').bind(ready.body.pageId),
+    ]);
+    const resumed=await f.prepare(intent);
+    expect(resumed.body.error?.code??resumed.body.state).toBe('reconciliation_required');
+    expect(await inDO(ready.body.pageId,t=>t.db.one('SELECT COUNT(*) AS n FROM tokens'))).toEqual({n:1});
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({count:1});
+  }
+});
+
+it('refuses deterministic allocation collisions and retired admission without charging setup quota',async()=>{
+  for(const collision of ['page','admission']) {
+    const f=await fixture(),intent=await f.intent(),pageId=await accountSetupPageId(ORIGIN,f.account,f.client,intent.operationId);
+    if(collision==='page') {
+      const response=await stub(pageId).fetch(new Request('https://tendril.internal/create',{method:'POST',headers:{'x-tendril-id':pageId,'Content-Type':'application/json'},body:JSON.stringify({owner:f.email,name:'Existing different page'})}));
+      expect(response.status).toBe(201); await response.body?.cancel();
+    } else {
+      const admission=env.ADMISSION.get(env.ADMISSION.idFromName('global'));
+      for(const action of ['reserve','release']) await (await admission.fetch(new Request('https://admission.internal/'+action,{method:'POST',headers:{'x-tendril-id':pageId}}))).body?.cancel();
+    }
+    const resumed=await f.prepare(intent);
+    expect(resumed.body.error?.code).toBe('reconciliation_required');
+    expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind(f.account).first()).toEqual({n:0});
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toBeNull();
+  }
+});
+
+it('does not reactivate admission retired during an incomplete setup',async()=>{
+  const f=await fixture(),intent=await f.intent(); f.loseRequest();
+  const pending=await f.prepare(intent);
+  const admission=env.ADMISSION.get(env.ADMISSION.idFromName('global'));
+  await (await admission.fetch(new Request('https://admission.internal/release',{method:'POST',headers:{'x-tendril-id':pending.body.pageId}}))).body?.cancel();
+  const resumed=await f.prepare(intent);
+  expect(resumed.body.state).toBe('reconciliation_required'); expect(resumed.body.code).toBe('setup_admission_retired');
+  expect(await inDO(pending.body.pageId,t=>t.exists())).toBe(false);
+  expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({count:1});
+});
+
+it('rechecks verified identity when owner sign-in races removal of the previously verified email', async () => {
+  const f = await fixture(), ready = await f.prepare(await f.intent()), session = crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
+    .bind(await sha256Hex(session), f.account, Date.now(), Date.now()+60000).run();
+  const key = new URL(ready.body.page!.page_url).pathname.split('/')[2];
+  f.removeIdentityBeforeClaim();
+  const response = await f.request('/auth/page?' + new URLSearchParams({ tendril: ready.body.pageId, key }),
+    { headers: { Cookie: '__Host-tendriller=' + session } });
+  expect(response.status).toBe(403);
+  expect(await inDO(ready.body.pageId, t => t.db.get('owner_account', null))).toBeNull();
+  expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(ready.body.pageId).first()).toEqual({ owner_account: null });
 });

@@ -36,6 +36,10 @@ export class Admission extends DurableObject<Env> {
     if (!/^[a-z2-7]{12}$/.test(id)) return errorResponse(400, "bad_request", "Invalid tendril id");
     const sql = this.ctx.storage.sql;
     const now = Date.now();
+    if (url.pathname === '/status' && req.method === 'GET') {
+      const row = sql.exec('SELECT released FROM creations WHERE id=?',id).toArray()[0] as {released:number}|undefined;
+      return json({state:row ? row.released ? 'released':'reserved':'absent'});
+    }
     if (url.pathname === "/release" && req.method === "POST") {
       const changed = sql.exec("UPDATE creations SET released = 1 WHERE id = ? AND released = 0 RETURNING ts", id).toArray() as { ts: number }[];
       if (this.live !== undefined) this.live -= changed.length;
