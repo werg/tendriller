@@ -159,3 +159,8 @@ changing contrib's reading index, run its generator and normal checks rather tha
 editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
 scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
 link and consistency checks do not prove that an unfamiliar agent can finish.
+
+The [account-bound setup and reviewed device pairing follow-ups](ONBOARDING_PROTOCOL_FOLLOWUPS.md)
+record the remaining optional interaction improvements, their current authority
+boundaries and unimplemented acceptance tasks. They require explicit durable
+protocol/state work; discovery improvements do not enable those proposed APIs.
