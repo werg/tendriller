@@ -16,7 +16,7 @@ async function participant(t, { failInference = false, failPairing = false, orph
   await writeFile(join(directory, 'session.mjs'), `import {appendFile} from 'node:fs/promises';
 export async function openSession() {
   const resource = setInterval(() => {}, 1000);
-  return {session:{deviceId:'fixture-device',close(){throw Error('Must close the entire owned bootstrap');}},
+  return {session:{deviceId:'fixture-device',participation:{status:{phase:'closed',connectedPeers:[]},onStatus(){return()=>{};}},close(){throw Error('Must close the entire owned bootstrap');}},
     supervisor:{ownerInstanceId:'fixture-owner'},
     async close(){await appendFile(${JSON.stringify(calls)},'owner\\n');clearInterval(resource);}};
 }`);
@@ -25,6 +25,8 @@ export function startReviewedPairingLoop(){return {async close(){
   await appendFile(${JSON.stringify(calls)},'pairing\\n');
   ${failPairing ? "throw Error('pairing close failed');" : ''}
 }};}`);
+  await mkdir(join(directory, 'helpers'));
+  await writeFile(join(directory, 'helpers/signal-request.mjs'), 'export function serveSignalRequests(){return Promise.resolve();}');
   await writeFile(join(directory, 'media/inference-service.mjs'), `import {appendFile} from 'node:fs/promises';
 export function servePeerInference(){return {snapshot(){return {};},async close(){
   await appendFile(${JSON.stringify(calls)},'inference\\n');

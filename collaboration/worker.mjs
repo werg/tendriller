@@ -2,17 +2,17 @@ import { acquireApplicationOwnerLock, createApplicationOwner } from '@chronolog/
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastOwner, checkOwnerFrame } from './browser-transport.mjs';
 import { prepareCollaborationCommand } from './protocol.mjs';
 
-const defaults = { maxPorts: 64, pendingTimeoutMs: 30000, idleTimeoutMs: 60000 };
-// A retired elected owner with no routes stays this long, so the same page can
-// reattach (reload of a view, an app-level reconnect) without restarting the
+const defaults = { maxPorts: 64, pendingTimeoutMs: 30000, idleTimeoutMs: 60000, retireGraceMs: 5000 };
+// rootLimits.retireGraceMs: a retired elected owner with no routes stays this long,
+// so the same page can reattach (an app-level reconnect) without restarting the
 // session and its peer connections. A new route cancels the retirement wait.
-const RETIRE_GRACE_MS = 5000;
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
 function rootLimits(value = {}) {
   const limits = { ...defaults, ...value };
   if (Object.keys(value).some(key => !Object.hasOwn(defaults, key)) ||
       !Number.isSafeInteger(limits.maxPorts) || limits.maxPorts < 1 || limits.maxPorts > 128 ||
-      [limits.pendingTimeoutMs, limits.idleTimeoutMs].some(ms => !Number.isFinite(ms) || ms < 100 || ms > 120000)) throw Error('OWNER_CONFIGURATION_INVALID');
+      [limits.pendingTimeoutMs, limits.idleTimeoutMs].some(ms => !Number.isFinite(ms) || ms < 100 || ms > 120000) ||
+      !Number.isFinite(limits.retireGraceMs) || limits.retireGraceMs < 0 || limits.retireGraceMs > 60000) throw Error('OWNER_CONFIGURATION_INVALID');
   return limits;
 }
 
@@ -82,7 +82,7 @@ export function serveBrowserOwner(options) {
   }
   function retireSoon() {
     if (retireTimer || closed) return;
-    retireTimer = setTimeout(() => { retireTimer = undefined; if (!broadcast || broadcast.routes === 0) void close().catch(() => {}); }, RETIRE_GRACE_MS);
+    retireTimer = setTimeout(() => { retireTimer = undefined; if (!broadcast || broadcast.routes === 0) void close().catch(() => {}); }, limits.retireGraceMs);
   }
   function startElection() {
     if (election) return election;

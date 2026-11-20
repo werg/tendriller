@@ -140,7 +140,7 @@ test('a dead SharedWorker root fails its facade closed and suspended observation
 
 
 test('retiring an elected owner preserves attached siblings and closes only after the last route', async t => {
-  const f = await fixture(t), observer = new BroadcastChannel(ownerChannelName('retained'));
+  const f = await fixture(t, { rootLimits: { retireGraceMs: 300 } }), observer = new BroadcastChannel(ownerChannelName('retained'));
   t.after(() => observer.close());
   const announcement = next(observer, data => isOwnerAnnouncement(data, 'retained'));
   f.scope.send({ type: 'boot', mode: 'elected', profileId: 'retained', id: 'candidate' });
@@ -156,7 +156,10 @@ test('retiring an elected owner preserves attached siblings and closes only afte
   await until(() => f.scope.replies.some(value => value.type === 'retired' && value.id === 'retirement'), 'retirement acknowledgement');
   assert.equal(f.held, 1); assert.equal(f.scope.closed, false); assert.equal(clients[1].signal.aborted, false);
   assert.equal((await clients[1].endpoints()).length, 1);
-  await clients[1].detach(); await until(() => f.scope.closed, 'last route closes retired owner');
+  await clients[1].detach();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(f.scope.closed, false, 'a same-page reattach still finds the owner during the grace');
+  await until(() => f.scope.closed, 'last route closes retired owner');
   assert.equal(f.held, 0); assert.equal(f.resourceClosed, true);
 });
 

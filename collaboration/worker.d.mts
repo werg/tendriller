@@ -5,7 +5,7 @@ export interface BrowserOwnerConfiguration {
   createIdentity?:(options:{signal:AbortSignal})=>Promise<string>;
   ownerOptions?:ApplicationOwnerOptions;
   /** Bounded SharedWorker bootstrap roots; expiry detaches only that root, never the owner lock. */
-  rootLimits?:{maxPorts?:number;pendingTimeoutMs?:number;idleTimeoutMs?:number};
+  rootLimits?:{maxPorts?:number;pendingTimeoutMs?:number;idleTimeoutMs?:number;/** Default 5000: how long a retired elected owner without routes waits for a same-page reattach. */retireGraceMs?:number};
 }
 export interface BrowserOwnerScope extends EventTarget { postMessage(message:unknown):void; start?():void; close?():void }
 /** load registers root listeners before awaiting configuration, preserving initial Worker events. */
