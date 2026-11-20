@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { boundedActive } from './state.mjs';
+import { classifyTransport } from './classification.mjs';
 
 export async function startBrowser(c, emit, { chromium, launchContext = launchResidentContext } = {}) {
   if (!chromium) ({ chromium } = await import('@playwright/test'));
@@ -9,14 +10,15 @@ export async function startBrowser(c, emit, { chromium, launchContext = launchRe
   const bytes = v => typeof v === 'string' ? Buffer.byteLength(v) : v?.length ?? 0;
   const pending = new Set();
   const activity = () => emit({ source: 'browser', kind: 'activity', pending: pending.size });
-  context.on('request', request => { pending.add(request); activity(); emit({ source: 'browser', kind: 'requests' }); });
+  context.on('request', request => { pending.add(request); activity(); emit({ source: 'browser', kind: 'requests', category: classifyTransport(request.url()) }); });
   const finished = request => { pending.delete(request); activity(); };
   context.on('requestfinished', finished); context.on('requestfailed', finished);
   context.on('page', p => p.on('websocket', ws => {
-    emit({ source: 'browser', kind: 'socketsOpened' });
-    ws.on('close', () => emit({ source: 'browser', kind: 'socketsClosed' }));
-    ws.on('framesent', e => { emit({ source: 'browser', kind: 'framesSent' }); emit({ source: 'browser', kind: 'bytesSent', count: bytes(e.payload) }); });
-    ws.on('framereceived', e => { emit({ source: 'browser', kind: 'framesReceived' }); emit({ source: 'browser', kind: 'bytesReceived', count: bytes(e.payload) }); });
+    const category = classifyTransport(ws.url());
+    emit({ source: 'browser', kind: 'socketsOpened', category });
+    ws.on('close', () => emit({ source: 'browser', kind: 'socketsClosed', category }));
+    ws.on('framesent', e => { emit({ source: 'browser', kind: 'framesSent', category }); emit({ source: 'browser', kind: 'bytesSent', count: bytes(e.payload), category }); });
+    ws.on('framereceived', e => { emit({ source: 'browser', kind: 'framesReceived', category }); emit({ source: 'browser', kind: 'bytesReceived', count: bytes(e.payload), category }); });
   }));
   cover = context.pages()[0] ?? await context.newPage();
   await cover.goto('about:blank');

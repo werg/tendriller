@@ -83,6 +83,37 @@ Atomic fsync checkpoints are saved on events and phase boundaries; waiting uses 
 
 The process is expected to remain alive for 48h **plus** warmup/reconnects and default 15-minute ingestion lag. Reports record native start/exit timestamps. During collection the browser/native participant have stopped. The service requires the persistent machine/display; page residency, MCP and this runner do not establish future model wake support.
 
+## Activity timeline
+
+Reports retain the latest 256 observed counter events in `activityTimeline`, with
+`activityTimelineDropped` counting older entries removed from that timeline.
+Counter totals, phase deltas and zero-budget overruns retain every observation;
+timeline eviction never subtracts traffic. Old checkpoints without these events
+have an empty timeline: timestamps and transport causes cannot be reconstructed.
+
+Each entry records the runner's observer-receipt timestamp `at` as numeric UTC
+epoch milliseconds, fixed source/counter/category labels, numeric count, phase
+(`closed`, `background`, `foreground`, or `boundary`) and a `stopping` flag.
+Receipt time is not transport initiation time or a server timestamp. Array order
+preserves receipt ordering when events share a millisecond. A stop-request marker
+is persisted before abort; later teardown observations remain counted. If a stop
+marker itself is eventually evicted, `stopRequestedAt` still retains the latest
+attempt's boundary. Resuming starts a new stop boundary and preserves the earlier
+timeline, interruption history and measured overruns.
+
+Transport categories are `setup-watch`, `discovery-watch`, `invitations`,
+`rendezvous`, `relay`, `assistant-provider`, `publication-watch`, `control` and
+`other`. Classification uses URL pathname only and retains no URL, query, method,
+body, identifier, token or arbitrary label. A category describes a path shape,
+not a verified transport cause. A delayed notification, renewal, reconnect and
+shutdown race must not be attributed without corresponding evidence.
+
+The reported wakeup scope is public setup/pairing reconciliation,
+participation-status and application-change callbacks. It excludes kernel-internal
+activity and AI/model turns. Zero such callbacks does not establish zero kernel
+wakeups or zero AI activity. These observers do not expand the declared coverage
+of uninstrumented network libraries, subprocesses or external model dispatch.
+
 ## Provider metrics and permissions
 
 The collector authenticates only read-only GraphQL queries to Cloudflare's API; it never tails Worker logs or polls application endpoints. Baseline is a separate pre-run hour; final queries cover each observed quiet interval, in exclusive-end UTC one-hour windows. Analytics requests do not invoke the measured Worker. A 5–60 minute configurable ingestion lag runs after sockets close because open WebSocket invocations may appear only when closed. No simulated-time result supplies billing duration.

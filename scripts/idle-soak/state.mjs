@@ -1,8 +1,11 @@
 import { openSync, closeSync, writeFileSync, renameSync, fsyncSync, mkdirSync, statSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { transportCategories } from './classification.mjs';
 
 export const HOUR = 3600000;
+export const ACTIVITY_LIMIT = 256;
+export const WAKEUP_SCOPE = 'Public setup/pairing reconciliation, participation-status and application-change callbacks; excludes kernel-internal activity and AI/model turns.';
 export const counters = ['requests', 'socketsOpened', 'socketsClosed', 'framesSent', 'framesReceived', 'bytesSent', 'bytesReceived', 'modelTurns', 'wakeups'];
 export const digest = value => createHash('sha256').update(value).digest('hex');
 export function privateJSON(path) {
@@ -33,12 +36,41 @@ export function validateConfig(c) {
 export function newState(c, now = Date.now()) {
   return { format: 'tendriller-idle-soak-v1', configHash: digest(JSON.stringify(c)), plannedHours: c.hours,
     createdAt: now, status: 'running', segments: [], events: [], metrics: [], interruptions: [], failures: [],
-    counts: Object.fromEntries(counters.map(k => [k, 0])), coverage: { modelTurns: false, wakeups: false, bootstrapScope: 'operator-command-unverified', modelScope: 'external-dispatch-unverified', nativeTransport: 'global-fetch-websocket-only', browserTransport: 'playwright-context-http-page-websocket' } };
+    activityTimeline: [], activityTimelineDropped: 0,
+    counts: Object.fromEntries(counters.map(k => [k, 0])), coverage: { modelTurns: false, wakeups: false, wakeupScope: WAKEUP_SCOPE, eventsForwarding: false, mcpOnline: null, mcpStatusAt: null, bootstrapScope: 'operator-command-unverified', modelScope: 'external-dispatch-unverified', nativeTransport: 'global-fetch-websocket-only', browserTransport: 'playwright-context-http-page-websocket' } };
 }
-export function record(s, event) {
+function timeline(s, value) {
+  s.activityTimeline ??= []; s.activityTimelineDropped ??= 0;
+  if (s.activityTimeline.length >= ACTIVITY_LIMIT) {
+    const remove = s.activityTimeline.length - ACTIVITY_LIMIT + 1;
+    s.activityTimeline.splice(0, remove); s.activityTimelineDropped += remove;
+  }
+  const segment = s.segments.at(-1);
+  const phase = segment && !segment.endedAt ? segment.phase : 'boundary';
+  s.activityTimeline.push({ ...value, phase, stopping: s.stopRequestedAt !== undefined });
+}
+/** Runner receipt time, in UTC epoch milliseconds; observer-supplied time is ignored. */
+export function record(s, event, now = Date.now()) {
   // Fixed vocabulary and numeric increments only. Never retain URLs, headers, payloads, error text or arbitrary labels.
+  if (event?.source === 'native' && event.kind === 'assistant-status') {
+    if (typeof event.online !== 'boolean' || typeof event.eventsForwarding !== 'boolean'
+      || (event.count !== undefined && event.count !== 1) || !Number.isSafeInteger(now) || now < 0) return false;
+    timeline(s, { at: now, source: 'native', counter: 'assistantStatus', count: 1, category: 'assistant-provider',
+      online: event.online, eventsForwarding: event.eventsForwarding });
+    return true;
+  }
   if (!event || !['browser', 'native', 'adapter', 'runner'].includes(event.source) || !counters.includes(event.kind) || !Number.isSafeInteger(event.count ?? 1) || (event.count ?? 1) < 0) return false;
+  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(s.counts[event.kind] + (event.count ?? 1))) return false;
   s.counts[event.kind] += event.count ?? 1;
+  timeline(s, { at: now, source: event.source, counter: event.kind, count: event.count ?? 1,
+    category: transportCategories.includes(event.category) ? event.category : 'other' });
+  return true;
+}
+/** Call and persist before abort/cleanup. Repeated stop signals retain the first boundary. */
+export function markStopRequested(s, now = Date.now()) {
+  if (s.stopRequestedAt !== undefined || !Number.isSafeInteger(now) || now < 0) return false;
+  s.stopRequestedAt = now;
+  timeline(s, { at: now, source: 'runner', counter: 'stopRequested', count: 1, category: 'control' });
   return true;
 }
 export function beginSegment(s, phase, now = Date.now()) {
@@ -76,8 +108,11 @@ export function report(s) {
   const complete = s.status === 'complete' && s.interruptions.length === 0 && s.failures.length === 0 && s.segments.length === 3 && s.segments.every(x => x.endedAt >= x.deadline && !x.incomplete);
   return { format: s.format, status: complete && metricsComplete && s.coverage.modelTurns && s.coverage.wakeups && s.segments.every(x => !x.overruns.length) && s.metrics.every(x => !x.overruns?.length) ? 'pass' : 'incomplete-or-over-budget',
     realWallClockComplete: complete, plannedHours: s.plannedHours, metricsComplete,
-    provenance: s.provenance, provenanceHash: s.provenanceHash, adapterHash: s.adapterHash, runnerHash: s.runnerHash, nativeStartedAt: s.nativeStartedAt, nativeExitedAt: s.nativeExitedAt, nativeExit: s.nativeExit, coverage: s.coverage, counts: Object.fromEntries(Object.entries(s.counts).map(([k,v]) => [k, ['modelTurns','wakeups'].includes(k) && !s.coverage[k] ? null : v])), segments: s.segments.map(x => ({...x, counts: Object.fromEntries(Object.entries(x.counts).map(([k,v]) => [k, ['modelTurns','wakeups'].includes(k) && !s.coverage[k] ? null : v])), delta: x.delta && Object.fromEntries(Object.entries(x.delta).map(([k,v]) => [k, ['modelTurns','wakeups'].includes(k) && !s.coverage[k] ? null : v]))})), metrics: s.metrics,
+    provenance: s.provenance, provenanceHash: s.provenanceHash, adapterHash: s.adapterHash, runnerHash: s.runnerHash, nativeStartedAt: s.nativeStartedAt, nativeExitedAt: s.nativeExitedAt, nativeExit: s.nativeExit, coverage: { ...s.coverage, wakeupScope: WAKEUP_SCOPE, eventsForwarding: s.coverage.eventsForwarding === true }, counts: Object.fromEntries(Object.entries(s.counts).map(([k,v]) => [k, ['modelTurns','wakeups'].includes(k) && !s.coverage[k] ? null : v])), segments: s.segments.map(x => ({...x, counts: Object.fromEntries(Object.entries(x.counts).map(([k,v]) => [k, ['modelTurns','wakeups'].includes(k) && !s.coverage[k] ? null : v])), delta: x.delta && Object.fromEntries(Object.entries(x.delta).map(([k,v]) => [k, ['modelTurns','wakeups'].includes(k) && !s.coverage[k] ? null : v]))})), metrics: s.metrics,
     interruptions: s.interruptions, failures: s.failures, events: s.events,
+    activityTimeline: s.activityTimeline ?? [], activityTimelineDropped: s.activityTimelineDropped ?? 0,
+    activityTimestampScope: 'Runner observer receipt, UTC epoch milliseconds; not transport initiation or server event time.',
+    stopRequestedAt: s.stopRequestedAt, wakeupScope: WAKEUP_SCOPE,
     idleBudgets: Object.fromEntries(counters.map(k => [k, 0])),
     limitations: ['Client counters cover the declared observer scopes, not all OS traffic.', 'Provider aggregates may be sampled or delayed; empty datasets are missing, never zero.', 'No account-wide free-tier capacity or invoice claim is established.'] };
 }

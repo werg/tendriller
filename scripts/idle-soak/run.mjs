@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
-import { validateConfig, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
+import { validateConfig, privateJSON, save, newState, record, markStopRequested, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
 import { measure } from './cloudflare.mjs';
 import { startBrowser } from './browser.mjs';
 import { nativeReady, quietBoundary } from './warmup.mjs';
@@ -25,6 +25,10 @@ export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => 
   const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
   signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
 });
+export function requestStop(state, abort, persist, now = Date.now()) {
+  try { if (state && markStopRequested(state, now)) persist(); }
+  finally { abort.abort(); }
+}
 export async function run(configPath, directory) {
   const root = resolve(import.meta.dirname, '../..');
   configPath = pathOutsideRepo(configPath, root); directory = pathOutsideRepo(directory, root);
@@ -46,7 +50,7 @@ export async function run(configPath, directory) {
   const checkpoint = resolve(directory, 'checkpoint.json');
   let s, native, browser, stopping = false;
   const abort = new AbortController();
-  const stop = () => abort.abort(); process.once('SIGTERM', stop); process.once('SIGINT', stop);
+  const stop = () => requestStop(s, abort, persist); process.once('SIGTERM', stop); process.once('SIGINT', stop);
   const persist = () => { save(checkpoint, s); save(resolve(directory, 'report.json'), report(s)); };
   const pending = { browser: 0, native: 0 };
   const boundary = quietBoundary({ signal: abort.signal, busy: () => pending.browser + pending.native > 0 });
@@ -68,6 +72,9 @@ export async function run(configPath, directory) {
     s.provenanceHash = digest(JSON.stringify(c.provenance));
     s.runnerHash = digest(readFileSync(fileURLToPath(import.meta.url)));
     s.adapterHash = createHash('sha256').update(readFileSync(c.adapter)).digest('hex');
+    // A resumed attempt has its own stop boundary; prior timeline markers and
+    // interruption/overrun evidence remain retained.
+    delete s.stopRequestedAt;
     s.status = 'running'; persist();
     // Explicit read-only baseline before any measured target phase. Never store credentials or raw API errors.
     if (!s.baseline) { s.baseline = await measure(c, Date.now() - 3600000, Date.now()); save(resolve(directory, 'baseline.json'), s.baseline); persist(); }
@@ -81,8 +88,8 @@ export async function run(configPath, directory) {
       if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
       if (nativeCoverage(s, message)) persist();
     });
-    native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); abort.abort(); });
-    native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); abort.abort(); } persist(); });
+    native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); stop(); });
+    native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); stop(); } persist(); });
     browser = await startBrowser(c, emit);
     const coverage = await browser.adapter.audit?.({ config: c });
     s.coverage.modelTurns ||= coverage?.modelTurns === true;
@@ -106,6 +113,7 @@ export async function run(configPath, directory) {
     }
     s.status = 'collecting'; persist();
     stopping = true;
+    if (markStopRequested(s)) persist();
     await browser.close(); browser = undefined;
     await stopNative(native); native = undefined;
     // Metrics windows exclude transitions and controlled reconnects. Collect after sockets close + ingestion lag.
@@ -123,8 +131,11 @@ export async function run(configPath, directory) {
       persist(); }
     throw Error('SOAK_INCOMPLETE_SEE_PRIVATE_CHECKPOINT');
   } finally {
-    stopping = true; await browser?.close().catch(() => {}); if (native) await stopNative(native);
-    process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop); unlinkSync(lockPath);
+    try { if (s && markStopRequested(s)) persist(); }
+    finally {
+      stopping = true; await browser?.close().catch(() => {}); if (native) await stopNative(native);
+      process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop); unlinkSync(lockPath);
+    }
   }
 }
 async function stopNative(child) {
