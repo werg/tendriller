@@ -120,7 +120,7 @@ test('concrete public SDK creation retains private handle and never claims or bl
       assert.equal(account.id, principal.id); return 'owner@example.com';
     }, fetch: async (url, options) => {
       calls.push({ url, options });
-      if (String(url).endsWith('/api/service')) return Response.json({ contract: 3, core_release: '0.3.0-rc.10', limits: {} });
+      if (String(url).endsWith('/api/service')) return Response.json({ contract: 3, core_release: '0.3.0-rc.11', limits: {} });
       return Response.json({ id: 'newpage', application: { id: appId }, page_url: 'https://newpage.pages.example/',
         api: 'https://tendriller.example/api/t/newpage', token: 'private-created-token' });
     } } });
