@@ -6,12 +6,12 @@ import { nativeCoverage, nativeAssistantStatus, nativeAssistantBusy } from '../i
 import { quietBoundary } from '../idle-soak/warmup.mjs';
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const readiness=f=>f.messages.filter(x=>x.idleSoakReady===1||x.idleSoakCoverage===1);
-function fixture({assistant=true,events=false,queryFailure=false,missingPairings=false}={}) {
+function fixture({assistant=true,events=false,queryFailure=false,missingPairings=false,changesNeedOwnerClose=false}={}) {
  const stop=new AbortController(),sessionStop=new AbortController(),query=Promise.withResolvers(),reconciliation=Promise.withResolvers();
  const calls=[],messages=[],wakeups=[];let status,notify,observed,reconcile,assistantReport,opens=0,closes=0,assistantCalls=0,supervisorCloses=0;
  const session={signal:sessionStop.signal,participation:{onStatus(fn){status=fn;return()=>calls.push('unsubscribe');}},
   query(name,input){calls.push(['query',name,input]);return query.promise;},
-  changes({signal}){return{async *[Symbol.asyncIterator](){
+  changes({signal}){if(changesNeedOwnerClose)signal=sessionStop.signal;return{async *[Symbol.asyncIterator](){
     while(!signal.aborted){const change=await new Promise(resolve=>{const abort=()=>resolve(null);signal.addEventListener('abort',abort,{once:true});notify=value=>{signal.removeEventListener('abort',abort);resolve(value);};if(signal.aborted)abort();});if(change===null)break;yield change;}
   }};}};
  const owned={session,watchSetup(){calls.push('watch');},processPairings:missingPairings?undefined:async options=>{calls.push(['reconcile',options]);return reconciliation.promise;},
@@ -138,4 +138,11 @@ test('activity failure after one-shot ready updates the quiet gate without resta
  assert(nativeAssistantStatus(s,f.messages.at(-1)));assert.equal(nativeAssistantBusy(s),true);assert.equal(s.coverage.mcpOnline,true);
  assert.equal(readiness(f).length,2);assert.equal(f.stats().closes,0);assert(!JSON.stringify(f.messages).includes('SECRET'));
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
+});
+
+
+test('abort closes the shared owner before awaiting readers blocked on owner transport', {timeout:1000}, async()=>{
+ const f=fixture({assistant:false,changesNeedOwnerClose:true});await flush();f.status(readyStatus);f.query.resolve({});
+ const pass=f.reconcile();f.reconciliation.resolve([]);await pass;await flush();
+ f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert.equal(f.stats().supervisorCloses,1);
 });
