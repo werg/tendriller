@@ -11,6 +11,7 @@ import { peerApi, peerApiJson, participantMessage } from './peer-exchange';
 import { authenticateAgentToken } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { servedVersion } from '../src/files';
+import { sha256Hex } from '../src/ids';
 
 const definition = { id: 'code-release', version: '1', schema: null, commands: [], queries: [] } as const;
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
@@ -214,6 +215,18 @@ it('retains unclaimed expiry, intended-owner checks and account resident quotas 
   for (let i = 0; i < 3; i++) await env.ACCOUNTS.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
     .bind(crypto.randomUUID(), account, Date.now()).run();
   await expect(signInAsOwner(h, account, ownerEmail)).rejects.toThrow('429');
+  const cookie = crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
+    .bind(await sha256Hex(cookie), account, Date.now(), Date.now() + 60_000).run();
+  const claimPage = await req('/auth/page?' + new URLSearchParams({ tendril: h.id, key: new URL(h.page_url).pathname.split('/')[2] }),
+    { headers: { Cookie: '__Host-tendriller=' + cookie, Accept: 'text/html' } });
+  expect(claimPage.status).toBe(429);
+  expect(claimPage.headers.get('Content-Type')).toContain('text/html');
+  const content = await claimPage.text();
+  expect(content).toContain('Your account is at its page limit');
+  expect(content).toContain('3 resident pages');
+  expect(content).toContain('href="/dashboard"');
+  expect(content).toContain('Your prepared app has not been claimed');
   expect((await apiJson(h, 'GET', '')).owner_account_id).toBeNull();
   expect(await peerApiJson(h, 'publication/read')).toEqual(receipt);
   await advance(h.id, 24 * 60 * 60 * 1000 + 1);
