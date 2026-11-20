@@ -6,6 +6,8 @@ import { DEVICE_PAIRING_LIMITS, signDevicePairingChallenge, type DevicePairingSt
 import { api, apiJson, create, req, inDO, advance, type Handle } from './helpers';
 import { peerApiJson } from './peer-exchange';
 import { sha256Hex } from '../src/ids';
+import { authenticateAgentToken } from '../src/access';
+import { handleDevicePairing } from '../src/device-pairing';
 
 async function fixture() {
   const native = await createPeerIdentity(), device = await createPeerIdentity();
@@ -21,9 +23,9 @@ async function fixture() {
   await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)').bind(await sha256Hex(raw), owner, Date.now(), Date.now() + 86400000).run();
   return { h, native, device, owner, cookie: `__Host-tendriller=${raw}` };
 }
-async function browser(h: Handle, input?: unknown, id?: string): Promise<Response> {
-  return req(`${h.page_url}_tendril/peers/pairing${id ? '?pairingId=' + id : ''}`, input === undefined ? {} :
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+async function browser(h: Handle, input?: unknown, id?: string, headers: Record<string, string> = {}): Promise<Response> {
+  return req(`${h.page_url}_tendril/peers/pairing${id ? '?pairingId=' + id : ''}`, input === undefined ? { headers } :
+    { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(input) });
 }
 async function jsonResponse<T = DevicePairingStatus>(response: Response, expected = 200): Promise<T> {
   const text = await response.text(); expect(response.status, text).toBe(expected); return JSON.parse(text) as T;
@@ -58,6 +60,18 @@ async function prepare(h: Handle, native: PeerIdentity, status: DevicePairingSta
     accounts: [{ publicKey: c.publicKey, accountId: c.accountId }] } };
 }
 const commit = (h: Handle, status: DevicePairingStatus, prepared: DevicePairingPrepared) => api(h, 'POST', 'peers/pairing', { action: 'commit', pairingId: status.pairingId, ...prepared });
+async function guest(h: Handle) {
+  const accountId = crypto.randomUUID(), raw = 'guest-' + crypto.randomUUID(), hash = await sha256Hex(raw);
+  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(accountId, Date.now(), `${accountId}@example.test`).run();
+  const link = await inDO(h.id, async t => {
+    const link = await t.createLink('guest', 'Pairing guest', null);
+    t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', accountId, link.id, t.now());
+    t.db.run('INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,?,?)', hash, accountId, 'guest', t.now() + 86400000);
+    return { id: link.id, key: link.key };
+  });
+  const url = new URL(h.page_url); url.pathname = `/s/${link.key}/`;
+  return { accountId, linkId: link.id, handle: { ...h, page_url: url.href }, headers: { Cookie: `__Host-tendril=${raw}`, Origin: url.origin } };
+}
 
 it('retains one exact challenge across duplicates and restart without granting authority', async () => {
   const { h, device } = await fixture(), id = crypto.randomUUID();
@@ -99,6 +113,9 @@ it('commits only the exact reviewed grant, recovers a lost response after restar
   const prepared = await prepare(h, native, c);
   await jsonResponse(await commit(h, c, prepared), 409);
   expect((await review(c, cookie)).status).toBe(200);
+  const badSignature = { ...prepared, request: { ...prepared.request, signature: '00'.repeat(64) } };
+  await jsonResponse(await commit(h, c, badSignature), 403);
+  expect((await apiJson(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId)).prepared).toBeUndefined();
   const broad = structuredClone(prepared);
   (broad.control.grants[broad.control.grants.length - 1] as { administrator: boolean }).administrator = true;
   await jsonResponse(await commit(h, c, broad), 409);
@@ -151,4 +168,93 @@ it('keeps rejection and malformed/capacity boundaries durable without overwritin
   const retained = await inDO(h.id, t => t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n);
   expect(retained).toBe(DEVICE_PAIRING_LIMITS.challengesPerMinute);
   expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('denied');
+});
+
+it('isolates guest requests by account and requires owner review even with a valid page session', async () => {
+  const { h, device, cookie } = await fixture(), a = await guest(h), b = await guest(h);
+  const c = await jsonResponse(await browser(a.handle, { action: 'challenge', requestId: 'guest-request', publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, a.headers));
+  expect(c.challenge.accountId).toBe(a.accountId);
+  await jsonResponse(await browser(b.handle, undefined, c.pairingId, b.headers), 403);
+  await jsonResponse(await browser(h, undefined, c.pairingId), 403);
+  await jsonResponse(await browser(b.handle, { action: 'prove', pairingId: c.pairingId, signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, b.headers), 403);
+  await jsonResponse(await browser(a.handle, { action: 'prove', pairingId: c.pairingId, signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, a.headers));
+  const raw = 'guest-review-' + crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)').bind(await sha256Hex(raw), a.accountId, Date.now(), Date.now() + 86400000).run();
+  expect((await req(c.reviewUrl, { headers: { Cookie: `__Host-tendriller=${raw}` } })).status).toBe(403);
+  expect((await review(c, cookie)).status).toBe(200);
+  expect((await jsonResponse(await browser(a.handle, undefined, c.pairingId, a.headers))).state).toBe('approved');
+});
+
+it('rechecks guest admission at the atomic control write and resumes the same prepared transition', async () => {
+  const { h, native, device, cookie } = await fixture(), g = await guest(h);
+  const c = await jsonResponse(await browser(g.handle, { action: 'challenge', requestId: 'revocation-race', publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, g.headers));
+  await jsonResponse(await browser(g.handle, { action: 'prove', pairingId: c.pairingId, signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, g.headers));
+  expect((await review(c, cookie)).status).toBe(200);
+  const prepared = await prepare(h, native, c);
+  const race = await inDO(h.id, async t => {
+    const original = t.env.ACCOUNTS;
+    let revoked = false;
+    t.env.ACCOUNTS = { prepare(sql: string) {
+      const statement = original.prepare(sql);
+      if (!sql.includes('FROM accounts WHERE id')) return statement;
+      return { bind(...args: unknown[]) {
+        const bound = statement.bind(...args);
+        return { async first() {
+          const value = await bound.first();
+          if (!revoked && args[0] === g.accountId && t.db.one<{ status: string }>('SELECT status FROM device_pairings WHERE id=?', c.pairingId)?.status === 'committing') {
+            revoked = true; t.db.run('DELETE FROM guest_accounts WHERE account_id=?', g.accountId);
+          }
+          return value;
+        } };
+      } };
+    } } as D1Database;
+    try {
+      const principal = await authenticateAgentToken(t, h.token), request = new Request('https://tendril.internal/agent', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'commit', pairingId: c.pairingId, ...prepared }) });
+      try { await handleDevicePairing(t, request, new URL(request.url), principal); return { revoked, code: 'unexpected-success' }; }
+      catch (error) { return { revoked, code: (error as { code: string }).code }; }
+    } finally { t.env.ACCOUNTS = original; }
+  });
+  expect(race.revoked).toBe(true); expect(race.code).toBe('forbidden');
+  const uncertain = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId);
+  expect(uncertain.state).toBe('revoked'); expect(uncertain.prepared).toEqual(prepared);
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)).toBeNull();
+  await inDO(h.id, t => t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', g.accountId, g.linkId, t.now()));
+  const resumed = await jsonResponse(await commit(h, c, prepared)); expect(resumed.state).toBe('committed');
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(2);
+});
+
+it('refuses a corrupt retained attempt without selecting a replacement or dropping the journal', async () => {
+  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  expect((await review(c, cookie)).status).toBe(200);
+  await jsonResponse(await commit(h, c, prepared));
+  await inDO(h.id, t => { const row = t.db.one<{ data: string }>('SELECT data FROM device_pairings WHERE id=?', c.pairingId)!;
+    const record = JSON.parse(row.data); record.prepared.control.epoch++;
+    t.db.run('UPDATE device_pairings SET data=? WHERE id=?', JSON.stringify(record), c.pairingId); });
+  const result = await apiJson(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId, undefined, 503);
+  expect(result.error.code).toBe('pairing_reconciliation_required');
+  await jsonResponse(await commit(h, c, prepared), 503);
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(2);
+  expect(await inDO(h.id, t => t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n)).toBe(1);
+});
+
+it('fails closed for missing storage and finite retained and device-binding capacities', async () => {
+  const { h, device } = await fixture(), c = await challenge(h, device, 'retained-at-capacity');
+  await inDO(h.id, t => t.transaction(() => {
+    const row = t.db.one<{ data: string; account_id: string }>('SELECT data,account_id FROM device_pairings WHERE id=?', c.pairingId)!;
+    for (let i = 1; i < DEVICE_PAIRING_LIMITS.retainedPerApplication; i++)
+      t.db.run('INSERT INTO device_pairings(id,account_id,created_at,expires_at,status,data) VALUES(?,?,?,?,?,?)', i.toString(16).padStart(64, '0'), row.account_id, t.now(), 0, 'denied', row.data);
+  }));
+  const full = await jsonResponse<any>(await browser(h, { action: 'challenge', requestId: 'another', publicKey: device.publicKey, rights: { reader: true, writer: true } }), 429);
+  expect(full.error.code).toBe('pairing_ledger_full'); expect(await challenge(h, device, 'retained-at-capacity')).toEqual(c);
+  await inDO(h.id, t => t.db.run('DROP TABLE device_pairings'));
+  const missing = await jsonResponse<any>(await browser(h, undefined, c.pairingId), 503);
+  expect(missing.error.code).toBe('pairing_storage_unavailable');
+  const other = await fixture();
+  await inDO(other.h.id, t => { const bindings = t.db.get<{ publicKey: string; accountId: string }[]>('peer_generation_accounts', []);
+    while (bindings.length < 1024) bindings.push({ publicKey: bindings.length.toString(16).padStart(64, '0'), accountId: other.owner });
+    t.db.set('peer_generation_accounts', bindings); });
+  const binding = await jsonResponse<any>(await browser(other.h, { action: 'challenge', requestId: 'binding-full', publicKey: other.device.publicKey, rights: { reader: true, writer: true } }), 429);
+  expect(binding.error.code).toBe('peer_account_binding_full');
+  expect(await inDO(other.h.id, t => t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n)).toBe(0);
 });

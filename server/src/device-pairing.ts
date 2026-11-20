@@ -54,6 +54,10 @@ async function verified(t: Tendril, id: string): Promise<PairingRecord> {
   if (!record) throw new HttpError(404, 'pairing_not_found', 'Keep the original request ID; no replacement request was created.');
   if (record.digest !== await sha256Hex(pairingProofBytes(record.challenge)) || record.challenge.applicationId !== selectedApplication(t).id ||
       record.challenge.serviceOrigin !== publicBase(t.env) || record.challenge.pageOrigin !== new URL(t.mainPageUrl()).origin) throw unavailable();
+  if (record.prepared && (!record.preparedDigest || !HEX.test(record.preparedDigest) || await peerDigest(record.prepared) !== record.preparedDigest) ||
+      record.preparedDigest && !record.prepared || ['approved', 'committing', 'committed'].includes(record.state) &&
+      (record.reviewedDigest !== record.digest || typeof record.reviewedAccount !== 'string' || !record.proof))
+    throw new HttpError(503, 'pairing_reconciliation_required', nextActions.reconciliation_required);
   return record;
 }
 function save(t: Tendril, record: PairingRecord): void {
@@ -143,6 +147,9 @@ async function challenge(t: Tendril, req: Request, principal: Principal, input: 
   }
   if (!authority.current) throw new HttpError(409, 'pairing_generation_required', 'Configure and select the initial application generation before requesting pairing.');
   if (authority.grant(value.publicKey)) throw new HttpError(409, 'pairing_device_known', 'This device already has retained authority. Inspect its session or use a separately reviewed authority change.');
+  const bindings = t.db.get<{ publicKey: string; accountId: string }[]>('peer_generation_accounts', []), binding = bindings.find(row => row.publicKey === value.publicKey);
+  if (binding && binding.accountId !== accountId) throw new HttpError(409, 'peer_account_binding_immutable', 'This device key retains its original enrollment account.');
+  if (!binding && bindings.length >= 1024) throw new HttpError(429, 'peer_account_binding_full', 'The retained device/account binding capacity is full.');
   const now = t.now();
   const pending = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM device_pairings WHERE account_id=? AND expires_at>? AND status IN ('challenge','pending','approved','committing')", accountId, now)!.n;
   const retained = t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n;
@@ -273,7 +280,9 @@ export async function handleDevicePairing(t: Tendril, req: Request, url: URL, pr
       if (principal.kind !== 'agent') throw new HttpError(400, 'pairing_identity_required');
       requireAgentScope(principal, 'control:write');
       const rows = t.db.all<{ id: string }>(`SELECT id FROM device_pairings WHERE status='committing' OR
-        (status='approved' AND expires_at>? AND json_extract(data,'$.challenge.expectedGeneration')=?) ORDER BY created_at DESC LIMIT 20`, t.now(), authority.current?.id ?? '');
+        (status='approved' AND expires_at>? AND json_extract(data,'$.challenge.expectedGeneration')=?)
+        ORDER BY CASE WHEN json_extract(data,'$.challenge.expectedGeneration')=? THEN 0 ELSE 1 END, created_at DESC LIMIT 20`,
+      t.now(), authority.current?.id ?? '', authority.current?.id ?? '');
       const pairings = [];
       for (const row of rows) pairings.push(await status(t, await verified(t, row.id), authority, true));
       await fresh(t, principal); return json({ pairings });
@@ -329,7 +338,7 @@ export async function reviewDevicePairing(t: Tendril, req: Request): Promise<Res
       if (!record.proof || !await verifyDevicePairingProof(record.challenge, record.proof)) throw unavailable();
       await reviewOwner(t, req);
       if (record.challenge.expiresAt <= t.now()) throw new HttpError(409, 'pairing_expired');
-      record.state = form.get('action') === 'approve' ? 'approved' : 'denied';
+      record.state = form.get('action') === 'deny' ? 'denied' : record.prepared ? 'committing' : 'approved';
       record.reviewedAccount = owner.id; record.reviewedDigest = record.digest; delete record.csrf;
       t.transaction(() => { if (owner.id !== t.db.get('owner_account', null)) throw new HttpError(403, 'pairing_owner_required'); save(t, record); });
       result = await status(t, record, authority);
