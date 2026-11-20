@@ -130,7 +130,7 @@ test('proposal errors leave native pairing live and abort fences late preparatio
 });
 
 
-test('canonical event recovery review preserves a healthy provider and its exact cursor without idle redials', async t => {
+test('canonical event recovery review preserves a healthy provider and its exact cursor without idle redials', { timeout: 10000 }, async t => {
   const { module, directory } = await fixture(t), f = runtime({ events: true }), providers = [];
   const cursor = '"retained-private-event-cursor"\n', cursorFile = join(directory, '.tendriller/assistant-event-cursor.json');
   await mkdir(join(directory, '.tendriller'), { mode: 0o700 });
@@ -151,11 +151,19 @@ test('canonical event recovery review preserves a healthy provider and its exact
     providers.push(provider);
     return { closed: done.promise, waitUntilOnline: async () => {}, close() { provider.closes++; done.resolve(); } };
   };
+  // Await the actual forwarding outcome. Filesystem completion is independent
+  // of event-loop turns when the full suite runs under CPU/I/O contention.
+  const waiting = new Map(), originalReport = f.dependencies.report;
+  const failureCount = () => f.reports.filter(x => x.state === 'adapter_activity_failed').length;
+  f.dependencies.report = value => {
+    originalReport(value);
+    for (const [count, resolve] of waiting) if (failureCount() >= count) { waiting.delete(count); resolve(); }
+  };
+  const settled = count => failureCount() >= count ? Promise.resolve() : new Promise(resolve => waiting.set(count, resolve));
   // Install virtual time after the asynchronous filesystem fixture is prepared.
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const run = module.runAssistant({ signal: f.stop.signal, events: true }, f.dependencies);
   t.after(async () => { f.stop.abort(); await run; });
-  const settled = async count => { for (let i=0; i<50 && f.reports.filter(x=>x.state==='adapter_activity_failed').length<count; i++) await flush(); };
   await settled(1);
   assert.equal(forwards, 1); assert.equal(providers.length, 1); assert.equal(providers[0].closes, 0);
   assert.equal(providers[0].signal.aborted, false); assert(!f.calls.includes('owner_closed'));
