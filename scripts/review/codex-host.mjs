@@ -4,9 +4,8 @@ import { createInterface } from 'node:readline';
 /** Exercise the real Codex MCP host without starting a model turn or changing user configuration. */
 export async function nativeHost({ origin, token, cwd, spawnHost = spawn, deadlineMs = 45000 }) {
   const child = spawnHost('codex', [
-    '-c', 'mcp_servers.tendriller_review.url=' + JSON.stringify(origin + '/mcp'),
-    '-c', 'mcp_servers.tendriller_review.bearer_token_env_var="TENDRILLER_REVIEW_TOKEN"',
-    '-c', 'mcp_servers.tendriller_review.startup_timeout_sec=30',
+    '-c', 'mcp_servers={tendriller_review={url=' + JSON.stringify(origin + '/mcp')
+      + ',bearer_token_env_var="TENDRILLER_REVIEW_TOKEN",startup_timeout_sec=30}}',
     'app-server', '--listen', 'stdio://',
   ], { cwd, env: { ...process.env, TENDRILLER_REVIEW_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] });
   let sequence = 0, stopped = false;
@@ -19,6 +18,7 @@ export async function nativeHost({ origin, token, cwd, spawnHost = spawn, deadli
     pending.clear();
   };
   child.once('error', () => fail('Codex could not start. Install the qualified Codex CLI.'));
+  child.stdin.on('error', () => fail('Codex MCP input closed'));
   child.once('exit', () => fail('Codex MCP host exited before completing the request.'));
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
@@ -42,7 +42,7 @@ export async function nativeHost({ origin, token, cwd, spawnHost = spawn, deadli
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   });
   const close = () => new Promise(resolve => {
-    if (child.exitCode !== null || stopped) { lines.close(); resolve(); return; }
+    if (child.exitCode !== null || !child.pid) { lines.close(); resolve(); return; }
     child.once('exit', () => { clearTimeout(timer); lines.close(); resolve(); });
     const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
     child.kill('SIGTERM');

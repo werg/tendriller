@@ -27,7 +27,6 @@ export async function recordReview({ project, accessPath, output, video = true, 
   const present = async (title, prompt, observation) => {
     await page.goto('about:blank');
     await page.setContent('<!doctype html><html><meta charset="utf-8"><title>Tendriller MCP qualification</title><style>body{background:#f4f6f4;color:#16372d;font:20px/1.5 system-ui;margin:0;padding:48px}main{max-width:1160px;margin:auto}small{font-size:16px}h1{font-size:34px;margin:18px 0}pre{background:#fff;border:1px solid #c9d8d0;border-radius:16px;padding:24px;white-space:pre-wrap;font:17px/1.45 ui-monospace;max-height:600px;overflow:hidden}.badge{font-size:15px;background:#164b37;color:white;padding:7px 12px;border-radius:20px;display:inline-block}</style><main><span class="badge">LIVE MCP · CODEX CLIENT</span><h1></h1><p></p><pre></pre><small>Automated deterministic tool execution through the real Codex MCP host. This is not a recording of ChatGPT web or an LLM conversation.</small></main></html>');
-    await page.locator('h1').textContent();
     await page.locator('h1').evaluate((node, value) => { node.textContent = value; }, title);
     await page.locator('p').evaluate((node, value) => { node.textContent = value; }, prompt);
     await page.locator('pre').evaluate((node, value) => { node.textContent = value; }, JSON.stringify(observation, null, 2).slice(0, 3800));
@@ -64,11 +63,12 @@ export async function recordReview({ project, accessPath, output, video = true, 
     };
     await positive(0, async () => {
       const result = await call('list_tendrils'); assert(result.structuredContent.applications.some(item => item.applicationId === app.applicationId));
-      return result.structuredContent;
+      return { applications: result.structuredContent.applications };
     });
     await positive(1, async () => {
       const result = await call('describe_application', app); assert(JSON.stringify(result.structuredContent).includes('completeItem'));
-      return result.structuredContent;
+      const value = result.structuredContent;
+      return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), events: value.events.map(item => item.name), provider: value.provider };
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
     const host = createClient(handle, { applicationId: app.applicationId });
@@ -85,14 +85,14 @@ export async function recordReview({ project, accessPath, output, video = true, 
       const deadline = Date.now() + 20000;
       while (!(await query()).find(item => item.id === 'check-labels').complete) { assert(Date.now() < deadline); await new Promise(done => setTimeout(done, 200)); }
       assert(!(await call('call_application_command', args)).isError);
-      return { command: result.structuredContent, verified: await query(), exactRetryPreservedOperationId: true };
+      return { operationId, outcome: result.structuredContent.outcome, verified: await query(), exactRetryPreservedOperationId: true };
     });
     await positive(4, async () => {
       const deadline = Date.now() + 20000;
       for (;;) {
         const result = await call('read_application_events', app);
         const events = result.structuredContent.events.filter(event => event.data.payload.id === 'check-labels');
-        if (events.length) { assert.equal(events.length, 1); return result.structuredContent; }
+        if (events.length) { assert.equal(events.length, 1); return { retainedEvents: events.map(event => ({ sourceEventId: event.sourceEventId, data: event.data })), duplicateEvents: 0 }; }
         assert(Date.now() < deadline); await new Promise(done => setTimeout(done, 200));
       }
     });
@@ -127,13 +127,26 @@ export async function recordReview({ project, accessPath, output, video = true, 
     const message = String(error.message).replaceAll(access.code, '[private access code]');
     report.error = message; throw Error('Plugin qualification failed: ' + message);
   } finally {
-    await client?.close(); await context?.close(); await browser.close();
-    for (const [index, recording] of recorded.entries()) if (recording) await recording.saveAs(resolve(output, index ? `walkthrough-${index}.webm` : 'walkthrough.webm'));
-    if (report.passed && video) {
-      const bytes = readFileSync(resolve(output, 'walkthrough.webm'));
-      report.video = { file: 'walkthrough.webm', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    let finalizationError;
+    try {
+      await client?.close();
+      await context?.close();
+      // Save while the Playwright transport is still connected, after page/context closure flushes the frames.
+      for (const [index, recording] of recorded.entries()) if (recording) await recording.saveAs(resolve(output, index ? `walkthrough-${index}.webm` : 'walkthrough.webm'));
+      if (report.passed && video) {
+        const bytes = readFileSync(resolve(output, 'walkthrough.webm'));
+        report.video = { file: 'walkthrough.webm', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+      }
+    } catch (error) {
+      finalizationError = error;
+      report.passed = false;
+      report.recordingError = String(error.message).replaceAll(access.code, '[private access code]');
+    } finally {
+      await browser.close();
+      writeFileSync(resolve(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
     }
-    writeFileSync(resolve(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+    if (finalizationError && !report.error) throw Error('Review evidence could not be finalized; see the sanitized report.');
   }
+
   return report;
 }

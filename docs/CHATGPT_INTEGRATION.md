@@ -144,18 +144,17 @@ workspace plugin do not create a directory listing.
    the portal's OAuth connection with a dedicated test account. Wait for the
    tool scan and resolve any required findings in **Metadata & Skills** or
    **MCPs**. [Domain verification and scanning](https://developers.openai.com/plugins/deploy/submission#connect-and-scan-your-mcp-server)
-4. Provision a dedicated sample account using the operator's test-access helper
-   in `scripts/provision-test-access.mjs`. Its private magic URL opens the sample
-   account without a GitHub or Google sign-in. Give it a claimed, assistant-connected **Review
-   checklist** with synthetic data. Seed an incomplete **Check labels** item
-   plus another item, approve its list query and a command to mark only the
-   selected item complete, and forward the approved completion event to the
-   inbox. Keep an eligible participant running and verify all positive and
-   negative cases from the package with that account. Provision a fresh sample
-   app for the reviewer after recording the walkthrough. In **Metadata & Skills → Review information
-   → Review details**, enter the private test credentials, sign-in instructions,
-   and the reviewer-accessible video link. Keep credentials out of the ZIP and
-   chat. [Review details](https://developers.openai.com/plugins/deploy/submission#complete-review-information)
+4. The maintainer prepares a dedicated synthetic **Review checklist**, keeps its
+   participant running, and runs the [automated native-client qualification and
+   recording](../integrations/chatgpt/plugin/REVIEW.md). This uses the real Codex
+   MCP host and all packaged tool-level cases; it does not claim ChatGPT web or
+   model-behavior verification. The publisher does not need to record or run
+   these checks. In **Metadata & Skills → Review information → Review details**,
+   enter the static `https://tendriller.dev/auth/test` login URL, a separately
+   supplied reusable private code, sample availability, and the accessible
+   recording URL with its actual client identified. Reviewers need no upstream
+   GitHub/Google account or magic link. Keep credentials out of the ZIP and chat.
+   [Review details](https://developers.openai.com/plugins/deploy/submission#complete-review-information)
 5. Select the draft and choose **Submit for review**. Complete the required
    attestations with the publisher. After approval, publish and give users the
    exact listing link. Test installation and account linking as a user outside

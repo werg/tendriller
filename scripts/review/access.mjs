@@ -8,7 +8,7 @@ export function readReviewAccess(path) {
     throw Error('Use a dedicated test-account record on an exact HTTPS origin');
   const saved = new URL(record.url);
   const code = new URLSearchParams(saved.hash.slice(1)).get('token');
-  if (saved.origin !== origin.origin || saved.pathname !== '/auth/test' || !/^[A-Za-z0-9_-]{43}$/.test(code ?? '') ||
+  if (saved.username || saved.password || saved.search || saved.origin !== origin.origin || saved.pathname !== '/auth/test' || !/^[A-Za-z0-9_-]{43}$/.test(code ?? '') ||
       createHash('sha256').update(code).digest('hex') !== record.tokenSha256)
     throw Error('Private test-account credentials are inconsistent');
   return { ...record, loginUrl: origin.origin + '/auth/test', code };

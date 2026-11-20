@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSy
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
+import { createRequire } from 'node:module';
 import { chromium } from '@playwright/test';
 import { createClient } from '../../dist/sdk/client.mjs';
 import { readReviewAccess } from './access.mjs';
@@ -14,10 +15,15 @@ const { values } = parseArgs({ options: { access: { type: 'string' }, config: { 
 if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video]');
 const root = resolve(import.meta.dirname, '../..'), accessPath = resolve(values.access), config = resolve(values.config), output = resolve(values.output);
 const access = readReviewAccess(accessPath), version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
+const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config });
+assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
 const project = mkdtempSync(join(tmpdir(), 'tendriller-review-fixture-'));
 let child, handle, opened = false, originalMode;
 const db = sql => JSON.parse(execFileSync(process.execPath, [join(root, 'node_modules/wrangler/bin/wrangler.js'), 'd1', 'execute', 'ACCOUNTS', '--remote', '--config', config, '--json', '--command', sql], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))[0];
-const run = args => execFileSync(process.execPath, ['review-app.mjs', ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const run = args => {
+  try { return execFileSync(process.execPath, ['review-app.mjs', ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch { throw Error('Synthetic fixture step failed: ' + args[0] + '. Private child diagnostics were withheld.'); }
+};
 const delay = () => new Promise(done => setTimeout(done, 250));
 mkdirSync(output, { recursive: true, mode: 0o700 });
 try {
@@ -39,9 +45,11 @@ try {
   const proposal = JSON.parse(run(['propose']));
   child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', 'ignore', 'ignore'] });
   const host = createClient(handle, { applicationId: handle.application.id });
+  let participantError;
+  child.once('error', () => { participantError = true; });
   let publication;
   const deadline = Date.now() + 30000;
-  while (!(publication = await host.peers.publication())) { assert(Date.now() < deadline, 'Preclaim publication deadline'); assert(child.exitCode === null); await delay(); }
+  while (!(publication = await host.peers.publication())) { assert(Date.now() < deadline, 'Preclaim publication deadline'); assert(!participantError && child.exitCode === null, 'Synthetic participant must remain running'); await delay(); }
   assert.equal((await host.info()).owner_account_id, null);
   const browser = await chromium.launch();
   try {
@@ -62,7 +70,7 @@ try {
   console.log('Native MCP qualification passed all packaged cases; recording and sanitized report saved.');
 } finally {
   const failures = [];
-  if (child && child.exitCode === null) {
+  if (child?.pid && child.exitCode === null) {
     const exited = once(child, 'exit'); child.kill('SIGTERM');
     const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
     try { await exited; } finally { clearTimeout(timer); }
@@ -74,6 +82,6 @@ try {
     } catch { failures.push('Could not delete the qualification-owned synthetic page'); }
   }
   if (opened) { try { db("UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'"); } catch { failures.push('Could not restore staging creation mode'); } }
+  if (failures.length) throw Error(failures.join('; ') + '. Private recovery files retained at ' + project);
   rmSync(project, { recursive: true, force: true });
-  if (failures.length) throw Error(failures.join('; '));
 }

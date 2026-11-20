@@ -6,10 +6,12 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
+import { readReviewAccess } from './review/access.mjs';
 
 const { values } = parseArgs({ options: { config: { type: 'string' }, output: { type: 'string' },
   days: { type: 'string', default: '30' }, renew: { type: 'boolean', default: false }, revoke: { type: 'boolean', default: false } } });
-if (!values.config || !values.output) throw Error('Pass --config server/wrangler.<environment>.jsonc --output /private/path/test-access.json [--days 30] [--revoke]');
+if (!values.config || !values.output) throw Error('Pass --config server/wrangler.<environment>.jsonc --output /private/path/test-access.json [--days 30] [--renew | --revoke]');
+if (values.renew && values.revoke) throw Error('Choose renew or revoke, not both');
 const days = Number(values.days);
 if (!Number.isInteger(days) || days < 1 || days > 90) throw Error('Choose 1 to 90 days');
 const configPath = resolve(values.config), output = resolve(values.output);
@@ -34,6 +36,7 @@ catch (error) {
 }
 if (record.origin !== origin || !/^test_[a-f0-9]{32}$/.test(record.accountId) || !/^[a-f0-9]{64}$/.test(record.tokenSha256) ||
     !Number.isSafeInteger(record.expiresAt)) throw Error('Private record does not match this deployment');
+readReviewAccess(output); // Validate the saved credential binding before changing the remote account.
 if (values.revoke) {
   run(['secret', 'bulk'], JSON.stringify({ TEST_ACCESS_JSON: null }));
   run(['d1', 'execute', 'ACCOUNTS', '--remote', '--command', `DELETE FROM sessions WHERE account_id='${record.accountId}';
@@ -45,7 +48,7 @@ if (values.revoke) {
     record.expiresAt = Date.now() + days * 86400000;
     writeFileSync(output, JSON.stringify(record, null, 2) + '\n', { mode: 0o600, flush: true });
   }
-  if (record.expiresAt <= Date.now()) throw Error('Saved test access expired. Revoke it and provision a new private record.');
+  if (record.expiresAt <= Date.now()) throw Error('Saved test access expired. Renew the same dedicated account with --renew, or revoke and create a new one.');
   const now = Date.now(), id = record.accountId;
   run(['d1', 'execute', 'ACCOUNTS', '--remote', '--command', `
     INSERT INTO accounts(id,created_at,email) VALUES('${id}',${now},'${id}@example.invalid') ON CONFLICT(id) DO NOTHING;
