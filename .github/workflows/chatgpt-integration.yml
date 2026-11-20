@@ -1,56 +1,44 @@
 name: ChatGPT integration
 
 on:
-  pull_request:
-  push:
-    branches: [master]
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      manifest_sha256:
+        type: string
+        required: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: chatgpt-integration-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   integration:
-    name: Qualified ChatGPT deployment bundle
+    name: ChatGPT native and packed-host qualification from public graph
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          path: core
-          # Qualify the source head, not GitHub's temporary PR merge commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/checkout@v4
-        with:
-          repository: werg/chronolog-db
-          ref: 15573014f4536369d7bd2f8a4b894a0d9fb69812
-          path: chronolog
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Build exact public packages and qualify the deployment release
-        working-directory: core
-        shell: bash
-        run: |
-          node integrations/chatgpt/deploy/build-release.mjs \
-            --core-source "$GITHUB_WORKSPACE/core" \
-            --core-ref "$(git rev-parse HEAD)" \
-            --chronolog-source "$GITHUB_WORKSPACE/chronolog" \
-            --output "$RUNNER_TEMP/chatgpt-release"
-      - uses: actions/upload-artifact@v4
+      - run: npm ci
+      - uses: actions/download-artifact@v4
         with:
-          name: tendriller-chatgpt-release
-          path: ${{ runner.temp }}/chatgpt-release/release/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+      - name: Retain native, packed-host and release import coverage without rebuilding
+        run: node scripts/qualify-chatgpt-graph.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: chatgpt-integration-qualification
-          path: ${{ runner.temp }}/chatgpt-release/build/logs/
+          path: .results/chatgpt-graph/
           include-hidden-files: true
           if-no-files-found: ignore

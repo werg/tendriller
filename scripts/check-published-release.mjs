@@ -11,7 +11,7 @@ const sha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value
 const commit = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const fail = (code, message) => { throw Object.assign(Error(message), { code }); };
 const componentRoles = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter'];
-const requiredRoles = [...componentRoles, 'composition', 'first-app', 'core-provenance', 'tools-provenance'];
+const requiredRoles = [...componentRoles, 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin'];
 
 function redirectTarget(location, previous, initial) {
   let target;

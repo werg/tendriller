@@ -1,3 +1,4 @@
+import { buildPlugin } from '../integrations/chatgpt/plugin/build.mjs';
 import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 // Bind exact public packages and first-app inputs before release publication.
 import { execFileSync } from 'node:child_process';
@@ -79,7 +80,7 @@ export function verifyReleaseArtifacts(root, manifest) {
       manifest.source_tree !== identity.sourceTree || !Number.isSafeInteger(manifest.contract) ||
       manifest.contract < 1 || !/^[a-f0-9]{64}$/.test(manifest.runtime ?? ''))
     fail('Release manifest must identify the exact clean source tree, contract and runtime.');
-  const required = [...roles, 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance'];
+  const required = [...roles, 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin'];
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== required.length + (manifest.artifacts.some(item => item.role === 'deployment') ? 1 : 0) ||
       required.some(role => manifest.artifacts.filter(item => item.role === role).length !== 1))
     fail('Release manifest must contain the complete SDK/runtime/engine/tools/session/starter composition and its proofs.');
@@ -212,11 +213,12 @@ export function prepareRelease({ root, version, contract }) {
     execFileSync('tar', [...ARCHIVE_METADATA,
       '-czf', join(dist, firstAppFile), '-C', directory, ...TUTORIAL_FILES, 'composition.json', 'packages']);
   } finally { rmSync(directory, { recursive: true, force: true }); }
-  const extras = [component(dist, 'composition', 'composition.json'), component(dist, 'first-app', firstAppFile),
+  buildPlugin(root);
+  const extras = [component(dist, 'plugin', 'tendriller-chatgpt-plugin.zip'), component(dist, 'composition', 'composition.json'), component(dist, 'first-app', firstAppFile),
     component(dist, 'core-provenance', 'provenance.json'), component(dist, 'tools-provenance', 'tools-manifest.json')];
   const releaseUrl = `https://github.com/werg/tendriller/releases/download/source-${identity.source}`;
   const artifacts = [...components, ...extras].map(item => ({ ...item, url: `${releaseUrl}/${item.file}`,
-    type: item.file.endsWith('.tgz') ? 'application/gzip' : 'application/json' }));
+    type: item.file.endsWith('.tgz') ? 'application/gzip' : item.file.endsWith('.zip') ? 'application/zip' : 'application/json' }));
   const manifest = { format: 'tendriller-core-release', version, contract, source_commit: identity.source,
     source_tree: identity.sourceTree, runtime: runtime.id, composition: { id: composition.id, file: 'composition.json' },
     first_app: { file: firstAppFile, profile: 'events', packages: ['sdk', 'tools', 'session'], build_dependency: 'esbuild@0.28.2' }, artifacts };

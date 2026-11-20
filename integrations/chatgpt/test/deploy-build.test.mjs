@@ -24,8 +24,10 @@ test('ChatGPT release validation and CI use the actual pinned core companion sou
   assert.equal(proof.source, CHRONOLOG_SOURCE);
   assert.equal(proof.dirty, false);
   const workflow = await readFile(join(root, '.github/workflows/chatgpt-integration.yml'), 'utf8');
-  const checkout = /repository:\s*werg\/chronolog-db\s*\n\s*ref:\s*([a-f0-9]{40})/.exec(workflow);
-  assert.equal(checkout?.[1], CHRONOLOG_SOURCE, 'CI must check out the same source that release validation accepts.');
+  assert.match(workflow, /name: public-packages/);
+  assert.match(workflow, /node scripts\/qualify-chatgpt-graph.mjs/);
+  assert.doesNotMatch(workflow, /repository:\s*werg\/chronolog-db|build-release.mjs/,
+    'Automatic CI must consume the pinned session from the retained graph, without another source build.');
 });
 const text = async (path, value) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, value); };
 const json = (path, value) => text(path, JSON.stringify(value, null, 2) + '\n');

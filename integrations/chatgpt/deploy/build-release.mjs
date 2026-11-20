@@ -113,7 +113,7 @@ async function packageIdentity(directory, name) {
 }
 
 /** Assemble public bytes only; sealRelease is deliberately separate from the test gate. */
-export async function assembleRelease({ core, chronolog, destination, env }, { run = execute } = {}) {
+export async function assembleRelease({ core, chronolog, destination, env, logDirectory = join(dirname(core.directory), 'logs') }, { run = execute } = {}) {
   const coreProof = await json(join(core.directory, 'dist/provenance.json'));
   proofIdentity(coreProof, core);
   const version = (await json(join(core.directory, 'package.json'))).version;
@@ -152,7 +152,7 @@ export async function assembleRelease({ core, chronolog, destination, env }, { r
   // The locked runtime dependency is installed before these public packages;
   // npm must never substitute a registry SDK or prune these exact archive bytes.
   await run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'],
-    { cwd: integration, env, logFile: join(dirname(core.directory), 'logs/runtime-dependencies.log') });
+    { cwd: integration, env, logFile: join(logDirectory, 'runtime-dependencies.log') });
   await unpackPublicArchive(join(destination, archives.sdk.file), sdk, { run, env });
   await unpackPublicArchive(join(destination, archives.chronolog.file), session, { run, env });
   await packageIdentity(sdk, '@tendriller/core'); await packageIdentity(session, '@chronolog/peer-session');
@@ -196,7 +196,7 @@ export async function sealRelease(directory, { core, chronolog, archives, checks
   return manifest;
 }
 
-const IMPORT_SMOKE = `import assert from 'node:assert/strict'; import { pathToFileURL } from 'node:url';
+export const IMPORT_SMOKE = `import assert from 'node:assert/strict'; import { pathToFileURL } from 'node:url';
 const root = process.argv[1];
 for (const [file, name] of [['integrations/chatgpt/integration.mjs','createIntegration'],
  ['integrations/chatgpt/account.mjs','createTendrillerAccountAdapter'], ['bridge-template/bridge-session.mjs','openSession']])
