@@ -170,7 +170,13 @@ protocol/state work; discovery improvements do not enable those proposed APIs.
 `npm run test:plugin:live -- --access /private/account.json --config
 server/wrangler.staging.jsonc --output /private/evidence` creates an isolated
 synthetic app and records a real Codex MCP client's tool-level acceptance run.
-Build artifacts first; install the qualified Codex CLI and Playwright Chromium.
+Build and prepare release artifacts from the exact clean deployed checkpoint
+first; install the qualified Codex CLI and Playwright Chromium. Anonymous
+preflight requires the deployed source, release, runtime and composition to
+match those artifacts. It checks the current pinned session's actual bytes.
+The CI workflow checks source/readiness before package acquisition and complete
+composition before reviewer credential renewal. Paused staging or production
+stops qualification; the fixture never changes service mode.
 No model turns or OpenAI model credentials are used. The test verifies prepared
 publication before claim, real OAuth/PKCE, reads, a write, retry, retained events,
 rejections and reload, then deletes only its own fixture. It leaves the stable

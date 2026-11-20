@@ -25,11 +25,13 @@ npm run test:plugin:live -- \
 ```
 
 Use the production config and its matching private account for production.
-Before renewing the account or creating a fixture, the workflow checks the
+Before package acquisition, the workflow checks open readiness and deployed
+source/release/runtime identity using only public reads. Before renewing the
+account or creating a fixture, it checks the
 selected host's readiness and exact source/release/runtime/composition identity.
 The fixture installs the SDK and Chronolog session named by that composition,
 verifies their actual hashes against the current source pin, and reports those
-identities. A mismatched deployment, missing readiness or paused production stops
+identities. A mismatched deployment, missing readiness or paused staging or production stops
 the run; it does not select another origin or an older archive. The recording
 rechecks deployment identity at completion. This fixture does not qualify the
 first-app kit or a browser-owned application peer; those have separate gates.
@@ -51,9 +53,11 @@ agent behavior**. Never relabel them as a ChatGPT conversation. The publisher's
 successful ChatGPT connection can be recorded separately as reported evidence.
 
 The fixture is deleted and its participant stopped after the test; an existing
-reviewer sample is untouched. Production creation is never automatically opened
-if paused. Staging can be opened briefly for fixture creation, with its mode
-restored immediately. If cleanup fails, the private temporary project is retained
+reviewer sample is untouched. Qualification never changes service mode. A paused
+host must be inspected and deliberately restored by its operator before rerunning
+qualification. The runner checks readiness again after dependency installation;
+a later creation pause remains a creation failure, without an override or another
+origin. If cleanup fails, the private temporary project is retained
 for operator recovery. `--no-video` explicitly skips recording for diagnostics.
 
 [Native MCP live qualification](../../../.github/workflows/plugin-qualification.yml)

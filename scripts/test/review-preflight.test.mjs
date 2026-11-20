@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { preflightReviewDeployment, reviewComposition, reviewProvenance } from '../review/preflight.mjs';
+import { CORE_RELEASE } from '../../contract/index.mjs';
+import { preflightReviewDeployment, preflightReviewSource, reviewComposition, reviewProvenance, reviewSource } from '../review/preflight.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture(t) {
@@ -47,6 +48,8 @@ function host(origin, document, { status = 200, serviceRelease = document.build.
     assert.equal(new URL(url).origin, origin);
     assert.equal(options.redirect, 'error');
     assert.equal(options.cache, 'no-store');
+    assert.equal(options.method ?? 'GET', 'GET');
+    assert.equal(options.credentials, 'omit');
     assert.equal(options.body, undefined);
     assert.equal(options.headers?.Authorization, undefined);
     if (url === origin + '/api/readiness') return Response.json(document, { status });
@@ -119,14 +122,34 @@ test('missing, unavailable, redirected and wrong-origin readiness cannot advance
   }
 });
 
-test('temporary creation admission is explicit and restricted to the existing staging fixture', async t => {
+test('paused staging and production never authorize credential renewal, a fixture or a mode override', async t => {
   const { qualified } = fixture(t), staging = 'https://staging.tendriller.dev';
-  const paused = host(staging, readiness(staging, qualified, 'creation_paused'));
-  await assert.rejects(preflightReviewDeployment(staging, qualified, paused), error => error.code === 'creation_paused');
-  assert.equal((await preflightReviewDeployment(staging, qualified, { ...paused, allowStagingCreationPause: true })).mode, 'creation_paused');
-  for (const [origin, mode] of [['https://tendriller.dev', 'creation_paused'], ['https://custom.example', 'creation_paused'], [staging, 'read_only']]) {
-    await assert.rejects(preflightReviewDeployment(origin, qualified, {
-      ...host(origin, readiness(origin, qualified, mode)), allowStagingCreationPause: true,
-    }), error => error.code === 'creation_paused');
+  for (const [origin, mode] of [[staging, 'creation_paused'], ['https://tendriller.dev', 'creation_paused'], ['https://custom.example', 'creation_paused'], [staging, 'read_only']]) {
+    const service = host(origin, readiness(origin, qualified, mode));
+    let mutations = 0;
+    await assert.rejects((async () => {
+      await preflightReviewDeployment(origin, qualified, service); mutations++;
+    })(), error => error.code === 'creation_paused');
+    assert.equal(mutations, 0);
+    assert.deepEqual(service.calls.map(call => call.url), [origin + '/api/readiness']);
   }
+});
+
+test('early readiness checks need no packages or private access and remain distinct from full composition evidence', async t => {
+  const { root, source } = fixture(t);
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version: CORE_RELEASE }));
+  mkdirSync(join(root, 'server/src'), { recursive: true });
+  writeFileSync(join(root, 'server/src/runtime-release.json'), JSON.stringify({ id: 'e'.repeat(64) }));
+  const snapshot = reviewSource(root, { source });
+  assert.equal(snapshot.build.compositionId, undefined);
+  assert.equal(snapshot.packagePaths, undefined);
+  const origin = 'https://selected.example', document = readiness(origin, { build: { ...snapshot.build, compositionId: 'c'.repeat(64) } });
+  assert.deepEqual(await preflightReviewSource(origin, snapshot, host(origin, document)), document);
+  let installs = 0;
+  await assert.rejects((async () => {
+    await preflightReviewSource(origin, snapshot, host(origin, { ...document, build: { ...document.build, sourceCommit: 'f'.repeat(40) } }));
+    installs++;
+  })(), /identity mismatch/);
+  assert.equal(installs, 0);
+  assert.throws(() => reviewSource(root, { source: { ...source, dirty: true } }), /clean source/);
 });

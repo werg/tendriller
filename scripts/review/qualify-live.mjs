@@ -12,7 +12,7 @@ import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
-import { cleanupFixturePage, restoreFixtureCreationMode } from './fixture.mjs';
+import { cleanupFixturePage } from './fixture.mjs';
 
 const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
 if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video]');
@@ -20,14 +20,9 @@ const root = resolve(import.meta.dirname, '../..'), accessPath = resolve(values.
 const access = readReviewAccess(accessPath), composition = reviewComposition(root);
 const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config });
 assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
+const readiness = await preflightReviewDeployment(access.origin, composition);
 const project = mkdtempSync(join(tmpdir(), 'tendriller-review-fixture-'));
-let child, handle, opened = false, originalMode, openingUncertain = false, creationAttempted = false;
-const db = sql => JSON.parse(execFileSync(process.execPath, [join(root, 'node_modules/wrangler/bin/wrangler.js'), 'd1', 'execute', 'ACCOUNTS', '--remote', '--config', config, '--json', '--command', sql], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))[0];
-const restoreCreationMode = () => {
-  if (!opened) return;
-  restoreFixtureCreationMode(db);
-  opened = false;
-};
+let child, handle, creationAttempted = false;
 const run = args => {
   try { return execFileSync(process.execPath, ['review-app.mjs', ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch { throw Error('Synthetic fixture step failed: ' + args[0] + '. Private child diagnostics were withheld.'); }
@@ -35,31 +30,17 @@ const run = args => {
 const delay = () => new Promise(done => setTimeout(done, 250));
 mkdirSync(output, { recursive: true, mode: 0o700 });
 try {
-  const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   writeFileSync(join(output, 'preflight.json'), JSON.stringify(reviewProvenance(composition, readiness), null, 2) + '\n', { mode: 0o600 });
   writeFileSync(join(project, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   for (const name of ['review-app.mjs', 'review-domain.mjs']) copyFileSync(join(root, 'integrations/chatgpt/plugin', name), join(project, name));
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     composition.packagePaths.sdk, composition.packagePaths.session], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
   const { createClient } = await import(pathToFileURL(createRequire(join(project, 'package.json')).resolve('@tendriller/core')).href);
-  await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
-  originalMode = db('SELECT mode FROM service_state WHERE id=1').results[0]?.mode;
-  assert(['open', 'creation_paused'].includes(originalMode));
-  if (originalMode === 'creation_paused') {
-    assert.equal(access.origin, 'https://staging.tendriller.dev', 'Only staging creation may be opened by the automated fixture');
-    writeFileSync(join(project, 'creation-mode.json'), JSON.stringify({ serviceOrigin: access.origin, originalMode,
-      attemptedMode: 'open' }) + '\n', { mode: 0o600, flush: true });
-    openingUncertain = true;
-    opened = db("UPDATE service_state SET mode='open' WHERE id=1 AND mode='creation_paused'").meta.changes === 1;
-    openingUncertain = false;
-    assert(opened);
-  }
-  try {
-    await preflightReviewDeployment(access.origin, composition);
-    creationAttempted = true;
-    run(['create', accessPath, 'Qualification checklist']);
-  }
-  finally { restoreCreationMode(); }
+  // Admission may change during package installation. Observe it again without
+  // overriding a pause; the create request still enforces any subsequent race.
+  await preflightReviewDeployment(access.origin, composition);
+  creationAttempted = true;
+  run(['create', accessPath, 'Qualification checklist']);
   handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
   run(['init']);
   const proposal = JSON.parse(run(['propose']));
@@ -114,8 +95,6 @@ try {
     try { await exited; } finally { clearTimeout(timer); }
   }
   failures.push(...await cleanupFixturePage({ project, origin: access.origin, creationAttempted, handle }));
-  if (openingUncertain) failures.push('The temporary staging mode change is uncertain; inspect the retained original-mode record before restoring it');
-  if (opened) { try { restoreCreationMode(); } catch { failures.push('Could not restore staging creation mode'); } }
   for (const file of ['report.json', 'fixture-failure.json']) {
     const reportPath = join(output, file);
     try {

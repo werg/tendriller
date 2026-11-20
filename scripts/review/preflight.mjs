@@ -6,13 +6,24 @@ import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { describeReadiness, describeService, requireCreationReady, requireService, requireServiceOrigin } from '../../contract/client.mjs';
+import { CORE_RELEASE, CONTRACT_VERSION } from '../../contract/index.mjs';
 import { sourceIdentity } from '../release-composition.mjs';
 import { readReviewAccess } from './access.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const sha = /^[a-f0-9]{40}$/, digest = /^[a-f0-9]{64}$/;
-const STAGING_ORIGIN = 'https://staging.tendriller.dev';
+
+/** Cheap source/readiness gate for CI before installing or building packages. */
+export function reviewSource(root, { source = sourceIdentity(root) } = {}) {
+  const pkg = json(resolve(root, 'package.json')), runtime = json(resolve(root, 'server/src/runtime-release.json'));
+  assert.equal(source.dirty, false, 'Live qualification needs a clean source checkpoint');
+  assert(sha.test(source.source) && sha.test(source.sourceTree), 'Exact source identity is required');
+  assert.equal(pkg.version, CORE_RELEASE, 'Source release differs from the public contract');
+  assert(digest.test(runtime.id), 'Source runtime identity is required');
+  return { build: { coreRelease: pkg.version, runtimeId: runtime.id, sourceCommit: source.source },
+    contract: CONTRACT_VERSION, sourceTree: source.sourceTree };
+}
 
 /** Qualify the actual release bytes, including the currently pinned session. */
 export function reviewComposition(root, { source = sourceIdentity(root) } = {}) {
@@ -78,18 +89,25 @@ export function reviewComposition(root, { source = sourceIdentity(root) } = {}) 
 }
 
 /** Public, read-only checks run before renewing credentials or creating fixtures. */
-export async function preflightReviewDeployment(origin, composition, { fetch, allowStagingCreationPause = false } = {}) {
+async function preflight(origin, composition, keys, { fetch: fetcher = globalThis.fetch } = {}) {
   assert.equal(requireServiceOrigin(origin), origin, 'Use the exact configured service origin');
+  const fetch = (url, options) => fetcher(url, { ...options, credentials: 'omit', referrerPolicy: 'no-referrer' });
   const readiness = await describeReadiness(origin, { fetch, signal: AbortSignal.timeout(15_000) });
-  for (const key of ['coreRelease', 'runtimeId', 'sourceCommit', 'compositionId']) {
+  requireCreationReady(readiness, { service: origin });
+  for (const key of keys) {
     assert.equal(readiness.build[key], composition.build[key], 'Live deployment identity mismatch: ' + key);
-  }
-  if (!(allowStagingCreationPause && origin === STAGING_ORIGIN && readiness.mode === 'creation_paused')) {
-    requireCreationReady(readiness, { service: origin });
   }
   const service = requireService(await describeService(origin, { fetch, signal: AbortSignal.timeout(15_000) }));
   assert.equal(service.core_release, composition.build.coreRelease, 'Live service descriptor release mismatch');
   return readiness;
+}
+
+export function preflightReviewSource(origin, source, options) {
+  return preflight(origin, source, ['coreRelease', 'runtimeId', 'sourceCommit'], options);
+}
+
+export function preflightReviewDeployment(origin, composition, options) {
+  return preflight(origin, composition, ['coreRelease', 'runtimeId', 'sourceCommit', 'compositionId'], options);
 }
 
 export function reviewProvenance(composition, readiness) {
@@ -101,13 +119,20 @@ export function reviewProvenance(composition, readiness) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { values } = parseArgs({ options: { config: { type: 'string' }, access: { type: 'string' },
-    'allow-staging-creation-pause': { type: 'boolean', default: false } } });
-  if (!values.config || !values.access) throw Error('Pass --config WRANGLER_CONFIG --access PRIVATE_JSON [--allow-staging-creation-pause]');
+    origin: { type: 'string' }, 'source-only': { type: 'boolean', default: false } } });
   const root = resolve(import.meta.dirname, '../..');
-  const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config: resolve(values.config) });
-  const origin = rawConfig.vars?.PUBLIC_BASE, access = readReviewAccess(resolve(values.access));
-  assert.equal(origin, access.origin, 'Private account must match the explicit deployment configuration');
-  const composition = reviewComposition(root);
-  const readiness = await preflightReviewDeployment(origin, composition, { allowStagingCreationPause: values['allow-staging-creation-pause'] });
-  console.log(JSON.stringify(reviewProvenance(composition, readiness), null, 2));
+  if (values['source-only']) {
+    if (!values.origin || values.config || values.access) throw Error('Source preflight requires --source-only --origin EXACT_SERVICE_ORIGIN and no private account.');
+    const source = reviewSource(root), readiness = await preflightReviewSource(values.origin, source);
+    console.log(JSON.stringify({ qualification: 'source-only', build: source.build, serviceOrigin: readiness.serviceOrigin,
+      mode: readiness.mode, checkedAt: readiness.checkedAt }, null, 2));
+  } else {
+    if (!values.config || !values.access || values.origin) throw Error('Full preflight requires --config WRANGLER_CONFIG --access PRIVATE_JSON.');
+    const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config: resolve(values.config) });
+    const origin = rawConfig.vars?.PUBLIC_BASE, access = readReviewAccess(resolve(values.access));
+    assert.equal(origin, access.origin, 'Private account must match the explicit deployment configuration');
+    const composition = reviewComposition(root);
+    const readiness = await preflightReviewDeployment(origin, composition);
+    console.log(JSON.stringify(reviewProvenance(composition, readiness), null, 2));
+  }
 }
