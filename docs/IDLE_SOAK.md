@@ -91,6 +91,11 @@ Counter totals, phase deltas and zero-budget overruns retain every observation;
 timeline eviction never subtracts traffic. Old checkpoints without these events
 have an empty timeline: timestamps and transport causes cannot be reconstructed.
 
+`coverage.byteScope` is `websocket-frames`: `bytesSent` and `bytesReceived`
+count observed WebSocket frame payload bytes only. Native fetch observations
+increment `requests` but do not measure HTTP request or response body bytes.
+Neither counter establishes total network or wire-protocol byte usage.
+
 Each entry records the runner's observer-receipt timestamp `at` as numeric UTC
 epoch milliseconds, fixed source/counter/category labels, numeric count, phase
 (`closed`, `background`, `foreground`, or `boundary`) and a `stopping` flag.
