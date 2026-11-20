@@ -220,6 +220,24 @@ test('concurrent distinct reviewed renewals cannot both replace the same predece
   assert.equal((await readdir(f.path('.'))).filter(name => name.endsWith('-response.json')).length, 2);
 });
 
+test('a delayed earlier response cannot replace a newer completed reviewed selection', async t => {
+  const f = await fixture(t), submitted = Promise.withResolvers(), release = Promise.withResolvers();
+  await writeFile(f.path('second-code.txt'), pageId + '-654321');
+  let submissions = 0;
+  const earlier = f.adopt({ fetch: async () => { submissions++; submitted.resolve(); await release.promise; return reply(delegated); },
+    verify: async () => { throw Error('The superseded credential must not be sent for verification'); } });
+  const rejected = assert.rejects(earlier, { code: 'host_selection_changed' });
+  await submitted.promise;
+  const renewed = { ...original, token: 'tk_' + 'c'.repeat(32) };
+  const later = await f.adopt({ fetch: async () => { submissions++; return reply(renewed); } }, f.path('second-code.txt'));
+  release.resolve();
+  await rejected;
+  assert.equal(submissions, 2);
+  assert.equal((await f.read('host-credential.json')).attemptId, later.attemptId);
+  assert.deepEqual(await f.local.readHostHandle(), renewed);
+  assert.equal((await readdir(f.path('.'))).filter(name => name.endsWith('-response.json')).length, 2);
+});
+
 test('origin, retained identity and private code checks fail before any network submission', async t => {
   const f = await fixture(t); let sends = 0;
   const options = { fetch: async () => { sends++; throw Error('unexpected network'); } };

@@ -342,6 +342,16 @@ public inspection result, including an `expired` result, as
 against the retained descriptor and redeem the owner's reviewed delegation for
 that same app. A missing or conflicting identity record stops continuation.
 
+After reviewed delegation is saved, `host-credential.json` together with the
+retained descriptor can identify that same application even if `handle.json`
+is missing. `npm run create` recognizes this state and returns `resumed: true`
+with the existing page URL; it does not preflight or allocate another page.
+Conflicting service, page or application evidence stops the command. If only
+incomplete setup, signer or recovery files remain, `setup_recovery_required`
+requires restoration or continuation of that original project. Keep these
+records; use a separate empty directory only for an explicitly new application.
+A local resumed result still needs the authority and data checks above.
+
 When the connector is disconnected too, the owner can sign in directly at
 `SERVICE_ORIGIN/dashboard/setups`, inspect the original setup, and copy its
 **Open existing page** link into the private file

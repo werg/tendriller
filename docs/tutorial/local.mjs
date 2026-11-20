@@ -1,5 +1,5 @@
 // Node-only private project state. This module is never bundled into the page.
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createClient, requireServiceOrigin } from '@tendriller/core';
 
@@ -25,15 +25,26 @@ export async function savePrivate(name, value) {
   return value;
 }
 
+// Missing handle.json is not evidence of a fresh project. A retained intent,
+// signer, reviewed credential or recovery file belongs to the existing app.
+export async function requireFreshProject() {
+  const files = await readdir(privateDirectory).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  if (files.length) throw Object.assign(Error('This project retains setup or recovery state without a usable host handle. Restore or continue that original application; no replacement page creation was attempted. Use a separate empty project only for an explicitly new application.'), { code: 'setup_recovery_required' });
+}
+
 // Reviewed host delegation changes only the HTTP credential. The original
 // setup handle, signed descriptor, device and operation journals stay intact.
 export async function hostIdentity(service) {
   try {
     const origin = requireServiceOrigin(service);
-    const [original, receipt, intent, descriptor, ownerPageText] = await Promise.all([
+    const [original, receipt, intent, descriptor, ownerPageText, reviewed] = await Promise.all([
       readPrivate('handle.json', true), readPrivate('account-setup-result.json', true),
       readPrivate('account-setup.json', true), readPrivate('descriptor.json', true),
       readFile(new URL('owner-page-url.txt', privateDirectory), 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; }),
+      readPrivate('host-credential.json', true),
     ]);
     let ownerPage;
     if (ownerPageText !== null) {
@@ -43,19 +54,22 @@ export async function hostIdentity(service) {
         throw Error('The retained owner page URL is invalid. Copy the original existing page link from this service’s signed-in setup recovery dashboard.');
     }
     const ownerPageId = ownerPage && /^([a-z2-7]{12})(?:\.|--p-)/.exec(ownerPage.hostname)[1];
-    const pageId = original?.id ?? receipt?.pageId ?? ownerPageId;
+    const pageId = original?.id ?? receipt?.pageId ?? ownerPageId ?? reviewed?.pageId;
     const applicationId = original?.application?.id ?? intent?.applicationId ?? descriptor?.payload?.applicationId;
     if (!/^[a-z2-7]{12}$/.test(pageId ?? '') || !/^[a-f0-9]{64}$/.test(applicationId ?? ''))
       throw Error('Restore the original handle, save its public setup inspection, or retain its dashboard page link in .tendriller/owner-page-url.txt alongside the original signed descriptor. Do not prepare a new application.');
     if (original && original.api !== `${origin}/api/t/${pageId}` ||
       intent && (intent.serviceOrigin !== origin || intent.applicationId !== applicationId) ||
       descriptor && descriptor.payload?.applicationId !== applicationId ||
+      reviewed && (reviewed.schemaVersion !== 1 || typeof reviewed.attemptId !== 'string' ||
+        reviewed.serviceOrigin !== origin || reviewed.pageId !== pageId || reviewed.applicationId !== applicationId) ||
       ownerPage && (ownerPageId !== pageId || original?.page_url && original.page_url !== ownerPage.href ||
         receipt?.page?.page_url && receipt.page.page_url !== ownerPage.href) ||
       receipt && (receipt.serviceOrigin !== origin || receipt.pageId !== pageId || receipt.applicationId !== applicationId ||
         intent && (receipt.operationId !== intent.operationId || receipt.requestDigest !== intent.requestDigest || receipt.credentialCommitment !== intent.credentialCommitment)))
       throw Error('The retained service, page, application or setup operation differs. Preserve the records and inspect the original application before continuing.');
-    return { serviceOrigin: origin, pageId, applicationId, pageUrl: original?.page_url ?? receipt?.page?.page_url ?? ownerPage?.href };
+    return { serviceOrigin: origin, pageId, applicationId,
+      pageUrl: original?.page_url ?? receipt?.page?.page_url ?? ownerPage?.href ?? reviewed?.handle?.page_url };
   } catch (error) {
     throw Object.assign(Error(error instanceof SyntaxError ? 'A private identity record is malformed. Restore its verified checkpoint before continuing.' : error.message), { code: 'host_identity_required' });
   }

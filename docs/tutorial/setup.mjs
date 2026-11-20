@@ -5,18 +5,31 @@ import { bytesDigest, bytesToHex, describeApplication, eventExecutionManifest,
   executionManifestArtifacts, participantGrant, signTransitionRequest, verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { definition } from './domain.mjs';
-import { devicePath, project, readPrivate, savePrivate } from './local.mjs';
+import { devicePath, project, readPrivate, savePrivate, readHostHandle, hostIdentity, requireHostHandle, requireFreshProject } from './local.mjs';
+
+async function resumeProject(origin) {
+  const existing = await readHostHandle(true);
+  if (existing) {
+    if (new URL(existing.api).origin !== origin) throw Object.assign(Error('The saved handle belongs to another service origin. Resume it only with its matching connector, or use a separate directory for the requested service; never copy private device state between services.'), { code: 'service_origin_mismatch' });
+    requireHostHandle(existing, await hostIdentity(origin));
+    if (await readPrivate('host-credential.json', true)) return { serviceOrigin: origin, page_url: existing.page_url, resumed: true,
+      next: 'Resume the retained native participant with its reviewed host credential and verify the existing application and data. Keep its signer, descriptor and signed operation records; do not initialize a replacement.' };
+    return { serviceOrigin: origin, page_url: existing.page_url, resumed: true, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
+  }
+  await requireFreshProject();
+  return null;
+}
 
 export async function createProject(service, owner, name = 'Shared notes') {
   if (!service || !owner) throw Error('Usage: npm run create -- https://YOUR_HOST VERIFIED_OWNER_EMAIL "Shared notes"');
   const origin = requireServiceOrigin(service);
-  const existing = await readPrivate('handle.json', true);
-  if (existing) {
-    if (new URL(existing.api).origin !== origin) throw Object.assign(Error('The saved handle belongs to another service origin. Resume it only with its matching connector, or use a separate directory for the requested service; never copy private device state between services.'), { code: 'service_origin_mismatch' });
-    return { serviceOrigin: origin, page_url: existing.page_url, resumed: true, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
-  }
+  const resumed = await resumeProject(origin);
+  if (resumed) return resumed;
   requireCreationReady(await describeReadiness(origin), { service: origin });
   requireService(await describeService(origin));
+  // A checkpoint restored while preflight was running still wins over creation.
+  const restored = await resumeProject(origin);
+  if (restored) return restored;
   const handle = await createPage(origin, { owner, name });
   await savePrivate('handle.json', handle);
   return { serviceOrigin: origin, page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };

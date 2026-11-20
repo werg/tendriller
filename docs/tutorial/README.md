@@ -70,6 +70,12 @@ connector access are lost, the owner can inspect `SERVICE_ORIGIN/dashboard/setup
 and save its **Open existing page** link privately as
 `.tendriller/owner-page-url.txt`; the retained signed descriptor binds the same
 application for the same `host:adopt` command.
+Once reviewed delegation is saved, its credential and the retained descriptor
+also let `npm run create` resume the same page if the original handle is missing.
+It returns the existing page URL without allocating a replacement. Conflicting
+identity or incomplete retained recovery state stops creation; restore or
+continue that checkpoint instead of clearing it. This local resume result does
+not replace the real session and retained-data checks above.
 For lost credentials, retained operation inspection and assistant permission
 renewal, follow [same-app continuation](https://tendriller.dev/docs/BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss).
 The original device checkpoint remains necessary; host delegation cannot

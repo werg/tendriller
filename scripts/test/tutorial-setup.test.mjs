@@ -8,6 +8,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+const pageId = 'abcdefghijkl';
+const handleFor = origin => ({ id: pageId, api: `${origin}/api/t/${pageId}`, token: 'tk_' + 'a'.repeat(32),
+  page_url: `https://${pageId}.pages.example.test/s/${'a'.repeat(26)}/`, application: { id: 'a'.repeat(64) } });
 
 async function fixture(t, initialMode = 'open', variant = 'events') {
   const directory = await mkdtemp(join(tmpdir(), 'tutorial-setup-'));
@@ -46,15 +49,14 @@ export async function createNativeEngine() { calls++; if (failure) throw failure
     else if (request.url === '/api/tendrils' && request.method === 'POST') {
       if (creationPaused) { response.writeHead(503); response.end(JSON.stringify({ error: { code: 'creation_paused', message: 'New tendrils are temporarily paused' } })); return; }
       response.writeHead(201);
-      response.end(JSON.stringify({ id: 'page', api: origin + '/api/t/page', token: 'test-only-token',
-        page_url: 'https://page.example.test/s/test/', application: { id: 'a'.repeat(64) } }));
+      response.end(JSON.stringify(handleFor(origin)));
     } else { response.writeHead(404); response.end('{}'); }
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(directory, { recursive: true, force: true }); });
-  return { directory, origin, calls, engine, setup: await import(pathToFileURL(join(directory, 'setup.mjs')).href),
+  return { directory, origin, calls, engine, handle: handleFor(origin), setup: await import(pathToFileURL(join(directory, 'setup.mjs')).href),
     setMode: value => { mode = value; }, pauseAtCreation: () => { creationPaused = true; } };
 }
 
@@ -95,6 +97,77 @@ test(`downloadable ${variant} setup rejects invalid origins before networking or
   await assert.rejects(access(join(directory, '.tendriller')), { code: 'ENOENT' });
 });
 }
+
+async function recoveredProject(f) {
+  const privatePath = join(f.directory, '.tendriller');
+  await mkdir(privatePath, { mode: 0o700 });
+  const selected = { schemaVersion: 1, attemptId: 'reviewed-existing-app', previousAttemptId: null,
+    serviceOrigin: f.origin, pageId, applicationId: f.handle.application.id, submittedAt: Date.now(),
+    handle: { ...f.handle, token: 'tk_' + 'b'.repeat(32) } };
+  await writeFile(join(privatePath, 'host-credential.json'), JSON.stringify(selected));
+  await writeFile(join(privatePath, 'descriptor.json'), JSON.stringify({ payload: { applicationId: f.handle.application.id } }));
+  await writeFile(join(privatePath, 'device.sqlite'), 'retained-native-signer-journal');
+  return { privatePath, selected };
+}
+
+test('create resumes reviewed credentials plus the retained descriptor after the original handle is lost', async t => {
+  const f = await fixture(t, 'creation_paused');
+  const { privatePath, selected } = await recoveredProject(f);
+  const before = await Promise.all(['host-credential.json', 'descriptor.json', 'device.sqlite'].map(name => readFile(join(privatePath, name))));
+  const resumed = await f.setup.createProject(f.origin, 'owner@example.test');
+  assert.equal(resumed.resumed, true);
+  assert.equal(resumed.page_url, f.handle.page_url);
+  assert.deepEqual(f.calls, [], 'resuming this identity does not preflight or allocate a new page');
+  await assert.rejects(f.setup.createProject('https://different.example.test', 'owner@example.test'), { code: 'service_origin_mismatch' });
+  const local = await import(pathToFileURL(join(f.directory, 'local.mjs')).href);
+  assert.deepEqual(await local.readHostHandle(), selected.handle);
+  for (const [index, name] of ['host-credential.json', 'descriptor.json', 'device.sqlite'].entries())
+    assert.deepEqual(await readFile(join(privatePath, name)), before[index]);
+  await assert.rejects(access(join(privatePath, 'handle.json')), { code: 'ENOENT' });
+  assert.deepEqual(f.calls, []);
+});
+
+test('conflicting or corrupt reviewed recovery records fail before any creation request', async t => {
+  for (const conflict of ['descriptor', 'origin', 'handle', 'malformed']) {
+    const f = await fixture(t);
+    const { privatePath, selected } = await recoveredProject(f);
+    if (conflict === 'descriptor') await writeFile(join(privatePath, 'descriptor.json'), JSON.stringify({ payload: { applicationId: 'c'.repeat(64) } }));
+    if (conflict === 'origin') selected.serviceOrigin = 'https://other.example.test';
+    if (conflict === 'handle') selected.handle.application = { id: 'c'.repeat(64) };
+    if (conflict !== 'descriptor') await writeFile(join(privatePath, 'host-credential.json'), conflict === 'malformed' ? selected.handle.token : JSON.stringify(selected));
+    await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), error => {
+      assert(['host_identity_required', 'host_handle_mismatch', 'host_state_invalid'].includes(error.code));
+      assert.equal(error.message.includes(selected.handle.token), false);
+      return true;
+    });
+    assert.deepEqual(f.calls, []);
+    await assert.rejects(access(join(privatePath, 'handle.json')), { code: 'ENOENT' });
+  }
+});
+
+test('incomplete retained setup or recovery evidence never becomes permission to create a replacement', async t => {
+  for (const name of ['descriptor.json', 'account-setup.json', 'account-setup-result.json',
+    'owner-page-url.txt', 'host-adoption-' + 'd'.repeat(64) + '-response.json', 'device.sqlite']) {
+    const f = await fixture(t);
+    const privatePath = join(f.directory, '.tendriller');
+    await mkdir(privatePath, { mode: 0o700 });
+    await writeFile(join(privatePath, name), 'retained-original-evidence');
+    await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), { code: 'setup_recovery_required' });
+    assert.deepEqual(f.calls, []);
+    assert.equal(await readFile(join(privatePath, name), 'utf8'), 'retained-original-evidence');
+    await assert.rejects(access(join(privatePath, 'handle.json')), { code: 'ENOENT' });
+  }
+});
+
+test('an original handle does not hide a conflicting retained application descriptor', async t => {
+  const f = await fixture(t), privatePath = join(f.directory, '.tendriller');
+  await mkdir(privatePath, { mode: 0o700 });
+  await writeFile(join(privatePath, 'handle.json'), JSON.stringify(f.handle));
+  await writeFile(join(privatePath, 'descriptor.json'), JSON.stringify({ payload: { applicationId: 'c'.repeat(64) } }));
+  await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), { code: 'host_identity_required' });
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(JSON.parse(await readFile(join(privatePath, 'handle.json'), 'utf8')), f.handle);
+});
 
 test('downloadable SQL setup diagnoses a missing engine after readiness but before page creation', async t => {
   const { directory, origin, calls, setup, engine } = await fixture(t, 'open', 'sql');
