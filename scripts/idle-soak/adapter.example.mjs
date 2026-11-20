@@ -1,26 +1,30 @@
-// Copy outside the repository, tailor to YOUR isolated synthetic app, then hash/review before the run.
-// This example targets the current first-app notes UI. Enrollment is completed by the operator beforehand.
-// It never signs in, enrolls, deploys, creates an app, performs a model turn, or inspects real user data.
-export async function ready({ page }) {
+// Copy outside the repository and tailor to YOUR isolated synthetic notes app. Enrollment is pre-completed.
+// Fresh #count rendering follows liveView.refresh's actual coherent query. The editable fieldset is NOT readiness.
+async function coherentRead(page, config) {
+  if (!Number.isSafeInteger(config.expectedNoteCount) || config.expectedNoteCount < 0) throw Error('EXPECTED_SYNTHETIC_NOTE_COUNT_REQUIRED');
+  await page.locator('#submit:enabled').waitFor({ timeout: 15000 });
+  const updated = page.locator('#count').evaluate(element => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { observer.disconnect(); reject(Error('READ_RENDER_TIMEOUT')); }, 15000);
+    const observer = new MutationObserver(() => { clearTimeout(timer); observer.disconnect(); resolve(element.textContent); });
+    observer.observe(element, { childList: true, characterData: true, subtree: true });
+  }));
+  // Register the DOM observer before the explicit boundary query; never poll host state while idle.
+  const [text] = await Promise.all([updated, page.locator('#refresh:enabled').click({ timeout: 10000 })]);
+  if (!new RegExp('^' + config.expectedNoteCount + ' retained notes? in this selected history$').test(text)) throw Error('COHERENT_SYNTHETIC_READ_MISMATCH');
+}
+export async function ready({ page, config }) {
   await page.locator('#connect:enabled').click({ timeout: 15000 });
-  await page.locator('#editor:enabled').waitFor({ timeout: 30000 });
+  await coherentRead(page, config);
 }
-export async function settle({ page }) {
-  // Called only on residency transitions, before the idle clock starts. Replace with an event-driven
-  // connected/replication-ready barrier if your app needs one. No recurring health checks.
-  if (page) await page.locator('#editor:enabled').waitFor({ timeout: 30000 });
-}
-export async function reconnect({ page, signal }) {
+export async function settle({ page, config }) { if (page) await coherentRead(page, config); }
+export async function reconnect({ page, config, signal }) {
   signal.throwIfAborted();
-  // Trigger an actual transport disconnect/reconnect, rather than mistaking an unchanged DOM for recovery.
   await page.locator('#close:enabled').click({ timeout: 10000 });
   await page.locator('#connect:enabled').click({ timeout: 10000 });
-  await page.locator('#editor:enabled').waitFor({ timeout: 10000 });
+  await coherentRead(page, config);
   return true;
 }
-// Set each to true ONLY after instrumenting the complete path. The default reports null, not zero.
+// Set true ONLY after instrumenting complete dispatch paths. Unknown counts remain null in evidence.
 export async function audit() { return { modelTurns: false, wakeups: false }; }
-// Optional event-driven external instrumentation (no timers / health polls):
-// export async function observe({ record, signal }) { ... }
-// record({source:'adapter',kind:'modelTurns',count:1}) at actual dispatch;
-// record({source:'adapter',kind:'wakeups',count:1}) at actual native notification handling.
+// Optional external dispatch instrumentation: observe({record,signal}), event-driven, no health timers.
+// record({source:'adapter',kind:'modelTurns',count:1}) at actual model dispatch, never at tool execution.

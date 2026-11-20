@@ -59,7 +59,7 @@ test('private checkpoint roundtrips atomically and rejects world-readable creden
 });
 function schema() {
   const input={name:'Filters',inputFields:['scriptName','namespaceId','datetime_geq','datetime_lt'].map(name=>({name}))};
-  const types=[input];
+  const types=[input, {name:'AccountSettings',fields:['workersInvocationsAdaptive','durableObjectsInvocationsAdaptiveGroups','durableObjectsPeriodicGroups','durableObjectsStorageGroups'].map(name=>({name,type:{name:'Settings'},args:[]}))}];
   for(const name of ['workersInvocationsAdaptive','durableObjectsInvocationsAdaptiveGroups','durableObjectsPeriodicGroups','durableObjectsStorageGroups']) {
     types.push({name:name+'Root',fields:[{name,type:{name:name+'Group'},args:[{name:'filter',type:{name:'Filters'}}]}]},
       {name:name+'Group',fields:[{name:'sum',type:{name:'Sums'}},{name:'max',type:{name:'Max'}}]});
@@ -93,7 +93,7 @@ test('real provider numbers retain units, expose overrun and chunk windows hourl
 test('residency changes are observed; reconnect requires adapter proof and records elapsed wall time',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'soak-browser-'));let visibility='visible',offline=[],proofs=0;const created=[];
   class Page extends EventEmitter{async close(){} async goto(){} async bringToFront(){visibility=this.cover?'hidden':'visible';}async waitForFunction(_fn,value){assert.equal(visibility,value);}async evaluate(){return visibility;}}
-  const ctx=new EventEmitter();ctx.pages=()=>[];ctx.newPage=async()=>{const p=new Page();p.cover=created.length===1;created.push(p);ctx.emit('page',p);return p;};ctx.setOffline=async value=>offline.push(value);ctx.close=async()=>{};
+  const ctx=new EventEmitter();ctx.pages=()=>[];ctx.newPage=async()=>{const p=new Page();p.cover=created.length===0;created.push(p);ctx.emit('page',p);return p;};ctx.setOffline=async value=>offline.push(value);ctx.close=async()=>{};
   const adapter=join(dir,'adapter.mjs');writeFileSync(adapter,'export async function ready(){}; export async function reconnect(){return true;}');
-  try{const browser=await startBrowser({...config,adapter},()=>{}, {chromium:{launchPersistentContext:async()=>ctx}});assert.deepEqual(await browser.phase('closed'),{observed:'closed'});assert.deepEqual(await browser.phase('background'),{observed:'hidden'});assert.deepEqual(await browser.phase('foreground'),{observed:'visible'});const reconnect=await browser.reconnect();assert.equal(reconnect.verified,true);assert(reconnect.elapsedMs>=0);assert.deepEqual(offline,[true,false]);await browser.close();}finally{rmSync(dir,{recursive:true,force:true});}
+  try{const browser=await startBrowser({...config,adapter},()=>{}, {chromium:{},launchContext:async()=>({context:ctx,close:async()=>{}})});assert.deepEqual(await browser.phase('closed'),{observed:'closed'});assert.deepEqual(await browser.phase('background'),{observed:'hidden'});assert.deepEqual(await browser.phase('foreground'),{observed:'visible'});const reconnect=await browser.reconnect();assert.equal(reconnect.verified,true);assert(reconnect.elapsedMs>=0);assert.deepEqual(offline,[true,false]);await browser.close();}finally{rmSync(dir,{recursive:true,force:true});}
 });
