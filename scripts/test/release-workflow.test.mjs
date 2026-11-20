@@ -59,3 +59,12 @@ test('live qualification reuses the promoted run or immutable public graph', () 
   for (const job of ['staging_acceptance', 'staging_mcp_qualification'])
     assert.match(graph[job], /manifest_sha256:.*needs.artifacts.outputs.manifest_sha256/);
 });
+
+test('every checkout in the release qualification graph disables persisted credentials', () => {
+  for (const name of ['service', 'release', 'agent-onboarding', 'staging-acceptance', 'plugin-qualification']) {
+    const checkouts = workflow(name).split('- uses: actions/checkout@v4').slice(1);
+    assert(checkouts.length > 0, name);
+    for (const checkout of checkouts)
+      assert.match(checkout.split(/\n      - /)[0], /persist-credentials: false/, name);
+  }
+});

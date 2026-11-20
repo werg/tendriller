@@ -25,12 +25,7 @@ function redirectTarget(location, previous, initial) {
   return target;
 }
 
-export async function verifyPublishedRelease(expected, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal, onVerified } = {}) {
-  if (!commit(expected.sourceCommit) || !sha256(expected.compositionId) || !sha256(expected.runtimeId) ||
-      !sha256(expected.manifestSha256) || typeof expected.coreRelease !== 'string' || expected.coreRelease.length > 64 ||
-      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expected.coreRelease))
-    fail('release_expectation_invalid', 'Require the exact source, release, runtime, composition and manifest SHA-256 from the artifacts job.');
-  const base = `https://github.com/werg/tendriller/releases/download/source-${expected.sourceCommit}`;
+function releaseDownload(base, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal, onVerified } = {}) {
   const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(limits.timeoutMs)]) : AbortSignal.timeout(limits.timeoutMs);
   let totalBytes = 0;
   async function download(file, expectedHash, expectedSize, retain = false) {
@@ -70,12 +65,32 @@ export async function verifyPublishedRelease(expected, { fetcher = globalThis.fe
       if (error?.code?.startsWith('release_')) throw error;
       fail('release_download_failed', `Public release asset ${file} could not be read completely.`);
     }
-    if (expectedSize !== undefined && bytes !== expectedSize || digest.digest('hex') !== expectedHash)
+    if (expectedSize !== undefined && bytes !== expectedSize || expectedHash !== undefined && digest.digest('hex') !== expectedHash)
       fail('release_bytes_mismatch', `Public release asset ${file} does not match the prepared artifact bytes.`);
     const content = retain || onVerified ? Buffer.concat(chunks) : undefined;
     if (onVerified) await onVerified(file, content);
     return retain ? content : undefined;
   }
+  return { download, get downloadedBytes() { return totalBytes; } };
+}
+
+// Bootstrap has no expected checksum yet: constrain its URL, redirects, bytes
+// and lifetime just as strictly as the graph it will identify. The verifier
+// re-fetches and authenticates these exact manifest bytes before any extraction.
+export async function readPublishedManifest(sourceCommit, options) {
+  if (!commit(sourceCommit)) fail('release_expectation_invalid', 'Require the exact source commit before acquiring a public manifest.');
+  const { download } = releaseDownload(`https://github.com/werg/tendriller/releases/download/source-${sourceCommit}`, options);
+  return download('manifest.json', undefined, undefined, true);
+}
+
+export async function verifyPublishedRelease(expected, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal, onVerified } = {}) {
+  if (!commit(expected.sourceCommit) || !sha256(expected.compositionId) || !sha256(expected.runtimeId) ||
+      !sha256(expected.manifestSha256) || typeof expected.coreRelease !== 'string' || expected.coreRelease.length > 64 ||
+      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expected.coreRelease))
+    fail('release_expectation_invalid', 'Require the exact source, release, runtime, composition and manifest SHA-256 from the artifacts job.');
+  const base = `https://github.com/werg/tendriller/releases/download/source-${expected.sourceCommit}`;
+  const downloader = releaseDownload(base, { fetcher, limits, signal, onVerified });
+  const { download } = downloader;
   function parse(bytes, file) {
     try { return JSON.parse(bytes.toString('utf8')); }
     catch { fail('release_metadata_invalid', `Public release metadata ${file} is not valid JSON.`); }
@@ -130,7 +145,7 @@ export async function verifyPublishedRelease(expected, { fetcher = globalThis.fe
   // packages. Merely publishing metadata cannot pass an incomplete release.
   for (const item of artifacts) if (item !== compositionAsset) await download(item.file, item.sha256, item.size);
   return { sourceCommit: expected.sourceCommit, coreRelease: expected.coreRelease, runtimeId: expected.runtimeId,
-    compositionId: expected.compositionId, artifacts: artifacts.length, downloadedBytes: totalBytes };
+    compositionId: expected.compositionId, artifacts: artifacts.length, downloadedBytes: downloader.downloadedBytes };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

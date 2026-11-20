@@ -134,6 +134,7 @@ jobs:
         with:
           # Consumers pin a source commit, not GitHub's temporary PR merge ref.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24

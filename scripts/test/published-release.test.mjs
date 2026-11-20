@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { RELEASE_DOWNLOAD_LIMITS, verifyPublishedRelease } from '../check-published-release.mjs';
+import { RELEASE_DOWNLOAD_LIMITS, verifyPublishedRelease, readPublishedManifest } from '../check-published-release.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
@@ -179,4 +179,50 @@ test('acquisition retains only hash-verified files and includes the exact deploy
   saved.clear();
   await assert.rejects(f.check({ onVerified: (file, bytes) => saved.set(file, bytes) }), { code: 'release_bytes_mismatch' });
   assert.equal(saved.has('tendriller-deployment.tgz'), false);
+});
+
+test('manual manifest acquisition pins the exact source URL and omits credentials', async () => {
+  const f = fixture();
+  const bytes = await readPublishedManifest(f.expected.sourceCommit, { fetcher: f.fetcher });
+  assert.deepEqual(bytes, f.bytes.get('manifest.json'));
+  assert.deepEqual(f.calls.map(call => call.url), [`${f.base}/manifest.json`]);
+  await assert.rejects(readPublishedManifest('master', { fetcher: f.fetcher }), { code: 'release_expectation_invalid' });
+  assert.equal(f.calls.length, 1);
+});
+
+test('manual manifest bootstrap rejects insecure, cross-source and excessive redirects', async () => {
+  for (const target of ['http://release-assets.githubusercontent.com/asset',
+    'https://example.test/manifest.json',
+    `https://github.com/werg/tendriller/releases/download/source-${'b'.repeat(40)}/manifest.json`,
+    'https://github.com/werg/tendriller/releases/download/v1.2.3/manifest.json']) {
+    const f = fixture();
+    f.overrides.set(`${f.base}/manifest.json`, () => new Response(null, { status: 302, headers: { location: target } }));
+    await assert.rejects(readPublishedManifest(f.expected.sourceCommit, { fetcher: f.fetcher }), { code: 'release_redirect_forbidden' });
+    assert.equal(f.calls.length, 1);
+  }
+  const f = fixture();
+  f.overrides.set(`${f.base}/manifest.json`, () => new Response(null, { status: 302, headers: { location: `${f.base}/manifest.json` } }));
+  await assert.rejects(readPublishedManifest(f.expected.sourceCommit, { fetcher: f.fetcher }), { code: 'release_redirect_limit' });
+  assert.equal(f.calls.length, RELEASE_DOWNLOAD_LIMITS.redirects + 1);
+});
+
+test('manual bootstrap enforces streaming metadata bounds and never falls back on missing source assets', async () => {
+  const f = fixture();
+  f.overrides.set(`${f.base}/manifest.json`, () => new Response(new Uint8Array(32)));
+  await assert.rejects(readPublishedManifest(f.expected.sourceCommit, {
+    fetcher: f.fetcher, limits: { ...RELEASE_DOWNLOAD_LIMITS, metadataBytes: 16 },
+  }), { code: 'release_size_limit' });
+  const missing = fixture(); missing.bytes.delete('manifest.json');
+  await assert.rejects(readPublishedManifest(missing.expected.sourceCommit, { fetcher: missing.fetcher }), { code: 'release_unavailable' });
+  assert.deepEqual(missing.calls.map(call => call.url), [`${missing.base}/manifest.json`]);
+});
+
+test('manual bootstrap accepts the signed HTTPS asset redirect and carries one bounded signal', async () => {
+  const f = fixture(), target = 'https://release-assets.githubusercontent.com/release-id/manifest.json?sig=opaque';
+  f.overrides.set(`${f.base}/manifest.json`, () => new Response(null, { status: 302, headers: { location: target } }));
+  const bytes = await readPublishedManifest(f.expected.sourceCommit, { fetcher: f.fetcher });
+  assert.deepEqual(bytes, f.bytes.get('manifest.json'));
+  assert.deepEqual(f.calls.map(call => call.url), [`${f.base}/manifest.json`, target]);
+  assert(f.calls[0].options.signal instanceof AbortSignal);
+  assert.equal(f.calls[1].options.signal, f.calls[0].options.signal);
 });
