@@ -19,7 +19,7 @@ const close = () => closing ??= (async () => {
   // The local fixture owns its custom HTTP/WebSocket dispatcher separately from
   // the application. It must drain only after the real owner closes its sockets.
   try { await closeLocalTransport(); } catch (error) { errors.push(error); }
-  if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed');
+  if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed: ' + errors.map(error => error.message).join('; '));
 })();
 try {
   pairings = startReviewedPairingLoop(owned.processPairings,
