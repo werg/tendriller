@@ -218,3 +218,41 @@ test('owner cancellation never opens a relay and failed relay framing closes bot
   await assert.rejects(failed.transport.open({ peer: { identity: remote, route: route(remote) } }, options()), /relay framing failed/);
   assert.deepEqual(failed.calls.map(call => call[0]), ['rendezvous', 'invite', 'closeSignaling', 'relay', 'closeRelay']);
 });
+
+
+test('discovery notifications are required, initial watch readiness gates advertise, and iterator return releases the watch', async () => {
+  assert.throws(()=>fixture({watchDiscovery:undefined}), {code:'invalid_introduction'});
+  const gate = Promise.withResolvers(), stop = new AbortController(); let watcherCloses = 0, watchOptions;
+  const f = fixture({watchDiscovery(identity, options) {
+    watchOptions = {identity,options};
+    return {ready:gate.promise,notifications:{async *[Symbol.asyncIterator]() {await gate.promise; yield {type:'ready'}; yield {type:'changed'}; yield {type:'ready'};}},
+      close(){watcherCloses++;}};
+  }});
+  const selected = {signal:stop.signal};
+  const invitation = f.discovery.invitations(selected)[Symbol.asyncIterator]().next();
+  await Promise.resolve(); f.calls.length=0;
+  const advertising = f.discovery.advertise({identity:local,storageId:'disk'},selected);
+  const events = f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  const initial = events.next(); await Promise.resolve(); await Promise.resolve(); assert.deepEqual(f.calls,[]);
+  assert.deepEqual(watchOptions,{identity:local,options:selected});
+  gate.resolve(); assert.deepEqual(await initial,{value:{type:'ready'},done:false}); await advertising;
+  assert.equal(f.calls[0][0],'advertise');
+  assert.deepEqual(await events.next(),{value:{type:'changed'},done:false});
+  assert.deepEqual(await events.next(),{value:{type:'ready'},done:false});
+  assert.equal(f.calls.length,1,'The adapter must not advertise or read automatically on notification delivery');
+  await events.return(); assert.equal(watcherCloses,1);
+  const late = f.discovery.advertise({identity:local,storageId:'disk'},selected);
+  stop.abort(Error('owner stopped')); await assert.rejects(late,/owner stopped/); await invitation;
+});
+
+test('duplicate notification readers, cancelled subscriptions and failure cleanup never create replacement watchers', async () => {
+  const controller = new AbortController(); let closes = 0;
+  const f = fixture({watchDiscovery() {return {ready:Promise.resolve(),notifications:{async *[Symbol.asyncIterator]() {
+    yield {type:'ready'}; throw Error('subscription revoked');}},close(){closes++;}};}});
+  const selected={signal:controller.signal}, first=f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  await first.next(); await assert.rejects(f.discovery.notifications(selected)[Symbol.asyncIterator]().next(),{code:'invalid_introduction'});
+  await assert.rejects(first.next(),/subscription revoked/); assert.equal(closes,1);
+  controller.abort(Error('already cancelled'));
+  await assert.rejects(f.discovery.notifications(selected)[Symbol.asyncIterator]().next(),/already cancelled/);
+  assert.equal(closes,1);
+});

@@ -4,7 +4,7 @@ export const PEER_DISCOVERY_WATCH_LIMITS = Object.freeze({ messageBytes: 128, op
   retryMs: 1000, maxRetryMs: 60_000 });
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export function validatePeerDiscoveryNotification(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 ||
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).join() !== 'type' ||
       !['ready', 'changed'].includes(value.type)) throw fail('invalid_discovery_notification', 'Expected only a discovery ready or changed notification');
   return Object.freeze({ type: value.type });
 }
