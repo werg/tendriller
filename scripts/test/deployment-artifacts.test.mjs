@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { verifyDeploymentArtifacts } from '../check-deployment-artifacts.mjs';
@@ -16,15 +16,21 @@ function fixture(t) {
   const put = (file, data) => { mkdirSync(dirname(join(root, file)), { recursive: true }); writeFileSync(join(root, file), typeof data === 'string' ? data : JSON.stringify(data)); };
   const runtime = runtimeManifest({ version: '1.2.3', contract: 3,
     assets: [{ path: 'kernel.mjs', sha256: hash('runtime'), size: 7 }], resources: [] });
-  put('.gitignore', 'dist/\nserver/public/\n');
+  put('.gitignore', 'dist/\nserver/public/\n.build/\n');
   put('package.json', { version: '1.2.3' });
   put('server/src/runtime-release.json', { id: runtime.id });
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['-c', 'user.name=Deployment test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'Source fixture'], { cwd: root });
-  const identity = sourceIdentity(root), engineSha256 = hash('engine'), starterSha256 = hash('starter');
+  const identity = sourceIdentity(root), starterSha256 = hash('starter');
+  put('.build/engine/package/package.json', { name: '@tendriller/engine', version: '1.2.3' });
+  put('.build/engine/package/provenance.json', { ...identity, files: { 'worker.mjs': hash('engine') } });
+  put('.build/engine/package/worker.mjs', 'engine');
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  execFileSync('tar', ['-czf', join(root, 'dist/tendriller-engine-1.2.3.tgz'), '-C', join(root, '.build/engine'), 'package']);
+  const engineSha256 = hash(readFileSync(join(root, 'dist/tendriller-engine-1.2.3.tgz')));
   put('dist/provenance.json', { ...identity, artifacts: [{ file: 'tendriller-engine-1.2.3.tgz', sha256: engineSha256 }] });
-  put('dist/tendriller-engine-1.2.3.tgz', 'engine');
+  put('dist/engine/worker.mjs', 'engine');
   put('dist/runtime/assets/manifest.json', runtime);
   put(`server/public/_tendril/runtime/${runtime.id}/manifest.json`, runtime);
   put(`server/public/_tendril/runtime/${runtime.id}/kernel.mjs`, 'runtime');
@@ -48,6 +54,12 @@ test('predeploy check rejects changed served source or runtime assets', t => {
   f.put('server/public/downloads/tendriller-first-app.tgz', 'starter');
   f.put(`server/public/_tendril/runtime/${f.expected.runtimeId}/kernel.mjs`, 'other runtime');
   assert.throws(f.check, /runtime asset changed/);
+});
+
+test('predeploy check rejects an altered extracted Worker even if the public archive is unchanged', t => {
+  const f = fixture(t);
+  f.put('dist/engine/worker.mjs', 'other Worker');
+  assert.throws(f.check, /Deployment engine file changed after packaging: worker.mjs/);
 });
 
 test('predeploy check rejects missing identity, different source and dirty checkout', t => {

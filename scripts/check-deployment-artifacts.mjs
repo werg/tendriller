@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { sourceIdentity } from './release-composition.mjs';
+import { packedArchive, sourceIdentity } from './release-composition.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -35,6 +35,15 @@ export function verifyDeploymentArtifacts(root, expected) {
   if (proof.artifacts?.find(item => item.file === file)?.sha256 !== expected.engineSha256 ||
       digest(join(root, 'dist', file)) !== expected.engineSha256)
     throw Error('Deployment engine bytes do not match the artifact-job composition.');
+  // Wrangler consumes the extracted Worker, not its archive. Anchor these
+  // local files to the provenance inside the already verified public archive.
+  const engine = packedArchive(join(root, 'dist', file)).json('provenance.json');
+  if (engine.dirty !== false || engine.source !== expected.sourceCommit || engine.sourceTree !== identity.sourceTree ||
+      !/^[a-f0-9]{64}$/.test(engine.files?.['worker.mjs'] ?? ''))
+    throw Error('Packed deployment engine lacks matching source and Worker provenance.');
+  for (const [path, hash] of Object.entries(engine.files))
+    if (digest(join(root, 'dist/engine', path)) !== hash)
+      throw Error(`Deployment engine file changed after packaging: ${path}`);
   if (digest(join(root, 'server/public/downloads/tendriller-first-app.tgz')) !== expected.starterSha256)
     throw Error('Deployment starter bytes do not match the artifact-job composition.');
   return { sourceCommit: expected.sourceCommit, compositionId: expected.compositionId,
