@@ -2,16 +2,28 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, copyFile, symlink, readFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, symlink, readFile, writeFile, access, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-async function fixture(t, initialMode = 'open') {
+async function fixture(t, initialMode = 'open', variant = 'events') {
   const directory = await mkdtemp(join(tmpdir(), 'tutorial-setup-'));
-  for (const name of ['setup.mjs', 'local.mjs', 'domain.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
+  const source = join(root, 'docs/tutorial', variant === 'sql' ? 'sql' : '');
+  for (const name of ['setup.mjs', 'local.mjs', 'domain.mjs']) await copyFile(join(source, name), join(directory, name));
+  let engine;
+  if (variant === 'sql') {
+    // Qualify the actual downloadable setup and SDK HTTP boundary without
+    // compiling the optional SQL engine. Count whether its loader was reached.
+    await writeFile(join(directory, 'engine.mjs'), `
+export let calls = 0, failure;
+export const fail = value => { failure = value; };
+export async function createNativeEngine() { calls++; if (failure) throw failure; return {}; }
+`);
+    engine = await import(pathToFileURL(join(directory, 'engine.mjs')).href);
+  }
   for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));
@@ -23,11 +35,12 @@ async function fixture(t, initialMode = 'open') {
     response.setHeader('Content-Type', 'application/json');
     if (request.url === '/api/readiness') {
       if (mode === 'unsupported') { response.writeHead(404); response.end('{}'); return; }
+      if (mode === 'unavailable') response.writeHead(503);
       response.end(JSON.stringify({ schemaVersion: 1, serviceOrigin: origin, mode,
         environment: { id: origin, label: 'Local qualification', kind: 'local' },
         build: { coreRelease: 'test', runtimeId: 'a'.repeat(64), sourceCommit: null },
-        creation: { available: mode === 'open', code: mode === 'open' ? null : 'creation_paused', message: 'Current service state.', nextAction: 'Keep this origin.' },
-        writes: { available: mode !== 'read_only', code: mode === 'read_only' ? 'read_only' : null },
+        creation: { available: mode === 'open', code: mode === 'open' ? null : mode === 'unavailable' ? 'unavailable' : 'creation_paused', message: 'Current service state.', nextAction: 'Keep this origin.' },
+        writes: { available: mode === 'open' || mode === 'creation_paused', code: mode === 'unavailable' ? 'unavailable' : mode === 'read_only' ? 'read_only' : null },
         readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status', checkedAt: new Date().toISOString() }));
     } else if (request.url === '/api/service') response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {} }));
     else if (request.url === '/api/tendrils' && request.method === 'POST') {
@@ -41,12 +54,13 @@ async function fixture(t, initialMode = 'open') {
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(directory, { recursive: true, force: true }); });
-  return { directory, origin, calls, setup: await import(pathToFileURL(join(directory, 'setup.mjs')).href),
+  return { directory, origin, calls, engine, setup: await import(pathToFileURL(join(directory, 'setup.mjs')).href),
     setMode: value => { mode = value; }, pauseAtCreation: () => { creationPaused = true; } };
 }
 
-test('downloadable setup resumes only the same service without creating or overwriting private state', async t => {
-  const { directory, origin, calls, setup, setMode } = await fixture(t);
+for (const variant of ['events', 'sql']) {
+test(`downloadable ${variant} setup resumes only the same service without creating or overwriting private state`, async t => {
+  const { directory, origin, calls, setup, setMode, engine } = await fixture(t, 'open', variant);
   const created = await setup.createProject(origin, 'owner@example.test');
   const saved = await readFile(join(directory, '.tendriller/handle.json'), 'utf8');
   assert.equal(created.serviceOrigin, origin);
@@ -57,16 +71,37 @@ test('downloadable setup resumes only the same service without creating or overw
   assert.equal(resumed.page_url, created.page_url);
   await assert.rejects(setup.createProject('https://production.example.test', 'owner@example.test'), { code: 'service_origin_mismatch' });
   assert.equal(calls.length, 3);
+  if (engine) assert.equal(engine.calls, 1, 'resumption and origin mismatch never load a native engine');
   assert.equal(await readFile(join(directory, '.tendriller/handle.json'), 'utf8'), saved);
 });
 
-test('downloadable setup creates no private state on paused, unsupported, or raced creation', async t => {
-  for (const mode of ['creation_paused', 'read_only', 'unsupported', 'open']) {
-    const { directory, origin, calls, setup, pauseAtCreation } = await fixture(t, mode);
+test(`downloadable ${variant} setup creates no private state on paused, unavailable, unsupported, or raced creation`, async t => {
+  for (const mode of ['creation_paused', 'read_only', 'unavailable', 'unsupported', 'open']) {
+    const { directory, origin, calls, setup, pauseAtCreation, engine } = await fixture(t, mode, variant);
     if (mode === 'open') pauseAtCreation();
-    await assert.rejects(setup.createProject(origin, 'owner@example.test'), { code: mode === 'unsupported' ? 'readiness_unsupported' : 'creation_paused' });
+    await assert.rejects(setup.createProject(origin, 'owner@example.test'), { code: mode === 'unsupported' ? 'readiness_unsupported' : mode === 'unavailable' ? 'unavailable' : 'creation_paused' });
     assert.deepEqual(calls, mode === 'open'
       ? [['GET', '/api/readiness'], ['GET', '/api/service'], ['POST', '/api/tendrils']] : [['GET', '/api/readiness']]);
+    if (engine) assert.equal(engine.calls, mode === 'open' ? 1 : 0, 'blocked readiness never loads optional native code');
     await assert.rejects(access(join(directory, '.tendriller/handle.json')), { code: 'ENOENT' });
   }
+});
+
+test(`downloadable ${variant} setup rejects invalid origins before networking or private state`, async t => {
+  const { directory, calls, setup, engine } = await fixture(t, 'open', variant);
+  await assert.rejects(setup.createProject('https://example.test/path', 'owner@example.test'), { code: 'invalid_service_origin' });
+  assert.deepEqual(calls, []);
+  if (engine) assert.equal(engine.calls, 0);
+  await assert.rejects(access(join(directory, '.tendriller')), { code: 'ENOENT' });
+});
+}
+
+test('downloadable SQL setup diagnoses a missing engine after readiness but before page creation', async t => {
+  const { directory, origin, calls, setup, engine } = await fixture(t, 'open', 'sql');
+  const failure = Object.assign(Error('Install the matching SQL-native archive.'), { code: 'SQL_ENGINE_UNAVAILABLE' });
+  engine.fail(failure);
+  await assert.rejects(setup.createProject(origin, 'owner@example.test'), error => error === failure);
+  assert.deepEqual(calls, [['GET', '/api/readiness'], ['GET', '/api/service']]);
+  assert.equal(engine.calls, 1);
+  await assert.rejects(access(join(directory, '.tendriller/handle.json')), { code: 'ENOENT' });
 });

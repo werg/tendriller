@@ -80,14 +80,17 @@ Chronolog owns the durable operation identity and outcome.
 
 First download the starter and the host's matching SDK/tools as described in
 [Build an app, step 1](BUILD_AN_APP.md#1-get-the-starter-and-matching-public-packages).
-Stop before building that guide's events-only Chronolog archive. From the
-extracted starter root, use the independent `sql/` directory:
+Check the selected host's readiness before acquiring or building optional SQL
+dependencies. The first-app kit includes an events-only Chronolog archive;
+this SQL application uses its own qualified session package instead. From the
+extracted starter root, use the independent `sql/` directory and the kit's local
+SDK/tools packages:
 
 ```sh
 cd sql
 TENDRILLER_RELEASE=$(node -p "JSON.parse(require('fs').readFileSync('../service.json','utf8')).core_release")
-npm install --save-exact "../artifacts/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
-  "../artifacts/tendriller-tools-$TENDRILLER_RELEASE.tgz"
+npm install --save-exact "../packages/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
+  "../packages/tendriller-tools-$TENDRILLER_RELEASE.tgz"
 ```
 
 Build the exact SQL package from a fresh Chronolog checkout. Use Node 24, Git,
@@ -116,7 +119,10 @@ npm run engine
 ```
 
 `engine` must print `available: true` and an execution-manifest digest before you
-create the hosted app. The same capability check runs at the start of `create`.
+create the hosted app. `create` first verifies its requested service origin,
+current readiness and host contract, then runs the same capability check before
+creating any page. A saved handle resumes only on its original service and
+does not trigger another engine load or create request.
 Keep the archive SHA-256, its `provenance.json`, the native qualification report,
 and this application's `package-lock.json` with your release evidence.
 

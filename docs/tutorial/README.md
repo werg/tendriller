@@ -1,9 +1,18 @@
 # First application: Shared Notes
 
-This is the complete source used by [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md). Extract
-the host's `/downloads/tendriller-first-app.tgz` into a new application directory,
-or copy this directory out of the Tendriller repository before installing its
-exact public SDK, tools and Chronolog session archives. Use Node 24.
+This is the complete source used by the selected service's
+`/docs/BUILD_AN_APP.md`. Use Node 24 and check that service's `/api/readiness`
+before acquiring dependencies. Follow its build guide to download and verify
+the immutable `tendriller-first-app-VERSION.tgz` release kit in a new application
+directory. The kit carries this starter, `composition.json`, and its exact SDK,
+tools and Chronolog events archives under `packages/`. Install those local
+archives after their hashes and the selected host's build identity agree.
+
+The host's `/downloads/tendriller-first-app.tgz` and this repository directory
+contain source for inspection. They are not the complete qualified release kit;
+do not combine them with same-version packages from another source checkpoint.
+For source development, build and qualify one clean matching composition as
+described in the selected service's development guide.
 
 The parent guide supplies the package acquisition commands and every setup
 checkpoint. After installing those dependencies:
