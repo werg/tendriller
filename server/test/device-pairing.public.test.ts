@@ -234,6 +234,31 @@ it('expires reviews and refuses stale authority instead of preparing a replaceme
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)).toBeNull();
 });
 
+it('serializes two simultaneously approved proposals without silently signing a replacement generation', async () => {
+  const { h, native, device, cookie } = await fixture(), secondDevice = await createPeerIdentity();
+  const first = await proven(h, device), second = await proven(h, secondDevice);
+  expect(first.challenge.expectedGeneration).toBe(second.challenge.expectedGeneration);
+  const prepared = await Promise.all([prepare(h, native, first), prepare(h, native, second)]);
+  await Promise.all([stage(h, first, prepared[0]), stage(h, second, prepared[1])].map(async result => jsonResponse(await result)));
+  expect((await review(first, cookie)).status).toBe(200);
+  expect((await review(second, cookie)).status).toBe(200);
+  let deadline: ReturnType<typeof setTimeout> | null = null;
+  const responses = await Promise.race([
+    Promise.all([commit(h, first, prepared[0]), commit(h, second, prepared[1])]),
+    new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(Error('Concurrent pairing admission did not settle')), 2000); }),
+  ]).finally(() => clearTimeout(deadline));
+  expect(responses.map(response => response.status).sort()).toEqual([200, 409]);
+  const states = await Promise.all([first, second].map(async value => jsonResponse(await browser(h, undefined, value.pairingId))));
+  expect(states.map(value => value.state).sort()).toEqual(['committed', 'stale']);
+  const winner = states.findIndex(value => value.state === 'committed'), loser = 1 - winner;
+  await jsonResponse(responses[winner]); await jsonResponse(responses[loser], 409);
+  await jsonResponse(await commit(h, [first, second][loser], prepared[loser]), 409);
+  const authority = await verifyAuthorityBundle(await peerApiJson(h, 'control/read'));
+  expect(authority.bundle.generations).toHaveLength(2);
+  expect(authority.grant([device, secondDevice][winner].publicKey)?.reader).toBe(true);
+  expect(authority.grant([device, secondDevice][loser].publicKey)).toBeNull();
+});
+
 it('keeps rejection and malformed/capacity boundaries durable without overwriting requests', async () => {
   const { h, device, native, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
   await jsonResponse(await stage(h, c, prepared));
@@ -384,6 +409,7 @@ it('fails closed for missing storage and finite retained and device-binding capa
   await inDO(h.id, t => t.db.run('DROP TABLE device_pairings'));
   const missing = await jsonResponse<any>(await browser(h, undefined, c.pairingId), 503);
   expect(missing.error.code).toBe('pairing_storage_unavailable');
+  expect((await apiJson(h, 'GET', 'peers/pairing', undefined, 503)).error.code).toBe('pairing_storage_unavailable');
   const other = await fixture();
   await inDO(other.h.id, t => { const bindings = t.db.get<{ publicKey: string; accountId: string }[]>('peer_generation_accounts', []);
     while (bindings.length < 1024) bindings.push({ publicKey: bindings.length.toString(16).padStart(64, '0'), accountId: other.owner });

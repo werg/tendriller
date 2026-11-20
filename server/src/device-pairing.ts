@@ -358,10 +358,13 @@ export async function handleDevicePairing(t: Tendril, req: Request, url: URL, pr
       }
       if (principal.kind !== 'agent') throw new HttpError(400, 'pairing_identity_required');
       requireAgentScope(principal, 'control:write');
-      const rows = t.db.all<{ id: string }>(`SELECT id FROM device_pairings WHERE status='committing' OR
-        (status IN ('pending','approved') AND expires_at>? AND json_extract(data,'$.challenge.expectedGeneration')=?)
-        ORDER BY CASE WHEN json_extract(data,'$.challenge.expectedGeneration')=? THEN 0 ELSE 1 END, created_at DESC LIMIT ?`,
-      t.now(), authority.current?.id ?? '', authority.current?.id ?? '', LIMITS.retainedPerApplication);
+      let rows: { id: string }[];
+      try {
+        rows = t.db.all<{ id: string }>(`SELECT id FROM device_pairings WHERE status='committing' OR
+          (status IN ('pending','approved') AND expires_at>? AND json_extract(data,'$.challenge.expectedGeneration')=?)
+          ORDER BY CASE WHEN json_extract(data,'$.challenge.expectedGeneration')=? THEN 0 ELSE 1 END, created_at DESC LIMIT ?`,
+        t.now(), authority.current?.id ?? '', authority.current?.id ?? '', LIMITS.retainedPerApplication);
+      } catch { throw unavailable(); }
       const pairings = [];
       // A lost final acknowledgement may leave a completed row marked committing.
       // Filter authoritative outcomes before the public limit so those rows cannot starve new proposals.
