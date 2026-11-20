@@ -63,6 +63,8 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
   // Resolve the original receipt before judging the newer selected generation.
   // Later revocation never triggers another admission of this key.
   if (transition) {
+    if (!['committed', 'revoked'].includes(result.state))
+      throw fail('PAIRING_OUTCOME_UNCERTAIN', 'The host has not verified this exact reviewed control/account outcome. Preserve the pause and original transition.');
     const prepared = original ?? result.prepared;
     if (!prepared || await peerDigest(transition.payload.transition) !== await peerDigest(prepared.request) ||
         !result.generation || await peerDigest(result.generation) !== await peerDigest(transition))
@@ -93,6 +95,8 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
     return result;
   }
   if (result.state === 'revoked') throw fail('PAIRING_ACCOUNT_REVOKED', 'This request lost account access. Keep its pause until a terminal review or exact outcome is reconciled.');
+  if (!pause && original)
+    throw fail('PAIRING_PAUSE_MISSING', 'A prepared transition exists without its durable ordering pause. Preserve the original project for reconciliation; do not prepare or send another transition.');
   const c = result.challenge, current = verified.current;
   if (!current || current.id !== c.expectedGeneration || verified.control.payload.revision !== c.controlRevision ||
       current.payload.coordinator !== session.deviceId || !verified.grant(session.deviceId)?.administrator)

@@ -103,6 +103,14 @@ test('a lost commit reply preserves the durable pause, then a fresh runner resol
   assert.equal((await p.verifyAuthorityBundle(await f.registry.read())).grant(f.target.publicKey).administrator, false);
 });
 
+test('a transition receipt with unresolved reviewed account/control identity never releases ordering', async () => {
+  const f = await fixture(); await f.tick(); f.approve(); f.loseReply();
+  await assert.rejects(f.tick(), { code: 'NETWORK_UNCERTAIN' });
+  f.status = { ...f.status, state: 'reconciliation_required' };
+  await assert.rejects(f.tick(), { code: 'PAIRING_OUTCOME_UNCERTAIN' });
+  assert.ok(f.pause); assert.equal(f.actions.includes('resume'), false);
+});
+
 test('changed prefixes and substituted origins fail closed without signing a replacement or releasing the pause', async () => {
   const f = await fixture(); await f.tick(); f.approve(); f.drift();
   await assert.rejects(f.tick(), { code: 'PAIRING_PREFIX_CHANGED' });
