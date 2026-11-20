@@ -17,7 +17,7 @@ function config() {
     async authenticate(request) { if (request.headers.get('Authorization') !== 'Bearer fixture') throw Object.assign(Error('auth'), { status: 401 }); return principal; } };
   const bridge = {
     listApplications: () => [{ id: APP, label: 'Kitchen' }],
-    getStatus: async () => ({ applicationId: APP, status: { phase: 'ready', generation: 'g1' } }),
+    getStatus: async () => ({ applicationId: APP, deviceId: 'fixture-device', historyId: 'runtime-history', status: { phase: 'ready', generation: 'g1' } }),
     readEvents: async () => ({ applicationId: APP, revision, cursor: 'tail', hasMore: false, events: [] }),
     query: async () => ({ revision, value: { question: 'How should I cook this?', requestId: 'r1' } }),
     verifySource: async () => ({ selected: true, currentRevision: revision }),
@@ -310,4 +310,47 @@ test('HTTP shutdown cancels a request stalled specifically in shared JWKS discov
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) }).catch(error => error);
   await ready; await service.close(); await pending;
   assert.equal(jwksAborted, true); assert.equal(f.closed(), true);
+});
+
+test('restart detects export changes before opening an observer with an incompatible cursor', async () => {
+  const f = config();
+  let exported = { schemaVersion: 1, applicationId: APP, historyId: 'runtime-history', fingerprint: 'v1', exportVersion: '1' };
+  f.value.bridge.exportDefinition = async () => exported;
+  const read = f.value.bridge.readEvents;
+  f.value.bridge.readEvents = async (...args) => ({ ...await read(...args), export: exported });
+  const service = await createIntegration(f.value);
+  try {
+    await service.consent.grant(principal, { applicationId: APP, events: ['assistant.help_requested'] });
+    const sub = await service.subscriptions.subscribe(principal, { name: 'assistant.help_requested', arguments: { application_id: APP },
+      delivery: { mode: 'webhook', url: 'https://callback.example/event', secret: 'whsec_' + Buffer.alloc(32).toString('base64') } });
+    exported = { ...exported, exportVersion: '2', fingerprint: 'v2' };
+    service.start();
+    await until(async () => (await service.store.read()).subscriptions[sub.id].pausedReason === 'export_review_required');
+    assert.equal(f.observed(), 0); assert.equal(f.sent.length, 0);
+    const status = (await service.outbox.status(principal, APP)).subscriptions[0];
+    assert.equal(status.cursorReset.previousExport.fingerprint, 'v1'); assert.equal(status.cursorReset.currentExport.fingerprint, 'v2');
+    assert.equal(typeof status.reviewToken, 'string');
+  } finally { await service.close(); }
+});
+
+test('background binding revocation stops only that approved consumer and keeps sibling observation', async () => {
+  const f = config(), revoked = new Set();
+  f.value.authorizeAccountAccess = async (actor, id) => actor.id === principal.id && id === APP && !revoked.has(actor.agentBinding?.id);
+  const service = await createIntegration(f.value);
+  const agent = id => ({ ...principal, agentBinding: { id, revision: 1, applications: { [APP]: { events: ['assistant.help_requested'] } } } });
+  try {
+    await service.consent.grant(principal, { applicationId: APP, events: ['assistant.help_requested'] });
+    const params = { name: 'assistant.help_requested', arguments: { application_id: APP },
+      delivery: { mode: 'webhook', url: 'https://callback.example/event', secret: 'whsec_' + Buffer.alloc(32).toString('base64') } };
+    const first = await service.subscriptions.subscribe(agent('first'), params), sibling = await service.subscriptions.subscribe(agent('sibling'), params);
+    service.start(); await until(() => f.observed() === 2);
+    revoked.add('first');
+    await until(async () => (await service.subscriptions.active()).length === 1);
+    await until(() => f.stopped() === 1);
+    const state = await service.store.read();
+    assert.equal(state.subscriptions[first.id].stopReason, 'authorization_revoked');
+    assert.equal(state.subscriptions[sibling.id].active, true);
+    assert.equal((await service.outbox.status(agent('first'), APP)).subscriptions.length, 1);
+    assert.equal((await service.outbox.status(agent('sibling'), APP)).subscriptions[0].id, sibling.id);
+  } finally { await service.close(); }
 });

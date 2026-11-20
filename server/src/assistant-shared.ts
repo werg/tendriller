@@ -11,7 +11,8 @@ export const REQUEST_LIMIT = 64 * 1024;
 export const EVENT_LIMIT = 8 * 1024;
 
 export type Rpc = { id: string | number | null; method: string; params: Record<string, unknown> };
-export type Principal = { account: string; grant: string; client: string; scopes: string[]; expires: number };
+export type Principal = { account: string; grant: string; client: string; scopes: string[]; expires: number;
+  bindingCredential?: string; consumer?: import('./assistant-bindings').Consumer };
 export type Operation = { name: string; description: string; input: unknown };
 export type EventDefinition = { name: string; description: string };
 export type Catalogue = { applicationId: string; pageId: string; label: string };
@@ -44,7 +45,7 @@ export const mcpEventDefinition = {
   inputSchema: { type: 'object', properties: { application_id: { type: 'string', pattern: APP_ID.source },
     event: { type: 'string', pattern: APP_NAME.source } }, required: ['application_id', 'event'], additionalProperties: false },
   payloadSchema: { type: 'object', properties: { applicationId: { type: 'string' }, event: { type: 'string' },
-    sourceEventId: { type: 'string' }, generation: { type: 'string' }, payload: {} },
+    sourceEventId: { type: 'string' }, generation: { type: 'string' }, payload: {}, export: { type: 'object' } },
     required: ['applicationId', 'event', 'sourceEventId', 'generation', 'payload'], additionalProperties: false },
 };
 type IndexRow = { application_id: string; page_id: string; label: string };

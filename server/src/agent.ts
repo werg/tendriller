@@ -9,9 +9,9 @@ import { validName } from './tendril';
 import { addActivity, listActivity } from './activity';
 import { pointers } from './files';
 import { HttpError, intParam, json, readJson } from './http';
-import { newPageKey, sha256Hex } from './ids';
+import { newPageKey, newToken, sha256Hex } from './ids';
 import { serviceDescriptor } from './descriptor';
-import { authenticateAgent, currentPrincipal, requireAccess } from './access';
+import { agentBinding, agentScopes, authenticateAgent, currentPrincipal, requireAgentScope } from './access';
 import { onboardingDescriptor } from './onboarding';
 import { publicBase } from './urls';
 
@@ -36,14 +36,54 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   const principal = await authenticateAgent(t, req);
   if (!currentPrincipal(t, principal)) throw new HttpError(401, 'unauthorized');
   t.recordAccess();
-  if (PEER_ROUTE.test(rest)) return handlePeers(t, req, url, rest, principal);
-  if (rest === 'assistant/propose' && method === 'POST') return proposeAssistant(t, req, principal);
-  if (rest === 'application') return handleApplication(t, req, principal);
+  if (PEER_ROUTE.test(rest)) {
+    requireAgentScope(principal, 'participants:connect');
+    if (rest === 'peers/bootstrap' && method !== 'GET') requireAgentScope(principal, 'host:manage');
+    return handlePeers(t, req, url, rest, principal);
+  }
+  if (rest === 'assistant/propose' && method === 'POST') {
+    requireAgentScope(principal, 'assistant:manage');
+    return proposeAssistant(t, req, principal);
+  }
+  if (rest === 'application') { requireAgentScope(principal, 'host:read'); return handleApplication(t, req, principal); }
+  if (rest === 'self' && method === 'GET') return json({ name: principal.name, binding: principal.binding,
+    applicationId: selectedApplication(t).id, authority: 'host-access-only' });
+  if (rest === 'tokens' && method === 'POST') {
+    requireAgentScope(principal, 'agents:delegate');
+    const body = await readJson(req, 4096), scopes = agentScopes(body.scopes, principal.binding?.scopes);
+    for (const scope of scopes) requireAgentScope(principal, scope);
+    if (typeof body.name !== 'string' || !/^[A-Za-z0-9_.@-]{1,64}$/.test(body.name)) throw new HttpError(400, 'invalid_agent_name');
+    if (t.db.one('SELECT 1 FROM tokens WHERE name=?', body.name)) throw new HttpError(409, 'exists');
+    if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+    const token = await t.addToken(body.name, scopes, () => {
+      if (!currentPrincipal(t, principal)) throw new HttpError(403, 'agent_binding_revoked');
+      if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+    });
+    return json({ name: body.name, token, binding: agentBinding(t, body.name) }, 201);
+  }
+  const rotate = /^tokens\/([^/]+)\/rotate$/.exec(rest);
+  if (rotate && method === 'POST') {
+    const name = rotate[1], binding = agentBinding(t, name);
+    if (!binding || !t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found');
+    if (name !== principal.name) {
+      requireAgentScope(principal, 'agents:delegate');
+      for (const scope of binding.scopes) requireAgentScope(principal, scope);
+    }
+    const token = newToken(), hash = await sha256Hex(token);
+    if (!currentPrincipal(t, principal) || agentBinding(t, name)?.revision !== binding.revision) throw new HttpError(409, 'agent_binding_changed');
+    const next = { ...binding, revision: binding.revision + 1 };
+    t.transaction(() => { t.db.run('UPDATE tokens SET hash=? WHERE name=?', hash, name); t.db.set('agent_binding:' + name, next); });
+    return json({ name, token, binding: next });
+  }
+  if (rest.startsWith('tokens/') && method === 'DELETE') {
+    const target = agentBinding(t, rest.slice('tokens/'.length));
+    if (target) for (const scope of target.scopes) requireAgentScope(principal, scope);
+  }
   const matches = routes.filter(route => route.pattern.test(rest));
   if (!matches.length) throw new HttpError(404, 'not_found', `No host route ${rest || '/'}`);
   const route = matches.find(route => route.method === method);
   if (!route) throw new HttpError(405, 'method_not_allowed');
-  requireAccess(principal, 'agent.manage');
+  requireAgentScope(principal, rest.startsWith('tokens') ? 'agents:delegate' : method === 'GET' ? 'host:read' : 'host:manage');
   return route.handler(t, req, url, principal.name, route.pattern.exec(rest)!.slice(1));
 }
 async function tendrilInfo(t: Tendril) {
@@ -184,18 +224,16 @@ route("GET", /^activity$/, (t, req, url) => {
   return json(listActivity(t, a === null || a === "" ? 0 : intParam(url, "after", 0, 0, Number.MAX_SAFE_INTEGER), limit));
 });
 
-route("POST", /^tokens$/, async (t, req) => {
-  const b = await readJson(req, 4096);
-  if (typeof b.name !== "string" || !/^[A-Za-z0-9_.@-]{1,64}$/.test(b.name)) throw new HttpError(400, "bad_request", "name must be 1-64 characters of [A-Za-z0-9_.@-]");
-  if (t.db.one("SELECT 1 AS x FROM tokens WHERE name = ?", b.name)) throw new HttpError(409, "exists", `A token named ${b.name} exists`);
-  const token = await t.addToken(b.name);
-  return json({ name: b.name, token }, 201);
-});
-
-route("GET", /^tokens$/, (t) => json({ tokens: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at ASC") }));
+route("GET", /^tokens$/, (t) => json({ tokens: t.db.all<{ name: string; created_at: number; last_used: number | null }>("SELECT name, created_at, last_used FROM tokens ORDER BY created_at ASC")
+  .map(row => ({ ...row, binding: agentBinding(t, row.name) })) }));
 
 route("DELETE", /^tokens\/([^/]+)$/, (t, req, url, by, [name]) => {
   if (!t.db.one("SELECT 1 AS x FROM tokens WHERE name = ?", name)) throw new HttpError(404, "not_found", "No such token");
   t.db.run("DELETE FROM tokens WHERE name = ?", name);
+  t.db.del('agent_binding:' + name);
+  for (const socket of t.ctx.getWebSockets()) {
+    const attached = socket.deserializeAttachment();
+    if (attached?.principal?.kind === 'agent' && attached.principal.name === name) socket.close(4003, 'Agent binding revoked');
+  }
   return new Response(null, { status: 204 });
 });

@@ -1,6 +1,6 @@
 import { PEER_DIRECTORY_LIMITS as LIMITS, validatePeerAdvertisement, validatePeerId, validatePeerTtl,
   type PeerAdvertisement, type PeerAdvertisementLease } from '../../contract/discovery.mjs';
-import { accountActive, currentPrincipal, type Principal } from './access';
+import { accountActive, currentPrincipal, participantIdentity, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
@@ -8,10 +8,7 @@ import type { Tendril } from './tendril';
 interface StoredAdvertisement extends PeerAdvertisementLease { owner: string; principal: Principal }
 const key = 'peer_directory';
 function identity(t: Tendril, principal: Principal): string {
-  const current = currentPrincipal(t, principal);
-  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
-    throw new HttpError(403, 'forbidden', 'Peer discovery requires an authenticated participant');
-  return current.kind === 'agent' ? `agent:${current.credentialHash}` : `account:${current.accountId}`;
+  return participantIdentity(t, principal).route;
 }
 function active(t: Tendril): StoredAdvertisement[] {
   return t.db.get<StoredAdvertisement[]>(key, []).filter(row => row.expiresAt > t.now() && currentPrincipal(t, row.principal));
@@ -53,7 +50,8 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
         t.db.set(key, rows.filter(row => row.advertisement.peerId !== peerId));
       return { withdrawn: peerId };
     }
-    if (!previous && (rows.length >= LIMITS.peers || rows.filter(row => row.owner === owner).length >= LIMITS.peersPerPrincipal))
+    const budget = participantIdentity(t, principal).budget;
+    if (!previous && (rows.length >= LIMITS.peers || rows.filter(row => participantIdentity(t, row.principal).budget === budget).length >= LIMITS.peersPerPrincipal))
       throw new HttpError(429, 'peer_directory_full', 'The bounded peer directory is full');
     // Duplicate availability updates do not create writes until the coalescing
     // window expires. Discovery carries routing hints, never per-edit updates.

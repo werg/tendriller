@@ -6,7 +6,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 
-export const CHRONOLOG_SOURCE = 'd014879ecb29714e80311d6101cfa8973953d5c4';
+export const CHRONOLOG_SOURCE = 'd3efeb6d75ac24bb9b44899f27d6940475ab55e9';
 const SHA = /^[a-f0-9]{40}$/u, HASH = /^[a-f0-9]{64}$/u;
 const TEMPLATE_FILES = ['domain.mjs', 'projection.mjs', 'session.mjs', 'bridge-session.mjs', 'local.mjs', 'private-records.mjs'];
 const REQUIRED = ['integrations/chatgpt/run.mjs', 'integrations/chatgpt/integration.mjs',
@@ -98,7 +98,15 @@ function proofIdentity(proof, expected, format) {
 }
 async function packageIdentity(directory, name) {
   const value = await json(join(directory, 'package.json'));
-  if (value.name !== name || Object.keys(value.dependencies ?? {}).length || Object.keys(value.peerDependencies ?? {}).length)
+  const peers = Object.entries(value.peerDependencies ?? {}), metadata = value.peerDependenciesMeta ?? {};
+  // The optional SDK collaboration entry consumes the exact session archive
+  // installed and verified below. This is the only permitted runtime peer;
+  // nothing here asks npm to resolve another version or dependency graph.
+  const optionalSessionPeer = name === '@tendriller/core' && peers.length === 1 && peers[0][0] === '@chronolog/peer-session' && peers[0][1] === '*' &&
+    Object.keys(metadata).length === 1 && metadata['@chronolog/peer-session']?.optional === true &&
+    Object.keys(metadata['@chronolog/peer-session']).length === 1;
+  if (value.name !== name || Object.keys(value.dependencies ?? {}).length || Object.keys(value.optionalDependencies ?? {}).length ||
+      (peers.length || Object.keys(metadata).length) && !optionalSessionPeer)
     fail('RELEASE_PUBLIC_PACKAGE_INVALID', 'The release requires the self-contained public SDK and events-only native session packages.');
   return value;
 }

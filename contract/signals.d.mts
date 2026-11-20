@@ -9,15 +9,23 @@ export interface EphemeralSignal {
   readonly payload: SignalPayload;
   readonly issuedAtMs: number;
   readonly expiresAtMs: number;
+  /** Signed stream context; a local session owner supplies endpoint fields. */
+  readonly stream?: SignalStream;
 }
-export interface SignalSendOptions { readonly ttlMs?: number; readonly signal?: AbortSignal }
+export interface SignalStream { readonly streamId: string; readonly endpointId?: string; readonly endpointIncarnation?: string; readonly target?: string }
+export interface SignalStreamSelector { readonly authorId?: string; readonly sessionId?: string; readonly streamId?: string; readonly endpointId?: string; readonly endpointIncarnation?: string; readonly target?: string }
+export interface SignalSendOptions { readonly ttlMs?: number; readonly signal?: AbortSignal; readonly stream?: SignalStream }
 export interface SignalSubscribeOptions {
   readonly topics?: readonly string[];
-  /** all preserves admitted messages in a bounded FIFO; latest suppresses older author/session/topic values, including after delivery. */
+  /** Exact selectors are applied before coalescing, so unrelated runs cannot suppress one another. */
+  readonly streams?: readonly SignalStreamSelector[];
+  /** all preserves bounded FIFO; latest coalesces by signed author/session/topic/endpoint/stream/target. */
   readonly mode?: 'all' | 'latest';
   readonly signal?: AbortSignal;
 }
 export interface Signals {
+  /** Explicit best-effort reach, never an acknowledgement from every participant. */
+  readonly delivery?: 'neighbors' | 'application';
   /** Dispatch on live routes. Completion does not acknowledge remote receipt or application processing. */
   send(topic: string, payload: SignalPayload, options?: SignalSendOptions): Promise<EphemeralSignal>;
   subscribe(options?: SignalSubscribeOptions): AsyncIterable<EphemeralSignal>;

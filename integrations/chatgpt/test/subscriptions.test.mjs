@@ -153,3 +153,20 @@ test('trusted OAuth grant metadata survives delivery and refresh without changin
     delivery: { ...input.delivery, url: 'https://second.example/callback' } }), { code: 'SUBSCRIPTION_LIMIT' });
   assert.equal(JSON.stringify(await f.store.read()).includes('never-persist'), false);
 });
+
+test('approved sibling bindings get independent subscriptions while sharing the account cap', async () => {
+  const f = fixture({ maxPerOwner: 2 }), input = request();
+  const binding = id => ({ ...owner, agentBinding: { id, revision: 1, applications: { 'app-a': { events: ['assistant.help_requested'] } } } });
+  const planner = binding('planner'), reviewer = binding('reviewer');
+  const one = await f.service.subscribe(planner, input), two = await f.service.subscribe(reviewer, input);
+  assert.notEqual(one.id, two.id); assert.equal(f.calls(), 2);
+  await assert.rejects(f.service.subscribe(binding('extra'), input), { code: 'SUBSCRIPTION_LIMIT' });
+  const rotated = await f.service.subscribe({ ...planner, oauthGrantId: 'rotated-token' }, input);
+  assert.equal(rotated.id, one.id); assert.equal(f.captures(), 2);
+  await f.service.unsubscribe(planner, { name: input.name, arguments: input.arguments, delivery: { mode: 'webhook', url: input.delivery.url } });
+  assert.deepEqual((await f.service.active()).map(value => value.id), [two.id]);
+  const saved = (await f.store.read()).subscriptions[two.id];
+  assert.equal(saved.owner.agentBindingId, 'reviewer');
+  assert.equal(saved.cursorScope.consumerId.startsWith('consumer_'), true);
+  assert.equal(saved.cursorScope.filter, 'assistant.help_requested');
+});

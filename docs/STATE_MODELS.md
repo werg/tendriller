@@ -42,7 +42,7 @@ actual position in the selected shared history. They are not a prior read
 followed by unguarded writes. Another writer can change a balance between the UI
 read and submission; the stale command then rejects. SQL/platform failure
 rejects the whole program, rolls back its changes, and produces no effective
-emit. The protocol's [deterministic SQL contract](https://github.com/werg/chronolog-db/blob/d014879ecb29714e80311d6101cfa8973953d5c4/docs/implementation-specs/10-deterministic-sql-transactions.md)
+emit. The protocol's [deterministic SQL contract](https://github.com/werg/chronolog-db/blob/d3efeb6d75ac24bb9b44899f27d6940475ab55e9/docs/implementation-specs/10-deterministic-sql-transactions.md)
 defines those atomicity and rejection rules.
 
 The literal source is short enough to inspect. The central part is:
@@ -99,19 +99,19 @@ needs.
 
 ```sh
 git clone https://github.com/werg/chronolog-db.git ../../chronolog-sql-source
-git -C ../../chronolog-sql-source checkout --detach d014879ecb29714e80311d6101cfa8973953d5c4
+git -C ../../chronolog-sql-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
 cd ../../chronolog-sql-source
 corepack pnpm install --frozen-lockfile
 node tools/package-peer-session.mjs --sql-native --output artifacts/session-sql
 node tools/test-peer-session-sql.mjs \
-  --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-d014879e-sql.tgz"
+  --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-d3efeb6d-sql.tgz"
 ```
 
 Return to your starter's `sql/` directory, and install the produced archive by
 its absolute path:
 
 ```sh
-npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-d014879e-sql.tgz
+npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-d3efeb6d-sql.tgz
 npm run engine
 ```
 
@@ -129,7 +129,7 @@ failure to resolve before initialization. Do not substitute the unpatched
 upstream DoltLite prebuild, fabricate a manifest or continue with an events
 session under the same SQL descriptor.
 
-The package's [native packager](https://github.com/werg/chronolog-db/blob/d014879ecb29714e80311d6101cfa8973953d5c4/tools/package-peer-session.mjs)
+The package's [native packager](https://github.com/werg/chronolog-db/blob/d3efeb6d75ac24bb9b44899f27d6940475ab55e9/tools/package-peer-session.mjs)
 includes the exact compiled addon and records its build identity. The default
 archive has no SQL engine. `--sql-native` supplies `/sql` and `/sql-native`;
 `--sql-browser` supplies `/sql` and `/sql-browser`. The flags can be combined,
@@ -226,7 +226,7 @@ test "$(git -C ../chronolog-emsdk rev-parse HEAD)" = e4fe26ef59168ff44f4c23c466e
 node tools/build-wasm-engine.mjs --emsdk ../chronolog-emsdk --output artifacts/wasm
 ```
 
-Install `chronolog-peer-session-d014879e-sql-wasm.tgz` into the application in
+Install `chronolog-peer-session-d3efeb6d-sql-wasm.tgz` into the application in
 place of its native-only package. Preserve these four engine files together in
 the authored publication's `engine/` directory:
 
@@ -237,7 +237,7 @@ the authored publication's `engine/` directory:
 | `sqlite3-opfs-async-proxy.js` | Engine storage support asset |
 | `manifest.json` | Toolchain, native build identity and WASM digest |
 
-The [WASM builder](https://github.com/werg/chronolog-db/blob/d014879ecb29714e80311d6101cfa8973953d5c4/tools/build-wasm-engine.mjs)
+The [WASM builder](https://github.com/werg/chronolog-db/blob/d3efeb6d75ac24bb9b44899f27d6940475ab55e9/tools/build-wasm-engine.mjs)
 uses the same pinned native sources/hooks. `loadBrowserEngine` verifies the
 WASM digest and supported build identity; `openSqlApplication` also checks the
 engine's execution-manifest digest against the application descriptor before
@@ -250,26 +250,36 @@ additionally includes `nativeDeviceId` for its optional inference panel; this SQ
 Worker does not require that field.
 Use the matching SQL project's saved handle and pinned descriptor to build
 these fields. Never copy the handle itself, `.tendriller/`, a private signer or
-the bootstrap epoch key into the publication. It supports this explicit
-message lifecycle:
+the bootstrap epoch key into the publication. It uses the same owner lifecycle as
+the events starter:
 
-| Page action | Worker message and result |
+| Page action | Public composition |
 | --- | --- |
-| Create this browser's identity deliberately | Send `sql-create`; receive `sql-identity` with only the public key; terminate this setup Worker |
-| Enroll that verified owner's browser | Stop the native peer; run `npm run enroll -- PUBLIC_KEY` from the SQL directory; then start `npm run peer` |
-| Connect the existing enrolled device | Create a fresh Worker, attach `serveWorkerWebRtcConnections`, send `sql-open`, await `sql-opened`, then `connectApplicationWorker` |
+| Create this browser's identity deliberately | `createBrowserIdentity({ workerUrl, profileId })` returns only the public key under the exclusive profile fence |
+| Enroll the verified owner's browser | Stop the native owner; run `npm run enroll -- PUBLIC_KEY` from the SQL directory; then start `npm run peer` |
+| Attach the existing enrolled device | `openBrowserOwner({ workerUrl, profileId, applicationId, definitionId, definitionVersion, requiresDedicatedWorker: true, context })` returns a fenced elected-owner facade for synchronous OPFS SQL |
 | Install runtime access | Install `createApplicationBackend({ id: session.applicationId, session })` and `session.signals` as in the first-app page |
-| Close the owner completely | Send `sql-close`, await `sql-closed`, close the page RTC bridge, then terminate the Worker |
+| Leave one view | `attachment.detach()` closes only that view's requests, streams and captured reads |
 
-The close message waits for the session's database handles to close **before**
-releasing the external OPFS pool. Terminating a Worker immediately after a page
-facade's `close()` does not provide that explicit pool-cleanup handshake. A
-fresh browser receives epoch keys over its authenticated encrypted peer link;
-the supplied Worker never takes a plaintext key from page configuration.
+Use `tendriller-inventory-${applicationId}` as the matching profile ID. The owner
+opens no SQL engine for protocol-only attachment or signals. On final owner
+shutdown it closes the session database handles before releasing the external
+OPFS pool. A fresh browser receives epoch keys over authenticated encrypted
+participation; page configuration never supplies a plaintext key.
+
+The qualified Chromium build exposes the required synchronous OPFS APIs in a
+dedicated Worker, not SharedWorker. `requiresDedicatedWorker: true` selects that
+route before opening storage. An explicitly forced shared mode fails with
+`OWNER_STORAGE_UNSUPPORTED`; it must not silently choose a different database.
+
+The native SQL peer also uses the private supervisor. Ordinary CLI calls attach
+to a running `npm run peer`; deliberate one-off setup/publication calls use
+`--mode own` while that owner is stopped. A separately enrolled native profile
+has its own signer and SQL materialization; it is never created implicitly.
 
 Serve the actual bundled Worker, its chunks, the four engine assets, public
 configuration and your UI in one authored graph. Publish only that graph via
-`tendril --session ./session.mjs publish`, with an explicit operation ID.
+`tendril --session ./session.mjs --mode own publish`, with an explicit operation ID.
 Keep the native peer running for this starter's coordinator/key-donor role.
 
 Browser SQL requires separate qualification on the target browser, origin,

@@ -16,7 +16,7 @@ declared evidence command. The [capability map](CAPABILITIES.md) points to the
 other supplied modules.
 
 Use the real native session or the browser facade returned by
-`connectApplicationWorker`. [Build an app](BUILD_AN_APP.md) supplies that complete
+`openBrowserOwner`. [Build an app](BUILD_AN_APP.md) supplies that complete
 bootstrap, enrollment and publication path. These helpers observe and interact
 with its existing session. They do not own its signer, database, transport,
 recovery policy or process lifetime.

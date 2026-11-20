@@ -10,7 +10,8 @@ import { createOutbox } from './outbox.mjs';
 import { openDeliveryStore } from './store.mjs';
 import { createWidgetResource } from './widget/resource.mjs';
 import { createMcpHandler } from './server.mjs';
-import { fail, SCOPES } from './common.mjs';
+import { fail, SCOPES, canonical } from './common.mjs';
+import { assertConsumerAccess } from './consumer.mjs';
 
 function waitForWake(signal, delay, setWake) {
   return new Promise(resolve => {
@@ -53,6 +54,7 @@ export async function createIntegration(config = {}) {
     let started = false, closed = false, loop, wake, stopping;
     const wakeUp = () => wake?.();
     async function authorized(principal, applicationId, eventName) {
+      assertConsumerAccess(principal, applicationId, eventName == null ? 'read' : 'event', eventName);
       if (await authorizeAccountAccess({ ...principal, requestSignal: lifetime.signal }, applicationId) !== true)
         fail('ACCOUNT_ACCESS_DENIED', 'Current account access to the application is required', { status: 403 });
       await originalConsent.assertAccess(principal, { applicationId, kind: eventName == null ? 'read' : 'event', ...(eventName == null ? {} : { name: eventName }) });
@@ -148,6 +150,13 @@ export async function createIntegration(config = {}) {
         watcher.task = (async () => {
           let cursor = sub.sourceCursor;
           try {
+            if (typeof bridge.exportDefinition === 'function') {
+              const exported = await bridge.exportDefinition(sub.applicationId);
+              if (canonical(sub.sourceExport ?? null) !== canonical(exported)) {
+                await outbox.pauseForExport(id, { export: exported, revision: await bridge.readRevision(sub.applicationId) }, { subscription: sub });
+                wakeUp(); return;
+              }
+            }
             for await (const batch of bridge.observe(sub.applicationId, { ...(cursor == null ? {} : { cursor }), signal })) {
               if (signal.aborted) break;
               if (batch.kind === 'recovery') { await outbox.pauseForRecovery(id, batch); wakeUp(); break; }

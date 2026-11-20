@@ -3,7 +3,7 @@ name: Agent onboarding
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [master, 'codex/multiparticipant-architecture']
   workflow_dispatch:
 
 permissions:
@@ -22,11 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: core
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -46,7 +47,7 @@ jobs:
         working-directory: core
       - name: Exercise the downloaded tutorial in a real browser
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d014879e.tgz"
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -62,11 +63,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: core
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d014879ecb29714e80311d6101cfa8973953d5c4
+          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -82,7 +84,7 @@ jobs:
         working-directory: core
       - name: Exercise SQL initialization, guarded writes and reopen
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d014879e-sql.tgz" --sql-native-only
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d-sql.tgz" --sql-native-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:

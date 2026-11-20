@@ -1,7 +1,7 @@
 import { PEER_INVITATION_LIMITS as LIMITS, PEER_INVITATION_PROTOCOL, validatePeerInvitation,
   type PeerInvitation } from '../../contract/invitations.mjs';
 import { validatePeerId } from '../../contract/discovery.mjs';
-import { accountActive, currentPrincipal, pageAccessAllowed, type Principal } from './access';
+import { accountActive, currentPrincipal, pageAccessAllowed, participantIdentity, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
@@ -17,10 +17,7 @@ const attachment = (ws: WebSocket): Attachment | null => {
 };
 export const isInvitationSocket = (ws: WebSocket): boolean => attachment(ws) !== null;
 function identity(t: Tendril, principal: Principal): string {
-  const current = currentPrincipal(t, principal);
-  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
-    throw new HttpError(403, 'forbidden', 'Peer invitations require an authenticated participant');
-  return current.kind === 'agent' ? `agent:${current.credentialHash}` : `account:${current.accountId}`;
+  return participantIdentity(t, principal).route;
 }
 async function fresh(t: Tendril, principal: Principal): Promise<void> {
   identity(t, principal);
@@ -50,7 +47,8 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     await fresh(t, principal);
     const listeners = active(t), previous = listeners.find(ws => attachment(ws)!.peerId === peerId);
     if (previous && attachment(previous)!.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');
-    if (!previous && (listeners.length >= LIMITS.listeners || listeners.filter(ws => attachment(ws)!.owner === owner).length >= LIMITS.listenersPerPrincipal))
+    const budget = participantIdentity(t, principal).budget;
+    if (!previous && (listeners.length >= LIMITS.listeners || listeners.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.listenersPerPrincipal))
       throw new HttpError(429, 'peer_listener_full', 'The bounded invitation directory is full');
     previous?.close(1000, 'Invitation listener replaced');
     const [client, server] = Object.values(new WebSocketPair());

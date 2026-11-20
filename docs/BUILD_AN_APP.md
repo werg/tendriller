@@ -93,16 +93,16 @@ npm install --save-dev --save-exact esbuild@0.28.2
 Chronolog's public session package is currently produced from exact source; do
 not assume `npm install @chronolog/peer-session` retrieves the required package.
 The source baseline for this tutorial is
-`d014879ecb29714e80311d6101cfa8973953d5c4`. Build its ordinary events archive:
+`d3efeb6d75ac24bb9b44899f27d6940475ab55e9`. Build its ordinary events archive:
 
 ```sh
 git clone https://github.com/werg/chronolog-db.git ../chronolog-source
-git -C ../chronolog-source checkout --detach d014879ecb29714e80311d6101cfa8973953d5c4
+git -C ../chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
 cd ../chronolog-source
 corepack pnpm install --frozen-lockfile --ignore-scripts
 node tools/package-peer-session.mjs
 cd ../shared-notes
-npm install --save-exact ../chronolog-source/artifacts/peer-session/chronolog-peer-session-d014879e.tgz
+npm install --save-exact ../chronolog-source/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz
 ```
 
 Keep the archive's reported SHA-256, `provenance.json`, exact source SHA and the
@@ -159,8 +159,8 @@ After owner claim:
 
 ```sh
 npm run init
-npx tendril --session ./session.mjs describe
-npx tendril --session ./session.mjs query notes null
+npx tendril --session ./session.mjs --mode own describe
+npx tendril --session ./session.mjs --mode own query notes null
 ```
 
 `init` performs every initial setup step:
@@ -191,10 +191,10 @@ and transports. Only one native process may own this device at a time.
 You can verify a retained write before building the UI:
 
 ```sh
-npx tendril --session ./session.mjs command addNote '{"text":"First native note"}' \
+npx tendril --session ./session.mjs --mode own command addNote '{"text":"First native note"}' \
   --operation first-native-note
-npx tendril --session ./session.mjs operation first-native-note
-npx tendril --session ./session.mjs query notes null
+npx tendril --session ./session.mjs --mode own operation first-native-note
+npx tendril --session ./session.mjs --mode own query notes null
 ```
 
 An `applied` response also has an `outcome`; check for `accepted`. Repeating an
@@ -235,11 +235,22 @@ The implementation is deliberately ordinary:
 | `index.html` | The editable UI and its visible setup/status/retry controls |
 | `build.mjs` | Bundle the public browser graph for one signed publication |
 
-The page calls `connectApplicationWorker`, installs
+The page calls `openBrowserOwner` from
+`@tendriller/core/collaboration/browser`, then installs
 `createApplicationBackend({ id: session.applicationId, session })` into
-`tendril.application`, and installs `session.signals`. The Worker owns the
-signer, device storage and actual session. Installation availability is not
-connection readiness; the UI displays session and participation status.
+`tendril.application` and `session.signals`. A SharedWorker owns the signer,
+device storage and session when supported. The fallback elects one dedicated
+Worker under an exclusive Web Lock; sibling views attach through bounded,
+authenticated local channels. It never infers ownership from a heartbeat.
+Closing a view detaches it; another view keeps its own subscriptions and work.
+Installation availability is not connection readiness; the UI displays session
+and participation status.
+
+Drafts and pending operation references are scoped to a retained view ID. If a
+duplicated tab requests the same live view ID, the owner assigns a fresh one; the
+new tab can explicitly copy the original draft. Each reference names the actual
+signer and original operation. Two views may inspect the same command without
+removing each other's references. See [multi-participant composition](MULTIPARTICIPANT.md).
 
 For a layout-only preview:
 
@@ -258,8 +269,8 @@ explicit authorized bootstrap as described in [Preview](tools/PREVIEW.md).
 With the native peer stopped, publish **only `page/`**:
 
 ```sh
-npx tendril --session ./session.mjs publish ./page --operation notes-release-1
-npx tendril --session ./session.mjs publication
+npx tendril --session ./session.mjs --mode own publish ./page --operation notes-release-1
+npx tendril --session ./session.mjs --mode own publication
 ```
 
 The CLI packs the complete authored graph, asks the session's control participant
@@ -273,6 +284,11 @@ publish reply is uncertain, repeat the **same** command and operation ID with
 unchanged files; Chronolog recovers the saved intent. A changed graph requires a
 new release operation ID. A stale predecessor requires inspection of the
 selected publication before making a deliberate new release.
+
+After `npm run peer` starts, ordinary CLI reads and commands use the default
+attachment mode; for example `npx tendril --session ./session.mjs self`. They do
+not open or close the signer store. Publication and setup administration use the
+explicit `--mode own` commands above while the resident owner is stopped.
 
 Publishing code does not enroll the browser's future device. The first visit
 therefore shows the next setup action explicitly.
@@ -338,7 +354,7 @@ Call the app complete only after checking the actual hosted behavior:
    the same native device and inspect/retry the original identity. A short UI
    timeout cancels observation; it does not cancel the saved operation.
 5. Stop the native peer before a CLI invocation, then query through
-   `npx tendril --session ./session.mjs query notes null`. Confirm the same
+   `npx tendril --session ./session.mjs --mode own query notes null`. Confirm the same
    retained data and original operation IDs. Start `npm run peer` again when done.
 6. Rebuild a visible UI change and publish with a new operation, such as
    `notes-release-2`. Confirm the selected receipt and page content. Changing

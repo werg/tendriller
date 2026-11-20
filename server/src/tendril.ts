@@ -31,7 +31,7 @@ import type { Features } from './inject';
 import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR } from './limits';
 import { handlePage, pageAccessDenied } from './page';
 import { apiUrl, pageUrl, publicBase } from './urls';
-import { authenticateAgent, authenticateAgentToken, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
+import { AGENT_SCOPES, authenticateAgent, authenticateAgentToken, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession, type AgentScope } from './access';
 import type { Role } from '../../contract/index.mjs';
 export type { Role } from '../../contract/index.mjs';
 
@@ -275,7 +275,7 @@ export class Tendril extends DurableObject<Env> {
     if (!this.exists()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     const body = await readJson(req, 4096);
     const code = typeof body.code === "string" ? body.code.trim() : "";
-    const a = this.db.get<{ hash: string; expires_at: number; attempts: number } | null>("adopt", null);
+    const a = this.db.get<{ hash: string; expires_at: number; attempts: number; mode?: 'delegate'; name?: string; scopes?: AgentScope[] } | null>("adopt", null);
     if (!a || a.expires_at < this.now()) {
       this.db.del("adopt");
       throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
@@ -287,16 +287,23 @@ export class Tendril extends DurableObject<Env> {
       throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     }
     this.db.del("adopt");
-    this.db.run("DELETE FROM tokens");
-    const token = await this.addToken("main");
-    addActivity(this, { kind: "adopted", summary: "A new agent session adopted this tendril; earlier agent tokens were revoked" });
+    if (a.mode !== 'delegate') this.db.run("DELETE FROM tokens");
+    const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes);
+    addActivity(this, { kind: a.mode === 'delegate' ? 'agent_delegated' : "adopted", summary: a.mode === 'delegate'
+      ? `An independently revocable agent binding ${a.name} joined this tendril`
+      : "A new agent session adopted this tendril; earlier agent tokens were revoked" });
     this.scheduleAlarm();
     return json(this.handle(token));
   }
 
-  async addToken(name: string): Promise<string> {
+  async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {}): Promise<string> {
     const token = newToken();
-    this.db.run("INSERT INTO tokens (name, hash, created_at, last_used) VALUES (?, ?, ?, NULL)", name, await sha256Hex(token), this.now());
+    const hash = await sha256Hex(token);
+    this.transaction(() => {
+      authorize();
+      this.db.run("INSERT INTO tokens (name, hash, created_at, last_used) VALUES (?, ?, ?, NULL)", name, hash, this.now());
+      this.db.set('agent_binding:' + name, { id: crypto.randomUUID(), scopes: [...scopes], revision: 1 });
+    });
     return token;
   }
 

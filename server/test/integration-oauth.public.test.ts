@@ -12,7 +12,7 @@ import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { resolveConnection } from '../src/assistant-shared';
 import { createPeersClient } from '../../contract/peers.mjs';
 import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
-import { connectApplicationAssistant, createAssistantKey, forwardApplicationEvents, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
+import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, forwardApplicationEvents, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 import { advance, create, inDO, runAlarm, stub } from './helpers';
 
@@ -458,7 +458,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
     rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
     relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
-  async function open(f: typeof a, definition: typeof notes | typeof counter, query: string, command: string, eventName: string) {
+  async function open<D extends typeof notes | typeof counter>(f: typeof a, definition: D, query: string, command: string, eventName: string) {
     const pagePath = new URL(f.page.api).pathname, headers = { Authorization: 'Bearer ' + f.page.token, 'Content-Type': 'application/json' };
     const peers = createPeersClient({ base: f.page.api, applicationId: f.page.application.id,
       request: async (path, options = {}) => {
@@ -511,11 +511,31 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       for (const name of queries) form.append('queries', name);
       return request(reviewPath, bind, { method: 'POST', headers: { Origin: origin, Cookie: f.cookie }, body: form });
     };
+    const reviewAction = async (action: string, fields: Record<string, string>) => {
+      const page = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
+      const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())![1];
+      return request(reviewPath, bind, { method: 'POST', headers: { Origin: ISSUER, Cookie: f.cookie },
+        body: new URLSearchParams({ csrf, action, ...fields }) });
+    };
     expect((await review(blueprints.queries, 'https://evil.example')).status).toBe(403);
     expect((await review(blueprints.queries)).status).toBe(303);
+    let dropNextResult = false, droppedResult: Record<string, any> | null = null;
     const start = (whichKey = key, peer = session) => {
       const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createApplicationTools(peer),
-        ...blueprints, openSocket: (_url, protocols) => testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous') as unknown as globalThis.WebSocket });
+        ...blueprints, openSocket: (_url, protocols) => {
+          const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
+          socket.send = data => {
+            const frame = typeof data === 'string' ? JSON.parse(data) : null;
+            if (dropNextResult && frame?.type === 'result' && frame.value?.operationReference) {
+              dropNextResult = false; droppedResult = frame.value;
+              // The real native tool saved/applied this operation. Only its
+              // transport response is lost, so another dispatch is unsafe.
+              socket.close(1000, 'Lost reply after native save'); return;
+            }
+            send(data);
+          };
+          return socket as unknown as globalThis.WebSocket;
+        } });
       adapters.push(adapter);
       return adapter;
     };
@@ -554,7 +574,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       return res.json<any>();
     };
     const tool = (name: string, args: Record<string, unknown> = {}) => rpc('tools/call', { name, arguments: args });
-    return { adapter, session, eventName, gid, rpc, tool, review, startBackup, id: f.page.application.id };
+    return { adapter, session, eventName, gid, rpc, tool, review, reviewAction, startBackup, backupKey, id: f.page.application.id,
+      loseNextResult: () => { dropNextResult = true; droppedResult = null; }, lostResult: () => droppedResult };
   }
   const sent: { id: string; body: string }[] = [];
   let mounted: WebSocket | undefined;
@@ -648,24 +669,13 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await view.release();
     expect(batch.events).toHaveLength(1);
     const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, generation: batch.revision.generation, payload: { ready: true } };
-    // Prevent automatic delivery until the configuration-outage fixture is ready.
-    await inDO(a.page.id, t => { t.env.ASSISTANT_CALLBACK_ORIGINS = ''; });
+    // Establish the outage before enqueueing work. The real alarm may fire
+    // immediately after publication; racing it here would test fixture timing.
+    await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
     const sequence = await first.adapter.publish(emitted);
     expect(await first.adapter.publish(emitted)).toBe(sequence);
-    await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
-    const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
-    expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
-    expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
 
     // A deployment with OAuth temporarily unavailable preserves existing jobs.
-    await expect.poll(() => inDO(a.page.id, t =>
-      t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs WHERE lease IS NOT NULL')!.n)).toBe(0);
-    await inDO(a.page.id, t => {
-      t.env.OAUTH_CONFIG_JSON = undefined;
-      t.env.ASSISTANT_CALLBACK_ORIGINS = settings.ASSISTANT_CALLBACK_ORIGINS as string;
-      t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
-      return t.ctx.storage.setAlarm(t.now());
-    });
     await advance(a.page.id, 100);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(0);
@@ -674,6 +684,9 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       expect(t.db.one('SELECT block_reason,attempts FROM assistant_jobs')).toMatchObject({ block_reason: 'oauth_unavailable', attempts: 0 });
       t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
     });
+    const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
+    expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
+    expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(1);
     expect((await first.review(['notes'])).status).toBe(303);
@@ -702,6 +715,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     rejectCallback = true;
     const later = { ...emitted, sourceEventId: 'pinned-after-retry' };
     const pinned = await first.adapter.publish(later);
+    await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
     await inDO(a.page.id, t => {
       t.transaction(() => {
         for (let i = 0; i < 258; i++)
@@ -710,9 +724,11 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       });
     });
     await first.adapter.publish({ ...later, sourceEventId: 'new-inbox-tail' });
-    const gap = (await first.tool('read_application_events', { applicationId: first.id, after: pinned, limit: 1 })).result.structuredContent;
+    const gap = (await first.tool('read_application_events', { applicationId: first.id, after: { ...inbox.next, sequence: pinned }, limit: 1 })).result.structuredContent;
     expect(gap.truncated).toBe(true);
-    expect(gap.events[0].sequence).toBeGreaterThan(pinned + 1);
+    expect(gap.resetRequired).toBe(true); expect(gap.reason).toBe('retention_truncated'); expect(gap.events).toEqual([]);
+    const resumed = (await first.tool('read_application_events', { applicationId: first.id, after: gap.next, limit: 1 })).result.structuredContent;
+    expect(resumed.events[0].sequence).toBeGreaterThan(pinned + 1);
     await inDO(a.page.id, t => expect(t.db.one('SELECT seq FROM assistant_events WHERE seq=?', pinned)).toBeTruthy());
 
     // The host may deliver immediately after emission. Let that attempt finish
@@ -741,7 +757,12 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await first.adapter.close();
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value)
       .toMatchObject([{ text: 'Rope checked' }]);
-    expect((await first.tool('call_application_command', write)).result.structuredContent.code).toBe('application_operation_unresolved');
+    const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
+    expect(unresolved).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: first.session.deviceId } });
+    expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
+      .toBe('provider_offline');
+    const provider = (await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.provider;
+    expect((await first.reviewAction('select-provider', { provider: await sha256Hex(first.backupKey), epoch: String(provider.selectionEpoch) })).status).toBe(303);
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.isError)
       .toBeUndefined();
     await vi.waitFor(async () => expect((await createApplicationTools(first.session).call('query', { name: 'notes', input: null }) as { value: unknown }).value)
@@ -763,6 +784,127 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await standby.close();
     expect((await first.rpc('initialize')).error).toBe('invalid_token');
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
+
+    // Two separately approved agents behind the same OAuth client can retain
+    // the same short operation ID without sharing authority or progress.
+    const reviewerKey = createApplicationAgentKey(), plannerKey = createApplicationAgentKey();
+    const register = (key: string, label: string) => second.tool('register_application_agent', { applicationId: second.id, bindingToken: key,
+      label, queries: ['readings'], commands: ['count'], events: ['counter.changed'], route: 'on-demand' });
+    const reviewer = (await register(reviewerKey, 'Reviewer')).result.structuredContent;
+    const planner = (await register(plannerKey, 'Planner')).result.structuredContent;
+    expect(reviewer.status).toBe('pending'); expect(planner.agentBindingId).not.toBe(reviewer.agentBindingId);
+    expect((await register(reviewerKey, 'Reviewer')).result.structuredContent.agentBindingId).toBe(reviewer.agentBindingId);
+    expect((await second.tool('call_application_command', { applicationId: second.id, bindingToken: reviewerKey,
+      command: 'count', input: 2, operationId: 'same-local-id' })).result.structuredContent.code).toBe('agent_binding_approval_required');
+    expect((await second.reviewAction('approve-agent', { binding: reviewer.agentBindingId, revision: '1' })).status).toBe(303);
+    expect((await second.reviewAction('approve-agent', { binding: planner.agentBindingId, revision: '1' })).status).toBe(303);
+    const agentWrite = (key: string, input: number) => second.tool('call_application_command', {
+      applicationId: second.id, bindingToken: key, command: 'count', input, operationId: 'same-local-id',
+      context: { endpointId: 'tool-endpoint', runId: 'run-' + input },
+    });
+    const [reviewed, planned] = await Promise.all([agentWrite(reviewerKey, 2), agentWrite(plannerKey, 3)]);
+    const reviewedRef = reviewed.result.structuredContent.operationReference, plannedRef = planned.result.structuredContent.operationReference;
+    expect(reviewedRef.deviceId).toBe(second.session.deviceId); expect(plannedRef.deviceId).toBe(second.session.deviceId);
+    expect(reviewedRef.operationId).not.toBe(plannedRef.operationId);
+    expect(reviewedRef.agentBindingId).toBe(reviewer.agentBindingId);
+    expect((await agentWrite(reviewerKey, 2)).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
+    expect((await agentWrite(reviewerKey, 4)).result.structuredContent.code).toBe('operation_id_conflict');
+    const inspection = (await second.tool('inspect_application_operation', { applicationId: second.id,
+      bindingToken: reviewerKey, operationId: 'same-local-id' })).result.structuredContent;
+    expect(inspection.operationReference.attemptId).toMatch(/^[a-f0-9]{64}$/u);
+    expect(inspection.operation.state.operationId).toBe(reviewedRef.operationId);
+    expect((await second.tool('wait_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
+      operationId: 'same-local-id' })).result.structuredContent.outcome).toBe('applied');
+    expect((await second.tool('retry_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
+      operationId: 'same-local-id' })).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
+    const agentInbox = (await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey })).result.structuredContent;
+    expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: plannerKey,
+      after: agentInbox.next })).result.structuredContent).toMatchObject({ resetRequired: true, reason: 'binding_changed', events: [] });
+    expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey,
+      after: { ...agentInbox.next, generation: 'f'.repeat(64) } })).result.structuredContent.reason).toBe('generation_changed');
+    expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey,
+      after: agentInbox.next, events: [] })).result.structuredContent.reason).toBe('filter_changed');
+    const rotated = createApplicationAgentKey(reviewer.agentBindingId);
+    expect((await second.tool('rotate_application_agent', { applicationId: second.id, bindingToken: reviewerKey,
+      nextBindingToken: rotated })).result.structuredContent.agentBindingId).toBe(reviewer.agentBindingId);
+    expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: reviewerKey })).result.structuredContent.code).toBe('invalid_agent_binding');
+    expect((await second.tool('inspect_application_operation', { applicationId: second.id, bindingToken: rotated,
+      operationId: 'same-local-id' })).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
+    expect((await second.tool('revoke_application_agent', { applicationId: second.id, bindingToken: rotated })).result.structuredContent.status).toBe('revoked');
+    expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: rotated })).result.structuredContent.code).toBe('agent_binding_revoked');
+    expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: plannerKey })).result.structuredContent.caller.verification).toBe('approved-binding');
+    const beforeLoss = (await second.tool('describe_application', { applicationId: second.id })).result.structuredContent.provider;
+    second.loseNextResult();
+    const uncertain = (await second.tool('call_application_command', { applicationId: second.id, bindingToken: plannerKey,
+      command: 'count', input: 5, operationId: 'reply-lost-after-save', context: { runId: 'original-run' } })).result.structuredContent;
+    expect(uncertain).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: second.session.deviceId } });
+    expect(['saved', 'applied']).toContain(second.lostResult()!.status);
+    expect(second.lostResult()!.attemptId).toMatch(/^[a-f0-9]{64}$/u);
+    await vi.waitFor(() => expect(second.adapter.online).toBe(true), { timeout: 5000 });
+    const restored = (await second.tool('inspect_application_operation', { applicationId: second.id,
+      bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
+    expect(restored.operationReference).toMatchObject({ operationId: uncertain.operationReference.operationId,
+      attemptId: second.lostResult()!.attemptId, deviceId: second.session.deviceId, historyId: 'generic-mcp-test',
+      sourceContext: { runId: 'original-run', evidence: 'caller-asserted' } });
+    const retried = (await second.tool('retry_application_operation', { applicationId: second.id,
+      bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
+    expect(retried.operationReference.attemptId).toBe(restored.operationReference.attemptId);
+    expect(retried.operationReference.sourceContext.runId).toBe('original-run');
+    expect((await second.tool('query_application', { applicationId: second.id, bindingToken: plannerKey, query: 'readings', input: null }))
+      .result.structuredContent.value.filter((value: { value: number }) => value.value === 5)).toHaveLength(1);
+    const afterLoss = (await second.tool('describe_application', { applicationId: second.id })).result.structuredContent.provider;
+    expect(afterLoss.bindingId).toBe(beforeLoss.bindingId);
+    expect(afterLoss.selectionEpoch).toBe(beforeLoss.selectionEpoch);
+    expect(afterLoss.connectionEpoch).toBeGreaterThan(beforeLoss.connectionEpoch);
+
+    // Simulate a command admitted under the pre-binding gateway, whose
+    // assistant_commands row has no assistant_operation_context counterpart.
+    // Its original signed operation already exists, but the provider's reply
+    // was lost before the caller could distinguish saved from applied.
+    const legacyClientId = 'pre-upgrade-reply-lost', legacyInput = 8;
+    const legacyNativeId = 'assistant_' + await sha256Hex(JSON.stringify([second.id, b.subject, legacyClientId]));
+    const legacyDigest = await sha256Hex(JSON.stringify(['count', legacyInput, null]));
+    const originalLegacy = await (await second.session.command('count', legacyInput, { operationId: legacyNativeId })).applied();
+    await inDO(b.page.id, t => {
+      t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)',
+        legacyNativeId, legacyDigest, second.session.deviceId);
+      expect(t.db.one('SELECT 1 FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toBeNull();
+    });
+    const legacyRequest = { applicationId: second.id, command: 'count', input: legacyInput, operationId: legacyClientId };
+    expect((await second.tool('inspect_application_operation', { applicationId: second.id,
+      operationId: legacyClientId })).result.structuredContent.code).toBe('legacy_operation_requires_original_command');
+    expect((await second.tool('call_application_command', { ...legacyRequest, input: 9 }))
+      .result.structuredContent.code).toBe('operation_id_conflict');
+    expect((await second.tool('call_application_command', { ...legacyRequest, context: { runId: 'forged-later' } }))
+      .result.structuredContent.code).toBe('operation_id_conflict');
+    const recoveredLegacy = (await second.tool('call_application_command', legacyRequest)).result.structuredContent;
+    expect(recoveredLegacy.operationReference).toMatchObject({ operationId: legacyNativeId, deviceId: second.session.deviceId,
+      generation: second.session.status.generation, sourceContext: { evidence: 'pre-upgrade-admission', generationEvidence: 'not-retained' } });
+    expect(recoveredLegacy.operation.state.attemptId).toBe(originalLegacy.attemptId);
+    expect(recoveredLegacy.outcome).toBe('applied');
+    expect((await second.tool('inspect_application_operation', { applicationId: second.id,
+      operationId: legacyClientId })).result.structuredContent.operationReference.operationId).toBe(legacyNativeId);
+    expect((await second.tool('call_application_command', legacyRequest)).result.structuredContent.operationReference.operationId)
+      .toBe(legacyNativeId);
+    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
+      .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
+    await inDO(b.page.id, t => {
+      expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
+      expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
+    });
+
+    // A legacy gateway admission without a native attempt cannot be silently
+    // treated as a new v2 operation (even if the signer is still online).
+    const missingClient = 'pre-upgrade-not-yet-saved';
+    const missingId = 'assistant_' + await sha256Hex(JSON.stringify([second.id, b.subject, missingClient]));
+    await inDO(b.page.id, t => t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)',
+      missingId, legacyDigest, second.session.deviceId));
+    const absent = (await second.tool('call_application_command', {
+      ...legacyRequest, operationId: missingClient })).result.structuredContent;
+    expect(absent).toMatchObject({ outcome: 'not-found', code: 'legacy_operation_not_found',
+      operationReference: { operationId: missingId, deviceId: second.session.deviceId } });
+    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
+      .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
   } finally {
     outbound.mockRestore();
     mounted?.close();

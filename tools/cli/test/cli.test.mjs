@@ -18,14 +18,24 @@ test('CLI accepts explicit stable operation flags and refuses missing values', (
   });
   assert.throws(() => parseArgs(['command', 'claim', '{}', '--operation']), /needs a value/);
   assert.throws(() => intFlag('1.5', 'timeout', 30), /safe integer/);
+  assert.deepEqual(parseArgs(['self', '--mode', 'attach', '--profile', 'retained', '--run', 'review']), {
+    cmd: 'self', args: [], flags: { mode: 'attach', profile: 'retained', run: 'review' },
+  });
 });
 test('public CLI advertises one session and rejects removed host data commands before opening a session', async () => {
   const result = await run(process.execPath, [cli, '--help']);
   assert.match(result.stdout, /--session/); assert.match(result.stdout, /publish <directory>/);
+  assert.match(result.stdout, /--mode attach/); assert.match(result.stdout, /only\s+detaches that client/);
   assert.doesNotMatch(result.stdout, /state get|events socket|scopes register|collector spool/);
   for (const command of ['state', 'stream', 'workflow', 'ack', 'rollback']) {
     await assert.rejects(run(process.execPath, [cli, command]), error => error.code === 64 && /Unknown command/.test(error.stderr));
   }
+});
+test('invalid ownership mode or missing independent profile is rejected before bootstrap import', async () => {
+  await assert.rejects(run(process.execPath, [cli, 'self', '--mode', 'automatic', '--session', 'missing.mjs']),
+    error => error.code === 64 && /Use --mode/.test(error.stderr));
+  await assert.rejects(run(process.execPath, [cli, 'self', '--mode', 'independent', '--session', 'missing.mjs']),
+    error => error.code === 64 && /requires --profile/.test(error.stderr));
 });
 test('reapplication cannot be issued without a reviewed revision', async () => {
   await assert.rejects(run(process.execPath, [cli, 'reapply', 'old', 'claim', '{}', '--operation', 'new']),

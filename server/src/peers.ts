@@ -1,5 +1,5 @@
 import { PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL, validatePeerBootstrap, validatePeerDescription } from '../../contract/peers.mjs';
-import { currentPrincipal, pageAccessAllowed, accountActive } from './access';
+import { participantIdentity, requireAgentScope, pageAccessAllowed, accountActive } from './access';
 import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
@@ -22,8 +22,8 @@ function attachment(ws: WebSocket): PeerAttachment | null {
 }
 export const isPeerSocket = (ws: WebSocket): boolean => attachment(ws) !== null;
 function authorized(t: Tendril, principal: Principal): boolean {
-  const current = currentPrincipal(t, principal);
-  return !!current && (current.kind === 'agent' || current.kind === 'page' && current.role !== 'display');
+  try { participantIdentity(t, principal); return true; }
+  catch { return false; }
 }
 const identifier = (value: string | null): string => {
   if (!value || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) throw new HttpError(400, 'bad_request', 'A bounded channel and peerId are required');
@@ -56,6 +56,7 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
     if (req.method === 'GET') return json(peerBootstrap(t));
     if (req.method === 'PUT') {
       if (principal.kind !== 'agent' && !(principal.kind === 'page' && principal.role === 'owner')) throw new HttpError(403, 'forbidden');
+      if (principal.kind === 'agent') requireAgentScope(principal, 'host:manage');
       let value;
       try { value = validatePeerBootstrap(await readJson(req, 20_000)); }
       catch (error) { throw new HttpError(400, 'bad_request', error instanceof Error ? error.message : 'Invalid bootstrap hints'); }
@@ -72,7 +73,9 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
   const existing = peers(t, channel);
   if (existing.length >= 2 || existing.some(ws => attachment(ws)?.ready || attachment(ws)?.peerId === peerId))
     throw new HttpError(409, 'peer_channel_full', 'A rendezvous has exactly two distinct endpoints');
-  if (peers(t).length >= LIMITS.sessions * 2) throw new HttpError(429, 'peer_quota', 'Too many pending rendezvous');
+  const pendingPeers = peers(t), budget = participantIdentity(t, principal).budget;
+  if (pendingPeers.length >= LIMITS.sessions * 2 || pendingPeers.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.sessions)
+    throw new HttpError(429, 'peer_quota', 'Too many pending rendezvous for this account or application');
   const [client, server] = Object.values(new WebSocketPair());
   const first = existing.length ? attachment(existing[0])! : null;
   const value: PeerAttachment = { kind: 'rendezvous', channel, session: first?.session ?? crypto.randomUUID(), peerId, principal,

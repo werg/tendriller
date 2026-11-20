@@ -5,11 +5,12 @@ import { HttpError } from './http';
 import { TENDRIL_ID_RE } from './ids';
 import type { Env } from './env';
 import type { Tendril } from './tendril';
+import { consumerCurrent } from './assistant-bindings';
 
 export const ACTIVITY_PROTOCOL = 'tendriller.application-activity.v1';
 export const ACTIVITY_TAG = 'application-activity';
 const TTL = 30 * 60_000, limit = 4;
-type Ticket = { p: string; a: string; v: string; g: string; exp: number };
+type Ticket = { p: string; a: string; v: string; g: string; exp: number; b: string; br: number; bv: 'approved-binding' | 'oauth-client' };
 type Attachment = Ticket & { tag: typeof ACTIVITY_TAG };
 const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/=+$/u, '').replace(/\+/gu, '-').replace(/\//gu, '_');
 const decode = (value: string) => Uint8Array.from(atob(value.replace(/-/gu, '+').replace(/_/gu, '/')), c => c.charCodeAt(0));
@@ -38,7 +39,10 @@ export async function makeActivityTicket(t: Tendril, principal: Principal, versi
   const key = await ticketKey(t.env);
   if (!key) return null;
   const exp = Date.now() + TTL;
-  const data: Ticket = { p: t.tid, a: principal.account, v: version, g: principal.grant, exp };
+  const consumer = principal.consumer;
+  if (!consumer?.events.length || !consumerCurrent(t, consumer)) return null;
+  const data: Ticket = { p: t.tid, a: principal.account, v: version, g: principal.grant, exp,
+    b: consumer.id, br: consumer.revision, bv: consumer.verification };
   const raw = new TextEncoder().encode(JSON.stringify(data));
   const proof = await crypto.subtle.sign('HMAC', key, raw);
   return { proof: encode(raw) + '.' + encode(new Uint8Array(proof)), exp };
@@ -67,7 +71,8 @@ export async function upgradeAssistantActivity(t: Tendril, req: Request) {
   if (!supplied || !oauth || !scope?.events.length || supplied.a !== scope.owner || supplied.v !== scope.inboxVersion ||
       !activeAdapters(t).length || !APP_ID.test(scope.applicationId)) throw new HttpError(401, 'activity_ticket_expired');
   const grant = await activeGrant(t.env, oauth, supplied.g, supplied.a);
-  if (!grant?.scope.split(' ').includes('applications:read') || connection(t)?.inboxVersion !== scope.inboxVersion)
+  if (!grant?.scope.split(' ').includes('applications:read') || connection(t)?.inboxVersion !== scope.inboxVersion ||
+      !consumerCurrent(t, { id: supplied.b, revision: supplied.br, verification: supplied.bv }))
     throw new HttpError(403, 'forbidden');
   const sockets = t.ctx.getWebSockets(ACTIVITY_TAG);
   if (sockets.length >= limit) throw new HttpError(429, 'activity_socket_limit');
@@ -86,7 +91,8 @@ export async function notifyAssistantActivity(t: Tendril) {
   const grants = new Map<string, ReturnType<typeof activeGrant>>();
   await Promise.all(sockets.map(async socket => {
     const value = socket.deserializeAttachment() as Attachment | null;
-    if (!value || value.exp <= Date.now() || value.v !== scope.inboxVersion) { socket.close(4003, 'Inbox access expired'); return; }
+    if (!value || value.exp <= Date.now() || value.v !== scope.inboxVersion ||
+        !consumerCurrent(t, { id: value.b, revision: value.br, verification: value.bv })) { socket.close(4003, 'Inbox access expired'); return; }
     let grant = grants.get(value.g);
     if (!grant) { grant = activeGrant(t.env, oauth, value.g, scope.owner); grants.set(value.g, grant); }
     if (!(await grant)?.scope.split(' ').includes('applications:read') || connection(t)?.inboxVersion !== scope.inboxVersion || !activeAdapters(t).length) {

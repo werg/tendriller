@@ -44,6 +44,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:browser
+      - name: Qualify shared and elected application owners in Chromium
+        run: npm run test:collaboration:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collaboration-browser-evidence
+          path: .results/collaboration-browser.json
+          include-hidden-files: true
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -52,11 +61,25 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  native-owner:
+    name: Native owner attachment and crash recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:artifacts
+      - run: npm run test:collaboration:native
+
   artifacts:
     name: Public package artifacts
     # Retain independently checked package inputs promptly for paired consumers.
     # A newer PR commit may cancel the longer browser matrix; these are CI
-    # artifacts, while every deployment still requires the full check job.
+    # artifacts; deployments also require the full check, browser and native jobs.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,7 +108,7 @@ jobs:
 
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, browser]
+    needs: [check, browser, native-owner, artifacts]
     runs-on: ubuntu-latest
     environment: staging
     outputs:
@@ -132,7 +155,7 @@ jobs:
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, staging_acceptance]
+    needs: [check, staging_acceptance, native-owner, artifacts]
     runs-on: ubuntu-latest
     environment: production
     env:
