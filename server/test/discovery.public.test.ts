@@ -1,6 +1,7 @@
 import { peerApi, peerApiJson, peerOwnerApi } from './peer-exchange';
 import { expect, it } from 'vitest';
-import { advance, api, create, inDO, req, type Handle } from './helpers';
+import { evictDurableObject } from 'cloudflare:test';
+import { advance, api, create, inDO, req, stub, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
 const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.discovery.v1' };
 const advertisement = (peerId = 'peer-a') => ({ peerId, storageId: `store:${peerId}`, routes: [{ kind: 'rendezvous', channel: `join:${peerId}` }] });
@@ -85,4 +86,15 @@ it('rejects leases and extra application metadata instead of retaining a polling
     for (const fields of [{ commands: [] }, { profiles: ['peer-generation-v1'] }, { coordinatorEligible: true }])
       expect((await peerApi(h, 'discovery/advertise', { advertisement: { ...advertisement(), ...fields } })).status).toBe(400);
   } finally { socket.close(); }
+});
+
+
+it('restores socket-owned routing hints and notifications after actual object hibernation', async () => {
+  const h = await create({ listener: false }), socket = await subscribe(h, 'peer-a'), observer = await subscribe(h, 'observer');
+  try {
+    const notified = next(observer); await peerApiJson(h, 'discovery/advertise', { advertisement: advertisement() }); await notified;
+    await evictDurableObject(stub(h.id));
+    expect((await peerApiJson(h, 'discovery/read')).peers).toEqual([{ advertisement: advertisement() }]);
+    const withdrawn = next(observer); await peerApiJson(h, 'discovery/withdraw', { peerId: 'peer-a' }); expect(await withdrawn).toEqual({ type: 'changed' });
+  } finally { socket.close(); observer.close(); }
 });

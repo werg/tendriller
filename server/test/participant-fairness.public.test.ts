@@ -81,6 +81,7 @@ it('a saturated account retains no more than half the participant request slots'
       await expect(handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), c))
         .rejects.toMatchObject({ status: 429, code: 'peer_principal_busy' });
       const account = crypto.randomUUID(), sessionHash = crypto.randomUUID(), link = await t.createLink('guest', 'independent account', null);
+      await t.env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, Date.now(), account + '@example.test').run();
       t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', account, link.id, t.now());
       t.db.run('INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,?,?)', sessionHash, account, 'guest', t.now() + 86400_000);
       const guest: PagePrincipal = { kind: 'page', role: 'guest', name: account, accountId: account, linkId: link.id, sessionHash };
