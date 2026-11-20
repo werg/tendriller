@@ -2,6 +2,15 @@ import { openSync, closeSync, writeFileSync, renameSync, fsyncSync, mkdirSync, s
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
+export const NATIVE_BOOTSTRAP_SCOPES = Object.freeze(['native-only-without-mcp-adapter', 'native-with-mcp-adapter']);
+export function nativeCoverage(state, message) {
+  if (message?.idleSoakCoverage !== 1 || !NATIVE_BOOTSTRAP_SCOPES.includes(message.bootstrapScope)) return false;
+  state.coverage.bootstrapScope = message.bootstrapScope;
+  state.coverage.wakeups ||= message.wakeups === true;
+  state.coverage.modelTurns ||= message.modelTurns === true;
+  return true;
+}
+
 export const HOUR = 3600000;
 export const counters = ['requests', 'socketsOpened', 'socketsClosed', 'framesSent', 'framesReceived', 'bytesSent', 'bytesReceived', 'modelTurns', 'wakeups'];
 export const digest = value => createHash('sha256').update(value).digest('hex');

@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
-import { validateConfig, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
+import { validateConfig, nativeCoverage, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
 import { measure } from './cloudflare.mjs';
 import { startBrowser } from './browser.mjs';
 import { nativeReady, quietBoundary } from './warmup.mjs';
@@ -69,10 +69,7 @@ export async function run(configPath, directory) {
     native.on('message', message => {
       if (message?.idleSoak === 1) emit(message);
       if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
-      if (message?.idleSoakCoverage === 1) {
-        if (message.bootstrapScope === 'native-only-without-mcp-adapter') s.coverage.bootstrapScope = message.bootstrapScope;
-        s.coverage.wakeups ||= message.wakeups === true; s.coverage.modelTurns ||= message.modelTurns === true; persist();
-      }
+      if (nativeCoverage(s, message)) persist();
     });
     native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); abort.abort(); });
     native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); abort.abort(); } persist(); });
