@@ -9,11 +9,12 @@ export async function startBrowser(c, emit, { chromium, launchContext = launchRe
   const { context, close, endpoint } = await launchContext(c, chromium);
   let page, cover;
   const bytes = v => typeof v === 'string' ? Buffer.byteLength(v) : v?.length ?? 0;
-  const pending = new Set(), completedWorkerLoads = new Map();
+  const pending = new Set(), completedWorkerLoads = new Map(), seenWorkerScripts = new Set();
   let workerBootstrapCompletions = 0;
   const activity = () => emit({ source: 'browser', kind: 'activity', pending: pending.size });
   context.on('request', request => {
     const completed = completedWorkerLoads.get(request.url()) ?? 0;
+    if (request.resourceType() === 'script') seenWorkerScripts.add(request.url());
     if (request.resourceType() === 'script' && completed > 0) completedWorkerLoads.set(request.url(), completed - 1); else pending.add(request);
     activity(); emit({ source: 'browser', kind: 'requests', category: classifyTransport(request.url()) }); });
   const finished = request => { pending.delete(request); activity(); };
@@ -31,16 +32,19 @@ export async function startBrowser(c, emit, { chromium, launchContext = launchRe
   const adapter = await import(pathToFileURL(c.adapter).href);
   if (typeof adapter.ready !== 'function' || typeof adapter.reconnect !== 'function') { await close(); throw Error('ADAPTER_READY_AND_RECONNECT_REQUIRED'); }
   const withWorkerBootstrap = async action => {
-    completedWorkerLoads.clear();
+    completedWorkerLoads.clear(); seenWorkerScripts.clear();
     const observer = endpoint && await observeBootstraps(endpoint, url => {
       // Retain the original request counter. Only complete an exact script URL
       // after worker-target main requestId === targetId and an executable reply.
       const request = [...pending].find(request => request.resourceType() === 'script' && request.url() === url);
-      if (request) pending.delete(request); else completedWorkerLoads.set(url, (completedWorkerLoads.get(url) ?? 0) + 1);
+      if (request) pending.delete(request); else if (!seenWorkerScripts.has(url)) completedWorkerLoads.set(url, (completedWorkerLoads.get(url) ?? 0) + 1);
       workerBootstrapCompletions++; activity();
     });
     try { const result = await action(); await observer?.finish(); return result; }
-    finally { await observer?.close(); }
+    finally {
+      try { await observer?.close(); }
+      finally { completedWorkerLoads.clear(); seenWorkerScripts.clear(); }
+    }
   };
   const open = async () => withWorkerBootstrap(async () => {
     page = await context.newPage();
