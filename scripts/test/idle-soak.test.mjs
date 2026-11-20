@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, statSync, readFileSync, rmSync } from 'node:fs';
@@ -96,4 +97,24 @@ test('residency changes are observed; reconnect requires adapter proof and recor
   const ctx=new EventEmitter();ctx.pages=()=>[];ctx.newPage=async()=>{const p=new Page();p.cover=created.length===0;created.push(p);ctx.emit('page',p);return p;};ctx.setOffline=async value=>offline.push(value);ctx.close=async()=>{};
   const adapter=join(dir,'adapter.mjs');writeFileSync(adapter,'export async function ready(){}; export async function reconnect(){return true;}');
   try{const browser=await startBrowser({...config,adapter},()=>{}, {chromium:{},launchContext:async()=>({context:ctx,close:async()=>{}})});assert.deepEqual(await browser.phase('closed'),{observed:'closed'});assert.deepEqual(await browser.phase('background'),{observed:'hidden'});assert.deepEqual(await browser.phase('foreground'),{observed:'visible'});const reconnect=await browser.reconnect();assert.equal(reconnect.verified,true);assert(reconnect.elapsedMs>=0);assert.deepEqual(offline,[true,false]);await browser.close();}finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('native observer bounds fetch, emits numeric counters only and does not extend participant lifetime', async () => {
+  const observer = new URL('../idle-soak/native-observer.mjs', import.meta.url).href;
+  const script = `
+    import assert from 'node:assert/strict';
+    globalThis.fetch=async (_input,init)=>{assert(init.signal);return new Response('PRIVATE_APP_DATA');};
+    globalThis.WebSocket=class extends EventTarget{send(){} close(){this.dispatchEvent(new Event('close'));}};
+    await import(${JSON.stringify(observer)});
+    await fetch('https://invalid.example/PRIVATE_HANDLE',{headers:{Authorization:'Bearer PRIVATE_TOKEN'}});
+    const ws=new WebSocket('wss://invalid.example', ['PRIVATE_TOKEN']);
+    ws.dispatchEvent(new Event('open'));ws.send('PRIVATE_APP_DATA');
+    ws.dispatchEvent(Object.assign(new Event('message'),{data:'PRIVATE_APP_DATA'}));ws.close();
+    globalThis[Symbol.for('tendriller.idle-soak.record')]('wakeups');
+  `;
+  const child=spawn(process.execPath,['--input-type=module','-e',script],{stdio:['ignore','pipe','pipe','ipc']});
+  const messages=[];let diagnostics='';child.on('message',v=>messages.push(v));child.stderr.on('data',v=>diagnostics+=v);
+  const result=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('OBSERVER_KEPT_CHILD_ALIVE'));},5000);child.once('error',reject);child.once('exit',code=>{clearTimeout(timer);resolve(code);});});
+  assert.equal(result,0,diagnostics);assert(messages.some(x=>x.kind==='requests'));assert(messages.some(x=>x.kind==='framesReceived'));assert(messages.some(x=>x.kind==='wakeups'));
+  assert(!JSON.stringify(messages).includes('PRIVATE_'));assert(messages.every(x=>Object.keys(x).sort().join(',')==='count,idleSoak,kind,source'));
 });

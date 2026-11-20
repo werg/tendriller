@@ -14,12 +14,12 @@
     "transport": "REPLACE_DIRECT_OR_RELAY"
   },
   "native": {
-    "argv": ["/ABSOLUTE/PATH/TO/node", "/tmp/tendriller-idle-soak/scripts/idle-soak/native-bootstrap.mjs"],
+    "argv": ["/ABSOLUTE/PATH/TO/node", "/ABSOLUTE/QUALIFIED/CHECKOUT/scripts/idle-soak/native-bootstrap.mjs"],
     "cwd": "/PRIVATE/synthetic-starter"
   },
   "browserProfile": "/PRIVATE/idle-soak/browser-profile",
   "adapter": "/PRIVATE/idle-soak/adapter.mjs",
-  "wrangler": "/tmp/tendriller-idle-soak/node_modules/wrangler/bin/wrangler.js",
+  "wrangler": "/ABSOLUTE/QUALIFIED/CHECKOUT/node_modules/wrangler/bin/wrangler.js",
   "metricsLagMs": 900000,
   "headless": false
 }

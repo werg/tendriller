@@ -33,7 +33,7 @@ export function validateConfig(c) {
 export function newState(c, now = Date.now()) {
   return { format: 'tendriller-idle-soak-v1', configHash: digest(JSON.stringify(c)), plannedHours: c.hours,
     createdAt: now, status: 'running', segments: [], events: [], metrics: [], interruptions: [], failures: [],
-    counts: Object.fromEntries(counters.map(k => [k, 0])), coverage: { modelTurns: false, wakeups: false, nativeTransport: 'global-fetch-websocket-only', browserTransport: 'playwright-context-http-page-websocket' } };
+    counts: Object.fromEntries(counters.map(k => [k, 0])), coverage: { modelTurns: false, wakeups: false, bootstrapScope: 'operator-command-unverified', modelScope: 'external-dispatch-unverified', nativeTransport: 'global-fetch-websocket-only', browserTransport: 'playwright-context-http-page-websocket' } };
 }
 export function record(s, event) {
   // Fixed vocabulary and numeric increments only. Never retain URLs, headers, payloads, error text or arbitrary labels.
@@ -61,6 +61,7 @@ export async function boundedActive(action, { signal, attempts = 4, expiresAt = 
       const active = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(Math.max(1, expiresAt - now()))]);
       return await new Promise((resolve, reject) => {
         const abort = () => reject(Error('ACTIVE_RETRY_EXPIRED'));
+        if (active.aborted) { abort(); return; }
         active.addEventListener('abort', abort, { once: true });
         Promise.resolve().then(() => action(i, active)).then(resolve, reject).finally(() => active.removeEventListener('abort', abort));
       });
