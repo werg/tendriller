@@ -59,14 +59,21 @@ email, account credentials or application keys.
    inspection, not a matching package composition. Use the supplied files;
    do not invent a deployment module or substitute a separate backend merely
    because the session is not configured yet.
-5. Get the owner's verified login email if unknown. Provision early using the
-   starter's create command (HTTP `POST /api/tendrils` on the selected origin
-   with JSON `{"owner":"their-email","name":"App name"}`). This is the supported
-   creation route even though MCP's application tools operate on already
-   connected apps. Save the private returned handle in the execution environment
-   and initialize, build and publish the first signed version before asking the
-   person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep tokens and keys out
-   of chat and published HTML. Check the actual service response for availability.
+5. Use the linked account's `tendrils:create` permission. Run the starter's
+   `npm run setup:prepare -- SERVICE_ORIGIN "App name"`, then call
+   `prepare_tendril_setup` with its exact public `prepare.arguments`. The native
+   project has already retained the private credential; only its commitment
+   enters MCP. The host derives the intended owner without asking for an email.
+   Save the public ready result and run `npm run setup:finish -- RESULT.json`
+   to reconstruct the same private handle. For a lost reply, call
+   `inspect_tendril_setup` for the original operation. Never generate a new intent
+   or use anonymous creation to replace an uncertain setup. A missing creation
+   scope or tool needs the matching deployment/catalog/consent update.
+   Initialize, build and publish the first signed version before asking the
+   person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep private
+   setup records, tokens and keys out of chat and published HTML. Direct-domain
+   setup without a linked creation account retains its explicit email-based
+   route in the build guide.
 6. Follow **create → define state → configure authority and initial
    generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a host
    handle does not create application commands or a running session.

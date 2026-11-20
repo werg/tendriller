@@ -16,6 +16,10 @@ Read `/api/readiness` before downloading or installing packages. Require open
 creation readiness at that origin; stop on a pause, unavailable or unsupported
 readiness and report its next action. Follow `firstApp.release` and the build
 guide for the immutable kit and exact local package composition.
+With account-linked MCP, use the starter's `setup:prepare`, call
+`prepare_tendril_setup` with its public arguments, and use `setup:finish` with
+the exact ready result. Retain the original private intent and use
+`inspect_tendril_setup` after a lost reply; the host derives the verified owner.
 
 The intended route is **create → define state → configure authority and initial generation → publish signed UI → owner sign-in → connect devices → verify**. A created
 page is only the host handle. Host credentials, device grants and publication

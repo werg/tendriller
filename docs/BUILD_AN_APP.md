@@ -185,17 +185,73 @@ first-app archive with `npm run test:first-app -- --first-app-archive
 it does not publish a release or qualify a deployed host. Never import core's
 private server/test modules or Chronolog's source internals into the app.
 
-## 2. Create the application and let the owner claim it
+## 2. Create the application for the intended owner
 
-Use the actual owner's verified email:
+### From an account-linked MCP connection
+
+Use the connector's linked account with its granted `tendrils:create` permission.
+The host resolves the verified owner; no owner email or OAuth access token needs
+to enter the local project. First retain one private setup intent:
+
+```sh
+npm run setup:prepare -- "$TENDRILLER_ORIGIN" "Shared notes"
+```
+
+This local command atomically saves `.tendriller/account-setup.json` before
+printing `prepare` and `inspect` tool arguments. The file contains the original
+operation ID, request digest, application ID and private setup credential. The
+printed `prepare.arguments` contains only the public name, mode, operation and
+application identities, and credential commitment. Do not print or copy the
+private intent into chat or the page.
+
+Call `prepare_tendril_setup` through the **same selected account-linked
+connector** with those exact `prepare.arguments`. The server checks current
+readiness, the existing creation permission and the account's verified identity.
+Save its public result object from `structuredContent` as
+`.tendriller/account-setup-result.json`. When its `state` is `ready`, complete
+the local handle:
+
+```sh
+npm run setup:finish -- .tendriller/account-setup-result.json
+```
+
+`setup:finish` verifies the exact origin, operation, digest, commitment,
+application and page metadata before combining the result with the already
+saved credential. It writes `.tendriller/handle.json` without replacing an
+existing handle. Its `handle_saved` output means preparation can continue;
+`connected` remains false until actual application connections are verified.
+
+If a tool response is lost or its state is `prepared`, `provisioning` or
+`reconciliation_required`, call `inspect_tendril_setup` using the printed
+`inspect.arguments`. Retry preparation only with the original public request
+when the reported next action permits it. Rerunning `setup:prepare` in the same
+directory resumes its saved intent; changed names, origins or operation IDs
+are rejected. Never create another intent just because the response was late.
+If the private file is lost, restore its verified checkpoint. Neither inspection
+nor `list_tendril_setups` can reconstruct its secret; they do not authorize a
+replacement credential or page.
+
+A missing tool or creation scope is an explicit catalog/deployment/consent
+prerequisite. Keep this origin and original intent while resolving it; do not
+extract another client's OAuth credentials or silently switch account routes.
+
+### From a domain without account-linked creation
+
+The existing anonymous route remains available with the actual owner's verified
+login email. It checks readiness and the host contract, creates a page and saves
+the returned private handle:
 
 ```sh
 npm run create -- "$TENDRILLER_ORIGIN" owner@example.com "Shared notes"
 ```
 
-The command checks the host contract, creates the page and saves its returned
-handle privately in `.tendriller/handle.json`. It prints the page URL and next
-step. Keep preparing: initialize, build, publish and start the participant before
+Unlike the account-linked operation, a lost anonymous-create response cannot be
+reconstructed from a locally retained setup intent. Inspect host/account state
+before issuing another create. Do not repeat anonymous creation to work around
+an uncertain account-linked operation.
+
+Both routes print the page URL and next step. Keep preparing: initialize, build,
+publish and start the participant before
 asking the owner to open the ready URL and sign in. Agent
 credentials cannot claim the page for them. An unclaimed page expires after
 24 hours; report a blocked claim explicitly.
@@ -210,8 +266,9 @@ signing key or an application data key.
 
 The supplied `.gitignore` excludes `.tendriller/`, `node_modules/` and `page/`.
 Keep the private directory out of commits and published files. Creation is a
-separate action from initialization: if the create response is lost before the
-handle is saved, inspect the host/account state before issuing another create.
+separate action from initialization; neither a saved handle nor an accepted
+setup result establishes device enrollment, assistant approval or an online
+participant.
 
 ## 3. Define retained state and initialize the native session
 

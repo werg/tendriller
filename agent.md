@@ -46,8 +46,13 @@ created application's code by itself.
    media, voice and preview needs before implementing equivalent plumbing.
 2. Follow **create → define state → configure authority and the first
    generation → publish → owner sign-in → connect devices → verify** in the build guide.
-3. Ask for the owner's verified email when it is not known. Create the real page
-   early, initialize and publish its first version, start the participant, and
+3. With an account-linked MCP connection, run `setup:prepare`, call
+   `prepare_tendril_setup` with its public arguments, and use `setup:finish`
+   to reconstruct the private handle from the exact ready result. The server
+   derives the verified owner; preserve the private original intent and call
+   `inspect_tendril_setup` after a lost reply. The direct-domain route without account-linked creation
+   asks for the actual owner's verified email. Create the real page early,
+   initialize and publish its first version, start the participant, and
    prepare any assistant-access proposal before giving the owner the ready URL.
    Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
    page and signs in; explicit browser enrollment and assistant consent follow.

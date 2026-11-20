@@ -26,6 +26,16 @@ repeat creation blindly or fall back to production. Follow the build guide and
 the discovery descriptor's `firstApp.release` to verify and install the immutable
 first-app kit and its exact local packages against the host identity.
 
+For linked-account creation, run `npm run setup:prepare -- SERVICE_ORIGIN NAME`
+in the retained starter project. Call `prepare_tendril_setup` with its printed
+public arguments using this connector's existing `tendrils:create` grant. The
+server resolves the owner; the local raw setup credential and OAuth credentials
+do not enter tool arguments. Save the public ready result and run `setup:finish`
+to reconstruct the same private handle. On a lost reply, inspect the original
+`operationId` with `inspect_tendril_setup`; never generate a replacement intent
+or fall back to anonymous creation. Follow the maintained build guide when the
+catalog or granted scope needs an update.
+
 Check that your
 execution environment supports Node 24, installing the exact packages, retained
 private storage and the required running participant. Provision early, initialize and publish the first signed version, prepare any

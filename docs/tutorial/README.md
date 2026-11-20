@@ -18,7 +18,10 @@ The parent guide supplies the package acquisition commands and every setup
 checkpoint. After installing those dependencies:
 
 ```sh
-npm run create -- https://YOUR_HOST owner@example.com "Shared notes"
+npm run setup:prepare -- https://YOUR_HOST "Shared notes"
+# Call prepare_tendril_setup through the same account-linked MCP connection
+# with the printed public arguments. Save its ready result under .tendriller/.
+npm run setup:finish -- .tendriller/account-setup-result.json
 npm run init
 npm run build
 npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation notes-release-1
@@ -29,6 +32,18 @@ npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
 npm run peer
 # In the published page, choose Connect existing device.
 ```
+
+The account-linked route derives the verified owner on the host and requires its
+existing `tendrils:create` grant. It needs no local OAuth credential or owner email.
+`setup:prepare` atomically retains `.tendriller/account-setup.json` before printing
+the public request; `setup:finish` reconstructs the private handle only from its
+exact ready result. Reopen the same directory and inspect the same operation
+after a lost reply. Restore the original private checkpoint if it is missing;
+never mint a replacement intent as a retry. `handle_saved` is not connected.
+
+Without an account-linked creation route, use the supported explicit email route:
+`npm run create -- https://YOUR_HOST owner@example.com "Shared notes"`.
+Do not use it to replace an uncertain account-linked operation.
 
 Only `page/` is publishable. `.tendriller/` holds the private agent handle,
 native device, initial key and exact setup requests; keep it out of Git and page
@@ -74,7 +89,8 @@ remain alive, as described in [Agent delivery](https://tendriller.dev/docs/AGENT
 | Source | Purpose |
 | --- | --- |
 | `domain.mjs` | Shared events-backed command/query definition |
-| `setup.mjs` | Create, initialize/select genesis, enroll verified browser key |
+| `account-setup.mjs` | Retain private setup intent, supply public MCP arguments, reconstruct exact ready handle |
+| `setup.mjs` | Explicit email creation, initialize/select genesis, enroll verified browser key |
 | `local.mjs` | Private setup records and native host client |
 | `session.mjs` | Real resumable native session; CLI bootstrap and running peer |
 | `worker.mjs` | Browser device, owned session, authority and peer key acquisition |
