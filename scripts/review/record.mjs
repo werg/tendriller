@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { importReviewPackages } from './packages.mjs';
 import { chromium } from '@playwright/test';
 import { nativeHost } from './codex-host.mjs';
+import { reviewError } from './diagnostics.mjs';
 import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess, authorizeReview } from './access.mjs';
 import { preflightReviewDeployment, reviewProvenance } from './preflight.mjs';
@@ -132,8 +133,7 @@ export async function recordReview({ project, accessPath, output, composition, v
     report.deploymentAtCompletion = reviewProvenance(composition, finalReadiness).deployment;
     report.passed = true;
   } catch (error) {
-    const message = String(error.message).replaceAll(access.code, '[private access code]');
-    report.error = message; throw Error('Plugin qualification failed: ' + message);
+    report.error = reviewError(error); throw Error('Plugin qualification failed; see the sanitized report.');
   } finally {
     let finalizationError;
     try {
@@ -148,7 +148,7 @@ export async function recordReview({ project, accessPath, output, composition, v
     } catch (error) {
       finalizationError = error;
       report.passed = false;
-      report.recordingError = String(error.message).replaceAll(access.code, '[private access code]');
+      report.recordingError = reviewError(error);
     } finally {
       await browser.close();
       writeFileSync(resolve(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });

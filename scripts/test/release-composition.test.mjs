@@ -38,7 +38,7 @@ function fixture(t, { sessionDirty = false, sqlEngines = [] } = {}) {
   };
   pack('session', { 'package.json': { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './native', './browser', './worker'].map(key => [key, './index.mjs'])) },
     'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, dirty: sessionDirty, sqlEngines } }, join(root, 'session.tgz'));
-  for (const file of ['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md']) {
+  for (const file of ['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md', 'review-app.mjs', 'review-domain.mjs', 'review-assistant.mjs']) {
     const target = join(root, 'integrations/chatgpt/plugin', file);
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(resolve(import.meta.dirname, '../../integrations/chatgpt/plugin', file), target);
@@ -217,7 +217,8 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
   assert.deepEqual(execFileSync('unzip', ['-p', join(f.root, 'dist', plugin.file), skill]),
     readFileSync(join(f.root, 'integrations/chatgpt/plugin', skill)));
   assert.deepEqual(execFileSync('unzip', ['-Z1', join(f.root, 'dist', plugin.file)], { encoding: 'utf8' }).trim().split('\n'),
-    ['plugin.json', 'mcp.json', 'assets/icon.png', skill]);
+    ['review/review-app.mjs', 'review/review-domain.mjs', 'review/review-assistant.mjs', 'review/support/participant-lifecycle.mjs', 'plugin.json', 'mcp.json', 'assets/icon.png', skill]);
+  assert.deepEqual(execFileSync('unzip', ['-p', join(f.root,'dist',plugin.file), 'review/support/participant-lifecycle.mjs']), readFileSync(join(f.root,'docs/tutorial/helpers/participant-lifecycle.mjs')));
   writeFileSync(join(f.root, 'dist', plugin.file), 'stale or altered guidance');
   assert.throws(() => verifyReleaseArtifacts(f.root, manifest), /does not match manifest/);
 });

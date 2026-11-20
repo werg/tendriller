@@ -3,11 +3,13 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync } f
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { REVIEW_FIXTURE_FILES } from '../../../scripts/review/fixture.mjs';
 
 export function buildPlugin(root, output = join(root, 'dist/tendriller-chatgpt-plugin.zip')) {
   const staging = mkdtempSync(join(tmpdir(), 'tendriller-plugin-'));
   const timestamp = new Date('2000-01-01T00:00:00Z');
   const files = new Map([
+    ...REVIEW_FIXTURE_FILES.map(([file, source]) => ['review/' + file, join(root, source)]),
     ['plugin.json', join(root, 'integrations/chatgpt/plugin/plugin.json')],
     ['mcp.json', join(root, 'integrations/chatgpt/plugin/mcp.json')],
     ['assets/icon.png', join(root, 'docs/assets/tendriller-icon-180.png')],

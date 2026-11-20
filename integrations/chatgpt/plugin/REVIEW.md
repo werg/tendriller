@@ -108,15 +108,26 @@ share its state. The initial `checklist` query returns two incomplete items,
 `check-labels` and `check-links`; the only command is `completeItem` with an
 explicit item ID. There is no deletion or reset command.
 
-Copy adjacent `review-app.mjs` and `review-domain.mjs` into a private directory.
+Extract the plugin ZIP's `review/` directory into a private directory. It contains
+`review-app.mjs`, `review-domain.mjs`, `review-assistant.mjs` and the canonical
+`support/participant-lifecycle.mjs` copied from the public starter. For a source
+checkout, `installReviewFixtureSources` in `scripts/review/fixture.mjs` prepares
+the same enumerated files; do not invent a separate lifecycle helper.
 Install the qualified public `@tendriller/core` and events-capable
 `@chronolog/peer-session` archives there. Then:
 
 1. Run `node review-app.mjs create /private/path/test-access.json`.
 2. Run `node review-app.mjs init`, then `node review-app.mjs propose`, without
-   waiting for claim. Retain the page and permission-review URLs.
+   waiting for claim. Retain the page and permission-review URLs and private
+   `assistant-proposal.json`, which binds the returned proposal ID to the adapter
+   key hash. `run` never substitutes a foreign observed proposal. Existing private
+   installations need a verified retained proposal/key binding supplied by their
+   operator; do not re-propose or reset consent merely to update this code.
 3. Supervise `node review-app.mjs run` from that directory. It retains one native
-   signer, reconnects, checkpoints forwarded events and publishes signed UI.
+   signer and publishes signed UI independently of the optional MCP component.
+   Setup notifications resume the existing proposal; only exact owner approval
+   starts the adapter and its checkpointed event forwarding. Revocation/replacement
+   stops that component without closing the native application.
 4. Sign in with the static test-account form. Open the already-prepared page;
    claim adopts its publication. Open the proposal URL and approve `checklist`,
    `completeItem` and `item.completed`. Verify the native signer is enrolled.

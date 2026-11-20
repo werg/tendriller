@@ -222,3 +222,14 @@ secret; the same account is renewed automatically. Reports, screenshots and vide
 use an explicit artifact allowlist; private fixture credentials stay outside it.
 See [review preparation](../integrations/chatgpt/plugin/REVIEW.md) for static
 reviewer login, credential renewal/revocation and persistent sample operation.
+
+The live MCP qualifier accepts `--artifact-root /absolute/clean/deployed-checkout`
+when running a diagnostic-tool revision against a separately restored CI graph.
+That checkout must remain clean and its manifest, composition and archives must
+match the actual deployment; the option does not bypass provenance or readiness.
+Claim/review failure evidence identifies a fixed step, normalized response routes
+and status codes, fixed UI markers and process state. It omits URLs, browser/child
+error text, console text, tokens and bodies. Provider enrollment retains a 25-second deadline after approval-driven startup,
+uses at most one ordinary read per second and backs off on 429; owner consent is
+submitted once. The native app/publication is independent of optional MCP
+connectivity; setup notifications start only the exactly approved component.
