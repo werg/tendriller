@@ -123,6 +123,33 @@ The service-owned management page remains available if authored JavaScript fails
 
 While visible, the holding page checks for a signed publication and opens the selected release as soon as it is available.
 
+## Storage durability of a browser device
+
+A browser device keeps its only signing key, its journal and its unsent signed work in
+origin storage. The SDK (`openBrowserOwner`, `createBrowserIdentity`) asks the browser to
+persist that storage (`requestPersistentStorage()`; the attachment's `storagePersisted`;
+`persistStorage: false` opts out).
+
+Chromium's in-memory storage (private windows and automation contexts) drops the files
+of an origin-private (OPFS) directory that nothing has touched for about ten minutes,
+even while the owner holds it open; the next open then fails closed with
+`APPLICATION_DATA_STORAGE_MISSING`. A normal profile keeps them. Opening the
+directory's handle resets that clock, so an attached page does so, leanly:
+
+- nothing runs when the browser reports the storage as persisted;
+- it runs only while the page is visible, every 4 minutes (`storageKeepAliveMs`,
+  default 240000; 0 disables), and never wakes a hidden or frozen tab;
+- hiding, freezing, showing or resuming the page touches once, so a backgrounded
+  tab has a full window: a private-window tab hidden for more than about ten minutes
+  can still lose its store;
+- one tick opens each `chronolog-*` directory handle without listing records:
+  about 4 ms for one store and 23 ms for 50 stores of 10,000 records in total
+  (measured in headless Chromium).
+
+The in-memory case cannot be detected directly: quota, `persisted()` and `persist()`
+read the same as on a normal profile, so the keep-alive runs wherever storage is not
+known to be persistent.
+
 ## The latest release by default
 
 The address bar keeps the page's own URL; the document's assets resolve through

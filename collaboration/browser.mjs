@@ -68,13 +68,56 @@ export function requestPersistentStorage(){
   if(typeof storage?.persist!=='function')return Promise.resolve(null);
   return (async()=>{try{return await storage.persisted?.()||await storage.persist();}catch{return false;}})();
 }
+/** Chromium's in-memory OPFS (private/incognito windows, automation contexts) drops
+ * the files of a record directory nothing has touched for about ten minutes, even while
+ * the owner holds it open (reproduced without any application code; a persistent
+ * profile keeps them). The next open then fails closed with
+ * APPLICATION_DATA_STORAGE_MISSING. Opening the directory's handle resets that clock.
+ *
+ * Lean by design: nothing runs when the browser has granted persistent storage; ticks
+ * run only while this page is visible (a hidden or frozen tab is never woken for it);
+ * hiding and showing the page each touch once, so a backgrounded tab starts with a
+ * full window. In-memory storage cannot be detected directly (quota, persisted() and
+ * persist() read the same as on a normal profile), so it runs wherever storage is not
+ * known to be persistent. intervalMs 0 disables. Returns a stop function. */
+export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPersistentStorage(),now=()=>Date.now(),onTick}={}){
+  const storage=globalThis.navigator?.storage,doc=globalThis.document;
+  if(!intervalMs||typeof storage?.getDirectory!=='function'||!doc)return ()=>{};
+  let stopped=false,timer;
+  const touch=async()=>{
+    if(stopped)return;
+    // Opening each record directory's handle is enough to keep its files (reproduced:
+    // 11 idle minutes kept; opening only the root was not); its records are not listed.
+    const started=now();let directories=0;
+    const root=await storage.getDirectory();
+    for await(const [name,handle] of root.entries()){
+      if(handle.kind!=='directory'||!name.startsWith('chronolog-'))continue;
+      await root.getDirectoryHandle(name);directories++;
+    }
+    onTick?.({ms:now()-started,directories});
+  };
+  const tick=()=>{void touch().catch(()=>{});};
+  const schedule=()=>{clearInterval(timer);timer=undefined;if(!stopped&&doc.visibilityState==='visible')timer=setInterval(tick,intervalMs);};
+  const visibility=()=>{tick();schedule();};
+  const pagehide=()=>{tick();clearInterval(timer);timer=undefined;};
+  void Promise.resolve(storagePersisted).then(persisted=>{
+    if(persisted===true||stopped)return;
+    doc.addEventListener('visibilitychange',visibility);doc.addEventListener('freeze',pagehide);doc.addEventListener('resume',visibility);
+    globalThis.addEventListener?.('pagehide',pagehide);globalThis.addEventListener?.('pageshow',visibility);
+    schedule();
+  }).catch(()=>{});
+  return ()=>{stopped=true;clearInterval(timer);doc.removeEventListener('visibilitychange',visibility);
+    doc.removeEventListener('freeze',pagehide);doc.removeEventListener('resume',visibility);
+    globalThis.removeEventListener?.('pagehide',pagehide);globalThis.removeEventListener?.('pageshow',visibility);};
+}
 function facade({session,transport,channel,worker,route,options}){
   let detached=false,releasing;
   // An attached session holds a retained signing key and signed work: keep it durable.
   const storagePersisted=options.persistStorage===false?Promise.resolve(null):requestPersistentStorage();
+  const stopKeepAlive=keepStorageInUse({intervalMs:options.storageKeepAliveMs??240_000,storagePersisted});
   function release(){
     if(releasing)return releasing;
-    detached=true;session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
+    detached=true;stopKeepAlive();session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
     releasing=(async()=>{
       await transport?.close();channel?.close();
       if(route==='shared'){worker.port.close();return;}
