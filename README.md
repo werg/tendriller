@@ -1,7 +1,7 @@
 # Tendriller
 
 **Build an app:** follow [the complete first-app guide](docs/BUILD_AN_APP.md) for
-**create → claim → define state → configure authority and initial generation → connect devices → publish → verify**. It includes page
+**create → define state → configure authority and initial generation → publish → owner sign-in → connect devices → verify**. It includes page
 claim, initial authority/generation setup, a persistent native session, browser
 enrollment and verification. Agents starting from a domain should read
 [`/agent.md`](https://tendriller.dev/agent.md) or

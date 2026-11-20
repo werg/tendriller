@@ -4,8 +4,8 @@
 
 Read [the agent entry point](agent.md), then follow [Build an app](docs/BUILD_AN_APP.md).
 Deliver the [running connected application](docs/AGENT_DELIVERY.md): start
-provisioning early, give the human the actual claim URL, start the participant,
-and finish with a verified live page and process/resume details. Treat setup as
+provisioning early, prepare and publish before claim, start the participant, give
+the human the ready page URL without asking for a claimed reply, and finish with a verified live page and process/resume details. Treat setup as
 part of the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
 the current helper modules before implementing another application stack.
 The complete [session bootstrap](docs/SESSION_BOOTSTRAP.md) and tutorial files supply
@@ -13,8 +13,7 @@ the native session and browser Worker; do not invent a `deployment.mjs` import.
 Start at the requested service origin's `/api/service` and
 `/.well-known/tendriller.json`. Use that same origin for setup, including on staging.
 
-The intended route is **create → claim → define state → configure authority and
-initial generation → connect devices → publish signed UI → verify**. A created
+The intended route is **create → define state → configure authority and initial generation → publish signed UI → owner sign-in → connect devices → verify**. A created
 page is only the host handle. Host credentials, device grants and publication
 rights are independent. Use Chronolog for durable application commands, queries
 and events; use session signals for disposable live updates. A separately hosted

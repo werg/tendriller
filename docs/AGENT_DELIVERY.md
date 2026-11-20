@@ -10,17 +10,18 @@ alone does not establish it.
 
 1. Read the requested origin's `/api/service`, onboarding descriptor and
    [capability map](CAPABILITIES.md). Identify the smallest native application path.
-2. Obtain the owner's verified email if it is missing. Use the supplied
-   [create command](BUILD_AN_APP.md#2-create-the-application-and-let-the-owner-claim-it),
-   save the private handle and give the owner the real `page_url` immediately.
-3. Ask the owner to open that URL and sign in. While they do so, prepare the
-   domain, UI and exact setup commands. Do not ask them to design the authority,
-   invent a session module or perform implementation work that the starter supplies.
-4. Continue with configuration, saved initial-generation selection, native session,
-   signed publication and explicit browser enrollment. Describe each human action
-   in terms of the concrete page or public device key they are approving.
-5. Start the actual native participant, perform a real shared command in both
-   directions, and verify reopening before calling the app complete.
+2. Obtain the owner's verified email if it is missing. Use the supplied create
+   command and retain the private setup handle. Continue through authority,
+   initial generation, bundling and signed publication before requesting sign-in.
+3. Start the native participant and prepare any assistant-access proposal. Give
+   the owner the ready `page_url` and actual permission-review URL together.
+   Do not stop at an unclaimed handle, ask for a "claimed" reply, or postpone
+   publication until sign-in. If the URL was already shared, keep preparing.
+4. Sign-in adopts the already-published app; no agent redeployment is necessary.
+   Browser enrollment and assistant consent remain explicit authority decisions.
+   Use their concrete public keys and permission-review forms for those actions.
+5. Perform real shared commands in both directions and verify reopening before
+   calling the app complete. Report the running process and saved resume state.
 
 If an action is blocked, preserve completed setup and name the exact missing
 permission, compatible artifact or runtime capability. Distinguish **not yet

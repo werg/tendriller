@@ -36,19 +36,35 @@ interface HostState {
   registry?: GenerationRegistry; signer?: PeerIdentity; assistantGeneration?: string | null; assistantGrants?: Map<string, PeerGrant | null>;
 }
 const hosts = new WeakMap<Tendril, HostState>();
+/** Private page-scoped enrollment binding, never an OAuth account or browser identity. */
+export const pendingPeerOwner = (t: Tendril) => `pending-page:${t.tid}`;
+const controlOwner = (t: Tendril) => t.db.get<string | null>('owner_account', null) ?? pendingPeerOwner(t);
+export function adoptPreparedPeerApplication(t: Tendril, accountId: string): void {
+  if (t.db.get('owner_account', null)) throw new HttpError(409, 'already_claimed');
+  const bindings = t.db.get<AccountBinding[]>(ACCOUNTS, []);
+  if (bindings.some(binding => binding.accountId !== pendingPeerOwner(t)))
+    throw new HttpError(409, 'peer_pending_account_mismatch');
+  if (bindings.length) t.db.set(ACCOUNTS, bindings.map(binding => ({ ...binding, accountId })));
+}
+/** Claim, enrollment and signed publication use one serialization boundary. */
+export function withPeerOwnerClaim<T>(t: Tendril, work: () => Promise<T>): Promise<T> {
+  return serial(t, async () => work());
+}
 function identity(t: Tendril, principal: Principal, ownerOnly = false): string {
   const current = currentPrincipal(t, principal), owner = t.db.get<string | null>('owner_account', null);
-  if (!owner || !current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
+  if (!current || (!owner && current.kind !== 'agent') || current.kind === 'page' && (current.role === 'display' || !current.accountId))
     throw new HttpError(403, 'forbidden', 'Peer controls require an authenticated account');
-  const account = current.kind === 'agent' ? owner : current.accountId!;
-  if (ownerOnly && account !== owner) throw new HttpError(403, 'forbidden', 'Only the application owner can administer hosted control authority');
+  const expiration = t.expiresAt();
+  if (expiration !== null && expiration <= t.now()) throw new HttpError(410, 'expired');
+  const account = current.kind === 'agent' ? controlOwner(t) : current.accountId!;
+  if (ownerOnly && account !== controlOwner(t)) throw new HttpError(403, 'forbidden', 'Only the application owner can administer hosted control authority');
   return account;
 }
 async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
   const account = identity(t, principal), owner = t.db.get<string | null>('owner_account', null);
   // Page policy already joins and checks this owner's active account. A guest
   // still needs its own fresh account query; neither result survives this call.
-  if (!await pageAccessAllowed(t) || account !== owner && !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
+  if (!await pageAccessAllowed(t) || owner !== null && account !== owner && !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
   if (t.db.get<string | null>('owner_account', null) !== owner || identity(t, principal) !== account)
     throw new HttpError(403, 'forbidden');
 }
@@ -69,6 +85,10 @@ function host(t: Tendril): HostState {
       state!.assistantGrants = undefined;
       t.transaction(() => {
         state!.guard?.();
+        if (!t.db.get('owner_account', null)) {
+          const previous = t.db.one<{ n: number }>('SELECT length(value) AS n FROM participant_records WHERE key=?', key)?.n ?? 0;
+          t.checkLocalStorage(bytes.byteLength - previous);
+        }
         t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, bytes.buffer);
         if (state!.pendingAccounts) t.db.set(ACCOUNTS, state!.pendingAccounts);
         if (state!.pendingFingerprint) t.db.set(state!.pendingFingerprint.key, state!.pendingFingerprint.value);
@@ -92,7 +112,7 @@ export function withUnconfiguredPeerApplication<T>(t: Tendril, work: () => Promi
 async function registry(t: Tendril, state: HostState): Promise<GenerationRegistry> {
   const configuration = t.db.get<Configuration | null>(CONFIG, null);
   if (!configuration) throw new HttpError(409, 'peer_application_unconfigured',
-    'Configure authority with host.peers.configureApplication after owner claim, then select the initial generation. See /docs/BUILD_AN_APP.md');
+    'Prepare authority with host.peers.configureApplication using the private setup credential, then select the initial generation. See /docs/BUILD_AN_APP.md');
   const signer = await loadPeerControlIdentity(t);
   if (!signer) throw new HttpError(503, 'peer_control_state_missing', 'The pinned control identity is unavailable; recovery must preserve its original trust state');
   state.signer = signer;
@@ -156,7 +176,7 @@ function accounts(value: unknown, defaultAccount?: string): AccountBinding[] {
   });
 }
 function checkAccountAdmission(t: Tendril, bindings: readonly AccountBinding[]): void {
-  const owner = t.db.get('owner_account', ''), unique = [...new Set(bindings.map(binding => binding.accountId))];
+  const owner = controlOwner(t), unique = [...new Set(bindings.map(binding => binding.accountId))];
   for (const account of unique) {
     if (account !== owner && !t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND approved=1', account))
       throw new HttpError(403, 'forbidden', 'Every enrolled device must belong to an admitted account');
@@ -165,7 +185,7 @@ function checkAccountAdmission(t: Tendril, bindings: readonly AccountBinding[]):
 async function checkAccounts(t: Tendril, bindings: readonly AccountBinding[]): Promise<void> {
   checkAccountAdmission(t, bindings);
   for (const account of new Set(bindings.map(binding => binding.accountId)))
-    if (!await accountActive(t, account)) throw new HttpError(403, 'forbidden', 'An enrolled account is not active');
+    if (account !== pendingPeerOwner(t) && !await accountActive(t, account)) throw new HttpError(403, 'forbidden', 'An enrolled account is not active');
   checkAccountAdmission(t, bindings);
 }
 /** The hosted policy retains an explicit control-only participant, never a data peer. */
@@ -207,7 +227,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
       if (action === 'definition') {
         const configured = t.db.get<Configuration | null>(CONFIG, null);
         if (!configured) throw new HttpError(409, 'peer_application_unconfigured',
-          'Configure authority with host.peers.configureApplication after owner claim. See /docs/BUILD_AN_APP.md');
+          'Prepare authority with host.peers.configureApplication using the private setup credential. See /docs/BUILD_AN_APP.md');
         if (!configured.definition || configured.schema === undefined) throw new HttpError(503, 'peer_publication_state_missing');
         const cached = snapshot(t);
         if (cached.definition) {
@@ -275,17 +295,18 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         if (!retainedSigner) staged.set('peer-generation/identity', encodePeerValue(await exportPeerIdentity(signer)));
         const bundle = await initial.read();
         // Durable control state outlives any coordinating peer or page publication.
-        await changeLifetime(t, 'resident');
+        if (t.db.get('owner_account', null)) await changeLifetime(t, 'resident');
         await freshAccess(t, principal);
         await checkAccounts(t, bindings);
         t.transaction(() => {
           identity(t, principal, true);
           checkAccountAdmission(t, bindings);
-          if (!hasResidentStorage(t)) throw new HttpError(409, 'peer_control_storage_unavailable');
+          if (t.db.get('owner_account', null) && !hasResidentStorage(t)) throw new HttpError(409, 'peer_control_storage_unavailable');
           if (t.db.get(CONFIG, null)) throw new HttpError(409, 'peer_application_conflict');
           const root = t.db.one<{ value: ArrayBuffer }>("SELECT value FROM participant_records WHERE key='peer-generation/identity'");
           if (root && !retainedSigner || !root && retainedSigner)
             throw new HttpError(409, 'peer_control_identity_conflict');
+          if (!t.db.get('owner_account', null)) t.checkLocalStorage([...staged.values()].reduce((sum, bytes) => sum + bytes.byteLength, 0));
           for (const [key, bytes] of staged) t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', key, bytes.buffer);
           t.db.set(CONFIG, { descriptor, control, fingerprint, definition: published.definition, schema: published.schema }); t.db.set(ACCOUNTS, bindings);
         });

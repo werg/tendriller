@@ -1,11 +1,13 @@
+import { env } from 'cloudflare:workers';
+import { evictDurableObject } from 'cloudflare:test';
 import { expect, it } from 'vitest';
 import {
   createPeerIdentity, signPublicationManifest, bytesDigest, participantGrant, generationStartRoot, verifyAuthorityBundle,
   type AuthorityBundle, type PeerIdentity, type SignedPublication, type SignedGeneration,
 } from '@chronolog/peer-generation/control';
 import { createTestPage } from './public-fixture';
-import { create, inDO } from './helpers';
-import { peerApiJson, participantMessage } from './peer-exchange';
+import { apiJson, advance, req, signInAsOwner, create, inDO } from './helpers';
+import { peerApi, peerApiJson, participantMessage } from './peer-exchange';
 import { authenticateAgentToken } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { servedVersion } from '../src/files';
@@ -166,4 +168,54 @@ it('cleanup retains selected and historical signed releases and unsigned recover
   });
   expect(await inDO(h.id, t => ({ current: servedVersion(t), versions: t.db.all('SELECT version FROM versions ORDER BY version'),
     files: t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM version_files')!.n }))).toEqual({ current: 2, versions: [{ version: 1 }, { version: 2 }], files: 4 });
+});
+
+
+it('publishes a complete signed app before claim and adopts its existing keys and publication on owner sign-in', async () => {
+  const ownerEmail = 'ready-before-claim@example.com';
+  const h = await create({ claim: false, owner: ownerEmail, application: { id: applicationId() } });
+  const author = await createPeerIdentity(), coordinator = await createPeerIdentity();
+  const input = configuration(author, coordinator);
+  const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', input);
+  const prepared = await release(authority, author, 'prepared-before-claim', null, 'Already deployed before sign-in');
+  const receipt = await peerApiJson(h, 'publication/publish', prepared);
+  expect(receipt.publication.id).toBe(prepared.publication.id);
+  expect((await apiJson(h, 'GET', '')).owner_account_id).toBeNull();
+  expect(await inDO(h.id, t => ({ lifetime: t.db.get('lifetime', 'ad_hoc'), expires: t.expiresAt() })))
+    .toMatchObject({ lifetime: 'ad_hoc', expires: expect.any(Number) });
+  expect((await req(h.page_url, { anonymous: true, redirect: 'manual' })).status).toBe(302);
+  await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(h.id)));
+  expect(await peerApiJson(h, 'publication/read')).toEqual(receipt);
+  const accountId = 'prepared-owner-' + crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)').bind(accountId, ownerEmail, Date.now()).run();
+  const cookie = await signInAsOwner(h, accountId, ownerEmail);
+  const page = await req(h.page_url, { anonymous: true, headers: { Cookie: cookie } });
+  expect(page.status).toBe(200);
+  expect(await page.text()).toContain('Already deployed before sign-in');
+  expect(await peerApiJson(h, 'publication/publish', prepared)).toEqual(receipt);
+  expect((await peerApiJson<AuthorityBundle>(h, 'control/configure', input)).descriptor).toEqual(authority.descriptor);
+  expect(await inDO(h.id, t => ({ owner: t.db.get('owner_account', null), lifetime: t.db.get('lifetime', 'ad_hoc'), expires: t.expiresAt(),
+    accounts: t.db.get<{ accountId: string }[]>('peer_generation_accounts', []).map(item => item.accountId) })))
+    .toEqual({ owner: accountId, lifetime: 'resident', expires: null, accounts: [accountId, accountId, accountId] });
+});
+
+it('retains unclaimed expiry, intended-owner checks and account resident quotas for prepared applications', async () => {
+  const ownerEmail = 'prepared-quota@example.com';
+  const h = await create({ claim: false, owner: ownerEmail, application: { id: applicationId() } });
+  const a = await createPeerIdentity(), b = await createPeerIdentity();
+  const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration(a, b));
+  const prepared = await release(authority, a, 'prepared-quota');
+  const receipt = await peerApiJson(h, 'publication/publish', prepared);
+  const wrong = 'wrong-' + crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)').bind(wrong, 'other@example.com', Date.now()).run();
+  await expect(signInAsOwner(h, wrong, 'other@example.com')).rejects.toThrow('403');
+  const account = 'full-' + crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)').bind(account, ownerEmail, Date.now()).run();
+  for (let i = 0; i < 3; i++) await env.ACCOUNTS.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
+    .bind(crypto.randomUUID(), account, Date.now()).run();
+  await expect(signInAsOwner(h, account, ownerEmail)).rejects.toThrow('429');
+  expect((await apiJson(h, 'GET', '')).owner_account_id).toBeNull();
+  expect(await peerApiJson(h, 'publication/read')).toEqual(receipt);
+  await advance(h.id, 24 * 60 * 60 * 1000 + 1);
+  expect((await peerApi(h, 'control/read')).status).toBe(410);
 });

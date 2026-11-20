@@ -10,10 +10,11 @@ checkpoint. After installing those dependencies:
 
 ```sh
 npm run create -- https://YOUR_HOST owner@example.com "Shared notes"
-# The owner opens the printed page URL and signs in.
 npm run init
 npm run build
 npx tendril --session ./session.mjs --mode own publish ./page --operation notes-release-1
+# Now give the owner the ready page URL; they sign in to open this version.
+# Do not wait for a claimed reply before publishing.
 # In the published page, choose Set up this browser and verify its public key.
 npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
 npm run peer
@@ -89,3 +90,10 @@ The source uses public package exports and no qualification fixture imports.
 It is a small working composition to adapt, not a general automatic enrollment
 service or a substitute for release qualification. The source of truth for
 capabilities remains the host descriptor and exact installed artifacts.
+
+
+For MCP access, run `npm run assistant:prepare` before owner sign-in and retain
+its returned review URL. Run `npm run assistant` instead of `peer` for the same
+native participant plus the assistant adapter. Give the owner the ready page and
+review URL together. Claim adopts the prepared app, while assistant approval
+remains explicit; there is no need to type “claimed” back to the agent.

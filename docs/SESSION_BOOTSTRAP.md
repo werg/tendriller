@@ -26,7 +26,11 @@ page release does not initialize or replace an application session.
 
 ## Fresh creation, in order
 
-First create and claim the hosted page. Open an explicit new device with
+First create the hosted page and prepare its first signed release before claim.
+The private setup credential can configure authority and publish within the
+unclaimed page's limits and 24-hour expiry. The owner later signs in to open the
+ready page; existing keys, controls and publications are adopted without reset.
+Open an explicit new device with
 `openNativeDevice({ path, create: true })`; retain its identity, a new epoch key
 and the intended setup inputs before sending mutations.
 

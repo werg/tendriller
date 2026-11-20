@@ -13,6 +13,8 @@ import { resolveConnection } from '../src/assistant-shared';
 import { createPeersClient } from '../../contract/peers.mjs';
 import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
 import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, forwardApplicationEvents, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
+import { peerApiJson } from './peer-exchange';
+import { createPeerIdentity } from '@chronolog/peer-session';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 import { advance, create, inDO, runAlarm, stub } from './helpers';
 
@@ -115,6 +117,47 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(invalid.body.result).toMatchObject({ isError: true, structuredContent: { code: 'invalid_guide_topic' } });
   expect((await call('tools/call', { name: 'list_tendrils', arguments: {} })).response.status).toBe(401);
   expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first()).toEqual(before);
+});
+
+it('prepares assistant permissions before claim and activates their review only for the verified owner', async () => {
+  const f = await hostFixture();
+  const email = (await env.ACCOUNTS.prepare('SELECT email FROM accounts WHERE id=?').bind(f.subject).first<{ email: string }>())!.email;
+  const h = await create({ claim: false, owner: email });
+  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: ISSUER + '/mcp', clients: [
+    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
+  ] }) });
+  const restore = await inDO(h.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
+  await inDO(h.id, t => { t.env.OAUTH_CONFIG_JSON = settings.OAUTH_CONFIG_JSON; t.env.OAUTH_SIGNING_JWK = settings.OAUTH_SIGNING_JWK; });
+  try {
+    const device = await createPeerIdentity();
+    await peerApiJson(h, 'control/configure', { historyId: 'prepared-assistant', executionManifestDigest: '12'.repeat(32),
+      schemaAdministrator: device.publicKey, epoch: 0, keyDigest: '34'.repeat(32), members: [{ grant: participantGrant(device.publicKey, { administrator: true }) }],
+      schema: null, definition: { id: 'prepared-notes', version: '1', schema: null,
+        commands: [{ name: 'addNote', description: 'Add a note', input: { type: 'null' } }],
+        queries: [{ name: 'notes', description: 'Read notes', input: { type: 'null' } }] } });
+    const response = await request(new URL(h.api).pathname + '/assistant/propose', settings, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + h.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'Prepared notes', adapterHashes: ['a'.repeat(64)], queries: ['notes'], commands: ['addNote'], events: [] }),
+    });
+    expect(response.status).toBe(200);
+    const prepared = await response.json() as { proposed: string; approved: boolean; reviewUrl: string };
+    expect(prepared.approved).toBe(false);
+    expect(await env.ACCOUNTS.prepare('SELECT * FROM assistant_connections WHERE page_id=?').bind(h.id).first()).toBeNull();
+    expect((await request(new URL(prepared.reviewUrl).pathname, settings, { headers: { Cookie: f.cookie } })).status).toBe(404);
+    const claim = await request('/auth/page?' + new URLSearchParams({ tendril: h.id, key: new URL(h.page_url).pathname.split('/')[2] }), settings,
+      { headers: { Cookie: f.cookie }, redirect: 'manual' });
+    expect(claim.status).toBe(303);
+    const review = await request(new URL(prepared.reviewUrl).pathname, settings, { headers: { Cookie: f.cookie } });
+    expect(review.status).toBe(200);
+    const text = await review.text();
+    expect(text).toContain('Prepared notes');
+    expect(await env.ACCOUNTS.prepare('SELECT enabled,owner_account FROM assistant_connections WHERE page_id=?').bind(h.id).first())
+      .toEqual({ enabled: 0, owner_account: f.subject });
+    expect(await inDO(h.id, t => t.db.get('assistant_connection', null))).toBeNull();
+    const csrf = /name="csrf" value="([^"]+)"/u.exec(text)![1];
+    expect((await formPost(new URL(prepared.reviewUrl).pathname, { csrf, action: 'approve', queries: 'notes', commands: 'addNote' }, settings, f.cookie)).status).toBe(303);
+    expect(await env.ACCOUNTS.prepare('SELECT enabled FROM assistant_connections WHERE page_id=?').bind(h.id).first()).toEqual({ enabled: 1 });
+  } finally { await inDO(h.id, t => { Object.assign(t.env, restore); }); }
 });
 
 it('enabled OAuth names its missing additive migration while the ordinary host still works with OAuth disabled', async () => {

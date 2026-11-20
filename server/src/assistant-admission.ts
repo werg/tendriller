@@ -2,7 +2,7 @@ import { escapeHtml } from './inject';
 import { browserIdentity, redirect } from './accounts/oauth-data';
 import { pagePolicy, currentPrincipal, type AgentPrincipal } from './access';
 import { selectedApplication } from './application';
-import { exchangePeerControl } from './peer-generations';
+import { pendingPeerOwner, exchangePeerControl } from './peer-generations';
 import type { Tendril } from './tendril';
 import { sha256Hex, safeEqual } from './ids';
 import { HttpError, json, readBody, readJson } from './http';
@@ -34,8 +34,8 @@ const reviewPath = (pageId: string) => '/connections/' + pageId;
 
 export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPrincipal) {
   if (!await assistantOAuth(t.env)) throw new HttpError(503, 'assistant_oauth_unavailable');
-  const owner = t.db.get<string | null>('owner_account', null);
-  if (!owner) throw new HttpError(409, 'claim_page_first');
+  const claimedOwner = t.db.get<string | null>('owner_account', null);
+  const owner = claimedOwner ?? pendingPeerOwner(t);
   const input = fields(await readJson(req, 16384), ['label', 'adapterHashes', 'queries', 'commands', 'events']);
   const label = string(input.label, 100);
   if (!Array.isArray(input.adapterHashes) || !input.adapterHashes.length || input.adapterHashes.length > 3 ||
@@ -54,16 +54,29 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
   // A replacement is a new grant even when the published schemas look alike.
   const id = await sha256Hex(JSON.stringify([owner, applicationId, agent.credentialHash, label, adapterHashes, queries, commands, events]));
   return t.serializeAssistant(async () => {
-    if (owner !== t.db.get('owner_account', null) || !currentPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
+    if (owner !== (t.db.get('owner_account', null) ?? pendingPeerOwner(t)) || !currentPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
     const previous = proposal(t);
     if (previous?.id !== id) {
-      await t.env.ACCOUNTS.prepare(`INSERT INTO assistant_connections(page_id,application_id,owner_account,label) VALUES(?,?,?,?)
+      if (claimedOwner) await t.env.ACCOUNTS.prepare(`INSERT INTO assistant_connections(page_id,application_id,owner_account,label) VALUES(?,?,?,?)
         ON CONFLICT(page_id) DO UPDATE SET label=CASE WHEN enabled=0 THEN excluded.label ELSE label END`)
         .bind(t.tid, applicationId, owner, label).run();
       t.db.set('assistant_proposal', { id, owner, applicationId, label, adapterHashes, agent, queries, commands, events });
     }
     return json({ applicationId, proposed: id, approved: connection(t)?.id === id,
       reviewUrl: publicBase(t.env) + reviewPath(t.tid) });
+  });
+}
+
+/** Claim activates discovery only; queries, commands and events still need owner consent. */
+export async function adoptPreparedAssistant(t: Tendril, accountId: string): Promise<void> {
+  return t.serializeAssistant(async () => {
+    const item = proposal(t);
+    if (!item || item.owner !== pendingPeerOwner(t) && item.owner !== accountId) return;
+    if (t.db.get('owner_account', null) !== accountId) throw new HttpError(403, 'forbidden');
+    await t.env.ACCOUNTS.prepare(`INSERT INTO assistant_connections(page_id,application_id,owner_account,label) VALUES(?,?,?,?)
+      ON CONFLICT(page_id) DO UPDATE SET label=CASE WHEN enabled=0 THEN excluded.label ELSE label END`)
+      .bind(t.tid, item.applicationId, accountId, item.label).run();
+    if (item.owner === pendingPeerOwner(t)) t.db.set('assistant_proposal', { ...item, owner: accountId });
   });
 }
 

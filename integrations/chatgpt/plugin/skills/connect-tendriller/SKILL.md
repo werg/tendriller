@@ -14,8 +14,10 @@ For a **new page/application**, read `tendril_guide` with `topic: "build"` and
 `topic: "capabilities"`. Use the supplied native/browser starter, the supported
 HTTP page-creation API and the existing UI/sensor helper modules. Check that your
 execution environment supports Node 24, installing the exact packages, retained
-private storage and the required running participant. Provision early and give
-the owner the real claim URL. Use `topic: "delivery"` for completion evidence. Complete claim, authority/first generation, device
+private storage and the required running participant. Provision early, initialize and publish the first signed version, prepare any
+assistant-access proposal, and start the participant before giving the owner the
+ready page and permission-review URLs. Never wait for claim or ask for a
+"claimed" reply before publishing. Use `topic: "delivery"` for completion evidence. Complete claim, authority/first generation, device
 connection, signed publication and bidirectional verification. Then follow
 `topic: "connect"` to expose selected app operations through MCP. If the necessary
 runtime is unavailable, name that prerequisite and offer a concrete handoff to a
