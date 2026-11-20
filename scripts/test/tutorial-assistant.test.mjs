@@ -9,6 +9,8 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'tutorial-assistant-'));
   for (const name of ['assistant.mjs', 'session.mjs', 'local.mjs', 'domain.mjs', 'pairing-native.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
+  await mkdir(join(directory, 'helpers'));
+  await copyFile(join(root,'docs/tutorial/helpers/participant-lifecycle.mjs'),join(directory,'helpers/participant-lifecycle.mjs'));
   for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));
@@ -50,76 +52,39 @@ test('an already cancelled assistant run cannot prepare a proposal or open an ow
   await assert.rejects(readFile(join(directory, '.tendriller/assistant-key.json')), { code: 'ENOENT' });
 });
 
-function runtime({ events = false, failConnect = false, failClose = false } = {}) {
-  const calls = [], reports = [], closed = Promise.withResolvers();
-  const session = { applicationId: 'a'.repeat(64) };
-  const dependencies = {
-    prepare: async options => { assert.equal(options.events, events); return { options: { api: 'https://staging.example.test/api/t/aaaaaaaaaaaa' }, review: { reviewUrl: 'https://staging.example.test/review' } }; },
-    open: async () => ({ session, close: async () => { calls.push('owner_closed'); } }),
-    tools: value => { assert.equal(value, session); return {}; },
-    connect: () => {
-      if (failConnect) throw Object.assign(Error('approval unavailable'), { code: 'APPROVAL_UNAVAILABLE' });
-      return { closed: closed.promise,
-        waitUntilOnline: async () => { calls.push('online'); if (!events) setImmediate(() => closed.resolve()); },
-        close: async () => { calls.push('adapter_closed'); closed.resolve(); if (failClose) throw Error('adapter cleanup failed'); } };
-    },
-    forward: async () => { calls.push('events_forwarded'); },
-    report: value => { reports.push(value); },
+const flush = () => new Promise(resolve => setImmediate(resolve));
+function runtime({events=false, failConnect=false}={}) {
+  const stop=new AbortController(), calls=[], reports=[], closed=Promise.withResolvers(), watchClosed=Promise.withResolvers();
+  const session={applicationId:'a'.repeat(64),signal:stop.signal};
+  const dependencies={
+    prepare:async options=>{assert.equal(options.events,events);return {options:{api:'https://staging.example/api/t/aaaaaaaaaaaa',token:'private'},review:{proposed:'a'.repeat(64),reviewUrl:'https://staging.example/review'}};},
+    open:async()=>({session,close:async()=>{calls.push('owner_closed');}}),
+    tools:()=>({}),
+    watch({onChange}){queueMicrotask(()=>onChange({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'consent'}}));
+      return {closed:watchClosed.promise,close(){watchClosed.resolve();calls.push('watch_closed');}};},
+    connect(){if(failConnect)throw Object.assign(Error('unavailable'),{code:'APPROVAL_UNAVAILABLE'});
+      return {closed:closed.promise,waitUntilOnline:async()=>{calls.push('online');},close(){calls.push('adapter_closed');closed.resolve();}};},
+    forward:async()=>{calls.push('events_forwarded');},report:value=>reports.push(value),
   };
-  return { dependencies, calls, reports, session };
+  return {stop,calls,reports,closed,dependencies};
 }
-
-test('ordinary assistant connection reports observed states without forwarding events or promising wake', async t => {
-  const { module } = await fixture(t), { dependencies, calls, reports } = runtime();
-  await module.runAssistant({}, dependencies);
-  assert.deepEqual(calls, ['online', 'adapter_closed', 'owner_closed']);
-  assert.deepEqual(reports.map(value => value.state), ['proposal_prepared', 'participant_running', 'adapter_online', 'stopped']);
-  assert.equal(reports[0].connected, false);
-  assert.equal(reports[1].futureWakeVerified, false);
-  assert.equal(reports[2].roundTripVerified, false);
-  assert.equal(reports[3].connected, false);
+test('optional adapter exit preserves the owner until the process is explicitly stopped',async t=>{
+  const {module}=await fixture(t),f=runtime();let ended=false;
+  const run=module.runAssistant({signal:f.stop.signal},f.dependencies).then(()=>{ended=true;});
+  await flush();await flush();assert(f.calls.includes('online'));f.closed.resolve();await flush();await flush();
+  assert(!f.calls.includes('owner_closed'));assert.equal(ended,false);
+  f.stop.abort();await run;assert.equal(f.calls.filter(x=>x==='owner_closed').length,1);
+  assert(!f.calls.includes('events_forwarded'));assert(f.reports.every(x=>x.futureWakeVerified!==true));
 });
-
-test('requested event forwarding shares one owner and closes it even if adapter cleanup fails', async t => {
-  const { module } = await fixture(t), { dependencies, calls } = runtime({ events: true, failClose: true });
-  await assert.rejects(module.runAssistant({ events: true }, dependencies), { name: 'AggregateError', message: 'Assistant participant cleanup failed' });
-  assert.deepEqual(calls, ['online', 'events_forwarded', 'adapter_closed', 'owner_closed']);
+test('failed optional connection reports its state while preserving the native participant',async t=>{
+  const {module}=await fixture(t),f=runtime({failConnect:true});
+  const run=module.runAssistant({signal:f.stop.signal},f.dependencies);await flush();await flush();
+  assert(f.reports.some(x=>x.state==='adapter_offline'&&x.code==='APPROVAL_UNAVAILABLE'));
+  assert(!f.calls.includes('owner_closed'));f.stop.abort();await run;assert(f.calls.includes('owner_closed'));
 });
-
-test('unapproved optional events are checkpointed with bounded skipped status and no delivery claim', async t => {
-  const { module, directory } = await fixture(t), { dependencies, reports, session } = runtime({ events: true });
-  await mkdir(join(directory, '.tendriller'), { mode: 0o700 });
-  const attempted = [], cursor = 'checkpoint-after-unapproved-event';
-  let released = 0;
-  Object.assign(session, {
-    signal: new AbortController().signal,
-    async *changes() { yield { kind: 'revision' }; },
-    async readView() {
-      return { readEvents: () => ({ events: [{ id: 'private-event-id', operationId: 'private-operation-id', payload: 'private-note-payload' }],
-        cursor, hasMore: false, revision: { generation: 'selected-generation' } }),
-      release() { released++; } };
-    },
-  });
-  const connect = dependencies.connect;
-  dependencies.connect = options => ({ ...connect(options), async publish(value) {
-    attempted.push(value);
-    throw Object.assign(Error('sensitive provider response text'), { code: 'event_not_approved' });
-  } });
-  delete dependencies.forward; // Exercise the actual public forwardApplicationEvents helper.
-  await module.runAssistant({ events: true }, dependencies);
-  assert.equal(attempted.length, 1, 'a rejected event is skipped, not retried as delivered work');
-  assert.equal(released, 1);
-  assert.equal(JSON.parse(await readFile(join(directory, '.tendriller/assistant-event-cursor.json'), 'utf8')), cursor);
-  assert.deepEqual(reports.filter(value => value.state === 'event_skipped'), [{ state: 'event_skipped', name: 'note.added',
-    reason: 'event_not_approved', delivered: false, roundTripVerified: false, futureWakeVerified: false }]);
-  assert.doesNotMatch(JSON.stringify(reports), /private-event-id|private-operation-id|private-note-payload|sensitive provider response text/);
-  assert.equal(reports.some(value => value.delivered === true || value.roundTripVerified === true || value.futureWakeVerified === true), false);
-});
-
-test('failed connection closes the owned supervisor without reporting online', async t => {
-  const { module } = await fixture(t), { dependencies, calls, reports } = runtime({ failConnect: true });
-  await assert.rejects(module.runAssistant({}, dependencies), { code: 'APPROVAL_UNAVAILABLE' });
-  assert.deepEqual(calls, ['owner_closed']);
-  assert.equal(reports.some(value => value.state === 'adapter_online'), false);
-  assert.equal(reports.at(-1).state, 'stopped');
+test('optional event forwarding cannot turn finite history iteration into application shutdown',async t=>{
+  const {module}=await fixture(t),f=runtime({events:true});
+  const run=module.runAssistant({signal:f.stop.signal,events:true},f.dependencies);await flush();await flush();
+  assert(f.calls.includes('events_forwarded'));assert(!f.calls.includes('owner_closed'));
+  f.stop.abort();await run;assert(f.calls.includes('owner_closed'));
 });

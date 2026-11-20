@@ -8,7 +8,7 @@ const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
 
 function fixture() {
   const version = '1.2.3-rc.4', source = 'a'.repeat(40), tree = 'b'.repeat(40), runtime = 'c'.repeat(64);
-  const base = `https://github.com/werg/tendriller/releases/download/v${version}`;
+  const base = `https://github.com/werg/tendriller/releases/download/source-${source}`;
   const bytes = new Map(), overrides = new Map(), calls = [];
   const artifact = (role, file, content = `public ${role} bytes`) => {
     const value = Buffer.isBuffer(content) ? content : Buffer.from(content); bytes.set(file, value);
@@ -162,4 +162,21 @@ test('malformed or incomplete metadata fails without requesting component URLs',
     await assert.rejects(f.check(), { code: 'release_metadata_invalid' });
     assert.equal(f.calls.length, 1);
   }
+});
+
+test('acquisition retains only hash-verified files and includes the exact deployment bundle', async () => {
+  const f = fixture();
+  const content = Buffer.from('qualified deployment');
+  f.bytes.set('tendriller-deployment.tgz', content);
+  f.manifest.artifacts.push({ role: 'deployment', file: 'tendriller-deployment.tgz', size: content.length,
+    sha256: hash(content), url: `${f.base}/tendriller-deployment.tgz`, type: 'application/gzip' });
+  f.saveManifest();
+  const saved = new Map();
+  await f.check({ onVerified: (file, bytes) => saved.set(file, bytes) });
+  assert.deepEqual(saved.get('tendriller-deployment.tgz'), content);
+  assert.equal(saved.size, f.manifest.artifacts.length + 1);
+  f.bytes.set('tendriller-deployment.tgz', Buffer.from('corruption'));
+  saved.clear();
+  await assert.rejects(f.check({ onVerified: (file, bytes) => saved.set(file, bytes) }), { code: 'release_bytes_mismatch' });
+  assert.equal(saved.has('tendriller-deployment.tgz'), false);
 });

@@ -55,6 +55,8 @@ import { createClient, requireService, describeReadiness, requireCreationReady, 
 import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
 import { createApplicationBinding } from '@tendriller/core/application';
 import { onboardingDescriptor, ASSISTANT_GUIDES } from '@tendriller/core/onboarding';
+assert.equal(onboardingDescriptor('https://example.test').firstApp.release.manifest,
+  'https://github.com/werg/tendriller/releases/download/source-${hostProof.source}/manifest.json');
 import { createAssistantKey, createApplicationAgentKey, proposeApplicationAssistant,
   connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
 import { createSignalBinding } from '@tendriller/core/signals';

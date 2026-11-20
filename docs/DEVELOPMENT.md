@@ -60,7 +60,29 @@ archives, the exact served starter and the pinned public Chronolog session in
 the starter and local SDK/tools/session packages. `dist/manifest.json` binds the
 composition, first-app archive and provenance files for immutable publication.
 
-Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree. Release publication is separate from deployment. Use `check:release` and the repository's release workflow for a deliberately selected release ref.
+Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree.
+
+The Public service workflow builds/checks once on Node 24, seals a deployment
+bundle into the manifest, then qualifies those same bytes in browser, exact-kit
+and native jobs. Node 22 retains a separate compatibility check. PR and branch
+jobs have read-only permissions and never publish or deploy. Only trusted master
+publishes, using `source-<full commit SHA>` release tags, with the manifest uploaded
+last. Package versions may stay unchanged across source checkpoints; the existing
+`v0.3.0-rc.17` release is never overwritten. Missing or different published bytes
+fail closed; an interrupted publication can resume only with identical assets.
+
+Publication is an explicit dependency of staging deployment. Both staging and
+production restore the same manifest-bound deployment archive, check its entire
+file graph and the engine/runtime/starter identities, and deploy the packaged
+Worker with bundling disabled. They never rebuild deployment bytes. Staging
+acceptance and MCP qualification consume that graph and both gate production.
+Post-deployment MCP qualification downloads the originating run's artifacts;
+manual/weekly MCP runs download and verify the checkpoint's public source-tagged
+graph. Service discovery and packed SDK navigation embed the exact source-tagged
+manifest/kit URLs. Do not move source tags or replace their assets. A workflow rerun
+must reproduce the existing bytes or fail; it cannot silently replace a release.
+The workflow's existing readiness, storage-schema, current-master and environment
+gates still apply. No local check performs publication or deployment.
 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
 

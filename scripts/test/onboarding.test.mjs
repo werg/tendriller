@@ -156,6 +156,10 @@ test('events and SQL starter qualification use the current pinned session source
   const source = provenance.source;
   assert.match(source, /^[a-f0-9]{40}$/);
   const workflow = readFileSync(join(root, '.github/workflows/agent-onboarding.yml'), 'utf8');
-  assert.equal(workflow.split('ref: ' + source).length - 1, 2, 'Both starter profiles must use the qualified session source');
+  assert.equal(workflow.split('ref: ' + source).length - 1, 1, 'SQL engine qualification pins the current session source');
+  assert(workflow.includes('name: public-packages'), 'SQL qualification must reuse the release graph');
+  const service = readFileSync(join(root, '.github/workflows/service.yml'), 'utf8');
+  assert(service.includes('npm run release:artifacts'), 'Events qualification prepares the pinned public session in the graph');
+  assert(service.includes('test:first-app -- --first-app-archive'), 'Events qualification must use the exact kit');
   assert(workflow.includes(`chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`));
 });

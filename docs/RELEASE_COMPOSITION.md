@@ -58,16 +58,23 @@ npm run test:first-app -- --first-app-archive /absolute/tendriller-first-app-VER
 This uses the packed engine, verifies the kit against the release manifest,
 compares its source with the actual served starter, installs the bundled public
 archives in a separate empty-cache consumer, and exercises native and Chromium
-behavior. The agent-onboarding PR workflow and core release workflow require
-this gate before publication and retain `.results/first-app.json`.
+behavior. The Public service workflow requires this gate on its retained
+artifact graph before publication and retains `.results/first-app.json`. The
+SQL onboarding job consumes the same graph with its separately pinned engine.
 `--native-only` is an explicitly partial local
 check and does not satisfy that workflow's full browser gate. Generating a
 composition is not itself qualification; assess the recorded checks and limits.
 
 Release uploads verify exact tag/source identity and existing asset bytes before
 uploading anything. They never move tags or overwrite differing same-name
-assets, and publish `manifest.json` last. Already published versions must get a
-new version when package code, starter source or composition metadata changes.
+assets, and publish `manifest.json` last. Trusted master publishes under
+`source-<full commit SHA>`; package versions do not select the release graph.
+Each source checkpoint gets its own immutable manifest and deployment bundle,
+including workflow or documentation changes without a package-version bump.
+Discovery embeds that exact source-tagged manifest and kit URL. The original
+version-tagged releases remain untouched. Both environments restore the sealed
+bundle and deploy the packaged Worker without bundling; staging acceptance and
+MCP qualification gate production.
 CI can produce candidates on a development branch without publishing or deploying.
 
 The scripted local kit check does not establish live OAuth, selected ChatGPT

@@ -1,10 +1,11 @@
 name: Agent onboarding
 
 on:
-  pull_request:
-  push:
-    branches: [master, 'codex/multiparticipant-architecture']
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      manifest_sha256:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -14,52 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  first-app:
-    name: First app from public artifacts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          path: core
-      - uses: actions/checkout@v4
-        with:
-          repository: werg/chronolog-db
-          ref: 15573014f4536369d7bd2f8a4b894a0d9fb69812
-          path: chronolog
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Trust checked-out sources for provenance
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/core"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/chronolog"
-      - run: npm ci
-        working-directory: core
-      - name: Build the pinned events session archive
-        working-directory: chronolog
-        run: |
-          corepack pnpm install --frozen-lockfile --ignore-scripts
-          node tools/package-peer-session.mjs
-      - run: npm run build:artifacts
-        working-directory: core
-      - run: npm run release:artifacts
-        working-directory: core
-      - name: Exercise the exact first-app release kit in a real browser
-        working-directory: core
-        run: |
-          release_version=$(node -p "require('./package.json').version")
-          npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$release_version.tgz"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: first-app-qualification
-          path: core/.results/first-app*
-          include-hidden-files: true
-          if-no-files-found: ignore
-
   sql-starter:
     name: Guarded SQL starter from public artifacts
     runs-on: ubuntu-latest
@@ -84,8 +39,14 @@ jobs:
         run: |
           corepack pnpm install --frozen-lockfile
           node tools/package-peer-session.mjs --sql-native
-      - run: npm run build:artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: core/dist
+      - run: node scripts/deployment-bundle.mjs
         working-directory: core
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
       - name: Exercise SQL initialization, guarded writes and reopen
         working-directory: core
         run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-15573014-sql.tgz" --sql-native-only

@@ -1,54 +1,34 @@
-name: Core release artifacts
+name: Publish qualified release graph
 on:
-  push:
-    tags: ['v*']
-    branches: ['release/v*']
-  create:
-  release:
-    types: [published]
-  workflow_dispatch:
-concurrency:
-  group: core-release
-  cancel-in-progress: false
+  workflow_call:
+    inputs:
+      manifest_sha256:
+        type: string
+        required: true
 permissions:
   contents: read
 jobs:
-  artifacts:
-    if: github.event_name != 'create' || (github.event.ref_type == 'branch' && startsWith(github.event.ref, 'release/v'))
+  publish:
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run check:release
-      - run: npm run release:artifacts
-      - name: Qualify the exact first-app release archive
-        run: |
-          release_version=$(node -p "require('./package.json').version")
-          npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$release_version.tgz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: core-release
-          path: |
-            dist/tendriller-*.tgz
-            dist/chronolog-peer-session-*.tgz
-            dist/manifest.json
-            dist/composition.json
-            dist/provenance.json
-            dist/tools-manifest.json
-            dist/SHA256SUMS
-            .results/first-app.json
-      - name: Publish immutable release candidate assets
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
+          name: public-packages
+          path: dist
+      - name: Verify the qualified graph before publication
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: node scripts/deployment-bundle.mjs
+      - name: Publish source-qualified immutable assets, manifest last
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ github.ref }}
-        run: node scripts/publish-release.mjs "$RELEASE_REF" SHA256SUMS
+        run: node scripts/publish-release.mjs refs/heads/master SHA256SUMS

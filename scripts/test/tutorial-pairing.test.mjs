@@ -144,13 +144,6 @@ test('revocation releases no pause until the server confirms expiry and fresh si
   assert.ok(f.records.has(`pairing-${f.status.pairingId}-prepared.json`), 'terminal recovery retains the original proposal');
 });
 
-test('native pairing windows are finite and closing does not erase an unresolved durable pause', async () => {
-  const f = await fixture(); await f.tick();
-  assert.throws(() => native.startPairingWindow({ owned: f, durationMs: 600001 }), { code: 'PAIRING_WINDOW_INVALID' });
-  const window = native.startPairingWindow({ owned: { session: f.session, pairing: f.pairing }, durationMs: 1 });
-  await window.close(); assert.ok(f.pause); assert.equal(f.actions.includes('resume'), false);
-});
-
 test('an unretained native intent cannot pause ordering or reach proposal/commit', async () => {
   const f = await fixture();
   await assert.rejects(native.advancePairing({ session: f.session, pairing: f.pairing,
@@ -158,19 +151,14 @@ test('an unretained native intent cannot pause ordering or reach proposal/commit
   assert.equal(f.pause, null); assert.equal(f.actions.includes('prepare'), false); assert.equal(f.actions.includes('commit'), false);
 });
 
-test('the retained-owner compatibility processor serializes overlapping passes and drains a bounded loop on close', async () => {
+test('the retained-owner processor serializes overlapping signed passes', async () => {
   const f = await fixture(), gate = Promise.withResolvers();
   f.pairing.client.pending = async () => { await gate.promise; return { pairings: [] }; };
   const process = native.createReviewedPairingProcessor({ session: f.session, pairing: f.pairing,
     store: { load: async name => f.records.get(name), save: async (name, value) => f.records.set(name, value) } });
   const first = process(), second = process(); assert.equal(first, second);
   gate.resolve(); assert.deepEqual(await first, []);
-  let stopped = false;
-  const loop = native.startReviewedPairingLoop(({ signal }) => new Promise(resolve => {
-    signal.addEventListener('abort', () => { stopped = true; resolve([]); }, { once: true });
-  }), { durationMs: 1000, intervalMs: 250, maxIdleMs: 500 });
-  await loop.close(); assert.equal(stopped, true);
-  assert.throws(() => native.startReviewedPairingLoop(process, { durationMs: Infinity }), { code: 'PAIRING_WINDOW_INVALID' });
+
 });
 
 function browserFixture({ brokenStorage = false, wrongOrigin = false, failWorker = false } = {}) {

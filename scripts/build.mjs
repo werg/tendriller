@@ -23,6 +23,13 @@ export function filesUnder(directory) {
 const contentType = path => ({ ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".css": "text/css", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".wasm": "application/wasm", ".txt": "text/plain", ".md": "text/markdown" }[path.slice(path.lastIndexOf("."))] || "application/octet-stream");
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 
+const releaseSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const releaseIdentity = { name: 'release-source', setup(builder) {
+  builder.onLoad({ filter: /[/\\]contract[/\\]onboarding\.mjs$/ }, args => ({
+    resolveDir: dirname(args.path), contents: readFileSync(args.path, 'utf8').replace("const RELEASE_SOURCE = 'unbuilt';", `const RELEASE_SOURCE = '${releaseSource}';`), loader: 'js',
+  }));
+} };
+
 export async function buildPublicArtifacts() {
   const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   if (packageVersion !== CORE_RELEASE) throw new Error("Package and public core release identities must agree");
@@ -97,6 +104,8 @@ export async function buildPublicArtifacts() {
   const runtimeExports = { "./kernel": { types: "./kernel.d.mts", import: "./assets/kernel.mjs" }, "./voice": { types: "./voice.d.mts", import: "./assets/voice.mjs" }, "./manifest": "./assets/manifest.json", "./assets/*": "./assets/*" };
   writeJson(join(runtime, "package.json"), { name: "@tendriller/runtime", version: CORE_RELEASE, type: "module", description: "Tendriller browser composition, sensors and explicit voice", exports: runtimeExports, files: ["assets", "kernel.d.mts", "voice.d.mts", "inputs.json", "build-metrics.json"], tendriller: { contract: CONTRACT_VERSION, runtime: id } });
   for (const file of readdirSync(join(root, "contract"))) if (/\.(mjs|mts|json)$/.test(file) && !["tsconfig.json", "engine.d.mts", "testing.d.mts"].includes(file)) copyFileSync(join(root, "contract", file), join(sdk, file));
+  writeFileSync(join(sdk, 'onboarding.mjs'), readFileSync(join(sdk, 'onboarding.mjs'), 'utf8')
+    .replace("const RELEASE_SOURCE = 'unbuilt';", `const RELEASE_SOURCE = '${releaseSource}';`));
   mkdirSync(join(sdk, "collaboration"), { recursive: true });
   for (const file of readdirSync(join(root, "collaboration"))) if (/\.(mjs|mts)$/.test(file)) copyFileSync(join(root, "collaboration", file), join(sdk, "collaboration", file));
   writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller page-host client and owned application session contract", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./setup": { types: "./setup.d.mts", import: "./setup.mjs" }, "./pairing": { types: "./pairing.d.mts", import: "./pairing.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./onboarding": { types: "./onboarding.d.mts", import: "./onboarding.mjs" }, "./browser": { types: "./browser.d.mts" }, "./voice": { types: "./voice.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./application": { types: "./application.d.mts", import: "./application.mjs" }, "./signals": { types: "./signals.d.mts", import: "./signals.mjs" }, "./peers": { types: "./peers.d.mts", import: "./peers.mjs" }, "./assistant": { types: "./assistant.d.mts", import: "./assistant.mjs" }, "./collaboration": { types: "./collaboration/index.d.mts", import: "./collaboration/index.mjs" }, "./collaboration/browser": { types: "./collaboration/browser.d.mts", import: "./collaboration/browser.mjs" }, "./collaboration/worker": { types: "./collaboration/worker.d.mts", import: "./collaboration/worker.mjs" }, "./collaboration/native": { types: "./collaboration/native.d.mts", import: "./collaboration/native.mjs" }, "./collaboration/diagnostics": { types: "./collaboration/diagnostics.d.mts", import: "./collaboration/diagnostics.mjs" }, "./schema": "./v3.json" }, peerDependencies: { "@chronolog/peer-session": "*" }, peerDependenciesMeta: { "@chronolog/peer-session": { optional: true } }, tendriller: { contract: CONTRACT_VERSION } });
@@ -127,7 +136,7 @@ export async function buildPublicArtifacts() {
 
 export async function buildEngine() {
   mkdirSync(join(dist, "engine"), { recursive: true });
-  const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers", "node:crypto", "node:net"], metafile: true, logLevel: "warning" });
+  const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), plugins: [releaseIdentity], bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers", "node:crypto", "node:net"], metafile: true, logLevel: "warning" });
   writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
 }
 export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }

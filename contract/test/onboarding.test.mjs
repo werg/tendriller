@@ -16,8 +16,8 @@ test('onboarding identifies its canonical service and keeps every setup route on
     assert(descriptor.workflow.findIndex(step => step.id === 'publish') < descriptor.workflow.findIndex(step => step.id === 'claim'));
     assert.equal(descriptor.interfaces.readiness, origin + '/api/readiness');
     assert.deepEqual(descriptor.firstApp.release, {
-      manifest: `https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/manifest.json`,
-      archive: `https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/tendriller-first-app-${CORE_RELEASE}.tgz`,
+      manifest: `https://github.com/werg/tendriller/releases/download/source-unbuilt/manifest.json`,
+      archive: `https://github.com/werg/tendriller/releases/download/source-unbuilt/tendriller-first-app-${CORE_RELEASE}.tgz`,
     });
   }
 });

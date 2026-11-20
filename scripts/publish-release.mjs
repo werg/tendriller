@@ -9,15 +9,15 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const dist = join(root, 'dist');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
-const tag = `v${pkg.version}`;
 if (manifest.version !== pkg.version) throw new Error('The release manifest version must match package.json.');
-if (![`refs/tags/${tag}`, `refs/heads/release/${tag}`].includes(process.argv[2])) {
-  throw new Error(`The release ref must be refs/tags/${tag} or refs/heads/release/${tag}.`);
+if (process.argv[2] !== 'refs/heads/master') {
+  throw new Error('The release ref must be refs/heads/master.');
 }
 const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 if (manifest.source_commit !== source || (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== source)) {
   throw new Error('The release manifest and workflow must identify the exact checked-out source commit.');
 }
+const tag = `source-${source}`;
 verifyReleaseArtifacts(root, manifest);
 
 // Callers may add generated metadata files after the ref; discovery is always last.

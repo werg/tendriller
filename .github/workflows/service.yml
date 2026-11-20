@@ -10,6 +10,10 @@ concurrency:
   group: public-service-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -18,9 +22,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["22.15.0", "24"]
+        node: ["22.15.0"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -32,20 +39,41 @@ jobs:
       - run: npm run check
 
   browser:
+    needs: [artifacts]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:browser
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+      - run: npm --prefix tools ci
+      - run: node scripts/test-browser.mjs
+      - name: Qualify the exact immutable first-app kit
+        run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz"
       - name: Qualify shared and elected application owners in Chromium
         run: npm run test:collaboration:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: first-app-qualification
+          path: .results/first-app*
+          include-hidden-files: true
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -62,17 +90,27 @@ jobs:
           if-no-files-found: ignore
 
   native-owner:
+    needs: [artifacts]
     name: Native owner attachment and crash recovery
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build:artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
       - run: npm run test:collaboration:native
 
   artifacts:
@@ -101,8 +139,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build:artifacts
-      - run: npm run test:consumer
+      - run: npm run check
       - run: npm run release:artifacts
       - name: Record the exact deployment composition
         id: composition
@@ -132,9 +169,24 @@ jobs:
             dist/tools-manifest.json
             dist/SHA256SUMS
 
+  sql-starter:
+    needs: [artifacts]
+    uses: ./.github/workflows/agent-onboarding.yml
+    with:
+      manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+
+  publish:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
+    needs: [check, browser, native-owner, sql-starter, artifacts]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+
   staging:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.STAGING_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.STAGING_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, browser, native-owner, artifacts]
+    needs: [check, browser, native-owner, artifacts, publish]
     runs-on: ubuntu-latest
     environment: staging
     outputs:
@@ -151,6 +203,9 @@ jobs:
       TENDRILLER_EXPECTED_STARTER_SHA256: ${{ needs.artifacts.outputs.starter_sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -160,7 +215,11 @@ jobs:
       - name: Require the exact public release before deployment
         run: node scripts/check-published-release.mjs
       - run: npm ci
-      - run: npm run build:deploy
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
       - run: node scripts/check-deployment-artifacts.mjs
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
@@ -179,7 +238,7 @@ jobs:
         run: node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
         run: >-
-          npx wrangler deploy --config server/wrangler.staging.jsonc --durable-objects-code-update-mode immediate
+          npx wrangler deploy --config server/wrangler.staging.jsonc --no-bundle --durable-objects-code-update-mode immediate
           --var "SERVICE_SOURCE_COMMIT:$TENDRILLER_EXPECTED_SOURCE_COMMIT"
           --var "SERVICE_COMPOSITION_ID:$TENDRILLER_EXPECTED_COMPOSITION_ID"
       - if: steps.current.outputs.current == 'true'
@@ -192,21 +251,24 @@ jobs:
 
   staging_acceptance:
     if: needs.staging.outputs.deployed == 'true'
-    needs: [staging]
+    needs: [staging, artifacts]
     uses: ./.github/workflows/staging-acceptance.yml
+    with:
+      manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
     secrets: inherit
 
   staging_mcp_qualification:
     if: needs.staging.outputs.deployed == 'true'
-    needs: [staging]
+    needs: [staging, artifacts]
     uses: ./.github/workflows/plugin-qualification.yml
     with:
       environment: staging
+      manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
     secrets: inherit
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, staging_acceptance, staging_mcp_qualification, native-owner, artifacts]
+    needs: [check, staging_acceptance, staging_mcp_qualification, native-owner, artifacts, publish]
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -221,6 +283,9 @@ jobs:
       TENDRILLER_EXPECTED_STARTER_SHA256: ${{ needs.artifacts.outputs.starter_sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -228,7 +293,11 @@ jobs:
       - name: Require the exact public release before deployment
         run: node scripts/check-published-release.mjs
       - run: npm ci
-      - run: npm run build:deploy
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
       - run: node scripts/check-deployment-artifacts.mjs
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
@@ -247,7 +316,7 @@ jobs:
         run: node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
         run: >-
-          npx wrangler deploy --config server/wrangler.production.jsonc --durable-objects-code-update-mode immediate
+          npx wrangler deploy --config server/wrangler.production.jsonc --no-bundle --durable-objects-code-update-mode immediate
           --var "SERVICE_SOURCE_COMMIT:$TENDRILLER_EXPECTED_SOURCE_COMMIT"
           --var "SERVICE_COMPOSITION_ID:$TENDRILLER_EXPECTED_COMPOSITION_ID"
       - if: steps.current.outputs.current == 'true'

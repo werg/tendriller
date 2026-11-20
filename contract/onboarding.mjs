@@ -5,6 +5,9 @@ export const ASSISTANT_GUIDES = Object.freeze({
   delivery: '/docs/AGENT_DELIVERY.md', troubleshooting: '/docs/TROUBLESHOOTING.md',
 });
 
+// Build substitutes the exact checkout into both packed SDK and host.
+const RELEASE_SOURCE = 'unbuilt';
+
 import { CONTRACT_VERSION, CORE_RELEASE } from './index.mjs';
 
 /** Public navigation only. This document grants no account or device authority. */
@@ -22,8 +25,8 @@ export function onboardingDescriptor(base) {
     agent_instructions: url('/agent.md'),
     starter: url('/downloads/tendriller-first-app.tgz'),
     firstApp: { release: {
-      manifest: `https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/manifest.json`,
-      archive: `https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/tendriller-first-app-${CORE_RELEASE}.tgz`,
+      manifest: `https://github.com/werg/tendriller/releases/download/source-${RELEASE_SOURCE}/manifest.json`,
+      archive: `https://github.com/werg/tendriller/releases/download/source-${RELEASE_SOURCE}/tendriller-first-app-${CORE_RELEASE}.tgz`,
     } },
     capabilities: url('/.well-known/tendriller-capabilities.json'),
     documentation: {
