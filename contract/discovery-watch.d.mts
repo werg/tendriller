@@ -1,4 +1,10 @@
 import type { PeerSocket } from './peers.mjs';
+/** Terminal provider-neutral failure: consumers must not replace this subscription automatically. */
+export declare class PeerDiscoveryWatchError extends Error {
+  readonly code: string;
+  readonly retryable: false;
+  constructor(code: string, message: string);
+}
 export type PeerDiscoveryNotification = Readonly<{ type: 'ready' | 'changed' }>;
 export interface PeerDiscoveryWatchOptions {
   readonly signal?: AbortSignal;

@@ -173,3 +173,49 @@ test('an uncooperative access probe has a bounded deadline and its late denial c
   gate.reject(Object.assign(Error('late denial'),{status:401}));await flush();
   assert.equal(f.sockets[1].closes.length,0);f.watch.close();
 });
+
+test('terminal watcher errors expose a provider-neutral retryable false contract; caller abort reasons remain intact',async()=>{
+  const {PeerDiscoveryWatchError,validatePeerDiscoveryWatchOptions,validatePeerAdvertisementPresence}=await import('../peers.mjs');
+  assert.equal(new PeerDiscoveryWatchError('participant_replaced','fenced').retryable,false);
+  for(const action of [()=>validatePeerDiscoveryWatchOptions({retryMs:0}),()=>validatePeerDiscoveryNotification({type:'wrong'}),
+    ()=>validatePeerAdvertisementPresence({}),
+    ()=>createPeersClient({base:'not a URL',request:async()=>{}}).watchDiscovery(peerId),
+    ()=>createPeersClient({base:'https://host.test',request:async()=>{}}).watchDiscovery('wrong')])
+    assert.throws(action,error=>error.retryable===false&&typeof error.code==='string');
+  for(const code of [1008,4000,4003]){
+    const f=fixture();f.sockets[0].end(code);await assert.rejects(f.watch.ready,error=>error.retryable===false);
+    await assert.rejects(f.watch.notifications[Symbol.asyncIterator]().next(),error=>error.retryable===false);
+  }
+  const invalid=fixture();invalid.sockets[0].receive({type:'wrong'});
+  await assert.rejects(invalid.watch.ready,error=>error.retryable===false);
+  const reason=Error('caller cancelled'), stop=new AbortController(), cancelled=fixture({signal:stop.signal});stop.abort(reason);
+  await assert.rejects(cancelled.watch.ready,error=>error===reason);
+  assert.equal(reason.retryable,undefined);
+});
+
+test('public declarations type discovery failures as terminal and readonly',async t=>{
+  const {mkdtemp,writeFile,rm}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const {join}=await import('node:path');
+  const {fileURLToPath}=await import('node:url');
+  const {execFile}=await import('node:child_process');
+  const {promisify}=await import('node:util');
+  const directory=await mkdtemp(join(tmpdir(),'discovery-error-types-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const file=join(directory,'consumer.mts');
+  await writeFile(file,`
+import {PeerDiscoveryWatchError,PeerDiscoveryError} from ${JSON.stringify(fileURLToPath(new URL('../peers.mjs',import.meta.url)))};
+const watched = new PeerDiscoveryWatchError('participant_replaced','fenced');
+const directory = new PeerDiscoveryError('invalid_advertisement','invalid');
+const fatal: false = watched.retryable;
+const alsoFatal: false = directory.retryable;
+const neutral: {readonly retryable: false; readonly code: string} = watched;
+// @ts-expect-error terminal does not mean transient
+const transient: true = watched.retryable;
+// @ts-expect-error consumers cannot change the retry decision
+watched.retryable = true;
+void [fatal,alsoFatal,neutral,transient];
+`);
+  await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../node_modules/typescript/bin/tsc',import.meta.url)),
+    '--strict','--noEmit','--skipLibCheck','--target','ES2022','--module','NodeNext',file]);
+});

@@ -10,7 +10,7 @@ export interface PeerAdvertisement {
 export interface PeerAdvertisementPresence { readonly advertisement: PeerAdvertisement }
 export interface PeerDirectory { readonly applicationId: string; readonly peers: readonly PeerAdvertisementPresence[] }
 export declare const PEER_DIRECTORY_LIMITS: Readonly<{ peers: number; peersPerPrincipal: number; routes: number; advertisementBytes: number }>;
-export declare class PeerDiscoveryError extends Error { readonly code: string; constructor(code: string, message: string) }
+export declare class PeerDiscoveryError extends Error { readonly code: string; readonly retryable: false; constructor(code: string, message: string) }
 export declare function validatePeerId(value: unknown): string;
 export declare function validatePeerRoute(value: unknown): PeerRoute;
 export declare function validatePeerAdvertisement(value: unknown): PeerAdvertisement;
