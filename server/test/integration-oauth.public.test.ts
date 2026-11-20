@@ -114,7 +114,9 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(start.readiness).toMatchObject({ serviceOrigin: origin, mode: 'open', creation: { available: true } });
   expect(start.setup.readinessUrl).toBe(origin + '/api/readiness');
   expect(start.text).toContain('Node 24');
-  expect(start.text).toContain('POST /api/tendrils');
+  expect(start.text).toContain('prepare_tendril_setup');
+  expect(start.text).toContain('inspect_tendril_setup');
+  expect(start.text).toContain('setup:finish');
   expect(start.text).not.toContain('https://tendriller.dev');
   expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/tendrils');
   const build = await readGuide({ topic: 'build' });
