@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { importReviewPackages } from '../review/packages.mjs';
 import { nativeMeasurement } from './observer-native.mjs';
-import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress } from './observer-data.mjs';
+import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress, relayTransportMeasurement } from './observer-data.mjs';
 import { hash, now, checks } from './evidence.mjs';
 
 function token(text, value) {
@@ -305,10 +305,11 @@ export class StarterObserver {
       if (!this.state.checkpoints['native-process']) this.checkpoint('native-process', { process });
       const peers = snapshot.native.participation?.connectedPeers;
       if (!peers?.includes(snapshot.browser.deviceId)) throw new MeasurementError('native-connected-peer-metric');
-      const transport = recordFile(config.native.project, need(config.native.transport, 'selected-transport-metric')).value;
-      if (!['websocket-relay', 'webrtc'].includes(transport)) throw new MeasurementError('selected-transport-value', 'failed');
+      const transportEvidence = relayTransportMeasurement(recordFile(config.native.project,
+        need(config.native.transport, 'selected-transport-metric')).value,
+      { process, pageId: config.handle.id, deviceId: snapshot.native.deviceId, remoteDeviceId: snapshot.browser.deviceId });
       return { applicationId: config.applicationId, nativeDeviceId: snapshot.native.deviceId, browserDeviceId: snapshot.browser.deviceId,
-        transport, nativeProcess: process, snapshot };
+        transport: transportEvidence.transport, transportEvidence, nativeProcess: process, snapshot };
     }
     if (check === 'discovery') {
       const file = join(this.runDirectory, 'observable.jsonl');

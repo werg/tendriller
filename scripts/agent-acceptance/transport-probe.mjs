@@ -3,7 +3,7 @@ import { resolve, relative } from 'node:path';
 
 /** Evaluator-only observation of actual relay sockets. No payloads, URLs,
  * authorization protocols, or application code are copied to the evidence. */
-export function observeRelaySockets(Base, { api, deviceId, remoteDeviceId, record, processIdentity = {} }) {
+export function observeRelaySockets(Base, { api, deviceId, remoteDeviceId, record, processIdentity = {}, onFailure = error => { throw error; } }) {
   const endpoint = new URL(api), path = /^\/api\/t\/([a-z2-7]{12})$/.exec(endpoint.pathname);
   if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !path ||
       ![deviceId, remoteDeviceId].every(id => /^[a-f0-9]{64}$/.test(id)) || deviceId === remoteDeviceId)
@@ -29,7 +29,7 @@ export function observeRelaySockets(Base, { api, deviceId, remoteDeviceId, recor
       if (!channels.has(channel)) { if (channels.size >= 16) channels.delete(channels.keys().next().value); channels.set(channel, new Map()); }
       const state = { socket: this, lane, paired: false, closed: false, sent: 0, received: 0, session: null };
       channels.get(channel).set(lane, state);
-      const update = () => { try { publish(); } catch {} };
+      const update = () => { try { publish(); } catch (error) { onFailure(error); throw Error('Relay instrumentation failed closed'); } };
       this.addEventListener('message', event => {
         if (typeof event.data === 'string') {
           if (event.data.length > 512) return;
@@ -59,5 +59,8 @@ if (process.env.TENDRILLER_ACCEPTANCE_TRANSPORT_CONFIG) {
   const fields = readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ');
   globalThis.WebSocket = observeRelaySockets(globalThis.WebSocket, { ...config,
     processIdentity: { pid: process.pid, birth: fields[19] },
+    // A stale positive file cannot outlive a measured live process. Do not keep
+    // the participant alive if a close/error invalidation cannot be persisted.
+    onFailure: () => process.exit(74),
     record: value => { const temporary = output + '.tmp'; writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 }); renameSync(temporary, output); } });
 }
