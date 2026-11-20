@@ -61,8 +61,17 @@ export async function openBrowserOwner(options){
     }
   }
 }
+/** Ask the browser to keep this origin's storage (device key, journal, unsent work)
+ * out of best-effort eviction under storage pressure. Never throws; null = unsupported. */
+export function requestPersistentStorage(){
+  const storage=globalThis.navigator?.storage;
+  if(typeof storage?.persist!=='function')return Promise.resolve(null);
+  return (async()=>{try{return await storage.persisted?.()||await storage.persist();}catch{return false;}})();
+}
 function facade({session,transport,channel,worker,route,options}){
   let detached=false,releasing;
+  // An attached session holds a retained signing key and signed work: keep it durable.
+  const storagePersisted=options.persistStorage===false?Promise.resolve(null):requestPersistentStorage();
   function release(){
     if(releasing)return releasing;
     detached=true;session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
@@ -84,7 +93,7 @@ function facade({session,transport,channel,worker,route,options}){
   globalThis.addEventListener?.('pagehide',leaving);
   session.signal.addEventListener('abort',ended,{once:true});
   if(session.signal.aborted)ended();
-  return Object.freeze({session,mode:route==='shared'?'shared':'elected',
+  return Object.freeze({session,mode:route==='shared'?'shared':'elected',storagePersisted,
     async suspend(){if(!detached){await session.suspend();await transport?.suspend();}},
     async resume(){if(detached)throw new CollaborationError('ENDPOINT_STALE');await transport?.resume();await session.resumeAttachment();return session;},
     async detach(){if(detached){await releasing;return;}detached=true;try{await session.detach();}finally{await release();}},
@@ -141,6 +150,10 @@ async function elected(url,options,handshake){
 export async function createBrowserIdentity(options){
   const url=validate(options),worker=new Worker(url,{type:'module'}),id=crypto.randomUUID();
   try{const ready=waitFor(worker,data=>data.type==='identity'&&data.id===id,options);
-    worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'identity',profileId:options.profileId,id});return(await ready).publicKey;
+    worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'identity',profileId:options.profileId,id});
+    const publicKey=(await ready).publicKey;
+    // A new retained key is the device's only signer: keep it out of best-effort eviction.
+    if(options.persistStorage!==false)void requestPersistentStorage();
+    return publicKey;
   }finally{worker.terminate();}
 }

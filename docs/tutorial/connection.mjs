@@ -16,6 +16,8 @@ const TRANSIENT = new Set(['OWNER_BUSY', 'OWNER_UNREACHABLE', 'ENDPOINT_STALE', 
 const codeOf = error => String(error?.code || error?.name || 'ERROR');
 
 /** User-facing copy for connection and pairing errors. Developer details stay in `technical`. */
+import { requestPersistentStorage } from '@tendriller/core/collaboration/browser';
+
 export function describeConnectionError(error, { appName = 'this app' } = {}) {
   const code = codeOf(error), technical = `${code}${error?.message && error.message !== code ? `: ${error.message}` : ''}`;
   const copy = (title, detail, retry = true, extra = {}) => ({ code, title, detail, retry, technical, ...extra });
@@ -58,6 +60,8 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
   const nudge = () => wake();
 
   async function enroll() {
+    // The new device key is this browser's only signer: keep its storage out of best-effort eviction.
+    void requestPersistentStorage();
     const retained = pairing.read();
     let status = retained?.pairingId ? await pairing.refresh() : await pairing.request();
     if (status.state === 'challenge') status = await pairing.request();
