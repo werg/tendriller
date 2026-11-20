@@ -44,7 +44,7 @@ return { profileId,
       const advertised = await peers.definition();
       signal.throwIfAborted();
       session = await openSqlApplication({ device, definition, authority, schema: advertised.schema, databasePath: '/inventory.sqlite',
-        signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256 } },
+        signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256, maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } },
         async createEngine({ signal }) {
           // Protocol-only attachments never import the SQL loader or open OPFS.
           const { createBrowserSqlEngine, loadBrowserEngine } = await import('@chronolog/peer-session/sql-browser');

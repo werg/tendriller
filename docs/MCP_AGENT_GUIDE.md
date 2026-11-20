@@ -76,7 +76,14 @@ email, account credentials or application keys.
    route in the build guide.
 6. Follow **create → define state → configure authority and initial
    generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a host
-   handle does not create application commands or a running session.
+   handle does not create application commands or a running session. Keep the
+   starter's connection component (`connection.mjs`, `connect-view.mjs`): opening
+   the page connects, and a new browser is approved with one tap on the service
+   origin that returns to the page. Never ship separate request/connect buttons.
+   Design views that fit the data; a JSON or field-by-field record editor is a
+   fallback, never the deliverable for a "full-featured" request. After the first
+   working version, run the UX pass in the delivery guide (phone and desktop,
+   fresh profile, screenshots).
 7. To use the app from this MCP connection, read `topic: "connect"`. Attach
    `@tendriller/core/assistant` to the *existing* application participant, propose
    its declared capabilities before claim, and give the owner the ready page and
@@ -107,4 +114,4 @@ a mounted card or a connected page does not guarantee that this ChatGPT
 conversation will wake after the turn ends. A stopped participant cannot execute
 new queries or commands: resume it from its retained store.
 
-During initial sign-in and consent, the native assistant adapter retries with backoff for up to ten minutes, matching the reviewed pairing window. Keep its process running while the owner reviews. An explicit `startup_timeout` means resume the same project and reopen the pairing window if necessary; do not replace its device or setup intent. After connection, idle adapter sockets hibernate. Revoked or replaced adapters stop immediately.
+During initial sign-in and consent, the native assistant adapter retries with backoff for up to ten minutes. Browser enrollment stays open for as long as the participant runs. Keep its process running while the owner reviews. An explicit `startup_timeout` means resume the same project; do not replace its device or setup intent. After connection, idle adapter sockets hibernate. Revoked or replaced adapters stop immediately.

@@ -53,6 +53,23 @@ remain bounded per attachment and owner; quota errors affect that client and do
 not convert dropped live progress into durable work. Save final results through
 the application's guarded command path.
 
+A resolved `send` means the signal was accepted by a route (or echoed to local
+views with `localEcho`), not that a particular peer received it. Right after
+connecting, the answering peer may not be connected yet; a request sent then is
+only echoed locally. For on-demand answers use the starter's
+`helpers/signal-request.mjs`: it waits until the answering peer is in
+`participation.status.connectedPeers`, re-sends the same request ID until the
+first reply piece arrives, and splits and reassembles replies larger than one
+16 KiB signal. Subscribe to reply pieces with `mode: 'all'`; `'latest'` keeps only
+the newest value per stream and suits state snapshots.
+
+Multi-piece messages are paced by the transport. Send each piece after the
+previous `send` resolves. The relay keeps a window of packets in flight and an
+ordered bounded local queue for the rest; the browser owner's fallback route and
+the starter's subscription queues are byte-bounded (8 MiB) so a reply of a few
+hundred KB does not refuse pieces or overflow a subscriber. `SIGNAL_BACKPRESSURE`
+now means a genuinely full queue.
+
 A live preview and its durable completion are separate operations. For example, drag previews may be replaced or lost; the final location is submitted as an ordinary application command with an operation ID. Stopping or disconnecting a signal source must not enqueue its expired previews into durable history.
 
 Tendriller's control transport refuses `ephemeral/signal`. The host's allowed ephemeral action is the small connection invitation, which contains routing intent only. Live application signals travel through the session's authenticated peer transport. There is no built-in hosted signal channel or automatic role-based alternative.

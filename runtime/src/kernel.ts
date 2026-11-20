@@ -1,4 +1,5 @@
-import { documentUrl, validateDocumentContext } from "./document";
+import { validateDocumentContext } from "./document";
+import { explicitlyPinned, watchPublicationUpdates } from "./updates";
 // Importing this module mounts nothing and requests no device permissions.
 // One application session owns data. A page owns all application UI.
 import { createCore } from "./core";
@@ -41,11 +42,9 @@ export interface RuntimeOptions {
 }
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
-  if (cfg.publication && cfg.version > 0) {
-    const pinned = documentUrl(cfg, new URL(cfg.publication.base, location.href));
-    pinned.search = location.search; pinned.hash = location.hash;
-    if (pinned.href !== location.href) history.replaceState(history.state, "", pinned.href);
-  }
+  // The address bar keeps the page's own URL so a reload or new tab opens the latest
+  // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
+  const updates = watchPublicationUpdates(cfg, { pinned: explicitlyPinned(cfg) });
   const core = createCore(cfg, options.application);
   let registration: Promise<void> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core).then(registered => {
@@ -89,7 +88,9 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     version: cfg.version,
     identity,
     installation: installation.api,
-    publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); } },
+    publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); },
+      get pinned() { return updates.pinned; }, get updateAvailable() { return updates.updateAvailable; },
+      onUpdate: listener => updates.onUpdate(listener), hold: () => updates.hold(), update: () => updates.update() },
     assetUrl(path) {
       if (!path || /[?#\\]/.test(path) || path.startsWith("/") || /^[a-z]+:/i.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || decodeURIComponent(path) !== path)
         throw new TypeError("Runtime assets require an unencoded relative path");

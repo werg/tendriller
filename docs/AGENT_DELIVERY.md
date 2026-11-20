@@ -119,7 +119,30 @@ to return to the application:
 | Retained work | Same-device browser reload and native reopen, with the original work still present |
 | Agent/process | What is running, where, its known lifetime, and the exact resume command |
 | Reuse | Which supplied session, helper and capability modules the app uses |
+| First visit and later visits | From a fresh phone-sized profile: the page connects with at most one approval tap on the service origin and no other setup UI; a reload and a second tab connect with none |
+| User experience | Before/after screenshots of every main flow on a phone-sized viewport and on desktop (below) |
 | Remaining boundary | Concrete unverified or blocked behavior, including conversation wake if relevant |
+
+## The user experience is part of the deliverable
+
+Plumbing evidence (receipts, commands both ways, reload) does not show that the
+app is usable. Before delivery, run a dedicated UX pass after the first working
+version:
+
+1. Walk every main user flow end to end in a real browser, from a fresh profile,
+   on a phone-sized viewport and on desktop. Take screenshots.
+2. Judge each screen and fix friction before delivering: visual hierarchy and the
+   one obvious next action, density, empty, loading and error states, long content
+   (truncate or fold, never a wall of raw text), named links instead of raw URLs,
+   URL-addressable state with a working back button, and keyboard use.
+3. While disconnected, show one clear connection state
+   ([the connection component](APP_PATTERNS.md#connect-the-browser)), not empty
+   dashboards, stale-data warnings or raw error codes.
+4. Design views that fit the data: conversations, timelines, diffs, tables with
+   named links, inline editing with previews. A structured record editor (JSON or
+   a form of fields) is a fallback, never the deliverable when the request is a
+   "full-featured" or "rich" experience.
+5. Report before/after screenshots and what changed.
 
 Supply editable source alongside this evidence when useful. Do not describe source
 delivery as a deployed or connected application. The

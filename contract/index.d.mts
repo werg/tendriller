@@ -71,7 +71,18 @@ export interface RuntimeServices {
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
   /** Resolves only after the exact required publication graph is saved by its service worker. */
-  publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
+  publication: {
+    saveOffline(): Promise<{ id: string; status: "ready" }>;
+    /** True only when this document was opened at its immutable /_publications/ID/ URL. */
+    readonly pinned: boolean;
+    /** A newer release is selected; the page switches at its next safe point. */
+    readonly updateAvailable: boolean;
+    onUpdate(listener: (update: { version: number }) => void): () => void;
+    /** Defer the automatic switch while there is unsaved work; call the result to release. */
+    hold(): () => void;
+    /** Load the latest selected release now. */
+    update(): void;
+  };
   sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
 }
 /** Application work belongs to the installed session; host services are explicit. */

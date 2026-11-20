@@ -48,7 +48,8 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
       await verifyAuthorityBundle(authority, descriptor);
       const device = await openNativeDevice({ path: selected.device });
       try {
-        session = await openNativeApplication({ device, definition, authority });
+        session = await openNativeApplication({ device, definition, authority,
+          signals: { limits: { maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } } });
         pairing = Object.freeze({ descriptor, applicationId: handle.application.id,
           serviceOrigin: new URL(handle.api).origin, pageOrigin: new URL(handle.page_url).origin,
           authority: options => host.peers.application(options),

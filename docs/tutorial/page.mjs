@@ -2,6 +2,7 @@ import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
 import { createViewStore, operationReference } from '@tendriller/core/collaboration';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createLiveView } from './helpers/live-view.mjs';
+import { createSignalRequests } from './helpers/signal-request.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { mountReviewedMedia } from './media/panel.mjs';
 import { createBrowserPairing } from './pairing-browser.mjs';
@@ -175,6 +176,8 @@ async function connectSession() {
       $('#peer-status').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}.`;
     });
     if ($('#operation-id').value) observeOperation($('#operation-id').value);
+    // On-demand answers from the native participant (not retained in the journal).
+    window.appRequests = createSignalRequests(session, { peer: configuration.nativeDeviceId });
     $('#editor').disabled = false; $('#close').disabled = false; $('#app-content').hidden = false;
   } catch (error) {
     if (!installed) {

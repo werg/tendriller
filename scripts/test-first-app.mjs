@@ -642,6 +642,25 @@ export async function closeLocalTransport() {
     await page.setViewportSize({ width: 1280, height: 960 });
     passed('a frozen (backgrounded) tab receives live replies again after resuming, without reload or prompts');
 
+    checkpoint('a request sent right after connecting is answered, and periodic updates arrive in every subscription mode');
+    await page.reload();
+    await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
+    const requested = Date.now();
+    const answer = await page.evaluate(() => window.appRequests.request('rows', { count: 300, width: 900 }).then(value => ({ rows: value.rows.length, last: value.rows.at(-1).label })));
+    assert.deepEqual(answer, { rows: 300, last: 'row "299"' });
+    report.first_request_after_connect = { ms: Date.now() - requested, bytes: 300 * 900 };
+    await page.evaluate(() => {
+      window.stateModes = { all: 0, latest: 0 };
+      for (const mode of ['all', 'latest']) void (async () => { for await (const signal of window.tendril.signals.subscribe({ topics: ['state'], mode })) { void signal; window.stateModes[mode]++; } })();
+    });
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await peer.request('signal-state', { count: 5, intervalMs: 500 });
+    await expect.poll(() => page.evaluate(() => window.stateModes.all), { timeout: 10_000 }).toBe(5);
+    report.periodic_updates = await page.evaluate(() => window.stateModes);
+    assert.ok(report.periodic_updates.latest >= 1, `A 'latest' subscription must observe periodic updates: ${JSON.stringify(report.periodic_updates)}`);
+    passed('the first request after connect is answered (300 rows, ~270 KB) and periodic updates reach all and latest subscribers');
+
+
     checkpoint('cancel an applied waiter, reload and retry its original operation');
     await page.evaluate(() => {
       const timeout = AbortSignal.timeout.bind(AbortSignal);

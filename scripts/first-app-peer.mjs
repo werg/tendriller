@@ -7,6 +7,7 @@ import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
 import {startReviewedPairingLoop} from './pairing-native.mjs';
 import {servePeerInference} from './media/inference-service.mjs';
+import {serveSignalRequests} from './helpers/signal-request.mjs';
 ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
 const owned = await openSession(), {session,supervisor} = owned;
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
@@ -35,6 +36,11 @@ try {
   // Every participation change, with its peer set, so the harness can count churn.
   const participationLog = [];
   session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); });
+  const requestsStopped = new AbortController();
+  void serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
+    if (q !== 'rows') throw Object.assign(Error('Unknown request'), { code: 'unknown' });
+    return { rows: Array.from({ length: input.count }, (_value, index) => ({ index, label: 'row "' + index + '"', text: 'x'.repeat(input.width) })) };
+  } }).catch(() => {});
   console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
   input = createInterface({input:process.stdin});
   for await (const line of input) {
@@ -44,6 +50,11 @@ try {
       if(request.action==='query') result=await session.query('notes',null);
       else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus};
       else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
+      else if(request.action==='signal-state') {
+        // Periodic state updates, as a dashboard sends them.
+        for(let index=0;index<request.count;index++){ await session.signals.send('state',{index,at:Date.now()},{ttlMs:30000}); await new Promise(r=>setTimeout(r,request.intervalMs)); }
+        result={sent:request.count};
+      }
       else if(request.action==='signal-burst') {
         // A reply larger than one signal, sent piece by piece as an app would: each send awaited, none retried.
         const failures=[], started=Date.now();

@@ -30,7 +30,7 @@ test('verified owner claims a page and executes its signed authored module', asy
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);
     expect((await client(handle).peers.publication())?.publication.id).toBe(release.publication.id);
-    expect(page.url()).toContain(`/_publications/${release.version}/`);
+    expect(page.url(), 'The address stays canonical, so a reload opens the latest release.').not.toContain('/_publications/');
     expect(page.url()).not.toContain('/auth/page');
   } finally { await deletePage(handle); }
 });
@@ -43,19 +43,45 @@ test('a different verified account cannot claim the owner invitation', async ({ 
   } finally { await deletePage(handle); }
 });
 
-test('each signed release serves one immutable graph and canonical navigation selects the next', async ({ page, context }) => {
+test('the page shows the latest release: open tabs switch when idle, wait for unsaved input, and only an explicit release URL pins', async ({ page, context }) => {
   const handle = await createPage();
   try {
     await signInFixture(context); await claim(context, handle);
-    const first = await publish(handle, '<h1 id="release">one</h1>');
-    await openClaimed(page, handle); const originalUrl = page.url();
+    const first = await publish(handle, '<h1 id="release">one</h1><input id="draft">');
+    await openClaimed(page, handle);
     await expect(page.locator('#release')).toHaveText('one');
-    const second = await publish(handle, '<h1 id="release">two</h1>');
+    const second = await publish(handle, '<h1 id="release">two</h1><input id="draft">');
     expect(second.version).toBe(first.version + 1);
-    await expect(page.locator('#release')).toHaveText('one');
-    await page.goto(localPageUrl(handle));
+    // An idle open tab switches by itself.
+    await expect(page.locator('#release')).toHaveText('two', { timeout: 15_000 });
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(false);
+    // Unsaved input defers the switch until it is no longer being edited.
+    await page.locator('#draft').fill('unsaved');
+    await publish(handle, '<h1 id="release">three</h1><input id="draft">');
+    await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable), { timeout: 15_000 }).toBe(true);
+    await page.waitForTimeout(1500);
     await expect(page.locator('#release')).toHaveText('two');
-    await page.goto(originalUrl);
+    await page.locator('#draft').fill('');
+    await page.locator('#draft').blur();
+    await expect(page.locator('#release')).toHaveText('three', { timeout: 15_000 });
+    // A reload and a new tab open the latest release.
+    await page.reload(); await expect(page.locator('#release')).toHaveText('three');
+    const other = await context.newPage(); await other.goto(page.url());
+    await expect(other.locator('#release')).toHaveText('three'); await other.close();
+    // A phone tab frozen in the background while a release is published switches on resume.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const lifecycle = await context.newCDPSession(page);
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
+    await publish(handle, '<h1 id="release">resumed</h1><input id="draft">');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+    await expect(page.locator('#release')).toHaveText('resumed', { timeout: 20_000 });
+    // Pinning is explicit: the immutable release URL stays on that release.
+    await page.goto(new URL(`_publications/${first.version}/`, localPageUrl(handle)).href);
+    await expect(page.locator('#release')).toHaveText('one');
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
+    await publish(handle, '<h1 id="release">four</h1><input id="draft">');
+    await page.waitForTimeout(3000);
     await expect(page.locator('#release')).toHaveText('one');
     expect((await client(handle).peers.publication(first.publication.id))?.publication).toEqual(first.publication);
   } finally { await deletePage(handle); }

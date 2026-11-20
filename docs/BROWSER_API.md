@@ -51,6 +51,7 @@ Safari device-qualification guarantee.
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
+| `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
 Construction starts no host connection, fetch, IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
 
@@ -60,7 +61,7 @@ Open **Page options** to add the page to the Home Screen or read the current pla
 
 Startup does not open an install prompt. On eligible published mobile pages, a small suggestion may appear after a 12-second delay following a trusted page interaction. It stays out of focused form editing, active or pending sensor use, and hidden pages. **Not now** suppresses suggestions for that page on this browser for 30 days; Page options remains available. Already standalone pages do not show installation suggestions.
 
-The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. An open tab remains pinned to its immutable publication, including on reload. **Page options → Open latest version** explicitly opens the selected release. Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
+The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. A page always shows the latest release by default (see below). Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
 
 For the default manifest, a custom page `icon` URL ending in `.png`, `.webp`, or `.svg` replaces the generated installation artwork. Serve a square image large enough for the target browsers. Use an authored manifest to declare exact sizes, provide alternate icons, or reference artwork at a URL without a supported file extension.
 
@@ -120,4 +121,37 @@ Each publication pins its complete authored file graph and runtime. **Page optio
 
 The service-owned management page remains available if authored JavaScript fails. It manages account access and displays publication history. Changing selected code requires a new signed Chronolog publication.
 
-While visible, the holding page checks for a signed publication and opens the selected release as soon as it is available. Once a version is open, its URL pins that publication so a reload can recover the same code. Use **Open latest version** in the page controls to load the currently selected release.
+While visible, the holding page checks for a signed publication and opens the selected release as soon as it is available.
+
+## The latest release by default
+
+The address bar keeps the page's own URL; the document's assets resolve through
+its injected `<base>`, which names the immutable publication graph. So:
+
+- a reload, a new tab, a Home Screen launch and a discarded-then-restored tab load
+  the release that is selected **now**;
+- an open tab holds one hibernating watch and learns when a newer release is
+  published. It switches at its next safe point: immediately when hidden or idle,
+  otherwise once no editable field is focused or changed and no
+  `tendril.publication.hold()` is active. A tab resumed from the background
+  rechecks at once;
+- pinning is explicit: a document opened at its immutable
+  `…/_publications/ID/` URL stays on that release (for a review or a comparison),
+  and `publication.pinned` is `true`.
+
+Every release is still the signed, verified publication the host selected; the
+switch is an ordinary navigation, so the runtime verifies it as on any load.
+Device keys, retained operations and drafts live in browser storage and survive
+the switch. An app with work that is not in `input`/`textarea` values calls
+`const release = tendril.publication.hold()` while that work is unsaved, then
+`release()`. `publication.onUpdate(listener)` lets an app show its own notice;
+`publication.update()` switches immediately.
+
+Why pages used to stay on their first release, and how that is kept: (1) a reload
+recovered the exact code that held unsent work; drafts and pending operation
+references are retained in storage and the switch waits for unsaved input or an
+explicit hold. (2) A new release's owner Worker could not take a profile from an
+older one still running in another tab; pages now attach to the running owner
+whatever its Worker version, and a changed application definition still needs a
+new application rather than a publish. (3) Offline launches use the saved graph
+when the network is unavailable, as before.

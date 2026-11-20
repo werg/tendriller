@@ -174,7 +174,8 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
       by,
       source: "server",
     });
-    if (next === 1) t.afterCommit(() => notifyPublicationWatchers(t));
+    // Holding pages wait for the first release; open pages wait for any newer one.
+    t.afterCommit(() => notifyPublicationWatchers(t));
     return next;
   });
   return n;

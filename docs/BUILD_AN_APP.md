@@ -526,69 +526,71 @@ attachment mode; for example `npx tendril --session ./session.mjs self`. They do
 not open or close the signer store. Publication and setup administration use the
 explicit `--mode own` commands above while the resident owner is stopped.
 
-Publishing code does not enroll the browser's future device. The first visit
-therefore shows the next setup action explicitly.
+Publishing code does not enroll the browser's future device. The page's
+connection component does that the first time each browser opens it.
 
 ## 6. Enroll and connect the owner's browser
 
-Start the private project's native participant before browser review:
+Start the private project's native participant before the owner opens the page:
 
 ```sh
 npm run peer # Or npm run assistant when using MCP access.
 ```
 
-Open the published page while signed in as its owner and choose **Request browser
-access**. The page retains one public request ID before networking. A short-lived
-Worker opens this browser's own retained identity under its exclusive device
-lock and signs the service challenge. That challenge binds the key, account,
-application, service/page origins, exact read/write rights, current authority and
-expiry. The private key stays in Worker storage.
+**Ship the connection component, not buttons.** The starter's `page.mjs` uses
+`createOwnerConnection` from `connection.mjs` and `mountConnectionView` from
+`connect-view.mjs` (see [Connect the browser](APP_PATTERNS.md#connect-the-browser)).
+Opening the page is the whole flow; agents keep it when adapting the UI:
 
-The same native owner saves the pairing intent, **durably pauses command
-ordering**, and retains the exact signed control proposal before submitting it
-for review. The pause drains earlier ordering work and freezes the selected
-prefix; merely checking that the generation has not changed would miss later
-writes within that generation. The proposal preserves all existing grants,
-epoch/key commitments and recovery floor and adds only the proved account/key
-with the narrow browser rights. The service validates the normal signed control
-admission without selecting a new generation at this stage.
+1. The page attaches to this browser's device owner. Every tab of the page shares
+   it; a tab on another publication's Worker attaches to the running owner.
+   A browser that is already enrolled is connected now, on every later visit,
+   with no prompt.
+2. A new browser retains one public request ID, creates its own key in a Worker
+   and signs the service challenge. That challenge binds the key, account,
+   application, service/page origins, exact read/write rights, current authority
+   and expiry. The private key stays in Worker storage.
+3. The host wakes the native owner. It saves the pairing intent, **durably pauses
+   command ordering**, and stages the exact signed control proposal before
+   review. The pause freezes the selected prefix; the proposal preserves all
+   existing grants, epoch/key commitments and recovery floor and adds only the
+   proved account/key with the narrow browser rights.
+4. The page then opens the service-origin approval once, with `return_to` set to
+   itself. The signed-in owner sees **Add this browser to APP?** and taps
+   **Approve this device**: the single confirmation, with same-origin and CSRF
+   checks, on a page that cannot be framed. Technical details (fingerprint,
+   origins, generation, retained prefix, proposal digest) are folded below it.
+   The service returns to the page, and only to that page's origin.
+5. The page shows **Finishing setup…** while the native owner saves the exact
+   commit attempt and submits the reviewed transition (the server rechecks
+   account access and authority), then connects by itself.
 
-Open **Review this exact browser request**. If preparation is still
-pending, keep the native owner running and reopen the review once it has staged
-the proposal. On the service-origin page, compare the complete fingerprint with
-the browser's displayed key and review the account, application, origins, rights,
-selected generation, retained prefix and proposal digest. Choose **Approve this
-device** only for that exact proposal. Review has same-origin and CSRF checks;
-it does not itself install the device grant. The native owner saves the exact
-commit attempt, then submits the reviewed transition. The server rechecks
-current account access and authority inside the serialized normal selector.
+If the owner leaves the approval without deciding, the page offers one
+**Approve this browser** action. Expired or stale requests are renewed for the
+same device; a denied request waits for an explicit **Ask again**. A request that
+the participant committed while the page was away is found on the next open.
+Errors are shown in user words (`describeConnectionError`), with the code folded
+into technical details; never show raw codes such as `APPLICATION_DEVICE_NOT_FOUND`
+or `OWNER_BUSY` as the message.
 
-The native review window lasts at most ten minutes, with idle checks backing off
-to thirty seconds.
-Closing it does not erase a durable pause. Native records under `.tendriller/`
+`npm run peer` keeps enrollment open for as long as it runs. A host notice wakes
+it when a browser asks and when the owner approves; idle checks otherwise back
+off to thirty seconds. A finite `durationMs` is available for one-off helpers.
+Stopping it does not erase a durable pause. Native records under `.tendriller/`
 retain `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json`; the pause belongs to the
-same device store. After a timeout, lost response or restart, reopen that same
-participant to reconcile the original outcome before resuming ordering.
+same device store. After a timeout, lost response or restart, the same
+participant's first pass reconciles the original outcome before resuming ordering.
 Uncertain or mismatched outcomes stay paused. Do not delete retained evidence,
 rebase the proposal or create another signer to get past the pause. Exact
 receipt recovery works even after a later generation change, and never restores
 a subsequently revoked grant.
 
-Choose **Check pairing status**, or return from the review tab for one bounded
-status read. There is no continuous browser poll. Only **Enrollment committed**
-means the reviewed signed grant is installed. Reloads retain the same request
-and browser key. Expired, denied or stale requests offer an explicit new review
-for that device; uncertain outcomes remain on the original request.
-
 For a deliberate inspection/retry step with the resident owner stopped,
 `npm run pair` performs one prepare/inspect/commit pass. It does not wait for human
-approval or the later independent receipt-verification pass. If it prepares or
-submits a proposal, restart the same native participant to finish or reconcile
-that request; keep the native process running for the complete pairing flow.
-`npm run enroll -- PUBLIC_KEY`
-remains a deliberate manual administration route; the ordinary browser flow
-uses its own signed proof and the complete proposal review above.
+approval. `npm run enroll -- PUBLIC_KEY` remains a deliberate manual
+administration route; the ordinary browser flow uses its own signed proof and the
+service-origin approval above.
 
 This first app grants the browser **read and write**, with **no publication,
 administration, coordination or recovery authority**. This keeps the first
@@ -599,7 +601,7 @@ service. Add browser coordination/recovery grants deliberately when the app's
 availability policy needs them; see [Membership](MEMBERSHIP.md) and
 [Peer connections](PEER_CONNECTIONS.md).
 
-Now choose **Connect existing device**. The Worker reopens its original identity,
+On connect, the Worker reopens its original identity,
 reads signed authority through its authenticated page session, verifies the
 pinned descriptor and starts participation. A current reader supplies the
 committed epoch keys through the authenticated encrypted peer channel.
@@ -619,7 +621,7 @@ Call the app complete only after checking the actual hosted behavior:
 
 1. The browser reads the native note from step 3, then saves a new note with an
    accepted applied result. The native peer reports the changed notes count.
-2. **Close connection**, reload, and choose **Connect existing device**. The
+2. **Close connection** and reload. The page connects by itself and the
    browser displays the same public key and retained notes. Do not create a
    replacement identity to make a failed resume look successful.
 3. Save a note, record its operation ID, and inspect it. Retrying that exact ID
