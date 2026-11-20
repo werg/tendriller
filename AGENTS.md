@@ -12,6 +12,10 @@ The complete [session bootstrap](docs/SESSION_BOOTSTRAP.md) and tutorial files s
 the native session and browser Worker; do not invent a `deployment.mjs` import.
 Start at the requested service origin's `/api/service` and
 `/.well-known/tendriller.json`. Use that same origin for setup, including on staging.
+Read `/api/readiness` before downloading or installing packages. Require open
+creation readiness at that origin; stop on a pause, unavailable or unsupported
+readiness and report its next action. Follow `firstApp.release` and the build
+guide for the immutable kit and exact local package composition.
 
 The intended route is **create → define state → configure authority and initial generation → publish signed UI → owner sign-in → connect devices → verify**. A created
 page is only the host handle. Host credentials, device grants and publication

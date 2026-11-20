@@ -34,7 +34,7 @@ email, account credentials or application keys.
    for reusable state, UI, sensor and media modules. The build guide contains
    the actual runnable starter, package acquisition and exact lifecycle commands.
 2. Before downloading or installing packages, read the same-origin
-   `setup.readinessUrl` (or `onboarding.interfaces.readiness`). Require an HTTP
+   `setup.readinessUrl` (or `onboarding.interfaces.readiness`) at `/api/readiness`. Require an HTTP
    200 response with `schemaVersion: 1`, the exact selected `serviceOrigin`,
    `mode: "open"` and `creation.available: true`. A paused/read-only service can
    return HTTP 200 with creation disabled. Stop new-app setup and report its
@@ -51,13 +51,16 @@ email, account credentials or application keys.
    concrete handoff to the person's coding-agent/runtime with this same service
    origin and guide. Do not search for unrelated plugins or promise that MCP
    alone hosts a new app's executable participant.
-4. Read `https://tendriller.dev/api/service` and
-   `https://tendriller.dev/.well-known/tendriller.json`. Download
-   `https://tendriller.dev/downloads/tendriller-first-app.tgz`. Use the supplied
-   files; do not invent a deployment module or substitute a separate backend
-   merely because the session is not configured yet.
+4. Read the selected origin's `/api/service` and
+   `/.well-known/tendriller.json`. Follow `firstApp.release` and the build guide
+   to download the immutable `tendriller-first-app-VERSION.tgz` kit, verify its
+   composition against the host identity, and install its local `packages/`
+   archives. The mutable `/downloads/tendriller-first-app.tgz` is source for
+   inspection, not a matching package composition. Use the supplied files;
+   do not invent a deployment module or substitute a separate backend merely
+   because the session is not configured yet.
 5. Get the owner's verified login email if unknown. Provision early using the
-   starter's create command (HTTP `POST https://tendriller.dev/api/tendrils`
+   starter's create command (HTTP `POST /api/tendrils` on the selected origin
    with JSON `{"owner":"their-email","name":"App name"}`). This is the supported
    creation route even though MCP's application tools operate on already
    connected apps. Save the private returned handle in the execution environment

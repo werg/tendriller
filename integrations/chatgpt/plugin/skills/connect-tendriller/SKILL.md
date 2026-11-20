@@ -9,10 +9,24 @@ Start with `tendril_guide` (`topic: "start"`). It returns the maintained setup
 instructions directly, without requiring web browsing. Follow its `serviceOrigin`
 for every request and link, including staging. A custom MCP connection may not
 include this skill; the tool and server instructions provide the same entry path.
+If the installed catalog lacks `tendril_guide`, call `get_profile` or
+`list_tendrils` and read the returned `setup.startHere`, `setup.buildGuide` or
+`setup.discoveryUrl` directly. Refresh the tool catalog when available. Keep the
+returned origin; do not infer an environment from the plugin name or substitute
+another service.
 
 For a **new page/application**, read `tendril_guide` with `topic: "build"` and
 `topic: "capabilities"`. Use the supplied native/browser starter, the supported
-HTTP page-creation API and the existing UI/sensor helper modules. Check that your
+HTTP page-creation API and the existing UI/sensor helper modules. Before
+downloading or installing packages, inspect this origin's `/api/readiness`
+(the returned `setup.readinessUrl`). Require the matching `serviceOrigin`,
+`mode: "open"` and `creation.available: true`. Stop on paused, read-only,
+unavailable or unsupported readiness and report `creation.nextAction`; do not
+repeat creation blindly or fall back to production. Follow the build guide and
+the discovery descriptor's `firstApp.release` to verify and install the immutable
+first-app kit and its exact local packages against the host identity.
+
+Check that your
 execution environment supports Node 24, installing the exact packages, retained
 private storage and the required running participant. Provision early, initialize and publish the first signed version, prepare any
 assistant-access proposal, and start the participant before giving the owner the
@@ -23,6 +37,11 @@ connection, signed publication and bidirectional verification. Then follow
 runtime is unavailable, name that prerequisite and offer a concrete handoff to a
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
 new app's executable participant.
+
+Run the starter's assistant participant for ordinary approved queries and
+commands. Event forwarding is an explicit `--events` choice with its own owner
+review; it does not configure a subscription, extend the process lifetime or
+establish future chat wake.
 
 For an **existing application**, call `list_tendrils`, then
 `describe_application`. An empty list means no assistant-connected applications

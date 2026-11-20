@@ -51,6 +51,71 @@ Previews use the same engine and code artifacts. They begin with creation paused
 
 Service state can pause creation or make the host read-only. Page/account holds revoke access and close introduction sockets; session device revocation is a separate signed control decision. Use account notices and appeal/review facilities for the host's moderation workflow.
 
+### Inspect and restore staging readiness
+
+Inspect the anonymous machine-readable surface before starting an onboarding
+exercise. `/api/readiness` is separate from the strict `/api/service` contract
+and does not reserve an account, page or quota:
+
+```sh
+TENDRILLER_ORIGIN=https://staging.tendriller.dev
+curl --fail-with-body --show-error --silent "$TENDRILLER_ORIGIN/api/readiness"
+```
+
+Record the selected origin, `environment`, `build`, `checkedAt`, `mode`,
+`creation` and `writes` with the exact deployment checkpoint. Verify that
+`serviceOrigin` equals this origin and that the source/composition identities
+match the intended deployment. A missing identity requires deployment evidence;
+do not infer it from the runtime hash. The modes mean:
+
+| Mode | Creation | Existing writes | Operator action |
+| --- | --- | --- | --- |
+| `open` | Available subject to admission and quotas | Available subject to authorization | Continue the intended exercise; creation still rechecks live state. |
+| `creation_paused` | Blocked | Available subject to authorization | Inspect why the pause was selected before intentionally reopening it. |
+| `read_only` | Blocked | Blocked | Resolve the operational incident before deliberately changing the mode. |
+| `unavailable` or no valid readiness response | Unverified and blocked | Unverified | Check the Worker deployment, D1 binding/schema, platform errors and quotas; do not guess a mode or switch origins. |
+
+A 404 means the selected deployment lacks the readiness endpoint. Deploy the
+qualified compatible composition through the normal release gate before using
+new setup clients. A 503 or malformed response is not evidence that the database
+contains `creation_paused`.
+
+An authenticated operator can inspect the actual staging row without changing
+it. Verify the account, Worker and `ACCOUNTS` binding in the selected
+configuration first:
+
+```sh
+node node_modules/wrangler/bin/wrangler.js d1 execute ACCOUNTS --remote \
+  --config server/wrangler.staging.jsonc --json \
+  --command 'SELECT id, mode FROM service_state WHERE id=1'
+```
+
+Only when reopening this exact staging deployment is intended, record its
+previous mode and use a conditional transition. This command changes a known
+creation pause; it cannot override a concurrent switch to read-only:
+
+```sh
+node node_modules/wrangler/bin/wrangler.js d1 execute ACCOUNTS --remote \
+  --config server/wrangler.staging.jsonc --json \
+  --command "UPDATE service_state SET mode='open' WHERE id=1 AND mode='creation_paused'"
+```
+
+Require exactly one changed row, then reread both the database mode and the
+same-origin readiness response. Zero changes means the observed mode changed or
+the row is absent: inspect again and stop the reopening attempt. Do not create a
+replacement row, reset storage, or relax schema checks as a repair. Recovery
+from read-only is a separate deliberate operator decision after its cause is
+resolved.
+
+For a temporary qualification window whose previous mode was `creation_paused`,
+restore that mode after the test with the same configuration and
+`UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'`.
+Verify the changed-row count and readiness again; a concurrent read-only
+incident must remain read-only. `scripts/run-staging-acceptance.mjs` performs
+this conditional temporary-open/restore sequence for its own staging run. It is
+not a read-only readiness probe. Repository checks and onboarding repair work do
+not change any deployed service mode.
+
 Inspect reserved file bytes against host/account ledgers when diagnosing storage discrepancies. Retained signed releases keep their immutable file references; orphan cleanup must not delete those assets. Page/account deletion deliberately removes hosted resources, while independently retained application data remains subject to the application's own policy.
 
 The account dashboard shows host lifecycle/publication activity. Local camera, microphone and location activity is tracked and stopped on the device; it is not a host sensor-history product. Use measured application/host traffic and actual deployment metrics when making capacity or cost claims.

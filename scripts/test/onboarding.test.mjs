@@ -34,6 +34,14 @@ test('MCP, published onboarding and installable skill retain one current discove
   assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
   for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery'])
     assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
+  for (const path of ['AGENTS.md', 'agent.md', 'docs/MCP_AGENT_GUIDE.md',
+    'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md']) {
+    const content = readFileSync(join(root, path), 'utf8');
+    assert(content.includes('/api/readiness'), `${path} lost the pre-installation readiness check`);
+    assert(content.includes('firstApp.release'), `${path} lost the immutable first-app composition route`);
+  }
+  for (const fallback of ['setup.startHere', 'setup.buildGuide', 'setup.discoveryUrl'])
+    assert(skill.includes(fallback), `Packaged skill lost the stale-tool fallback ${fallback}`);
 });
 
 test('the domain-only onboarding graph points to shipped public documents and the starter', () => {

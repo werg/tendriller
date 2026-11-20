@@ -1,7 +1,10 @@
 # Build a Tendriller application
 
 **The deliverable is a running hosted application connected to the user's work.**
-Initiate provisioning, configure the session, publish the first signed UI and
+Check the selected service's `/api/readiness` before installing or provisioning.
+Continue new-app setup only when creation is available; otherwise report the
+same-origin next action. Initiate provisioning, configure the session, publish
+the first signed UI and
 start the participant before asking the owner to sign in. Read
 [delivery and process lifetime](docs/AGENT_DELIVERY.md); source files alone do not
 establish the requested result.
@@ -34,6 +37,10 @@ created application's code by itself.
 
 1. Read that origin's `/api/service` for its contract/release and
    `/.well-known/tendriller.json` for the first-app guide and machine-readable route.
+   Before downloading or installing packages, require matching-origin open
+   creation readiness from `/api/readiness`; stop on a pause, unavailable or
+   unsupported readiness. The build guide verifies the immutable
+   `firstApp.release` kit and its local packages against this host's identity.
    `/llms.txt` is the ordered index; `/llms-full.txt` is the combined onboarding text.
    Search `/.well-known/tendriller-capabilities.json` for the task's state, refresh,
    media, voice and preview needs before implementing equivalent plumbing.
@@ -53,7 +60,7 @@ created application's code by itself.
 
 ## Reuse the supplied implementation
 
-Start from the downloadable source and actually import or adapt its session,
+Start from the verified first-app kit and actually import or adapt its session,
 reactive-view, operation-view, reviewed-input, camera and voice modules. The
 [pattern guide](docs/APP_PATTERNS.md) and [media/inference example](docs/AI_INPUT.md)
 identify those files. Record which current implementations you used; reading
