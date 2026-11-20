@@ -1,4 +1,4 @@
-import { createPeerDiscoveryWatcher, validatePeerDiscoveryWatchOptions, PEER_DISCOVERY_PROTOCOL } from './discovery-watch.mjs';
+import { createPeerDiscoveryWatcher, validatePeerDiscoveryWatchOptions, PeerDiscoveryWatchError, PEER_DISCOVERY_PROTOCOL } from './discovery-watch.mjs';
 export * from './discovery-watch.mjs';
 import { validatePeerAdvertisement, validatePeerAdvertisementPresence, validatePeerDirectory, validatePeerId } from './discovery.mjs';
 export * from './discovery.mjs';
@@ -15,7 +15,8 @@ const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
   constructor(code, message) { super(message); this.name = 'PeerConnectionError'; this.code = code; }
 }
-const fail = (code, message) => { throw new PeerConnectionError(code, message); };
+const fail = (code, message) => { throw code === 'invalid_discovery_watch'
+  ? new PeerDiscoveryWatchError(code, message) : new PeerConnectionError(code, message); };
 export function validatePeerBootstrap(value) {
   if (!value || value.version !== 2 || !Array.isArray(value.endpoints) || value.endpoints.length > MAX_BOOTSTRAP_ENDPOINTS ||
       Object.keys(value).some(key => !['version', 'endpoints'].includes(key))) fail('invalid_bootstrap', 'Expected a bounded version 2 introduction endpoint list');
@@ -163,7 +164,10 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
       if (typeof peerId !== 'string' || !/^[0-9a-f]{64}$/.test(peerId)) fail('invalid_discovery_watch', 'Discovery requires a signing peer identity');
       validatePeerDiscoveryWatchOptions(options);
       if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
-      const url = socketUrl('peers/discovery/watch', 'invalid_discovery_watch'); url.searchParams.set('peerId', peerId);
+      let url;
+      try { url = socketUrl('peers/discovery/watch', 'invalid_discovery_watch'); }
+      catch { fail('invalid_discovery_watch', 'Discovery requires a secure service URL without credentials'); }
+      url.searchParams.set('peerId', peerId);
       const watchProtocols = [PEER_DISCOVERY_PROTOCOL, ...protocols.filter(value =>
         ![PEER_DISCOVERY_PROTOCOL, PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL].includes(value))];
       return createPeerDiscoveryWatcher(() => (options.socket || socket)(url.href, watchProtocols), { ...options,

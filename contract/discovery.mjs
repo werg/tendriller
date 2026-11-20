@@ -2,7 +2,7 @@
 export const PEER_DIRECTORY_LIMITS = Object.freeze({ peers: 64, peersPerPrincipal: 8, routes: 4,
   advertisementBytes: 16_384 });
 export class PeerDiscoveryError extends Error {
-  constructor(code, message) { super(message); this.name = 'PeerDiscoveryError'; this.code = code; }
+  constructor(code, message) { super(message); this.name = 'PeerDiscoveryError'; this.code = code; this.retryable = false; }
 }
 const invalid = message => { throw new PeerDiscoveryError('invalid_advertisement', message); };
 const object = value => !!value && typeof value === 'object' && !Array.isArray(value);

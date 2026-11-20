@@ -2,7 +2,10 @@
 export const PEER_DISCOVERY_PROTOCOL = 'tendriller.discovery.v1';
 export const PEER_DISCOVERY_WATCH_LIMITS = Object.freeze({ messageBytes: 128, openTimeoutMs: 15_000,
   retryMs: 1000, maxRetryMs: 60_000 });
-const fail = (code, message) => Object.assign(new Error(message), { code });
+export class PeerDiscoveryWatchError extends Error {
+  constructor(code, message) { super(message); this.name = 'PeerDiscoveryWatchError'; this.code = code; this.retryable = false; }
+}
+const fail = (code, message) => new PeerDiscoveryWatchError(code, message);
 export function validatePeerDiscoveryNotification(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).join() !== 'type' ||
       !['ready', 'changed'].includes(value.type)) throw fail('invalid_discovery_notification', 'Expected only a discovery ready or changed notification');
