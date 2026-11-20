@@ -52,19 +52,21 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
   if (new Set(events.map(event => event.name)).size !== events.length || !queries.length && !commands.length && !events.length)
     throw new HttpError(400, 'invalid_exposure');
   const applicationId = selectedApplication(t).id;
-  // A replacement is a new grant even when the published schemas look alike.
-  const id = await sha256Hex(JSON.stringify([owner, applicationId, agent.credentialHash, label, adapterHashes, queries, commands, events]));
+  // Claim changes the authorized owner, not this page's exact prepared proposal.
+  const id = await sha256Hex(JSON.stringify([t.tid, applicationId, agent.credentialHash, label, adapterHashes, queries, commands, events]));
   return t.serializeAssistant(async () => {
-    if (owner !== (t.db.get('owner_account', null) ?? pendingPeerOwner(t)) || !await freshPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
+    const ownerCurrent = () => owner === (t.db.get('owner_account', null) ?? pendingPeerOwner(t));
+    if (!await freshPrincipal(t, agent) || !ownerCurrent()) throw new HttpError(403, 'forbidden');
     const previous = proposal(t);
+    if (previous?.id === id && previous.owner !== owner) throw new HttpError(403, 'forbidden');
     if (previous?.id !== id) {
       if (claimedOwner) await t.env.ACCOUNTS.prepare(`INSERT INTO assistant_connections(page_id,application_id,owner_account,label) VALUES(?,?,?,?)
         ON CONFLICT(page_id) DO UPDATE SET label=CASE WHEN enabled=0 THEN excluded.label ELSE label END`)
         .bind(t.tid, applicationId, owner, label).run();
-      if (!await freshPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
+      if (!await freshPrincipal(t, agent) || !ownerCurrent()) throw new HttpError(403, 'forbidden');
       t.db.set('assistant_proposal', { id, owner, applicationId, label, adapterHashes, agent, queries, commands, events });
     }
-    return json({ applicationId, proposed: id, approved: connection(t)?.id === id,
+    return json({ applicationId, proposed: id, approved: connection(t)?.id === id && connection(t)?.owner === owner,
       reviewUrl: publicBase(t.env) + reviewPath(t.tid) });
   });
 }

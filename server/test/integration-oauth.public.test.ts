@@ -17,7 +17,7 @@ import { connectApplicationAssistant, createAssistantKey, createApplicationAgent
 import { peerApiJson } from './peer-exchange';
 import { createPeerIdentity } from '@chronolog/peer-session';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
-import { advance, create, inDO, runAlarm, stub } from './helpers';
+import { advance, create, inDO, runAlarm, stub, apiJson } from './helpers';
 
 const ISSUER = 'https://tendriller.dev', RESOURCE = 'https://integration.example/mcp';
 const REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
@@ -162,14 +162,22 @@ it('prepares assistant permissions before claim and activates their review only 
   await inDO(h.id, t => { t.env.OAUTH_CONFIG_JSON = settings.OAUTH_CONFIG_JSON; t.env.OAUTH_SIGNING_JWK = settings.OAUTH_SIGNING_JWK; });
   try {
     const device = await createPeerIdentity();
-    await peerApiJson(h, 'control/configure', { historyId: 'prepared-assistant', executionManifestDigest: '12'.repeat(32),
+    const configuration = { historyId: 'prepared-assistant', executionManifestDigest: '12'.repeat(32),
       schemaAdministrator: device.publicKey, epoch: 0, keyDigest: '34'.repeat(32), members: [{ grant: participantGrant(device.publicKey, { administrator: true }) }],
       schema: null, definition: { id: 'prepared-notes', version: '1', schema: null,
         commands: [{ name: 'addNote', description: 'Add a note', input: { type: 'null' } }],
-        queries: [{ name: 'notes', description: 'Read notes', input: { type: 'null' } }] } });
+        queries: [{ name: 'notes', description: 'Read notes', input: { type: 'null' } }] } };
+    const authority = await peerApiJson(h, 'control/configure', configuration);
+    await peerApiJson(h, 'control/select', { request: await signTransitionRequest({ applicationId: h.application.id,
+      profile: authority.descriptor.payload.profile, policy: authority.descriptor.payload.policy, transitionId: 'prepared-genesis',
+      requester: device.publicKey, coordinator: device.publicKey, expectedGeneration: null, controlRevision: 0, reason: 'create', base: null }, device) });
+    const key = createAssistantKey(), adapterHash = await sha256Hex(key);
+    const input = { label: 'Prepared notes', adapterHashes: [adapterHash], queries: ['notes'], commands: ['addNote'], events: [] };
+    const prepare = (body = input, token = h.token) => request(new URL(h.api).pathname + '/assistant/propose', settings, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const response = await request(new URL(h.api).pathname + '/assistant/propose', settings, {
       method: 'POST', headers: { Authorization: 'Bearer ' + h.token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Prepared notes', adapterHashes: ['a'.repeat(64)], queries: ['notes'], commands: ['addNote'], events: [] }),
+      body: JSON.stringify(input),
     });
     expect(response.status).toBe(200);
     const prepared = await response.json() as { proposed: string; approved: boolean; reviewUrl: string };
@@ -189,6 +197,42 @@ it('prepares assistant permissions before claim and activates their review only 
     const csrf = /name="csrf" value="([^"]+)"/u.exec(text)![1];
     expect((await formPost(new URL(prepared.reviewUrl).pathname, { csrf, action: 'approve', queries: 'notes', commands: 'addNote' }, settings, f.cookie)).status).toBe(303);
     expect(await env.ACCOUNTS.prepare('SELECT enabled FROM assistant_connections WHERE page_id=?').bind(h.id).first()).toEqual({ enabled: 1 });
+    const approved = await inDO(h.id, t => t.db.get('assistant_connection', null));
+    const reconnect = async () => {
+      const response = await request(new URL(h.api).pathname + '/assistant/adapter', settings, { headers: {
+        Upgrade: 'websocket', 'Sec-WebSocket-Protocol': ['tendriller.application-mcp.v1', key, 'td_device_' + device.publicKey].join(', '),
+      } });
+      expect(response.status).toBe(101);
+      const socket = response.webSocket!; socket.accept();
+      const closed = new Promise<void>(resolve => socket.addEventListener('close', () => resolve(), { once: true }));
+      socket.close(); await closed;
+    };
+    await reconnect();
+    expect(await (await prepare()).json()).toMatchObject({ proposed: prepared.proposed, approved: true });
+    expect(await inDO(h.id, t => t.db.get('assistant_connection', null))).toEqual(approved);
+    await reconnect(); // Same reviewed key and retained signer; no second review.
+    const other = await hostFixture();
+    expect((await request(new URL(prepared.reviewUrl).pathname, settings, { headers: { Cookie: other.cookie } })).status).toBe(404);
+    for (const changed of [{ ...input, label: 'Changed label' }, { ...input, adapterHashes: ['b'.repeat(64)] }, { ...input, commands: [] }]) {
+      const result = await (await prepare(changed)).json() as { proposed: string; approved: boolean };
+      expect(result.proposed).not.toBe(prepared.proposed); expect(result.approved).toBe(false);
+    }
+    expect(await (await prepare()).json()).toMatchObject({ proposed: prepared.proposed, approved: true });
+    const delegated = await apiJson<{ token: string }>(h, 'POST', 'tokens', { name: 'different-credential', scopes: ['assistant:manage', 'participants:connect'] });
+    const differentCredential = await (await prepare(input, delegated.token)).json() as { proposed: string; approved: boolean };
+    expect(differentCredential.proposed).not.toBe(prepared.proposed); expect(differentCredential.approved).toBe(false);
+    await prepare();
+    // Published operation schemas are immutable; changed schemas cannot reuse this approval.
+    const changedSchema = await request(new URL(h.api).pathname + '/peers/participant', settings, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + h.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocol: 'chronolog-participant-v1', applicationId: h.application.id, requestId: crypto.randomUUID(),
+        facet: 'control', action: 'configure', payload: { ...configuration, definition: { ...configuration.definition,
+          queries: [{ name: 'notes', description: 'Read notes', input: { type: 'string' } }] } } }),
+    });
+    expect(changedSchema.status).toBe(409); await changedSchema.text();
+    await inDO(h.id, t => t.db.set('owner_account', other.subject));
+    try { const denied = await prepare(); expect(denied.status).toBe(403); await denied.text(); }
+    finally { await inDO(h.id, t => t.db.set('owner_account', f.subject)); }
   } finally { await inDO(h.id, t => { Object.assign(t.env, restore); }); }
 });
 
