@@ -1,3 +1,4 @@
+import { routeAccountSetup } from './account-setup';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
 import { parseActivityTicket } from './assistant-activity';
 import { routeAssistant } from './assistant-gateway';
@@ -239,6 +240,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const response = json(readiness, readiness.mode === 'unavailable' ? 503 : 200, { Link: onboardingLinks(publicBase(env)) });
       return req.method === 'HEAD' ? new Response(null, response) : response;
     }
+    if (path === "/api/setup") return routeAccountSetup(req, env);
     if (path === "/api/tendrils") {
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
       await requireCreationOpen(env);

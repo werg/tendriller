@@ -1,3 +1,4 @@
+import { setupPage } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
 import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch } from "./publication-watch";
@@ -127,6 +128,7 @@ export class Tendril extends DurableObject<Env> {
     const url = new URL(req.url);
     const kind = url.pathname.split("/")[1];
     try {
+      if (kind === "setup") return await setupPage(this, req);
       if (kind === "create") return await this.create(req);
       if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) {
@@ -491,6 +493,8 @@ export class Tendril extends DurableObject<Env> {
   private async claimOwnerSerialized(accountId: string, identities: unknown[]): Promise<Response> {
     const current = this.db.get<string | null>("owner_account", null);
     if (current && current !== accountId) throw new HttpError(403, "claimed", "Another account owns this tendril");
+    const intendedAccount = this.db.get<string | null>("intended_owner_account", null);
+    if (intendedAccount && intendedAccount !== accountId) throw new HttpError(403, "wrong_owner", "This setup belongs to a different linked account");
     const expected = this.db.get<string | null>("intended_owner", null);
     if (!current && expected && !ownerMatches(expected, identities)) throw new HttpError(403, "wrong_owner", "This tendril was made for another account");
     if (!current) {

@@ -1,3 +1,5 @@
+import { setupCredentialActive } from './setup-credential';
+import type { SetupBinding } from './setup-page';
 // Authentication resolves identity. Authorization and activity recording are explicit.
 import type { Role } from "../../contract/index.mjs";
 import type { Link, Tendril } from "./tendril";
@@ -54,6 +56,11 @@ export async function authenticateAgentToken(t: Tendril, token: string): Promise
   const hash = await sha256Hex(token);
   const row = localToken(t, hash);
   if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
+  if (row.name === 'setup') {
+    const setup = t.db.get<SetupBinding | null>('account_setup', null);
+    if (!setup || setup.commitment !== hash || setup.expires_at <= t.now() || !await setupCredentialActive(t.env, setup))
+      throw new HttpError(401, 'setup_binding_inactive', 'The setup credential expired or its admitting account/client grant was revoked. Use the owner’s reviewed delegation route.');
+  }
   const binding = agentBinding(t, row.name);
   return { kind: "agent", name: row.name, credentialHash: hash, ...(binding ? { binding } : {}) };
 }

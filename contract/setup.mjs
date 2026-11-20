@@ -28,6 +28,7 @@ async function validateIntent(intent) {
 
 /** The store must atomically create an absent operation and never overwrite one. */
 export async function createSetupIntent(service, input, { store } = {}) {
+  input = structuredClone(input);
   const serviceOrigin = requireServiceOrigin(service);
   if (!store || typeof store.load !== 'function' || typeof store.save !== 'function')
     fail('setup_storage_required', 'Provide durable private load/save storage before preparing a page.');
@@ -51,6 +52,7 @@ export async function createSetupIntent(service, input, { store } = {}) {
 
 /** Combine only the exact successful public receipt with the retained private credential. */
 export async function completeSetupIntent(intent, result) {
+  intent = structuredClone(intent); result = structuredClone(result);
   await validateIntent(intent);
   if (result?.schemaVersion !== 1 || result.serviceOrigin !== intent.serviceOrigin || result.operationId !== intent.operationId ||
       result.requestDigest !== intent.requestDigest || result.credentialCommitment !== intent.credentialCommitment ||
@@ -83,6 +85,7 @@ async function setupHttp(service, accessToken, path, body, { fetch: fetcher = gl
   return result;
 }
 export async function prepareTendrilSetup(intent, options) {
+  intent = structuredClone(intent);
   await validateIntent(intent);
   return setupHttp(intent.serviceOrigin, options?.accessToken, '/api/setup', setupRequest(intent), options);
 }

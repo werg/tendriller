@@ -54,8 +54,8 @@ export async function requireWritesOpen(env: Env): Promise<void> {
   if (await serviceMode(env) === "read_only") throw new HttpError(503, "read_only", "Writes are temporarily paused");
 }
 
-/** Returns a compensation action to call if creation fails. */
-export async function reserveCreationIp(env: Env, req: Request): Promise<() => Promise<void>> {
+/** Shared address policy for anonymous and account-bound creation. */
+export async function checkCreationIp(env: Env, req: Request): Promise<{ ip: string; day: string }> {
   const db = env.ACCOUNTS!;
   const ip = req.headers.get("CF-Connecting-IP");
   if (!ip) throw new HttpError(503, "unavailable", "Creator address is unavailable");
@@ -75,7 +75,12 @@ export async function reserveCreationIp(env: Env, req: Request): Promise<() => P
       } catch (error) { if (error instanceof HttpError) throw error; }
     }
   }
-  const day = new Date().toISOString().slice(0, 10);
+  return { ip, day: new Date().toISOString().slice(0, 10) };
+}
+
+/** Returns a compensation action to call if anonymous creation fails. */
+export async function reserveCreationIp(env: Env, req: Request): Promise<() => Promise<void>> {
+  const db = env.ACCOUNTS, { ip, day } = await checkCreationIp(env, req);
   const row = await db.prepare(`INSERT INTO creation_ip (ip, day, count) VALUES (?, ?, 1)
     ON CONFLICT(ip, day) DO UPDATE SET count = count + 1 WHERE count < 30 RETURNING count`)
     .bind(ip, day).first<{ count: number }>();
