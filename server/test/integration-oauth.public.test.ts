@@ -648,6 +648,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await view.release();
     expect(batch.events).toHaveLength(1);
     const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, generation: batch.revision.generation, payload: { ready: true } };
+    // Prevent automatic delivery until the configuration-outage fixture is ready.
+    await inDO(a.page.id, t => { t.env.ASSISTANT_CALLBACK_ORIGINS = ''; });
     const sequence = await first.adapter.publish(emitted);
     expect(await first.adapter.publish(emitted)).toBe(sequence);
     await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
@@ -656,7 +658,14 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
 
     // A deployment with OAuth temporarily unavailable preserves existing jobs.
-    await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
+    await expect.poll(() => inDO(a.page.id, t =>
+      t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs WHERE lease IS NOT NULL')!.n)).toBe(0);
+    await inDO(a.page.id, t => {
+      t.env.OAUTH_CONFIG_JSON = undefined;
+      t.env.ASSISTANT_CALLBACK_ORIGINS = settings.ASSISTANT_CALLBACK_ORIGINS as string;
+      t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
+      return t.ctx.storage.setAlarm(t.now());
+    });
     await advance(a.page.id, 100);
     await runAlarm(a.page.id);
     expect(sent).toHaveLength(0);
