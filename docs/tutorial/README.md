@@ -110,3 +110,11 @@ its returned review URL. Run `npm run assistant` instead of `peer` for the same
 native participant plus the assistant adapter. Give the owner the ready page and
 review URL together. Claim adopts the prepared app, while assistant approval
 remains explicit; there is no need to type “claimed” back to the agent.
+
+The default assistant requests only the declared notes query and add-note command.
+For optional event forwarding, use `npm run assistant:prepare -- --events` and
+`npm run assistant -- --events` with the same reviewed choice. Forwarding events
+does not create an MCP subscription, run a future model turn, or extend this
+process's lifetime. The runner reports proposal preparation, the running native
+PID, actual adapter status and shutdown separately. Even `adapter_online` still
+requires a real MCP/browser round trip before setup is complete.
