@@ -24,6 +24,8 @@ export interface Env {
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /** Private test-account access configuration, provisioned by the operator. */
+  TEST_ACCESS_JSON?: string;
   /** Optional first-party integration OAuth. Register exact clients and resource. */
   OAUTH_CONFIG_JSON?: string;
   /** Private RS256/ES256 JWK, installed as a Worker secret. Never published. */

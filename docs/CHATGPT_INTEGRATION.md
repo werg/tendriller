@@ -130,8 +130,9 @@ workspace plugin do not create a directory listing.
    the portal's OAuth connection with a dedicated test account. Wait for the
    tool scan and resolve any required findings in **Metadata & Skills** or
    **MCPs**. [Domain verification and scanning](https://developers.openai.com/plugins/deploy/submission#connect-and-scan-your-mcp-server)
-4. Prepare a dedicated reviewer account that can sign in without MFA or an
-   email or SMS challenge. Give it a claimed, assistant-connected **Review
+4. Provision a dedicated sample account using the operator's test-access helper
+   in `scripts/provision-test-access.mjs`. Its private magic URL opens the sample
+   account without a GitHub or Google sign-in. Give it a claimed, assistant-connected **Review
    checklist** with synthetic data. Seed an incomplete **Check labels** item
    plus another item, approve its list query and a command to mark only the
    selected item complete, and forward the approved completion event to the

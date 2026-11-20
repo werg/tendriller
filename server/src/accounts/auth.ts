@@ -3,6 +3,7 @@ import type { Env } from "../env";
 import { errorResponse, json } from "../http";
 import { sha256Hex } from "../ids";
 import { publicBase } from "../urls";
+import { routeTestAccess, testAccountEnabled } from './test-access';
 
 type Provider = "github" | "google";
 export interface AccountSession { accountId: string; email: string | null; createdAt: number; suspendedAt: number | null }
@@ -37,13 +38,14 @@ export async function serviceSession(req: Request, env: Env, includeSuspended = 
   const row = await env.ACCOUNTS.prepare(`SELECT a.id AS accountId, a.email, a.created_at AS createdAt, a.suspended_at AS suspendedAt
     FROM sessions s JOIN accounts a ON a.id = s.account_id
     WHERE s.hash = ? AND s.expires_at > ? AND a.deleting_at IS NULL`).bind(hash, Date.now()).first<AccountSession>();
-  return row && (includeSuspended || !row.suspendedAt) ? row : null;
+  return row && testAccountEnabled(env, row.accountId) && (includeSuspended || !row.suspendedAt) ? row : null;
 }
 
 export async function routeAuth(req: Request, env: Env, url: URL): Promise<Response> {
   const db = env.ACCOUNTS;
   if (!db) return errorResponse(503, "unavailable", "Accounts database is not configured");
   const path = url.pathname;
+  if (path === '/auth/test') return routeTestAccess(req, env);
   if (path === "/auth" && req.method === "GET") {
     const back = encodeURIComponent(safeReturn(url.searchParams.get("return_to")));
     return servicePage("Sign in", `<h1>Sign in to Tendriller</h1><p>Choose an account to open your tendrils.</p><div class="actions"><a class="button" href="/auth/github?return_to=${back}">Continue with GitHub</a><a class="button secondary" href="/auth/google?return_to=${back}">Continue with Google</a></div>`);
@@ -54,6 +56,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     const linking = !!begin[1];
     const session = linking ? await serviceSession(req, env) : null;
     if (linking && !session) return errorResponse(401, "unauthorized", "Sign in before linking an account");
+    if (linking && session?.accountId.startsWith('test_')) return errorResponse(403, 'test_account_only', 'Use sample data in the test account');
     const c = client(env, provider);
     if (!c) return errorResponse(503, "unavailable", `${provider} sign-in is not configured`);
     if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {

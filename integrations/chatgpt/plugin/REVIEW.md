@@ -7,11 +7,25 @@ publisher identity selected in the portal.
 
 ## Dedicated account and live sample
 
-Use a GitHub or Google account dedicated to synthetic review data. Confirm its
-provider permits the reviewer to sign in without a second factor or an email or
-SMS challenge. Supply credentials only in the private OpenAI review form.
-Record the account's verified email for page creation. The owner signs in to
-claim the page and approve its assistant connection.
+Provision the dedicated sample account through the operator's private magic URL.
+It uses a normal Tendriller account and session, then the same application and
+OAuth approvals. Reviewers can use it without an upstream provider account.
+The same mechanism is available for our live browser tests.
+
+Run `node scripts/provision-test-access.mjs --config server/wrangler.staging.jsonc
+--output /private/path/staging-test-access.json --days 30` from the repository
+root. Choose the production config and a different private output path for a
+production account. The script saves the private URL and synthetic owner email
+identity locally and configures only the token hash in the Worker. Open its saved
+`url`, then select **Open test account**. Use the synthetic account email
+`ACCOUNT_ID@example.invalid` from that record when creating the sample page.
+The owner claims and approves that page through the normal browser flow.
+
+The reusable link expires after the selected period. Keep it in the private
+OpenAI review form or local test configuration. To revoke it, rerun the same
+provisioning command with `--revoke`; this also suspends its sample account and
+revokes its browser sessions and OAuth grants. Create a new output record for a
+new account after revocation. All testers using the link share sample state.
 
 Use the adjacent `review-domain.mjs` as the application definition. Its initial
 query `checklist` returns two incomplete items, `check-labels` and `check-links`.
@@ -49,7 +63,7 @@ URL in **Metadata & Skills → Review information → Review details**. The case
 the ZIP are proposed review procedures. A package build does not establish that
 they passed in ChatGPT.
 
-Enter reviewer credentials, the login URL `https://tendriller.dev/auth`, the
+Enter the private magic URL, the **Open test account** step, the
 selected ChatGPT plugin, the actual app name, and participant availability in the
 private review form. Verify the reviewer can complete the steps before
 submission. Keep the account, sample app and participant available for later

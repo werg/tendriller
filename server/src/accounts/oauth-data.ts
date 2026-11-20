@@ -2,6 +2,7 @@ import type { Env } from '../env';
 import { readBody } from '../http';
 import { sha256Hex } from '../ids';
 import { serviceSession } from './auth';
+import { testAccountEnabled } from './test-access';
 import { object, oauthJson, randomToken, reject, type OAuthConfig } from './oauth-support';
 
 const schemaChecks = new WeakMap<Env, { until: number; task: Promise<void> }>();
@@ -23,13 +24,14 @@ export async function ensureOAuthSchema(env: Env): Promise<void> {
 export interface OAuthGrant { id: string; account_id: string; client_id: string; resource: string; scope: string; created_at: number; expires_at: number; revoked_at: number | null }
 export const scopesOf = (grant: Pick<OAuthGrant, 'scope'>): string[] => grant.scope ? grant.scope.split(' ') : [];
 export async function activeAccount(env: Env, subject: string): Promise<boolean> {
+  if (!testAccountEnabled(env, subject)) return false;
   return !!await env.ACCOUNTS.prepare('SELECT id FROM accounts WHERE id=? AND suspended_at IS NULL AND deleting_at IS NULL').bind(subject).first();
 }
 export async function activeGrant(env: Env, config: OAuthConfig, id: string, subject?: string): Promise<OAuthGrant | null> {
   const row = await env.ACCOUNTS.prepare(`SELECT g.* FROM integration_oauth_grants g JOIN accounts a ON a.id=g.account_id
     WHERE g.id=? AND g.resource=? AND g.revoked_at IS NULL AND g.expires_at>?
       AND a.suspended_at IS NULL AND a.deleting_at IS NULL`).bind(id, config.resource, Date.now()).first<OAuthGrant>();
-  if (!row || subject !== undefined && row.account_id !== subject || !registeredGrant(config, row)) return null;
+  if (!row || !testAccountEnabled(env, row.account_id) || subject !== undefined && row.account_id !== subject || !registeredGrant(config, row)) return null;
   return row;
 }
 export function registeredGrant(config: OAuthConfig, grant: Pick<OAuthGrant, 'client_id' | 'scope'>): boolean {
