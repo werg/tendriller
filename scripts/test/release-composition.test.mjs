@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { prepareRelease, REQUIRED_SDK_EXPORTS, sourceIdentity, verifyReleaseArtifacts } from '../release-composition.mjs';
@@ -220,4 +220,31 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
     ['plugin.json', 'mcp.json', 'assets/icon.png', skill]);
   writeFileSync(join(f.root, 'dist', plugin.file), 'stale or altered guidance');
   assert.throws(() => verifyReleaseArtifacts(f.root, manifest), /does not match manifest/);
+});
+
+
+test('plugin ZIP identity is independent of checkout file permissions', async t => {
+  const { buildPlugin } = await import('../../integrations/chatgpt/plugin/build.mjs');
+  const f=fixture(t), first=join(f.root,'dist/plugin-first.zip'), second=join(f.root,'dist/plugin-second.zip');
+  const skill=join(f.root,'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md');
+  chmodSync(skill,0o664);buildPlugin(f.root,first);chmodSync(skill,0o644);buildPlugin(f.root,second);
+  assert.deepEqual(readFileSync(first),readFileSync(second));
+});
+
+test('sealing omits development runtime residue while restored-graph checks reject any extra bytes', async t => {
+  const { sealDeployment, restoreDeployment, verifyRestoredDeployment } = await import('../deployment-bundle.mjs');
+  const f=fixture(t);f.prepare();
+  for(const path of ['dist/engine','dist/runtime','dist/sdk','dist/tools']) {mkdirSync(join(f.root,path),{recursive:true});writeFileSync(join(f.root,path,'bytes.mjs'),'qualified');}
+  const old='f'.repeat(64), oldPath=join(f.root,'server/public/_tendril/runtime',old);
+  mkdirSync(oldPath,{recursive:true});writeFileSync(join(oldPath,'stale.mjs'),'previous immutable runtime');
+  const manifest=sealDeployment(f.root), expectedHash=digest(readFileSync(join(f.root,'dist/manifest.json')));
+  const archive=readFileSync(join(f.root,'dist/tendriller-deployment.tgz'));
+  assert.equal(execFileSync('tar',['-tzf',join(f.root,'dist/tendriller-deployment.tgz')],{encoding:'utf8'}).includes(old),false);
+  rmSync(oldPath,{recursive:true}); f.prepare();sealDeployment(f.root);
+  assert.deepEqual(readFileSync(join(f.root,'dist/tendriller-deployment.tgz')),archive);
+  assert.equal(digest(readFileSync(join(f.root,'dist/manifest.json'))),expectedHash);
+  restoreDeployment(f.root,expectedHash);verifyRestoredDeployment(f.root,expectedHash);
+  mkdirSync(oldPath,{recursive:true});writeFileSync(join(oldPath,'stale.mjs'),'injected after restore');
+  assert.throws(()=>verifyRestoredDeployment(f.root,expectedHash),/differ from the qualified bundle/);
+  assert(manifest.artifacts.some(item=>item.role==='deployment'));
 });

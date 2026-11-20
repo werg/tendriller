@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -19,6 +19,7 @@ export function buildPlugin(root, output = join(root, 'dist/tendriller-chatgpt-p
       const target = join(staging, name);
       mkdirSync(dirname(target), { recursive: true });
       copyFileSync(source, target);
+      chmodSync(target, 0o644);
       utimesSync(target, timestamp, timestamp);
     }
     const archive = join(staging, 'plugin.zip');

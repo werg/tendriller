@@ -1,7 +1,7 @@
 // Seal and restore the bytes consumed by Wrangler; never rebuild during promotion.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,14 +10,22 @@ import { verifyReleaseArtifacts } from './release-composition.mjs';
 
 const paths = ['dist/engine', 'dist/runtime', 'dist/sdk', 'dist/tools', 'server/public'];
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const pack = (root, file) => execFileSync('tar', [...ARCHIVE_METADATA, '-czf', file, '-C', root, ...paths]);
+const pack = (root, file, exclude = []) => execFileSync('tar', [...ARCHIVE_METADATA,
+  ...exclude.map(path => '--exclude=' + path), '-czf', file, '-C', root, ...paths]);
+function previousRuntimePaths(root, current) {
+  const prefix = 'server/public/_tendril/runtime', directory = join(root, prefix);
+  return existsSync(directory) ? readdirSync(directory).filter(name => /^[a-f0-9]{64}$/.test(name) && name !== current)
+    .map(name => prefix + '/' + name) : [];
+}
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 
 export function sealDeployment(root) {
   const manifest = json(join(root, 'dist/manifest.json'));
   verifyReleaseArtifacts(root, manifest);
   const file = 'tendriller-deployment.tgz';
-  pack(root, join(root, 'dist', file));
+  // Development may retain previous immutable runtimes. Deploy only this
+  // qualified graph; older published runtimes are retained independently in R2.
+  pack(root, join(root, 'dist', file), previousRuntimePaths(root, manifest.runtime));
   const bytes = readFileSync(join(root, 'dist', file));
   manifest.artifacts.push({ role: 'deployment', file, size: bytes.length, sha256: hash(bytes),
     url: `https://github.com/werg/tendriller/releases/download/source-${manifest.source_commit}/${file}`, type: 'application/gzip' });
