@@ -14,7 +14,7 @@ import {
 const INBOX_WIDGET = 'ui://tendriller/application-inbox.html';
 const PROTOCOL = '2025-11-25';
 const supported = [PROTOCOL, '2025-06-18', '2025-03-26', '2026-07-28'];
-const discoveryMethods = new Set(['initialize', 'server/discover', 'ping', 'tools/list', 'resources/list', 'resources/read', 'events/list']);
+const discoveryMethods = new Set(['initialize', 'server/discover', 'ping', 'tools/list', 'resources/list', 'resources/templates/list', 'resources/read', 'events/list']);
 const eventMethods = new Set(['events/subscribe', 'events/unsubscribe']);
 const schemaString = { type: 'string', minLength: 1 };
 const app = { applicationId: { type: 'string', pattern: '^[a-f0-9]{64}$' } };
@@ -143,8 +143,10 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
   });
   if (req.method !== 'POST') return authorization || req.method === 'GET'
     ? json({ error: 'method_not_allowed' }, 405, { Allow: 'POST' }) : challenge();
+  // OAuth clients probe a protected resource with an empty, non-JSON POST.
+  // Challenge that probe before applying the authenticated request format.
   if (req.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json')
-    return json({ error: 'unsupported_media_type' }, 415);
+    return authorization === null ? challenge() : json({ error: 'unsupported_media_type' }, 415);
   let message;
   try { message = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await readBody(req, REQUEST_LIMIT, 3000))); }
   catch (error) {
@@ -192,6 +194,7 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       if (principal) requireScope(principal, 'applications:read');
       return complete({ resources: [{ name: 'Tendriller inbox', uri: INBOX_WIDGET, mimeType: 'text/html;profile=mcp-app' }] });
     }
+    if (method === 'resources/templates/list') return complete({ resourceTemplates: [] });
     if (method === 'resources/read') {
       if (principal) requireScope(principal, 'applications:read');
       if (params.uri !== INBOX_WIDGET) throw new HttpError(404, 'unknown_resource');

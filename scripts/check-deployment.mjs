@@ -120,6 +120,13 @@ if (assistant) {
   const catalog = await call('tools/list');
   if (!catalog.ok || !(await catalog.json()).result?.tools?.some(tool => tool.name === 'get_application_delivery'))
     throw new Error('Assistant tool discovery failed');
+  const templates = await call('resources/templates/list');
+  if (!templates.ok || !Array.isArray((await templates.json()).result?.resourceTemplates))
+    throw new Error('Assistant resource-template discovery failed');
+  const probe = await fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(15_000),
+    headers: { 'Content-Type': 'application/octet-stream' } });
+  if (probe.status !== 401 || !probe.headers.get('WWW-Authenticate')?.includes(`${base}/.well-known/oauth-protected-resource/mcp`))
+    throw new Error('Assistant setup probe did not advertise account linking');
   const protectedCall = await call('tools/call', { name: 'get_profile', arguments: {} });
   if (protectedCall.status !== 401 || !protectedCall.headers.get('WWW-Authenticate')?.includes(`${base}/.well-known/oauth-protected-resource/mcp`))
     throw new Error('Assistant tool access did not require an account grant');

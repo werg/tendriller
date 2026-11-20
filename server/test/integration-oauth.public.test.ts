@@ -45,6 +45,19 @@ it('first-party OAuth stays disabled until explicitly configured and remains on 
   expect((await request('/.well-known/oauth-authorization-server', configured({ OAUTH_SIGNING_JWK: undefined }))).status).toBe(503);
 });
 
+it('challenges an empty OAuth setup probe and serves the public resource-template catalog', async () => {
+  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: ISSUER + '/mcp', clients: [{
+    id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'],
+  }] }) });
+  const probe = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } });
+  expect(probe.status).toBe(401);
+  expect(probe.headers.get('WWW-Authenticate')).toContain(ISSUER + '/.well-known/oauth-protected-resource/mcp');
+  const templates = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/templates/list' }) });
+  expect(templates.status).toBe(200);
+  expect(await templates.json()).toMatchObject({ result: { resourceTemplates: [] } });
+});
+
 it('enabled OAuth names its missing additive migration while the ordinary host still works with OAuth disabled', async () => {
   const settings = configured();
   await env.ACCOUNTS.prepare('ALTER TABLE integration_oauth_management_sessions RENAME TO temporarily_absent_management_sessions').run();

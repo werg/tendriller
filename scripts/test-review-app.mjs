@@ -64,7 +64,17 @@ try {
   await display.getByRole('heading', { name: 'Review checklist' }).waitFor();
   const host = createClient(handle, { applicationId: app.applicationId });
   const beforePublication = (await host.peers.publication()).publication.id;
-  const operationId = randomUUID();
+  const operationRecord = resolve(project, '.private/acceptance-operation.json');
+  let operationId;
+  try {
+    const saved = JSON.parse(readFileSync(operationRecord, 'utf8'));
+    assert.equal(saved.applicationId, app.applicationId);
+    operationId = saved.operationId;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    operationId = randomUUID();
+    writeFileSync(operationRecord, JSON.stringify({ applicationId: app.applicationId, operationId }), { flag: 'wx', mode: 0o600, flush: true });
+  }
   const change = await call('call_application_command', { ...app, command: 'completeItem', input: { id: 'check-labels' }, operationId });
   assert.ok(!change.isError, JSON.stringify(change.structuredContent));
   const deadline = Date.now() + 20000;
@@ -93,7 +103,10 @@ try {
   const beforeDenied = await read();
   assert.ok((await call('call_application_command', { ...app, command: 'deleteAll', input: null, operationId: randomUUID() })).isError);
   assert.ok((await call('describe_application', { applicationId: 'f'.repeat(64) })).isError);
-  assert.ok((await call('call_application_command', { ...app, command: 'completeItem', input: {}, operationId: randomUUID() })).isError);
+  const ambiguousId = randomUUID();
+  const ambiguous = await call('call_application_command', { ...app, command: 'completeItem', input: {}, operationId: ambiguousId });
+  const rejected = ambiguous.isError ? ambiguous : await call('wait_application_operation', { ...app, operationId: ambiguousId });
+  assert.ok(rejected.isError || rejected.structuredContent.outcome === 'rejected', JSON.stringify(rejected.structuredContent));
   assert.deepEqual(await read(), beforeDenied);
   report.checks.push('Reject deletion, another application and an unspecified item without changing state');
   const authority = await verifyAuthorityBundle(await host.peers.application());
