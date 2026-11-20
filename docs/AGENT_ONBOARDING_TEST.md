@@ -495,7 +495,7 @@ check inputs and their sequence:
 | `browser-reload`, `native-reopen` | Supply `options` with `phase: "before"`, `operationId`, `author`, `command`, `marker`. Perform actual owner reload/reopen or explicit same-store native restart, then observe with `phase: "after"` and the same fields. Native restart requires a new process birth token and the same measured store inode/device/signing identity and signed attempt. No process is restarted by the observer. |
 | `lost-command-response` | `options.action: "submit-lost"` submits the configured operation, then deliberately interrupts its applied waiter. This remains blocked until `action: "retry"` inspects/retries the same saved signed attempt and sees one applied result in native and browser rows. If a response won the interruption race, it reports that the loss was not established. |
 | `lost-publication-response` | Configure `publication.intent` (a file reference selecting the existing signed publication) and `publication.assets` (its saved public SDK asset array). `options.action: "drop"` retains the exact intent before calling publish, discards the real acknowledgement, and retains only its witness digest. `action: "retry"` must recover the identical versioned receipt and selected signed head. This is evaluator-side acknowledgement loss, not a network partition or browser retry qualification. No publication is newly signed by this observer. |
-| `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` selecting the actual `websocket-relay` or `webrtc` metric. A configured desired transport is not evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
+| `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` containing the maintained relay probe’s complete current observation. Protocol, live PID/birth, page and both device identities, freshness, paired lanes and binary traffic are verified. A string label or configured desired transport is not evidence. WebRTC requires separately attributed external-host evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
 | `unavailable-peer` | `options.phase: "before"` measures the native process and browser. Stop only this disposable participant externally. `phase: "offline"` verifies its exit and actual visible waiting text. Resume the same device and observe with normal browser-to-agent marker/operation options. |
 | `discovery` | Measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs, requiring readiness before any observed install. Opaque or web-only tool traces stay blocked. |
 | `missing-setup` | Configure `missingSetup.report` to a separate actual harness run report and `expectedCode` to its prerequisite code. It must name this origin, a different attempt, blocked status and a concrete next action. |
@@ -526,9 +526,14 @@ The probe observes actual matching application/device relay sockets, both
 matching paired-lane handshakes, and sent/received binary traffic. Construction
 or a configured transport alone never establishes success. It records no
 authorization protocols, URLs, application payloads, or private channel values;
-a close/error clears the measured transport. Only after inspecting a current
-record bound to the measured live PID/birth and browser peer may the evaluator
-set `native.transport` to that file with `pointer: "/transport"`. It cannot
+a close/error clears the measured transport. Failure to persist an observation
+terminates the instrumented participant with exit 74, so an old positive file
+cannot qualify as a live process. Set `native.transport` to that complete file
+without a pointer. The observer validates its protocol, live PID/birth, exact
+page/native/browser identities, matching paired lanes and binary traffic. The
+observation must be at most five seconds old (with one second clock tolerance);
+observe immediately after an ordinary application command to produce activity,
+without background polling or heartbeat traffic. It cannot
 measure WebRTC or recover transport evidence from an earlier uninstrumented
 process. Keep those cases blocked.
 

@@ -89,3 +89,23 @@ export function processMeasurement(project, config) {
       command, resume: need(config.resume, 'native-resume'), storage: need(config.storage, 'native-storage') };
   } catch (error) { if (error instanceof MeasurementError) throw error; throw new MeasurementError('native-process-unavailable'); }
 }
+
+/** A desired transport or stale file is not an observed live connection. */
+export function relayTransportMeasurement(record, { process, pageId, deviceId, remoteDeviceId, at = Date.now() }) {
+  if (!record || typeof record !== 'object') throw new MeasurementError('relay-transport-evidence');
+  same(record.protocol, 'tendriller-relay-observation-v1', 'relay-observation-protocol');
+  for (const [key, value] of Object.entries({ pid: process.pid, birth: process.birth, pageId, deviceId, remoteDeviceId }))
+    same(record[key], value, 'relay-' + key);
+  const time = Date.parse(record.observedAt);
+  if (!Number.isFinite(time) || time > at + 1000 || at - time > 5000) throw new MeasurementError('relay-observation-not-current');
+  if (record.transport !== 'websocket-relay') throw new MeasurementError('relay-not-selected');
+  if (!Array.isArray(record.pairs) || record.pairs.length > 16) throw new MeasurementError('relay-pairs', 'failed');
+  const pair = record.pairs.find(lanes => Array.isArray(lanes) && lanes.length === 2 &&
+    new Set(lanes.map(l => l.lane)).size === 2 && lanes.every(l => ['reliable', 'live'].includes(l.lane) &&
+      l.open === true && l.paired === true && l.closed === false && /^[a-f0-9-]{36}$/.test(l.session ?? '')) &&
+    lanes[0].session === lanes[1].session && lanes.some(l => l.lane === 'reliable' &&
+      Number.isSafeInteger(l.sent) && l.sent > 0 && Number.isSafeInteger(l.received) && l.received > 0));
+  need(pair, 'relay-paired-binary-traffic');
+  return { transport: record.transport, observedAt: record.observedAt, pid: record.pid, birth: record.birth,
+    pageId, deviceId, remoteDeviceId, pair };
+}
