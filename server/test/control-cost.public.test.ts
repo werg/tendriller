@@ -176,7 +176,7 @@ it.each(['suspension', 'ownership change'] as const)('checks fresh owner policy 
   });
 });
 
-it('keeps duplicate discovery withdrawals and bootstrap settings read-only while still removing expired hints', async () => {
+it('keeps duplicate discovery withdrawals and bootstrap settings read-only while still removing disconnected hints', async () => {
   const page = await create();
   await inDO(page.id, async t => {
     const principal = await authenticateAgentToken(t, page.token), url = new URL('https://tendril.internal/peers/bootstrap');
@@ -190,9 +190,13 @@ it('keeps duplicate discovery withdrawals and bootstrap settings read-only while
         expect((await put()).status).toBe(200);
       }
       expect(set).not.toHaveBeenCalled();
-      await exchangeDiscovery(t, principal, 'advertise', { advertisement: { peerId: 'expired', storageId: 'store:expired',
-        routes: [{ kind: 'rendezvous', channel: 'join:expired' }] } });
-      t.skew += 120_000;
+      const watchUrl = new URL('https://tendril.internal/peers/discovery/watch?peerId=disconnected');
+      const response = await handlePeers(t, new Request(watchUrl, { headers: { Upgrade: 'websocket',
+        'Sec-WebSocket-Protocol': 'tendriller.discovery.v1' } }), watchUrl, 'peers/discovery/watch', principal);
+      response.webSocket!.accept();
+      await exchangeDiscovery(t, principal, 'advertise', { advertisement: { peerId: 'disconnected', storageId: 'store:disconnected',
+        routes: [{ kind: 'rendezvous', channel: 'join:disconnected' }] } });
+      t.ctx.getWebSockets('peer-discovery')[0].close(); response.webSocket!.close();
       set.mockClear();
       await exchangeDiscovery(t, principal, 'withdraw', { peerId: 'absent' });
       expect(set).toHaveBeenCalledOnce();
