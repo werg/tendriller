@@ -117,7 +117,7 @@ Load optional voice from `import(runtime.assetUrl('voice.mjs'))` or `@tendriller
 
 ## Immutable code and offline use
 
-Each publication pins its complete authored file graph and runtime. **Page options → Save for offline use** calls `publication.saveOffline()`, which registers offline support on demand and resolves only after the required graph is verified and saved by the service worker. Home Screen installation does not implicitly call it. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads and offline reload; live features still depend on the page's data and connection lifecycle.
+Each publication pins its complete authored file graph and runtime. **Page options → Save for offline use** calls `publication.saveOffline()`, which registers offline support on demand and resolves only after the required graph is verified and saved by the service worker. Home Screen installation does not implicitly call it. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads; an offline reload of the page URL opens the latest saved release (see below); live features still depend on the page's data and connection lifecycle.
 
 The service-owned management page remains available if authored JavaScript fails. It manages account access and displays publication history. Changing selected code requires a new signed Chronolog publication.
 
@@ -131,7 +131,8 @@ its injected `<base>`, which names the immutable publication graph. So:
 - a reload, a new tab, a Home Screen launch and a discarded-then-restored tab load
   the release that is selected **now**;
 - an open tab holds one hibernating watch and learns when a newer release is
-  published. It switches at its next safe point: immediately when hidden or idle,
+  published. The watch is the runtime's only self-started host contact; it opens
+  after the document has loaded and while it is visible, never during the load. It switches at its next safe point: immediately when hidden or idle,
   otherwise once no editable field is focused or changed and no
   `tendril.publication.hold()` is active. A tab resumed from the background
   rechecks at once;
@@ -154,4 +155,5 @@ explicit hold. (2) A new release's owner Worker could not take a profile from an
 older one still running in another tab; pages now attach to the running owner
 whatever its Worker version, and a changed application definition still needs a
 new application rather than a publish. (3) Offline launches use the saved graph
-when the network is unavailable, as before.
+when the network is unavailable; an offline reload of the page URL opens the
+latest complete saved release, falling back to the tab's own.

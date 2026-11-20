@@ -18,6 +18,7 @@ export class MockServer {
   port = 0;
   readonly requests: string[] = [];
   upgrades = 0;
+  upgradeUrls: string[] = [];
   readonly pages = new Map<string, MockTendril>();
   get origin() { return `http://127.0.0.1:${this.port}`; }
   create(options: Partial<Pick<MockTendril, 'html' | 'noSw'>> = {}): MockTendril {
@@ -44,7 +45,7 @@ export class MockServer {
   }
   async start() {
     this.server = http.createServer((req, res) => this.http(req, res));
-    this.server.on('upgrade', (_req, socket) => { this.upgrades++; socket.destroy(); });
+    this.server.on('upgrade', (req, socket) => { this.upgrades++; this.upgradeUrls.push(req.url ?? ''); socket.destroy(); });
     await new Promise<void>(resolve => this.server.listen(0, '127.0.0.1', resolve));
     this.port = (this.server.address() as { port: number }).port;
   }

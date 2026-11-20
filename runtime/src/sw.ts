@@ -165,7 +165,9 @@ async function navigate(event: FetchEvent): Promise<Response> {
   const pinned = relative === undefined ? null : /^_publications\/([A-Za-z0-9_-]+)\/(.*)$/.exec(relative);
   const pin = pinned?.[1];
   const replaced = (event as FetchEvent & { replacesClientId?: string }).replacesClientId;
-  const prior = pin || meta.clients[replaced || event.clientId] || meta.latest;
+  // The page URL opens the latest complete release, also offline; the tab's own
+  // release is the fallback. Only an explicit /_publications/ID/ URL pins.
+  const prior = pin || [meta.latest, meta.clients[replaced || event.clientId]].find(id => id && meta.complete.includes(id));
   const publication = prior && meta.complete.includes(prior) ? meta.publications[prior] : undefined;
   const path = pinned ? pinned[2] : relative;
   const filename = path === "" ? publication?.entry : path?.endsWith("/") ? path + "index.html" : path;

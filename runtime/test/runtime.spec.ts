@@ -8,7 +8,13 @@ async function open(page: Page, fixture: MockTendril) {
   await page.goto(mock.url(fixture));
   await page.waitForFunction(() => !!window.tendril);
 }
-test('the sole runtime is quiet and exposes explicit application and live bindings', async ({ page }) => {
+/** The runtime's only self-started host contact is the hibernating latest-release watch. */
+function onlyReleaseWatch(fixture: MockTendril) {
+  const own = mock.upgradeUrls.filter(url => url.startsWith(mock.base(fixture)));
+  expect(own.every(url => url.startsWith(mock.base(fixture) + '_tendril/publication-ready?after='))).toBe(true);
+  expect(mock.upgrades).toBe(mock.upgradeUrls.length);
+}
+test('the sole runtime is quiet apart from its release watch and exposes explicit application and live bindings', async ({ page }) => {
   const fixture = mock.create();
   await open(page, fixture);
   expect(await page.evaluate(() => ({
@@ -20,7 +26,7 @@ test('the sole runtime is quiet and exposes explicit application and live bindin
     legacyState: 'state' in window.tendril,
     storage: Object.keys(localStorage),
   }))).toEqual({ application: false, signals: false, host: ['peers', 'request'], device: false, profile: false, legacyState: false, storage: [] });
-  expect(mock.upgrades).toBe(0);
+  onlyReleaseWatch(fixture);
   expect(mock.requests.filter(path => path.startsWith(mock.base(fixture)) && path.includes('_tendril/') && !path.includes('/runtime/'))).toEqual([]);
   await page.evaluate(() => window.tendril.ready());
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
@@ -44,27 +50,35 @@ test('application installation binds one identity without starting host transpor
     return { same: installed === application, available: window.tendril.application.available, repeated };
   });
   expect(result).toEqual({ same: true, available: true, repeated: 'backend_already_selected' });
-  expect(mock.upgrades).toBe(0);
+  onlyReleaseWatch(fixture);
 });
 
-test('publications retain distinct code graphs across two tabs and offline reload', async ({ page, context }) => {
+test('open tabs keep the code graph of their release; reloads open the latest; an explicit release URL pins, also offline', async ({ page, context }) => {
   const fixture = mock.create({ noSw: false, html: '<h1 id="h">Page A</h1><script src="app.js"></script>' });
   fixture.files['app.js'] = { type: 'text/javascript', body: "window.__app = 'A';" };
   fixture.files['lazy.js'] = { type: 'text/javascript', body: "window.__lazy = 'A';" };
   await open(page, fixture); expect(await savedForOffline(page)).toBe('1');
-  await expect(page).toHaveURL(/\/_publications\/1\/index.html$/);
+  // The address stays the page's own URL, so a reload opens the latest release.
+  expect(page.url()).toBe(mock.url(fixture));
   fixture.version = 2; fixture.html = '<h1 id="h">Page B</h1><script src="app.js"></script>';
   fixture.files['app.js'] = { type: 'text/javascript', body: "window.__app = 'B';" };
   fixture.files['lazy.js'] = { type: 'text/javascript', body: "window.__lazy = 'B';" };
   const next = await context.newPage(); await open(next, fixture); expect(await savedForOffline(next)).toBe('2');
   expect(await page.evaluate(() => window.tendril.version)).toBe(1);
+  const pinned = await context.newPage();
+  await pinned.goto(mock.url(fixture) + '_publications/1/index.html'); await pinned.waitForFunction(() => !!window.tendril);
+  expect(await pinned.evaluate(() => window.tendril.publication.pinned)).toBe(true);
   await context.setOffline(true);
-  for (const [tab, label] of [[page, 'A'], [next, 'B']] as const) {
+  // Each open tab still resolves lazy code within its own release.
+  for (const [tab, label] of [[page, 'A'], [next, 'B'], [pinned, 'A']] as const) {
     await tab.evaluate(() => new Promise<void>((resolve, reject) => {
       const script = document.createElement('script'); script.src = 'lazy.js'; script.onload = () => resolve();
       script.onerror = () => reject(Error('lazy asset failed')); document.head.append(script);
     }));
     expect(await tab.evaluate(() => (window as any).__lazy)).toBe(label);
+  }
+  // Offline reloads: the page URL opens the latest saved release, the release URL its own.
+  for (const [tab, label] of [[page, 'B'], [next, 'B'], [pinned, 'A']] as const) {
     await tab.reload(); await expect(tab.locator('#h')).toHaveText(`Page ${label}`);
     expect(await tab.evaluate(() => (window as any).__app)).toBe(label);
     expect(await tab.evaluate(() => 'state' in window.tendril || 'connected' in window.tendril)).toBe(false);

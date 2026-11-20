@@ -3,7 +3,8 @@
 // or a discarded-and-restored tab loads whatever release is selected now. An open tab
 // learns of a newer release over one hibernating socket and switches at its next safe
 // point: immediately when hidden or idle, otherwise once no input is focused or
-// edited and no application hold is active. Pinning is explicit: a document opened
+// edited and no application hold is active. The watch is the runtime's only
+// self-started host contact (see BROWSER_API.md). Pinning is explicit: a document opened
 // at its immutable /_publications/ID/ URL stays on that release.
 import type { TendrilConfig } from "./types";
 
@@ -74,7 +75,11 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
   document.addEventListener("focusout", () => setTimeout(attempt, 0));
   document.addEventListener("change", () => setTimeout(attempt, 0));
   setInterval(attempt, 5000);
-  connect();
+  // The only host contact this runtime starts by itself: one hibernating watch, opened
+  // after the document has loaded and only while it is visible (a hidden tab connects
+  // when it is next shown). Loading the page never waits on or contacts the host.
+  if (document.readyState === "complete") setTimeout(() => { if (document.visibilityState === "visible") connect(); }, 0);
+  else window.addEventListener("load", () => { if (document.visibilityState === "visible") connect(); }, { once: true });
   return Object.freeze({
     pinned: options.pinned,
     get updateAvailable() { return available !== null; },
