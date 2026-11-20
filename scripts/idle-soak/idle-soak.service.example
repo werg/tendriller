@@ -1,0 +1,25 @@
+[Unit]
+Description=Tendriller isolated real wall clock idle soak
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=86400
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Replace ALL absolute paths. Use the exact Node 24 executable, not an interactive shell alias.
+WorkingDirectory=/tmp/tendriller-idle-soak
+ExecStart=/ABSOLUTE/PATH/TO/node /tmp/tendriller-idle-soak/scripts/idle-soak/run.mjs --config /PRIVATE/idle-soak/config.json --state /PRIVATE/idle-soak/run-48h
+Restart=on-failure
+RestartSec=60
+KillMode=control-group
+TimeoutStopSec=20
+UMask=0077
+# Native output is discarded; no credentials/app payloads are placed in the journal.
+StandardOutput=null
+StandardError=journal
+# For headed Chromium, supply the persistent operator display and its auth if required.
+# Environment=DISPLAY=:99
+
+[Install]
+WantedBy=default.target
