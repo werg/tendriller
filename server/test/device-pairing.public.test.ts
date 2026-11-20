@@ -1,4 +1,3 @@
-import { SETUP_WATCH_PROTOCOL } from '../../contract/setup.mjs';
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { createPeerIdentity, signTransitionRequest, generationStartRoot, participantGrant, verifyAuthorityBundle, peerDigest,
@@ -517,19 +516,21 @@ it('reports the exact staged proposal as committed when its native administrator
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)?.writer).toBe(true);
 });
 
-it('wakes the native setup watch when a browser proves a request and when the owner approves it on the review page', async () => {
+it('notifies a resident native owner when a later browser proves its key and review is approved', async () => {
   const { h, native, device, cookie } = await fixture();
-  const response = await req(`${h.api}/setup/watch`, { anonymous: true,
-    headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': `${SETUP_WATCH_PROTOCOL}, ${h.token}` } });
+  const response = await api(h, 'GET', 'setup/watch', undefined,
+    { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.setup.v1' });
   expect(response.status).toBe(101);
-  const socket = response.webSocket!, frames: unknown[] = [];
-  socket.accept(); socket.addEventListener('message', event => frames.push(JSON.parse(event.data as string)));
-  await expect.poll(() => frames.length).toBe(1);
-  const c = await proven(h, device);
-  await expect.poll(() => frames.length).toBe(2);
-  expect(frames[1]).toMatchObject({ type: 'setup', version: 1 });
-  await jsonResponse(await stage(h, c, await prepare(h, native, c)));
-  expect((await review(c, cookie)).status).toBe(200);
-  await expect.poll(() => frames.length).toBe(3);
+  const socket = response.webSocket!;
+  const next = () => new Promise<any>(resolve => socket.addEventListener('message', event => resolve(JSON.parse(event.data as string)), { once: true }));
+  const initial = next(); socket.accept(); await initial;
+  const proved = next(), status = await proven(h, device);
+  expect((await proved).type).toBe('setup');
+  const prepared = await prepare(h, native, status);
+  await jsonResponse(await stage(h, status, prepared));
+  const approved = next();
+  expect((await review(status, cookie)).status).toBe(200);
+  expect((await approved).type).toBe('setup');
+  expect((await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + status.pairingId)).state).toBe('approved');
   socket.close();
 });

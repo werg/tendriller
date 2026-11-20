@@ -52,8 +52,9 @@ Use the starter's reviewed browser pairing flow. The browser retains its own
 key and request; the existing native owner durably pauses ordering and stages
 the exact signed proposal before owner review. The service-origin review binds
 the fingerprint, account, narrow rights, generation and retained prefix. The
-native helper has a finite window; timeout or restart preserves uncertain work
-and the ordering pause. Reopen that same participant and reconcile the original
+native participant receives later pairing requests through a hibernating setup
+subscription, without idle polling. Individual reviews expire after ten minutes;
+uncertain replies and process restart preserve the ordering pause. Reopen that same participant and reconcile the original
 outcome rather than signing a replacement. A committed grant still needs a real
 session connection and cross-device command/read evidence.
 

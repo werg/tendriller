@@ -25,7 +25,7 @@ npm run setup:finish -- .tendriller/account-setup-result.json
 npm run init
 npm run build
 npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation notes-release-1
-npm run peer # Or npm run assistant for the MCP participant.
+npm run serve # Native participant with optional reviewed MCP access.
 # Now give the owner the ready page URL; they sign in to open this version.
 # Do not wait for a claimed reply before publishing or starting the participant.
 # The owner opens the page. It connects by itself: a new browser creates its own
@@ -96,10 +96,11 @@ The host checks current account access, authority and the reviewed payload again
 when the normal signed control transition is selected. Existing grants and key
 commitments are preserved.
 
-`npm run peer` keeps enrollment open for as long as it runs. Its hibernating
-setup channel wakes it when a browser asks or the owner approves, so it prepares
-and commits within seconds without polling. Every request still needs the
-owner's approval on the service origin.
+The native participant remains available for later devices through an
+authenticated setup WebSocket on the existing hibernating page object. Idle
+setup has no polling or heartbeat. Each review expires after ten minutes, with
+one local active-request deadline. Every request still needs the owner's
+approval on the service origin.
 
 The page uses `connection.mjs` and `connect-view.mjs`: opening it attaches to
 this browser's existing device owner (any tab), sets up a new browser, opens the
@@ -112,8 +113,8 @@ denied one waits for an explicit "Ask again".
 Private native records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json` under `.tendriller/`.
 The durable ordering pause lives in the same native device store and survives
-process close and reopen. A lost response, unavailable status, or expired helper
-window leaves uncertain work paused. Reopen the same project and participant to
+process close and reopen. A lost response or unavailable status leaves uncertain
+work paused. Reopen the same project and participant to
 reconcile the original signed transition; never delete the records, copy the
 signer or sign a replacement prefix to resume writes. Only a verified exact
 outcome, or a confirmed terminal request with no committed transition, releases
@@ -215,8 +216,8 @@ capabilities remains the host descriptor and exact installed artifacts.
 
 
 For MCP access, run `npm run assistant:prepare` before owner sign-in and retain
-its returned review URL. Run `npm run assistant` instead of `peer` for the same
-native participant plus the assistant adapter. Give the owner the ready page and
+its returned review URL. Run one `npm run serve` process for the native
+participant plus its optional assistant adapter. Give the owner the ready page and
 review URL together. Claim adopts the prepared app, while assistant approval
 remains explicit; there is no need to type “claimed” back to the agent.
 
@@ -225,5 +226,7 @@ For optional event forwarding, use `npm run assistant:prepare -- --events` and
 `npm run assistant -- --events` with the same reviewed choice. Forwarding events
 does not create an MCP subscription, run a future model turn, or extend this
 process's lifetime. The runner reports proposal preparation, the running native
-PID, actual adapter status and shutdown separately. Even `adapter_online` still
+PID, actual adapter status and shutdown separately. Missing consent, adapter failure, revocation and replacement leave the native
+participant running. New consent reconnects only the adapter through setup
+notifications. Even `adapter_online` still
 requires a real MCP/browser round trip before setup is complete.

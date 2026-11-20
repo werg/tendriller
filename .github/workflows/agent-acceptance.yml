@@ -1,0 +1,33 @@
+name: Agent acceptance harness
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/agent-acceptance/**'
+      - 'scripts/test/agent-acceptance-*.test.mjs'
+      - 'scripts/review/access.mjs'
+      - 'scripts/review/preflight.mjs'
+      - 'docs/AGENT_ONBOARDING_TEST.md'
+      - '.github/workflows/agent-acceptance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  harness-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Protocol and real local owner regression (no model or live account)
+        run: node --test scripts/test/agent-acceptance-*.test.mjs
+        env:
+          TENDRILLER_ACCEPTANCE_BROWSER: '1'

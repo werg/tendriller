@@ -187,8 +187,9 @@ documents the implemented candidate interfaces and their acceptance gates.
 Account setup retains one client credential and allocation across retries.
 Pairing uses the browser's own key proof, a native proposal prepared before owner
 review, and a durable ordering pause until the exact signed outcome is resolved.
-The helper window is finite; closing or restarting a participant does not erase
-uncertain work. Public SDK/endpoint and tutorial helper tests cover their named
+The native participant uses hibernating setup notifications without idle polling;
+individual reviews expire after ten minutes. Its lifetime is independent of the
+optional MCP adapter. Closing or restarting it does not erase uncertain work. Public SDK/endpoint and tutorial helper tests cover their named
 boundaries. The exact packed first-app/browser run, selected-host MCP run and
 unaided cold-start exercise are separate evidence; source changes do not deploy
 the features or complete those qualifications.

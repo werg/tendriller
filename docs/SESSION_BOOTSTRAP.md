@@ -133,14 +133,11 @@ commit and connects; it also connects when it later finds a request the native
 owner committed while it was away. Approval never happens in author-controlled
 page HTML, and the review page cannot be framed.
 
-The native participant handles pairing for its whole lifetime
-(`superviseParticipant` in `helpers/participant-lifecycle.mjs`). It holds the
-hibernating setup channel (`watchApplicationSetup`), which the host notifies
-when a browser proves a request and when the owner approves or rejects one, so
-it prepares and commits within seconds without polling. A notification carries
-no pairing data and grants nothing; the participant re-reads pending requests
-through its authenticated API. A timeout, lost commit reply or
-process close preserves both the exact request and durable ordering pause.
+The native participant subscribes to authenticated setup notifications over a
+hibernating WebSocket. Later devices can pair without restarting it. Idle setup
+does not poll or send heartbeats. Each review request expires after ten minutes,
+with one local expiry deadline while that request is active. A lost commit reply
+or process close preserves both the exact request and durable ordering pause.
 On reopen, verify the original signed transition and complete reviewed payload
 before adopting it and resuming ordering. A mismatch or unavailable status stays
 paused; never substitute a new prefix or signer. `npm run pair` performs one
