@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -80,4 +80,23 @@ test('observational backpressure retries are bounded and never hide other failur
   assert.equal(calls, 3);
   await assert.rejects(readWithAdmissionRetry(() => { throw Object.assign(Error('busy'), { status: 429 }); }, { deadlineMs: 0 }), /busy/);
   await assert.rejects(readWithAdmissionRetry(() => { throw Object.assign(Error('denied'), { status: 403 }); }), /denied/);
+});
+
+
+test('review fixture imports import-only consumer exports through ESM resolution', async () => {
+  const { importReviewPackages } = await import('../review/packages.mjs');
+  const project = mkdtempSync(join(tmpdir(), 'review-esm-'));
+  try {
+    for (const [name, value] of [['@tendriller/core', 'core'], ['@chronolog/peer-session', 'session']]) {
+      const directory = join(project, 'node_modules', name); mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'package.json'), JSON.stringify({ name, type: 'module', exports: { '.': { import: './index.mjs' } } }));
+      writeFileSync(join(directory, 'index.mjs'), `export const identity = ${JSON.stringify(value)};`);
+    }
+    const modules = await importReviewPackages(project);
+    assert.equal(modules.core.identity, 'core'); assert.equal(modules.session.identity, 'session');
+    assert(!readdirSync(project).some(name => name.startsWith('.review-imports-')));
+    rmSync(join(project, 'node_modules/@chronolog/peer-session'), { recursive: true });
+    await assert.rejects(importReviewPackages(project));
+    assert(!readdirSync(project).some(name => name.startsWith('.review-imports-')));
+  } finally { rmSync(project, { recursive: true, force: true }); }
 });

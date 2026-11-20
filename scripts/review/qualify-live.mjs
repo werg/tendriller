@@ -6,7 +6,7 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { importReviewPackages } from './packages.mjs';
 import { chromium } from '@playwright/test';
 import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
@@ -22,7 +22,7 @@ const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_re
 assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
 const readiness = await preflightReviewDeployment(access.origin, composition);
 const project = mkdtempSync(join(tmpdir(), 'tendriller-review-fixture-'));
-let child, handle, creationAttempted = false;
+let child, handle, creationAttempted = false, phase = 'install public packages';
 const run = args => {
   try { return execFileSync(process.execPath, ['review-app.mjs', ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch { throw Error('Synthetic fixture step failed: ' + args[0] + '. Private child diagnostics were withheld.'); }
@@ -35,15 +35,18 @@ try {
   for (const name of ['review-app.mjs', 'review-domain.mjs']) copyFileSync(join(root, 'integrations/chatgpt/plugin', name), join(project, name));
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     composition.packagePaths.sdk, composition.packagePaths.session], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
-  const { createClient } = await import(pathToFileURL(createRequire(join(project, 'package.json')).resolve('@tendriller/core')).href);
+  const { core: { createClient } } = await importReviewPackages(project);
   // Admission may change during package installation. Observe it again without
   // overriding a pause; the create request still enforces any subsequent race.
   await preflightReviewDeployment(access.origin, composition);
+  phase = 'create fixture';
   creationAttempted = true;
   run(['create', accessPath, 'Qualification checklist']);
   handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
+  phase = 'initialize application';
   run(['init']);
   const proposal = JSON.parse(run(['propose']));
+  phase = 'publish before claim';
   const diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
   try { child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', 'ignore', diagnostic] }); }
   finally { closeSync(diagnostic); }
@@ -64,6 +67,7 @@ try {
   const publication = await readWithAdmissionRetry(() => host.peers.publication());
   assert(publication, 'Verify the committed publication on the actual host');
   assert.equal((await host.info()).owner_account_id, null);
+  phase = 'claim and review permissions';
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext(), page = await context.newPage();
@@ -77,6 +81,7 @@ try {
     const onlineDeadline = Date.now() + 25000;
     while (!(await (await context.request.get(proposal.reviewUrl)).text()).includes('Enrolled signer:')) { assert(Date.now() < onlineDeadline, 'Native participant deadline'); await delay(); }
   } finally { await browser.close(); }
+  phase = 'native MCP qualification';
   const report = await recordReview({ project, accessPath, output, composition, video: !values['no-video'] });
   report.preclaimPublicationVerified = true;
   writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
@@ -85,7 +90,7 @@ try {
   let nativeErrorCode;
   try { nativeErrorCode = readFileSync(join(project, 'participant-private.log'), 'utf8').match(/code: ['"]([a-zA-Z0-9_]+)['"]/)?.[1]; } catch {}
   if (!nativeErrorCode) nativeErrorCode = child?.exitCode != null ? 'EXIT_' + child.exitCode : undefined;
-  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase: 'fixture or qualification', nativeErrorCode }, null, 2), { mode: 0o600 });
+  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase, nativeErrorCode }, null, 2), { mode: 0o600 });
   throw Error('Live qualification failed. See the sanitized reports' + (nativeErrorCode ? ' (native ' + nativeErrorCode + ')' : '') + '. No private child diagnostics were printed.');
 } finally {
   const failures = [];
