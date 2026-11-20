@@ -186,6 +186,8 @@ async function connectSession() {
     });
     if ($('#operation-id').value) observeOperation($('#operation-id').value);
     submission.update({ attached: true }); $('#close').disabled = false;
+    // On-demand answers from the native participant (not retained in the journal).
+    window.appRequests = createSignalRequests(session, { peer: configuration.nativeDeviceId });
     // The draft editor is usable now; the submission state gates every action until reads succeed.
     $('#app-content').hidden = false;
     // The query activates data. Status observation handles later key delivery.
@@ -194,8 +196,6 @@ async function connectSession() {
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
     installed = true;
-    // On-demand answers from the native participant (not retained in the journal).
-    window.appRequests = createSignalRequests(session, { peer: configuration.nativeDeviceId });
   } catch (error) {
     if (!installed) {
       liveView?.close(); operationView?.close(); media?.close();
