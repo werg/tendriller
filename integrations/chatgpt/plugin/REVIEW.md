@@ -80,7 +80,7 @@ run, or explicitly document that the item is already complete.
 
 ## Record and run the review cases
 
-Run the five positive cases and three negative cases from
+Run all positive and negative cases from
 `plugin.json` in the actual ChatGPT plugin using the dedicated review account.
 Capture a browser recording showing account linking, listing and describing the
 sample, reading Check labels, approving completion, a fresh read, and the

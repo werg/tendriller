@@ -150,9 +150,9 @@ workspace plugin do not create a directory listing.
    checklist** with synthetic data. Seed an incomplete **Check labels** item
    plus another item, approve its list query and a command to mark only the
    selected item complete, and forward the approved completion event to the
-   inbox. Keep an eligible participant running and verify the five positive and
-   three negative cases from the package with that account. Reset sample state
-   after recording the walkthrough. In **Metadata & Skills → Review information
+   inbox. Keep an eligible participant running and verify all positive and
+   negative cases from the package with that account. Provision a fresh sample
+   app for the reviewer after recording the walkthrough. In **Metadata & Skills → Review information
    → Review details**, enter the private test credentials, sign-in instructions,
    and the reviewer-accessible video link. Keep credentials out of the ZIP and
    chat. [Review details](https://developers.openai.com/plugins/deploy/submission#complete-review-information)
