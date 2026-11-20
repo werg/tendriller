@@ -6,6 +6,16 @@ its existing Durable Object. Application code and state stay with the enrolled
 Chronolog participants. The same endpoint serves multiple owners and application
 definitions, including applications that use SQL.
 
+## Start from an agent conversation
+
+Call `tendril_guide` with `topic: "start"` for the maintained
+[MCP workflow](MCP_AGENT_GUIDE.md), or `topic: "connect"` to read this document
+inside MCP. For a new app, follow `topic: "build"` before enrolling its assistant
+adapter. An empty list means no assistant-connected apps, not a missing plugin.
+All returned links use the connected service origin. The normal route is this
+Cloudflare endpoint and the app's existing participant; the separately deployed
+Node integration is an optional harness for explicit external deployments.
+
 ## Prepare the service once
 
 Apply account migrations `0002_integration_oauth.sql` and

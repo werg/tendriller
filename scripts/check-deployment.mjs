@@ -110,6 +110,8 @@ if (assistant) {
   ]);
   if (resource.resource !== `${base}/mcp` || resource.authorization_servers?.length !== 1 ||
       resource.authorization_servers[0] !== base || issuer.issuer !== base ||
+      !Array.isArray(resource.scopes_supported) || !resource.scopes_supported.length ||
+      resource.scopes_supported.some(scope => !issuer.scopes_supported?.includes(scope)) ||
       issuer.authorization_endpoint !== `${base}/oauth/authorize` || issuer.token_endpoint !== `${base}/oauth/token` ||
       issuer.authorization_response_iss_parameter_supported !== true || issuer.client_id_metadata_document_supported !== true ||
       !issuer.code_challenge_methods_supported?.includes('S256') || !issuer.token_endpoint_auth_methods_supported?.includes('none') ||
@@ -120,6 +122,19 @@ if (assistant) {
   const catalog = await call('tools/list');
   if (!catalog.ok || !(await catalog.json()).result?.tools?.some(tool => tool.name === 'get_application_delivery'))
     throw new Error('Assistant tool discovery failed');
+  const guideResponse = await call('tools/call', { name: 'tendril_guide', arguments: {} });
+  const guide = (await guideResponse.json()).result?.structuredContent;
+  if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
+      guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
+      !guide.text?.includes('Node 24') || !guide.text?.includes(`${base}/api/tendrils`))
+    throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
+  const templates = await call('resources/templates/list');
+  if (!templates.ok || !Array.isArray((await templates.json()).result?.resourceTemplates))
+    throw new Error('Assistant resource-template discovery failed');
+  const probe = await fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(15_000),
+    headers: { 'Content-Type': 'application/octet-stream' } });
+  if (probe.status !== 401 || !probe.headers.get('WWW-Authenticate')?.includes(`${base}/.well-known/oauth-protected-resource/mcp`))
+    throw new Error('Assistant setup probe did not advertise account linking');
   const protectedCall = await call('tools/call', { name: 'get_profile', arguments: {} });
   if (protectedCall.status !== 401 || !protectedCall.headers.get('WWW-Authenticate')?.includes(`${base}/.well-known/oauth-protected-resource/mcp`))
     throw new Error('Assistant tool access did not require an account grant');

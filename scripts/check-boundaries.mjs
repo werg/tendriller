@@ -7,8 +7,10 @@ const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMa
   entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
 const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog-db|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)|@chronolog\//;
 const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
-// The host admits portable control verification. Executable application logic stays with its participants.
+// The host admits portable control and declared input-schema verification.
+// Executable application logic stays with its participants.
 const controlImports = new Map([
+  ['server/src/assistant.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-generations.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-control-identity.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],

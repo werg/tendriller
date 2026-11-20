@@ -156,3 +156,25 @@ Publish the outcome only when the corresponding run exists. If the environment
 cannot access the host, compatible artifact or required owner authorization,
 record the blocked stage and complete the checks that are available. Keep that
 limitation visible alongside the result.
+
+
+## MCP-only discovery scenario
+
+In a fresh chat with only the Tendriller MCP connection selected, request:
+“Build me a small checklist page I can use on my phone, and connect it to this
+chat.” Start with an account that has no assistant-connected apps. Do not supply
+repository paths or install the bundled skill as hidden prior context.
+
+Record whether the agent finds `tendril_guide`, reads `start` and `build`, uses
+the connected service origin and checks its execution capabilities. With a
+supported native runtime, apply the full build and delivery criteria above.
+Without that runtime, the expected result is a concrete runtime handoff with
+same-origin build instructions and an honest blocked status. Searching for
+unrelated plugins, inferring that an empty list disables creation, or delivering
+a static website as the connected app fails this discovery scenario.
+
+Also test an existing but unconnected app: the agent should follow `connect`
+and the existing participant's review URL rather than create a replacement.
+The automated MCP regression follows the guide/tool/resource and empty-list
+path, including anonymous discovery and staging links; it does not substitute
+for this fresh-agent behavior evaluation.

@@ -1,35 +1,28 @@
+import { onboardingDescriptor } from '@tendriller/core/onboarding';
 import { serverBase } from './config.mjs';
 
 /** Public navigation only: generating a guide creates no page, identity or session. */
 export function onboardingGuide(flags = {}, env = process.env) {
   const service = publicServiceOrigin(serverBase(env, flags));
+  const shared = onboardingDescriptor(service);
   const url = path => service + path;
   return {
     service,
     network_checked: false,
-    start_here: url('/docs/BUILD_AN_APP.md'),
-    agent_guide: url('/agent.md'),
-    capabilities: url('/.well-known/tendriller-capabilities.json'),
-    capability_guide: url('/docs/CAPABILITIES.md'),
-    delivery_guide: url('/docs/AGENT_DELIVERY.md'),
+    onboarding: shared,
+    mcp_guide: shared.documentation.mcp,
+    start_here: shared.start_here,
+    agent_guide: shared.agent_instructions,
+    capabilities: shared.capabilities,
+    capability_guide: shared.documentation.capabilities,
+    delivery_guide: shared.documentation.delivery,
     patterns: url('/docs/APP_PATTERNS.md'),
     preview: url('/docs/tools/PREVIEW.md'),
-    primary_deliverable: 'A live hosted application with a connected native/browser session, verified signed publication, and honest process lifetime/resume instructions.',
-    troubleshooting: url('/docs/TROUBLESHOOTING.md'),
-    service_descriptor: url('/api/service'),
+    primary_deliverable: shared.delivery.primary,
+    troubleshooting: shared.documentation.troubleshooting,
+    service_descriptor: shared.interfaces.service_descriptor,
     next: `tendril service --server ${service}`,
-    workflow: [
-      { step: 1, action: 'Create and claim the application page',
-        ready_when: 'Provision early, save application.id, give the actual page_url to the owner, and complete their sign-in; setup is part of the task.' },
-      { step: 2, action: 'Define durable state and commands',
-        ready_when: 'The application definition, execution manifest and required device grants are explicit.' },
-      { step: 3, action: 'Build the UI',
-        ready_when: 'The authored HTML and assets use the same definition and expose session status.' },
-      { step: 4, action: 'Connect the owned Chronolog session',
-        ready_when: 'Authority has an explicitly selected initial generation. The enrolled signer, persistent local store, epoch keys and verified authority open the session; one participation controller owns peer connections.' },
-      { step: 5, action: 'Publish and verify',
-        ready_when: 'An authorized publisher signs the complete file graph, the host returns a receipt, and retained work survives reopening the same device.' },
-    ],
+    workflow: shared.workflow,
     prerequisites: [
       'Compatible public Tendriller and Chronolog artifacts; verify the host contract before creating a page.',
       'An owner email and owner sign-in to claim the page.',

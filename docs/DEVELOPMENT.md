@@ -116,3 +116,27 @@ rejection, exact retry and native process reopen. It reports native coverage
 explicitly and does not claim the supplied SQL browser Worker is qualified by
 that check. Engine archives must match the target Node/platform/architecture/libc
 requirements; an events-only archive cannot stand in for SQL.
+
+
+## Keep guidance synchronized
+
+`contract/onboarding.mjs` owns the public navigation and lifecycle descriptor.
+The host, account-linked MCP guide catalog and packaged CLI consume that same
+public module (`@tendriller/core/onboarding`). Edit the maintained Markdown guides
+for procedures; MCP reads those deployed assets rather than a copied manual.
+`scripts/onboarding.mjs` builds the combined text from those documents, and the
+plugin builder packages the maintained skill directly.
+
+When changing the lifecycle or supported setup routes, update its primary guide,
+agent entry/index and the plugin skill together. `npm run test:onboarding` checks
+the guide catalog, shipped documents, entry-point links, skill routes and combined
+text. The server tests exercise unauthenticated MCP discovery, all guide topics,
+staging URL rewriting and an empty account's next action. CLI tests compare its
+embedded navigation with the shared descriptor. Rebuild before these checks.
+
+Contrib should link to the target service's current guides for setup; keep pinned
+source links in qualification reports as evidence for their recorded runs. After
+changing contrib's reading index, run its generator and normal checks rather than
+editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
+scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
+link and consistency checks do not prove that an unfamiliar agent can finish.

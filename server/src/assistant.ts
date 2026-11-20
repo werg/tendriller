@@ -11,6 +11,7 @@ import { activeGrant } from './accounts/oauth-data';
 import { sha256Hex } from './ids';
 import { publicBase } from './urls';
 import type { Tendril } from './tendril';
+import { parseApplicationInput, type ApplicationInputSchema } from '@chronolog/peer-generation/control';
 
 type OperationContext = {
   operation_id: string; binding_id: string; client_operation_id: string; provider_binding_id: string;
@@ -131,8 +132,13 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   const kind = isReapply ? 'reapply' : journalKind ?? (isCommand ? 'command' : 'query');
   const name = journalKind ? existing!.command : string(params[isCommand ? 'command' : 'query'], 128);
   if (!journalKind || journalKind === 'retry') {
-    if (!(writes ? approved.commands : approved.queries).some(item => item.name === name)) throw new HttpError(403, 'operation_not_approved');
+    const operation = (writes ? approved.commands : approved.queries).find(item => item.name === name);
+    if (!operation) throw new HttpError(403, 'operation_not_approved');
     requireConsumerOperation(consumer, writes ? 'commands' : 'queries', name);
+    if (!journalKind) {
+      try { parseApplicationInput(operation.input as ApplicationInputSchema, params.input); }
+      catch { throw new HttpError(400, 'invalid_application_input', 'Input does not match the approved application operation schema.'); }
+    }
   }
   const original = isReapply ? t.db.one<OperationContext>(operationQuery, consumer.id,
     string(params.originalOperationId, 200, /^[A-Za-z0-9_.:-]+$/u)) : null;

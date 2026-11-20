@@ -1,4 +1,5 @@
 import type { Env } from '../env';
+import { testAccountEnabled } from './test-access';
 import { safeEqual, sha256Hex } from '../ids';
 import { activeGrant, cleanup, postOnly, registeredGrant, revokeGrant, type OAuthGrant } from './oauth-data';
 import { requestedScopes } from './oauth-authorization';
@@ -119,7 +120,7 @@ export async function inspectAccessToken(env: Env, config: OAuthConfig, token: s
       AND a.suspended_at IS NULL AND a.deleting_at IS NULL`).bind(hash, now, config.resource, now)
     .first<{ grant_id: string; jti: string; scope: string; created_at: number; expires_at: number;
       account_id: string; client_id: string; grant_scope: string }>();
-  if (!access || !registeredGrant(config, { client_id: access.client_id, scope: access.grant_scope }) ||
+  if (!access || !testAccountEnabled(env, access.account_id) || !registeredGrant(config, { client_id: access.client_id, scope: access.grant_scope }) ||
       !registeredGrant(config, access)) return null;
   return { active: true, token_type: 'Bearer', sub: access.account_id, iss: config.issuer, aud: config.resource,
     scope: access.scope, client_id: access.client_id, iat: Math.floor(access.created_at / 1000), exp: Math.floor(access.expires_at / 1000),

@@ -6,6 +6,7 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { ASSISTANT_GUIDES, onboardingDescriptor } from '../../contract/onboarding.mjs';
 import { buildOnboardingAssets, combinedOnboarding, ONBOARDING_DOCS, TUTORIAL_FILES, TUTORIAL_DOWNLOAD } from '../onboarding.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -15,6 +16,25 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const dynamicPaths = new Set(['/', '/api/service', '/.well-known/tendriller.json',
   '/.well-known/tendriller-capabilities.json', '/contract/v3.json',
   '/.well-known/oauth-protected-resource/mcp', '/auth', '/connections', '/oauth/connections', '/privacy', '/terms']);
+
+test('MCP, published onboarding and installable skill retain one current discovery route', () => {
+  const guidePaths = Object.values(ASSISTANT_GUIDES);
+  for (const path of guidePaths) {
+    assert(ONBOARDING_DOCS.includes(path.slice(1)), `Guide is absent from combined onboarding: ${path}`);
+    assert(existsSync(join(publicRoot, path)), `MCP advertises an unshipped guide: ${path}`);
+  }
+  const descriptor = onboardingDescriptor('https://staging.example');
+  assert.equal(descriptor.documentation.mcp, 'https://staging.example' + ASSISTANT_GUIDES.start);
+  assert.equal(descriptor.start_here, 'https://staging.example' + ASSISTANT_GUIDES.build);
+  for (const path of ['agent.md', 'llms.txt', 'docs/BUILD_AN_APP.md', 'docs/CHATGPT_INTEGRATION.md']) {
+    assert(links(readFileSync(join(root, path), 'utf8')).some(target => target.includes('MCP_AGENT_GUIDE.md')),
+      `${path} lost its MCP onboarding pointer`);
+  }
+  const skill = readFileSync(join(root, 'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md'), 'utf8');
+  assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
+  for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery'])
+    assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
+});
 
 test('the domain-only onboarding graph points to shipped public documents and the starter', () => {
   for (const path of ['AGENTS.md', 'llms.txt', ...ONBOARDING_DOCS]) {

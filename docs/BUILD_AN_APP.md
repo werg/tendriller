@@ -1,6 +1,12 @@
 # Build your first Tendriller application
 
 **Start here when a user gives you a Tendriller domain and asks for an app.**
+If you entered through MCP, `tendril_guide` returns this document with
+`topic: "build"`; use `topic: "start"` for the
+[MCP route](MCP_AGENT_GUIDE.md). An empty application list does not prevent using
+the HTTP creation route. First check that your environment can run the supplied
+Node 24 participant and retain its private store; name a missing runtime
+explicitly rather than delivering an unconnected preview.
 The result is its live hosted page and connected participant. Provisioning,
 owner claim, enrollment and signed publication are part of the task; the starter
 download is an implementation input. Follow the

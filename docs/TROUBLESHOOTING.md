@@ -11,6 +11,21 @@ tokens, capability URLs, private keys and application data out of public logs an
 published assets. An uncertain response is a reason to inspect the existing work,
 not to create a replacement identity or backend.
 
+## MCP has no applications or the agent cannot find setup
+
+Call `tendril_guide` with `topic: "start"`; the tool returns the maintained
+[MCP workflow](MCP_AGENT_GUIDE.md) without browsing. An empty `list_tendrils`
+means no assistant-connected apps for that account. Use `topic: "build"` for a
+new application and its supported HTTP creation route, or `topic: "connect"`
+for the existing participant's proposal and owner review. Check Node 24, retained
+storage and actual process lifetime before promising a connected new app. A
+missing runtime requires a concrete runtime handoff, not another website plugin.
+
+If the guide tool is absent, refresh the client's cached tool catalog or recreate
+the custom connection after confirming the intended service origin and deployed
+release. Keep the same origin for all setup requests; do not switch staging to
+production to find an app.
+
 ## Locate the missing checkpoint
 
 | Checkpoint | Evidence to inspect | What remains to do |

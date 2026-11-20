@@ -45,6 +45,78 @@ it('first-party OAuth stays disabled until explicitly configured and remains on 
   expect((await request('/.well-known/oauth-authorization-server', configured({ OAUTH_SIGNING_JWK: undefined }))).status).toBe(503);
 });
 
+it('challenges an empty OAuth setup probe and serves the public resource-template catalog', async () => {
+  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: ISSUER + '/mcp', clients: [{
+    id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'],
+  }] }) });
+  const probe = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } });
+  expect(probe.status).toBe(401);
+  expect(probe.headers.get('WWW-Authenticate')).toContain(ISSUER + '/.well-known/oauth-protected-resource/mcp');
+  // ChatGPT requests all scopes advertised by the protected resource, rather
+  // than limiting itself to those in authorization-server metadata.
+  const resource = await (await request('/.well-known/oauth-protected-resource/mcp', settings)).json() as { scopes_supported: string[] };
+  expect(resource.scopes_supported).toEqual(['applications:read']);
+  const authorization = await request('/oauth/authorize?' + new URLSearchParams({
+    client_id: 'chatgpt', redirect_uri: REDIRECT, state: 'chatgpt-discovery', resource: ISSUER + '/mcp',
+    response_type: 'code', scope: resource.scopes_supported.join(' '),
+    code_challenge_method: 'S256', code_challenge: await challengeFor('s'.repeat(43)),
+  }), settings);
+  expect(authorization.status).toBe(303);
+  expect(new URL(authorization.headers.get('Location')!, ISSUER).pathname).toBe('/auth');
+  const templates = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/templates/list' }) });
+  expect(templates.status).toBe(200);
+  expect(await templates.json()).toMatchObject({ result: { resourceTemplates: [] } });
+});
+
+it('provides a complete public MCP onboarding route without browsing or account access, including staging', async () => {
+  const origin = 'https://staging.tendriller.dev';
+  const settings = configured({ PUBLIC_BASE: origin, OAUTH_CONFIG_JSON: JSON.stringify({ resource: origin + '/mcp', clients: [
+    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
+  ] }) });
+  const call = async (method: string, params: object = {}) => {
+    const response = await route(new Request(origin + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }), settings);
+    return { response, body: await response.json() as Record<string, any> };
+  };
+  const before = await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first();
+  const initialized = await call('initialize', { protocolVersion: '2025-11-25' });
+  expect(initialized.body.result.instructions).toContain('tendril_guide');
+  expect(initialized.body.result.instructions).toContain(origin);
+  const catalog = await call('tools/list');
+  const guideTool = catalog.body.result.tools.find((item: any) => item.name === 'tendril_guide');
+  expect(guideTool.securitySchemes).toEqual([{ type: 'noauth' }]);
+  expect(guideTool.inputSchema.properties.topic.enum).toContain('build');
+  const readGuide = async (args: object = {}) => {
+    const reply = await call('tools/call', { name: 'tendril_guide', arguments: args });
+    expect(reply.response.status).toBe(200);
+    expect(reply.body.result.isError).not.toBe(true);
+    return reply.body.result.structuredContent;
+  };
+  const start = await readGuide();
+  expect(start.topic).toBe('start');
+  expect(start.serviceOrigin).toBe(origin);
+  expect(start.text).toContain('Node 24');
+  expect(start.text).toContain('POST ' + origin + '/api/tendrils');
+  expect(start.text).not.toContain('https://tendriller.dev');
+  expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/tendrils');
+  const build = await readGuide({ topic: 'build' });
+  expect(build.text).toContain('npm run create');
+  expect(build.text).toContain(origin + '/downloads/tendriller-first-app.tgz');
+  for (const topic of ['capabilities', 'connect', 'delivery', 'troubleshooting']) {
+    const guide = await readGuide({ topic });
+    expect(guide.url).toBe(origin + '/docs/' + ({ capabilities: 'CAPABILITIES', connect: 'CLOUDFLARE_ASSISTANT', delivery: 'AGENT_DELIVERY', troubleshooting: 'TROUBLESHOOTING' } as Record<string, string>)[topic] + '.md');
+    expect(guide.text.length).toBeGreaterThan(100);
+  }
+  const resources = await call('resources/list');
+  expect(resources.body.result.resources).toContainEqual(expect.objectContaining({ uri: start.url, mimeType: 'text/markdown' }));
+  expect((await call('resources/read', { uri: start.url })).body.result.contents[0].text).toBe(start.text);
+  const invalid = await call('tools/call', { name: 'tendril_guide', arguments: { topic: 'https://untrusted.example/' } });
+  expect(invalid.body.result).toMatchObject({ isError: true, structuredContent: { code: 'invalid_guide_topic' } });
+  expect((await call('tools/call', { name: 'list_tendrils', arguments: {} })).response.status).toBe(401);
+  expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first()).toEqual(before);
+});
+
 it('enabled OAuth names its missing additive migration while the ordinary host still works with OAuth disabled', async () => {
   const settings = configured();
   await env.ACCOUNTS.prepare('ALTER TABLE integration_oauth_management_sessions RENAME TO temporarily_absent_management_sessions').run();
@@ -616,6 +688,9 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('get_profile')).result.structuredContent.id).not.toEqual((await second.tool('get_profile')).result.structuredContent.id);
     expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual(['application.event']);
     expect((await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.queries[0].name).toBe('notes');
+    expect((await first.tool('call_application_command', { applicationId: first.id, command: 'addNote', input: {},
+      operationId: 'invalid-before-admission' })).result.structuredContent.code).toBe('invalid_application_input');
+    await inDO(a.page.id, t => expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands')).toEqual({ n: 0 }));
     const announcement = (await first.tool('open_application_inbox', { applicationId: first.id })).result;
     expect(announcement.structuredContent).not.toHaveProperty('activity');
     const proof = announcement._meta.activity.proof;
@@ -731,8 +806,15 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(resumed.events[0].sequence).toBeGreaterThan(pinned + 1);
     await inDO(a.page.id, t => expect(t.db.one('SELECT seq FROM assistant_events WHERE seq=?', pinned)).toBeTruthy());
 
-    rejectCallback = true;
-    await inDO(a.page.id, t => t.db.run('UPDATE assistant_jobs SET attempts=7,due=? WHERE event_seq=?', t.now() - 1, pinned));
+    // The host may deliver immediately after emission. Let that attempt finish
+    // before preparing the final retry, so its lease cannot overwrite this setup.
+    await runAlarm(a.page.id);
+    await expect.poll(() => inDO(a.page.id, t =>
+      t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs WHERE lease IS NOT NULL')!.n)).toBe(0);
+    await inDO(a.page.id, async t => {
+      t.db.run('UPDATE assistant_jobs SET attempts=7,due=? WHERE event_seq=?', t.now() - 1, pinned);
+      await t.ctx.storage.setAlarm(t.now());
+    });
     await runAlarm(a.page.id);
     const failed = (await first.tool('get_application_delivery', { applicationId: first.id })).result.structuredContent;
     expect(failed.recent).toEqual(expect.arrayContaining([expect.objectContaining({ sourceEventId: later.sourceEventId, outcome: 'retry_exhausted', attempts: 8 })]));
@@ -748,8 +830,12 @@ it('serves unrelated native applications through one MCP endpoint and retains in
 
     const { standby } = await first.startBackup();
     await first.adapter.close();
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value)
-      .toMatchObject([{ text: 'Rope checked' }]);
+    // close() settles the local loop; wait for the remote close handshake before
+    // testing the separate already-offline-provider scenario.
+    await vi.waitFor(async () => expect(await inDO(a.page.id, t =>
+      t.ctx.getWebSockets('application-mcp').filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN).length)).toBe(1));
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result)
+      .toMatchObject({ structuredContent: { value: [{ text: 'Rope checked' }] } });
     const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
     expect(unresolved).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: first.session.deviceId } });
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
@@ -906,7 +992,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await inDO(a.page.id, t => { Object.assign(t.env, restore); });
     await inDO(b.page.id, t => { Object.assign(t.env, restore); });
   }
-}, 30_000);
+}, 60_000);
 
 it('uses an operator-pinned client metadata document for public PKCE without fetching caller-controlled URLs', async () => {
   const f = await hostFixture(), id = 'https://chatgpt.com/oauth/client.json';
@@ -950,7 +1036,10 @@ it('uses an operator-pinned client metadata document for public PKCE without fet
     const result = await response.json() as { access_token: string };
     const listed = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call',
       params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
-    expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [] } } });
+    expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [], setup: {
+      guideTool: 'tendril_guide', topic: 'start', serviceOrigin: ISSUER,
+      startHere: ISSUER + '/docs/MCP_AGENT_GUIDE.md', nextAction: expect.stringContaining('For a new app'),
+    } } } });
   } finally { outbound.mockRestore(); }
 });
 
