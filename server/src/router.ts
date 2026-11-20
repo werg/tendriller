@@ -11,6 +11,7 @@ import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
 import { routeIntegrationOAuth } from "./accounts/integration-oauth";
 import { dashboard } from "./accounts/keys";
+import { setupDashboard } from './accounts/setups';
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
 import { adminPage, appealPage } from "./abuse/admin";
@@ -169,6 +170,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/admin" || path === "/admin/action" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
+  if (path === '/dashboard/setups' || path.startsWith('/dashboard/setups/')) return setupDashboard(req,env,url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {

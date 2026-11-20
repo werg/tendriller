@@ -145,6 +145,33 @@ it('preserves precise trigger refusal codes when account readiness changes at al
   }
 });
 
+async function ownerSession(account: string) {
+  const raw = crypto.randomUUID(), hash = await sha256Hex(raw);
+  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
+    .bind(hash,account,Date.now(),Date.now()+60000).run();
+  return {hash,headers:{Cookie:'__Host-tendriller='+raw}};
+}
+function afterAccountRead(settings: Env, match: (query: string) => boolean, change: () => Promise<void>) {
+  const original = settings.ACCOUNTS;
+  let done = false;
+  const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => new Proxy(statement,{get(target,key) {
+    if (key === 'bind') return (...values: unknown[]) => wrap(target.bind(...values),query);
+    if (key === 'first' || key === 'all') return async (...values: unknown[]) => {
+      const result = await Reflect.apply(target[key],target,values);
+      if (!done && match(query)) { done = true; await change(); }
+      return result;
+    };
+    const value = Reflect.get(target,key,target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  }});
+  settings.ACCOUNTS = new Proxy(original,{get(target,key) {
+    if (key === 'prepare') return (query: string) => wrap(target.prepare(query),query);
+    const value = Reflect.get(target,key,target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  }});
+  return () => { settings.ACCOUNTS = original; };
+}
+
 it('prepares and inspects one account-bound page with a retained credential and no returned secret', async () => {
   const f = await fixture(), intent = await f.intent(), prepared = await f.prepare(intent);
   expect(prepared.response.status).toBe(200); expect(prepared.body.state).toBe('ready');
@@ -474,4 +501,87 @@ it('rechecks verified identity when owner sign-in races removal of the previousl
   expect(response.status).toBe(403);
   expect(await inDO(ready.body.pageId, t => t.db.get('owner_account', null))).toBeNull();
   expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(ready.body.pageId).first()).toEqual({ owner_account: null });
+});
+
+it('lets the signed-in owner find the existing setup after connector revocation without exposing credentials or changing authority',async()=>{
+  const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent), session = await ownerSession(f.account);
+  await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(),f.grant).run();
+  const transport = f.settings.TENDRIL;
+  f.settings.TENDRIL = new Proxy(transport,{get(){throw new Error('A setup list must not wake pages');}});
+  const listing = await f.request('/dashboard/setups',{headers:session.headers}), listText = await listing.text();
+  expect(listing.status).toBe(200); expect(listing.headers.get('Cache-Control')).toBe('no-store');
+  expect(listText).toContain(intent.operationId); expect(listText).toContain(ready.body.pageId);
+  f.settings.TENDRIL = transport;
+  const detail = await f.request('/dashboard/setups/'+ready.body.pageId,{headers:session.headers}), detailText = await detail.text();
+  expect(detail.status).toBe(200); expect(detailText).toContain(ready.body.page!.page_url);
+  for (const text of [listText,detailText]) for (const secret of [intent.credential,intent.credentialCommitment,intent.requestDigest,f.grant]) expect(text).not.toContain(secret);
+  expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(ready.body.pageId).first()).toEqual({owner_account:null});
+  expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({count:1});
+  expect(await inDO(ready.body.pageId,t=>t.db.one('SELECT COUNT(*) AS n FROM tokens'))).toEqual({n:1});
+  expect((await f.request('/api/t/'+ready.body.pageId,{headers:{Authorization:'Bearer '+intent.credential}})).status).toBe(401);
+});
+
+it('scopes owner setup recovery to the active browser account and exposes no mutation route',async()=>{
+  const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent), owner = await ownerSession(f.account);
+  const other = await fixture(), stranger = await ownerSession(other.account);
+  expect((await f.request('/dashboard/setups')).status).toBe(302);
+  expect((await f.request('/dashboard/setups/'+ready.body.pageId,{headers:stranger.headers})).status).toBe(404);
+  const unrelated = await f.request('/dashboard/setups',{headers:stranger.headers});
+  expect(await unrelated.text()).not.toContain(intent.operationId);
+  expect((await f.request('/dashboard/setups/'+ready.body.pageId,{method:'POST',headers:owner.headers})).status).toBe(405);
+  expect((await route(new Request('https://another.example/dashboard/setups',{headers:owner.headers}),f.settings)).status).toBe(404);
+  const dashboard = await f.request('/dashboard',{headers:owner.headers});
+  expect(await dashboard.text()).toContain('href="/dashboard/setups"');
+  expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({count:1});
+});
+
+it('shows retained missing or corrupt journals to their owner without minting or linking a replacement',async()=>{
+  for (const fault of ['missing','corrupt']) {
+    const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent), session = await ownerSession(f.account);
+    await env.ACCOUNTS.prepare(fault === 'missing' ? 'DELETE FROM account_setups WHERE account_id=?' : "UPDATE account_setups SET request_json='{}' WHERE account_id=?")
+      .bind(f.account).run();
+    f.settings.TENDRIL = new Proxy(f.settings.TENDRIL,{get(){throw new Error('Damaged recovery must not initialize or inspect a page');}});
+    const listing = await f.request('/dashboard/setups',{headers:session.headers});
+    expect(await listing.text()).toContain(intent.operationId);
+    const detail = await f.request('/dashboard/setups/'+ready.body.pageId,{headers:session.headers}), text = await detail.text();
+    expect(detail.status).toBe(200); expect(text).toContain('reconciliation required'); expect(text).not.toContain(ready.body.page!.page_url);
+    expect(text).not.toContain(intent.credentialCommitment); expect(text).not.toContain(intent.credential);
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({count:1});
+  }
+});
+
+it('rechecks owner sessions after reading retained setup evidence and after page inspection',async()=>{
+  for (const fault of ['revoked','expired','suspended','deleting','changed'] as const) {
+    const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent), session = await ownerSession(f.account);
+    const other = fault === 'changed' ? await fixture() : null;
+    const restore = afterAccountRead(f.settings,query=>query.includes('SELECT a.page_id,a.operation_id'),async()=>{
+      if (fault === 'revoked') await env.ACCOUNTS.prepare('DELETE FROM sessions WHERE hash=?').bind(session.hash).run();
+      if (fault === 'expired') await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=0 WHERE hash=?').bind(session.hash).run();
+      if (fault === 'suspended') await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(),f.account).run();
+      if (fault === 'deleting') await env.ACCOUNTS.prepare('UPDATE accounts SET deleting_at=? WHERE id=?').bind(Date.now(),f.account).run();
+      if (fault === 'changed') await env.ACCOUNTS.prepare('UPDATE sessions SET account_id=? WHERE hash=?').bind(other!.account,session.hash).run();
+    });
+    const response = await f.request('/dashboard/setups',{headers:session.headers}); restore();
+    expect(response.status).toBe(302); expect(await response.text()).not.toContain(intent.operationId);
+  }
+  const f = await fixture(), ready = await f.prepare(await f.intent()), session = await ownerSession(f.account), transport = f.settings.TENDRIL;
+  f.settings.TENDRIL = {idFromName:name=>transport.idFromName(name),get(id){const object=transport.get(id);return {async fetch(request:Request){
+    const response=await object.fetch(request);
+    await env.ACCOUNTS.prepare('DELETE FROM sessions WHERE hash=?').bind(session.hash).run();
+    return response;
+  }} as DurableObjectStub;}} as DurableObjectNamespace;
+  const response = await f.request('/dashboard/setups/'+ready.body.pageId,{headers:session.headers});
+  expect(response.status).toBe(302); expect(await response.text()).not.toContain(ready.body.page!.page_url);
+});
+
+it('rechecks connector authorization before returning a list or a missing-journal receipt',async()=>{
+  for (const missing of [false,true]) {
+    const f = await fixture(), intent = await f.intent(); await f.prepare(intent);
+    if (missing) await env.ACCOUNTS.prepare('DELETE FROM account_setups WHERE account_id=?').bind(f.account).run();
+    const restore = afterAccountRead(f.settings,query=>query.includes('FROM account_setup_allocations'),async()=>{
+      await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(),f.grant).run();
+    });
+    const response = await f.request('/api/setup'+(missing?'?operationId='+intent.operationId:'')); restore();
+    expect(response.status).toBe(401); expect(await response.text()).not.toContain(intent.credentialCommitment);
+  }
 });
