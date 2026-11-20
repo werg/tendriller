@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { validateConfig, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
 import { measure } from './cloudflare.mjs';
 import { startBrowser } from './browser.mjs';
+import { nativeReady, quietBoundary } from './warmup.mjs';
 
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve(); };
@@ -37,7 +38,8 @@ export async function run(configPath, directory) {
   const abort = new AbortController();
   const stop = () => abort.abort(); process.once('SIGTERM', stop); process.once('SIGINT', stop);
   const persist = () => { save(checkpoint, s); save(resolve(directory, 'report.json'), report(s)); };
-  const emit = event => { if (record(s, event)) persist(); };
+  const boundary = quietBoundary({ signal: abort.signal });
+  const emit = event => { if (record(s, event)) { boundary.activity(); persist(); } };
   try {
     try { s = privateJSON(checkpoint); } catch (e) { if (e.code !== 'ENOENT') throw e; s = newState(c); }
     if (s.configHash !== digest(JSON.stringify(c))) throw Error('CONFIG_CHANGED_USE_NEW_RUN_DIRECTORY');
@@ -48,6 +50,7 @@ export async function run(configPath, directory) {
     }
     s.provenance = { sourceCommit:c.provenance.sourceCommit, compositionId:c.provenance.compositionId };
     s.provenanceHash = digest(JSON.stringify(c.provenance));
+    s.runnerHash = digest(readFileSync(fileURLToPath(import.meta.url)));
     s.adapterHash = createHash('sha256').update(readFileSync(c.adapter)).digest('hex');
     s.status = 'running'; persist();
     // Explicit read-only baseline before any measured target phase. Never store credentials or raw API errors.
@@ -55,6 +58,7 @@ export async function run(configPath, directory) {
     native = spawn(c.native.argv[0], [...c.native.argv.slice(1)], { cwd: c.native.cwd,
       env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${fileURLToPath(new URL('./native-observer.mjs', import.meta.url))}` },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const ready = nativeReady(native, { signal: abort.signal }); ready.catch(() => {});
     s.nativeStartedAt = Date.now(); s.events.push({kind:'native-start',at:s.nativeStartedAt}); persist();
     native.on('message', message => {
       if (message?.idleSoak === 1) emit(message);
@@ -71,13 +75,16 @@ export async function run(configPath, directory) {
     s.coverage.wakeups ||= coverage?.wakeups === true;
     // Optional event-driven external audit; no periodic calls are scheduled.
     await browser.adapter.observe?.({ record: emit, config: c, signal: abort.signal });
+    await ready; s.events.push({ kind: 'native-ready', at: Date.now() }); persist();
     for (const phase of ['closed', 'background', 'foreground']) {
       if (s.segments.some(x => x.phase === phase && !x.incomplete && x.endedAt >= x.deadline)) continue;
       const transitionStart = Date.now();
       const residency = await boundedActive(() => browser.phase(phase), {attempts:1, expiresAt:Date.now()+60000, signal:abort.signal});
       await boundedActive(() => browser.settle(), {attempts:1, expiresAt:Date.now()+60000, signal:abort.signal});
       s.events.push({ kind: 'residency', phase, ...residency, at: Date.now(), transitionMs: Date.now() - transitionStart });
-      // Start after bounded warmup: startup, page loads and reconnects are separately counted in total counts.
+      // Complete startup and drain boundary traffic before measuring; continuous
+      // activity fails this bounded barrier instead of earning idle credit.
+      await boundary.wait();
       beginSegment(s, phase); persist();
       await waitUntil(s.segments.at(-1).deadline, abort.signal);
       endSegment(s); persist();

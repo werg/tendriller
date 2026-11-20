@@ -44,6 +44,13 @@ systemctl --user status tendriller-idle-soak.service
 
 The user's systemd manager must persist after logout (administrator enables lingering if necessary). The unit uses `KillMode=control-group`, 60s restart backoff, at most three starts/day, private umask, and a 20s shutdown deadline. Do not use a 48h GitHub Actions job or leave the foreground shell as the lifetime guarantee. No service is installed or started by this implementation.
 
+Before measuring, the native bootstrap must confirm application activation,
+participation readiness and initial setup reconciliation. Each residency boundary
+then requires two seconds with no observed client activity, bounded to thirty
+seconds total. Continuous startup activity fails that barrier; startup traffic
+is retained in total counters and earns no idle credit. These timers are cleared
+before the quiet segment begins. The report also hashes the actual runner.
+
 Atomic fsync checkpoints are saved on events and phase boundaries; waiting uses one native timer per phase, no health polling or model turns. Restart resumes the same config/profile/native records. A crashed/interrupted quiet interval is incomplete and must run afresh; no unobserved gap earns measurement credit. Completed intervals remain retained, and interruption/failure history prevents a clean pass. Use a fresh run directory for a clean rerun. A local PID lock rejects simultaneous runners. Reboot/PID reuse may require checking and removing a stale runner.lock manually. The same native participant must not be independently supervised a second time.
 
 The process is expected to remain alive for 48h **plus** warmup/reconnects and default 15-minute ingestion lag. Reports record native start/exit timestamps. During collection the browser/native participant have stopped. The service requires the persistent machine/display; page residency, MCP and this runner do not establish future model wake support.
