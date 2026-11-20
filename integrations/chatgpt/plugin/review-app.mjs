@@ -29,7 +29,7 @@ const mode = process.argv[2];
 if (mode === 'create') {
   const access = JSON.parse(await readFile(process.argv[3], 'utf8'));
   const handle = await read('handle.json') ?? await save('handle.json', await createPage(access.origin,
-    { owner: `${access.accountId}@example.invalid`, name: 'Review checklist' }));
+    { owner: `${access.accountId}@example.invalid`, name: process.argv[4] ?? 'Review checklist' }));
   console.log(JSON.stringify({ pageUrl: handle.page_url }));
   process.exit(0);
 }
@@ -38,7 +38,7 @@ if (!handle) throw Error('Run create first');
 const host = createClient(handle, { applicationId: handle.application.id });
 const options = { api: handle.api, token: handle.token,
   key: await read('assistant-key.json') ?? await save('assistant-key.json', createAssistantKey()),
-  label: 'Review checklist', queries: ['checklist'], commands: ['completeItem'],
+  label: handle.name, queries: ['checklist'], commands: ['completeItem'],
   events: [{ name: 'item.completed', description: 'The synthetic checklist item ID that was completed.' }] };
 if (mode === 'propose') {
   const proposal = await proposeApplicationAssistant(options);

@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
 
 const { values } = parseArgs({ options: { config: { type: 'string' }, output: { type: 'string' },
-  days: { type: 'string', default: '30' }, revoke: { type: 'boolean', default: false } } });
+  days: { type: 'string', default: '30' }, renew: { type: 'boolean', default: false }, revoke: { type: 'boolean', default: false } } });
 if (!values.config || !values.output) throw Error('Pass --config server/wrangler.<environment>.jsonc --output /private/path/test-access.json [--days 30] [--revoke]');
 const days = Number(values.days);
 if (!Number.isInteger(days) || days < 1 || days > 90) throw Error('Choose 1 to 90 days');
@@ -41,6 +41,10 @@ if (values.revoke) {
     UPDATE integration_oauth_grants SET revoked_at=${Date.now()} WHERE account_id='${record.accountId}' AND revoked_at IS NULL;`]);
   console.log('Test access revoked, including its browser sessions and OAuth grants.');
 } else {
+  if (values.renew) {
+    record.expiresAt = Date.now() + days * 86400000;
+    writeFileSync(output, JSON.stringify(record, null, 2) + '\n', { mode: 0o600, flush: true });
+  }
   if (record.expiresAt <= Date.now()) throw Error('Saved test access expired. Revoke it and provision a new private record.');
   const now = Date.now(), id = record.accountId;
   run(['d1', 'execute', 'ACCOUNTS', '--remote', '--command', `
