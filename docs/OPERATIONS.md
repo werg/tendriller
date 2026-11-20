@@ -116,6 +116,31 @@ this conditional temporary-open/restore sequence for its own staging run. It is
 not a read-only readiness probe. Repository checks and onboarding repair work do
 not change any deployed service mode.
 
+### Recover an interrupted native MCP qualification fixture
+
+Native MCP qualification requires a clean `build:artifacts` plus
+`release:artifacts` composition. Its workflow runs `scripts/review/preflight.mjs`
+before renewing reviewer credentials, and the fixture checks the selected
+origin and exact deployed build again before creation and at completion. A
+successful artifact build alone is not live qualification. The report
+separately identifies native tool execution, browser snapshot/login checks,
+browser-owned application peers, first-app kit qualification, ChatGPT web and
+model behavior.
+
+Before temporarily opening staging, the fixture writes its selected origin and
+original mode to a private `creation-mode.json` file. If a mode-write response is
+lost or restoration cannot establish the paused state, cleanup fails and retains
+the private fixture. Review that record and current operator activity before
+applying the restoration above. The fixture does not reopen production or
+replace a concurrent read-only decision.
+
+If the create child fails after saving its handle, cleanup uses that handle on
+its verified original origin. If no handle survived, creation remains uncertain:
+retain the private project, mark cleanup incomplete, and inspect the original
+account/host evidence. Delete only a positively identified qualification-owned
+page; do not create again, bulk-delete unclaimed pages or discard the private
+recovery files to make a run appear clean.
+
 Inspect reserved file bytes against host/account ledgers when diagnosing storage discrepancies. Retained signed releases keep their immutable file references; orphan cleanup must not delete those assets. Page/account deletion deliberately removes hosted resources, while independently retained application data remains subject to the application's own policy.
 
 The account dashboard shows host lifecycle/publication activity. Local camera, microphone and location activity is tracked and stopped on the device; it is not a host sensor-history product. Use measured application/host traffic and actual deployment metrics when making capacity or cost claims.

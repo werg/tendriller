@@ -12,6 +12,7 @@ import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
+import { cleanupFixturePage, restoreFixtureCreationMode } from './fixture.mjs';
 
 const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
 if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video]');
@@ -20,8 +21,13 @@ const access = readReviewAccess(accessPath), composition = reviewComposition(roo
 const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config });
 assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
 const project = mkdtempSync(join(tmpdir(), 'tendriller-review-fixture-'));
-let child, handle, opened = false, originalMode;
+let child, handle, opened = false, originalMode, openingUncertain = false, creationAttempted = false;
 const db = sql => JSON.parse(execFileSync(process.execPath, [join(root, 'node_modules/wrangler/bin/wrangler.js'), 'd1', 'execute', 'ACCOUNTS', '--remote', '--config', config, '--json', '--command', sql], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))[0];
+const restoreCreationMode = () => {
+  if (!opened) return;
+  restoreFixtureCreationMode(db);
+  opened = false;
+};
 const run = args => {
   try { return execFileSync(process.execPath, ['review-app.mjs', ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch { throw Error('Synthetic fixture step failed: ' + args[0] + '. Private child diagnostics were withheld.'); }
@@ -41,14 +47,19 @@ try {
   assert(['open', 'creation_paused'].includes(originalMode));
   if (originalMode === 'creation_paused') {
     assert.equal(access.origin, 'https://staging.tendriller.dev', 'Only staging creation may be opened by the automated fixture');
+    writeFileSync(join(project, 'creation-mode.json'), JSON.stringify({ serviceOrigin: access.origin, originalMode,
+      attemptedMode: 'open' }) + '\n', { mode: 0o600, flush: true });
+    openingUncertain = true;
     opened = db("UPDATE service_state SET mode='open' WHERE id=1 AND mode='creation_paused'").meta.changes === 1;
+    openingUncertain = false;
     assert(opened);
   }
   try {
     await preflightReviewDeployment(access.origin, composition);
+    creationAttempted = true;
     run(['create', accessPath, 'Qualification checklist']);
   }
-  finally { if (opened) { db("UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'"); opened = false; } }
+  finally { restoreCreationMode(); }
   handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
   run(['init']);
   const proposal = JSON.parse(run(['propose']));
@@ -102,20 +113,18 @@ try {
     const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
     try { await exited; } finally { clearTimeout(timer); }
   }
-  if (handle) {
+  failures.push(...await cleanupFixturePage({ project, origin: access.origin, creationAttempted, handle }));
+  if (openingUncertain) failures.push('The temporary staging mode change is uncertain; inspect the retained original-mode record before restoring it');
+  if (opened) { try { restoreCreationMode(); } catch { failures.push('Could not restore staging creation mode'); } }
+  for (const file of ['report.json', 'fixture-failure.json']) {
+    const reportPath = join(output, file);
     try {
-      const response = await fetch(handle.api, { method: 'DELETE', headers: { Authorization: 'Bearer ' + handle.token }, signal: AbortSignal.timeout(15000) });
-      if (!response.ok) throw Error('Synthetic page cleanup returned HTTP ' + response.status);
-    } catch { failures.push('Could not delete the qualification-owned synthetic page'); }
+      const report = JSON.parse(readFileSync(reportPath));
+      report.fixtureCleanup = failures.length === 0;
+      if (failures.length) { report.passed = false; report.cleanupErrors = failures; }
+      writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  if (opened) { try { db("UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'"); } catch { failures.push('Could not restore staging creation mode'); } }
-  const reportPath = join(output, 'report.json');
-  try {
-    const report = JSON.parse(readFileSync(reportPath));
-    report.fixtureCleanup = failures.length === 0;
-    if (failures.length) { report.passed = false; report.cleanupErrors = failures; }
-    writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (failures.length) throw Error(failures.join('; ') + '. Private recovery files retained at ' + project);
   rmSync(project, { recursive: true, force: true });
 }
