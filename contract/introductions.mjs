@@ -1,4 +1,5 @@
 import { validatePeerRoute } from './discovery.mjs';
+import { validatePeerDiscoveryNotification } from './discovery-watch.mjs';
 import { validatePeerInvitation } from './invitations.mjs';
 
 const identityKey = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
@@ -20,11 +21,26 @@ function until(value, signal) {
 export function createPeerIntroductions({ peers, identity, openDirectConnection, openRelayConnection, directTimeoutMs = 5000 }) {
   if (!identityKey(identity) || typeof openDirectConnection !== 'function' || typeof openRelayConnection !== 'function' ||
       !Number.isSafeInteger(directTimeoutMs) || directTimeoutMs < 1 || directTimeoutMs > 30_000 ||
-      !['discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
+      !['watchDiscovery', 'discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
     invalid('Provide the session device identity, host peers client and direct/relay connection openers');
-  let activeListener, nextListener = Promise.withResolvers();
+  let activeListener, nextListener = Promise.withResolvers(), activeWatcher, nextWatcher = Promise.withResolvers();
   return Object.freeze({
     discovery: Object.freeze({
+      async *notifications({ signal }) {
+        signal.throwIfAborted();
+        if (activeWatcher) invalid('The owned session has one discovery watcher');
+        const watcher = peers.watchDiscovery(identity, { signal });
+        activeWatcher = watcher; nextWatcher.resolve(watcher);
+        try {
+          for await (const value of watcher.notifications) {
+            signal.throwIfAborted();
+            yield validatePeerDiscoveryNotification(value);
+          }
+        } finally {
+          if (activeWatcher === watcher) { activeWatcher = undefined; nextWatcher = Promise.withResolvers(); }
+          watcher.close();
+        }
+      },
       async read({ signal }) {
         signal.throwIfAborted();
         const directory = await peers.discover({ signal });
@@ -37,15 +53,19 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
           return route ? [hint(remote, validatePeerRoute(route))] : [];
         }));
       },
-      async advertise(value, { ttlMs, signal }) {
+      async advertise(value, { signal }) {
         signal.throwIfAborted();
         if (value.identity !== identity) invalid('An advertisement must identify this owned session');
+        const watcher = await until(nextWatcher.promise, signal);
+        await until(watcher.ready, signal);
+        signal.throwIfAborted();
+        if (activeWatcher !== watcher) invalid('The discovery watcher ended before advertising');
         const listener = await until(nextListener.promise, signal);
         await until(listener.ready, signal);
         signal.throwIfAborted();
         if (activeListener !== listener) invalid('The invitation listener ended before advertising');
         await peers.advertise({ peerId: identity, storageId: value.storageId,
-          routes: [invitationRoute(identity)] }, { ttlMs, signal });
+          routes: [invitationRoute(identity)] }, { signal });
       },
       async withdraw({ signal }) {
         signal.throwIfAborted();

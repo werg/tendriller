@@ -1,0 +1,112 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createPeerDiscoveryWatcher, createPeersClient, PEER_DISCOVERY_PROTOCOL,
+  validatePeerDiscoveryNotification } from '../peers.mjs';
+import { createClient } from '../client.mjs';
+const peerId = 'ab'.repeat(32);
+const flush = () => new Promise(resolve => setImmediate(resolve));
+class Socket extends EventTarget {
+  readyState = 1; sent = []; closes = [];
+  send(value) { this.sent.push(value); }
+  close(code, reason) { this.readyState = 3; this.closes.push({code,reason}); }
+  receive(value) { this.dispatchEvent(new MessageEvent('message', {data:JSON.stringify(value)})); }
+  end(code = 1006) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), {code})); }
+}
+function fixture(options = {}, factory) {
+  const sockets = [];
+  const watch = createPeerDiscoveryWatcher(() => { const socket = factory?.() ?? new Socket(); sockets.push(socket); return socket; }, options);
+  return {watch,sockets};
+}
+
+test('watch uses native credential subprotocols or the page proxy cookie path; construction of the client is inert', async () => {
+  const opened = [], original = globalThis.WebSocket;
+  globalThis.WebSocket = class extends Socket {constructor(url, protocols) {super(); opened.push({url,protocols,socket:this});}};
+  try {
+    const native = createClient({api:'https://service.test/api/t/aaaaaaaaaaaa',token:'private-test-token'});
+    assert.equal(opened.length, 0);
+    const watch = native.peers.watchDiscovery(peerId);
+    assert.equal(opened[0].url, `wss://service.test/api/t/aaaaaaaaaaaa/peers/discovery/watch?peerId=${peerId}`);
+    assert.deepEqual(opened[0].protocols, [PEER_DISCOVERY_PROTOCOL,'private-test-token']);
+    opened[0].socket.receive({type:'ready'}); await watch.ready; watch.close();
+    const page = createPeersClient({base:'https://page.test/s/code/_tendril',request:()=>{throw Error('No polling');}});
+    const pageWatch = page.watchDiscovery(peerId);
+    assert.equal(opened[1].url, `wss://page.test/s/code/_tendril/peers/discovery/watch?peerId=${peerId}`);
+    assert.deepEqual(opened[1].protocols,[PEER_DISCOVERY_PROTOCOL]); pageWatch.close();
+    for (const base of ['http://remote.test/api','https://u:p@service.test/api','https://service.test/api?q=secret','https://service.test/api#fragment']) {
+      const peers = createPeersClient({base,request:()=>{}});
+      assert.throws(()=>peers.watchDiscovery(peerId),{code:'invalid_discovery_watch'});
+    }
+    assert.throws(()=>page.watchDiscovery('alias'),{code:'invalid_discovery_watch'});
+    assert.throws(()=>page.watchDiscovery(peerId,{retryMs:0}),{code:'invalid_discovery_watch'});
+    assert.equal(opened.length,2);
+  } finally {globalThis.WebSocket = original;}
+});
+
+test('only the first server ready frame establishes readiness; healthy idle has no traffic or timers', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  const f = fixture(), reader = f.watch.notifications[Symbol.asyncIterator](); let ready = false;
+  f.watch.ready.then(()=>{ready=true;});
+  f.sockets[0].dispatchEvent(new Event('open')); await flush(); assert.equal(ready,false);
+  f.sockets[0].receive({type:'ready'});
+  assert.deepEqual(await reader.next(),{value:{type:'ready'},done:false}); await f.watch.ready;
+  for(let i=0;i<100;i++) f.sockets[0].receive({type:'changed'});
+  assert.deepEqual(await reader.next(),{value:{type:'changed'},done:false});
+  const pending = reader.next(); t.mock.timers.tick(172800000); await flush();
+  assert.equal(f.sockets.length,1); assert.deepEqual(f.sockets[0].sent,[]); assert.equal(f.sockets[0].closes.length,0);
+  f.watch.close(); assert.deepEqual(await pending,{value:undefined,done:true}); await f.watch.closed;
+});
+
+test('reconnect emits ready once on its new connection and ignores stale changes and socket callbacks', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  const f = fixture({retryMs:10,maxRetryMs:20}), reader = f.watch.notifications[Symbol.asyncIterator]();
+  f.sockets[0].receive({type:'ready'}); await reader.next();
+  f.sockets[0].receive({type:'changed'}); f.sockets[0].end();
+  t.mock.timers.tick(9); assert.equal(f.sockets.length,1);
+  t.mock.timers.tick(1); assert.equal(f.sockets.length,2);
+  let delivered = false; const next = reader.next().then(value=>{delivered=true;return value;});
+  f.sockets[0].receive({type:'ready'}); await flush(); assert.equal(delivered,false);
+  f.sockets[1].receive({type:'ready'}); assert.deepEqual(await next,{value:{type:'ready'},done:false});
+  f.sockets[1].receive({type:'changed'}); assert.deepEqual(await reader.next(),{value:{type:'changed'},done:false});
+  f.watch.close();
+});
+
+test('failed opens and open timeouts reconnect with capped failure backoff; cancellation clears pending retry', async t => {
+  t.mock.timers.enable({apis:['setTimeout']}); let opens = 0;
+  const f = fixture({retryMs:10,maxRetryMs:20,timeoutMs:30},()=>{opens++;if(opens<4)throw Error('offline');return new Socket();});
+  assert.equal(opens,1); t.mock.timers.tick(10);assert.equal(opens,2);
+  t.mock.timers.tick(19);assert.equal(opens,2);t.mock.timers.tick(1);assert.equal(opens,3);
+  t.mock.timers.tick(20);assert.equal(opens,4);t.mock.timers.tick(30);assert.equal(f.sockets[0].closes.length,1);
+  f.watch.close();t.mock.timers.tick(86400000);assert.equal(opens,4);await assert.rejects(f.watch.ready,{code:'discovery_closed'});
+  const stop = new AbortController(), cancelled = fixture({signal:stop.signal,retryMs:10,maxRetryMs:20});
+  const reading = cancelled.watch.notifications[Symbol.asyncIterator]().next();
+  const rejected = assert.rejects(reading,/owner ended/);cancelled.sockets[0].end();stop.abort(Error('owner ended'));
+  await rejected;await assert.rejects(cancelled.watch.ready,/owner ended/);t.mock.timers.tick(86400000);assert.equal(cancelled.sockets.length,1);
+  const before = new AbortController();before.abort(Error('before open'));
+  const closed = fixture({signal:before.signal});await assert.rejects(closed.watch.ready,/before open/);assert.equal(closed.sockets.length,0);
+});
+
+for(const code of [1008,4003]) test(`terminal subscription refusal ${code} cannot reconnect`,async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.sockets[0].end(code);
+  await assert.rejects(f.watch.ready,{code:'discovery_access_revoked'});assert.equal((await f.watch.closed).code,code);
+  t.mock.timers.tick(86400000);assert.equal(f.sockets.length,1);
+  await assert.rejects(f.watch.notifications[Symbol.asyncIterator]().next(),{code:'discovery_access_revoked'});
+});
+
+test('exact notification validation rejects payload data, duplicate readiness, pre-ready changes and oversized or binary frames',async()=>{
+  for(const value of [null,[],{}, {type:'ready',version:1},{type:'changed',peers:[]},{type:'unknown'}])
+    assert.throws(()=>validatePeerDiscoveryNotification(value),{code:'invalid_discovery_notification'});
+  for(const data of ['{"type":"changed"}', 'not json', JSON.stringify({type:'ready',secret:'no'}),' '.repeat(129),new ArrayBuffer(1)]) {
+    const f=fixture();f.sockets[0].dispatchEvent(new MessageEvent('message',{data}));
+    await assert.rejects(f.watch.ready,{code:'invalid_discovery_notification'});assert.equal((await f.watch.closed).code,1008);
+    assert.equal(f.sockets[0].closes[0].code,1008);
+  }
+  const f=fixture();f.sockets[0].receive({type:'ready'});await f.watch.ready;
+  f.sockets[0].receive({type:'ready'});assert.equal((await f.watch.closed).code,1008);
+});
+
+test('a watch has one notification consumer and explicit close drains its owned lifetime',async()=>{
+  const f=fixture(), first=f.watch.notifications[Symbol.asyncIterator](), second=f.watch.notifications[Symbol.asyncIterator]();
+  const pending=first.next();await assert.rejects(second.next(),{code:'reader_exists'});
+  f.watch.close();assert.deepEqual(await pending,{value:undefined,done:true});
+  assert.deepEqual(await f.watch.closed,{code:1000,reason:'Discovery watch closed'});
+});
