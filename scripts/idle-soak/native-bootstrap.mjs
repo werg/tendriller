@@ -83,6 +83,9 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
     stop.abort();
     if (typeof unsubscribe === 'function') unsubscribe();
     try {
+      // Close the aborted owner before waiting for readers which can be
+      // blocked on that owner's transport. The canonical hook shares this promise.
+      await closeOwned();
       await lifecycle?.close();
       await Promise.allSettled([assistantTask, changesTask].filter(Boolean));
     } finally { await closeOwned(); }
