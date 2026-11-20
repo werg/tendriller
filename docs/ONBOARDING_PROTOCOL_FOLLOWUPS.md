@@ -246,9 +246,10 @@ a `generation` field with `reconciliation_required` is not a committed review.
 After commitment the browser connects through its normal peer session and key
 exchange. The UI describes enrollment separately and reports connected only
 after application work succeeds. An offline native participant leaves a bounded
-pending/approved request with an explicit next action. The running starter's
-pairing window lasts at most ten minutes and backs off idle checks up to 30
-seconds. Single-pass `npm run pair` is available for deliberate inspection/retry
+pending/approved request with an explicit next action. The running starter uses authenticated setup notifications on the existing
+hibernating page object. It stays available for later devices without idle
+polling or heartbeats. Each review expires after ten minutes, with a single
+local deadline for an active request. Single-pass `npm run pair` is available for deliberate inspection/retry
 while the ordinary native owner is stopped. It does not wait for owner review or
 the later independent receipt-verification pass. Restart the same retained native
 participant to complete or reconcile a proposal that the pass prepares or submits.

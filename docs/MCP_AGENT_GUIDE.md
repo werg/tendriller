@@ -81,7 +81,7 @@ email, account credentials or application keys.
    `@tendriller/core/assistant` to the *existing* application participant, propose
    its declared capabilities before claim, and give the owner the ready page and
    returned permission-review URL. The supplied starter has `npm run assistant:prepare`
-   and `npm run assistant` for this route. They choose what to expose. Keep that participant available for calls.
+   and `npm run serve` for this route. They choose what to expose. Keep that participant available for calls.
 8. Refresh `list_tendrils`, call `describe_application`, make a real query and
    the requested command, then verify the applied result and retained state
    after reload. Use `topic: "delivery"` for the completion evidence and report
@@ -107,4 +107,11 @@ a mounted card or a connected page does not guarantee that this ChatGPT
 conversation will wake after the turn ends. A stopped participant cannot execute
 new queries or commands: resume it from its retained store.
 
-During initial sign-in and consent, the native assistant adapter retries with backoff for up to ten minutes, matching the reviewed pairing window. Keep its process running while the owner reviews. An explicit `startup_timeout` means resume the same project and reopen the pairing window if necessary; do not replace its device or setup intent. After connection, idle adapter sockets hibernate. Revoked or replaced adapters stop immediately.
+The native participant stays running while the owner signs in or reviews access.
+Its authenticated hibernating setup subscription receives later device requests
+and consent changes without idle polling. The optional MCP adapter starts after
+approval. Its timeout, revocation or replacement never ends the application or
+pairing process; new consent reconnects that component. Individual browser
+reviews expire after ten minutes and retain uncertain attempts. After a deliberate
+process stop, resume the same project and device store. Idle adapter sockets
+hibernate. Neither subscription promises a future ChatGPT model turn.

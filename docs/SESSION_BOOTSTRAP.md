@@ -125,9 +125,11 @@ owner review. The owner approves that fingerprint, narrow rights and exact
 proposal digest. The normal serialized host selector rechecks current authority
 and account access when committing it.
 
-The native loop is bounded to ten minutes, with idle checks backing off to thirty
-seconds. A timeout, lost commit reply or
-process close preserves both the exact request and durable ordering pause.
+The native participant subscribes to authenticated setup notifications over a
+hibernating WebSocket. Later devices can pair without restarting it. Idle setup
+does not poll or send heartbeats. Each review request expires after ten minutes,
+with one local expiry deadline while that request is active. A lost commit reply
+or process close preserves both the exact request and durable ordering pause.
 On reopen, verify the original signed transition and complete reviewed payload
 before adopting it and resuming ordering. A mismatch or unavailable status stays
 paused; never substitute a new prefix or signer. `npm run pair` performs one

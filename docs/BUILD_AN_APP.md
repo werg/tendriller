@@ -539,7 +539,7 @@ therefore shows the next setup action explicitly.
 Start the private project's native participant before browser review:
 
 ```sh
-npm run peer # Or npm run assistant when using MCP access.
+npm run serve # Native participant with optional reviewed MCP access.
 ```
 
 Open the published page while signed in as its owner and choose **Request browser
@@ -568,9 +568,12 @@ it does not itself install the device grant. The native owner saves the exact
 commit attempt, then submits the reviewed transition. The server rechecks
 current account access and authority inside the serialized normal selector.
 
-The native review window lasts at most ten minutes, with idle checks backing off
-to thirty seconds.
-Closing it does not erase a durable pause. Native records under `.tendriller/`
+The native participant stays running independently of MCP connectivity. Its
+authenticated setup WebSocket receives pairing and consent changes through the
+existing hibernating page object, including requests from a device added later.
+There are no idle status polls or heartbeat timers. Individual review requests
+expire after ten minutes; one local deadline reconciles an active request.
+Stopping the process does not erase a durable pause. Native records under `.tendriller/`
 retain `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json`; the pause belongs to the
 same device store. After a timeout, lost response or restart, reopen that same
@@ -719,7 +722,7 @@ mobile suspension.
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Native CLI and `npm run peer` cannot share one open writer. |
 | Browser is not enrolled | Request access from its retained browser device, keep the native peer running to stage the exact proposal, and complete the service-origin owner review. Check committed status before connecting. Account login and device grants are separate. |
-| Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Reopen the same native owner after a bounded window closes; reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
+| Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Keep the native owner running for setup notifications; after a process stop, reopen the same owner and reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |
 | Publication forbidden | Inspect the current explicit publisher grant and submitting account authorization. Administration is a separate right. |
 | Stale publication or control transition | Inspect the selected head and saved request. Retry exact uncertain work; review a fresh change after a conflict. |
@@ -745,13 +748,16 @@ For a chat-linked Shared Notes app, after publication run:
 
 ```sh
 npm run assistant:prepare
-npm run assistant
+npm run serve
 ```
 
-Use `assistant` **instead of** `peer`: it runs the same native participant with
+Use one `serve` process: it runs the same native participant with
 the declared `notes` query and `addNote` command. Optional `note.added` forwarding
 requires `--events` on both preparation and the running adapter, plus the owner's
 corresponding permission review. It does not configure a future ChatGPT turn.
+Missing consent, adapter timeouts, revocation or replacement stop only the
+optional adapter; they never stop the application participant or pairing. New
+consent arrives through the setup subscription and reconnects the adapter.
 The runner distinguishes preparation, the native PID, adapter status, skipped
 unapproved events and shutdown; verify a real round trip before claiming a
 connection. Keep it

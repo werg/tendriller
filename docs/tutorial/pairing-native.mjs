@@ -1,4 +1,4 @@
-// A bounded enrollment window on the existing native owner. It never opens a
+// Reviewed enrollment on the existing native owner. It never opens a
 // second signing store or replaces a retained transition after an uncertain send.
 import { peerDigest, verifyAuthorityBundle, signTransitionRequest } from '@chronolog/peer-session';
 import { createDevicePairingClient } from '@tendriller/core/pairing';
@@ -24,8 +24,8 @@ export function assertPairingContext(status, { applicationId, serviceOrigin, pag
   return status;
 }
 
-/** One tick is exported for deterministic lifecycle tests; callers use the
- * bounded window below. The actual signed-control selector remains the host. */
+/** One retained-request reconciliation pass. The notification-driven supervisor
+ * serializes calls; the signed-control selector remains the host. */
 export async function advancePairing({ session, pairing, retain = savePrivate, restore = readPrivate, onStatus = () => {}, signal }) {
   signal?.throwIfAborted();
   const persist = async (name, value) => {
@@ -137,7 +137,7 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
   return result;
 }
 
-/** Compatibility for the explicit `npm run pair` command and other native
+/** Single-pass processor for the explicit `npm run pair` command and other native
  * consumers. All passes share one owner and serialize the exact same lifecycle. */
 export function createReviewedPairingProcessor({ handle, host, descriptor, session, identity, store, client, pairing: supplied }) {
   const pairing = supplied ?? { applicationId: handle.application.id, serviceOrigin: new URL(handle.api).origin,
