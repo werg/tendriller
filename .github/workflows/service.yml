@@ -153,9 +153,17 @@ jobs:
     uses: ./.github/workflows/staging-acceptance.yml
     secrets: inherit
 
+  staging_mcp_qualification:
+    if: needs.staging.outputs.deployed == 'true'
+    needs: [staging]
+    uses: ./.github/workflows/plugin-qualification.yml
+    with:
+      environment: staging
+    secrets: inherit
+
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    needs: [check, staging_acceptance, native-owner, artifacts]
+    needs: [check, staging_acceptance, staging_mcp_qualification, native-owner, artifacts]
     runs-on: ubuntu-latest
     environment: production
     env:
