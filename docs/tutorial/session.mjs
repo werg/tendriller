@@ -52,7 +52,7 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
           openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
         }) });
         signal?.throwIfAborted();
-        return createApplicationOwner(session, { host: controlHost });
+        return createApplicationOwner(session, { host: control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
     } });
   return { session, control, supervisor, close: () => supervisor.close() };
