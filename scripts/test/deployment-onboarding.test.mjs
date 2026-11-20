@@ -22,7 +22,8 @@ const guidePaths = {
 
 function fixture() {
   const build = { coreRelease: CORE_RELEASE, runtimeId: runtime.id, sourceCommit, compositionId };
-  const readiness = { schemaVersion: 1, serviceOrigin: base, environment: { id: base }, build,
+  const readiness = { schemaVersion: 1, serviceOrigin: base, environment: { id: base, label: 'Fixture preview', kind: 'preview' }, build,
+    checkedAt: '2026-11-20T10:00:00.000Z',
     mode: 'open', creation: { available: true, code: null, message: 'Ready', nextAction: 'Continue' },
     writes: { available: true, code: null }, readinessUrl: base + '/api/readiness', statusUrl: base + '/status' };
   return {
