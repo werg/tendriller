@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { closeTestPeer, nativeTestPeerSource } from '../first-app-peer.mjs';
 
-async function participant(t, { failInference = false, orphan = false } = {}) {
+async function participant(t, { failInference = false, failPairing = false, orphan = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'peer-close-'));
   const calls = join(directory, 'cleanup-calls');
   await mkdir(join(directory, 'media'));
@@ -19,6 +19,11 @@ export async function openSession() {
     supervisor:{ownerInstanceId:'fixture-owner'},
     async close(){await appendFile(${JSON.stringify(calls)},'owner\\n');clearInterval(resource);}};
 }`);
+  await writeFile(join(directory, 'pairing-native.mjs'), `import {appendFile} from 'node:fs/promises';
+export function startReviewedPairingLoop(){return {async close(){
+  await appendFile(${JSON.stringify(calls)},'pairing\\n');
+  ${failPairing ? "throw Error('pairing close failed');" : ''}
+}};}`);
   await writeFile(join(directory, 'media/inference-service.mjs'), `import {appendFile} from 'node:fs/promises';
 export function servePeerInference(){return {snapshot(){return {};},async close(){
   await appendFile(${JSON.stringify(calls)},'inference\\n');
@@ -69,16 +74,22 @@ test('generated first-app peer closes the whole owner once and exits naturally b
   const f = await participant(t);
   const result = await closeTestPeer(f.peer);
   assert.deepEqual(result, { exitCode: 0, signal: null });
-  assert.deepEqual(await f.calls(), ['inference', 'owner']);
+  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
   assert.deepEqual(f.forced, []);
   assert.equal(await closeTestPeer(f.peer), result);
-  assert.deepEqual(await f.calls(), ['inference', 'owner']);
+  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
 });
 
 test('inference cleanup failure still closes the owned participant and fails qualification', { timeout: 5_000 }, async t => {
   const f = await participant(t, { failInference: true });
   await assert.rejects(closeTestPeer(f.peer), /Native test participant cleanup failed/);
-  assert.deepEqual(await f.calls(), ['inference', 'owner']);
+  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
+});
+
+test('pairing cleanup failure still closes inference and the owner and fails qualification', { timeout: 5_000 }, async t => {
+  const f = await participant(t, { failPairing: true });
+  await assert.rejects(closeTestPeer(f.peer), /Native test participant cleanup failed/);
+  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
 });
 
 test('an acknowledged but orphaned child is terminated as failure, never counted as clean shutdown', { timeout: 5_000 }, async t => {

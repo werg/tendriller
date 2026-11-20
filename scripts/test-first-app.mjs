@@ -163,13 +163,15 @@ try {
   host = new Miniflare({ ...convertV4MiniflareOptions({ ...workerOptions,
     scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
     bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
-      OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration) },
+      OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration),
+      ...(kit ? { SERVICE_SOURCE_COMMIT: kit.composition.core.source, SERVICE_COMPOSITION_ID: kit.composition.id } : {}) },
     host: '127.0.0.1', port: 8790, https: true, cf: false,
   }), resourcePersistencePath: join(directory, 'host-state'), resourceTmpPath: join(directory, 'host-tmp'),
   enableDevRegistry: false, logRequests: false });
   await host.ready;
   const accounts = await host.getD1Database('ACCOUNTS');
-  for (const migration of ['0001_accounts.sql', '0002_integration_oauth.sql', '0003_assistant_connections.sql', '0004_account_setup.sql'])
+  for (const migration of (await readdir(join(engine, 'package/migrations')))
+    .filter(name => /^\d+_[a-z0-9_]+\.sql$/.test(name)).sort())
     for (const query of unstable_splitSqlQuery(await readFile(join(engine, 'package/migrations', migration), 'utf8')))
       await accounts.prepare(query).run();
   const now = Date.now(), ownerToken = 'tendriller-local-e2e-session';
@@ -193,6 +195,14 @@ try {
     accounts.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES(?,?,?,?,?,?)')
       .bind(sha256(oauthToken), oauthGrant, oauthJti, 'tendrils:create tendrils:list', now, now + 86_400_000),
   ]);
+  if (kit) {
+    const readiness = await (await fetch(SERVICE + '/api/readiness')).json();
+    assert.equal(readiness.serviceOrigin, SERVICE);
+    assert.equal(readiness.build.sourceCommit, kit.composition.core.source);
+    assert.equal(readiness.build.compositionId, kit.composition.id);
+    assert.equal(readiness.creation.available, true);
+    passed('actual isolated service readiness advertises the same source and composition');
+  }
   passed('packed host with isolated storage');
 
   checkpoint('download first-app source and install exact public packages');
@@ -426,21 +436,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending');
     assert.equal(await page.locator('#pairing-review').getAttribute('href'), reviewUrl, 'Reload must retain the original pairing request.');
     assert.equal(await page.locator('#device-key').inputValue(), browserDevice);
-    const reviewPage = await context.newPage();
-    await reviewPage.goto(reviewUrl);
-    await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
-    await reviewPage.getByRole('button', { name: 'Approve this device', exact: true }).click();
-    await expect(reviewPage.locator('[role=status]')).toContainText('approved');
-    await reviewPage.close();
-    await page.locator('#pairing-refresh').click();
-    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'approved');
-    const paired = JSON.parse(await node(['setup.mjs', 'pair']));
-    assert.equal(paired.pairings.find(item => item.publicKey === browserDevice)?.state, 'committed');
-    await node(['setup.mjs', 'pair']);
-    await page.locator('#pairing-refresh').click();
-    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'committed');
     report.browser_device_id = browserDevice;
-    passed('retained browser proof, exact owner review and native signed enrollment with repeat recovery');
 
     // Drive the same real native bootstrap without a second store owner. This is
     // the agent side of the test; it adds no protocol, backend or fixture state.
@@ -484,6 +480,39 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       return client;
     }
     await startPeer();
+    checkpoint('retain the exact reviewed prefix across native restart');
+    await expect.poll(async () => (await peer.request('ordering-pause')).pause,
+      { timeout: 30_000, message: 'The native participant must durably pause ordering before owner review.' }).not.toBeNull();
+    const paused = (await peer.request('ordering-pause')).pause;
+    assert.match(paused.operationId, /^pairing:/);
+    assert.ok(paused.base);
+    await closeTestPeer(peer); peer = undefined;
+    await startPeer();
+    assert.deepEqual((await peer.request('ordering-pause')).pause, paused,
+      'Closing and reopening the native owner must preserve the exact review prefix.');
+    const prepared = await peer.request('pairing-process');
+    assert.equal(prepared.find(item => item.publicKey === browserDevice)?.state, 'pending',
+      'The original signed proposal must be prepared and awaiting owner review.');
+    // A pending proof alone cannot authorize enrollment. The actual native
+    // participant prepares and retains the full signed control change first.
+    const reviewPage = await context.newPage();
+    await reviewPage.goto(reviewUrl);
+    await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
+    await expect(reviewPage.getByRole('button', { name: 'Approve this device', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await reviewPage.getByRole('button', { name: 'Approve this device', exact: true }).click();
+    await expect(reviewPage.locator('[role=status]')).toContainText('approved');
+    await reviewPage.close();
+    await expect.poll(async () => {
+      await page.locator('#pairing-refresh').click();
+      return page.locator('#pairing-status').getAttribute('data-state');
+    }, { timeout: 30_000, message: 'The same running native owner must commit the exact approved proposal.' }).toBe('committed');
+    await expect.poll(async () => (await peer.request('ordering-pause')).pause,
+      { timeout: 30_000, message: 'Only verified committed authority may release the retained pause.' }).toBeNull();
+    await peer.request('pairing-process');
+    await page.locator('#pairing-refresh').click();
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'committed');
+    report.pairing = { reviewed_prefix: paused.base, recovered_native_pause: true, committed: true };
+    passed('retained browser proof, full owner review, durable native pause across restart and exact signed enrollment');
     const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
     assert.equal(attached.deviceId, device.deviceId);
     assert.equal(attached.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);

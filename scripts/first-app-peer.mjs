@@ -5,17 +5,21 @@ export function nativeTestPeerSource({ evidenceBase64, browserDeviceId }) {
   return `import assert from 'node:assert/strict';
 import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
+import {startReviewedPairingLoop} from './pairing-native.mjs';
 import {servePeerInference} from './media/inference-service.mjs';
 const owned = await openSession(), {session,supervisor} = owned;
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
-let inference, input, closing, inferenceCalls = 0, inferenceSource = null;
+let pairings, inference, input, closing, inferenceCalls = 0, inferenceSource = null;
 const close = () => closing ??= (async () => {
   const errors = [];
+  try { await pairings?.close(); } catch (error) { errors.push(error); }
   try { await inference?.close(); } catch (error) { errors.push(error); }
   try { await owned.close(); } catch (error) { errors.push(error); }
   if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed');
 })();
 try {
+  pairings = startReviewedPairingLoop(owned.processPairings,
+    {durationMs:600000,intervalMs:250,maxIdleMs:500});
   inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: 2,
     async infer({bytes, mediaType, source, signal}) {
       signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
@@ -31,6 +35,8 @@ try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
       else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status};
+      else if(request.action==='ordering-pause') result={pause:await session.orderingPause()};
+      else if(request.action==='pairing-process') result=await owned.processPairings();
       else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
       else if(request.action==='command') {
         const before=await session.query('notes',null);
