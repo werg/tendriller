@@ -16,6 +16,9 @@ export interface SetupRow {
   request_json: string; creator_ip: string; creation_day: string; state: SetupResult['state']; indexed: number;
   initialization_started: number; created_at: number; expires_at: number; updated_at: number; failure_code: string | null;
 }
+type Allocation = Pick<SetupRow, 'service_origin' | 'account_id' | 'client_id' | 'operation_id' | 'request_digest' |
+  'credential_commitment' | 'grant_id' | 'intended_email' | 'page_id' | 'application_id' | 'creator_ip' | 'creation_day' | 'created_at' | 'expires_at'>;
+type ResultRow = Allocation & Partial<Pick<SetupRow, 'state' | 'failure_code'>>;
 const DAY = 86_400_000;
 const OPERATION = /^[A-Za-z0-9_.:-]{1,160}$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -26,11 +29,15 @@ const query = 'service_origin=? AND account_id=? AND client_id=? AND operation_i
 export async function requireSetupSchema(env: Env): Promise<void> {
   try {
     const identity = await env.ACCOUNTS.prepare('SELECT id,revision FROM account_setup_schema').all<{ id: number; revision: number }>();
-    if (identity.results.length !== 1 || identity.results[0].id !== 1 || identity.results[0].revision !== 1) throw new Error('revision');
+    if (identity.results.length !== 1 || identity.results[0].id !== 1 || identity.results[0].revision !== 2) throw new Error('revision');
     const names = await env.ACCOUNTS.prepare('PRAGMA table_info(account_setups)').all<{ name: string; type: string }>();
     const expected = ['service_origin','account_id','client_id','operation_id','request_digest','credential_commitment','grant_id','intended_email',
       'page_id','application_id','request_json','creator_ip','creation_day','state','indexed','initialization_started','created_at','expires_at','updated_at','failure_code'];
     if (names.results.length !== expected.length || expected.some((name, index) => names.results[index]?.name !== name)) throw new Error('shape');
+    const fences = await env.ACCOUNTS.prepare('PRAGMA table_info(account_setup_allocations)').all<{ name: string }>();
+    const fenceNames = ['service_origin','account_id','client_id','operation_id','request_digest','credential_commitment','grant_id','intended_email',
+      'page_id','application_id','creator_ip','creation_day','created_at','expires_at'];
+    if (fences.results.length !== fenceNames.length || fenceNames.some((name, index) => fences.results[index]?.name !== name)) throw new Error('allocation shape');
     const guards = await env.ACCOUNTS.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name IN ('account_setup_capacity','account_setup_charge')").first<{ n: number }>();
     if (guards?.n !== 2) throw new Error('guards');
   } catch { throw new HttpError(503, 'setup_storage_unavailable', 'Apply required migration 0004_account_setup.sql to compatible account storage before creating account-bound pages.'); }
@@ -45,7 +52,9 @@ export async function requireSetupPrincipal(env: Env, principal: Principal): Pro
 }
 export async function readSetupRow(env: Env, pageId: string): Promise<SetupRow | null> {
   await requireSetupSchema(env);
-  return env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE page_id=?').bind(pageId).first<SetupRow>();
+  const row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE page_id=?').bind(pageId).first<SetupRow>();
+  if (row) await rowIntegrity(env, row);
+  return row;
 }
 async function verifiedEmail(env: Env, account: string): Promise<string> {
   const rows = await env.ACCOUNTS.prepare(`SELECT DISTINCT lower(e.email) AS email, lower(a.email) AS display_email
@@ -57,16 +66,18 @@ async function verifiedEmail(env: Env, account: string): Promise<string> {
   if (!selected) throw new HttpError(403, 'owner_verification_required', 'Verify an email on this linked account before preparing a page. No page or quota was allocated.');
   return selected.email;
 }
-async function rowIntegrity(row: SetupRow): Promise<SetupRequest> {
+async function rowIntegrity(env: Env, row: SetupRow): Promise<SetupRequest> {
   try {
     const input = setupRequest(JSON.parse(row.request_json));
     if (input.operationId !== row.operation_id || input.applicationId !== row.application_id || input.credentialCommitment !== row.credential_commitment ||
         await setupRequestDigest(row.service_origin, input) !== row.request_digest || !/^[a-z2-7]{12}$/.test(row.page_id) ||
         !HASH.test(row.credential_commitment) || !Number.isSafeInteger(row.expires_at) || row.expires_at <= row.created_at) throw new Error('mismatch');
+    const fence = await env.ACCOUNTS.prepare('SELECT * FROM account_setup_allocations WHERE page_id=?').bind(row.page_id).first<Allocation>();
+    if (!fence || (Object.keys(fence) as (keyof Allocation)[]).some(key => fence[key] !== row[key])) throw new Error('allocation mismatch');
     return input;
   } catch { throw new HttpError(409, 'reconciliation_required', 'The retained setup journal is corrupt. Preserve its page and original local credential for operator reconciliation.'); }
 }
-function result(row: SetupRow, state = row.state, code: string | null = row.failure_code, page?: SetupResult['page']): SetupResult {
+function result(row: ResultRow, state: SetupResult['state'] = row.state ?? 'reconciliation_required', code: string | null = row.failure_code ?? null, page?: SetupResult['page']): SetupResult {
   return { schemaVersion: 1, serviceOrigin: row.service_origin, operationId: row.operation_id, requestDigest: row.request_digest,
     credentialCommitment: row.credential_commitment, state, code, pageId: row.page_id, applicationId: row.application_id, expiresAt: row.expires_at,
     nextAction: state === 'ready' ? 'Combine this receipt with the original locally retained credential, prepare the signed app, and let the intended owner sign in. Browser enrollment and assistant consent remain separate. If the local credential was lost, inspect this page and use the authenticated owner’s reviewed delegation route; this service cannot reconstruct the secret from its commitment.'
@@ -75,7 +86,7 @@ function result(row: SetupRow, state = row.state, code: string | null = row.fail
       : state === 'blocked' ? 'Resolve the reported readiness, account, grant or capacity condition on this service, then inspect or retry the same operation and credential commitment.'
       : 'Inspect or retry the same operation with its original input and credential commitment. Preparation is not a connected application.', ...(page ? { page } : {}) };
 }
-async function pageRequest(env: Env, row: SetupRow, action: 'inspect' | 'initialize') {
+async function pageRequest(env: Env, row: SetupRow, action: 'inspect' | 'reserve' | 'initialize') {
   const response = await env.TENDRIL.get(env.TENDRIL.idFromName(row.page_id)).fetch(new Request('https://tendril.internal/setup/' + action, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-tendril-id': row.page_id },
     body: JSON.stringify({ requestDigest: row.request_digest }),
@@ -87,7 +98,7 @@ async function pageRequest(env: Env, row: SetupRow, action: 'inspect' | 'initial
   return body;
 }
 async function inspectRow(env: Env, row: SetupRow): Promise<SetupResult> {
-  await rowIntegrity(row);
+  await rowIntegrity(env, row);
   if (row.expires_at <= Date.now()) return result(row, 'expired', 'setup_expired');
   if (row.indexed) {
     const indexed = await env.ACCOUNTS.prepare('SELECT state FROM tendrils WHERE id=?').bind(row.page_id).first<{ state: string }>();
@@ -99,6 +110,7 @@ async function inspectRow(env: Env, row: SetupRow): Promise<SetupResult> {
       if (row.state === 'ready') return result(row, 'reconciliation_required', 'setup_page_state_missing');
     } catch (error) {
       if (error instanceof HttpError && error.code === 'reconciliation_required') return result(row, 'reconciliation_required', error.code);
+      if (error instanceof HttpError && error.code === 'setup_expired') return result(row, 'expired', error.code);
       return result(row, 'provisioning', 'setup_inspection_unavailable');
     }
   }
@@ -109,17 +121,23 @@ export async function inspectTendrilSetup(env: Env, principal: Principal, operat
   await requireSetupPrincipal(env, principal); await requireSetupSchema(env);
   const op = string(operationId, 160, OPERATION);
   const row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...namespace(publicBase(env), principal, op)).first<SetupRow>();
-  if (!row) throw new HttpError(404, 'setup_not_found', 'No setup with this operation ID belongs to this linked account and OAuth client.');
+  if (!row) {
+    const allocation = await env.ACCOUNTS.prepare('SELECT * FROM account_setup_allocations WHERE ' + query).bind(...namespace(publicBase(env), principal, op)).first<Allocation>();
+    if (allocation) return result(allocation, 'reconciliation_required', 'setup_journal_missing');
+    throw new HttpError(404, 'setup_not_found', 'No setup with this operation ID belongs to this linked account and OAuth client.');
+  }
   const inspected = await inspectRow(env, row);
   await requireSetupPrincipal(env, principal);
   return inspected;
 }
 export async function listTendrilSetups(env: Env, principal: Principal) {
   await requireSetupPrincipal(env, principal); await requireSetupSchema(env);
-  const rows = await env.ACCOUNTS.prepare(`SELECT * FROM account_setups WHERE service_origin=? AND account_id=? AND client_id=? ORDER BY created_at DESC LIMIT 100`)
-    .bind(publicBase(env), principal.account, principal.client).all<SetupRow>();
+  const rows = await env.ACCOUNTS.prepare(`SELECT a.*,s.state,s.failure_code FROM account_setup_allocations a LEFT JOIN account_setups s ON s.page_id=a.page_id
+    WHERE a.service_origin=? AND a.account_id=? AND a.client_id=? ORDER BY a.created_at DESC LIMIT 100`)
+    .bind(publicBase(env), principal.account, principal.client).all<ResultRow>();
   // The bounded account view does not wake every page; inspect an exact operation to reconcile it.
-  return { serviceOrigin: publicBase(env), setups: rows.results.map(row => result(row, row.expires_at <= Date.now() ? 'expired' : row.state)) };
+  return { serviceOrigin: publicBase(env), setups: rows.results.map(row => !row.state ? result(row, 'reconciliation_required', 'setup_journal_missing')
+    : result(row, row.expires_at <= Date.now() ? 'expired' : row.state)) };
 }
 export async function prepareTendrilSetup(env: Env, principal: Principal, raw: unknown, req: Request): Promise<SetupResult> {
   await requireSetupPrincipal(env, principal); await requireSetupSchema(env);
@@ -130,6 +148,12 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
   const origin = publicBase(env), digest = await setupRequestDigest(origin, input), key = namespace(origin, principal, input.operationId);
   let row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
   if (!row) {
+    const allocation = await env.ACCOUNTS.prepare('SELECT * FROM account_setup_allocations WHERE ' + query).bind(...key).first<Allocation>();
+    if (allocation) {
+      if (allocation.request_digest !== digest || allocation.credential_commitment !== input.credentialCommitment)
+        throw new HttpError(409, 'setup_operation_conflict', 'The original allocation still reserves this operation and its exact request.');
+      return result(allocation, 'reconciliation_required', 'setup_journal_missing');
+    }
     await requireCreationOpen(env);
     const email = await verifiedEmail(env, principal.account), { ip, day } = await checkCreationIp(env, req);
     if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: ip })).success) throw new HttpError(429, 'rate_limited');
@@ -141,7 +165,8 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)`)
         .bind(...key, digest, input.credentialCommitment, principal.grant, email, newTendrilId(), input.applicationId, JSON.stringify(input), ip, day, now, now + DAY, now).run();
     } catch (error) {
-      const code = ['setup_ledger_full','setup_pending_full','setup_account_full','setup_creation_rate_limited','setup_binding_inactive','owner_verification_required','creation_paused'].find(code => String(error).includes(code));
+      const code = ['setup_ledger_full','setup_pending_full','setup_account_full','setup_creation_rate_limited','setup_binding_inactive','owner_verification_required','creation_paused','reconciliation_required'].find(code => String(error).includes(code));
+      if (code === 'reconciliation_required') throw new HttpError(409, code, 'The original allocation is retained but its operation journal is missing. Inspect it without creating a replacement.');
       if (code) throw new HttpError(429, code, 'Setup capacity is full. Inspect retained operations or ask the operator for reviewed retirement; uncertain operation IDs are never discarded.');
       throw error;
     }
@@ -149,10 +174,11 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
     if (!row) throw new HttpError(409, 'reconciliation_required', 'Setup allocation did not retain its operation journal.');
   }
   if (row.request_digest !== digest || row.credential_commitment !== input.credentialCommitment) throw new HttpError(409, 'setup_operation_conflict', 'Retry this operation only with its original request and credential commitment.');
-  await rowIntegrity(row);
+  await rowIntegrity(env, row);
   const observed = await inspectRow(env, row);
-  if (['ready','expired','reconciliation_required'].includes(observed.state)) {
+  if (['ready','expired','reconciliation_required'].includes(observed.state) || observed.state === 'blocked' && observed.code === 'setup_binding_inactive') {
     await requireSetupPrincipal(env, principal);
+    if (observed.state === 'ready') await env.ACCOUNTS.prepare(`UPDATE account_setups SET state='ready',failure_code=NULL,updated_at=? WHERE ${query}`).bind(Date.now(), ...key).run();
     return observed;
   }
   try {
@@ -162,38 +188,40 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
     const verified = await env.ACCOUNTS.prepare(`SELECT 1 FROM identities i JOIN identity_emails e ON e.provider=i.provider AND e.subject=i.subject
       WHERE i.account_id=? AND lower(e.email)=?`).bind(row.account_id, row.intended_email).first();
     if (!verified) return result(row, 'blocked', 'owner_verification_required');
+    // A durable expiry journal and alarm precede global admission. An abandoned
+    // pre-page reservation can therefore release capacity without another retry.
+    await pageRequest(env, row, 'reserve');
     const admission = await env.ADMISSION.get(env.ADMISSION.idFromName('global')).fetch(new Request('https://admission.internal/reserve', {
-      method: 'POST', headers: { 'x-tendril-id': row.page_id },
+      method: 'POST', headers: { 'x-tendril-id': row.page_id, 'x-setup-expires-at': String(row.expires_at) },
     }));
-    if (!admission.ok) return result(row, 'blocked', 'setup_admission_unavailable');
+    if (!admission.ok) return admission.status === 410 ? result(row, 'expired', 'setup_expired') : result(row, 'blocked', 'setup_admission_unavailable');
     await requireSetupPrincipal(env, principal); await requireCreationOpen(env);
     if (!row.indexed) {
       // Index and stage marker share one D1 transaction; neither is compensated on a lost response.
       await env.ACCOUNTS.batch([
         env.ACCOUNTS.prepare(`INSERT INTO tendrils(id,owner_account,intended_owner,creator_ip,created_at,claimed_at,lifetime)
           SELECT page_id,NULL,intended_email,creator_ip,created_at,NULL,'ad_hoc' FROM account_setups
-          WHERE ${query} AND indexed=0 ON CONFLICT(id) DO NOTHING`).bind(...key),
-        env.ACCOUNTS.prepare(`UPDATE account_setups SET indexed=1,state='provisioning',updated_at=? WHERE ${query} AND EXISTS(SELECT 1 FROM tendrils WHERE id=account_setups.page_id)`).bind(Date.now(), ...key),
+          WHERE ${query} AND indexed=0 AND state<>'expired' AND expires_at>? ON CONFLICT(id) DO NOTHING`).bind(...key, Date.now()),
+        env.ACCOUNTS.prepare(`UPDATE account_setups SET indexed=1,state='provisioning',updated_at=? WHERE ${query} AND state<>'expired'
+          AND EXISTS(SELECT 1 FROM tendrils WHERE id=account_setups.page_id)`).bind(Date.now(), ...key),
       ]);
     }
-    const acquired = await env.ACCOUNTS.prepare(`UPDATE account_setups SET initialization_started=1,updated_at=?
-      WHERE ${query} AND indexed=1 AND initialization_started=0 RETURNING page_id`).bind(Date.now(), ...key).first();
-    let initialized;
-    if (acquired) {
-      try { initialized = await pageRequest(env, row, 'initialize'); }
-      catch (error) {
-        if (error instanceof HttpError && ['creation_paused','setup_binding_inactive','owner_verification_required'].includes(error.code))
-          await env.ACCOUNTS.prepare(`UPDATE account_setups SET initialization_started=0,state='blocked',failure_code=? WHERE ${query}`).bind(error.code, ...key).run();
-        throw error;
-      }
-    } else initialized = await pageRequest(env, row, 'inspect');
+    await env.ACCOUNTS.prepare(`UPDATE account_setups SET initialization_started=1,updated_at=?
+      WHERE ${query} AND indexed=1 AND state<>'expired'`).bind(Date.now(), ...key).run();
+    // A missing reply says nothing about delivery. The page retries exactly this
+    // initialization only against its retained reservation and atomic write set.
+    const initialized = await pageRequest(env, row, 'initialize');
     if (!initialized.page) return result(row, 'provisioning', 'setup_reconciliation_pending');
+    if (initialized.credentialActive === false || !await setupCredentialActive(env, row)) return result(row, 'blocked', 'setup_binding_inactive', initialized.page);
     await requireSetupPrincipal(env, principal);
     await env.ACCOUNTS.prepare(`UPDATE account_setups SET state='ready',failure_code=NULL,updated_at=? WHERE ${query}`).bind(Date.now(), ...key).run();
     return result(row, 'ready', null, initialized.page);
   } catch (error) {
     if (error instanceof HttpError && ['invalid_token','insufficient_scope'].includes(error.code)) throw error;
-    return result(row, error instanceof HttpError && error.code === 'creation_paused' ? 'blocked' : 'provisioning',
+    const state = error instanceof HttpError && error.code === 'reconciliation_required' ? 'reconciliation_required'
+      : error instanceof HttpError && error.code === 'setup_expired' ? 'expired'
+      : error instanceof HttpError && ['creation_paused','setup_binding_inactive','owner_verification_required'].includes(error.code) ? 'blocked' : 'provisioning';
+    return result(row, state,
       error instanceof HttpError ? error.code : 'setup_outcome_unknown');
   }
 }

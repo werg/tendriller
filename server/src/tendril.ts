@@ -1,4 +1,4 @@
-import { setupPage } from './setup-page';
+import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
 import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch } from "./publication-watch";
@@ -122,6 +122,10 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async ensureAssistantDelivery(at: number): Promise<void> {
+    await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
+  }
+
+  async ensureSetupExpiry(at: number): Promise<void> {
     await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
   }
 
@@ -303,6 +307,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {}): Promise<string> {
+    if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'The setup credential name is reserved for its committed account operation. Choose another agent name.');
     const token = newToken();
     const hash = await sha256Hex(token);
     this.transaction(() => {
@@ -693,7 +698,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   private scheduleCommittedAlarm(): Promise<void> | void {
-    if (!this.exists()) return;
+    if (!this.exists()) {
+      const setupDue = nextSetupDeadline(this);
+      if (setupDue !== null) return this.alarms.ensure(Math.max(setupDue - this.skew, Date.now() + 1));
+      return;
+    }
     const now = this.now(), times = [this.db.get<number>('next_cleanup', now + DAY)];
     const peerDue = nextPeerDeadline(this), expires = this.expiresAt();
     if (peerDue !== null) times.push(peerDue);
@@ -708,9 +717,14 @@ export class Tendril extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     await this.alarms.fired();
-    if (!this.exists()) return;
     this.handlingAlarm = true;
     try {
+      if (!this.exists()) {
+        await expireSetupReservation(this);
+        this.handlingAlarm = false;
+        await this.scheduleCommittedAlarm();
+        return;
+      }
       try { await recoverLifetimeChange(this); }
       catch (error) { console.error('Lifetime recovery remains pending', error); }
       // Expiry removes the entire object, so pruning and reconciling the same
