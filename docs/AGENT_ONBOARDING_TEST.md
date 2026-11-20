@@ -511,6 +511,27 @@ For example, after the owner adds a note:
 ```
 
 The controller returns `status` and explicit `missing`/`mismatches` metrics.
+If the native attachment exposes connected peers but no transport diagnostic,
+leave transport unknown. For the existing public WebSocket relay only, the
+maintained evaluator preload `scripts/agent-acceptance/transport-probe.mjs` can
+observe a scoped same-store participant restart. Put a private JSON config
+outside the model project with `api` (the exact owned handle API), `deviceId`,
+`remoteDeviceId` (the measured browser key), `runDirectory`, and `output` (a
+private file inside that run). Start the participant's original resume command
+with `TENDRILLER_ACCEPTANCE_TRANSPORT_CONFIG=/private/probe.json` and Node's
+`--import /absolute/harness/scripts/agent-acceptance/transport-probe.mjs`.
+This is evaluator instrumentation; record the changed argv and restart, and do
+not send the config, preload, or implementation advice to the fresh model.
+The probe observes actual matching application/device relay sockets, both
+matching paired-lane handshakes, and sent/received binary traffic. Construction
+or a configured transport alone never establishes success. It records no
+authorization protocols, URLs, application payloads, or private channel values;
+a close/error clears the measured transport. Only after inspecting a current
+record bound to the measured live PID/birth and browser peer may the evaluator
+set `native.transport` to that file with `pointer: "/transport"`. It cannot
+measure WebRTC or recover transport evidence from an earlier uninstrumented
+process. Keep those cases blocked.
+
 Missing files, unsupported attachment diagnostics, absent browser/session metrics
 and incomplete before/after sequences remain `blocked`; a mismatched measured
 identity, signature, operation, row or receipt is `failed`. It never fills gaps
