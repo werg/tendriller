@@ -258,6 +258,19 @@ Use `--mode mcp` for the separate MCP-only prompt (no domain, guide names or
 architecture hints). The owner signs into the dedicated account and performs
 real PKCE consent through `scripts/review/access.mjs`. Before each model turn,
 the harness obtains a fresh account token and reloads the app-server connection.
+If a token expires during a long-running turn, the bridge renews it on an actual
+upstream HTTP **401** using the same real owner OAuth flow, then replays the exact
+buffered request once. Concurrent 401s share one renewal; delayed 401s from the
+old credential reuse the already renewed token. The selected service authenticates
+before MCP dispatch, so this replay does not duplicate an admitted application
+command. A 403, tool-level error, other status, or second 401 is never retried.
+Body bytes, method, session/protocol headers and source tool results are preserved;
+only the bearer changes. There is no periodic/background OAuth refresh and no
+extra model message. Renewal has a 30-second deadline within the request's
+60-second budget. Disconnecting the last waiting request or closing the bridge
+cancels renewal; cancellation closes only that flow's OAuth page. Renewal failure
+returns a transport failure without exposing credentials or retrying dispatch.
+Successful request-driven renewals are timestamped privately in `mcp-auth.jsonl`.
 A loopback transport forwards only to the selected origin's `/mcp`, with redirects
 disabled, preserving the genuine tools/results. Bearer tokens remain in the
 harness process, outside the model shell environment. The real catalog and its
@@ -548,7 +561,8 @@ npm run check
 ```
 
 The local tests exercise actual stdio child processes, protocol event filtering,
-RPC errors/exits/deadlines, observation validation, bearer refresh forwarding and
+RPC errors/exits/deadlines, observation validation, bearer refresh forwarding,
+coalesced HTTP-401 renewal with exact replay, denial/cancellation behavior and
 a real headless Chromium owner against a synthetic local form/checklist. The
 fixture's localStorage is only an owner-driver test, not Tendriller persistence
 evidence. `protocol-smoke` starts the installed real app-server, initializes a

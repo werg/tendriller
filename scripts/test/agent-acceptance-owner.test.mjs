@@ -72,3 +72,146 @@ test('MCP bridge preserves selected-origin tools and uses refreshed account bear
   assert.deepEqual(calls.map(call => call.headers.authorization), ['Bearer FIRST_PRIVATE_TOKEN', 'Bearer REFRESHED_PRIVATE_TOKEN']);
   assert.equal((await fetch(new URL('/wrong', bridge.url))).status, 404);
 });
+
+test('concurrent MCP 401s renew once and replay identical buffered bodies and protocol headers', async t => {
+  const entered = Promise.withResolvers(), renewed = Promise.withResolvers(), calls = [];
+  let renewals = 0;
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired',
+    freshToken: async ({ signal }) => { renewals++; assert(!signal.aborted); await renewed.promise; return 'fresh'; },
+    fetch: async (url, options) => {
+      calls.push({ url, method: options.method, headers: { ...options.headers }, body: options.body.toString() });
+      if (calls.filter(call => call.headers.authorization === 'Bearer expired').length === 3) entered.resolve();
+      return options.headers.authorization === 'Bearer expired' ? new Response('Unauthorized', { status: 401 })
+        : new Response(JSON.stringify({ result: { tools: [{ name: 'actual_source_tool' }] } }), { headers: { 'content-type': 'application/json', 'mcp-session-id': 'actual-session' } });
+    } });
+  t.after(() => bridge.close());
+  const bodies = [1, 2, 3].map(id => ` { "id": ${id}, "method": "tools/list" }\n`);
+  const requests = bodies.map(body => fetch(bridge.url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json',
+    'mcp-session-id': 'same-session', 'mcp-protocol-version': '2025-06-18', 'last-event-id': 'event-4' }, body }));
+  await entered.promise; renewed.resolve();
+  const responses = await Promise.all(requests);
+  for (const response of responses) {
+    assert.equal(response.headers.get('mcp-session-id'), 'actual-session');
+    assert.deepEqual((await response.json()).result.tools, [{ name: 'actual_source_tool' }]);
+  }
+  assert.equal(renewals, 1); assert.equal(calls.length, 6);
+  for (const body of bodies) {
+    const attempts = calls.filter(call => call.body === body);
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts.map(call => call.headers.authorization), ['Bearer expired', 'Bearer fresh']);
+    const omitAuth = ({ authorization, ...headers }) => headers;
+    assert.deepEqual(omitAuth(attempts[0].headers), omitAuth(attempts[1].headers));
+    assert.equal(attempts[0].method, attempts[1].method); assert.equal(attempts[0].url, attempts[1].url);
+  }
+});
+
+test('a delayed old-token 401 reuses the already renewed credential without another OAuth flow', async t => {
+  const slowSent = Promise.withResolvers(), releaseSlow = Promise.withResolvers(); let renewals = 0;
+  const calls = [];
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired', freshToken: async () => { renewals++; return 'fresh'; },
+    fetch: async (_url, options) => {
+      const body = options.body.toString(); calls.push([body, options.headers.authorization]);
+      if (options.headers.authorization === 'Bearer expired') {
+        if (body === 'slow') { slowSent.resolve(); await releaseSlow.promise; }
+        return new Response('', { status: 401 });
+      }
+      return new Response(body);
+    } });
+  t.after(() => bridge.close());
+  const slow = fetch(bridge.url, { method: 'POST', body: 'slow' }); await slowSent.promise;
+  assert.equal(await (await fetch(bridge.url, { method: 'POST', body: 'fast' })).text(), 'fast');
+  releaseSlow.resolve(); assert.equal(await (await slow).text(), 'slow');
+  assert.equal(renewals, 1); assert.equal(calls.length, 4);
+});
+
+test('MCP 403, tool errors and non-auth failures never renew; a second 401 is forwarded unchanged', async t => {
+  for (const status of [403, 200, 503, 401]) await t.test(String(status), async () => {
+    let calls = 0, renewals = 0;
+    const body = status === 200 ? '{"isError":true,"content":[{"text":"tool denied"}]}' : 'source rejection';
+    const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'old', freshToken: async () => { renewals++; return 'new'; },
+      fetch: async () => { calls++; return new Response(body, { status, headers: { 'www-authenticate': 'Bearer resource_metadata="https://selected.example/resource"' } }); } });
+    try {
+      const response = await fetch(bridge.url, { method: 'POST', body: '{"method":"tools/call"}' });
+      assert.equal(response.status, status); assert.equal(await response.text(), body);
+      assert.equal(calls, status === 401 ? 2 : 1); assert.equal(renewals, status === 401 ? 1 : 0);
+      assert.equal(response.headers.get('www-authenticate'), 'Bearer resource_metadata="https://selected.example/resource"');
+    } finally { await bridge.close(); }
+  });
+});
+
+test('renewal failure does not replay or expose diagnostics', async t => {
+  let calls = 0;
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired',
+    freshToken: async () => { throw Error('PRIVATE_OAUTH_DIAGNOSTIC'); },
+    fetch: async () => { calls++; return new Response('', { status: 401 }); } });
+  t.after(() => bridge.close());
+  const response = await fetch(bridge.url, { method: 'POST', body: 'same-command' });
+  assert.equal(response.status, 502); assert(!(await response.text()).includes('PRIVATE_OAUTH_DIAGNOSTIC')); assert.equal(calls, 1);
+});
+
+test('renewal timeout bounds callbacks that ignore cancellation', { timeout: 5000 }, async t => {
+  let signal;
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired', renewalTimeoutMs: 25,
+    freshToken: options => { signal = options.signal; return new Promise(() => {}); }, fetch: async () => new Response('', { status: 401 }) });
+  t.after(() => bridge.close());
+  const response = await fetch(bridge.url, { method: 'POST', body: 'same-command' });
+  assert.equal(response.status, 502); await response.text(); assert(signal.aborted);
+});
+
+test('bridge close aborts a pending renewal and prevents late credential installation', { timeout: 5000 }, async () => {
+  const entered = Promise.withResolvers(), late = Promise.withResolvers(); let signal;
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired', freshToken: options => {
+    signal = options.signal; entered.resolve(); return late.promise;
+  }, fetch: async () => new Response('', { status: 401 }) });
+  const pending = fetch(bridge.url, { method: 'POST', body: 'same-command' }).then(response => response.text(), () => null);
+  await entered.promise; await bridge.close(); assert(signal.aborted);
+  late.resolve('too-late'); await pending;
+  assert.throws(() => bridge.refresh('never-install-after-close'));
+  await bridge.close();
+});
+
+test('one disconnected client does not cancel a renewal still needed by another request', { timeout: 5000 }, async t => {
+  const bothSent = Promise.withResolvers(), renewed = Promise.withResolvers(); let signal, renewals = 0, oldCalls = 0, retries = 0;
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired', freshToken: options => {
+    renewals++; signal = options.signal; return renewed.promise;
+  }, fetch: async (_url, options) => {
+    if (options.headers.authorization === 'Bearer expired') { if (++oldCalls === 2) bothSent.resolve(); return new Response('', { status: 401 }); }
+    retries++; return new Response('unchanged command result');
+  } });
+  t.after(() => bridge.close());
+  const abort = new AbortController();
+  const first = fetch(bridge.url, { method: 'POST', body: 'first', signal: abort.signal }).catch(() => null);
+  const second = fetch(bridge.url, { method: 'POST', body: 'second' });
+  await bothSent.promise; abort.abort(); await first;
+  await new Promise(resolve => setTimeout(resolve, 20)); // Let the server observe the closed client socket.
+  assert(!signal.aborted); renewed.resolve('fresh');
+  assert.equal(await (await second).text(), 'unchanged command result'); assert.equal(renewals, 1); assert.equal(retries, 1);
+});
+
+test('request cancellation aborts an OAuth flow once its last waiter disconnects', { timeout: 5000 }, async t => {
+  const entered = Promise.withResolvers(), cancelled = Promise.withResolvers();
+  const bridge = await mcpBridge({ origin: 'https://selected.example', token: 'expired', freshToken: ({ signal }) => {
+    signal.addEventListener('abort', () => cancelled.resolve(), { once: true }); entered.resolve(); return new Promise(() => {});
+  }, fetch: async () => new Response('', { status: 401 }) });
+  t.after(() => bridge.close());
+  const abort = new AbortController();
+  const pending = fetch(bridge.url, { method: 'POST', body: 'same-command', signal: abort.signal }).catch(() => null);
+  await entered.promise; abort.abort(); await pending; await cancelled.promise;
+});
+
+test('Owner renewal closes only its OAuth page on cancellation or authorization failure', { timeout: 5000 }, async () => {
+  for (const failure of [false, true]) {
+    let oauthCloses = 0;
+    const entered = Promise.withResolvers(), oauthPage = { close: async () => { oauthCloses++; } };
+    const owner = new Owner({ context: { newPage: async () => oauthPage, request: {} }, access: {}, authorize: async context => {
+      await context.newPage(); entered.resolve();
+      if (failure) throw Error('Synthetic authorization failure');
+      return new Promise(() => {});
+    } });
+    owner.page = { close: () => { throw Error('Must not close the owner app page'); } };
+    const abort = new AbortController();
+    const result = assert.rejects(owner.freshToken({ signal: abort.signal }));
+    await entered.promise; if (!failure) abort.abort(); await result;
+    assert.equal(oauthCloses, 1);
+  }
+});
