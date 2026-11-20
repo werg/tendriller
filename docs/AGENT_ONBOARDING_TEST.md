@@ -196,3 +196,246 @@ Run these failure variants against an isolated test deployment as well:
 After shipping discovery changes, refresh the real installed plugin's tool
 catalog and repeat the empty-account scenario. A source-level `tools/list` test
 does not establish that ChatGPT's installed plugin exposes the updated guide.
+
+## Maintained acceptance harness
+
+`scripts/agent-acceptance/cli.mjs` maintains six parts of this procedure:
+
+1. An independent Codex app-server conversation in an empty project with an
+   isolated home, model credentials only, and the ordinary checklist prompt above.
+2. Separate domain-only and account-authenticated MCP discovery modes. MCP uses
+   the selected origin's genuine catalog and results, with OAuth renewed before
+   every turn. No handcrafted tools or maintainer instructions substitute for discovery.
+3. A paired headless owner browser using the existing private review-access
+   account, with explicit exact permission review and ordinary UI interactions.
+4. Timestamped private observable evidence and a minimal shareable report, binding
+   the deployment to the exact clean release composition and artifact hashes.
+5. An observer protocol for signed publication, both command directions,
+   reload/reopen, lost responses, peer absence, missing setup and cleanup.
+6. A separate external-host report protocol, including honest attribution for
+   actual ChatGPT web observations. Native Codex never qualifies ChatGPT web.
+
+The harness does not deploy, change readiness, reset accounts, install a service,
+or control existing reviewer processes. Use a disposable application. The parent
+operator deploys and qualifies the selected checkpoint before starting a live run.
+No package.json change is required; the tests join the existing `test:ci` glob.
+
+### Prepare and launch
+
+Use Node 24, a model-authenticated `codex` CLI with the app-server protocol, the
+repository's installed Playwright package and Chromium. `npm ci` is the ordinary
+development dependency gate. The launch preflight reuses
+`scripts/review/preflight.mjs`: the release checkout must be clean with prepared
+release artifacts, and the selected service must advertise open creation readiness
+and that exact source/release/runtime/composition tuple. This gate runs before
+owner login, OAuth, model turns, or acquisition of application packages. A pause,
+unavailable/unsupported readiness, stale deployment, or missing artifact stops
+the run; the private failure record retains the exact prerequisite/next action.
+
+Choose a **new absolute directory outside every source checkout**. The harness
+creates its empty `project/`, isolated `home/`, temporary files and evidence there.
+It copies only the model auth file to that isolated home and removes the isolated
+Codex credential/cache directory on shutdown. It disables host tracing/telemetry.
+It inherits PATH and optional OPENAI_API_KEY, not maintainer environment,
+configuration, skills, memories, repository snippets or review credentials.
+Any instruction sources reported by `thread/start` fail the baseline closed.
+This is context isolation, not an OS security sandbox: the agent has host network
+and filesystem access with approval policy `never`. Run on a disposable evaluator
+host when filesystem/process isolation is required. Protect the private account
+and run directory accordingly.
+
+```sh
+node scripts/agent-acceptance/cli.mjs run \
+  --origin https://staging.tendriller.dev --mode domain \
+  --release-root /private/clean-deployed-release \
+  --access /private/review-access.json \
+  --output /private/acceptance/new-domain-run \
+  --adapter /private/observers/checklist-observer.mjs \
+  --seconds 1800
+```
+
+Use `--mode mcp` for the separate MCP-only prompt (no domain, guide names or
+architecture hints). The owner signs into the dedicated account and performs
+real PKCE consent through `scripts/review/access.mjs`. Before each model turn,
+the harness obtains a fresh account token and reloads the app-server connection.
+A loopback transport forwards only to the selected origin's `/mcp`, with redirects
+disabled, preserving the genuine tools/results. Bearer tokens remain in the
+harness process, outside the model shell environment. The real catalog and its
+hash are recorded; an absent catalog blocks the turn. An empty account is a
+scenario prerequisite to verify independently, not a reason to erase existing apps.
+An MCP error never silently falls back to domain discovery.
+
+The launcher stays in the foreground until stopped or its model/owner work window
+expires. Individual RPC, browser and observer actions also have deadlines. The
+private `control.sock` accepts only local filesystem-authorized requests. In a
+second terminal, inspect the sanitized progress, and read `observable.jsonl`
+privately to find the page/review URLs and actual agent questions:
+
+```sh
+node scripts/agent-acceptance/cli.mjs status --output /private/acceptance/new-domain-run
+node scripts/agent-acceptance/cli.mjs owner --output /private/acceptance/new-domain-run --input /private/owner-action.json
+node scripts/agent-acceptance/cli.mjs send --output /private/acceptance/new-domain-run --input /private/owner-reply.json
+node scripts/agent-acceptance/cli.mjs observe --output /private/acceptance/new-domain-run --input /private/check.json
+node scripts/agent-acceptance/cli.mjs stop --output /private/acceptance/new-domain-run
+```
+
+`send` input is `{ "kind": "identity", "text": "…" }`. Allowed categories are
+`identity`, `sign-in`, `review`, `visible-error`, `user-outcome` and
+`maintainer-advice`. Give identity only when asked. Sign in and review only the
+actual app and device/capabilities requested. Report visible errors literally;
+do not diagnose implementation or provide code. Report ordinary checklist outcomes
+to continue the conversation. All inputs are timestamped and hashed in the report;
+`maintainer-advice` permanently marks the attempt assisted. Categorizing advice
+as identity does not make it unassisted: review the private inputs when judging it.
+No owner reply is sent automatically after a claim. The original user prompt
+contains no observation checklist, endpoints, architecture, private handle or secrets.
+
+### Exact owner actions
+
+`owner` input is one of these JSON objects. Select labels from the actual page;
+the harness never evaluates model-supplied JavaScript or supplies application code.
+
+```json
+{ "action": "navigate", "url": "https://staging.tendriller.dev/ACTUAL_REVIEW_PATH" }
+```
+
+```json
+{
+  "action": "review",
+  "expected": {
+    "fingerprint": "EXACT VISIBLE FINGERPRINT TEXT",
+    "rights": "EXACT VISIBLE RIGHTS TEXT",
+    "retainedPrefix": "EXACT VISIBLE RETAINED PREFIX TEXT"
+  },
+  "permissions": ["EXACT SELECTED CHECKBOX LABEL"],
+  "button": "EXACT APPROVAL BUTTON NAME"
+}
+```
+
+Other actions are `inspect`, `fill` with `label` and `value`, `click` with `name`
+and optional accessible `role`, `reload`, and `reopen`. Reopen closes and recreates
+the page in the same browser context; it does **not** establish browser-process
+restart or independent peer retention. Navigation rejects foreign origins and
+credential-bearing URLs. Action results contain visible page text and remain
+private. Login uses a static URL and a separately filled private account code;
+credentials are never a model input. Exact review text must be chosen by the
+evaluator after inspection, not guessed or approved by checking every checkbox.
+
+### Observer adapter protocol
+
+Fresh agents may author different file layouts and command interfaces. The harness
+therefore does not import their private modules or guess native stores. Supply a
+**trusted evaluator executable** outside the agent's project with `--adapter`.
+It receives one JSON request on stdin, returns exactly one JSON observation on
+stdout, and exits within 30 seconds. The harness supplies PATH only, bounds output
+to 1 MiB, and suppresses adapter stderr. An observer must inspect actual native
+queries, retained operations, signed host/session controls and browser evidence;
+model completion text and application-authored assertions are not independent proof.
+Writing an observer that returns unconditional success invalidates the run.
+Keep private observer implementations and credentials outside the model context.
+
+For `observe`, `/private/check.json` contains a `check` and optional `options`.
+The executable receives:
+
+```json
+{
+  "protocol": "tendriller-agent-adapter-v1",
+  "action": "observe",
+  "runDirectory": "/private/acceptance/new-domain-run",
+  "project": "/private/acceptance/new-domain-run/project",
+  "origin": "https://staging.tendriller.dev",
+  "check": "browser-to-agent",
+  "options": {}
+}
+```
+
+Its response has protocol `tendriller-agent-observation-v1`, the same `check`,
+`observedAt` as an ISO timestamp, `status` (`passed`, `failed`, `blocked`, or
+`not-tested`), and an `evidence` object. Evidence stays private; the shareable report
+contains only check status, source, timestamp and SHA-256 reference. Retain these
+measurements (public identities and private paths must stay in the private evidence):
+
+| Check | Evidence to collect |
+| --- | --- |
+| `discovery` | Ordered discovered URLs, failed reads, reused files/imports, install/create timing and exact downloaded package hashes. |
+| `preclaim-publication` | `unclaimed: true`, `signatureVerified: true`, `publicationId`, `operationId`, receipt, observation before claim, same signed head after claim. |
+| `authority` | Actual public definition, creation transition, reviewed device fingerprint/rights/prefix and their verified selection. |
+| `connected` | `applicationId`, distinct `nativeDeviceId`/`browserDeviceId`, `transport`, and `nativeProcess` containing `pid`, `startedAt`, exact `resume` command and `storage` location. Include connection/session observations. |
+| `browser-to-agent`, `agent-to-browser` | `operationId`, `commandOutcome: "applied"`, coherent `query`, unique `marker`, `browserObserved: true`, `nativeObserved: true`; actual UI/command and read results. |
+| `browser-reload` | Browser device identity before/after reload and persisted marker/read observations. |
+| `native-reopen` | `beforeDeviceId`, identical `afterDeviceId`, `retained: true`; stopped/restarted PID, exact store/resume command, actual reopened query. |
+| `lost-command-response`, `lost-publication-response` | `responseLost: true`, equal nonempty `operationId`/`retryOperationId`, equal SHA-256 `attemptHash`/`retryAttemptHash`, `appliedCount: 1`; retained signed attempt and original receipt after retry. Publication also requires equal `receiptId`/`retryReceiptId`. |
+| `unavailable-peer` | Disposable peer stop, visible honest UI state, same-device reconnection and retained work. |
+| `missing-setup` | Separate fresh attempt identifier, omitted prerequisite, actual diagnosis and next action; do not break the baseline's authority. |
+| `publication` | Verified signed selected head, complete authored graph and receipt bound to the observed live page. |
+| `cleanup` | `ownedApplicationsReconciled: true`, `nativeProcessesStopped: true`, `persistentReviewerServicesUntouched: true`, deletion receipts for this run only, or confirmed no creation. |
+
+The schema rejects missing round-trip, connection, preclaim, reopen and retry
+measurements. Other measurements still need evaluator review: a schema cannot
+prove an external observer's honesty. The report never converts model messages
+into passed checks. Every check must pass for `complete`; missing evidence remains
+`blocked`, a failing observation produces `failed`, and advice produces `assisted`.
+Perform preclaim observation **before** claim, and cleanup observation **before**
+`stop`. Stop terminates the owned app-server process group, closes Chromium and
+the transport, and records actual start/stop/exit details. Detached participants
+or services need explicit observer accounting; the harness does not stop unknown
+PIDs or existing services. Private project/device records remain for uncertain
+operation reconciliation. Delete them only after run-owned remote cleanup is proven.
+
+### External hosts and unavailable browsers
+
+When a local browser is unavailable, `--no-browser --adapter /absolute/observer`
+supports a domain-mode run with an external owner. It records that limitation;
+it neither creates browser evidence nor permits unauthenticated MCP mode.
+If testing a different host, including actual ChatGPT web, use:
+
+```sh
+node scripts/agent-acceptance/cli.mjs external-report \
+  --output /private/acceptance/new-external-run --input /private/external-host.json
+```
+
+The envelope protocol is `tendriller-external-host-v1`, with `host` (`chatgpt-web`
+or `other`), `mode`, `origin`, `environment` (model, tools/catalog, browser and
+restrictions), exact `initialPrompt`, `sessionEvidence` (actual host session and
+visible observation references), `interventions` (`kind`, `text`), and
+`observations` in the adapter response format above. Do not include reasoning,
+chain-of-thought, raw session dumps, or credentials. Import retains environment,
+prompt and session references privately. External ChatGPT evidence is labeled
+`external-attested`, never native-verified. An absent browser session is
+`not-tested`; a native Codex success cannot fill it in. Reviewer inspection of
+the real external session remains necessary. External reports do not control or
+promise future wake of an existing ChatGPT conversation.
+
+### Tests, evidence privacy and limits
+
+```sh
+TENDRILLER_ACCEPTANCE_BROWSER=1 node --test scripts/test/agent-acceptance-*.test.mjs
+node scripts/agent-acceptance/cli.mjs protocol-smoke \
+  --output /private/acceptance/new-protocol-smoke --seconds 20
+npm run check
+```
+
+The local tests exercise actual stdio child processes, protocol event filtering,
+RPC errors/exits/deadlines, observation validation, bearer refresh forwarding and
+a real headless Chromium owner against a synthetic local form/checklist. The
+fixture's localStorage is only an owner-driver test, not Tendriller persistence
+evidence. `protocol-smoke` starts the installed real app-server, initializes a
+fresh ephemeral thread and shuts it down without a model turn or remote app.
+Neither substitutes for the parent's bounded live staged model/owner run.
+The default core gate runs protocol/owner-contract tests and explicitly skips the
+real Chromium case; the command above enables that case on browser-equipped hosts.
+The standalone `agent-acceptance.yml` workflow enables the same local Chromium
+regression in the repository's pinned Playwright container. It needs no model or
+review-account credentials and does not claim a live acceptance run.
+
+Files/directories are private (0600/0700). The model thread is ephemeral; reasoning
+events/deltas and entire turn dumps are never written. Only allowlisted completed
+observable messages/tools and minimal turn status are retained. Raw stderr is
+discarded. Tool outputs, owner text, prompts, URLs, application private stores and
+external observation details can contain secrets: **do not publish the run directory**.
+Only the minimal `report.json` is intended for reviewable sharing after inspection.
+It includes exact deployment/artifact identities, model/tool environment, timestamps,
+intervention hashes, first shared-command time, first unresolved stage and process
+lifetime. Detailed receipt/operation/identity/resume evidence is deliberately private.
+Unknown or unperformed observations stay explicit. Preserve the failed attempt
+before starting a fresh one; do not retrofit a baseline with hidden maintainer help.
