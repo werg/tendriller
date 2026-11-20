@@ -37,7 +37,8 @@ export async function openSession({ signal, mode }) {
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   const record = value => appendFile(${JSON.stringify(calls)}, JSON.stringify(value)+'\\n');
   const saved = { status:'saved', operationId:'stable-op', attemptId:'signed-original' };
-  const lost = () => Object.assign(Error(process.env.LARGE_ERROR ? 'x'.repeat(1024*1024) : 'Reply lost'), { code:'ACK_LOST' });
+  const lost = () => Object.assign(Error(process.env.LARGE_ERROR ? 'x'.repeat(1024*1024) : 'Reply lost'), { code:'ACK_LOST',
+    ...(process.env.FIXTURE_ERROR_EXIT === undefined ? {} : {exit:JSON.parse(process.env.FIXTURE_ERROR_EXIT)}) });
   return { session: {
     query: async () => { if (process.env.LARGE_ERROR) throw lost(); return {value:process.env.LARGE_RESULT ? 'x'.repeat(1024*1024) : 'ready'}; },
     command: async (_name, _input, options) => { await record({command:options.operationId}); return { applied:async()=>{throw lost();} }; },
@@ -94,6 +95,20 @@ test('cleanup failure after a successful query remains a failure without printin
   const f = await fixture(t), result = await f.start(['query', 'items', 'null'], { CLOSE_FAIL: '1' }).result();
   assert.equal(result.code, 1); assert.equal(result.stdout, ''); assert.equal(JSON.parse(result.stderr).error.code, 'CLOSE_FAILED');
   assert.equal(JSON.parse(await readFile(f.cleanup)).finished, true);
+});
+
+test('caught errors normalize zero and invalid exit codes while preserving valid nonzero codes and cleanup evidence', async t => {
+  const f = await fixture(t);
+  for (const exit of [0, -1, 256, 1.5, '64', 64, 255]) {
+    const result = await f.start(['command', 'addItem', '{}', '--operation', 'stable-op'], {
+      CLOSE_FAIL: '1', FIXTURE_ERROR_EXIT: JSON.stringify(exit),
+    }).result();
+    assert.equal(result.code, Number.isInteger(exit) && exit >= 1 && exit <= 255 ? exit : 1);
+    const error = JSON.parse(result.stderr);
+    assert.equal(error.error.code, 'ACK_LOST'); assert.equal(error.cleanup.code, 'CLOSE_FAILED');
+    assert.equal(error.operation.operationId, 'stable-op'); assert.equal(error.operation.attemptId, 'signed-original');
+    assert.equal(result.stdout, '');
+  }
 });
 
 for (const committed of [false, true]) test(`publication ${committed ? 'committed receipt' : 'uncertain intent'} survives cleanup failure without replacement publication`, async t => {
