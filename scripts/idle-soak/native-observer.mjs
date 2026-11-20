@@ -18,3 +18,6 @@ if (OriginalSocket) globalThis.WebSocket = new Proxy(OriginalSocket, {
 // A private native bootstrap may instrument actual model dispatch / notification handling with this fixed numeric API.
 Object.defineProperty(globalThis, Symbol.for('tendriller.idle-soak.record'), { value: emit });
 process.on('disconnect', () => process.exit(75));
+
+// Observation must not keep a completed native participant artificially alive.
+process.channel?.unref();

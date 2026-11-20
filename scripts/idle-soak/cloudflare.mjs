@@ -37,7 +37,7 @@ export function planQueries(types, c, start, end) {
   const type = name => types.find(x => x.name === name);
   const result = [];
   for (const spec of specs) {
-    const field = types.flatMap(t => t.fields ?? []).find(f => f.name === spec.dataset);
+    const field = types.flatMap(t => t.fields ?? []).find(f => f.name === spec.dataset && f.args?.some(a => a.name === 'filter'));
     const filterType = type(typeName(field?.args.find(a => a.name === 'filter')?.type));
     const filters = new Set(filterType?.inputFields?.map(x => x.name));
     const scopeField = spec.scope === 'worker' ? 'scriptName' : filters.has('namespaceId') ? 'namespaceId' : 'namespaceIds_has';
