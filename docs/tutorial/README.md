@@ -25,12 +25,13 @@ npm run setup:finish -- .tendriller/account-setup-result.json
 npm run init
 npm run build
 npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation notes-release-1
-# Now give the owner the ready page URL; they sign in to open this version.
-# Do not wait for a claimed reply before publishing.
 npm run peer # Or npm run assistant for the MCP participant.
-# In the published page, choose Set up this browser.
-# Open its review link and approve the exact device key and read/write rights.
-# Refresh pairing status until Enrollment committed, then Connect existing device.
+# Now give the owner the ready page URL; they sign in to open this version.
+# Do not wait for a claimed reply before publishing or starting the participant.
+# In the published page, choose Request browser access.
+# The native peer pauses ordering and stages the exact signed proposal.
+# Open the service review link and review that proposal before approving it.
+# Check pairing status; after Enrollment committed, Connect existing device.
 ```
 
 The account-linked route derives the verified owner on the host and requires its
@@ -45,13 +46,39 @@ Without an account-linked creation route, use the supported explicit email route
 `npm run create -- https://YOUR_HOST owner@example.com "Shared notes"`.
 Do not use it to replace an uncertain account-linked operation.
 
-The running native owner consumes reviewed browser pairing requests without
-opening a second signer. Browser reloads retain the same public request and key;
-private signing keys never leave Worker storage. The native project saves the
-exact signed control change before sending it, so an uncertain reply is retried
-with the same transition. Expired or stale requests require a fresh owner review
-for the same device. A committed pairing still needs a successful session connection.
-With the resident owner stopped, `npm run pair` can consume approved requests once.
+The running native owner handles pairing with its existing session and signer.
+After the browser proves possession of its own key, that owner retains the
+pairing intent, durably pauses command ordering and saves the exact signed
+proposal **before owner review**. The service review displays the fingerprint,
+account, application, origins, narrow reader/writer rights, selected generation,
+retained prefix and proposal digest. Approval binds that complete proposal.
+The host checks current account access, authority and the reviewed payload again
+when the normal signed control transition is selected. Existing grants and key
+commitments are preserved.
+
+The default pairing window is at most ten minutes. It checks pending work with
+bounded backoff and does not renew a request automatically. The browser has no
+continuous polling loop: **Check pairing status**, or returning from review,
+performs one bounded read. Browser reloads retain the same public request and key;
+private signing keys stay in Worker storage. A new review for an expired, denied
+or stale request is an explicit action for that same device.
+
+Private native records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
+`pairing-ID-commit.json` and `pairing-ID-outcome.json` under `.tendriller/`.
+The durable ordering pause lives in the same native device store and survives
+process close and reopen. A lost response, unavailable status, or expired helper
+window leaves uncertain work paused. Reopen the same project and participant to
+reconcile the original signed transition; never delete the records, copy the
+signer or sign a replacement prefix to resume writes. Only a verified exact
+outcome, or a confirmed terminal request with no committed transition, releases
+that pause. A later revoked grant is never restored by replay.
+
+With the resident owner stopped, `npm run pair` performs one bounded
+prepare/inspect/commit pass and closes that owner. It may stage a proposal and
+leave ordering paused for review; rerun the same command after the review.
+`npm run enroll -- PUBLIC_KEY` remains a deliberate manual administration route.
+A committed pairing still needs a successful peer session and real notes query
+before the page reports that it is connected.
 
 Only `page/` is publishable. `.tendriller/` holds the private agent handle,
 native device, initial key and exact setup requests; keep it out of Git and page
@@ -98,10 +125,12 @@ remain alive, as described in [Agent delivery](https://tendriller.dev/docs/AGENT
 | --- | --- |
 | `domain.mjs` | Shared events-backed command/query definition |
 | `account-setup.mjs` | Retain private setup intent, supply public MCP arguments, reconstruct exact ready handle |
-| `setup.mjs` | Explicit email creation, initialize/select genesis, enroll verified browser key |
+| `setup.mjs` | Explicit email creation, initialize/select genesis, one pairing pass or deliberate manual enrollment |
 | `local.mjs` | Private setup records and native host client |
 | `session.mjs` | Real resumable native session; CLI bootstrap and running peer |
 | `worker.mjs` | Browser device, owned session, authority and peer key acquisition |
+| `pairing-browser.mjs`, `pairing-worker.mjs` | Retain one public browser request and prove possession using its own fenced device |
+| `pairing-native.mjs` | Bounded processing on the existing native owner, durable ordering pause and exact reviewed transition recovery |
 | `page.mjs`, `index.html` | Editable UI and public session facade |
 | `build.mjs` | Browser bundling and a public-only publication graph |
 | `helpers/` | Importable coherent views, operation observations and reviewed input |

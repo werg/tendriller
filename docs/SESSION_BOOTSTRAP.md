@@ -108,13 +108,31 @@ reader supplies them. A known coordinator need not currently be reachable.
 
 ## Enroll a browser without distributing secrets
 
-The published Worker creates a device only after the explicit setup action and
-reports **only its public key**. The owner verifies the intended browser. The
-native enrollment command reads authenticated `info().owner_account_id`, keeps
-all current grants and the exact complete coordinator prefix, and prepares a
-`reason: 'control-change'` transition with the next control revision and the new
-explicit account binding. The complete signed request and control update are
-saved before their first send; retries reuse them.
+The explicit browser setup action retains one public request and creates or
+reopens that browser's own device under its exclusive profile lock. A short-lived
+Worker signs a bounded service challenge with that identity; the key, account,
+application, origins, rights, expected generation and expiry are fixed by the
+proof. `pairing-browser.mjs` retains only public intent, and
+`pairing-worker.mjs` keeps private key operations inside the device owner.
+
+The existing native owner processes the request through `pairing-native.mjs`.
+It retains its intent, calls the public durable `session.pauseOrdering(id)`, and
+prepares the usual `reason: 'control-change'` transition with the exact drained
+prefix, next control revision and proved account binding. All existing grants
+and key commitments remain intact. The complete signed request and full control
+update are saved and staged with `client.prepare` **before** the service-origin
+owner review. The owner approves that fingerprint, narrow rights and exact
+proposal digest. The normal serialized host selector rechecks current authority
+and account access when committing it.
+
+The native loop is bounded to ten minutes. A timeout, lost commit reply or
+process close preserves both the exact request and durable ordering pause.
+On reopen, verify the original signed transition and complete reviewed payload
+before adopting it and resuming ordering. A mismatch or unavailable status stays
+paused; never substitute a new prefix or signer. `npm run pair` performs one
+bounded pass with the resident owner stopped. The deliberate manual `enroll`
+command still uses authenticated `info().owner_account_id` for a separately
+verified owner device; it is not the ordinary browser pairing flow.
 
 The published code never receives the agent token, native signer or plaintext
 epoch key. On connect, the browser uses its page's authenticated same-origin

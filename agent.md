@@ -56,6 +56,10 @@ created application's code by itself.
    prepare any assistant-access proposal before giving the owner the ready URL.
    Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
    page and signs in; explicit browser enrollment and assistant consent follow.
+   Use the browser's retained-key pairing request and the same running native
+   owner. Its bounded helper pauses ordering and stages the exact signed
+   proposal before owner review. Preserve uncertain requests and their durable
+   pause across restart; approve only the complete displayed proposal.
    Do the setup in the agent's
    supported runtime and preserve it so later invocations can resume.
 4. Finish only after a browser command is visible in a native read, a native
@@ -148,9 +152,12 @@ Do not recreate keys, identity or transition IDs when resuming a partial setup.
 The complete [bootstrap](docs/SESSION_BOOTSTRAP.md) covers this missing connection
 between configuration and session opening.
 
-For later enrollment, the authenticated agent's `host.info()` includes
+For ordinary browser enrollment, use the starter's challenge/proof, native
+preparation, service-origin owner review and exact signed commitment. The
+browser retains its own key; account sign-in grants no device rights. For a
+deliberate manual enrollment, the authenticated agent's `host.info()` includes
 `owner_account_id` (`null` until claimed). Use it as an explicit account binding
-only for a verified device belonging to that owner. It grants no device rights.
+only for a separately verified device belonging to that owner.
 
 Chronolog owns the device signer, local byte store, database, operation journal, peer connections and replication. Use its native or browser Worker session entry for your environment. Bootstrap from the host's public definition and authority, pin the descriptor, and verify all signed evidence through Chronolog. Keep browser execution and replication in the owned Worker.
 

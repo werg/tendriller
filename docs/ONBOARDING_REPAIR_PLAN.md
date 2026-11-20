@@ -159,7 +159,8 @@ acceptance items. Account setup retains one allocation and credential commitment
 browser pairing retains one proved, reviewed proposal and signed-control attempt.
 Existing OAuth grants acquire no implicit new rights. The per-page baseline is
 fresh Durable Object revision 10; account setup requires the explicit
-`0004_account_setup.sql` migration and its schema revision 2 allocation fences.
+`0004_account_setup.sql` and `0005_account_setup_recovery.sql` migrations,
+including the checked account-setup schema marker 3 and retained allocation fences.
 
 Committed focused tests cover same-operation recovery, account/client isolation,
 scope and credential freshness, wrong-account claim, allocation failures,

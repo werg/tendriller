@@ -34,7 +34,7 @@ There is no missing `deployment.mjs` to invent.
 | Build the UI | Bundle the page and owning Worker | `page/` contains the complete authored graph and public configuration |
 | Publish | Use the creator session's saved signed publication | A receipt and selected immutable release ready for the owner’s first signed-in visit |
 | Owner sign-in | Give the person the already-published page and any prepared permission-review URL | Existing authority, keys and code retained; no new publication needed |
-| Connect the browser | Create its device, explicitly enroll its public key, then connect | The session acquires keys from the native peer and shows real connection/data status |
+| Connect the browser | Request access with its own device, let the native peer stage an exact proposal, review it, then connect | The reviewed signed grant is committed; the session acquires keys and reads real application state |
 | Verify | Submit, reload, read, inspect and retry | Retained notes and the same device/operation identities survive reopening |
 
 The owner sign-in and enrollment decision are real authority boundaries. Prepare
@@ -417,42 +417,60 @@ therefore shows the next setup action explicitly.
 
 ## 6. Enroll and connect the owner's browser
 
-Open the published page while signed in as its owner and choose **Set up this
-browser**. The page retains one public request ID before networking. A short-lived,
-exclusively fenced Worker reopens this browser's retained identity and signs a
-challenge binding its key, account, application, service/page origins, exact
-read/write rights, current authority and expiry. The private key stays in Worker
-storage.
-
-Open **Review this browser's key and permissions**. On the service-origin review
-page, compare the complete device fingerprint with the browser's displayed public
-key, check the application and origins, and choose **Approve this device**. This
-approves the request; it does not yet create a device grant.
-
-Keep the private project's native participant running:
+Start the private project's native participant before browser review:
 
 ```sh
 npm run peer # Or npm run assistant when using MCP access.
 ```
 
-That same native owner consumes approved requests, preserves the current retained
-prefix, grants and key commitments, and binds the new device to its proved account.
-It saves the exact signed control change in `.tendriller/pairing-ID.json` before
-sending it. A lost reply or restart retries the saved request. The server checks
-the proof, review, current owner and authority again inside its serialized control
-transition. The browser receives only reader/writer rights; replaying an older
-approval cannot restore a later revoked grant.
+Open the published page while signed in as its owner and choose **Request browser
+access**. The page retains one public request ID before networking. A short-lived
+Worker opens this browser's own retained identity under its exclusive device
+lock and signs the service challenge. That challenge binds the key, account,
+application, service/page origins, exact read/write rights, current authority and
+expiry. The private key stays in Worker storage.
 
-Choose **Refresh pairing status**. Only **Enrollment committed** means the signed
-grant is installed. Then choose **Connect existing device**. Reloads retain the
-same request and browser key. Expired, denied or stale requests expose **Request a
-new review for this device**; this explicit action keeps the identity and obtains
-a new owner review. Uncertain outcomes remain on the original request.
+The same native owner saves the pairing intent, **durably pauses command
+ordering**, and retains the exact signed control proposal before submitting it
+for review. The pause drains earlier ordering work and freezes the selected
+prefix; merely checking that the generation has not changed would miss later
+writes within that generation. The proposal preserves all existing grants,
+epoch/key commitments and recovery floor and adds only the proved account/key
+with the narrow browser rights. The service validates the normal signed control
+admission without selecting a new generation at this stage.
 
-For a deliberate one-shot local run while the resident native owner is stopped,
-`npm run pair` consumes already approved reviews and closes the complete owner.
-`npm run enroll -- PUBLIC_KEY` remains an explicit manual administration route;
-the normal browser flow uses the signed proof and owner review above.
+Open **Review this exact browser request**. If preparation is still
+pending, keep the native owner running and reopen the review once it has staged
+the proposal. On the service-origin page, compare the complete fingerprint with
+the browser's displayed key and review the account, application, origins, rights,
+selected generation, retained prefix and proposal digest. Choose **Approve this
+device** only for that exact proposal. Review has same-origin and CSRF checks;
+it does not itself install the device grant. The native owner saves the exact
+commit attempt, then submits the reviewed transition. The server rechecks
+current account access and authority inside the serialized normal selector.
+
+The native review window lasts at most ten minutes with bounded idle backoff.
+Closing it does not erase a durable pause. Native records under `.tendriller/`
+retain `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
+`pairing-ID-commit.json` and `pairing-ID-outcome.json`; the pause belongs to the
+same device store. After a timeout, lost response or restart, reopen that same
+participant to reconcile the original outcome before resuming ordering.
+Uncertain or mismatched outcomes stay paused. Do not delete retained evidence,
+rebase the proposal or create another signer to get past the pause. Exact
+receipt recovery works even after a later generation change, and never restores
+a subsequently revoked grant.
+
+Choose **Check pairing status**, or return from the review tab for one bounded
+status read. There is no continuous browser poll. Only **Enrollment committed**
+means the reviewed signed grant is installed. Reloads retain the same request
+and browser key. Expired, denied or stale requests offer an explicit new review
+for that device; uncertain outcomes remain on the original request.
+
+For a one-shot local run with the resident owner stopped, `npm run pair` performs
+one prepare/inspect/commit pass. It can leave a staged proposal paused for owner
+review; rerun it afterward using the same project. `npm run enroll -- PUBLIC_KEY`
+remains a deliberate manual administration route; the ordinary browser flow
+uses its own signed proof and the complete proposal review above.
 
 This first app grants the browser **read and write**, with **no publication,
 administration, coordination or recovery authority**. This keeps the first
@@ -575,7 +593,8 @@ mobile suspension.
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Native CLI and `npm run peer` cannot share one open writer. |
-| Browser is not enrolled | Verify its displayed public key, run the explicit owner-bound enrollment command, then reconnect. Account login and device grants are separate. |
+| Browser is not enrolled | Request access from its retained browser device, keep the native peer running to stage the exact proposal, and complete the service-origin owner review. Check committed status before connecting. Account login and device grants are separate. |
+| Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Reopen the same native owner after a bounded window closes; reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |
 | Publication forbidden | Inspect the current explicit publisher grant and submitting account authorization. Administration is a separate right. |
 | Stale publication or control transition | Inspect the selected head and saved request. Retry exact uncertain work; review a fresh change after a conflict. |

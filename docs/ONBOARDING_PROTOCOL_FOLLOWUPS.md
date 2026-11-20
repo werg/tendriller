@@ -3,7 +3,9 @@
 Status: **both required capabilities are implemented in the repository** for
 [core PR #68](https://github.com/werg/tendriller/pull/68). Focused SDK, worker and
 starter tests are committed. The remaining integrated, packed-browser and
-deployed-client acceptance gates are recorded below; source changes do not
+deployed-client acceptance gates are recorded below. All twenty original
+acceptance tasks are retained; open aggregate gates include their unexercised
+failure cases, not just missing implementation. Source changes do not
 deploy a service or authenticate a user's browser.
 
 These implementations remove two avoidable interactions: asking for an owner's
@@ -26,8 +28,10 @@ email-based creation and explicit signed enrollment APIs remain available.
 
 The account operation ledger is the explicit
 [`0004_account_setup.sql` migration](../server/migrations/0004_account_setup.sql).
-Its account-setup schema revision **2** and allocation fences are checked by the service; a missing
-or incompatible ledger fails closed. Runtime request handling never creates the
+The additive [`0005_account_setup_recovery.sql` migration](../server/migrations/0005_account_setup_recovery.sql)
+preserves retained allocation witnesses and advances the account-setup schema
+marker to **3**. Both migrations and that exact marker are required; a missing
+or incompatible ledger fails closed. Runtime request handling never applies a
 migration or reinterprets existing rows.
 
 The per-page [Durable Object schema](../server/src/db.ts) is revision **10**.
@@ -89,6 +93,14 @@ hash. The retained public reference remains useful for inspection and the actual
 owner's separately reviewed delegation/adoption route; recovery never mints a
 replacement secret or creates a second page automatically.
 
+The active owner's `/dashboard/setups` lists up to 100 retained operations across
+that account's clients without waking pages. `/dashboard/setups/:pageId`
+inspects only the original page and offers its validated owner link when retained
+evidence agrees. These read-only service-session views remain available after
+connector revocation. They disclose neither a setup credential nor its
+commitment, and cannot grant replacement authority. Missing or corrupt evidence
+requires reconciliation without a guessed link or new page.
+
 ### Allocation, bounds and statuses
 
 The D1 journal retains the canonical request digest, credential commitment,
@@ -129,31 +141,43 @@ original-grant revocation and cached adapter admission. The committed focused
 checkpoints passed 21 setup worker tests plus 6 authority tests, with 44 related
 Admission/alarm/lifetime tests. Per-account retained capacity and the last daily
 IP slot are exercised; the 10,000-row global ceiling is enforced by the schema
-but was not separately stress-tested to its maximum.
+but was not separately stress-tested to its maximum. The exhaustive allocation
+fault task remains open: direct lost replies from the D1 allocation, index and
+final status writes are not established by the current scenarios.
 
 ### Implementation and acceptance tasks
 
-- [x] Implement exact HTTP/tool schemas, canonical digest, namespace, typed
-  states and public SDK types without caller-supplied ownership.
-- [x] Add internal idempotent page initialization while preserving the anonymous
-  email route's authorization boundary.
-- [x] Complete the retained-credential freshness matrix: configured scope,
-  issuer/audience, account/client, grant revocation, expiry, suspension/deletion,
-  and revocation during asynchronous control/publication work.
-- [x] Resolve verified email server-side and require the original account at claim.
-- [x] Implement bounded durable journals and atomic per-page initialization with
-  explicit account migration and fresh DO schema revision 10.
-- [x] Retain the client credential before networking and reconstruct one handle
-  from the original public receipt after a lost response.
-- [x] Exercise allocation-boundary failures and retained recovery, including
-  pre-admission reservation, D1 index, initialization dispatch and orphan cleanup.
-- [x] Race exact duplicate requests and refuse changed name/application/commitment.
-- [x] Test scope/expiry/revocation/adoption for the retained setup binding;
-  preserve prepared authority and independent browser/assistant consent.
-- [x] Test capacity and missing-journal retirement cases without evicting
-  uncertain allocation evidence or allocating a replacement page.
-- [ ] Qualify the final packed starter and actual account-linked MCP/browser
-  journey on the selected deployed host; distinguish local and live evidence.
+- [x] Review the exact endpoint/tool schemas, canonical request digest, operation
+  namespace, error states and credential commitment format; update SDK types and
+  tool annotations only with the implemented behavior.
+- [x] Reuse the existing readiness, IP and Admission checks with a dedicated
+  idempotent authenticated initializer, preserving the anonymous route's email
+  and authorization rules.
+- [x] Require the existing configured and granted `tendrils:create` permission;
+  test wrong issuer/audience, another account/client, missing scope, revocation,
+  suspension, deletion and expired grants. Existing tokens acquire no new scope.
+- [x] Resolve verified email server-side; test no verified email, stale display
+  email, multiple verified identities and wrong-account claim. Persist and enforce
+  the exact intended account without weakening the existing email route.
+- [x] Implement the bounded durable ledger and atomic per-page initialization.
+  Review the account/DO schema rollout explicitly under the storage policy; do
+  not reinterpret existing rows or bypass a schema mismatch.
+- [x] Persist the client credential and operation before networking; verify a lost
+  HTTP/MCP response can reconstruct the same handle without a returned raw secret.
+- [ ] Inject failures before and after every allocation boundary: ledger write,
+  admission reserve, account index, page initialization, result persistence and
+  response delivery. Restart each object and recover one page, one credential
+  binding and one quota charge.
+- [x] Race exact duplicate calls and changed-body reuse. Exact calls converge;
+  changed name, application ID or credential commitment is refused.
+- [x] Define and test setup-binding scope, expiry, revocation and owner adoption.
+  Preserve prepared code/authority at claim while keeping browser membership and
+  assistant consent independent.
+- [x] Exercise lost local secret, lost operation ID, expired operation, full ledger,
+  missing/corrupt retained state and deleted page. Each offers inspection, reviewed
+  recovery or a terminal explanation, never a silent replacement creation.
+- [ ] Qualify the packed starter and real MCP client on the selected host; report
+  account creation, owner sign-in and live browser evidence separately.
 
 ## B. Pair a browser through a bounded, reviewed request
 
@@ -169,6 +193,7 @@ participant uses `handle.api + "/peers/pairing"`. The public
 | `prove` | POST `{action:"prove",pairingId,signature}` | The same request becomes `pending` after possession is verified. |
 | `inspect` | GET `?pairingId=...` | Same-account browser status or authorized native inspection of the original request. |
 | `pending` | Native GET without an ID | At most 20 reviewed/retained attempts. Current-generation work is prioritized; uncertain attempts can report terminal observations. |
+| `prepare` | Native POST `{action:"prepare",pairingId,request,control}` | Validate and retain the exact signed proposal without selecting it. Status stays `pending`; its `preparedDigest` becomes available for owner review. |
 | `commit` | Native POST `{action:"commit",pairingId,request,control}` | The existing signed-control outcome; exact accepted retries return the original generation. |
 
 The proof is Ed25519 over the SDK's fixed-position UTF-8 JSON array with domain
@@ -178,26 +203,48 @@ rights, expected generation, control revision, nonce and expiry. The public
 Chronolog `PeerIdentity` stays inside retained device storage; signing never
 exports its private key.
 
-The owner opens `/pairings/:pageId/:pairingId` on the **service origin**.
-The script-free review displays the exact fingerprint, account, application,
-origins, rights and expiration. Its form uses a session-bound, one-use CSRF token
-and the immutable proposal digest. Cross-origin submission, wrong-owner review,
-expired forms and replay are refused; embedding is blocked by frame policy.
+Run the existing native coordinator/administrator before owner review. Once the
+browser proves possession, that native owner saves the intent and calls
+`session.pauseOrdering(operationId)`. The durable pause drains prior ordering,
+fixes the exact generation/prefix and blocks later local or remote ordering.
+A generation ID alone cannot establish this boundary: more commands can append
+within the same generation while the owner reviews.
 
-Approval remains separate from enrollment. The existing native coordinator and
-administrator preserves current control metadata and every existing grant,
-adds only the requested member reader/writer grant and immutable account binding,
-and retains the signed attempt before sending it. The fixed transition ID is
-`pair-` followed by the pairing ID. Existing signature, prefix and control
-checks run before the host reserves the attempt. The pairing approval and target
-account admission are checked again inside the existing atomic registry write.
+The native owner preserves every existing grant, epoch/key digest and recovery
+floor, adds only the proved account/key with the requested member reader/writer
+rights, and saves the complete signed request and control before calling
+`prepare`. Coordinator, recovery, administrator and publisher remain false for
+the new browser. The fixed transition ID is `pair-` followed by the pairing ID.
+The service runs normal signature, prefix and control admission without selecting
+a generation at preparation time. Unprepared pending requests have no approval
+controls.
+
+The owner then opens `/pairings/:pageId/:pairingId` on the **service origin**.
+The script-free review displays the exact fingerprint, account, application,
+origins, rights, generation, retained prefix, full proposal digest and expiration.
+The review digest binds both the challenge and the entire prepared request and
+control/account payload. Its form uses a session-bound, one-use CSRF token.
+Cross-origin submission, wrong-owner review, expiry and replay are refused;
+embedding is blocked by frame policy. A signed transition alone does not bind
+the complete grant update and is insufficient evidence of this review.
+
+Approval remains separate from enrollment. The same native owner retains the
+exact commit attempt before sending it. Pairing approval, current account access,
+credential and normal authority checks are repeated inside the existing
+serialized control selector. Status compares the selected signed transition and
+retained full-payload fingerprint with the reviewed proposal. The helper must
+verify that exact outcome before adopting it and releasing the ordering pause;
+a `generation` field with `reconciliation_required` is not a committed review.
 
 After commitment the browser connects through its normal peer session and key
 exchange. The UI describes enrollment separately and reports connected only
 after application work succeeds. An offline native participant leaves a bounded
-pending/approved request with an explicit next action. The running starter backs
-off idle native polling up to 30 seconds; one-shot `npm run pair` remains available
-while the ordinary native owner is stopped.
+pending/approved request with an explicit next action. The running starter's
+pairing window lasts at most ten minutes and backs off idle checks up to 30
+seconds. One-shot `npm run pair` remains available while the ordinary native
+owner is stopped; one pass can stage a proposal and leave it paused for review.
+The browser makes explicit status checks, or one bounded check on returning
+from the review tab, without continuous polling or automatic request renewal.
 
 ### Bounds and recovery
 
@@ -219,6 +266,17 @@ and control before submission; a restarted process resends those same bytes.
 The host also records the attempt and reconciles it against the verified signed
 generation chain after object eviction or a lost commitment response.
 
+The native helper reads back `pairing-ID-intent.json`,
+`pairing-ID-prepared.json`, `pairing-ID-commit.json` and
+`pairing-ID-outcome.json` under its private project before advancing. The durable
+ordering pause is in the same device store; closing a helper window or process
+does not clear it. Reopen that same participant to reconcile the original
+transition. Missing or conflicting outcomes keep ordering paused. Never delete
+the evidence, copy a signer or select a replacement prefix to make writes resume.
+A confirmed terminal request with no original committed transition can release
+its exact pause. Resolve an existing receipt before rejecting newer generation
+state so a committed exact retry remains recoverable after subsequent changes.
+
 Statuses distinguish `challenge`, `pending`, `approved`, `committing`,
 `committed`, `expired`, `denied`, `stale`, `revoked` and
 `reconciliation_required`. A changed generation requires a newly reviewed
@@ -231,27 +289,29 @@ or uncertain evidence.
 
 ### Implementation and acceptance tasks
 
-- [x] Implement exact challenge/proof schemas, domain separation, bindings,
-  privacy boundaries and finite limits.
-- [x] Implement authenticated request/status endpoints and bounded durable state;
-  missing or incompatible storage disables pairing.
-- [x] Implement service-origin owner review, exact fingerprint/rights display,
-  same-origin session-bound CSRF, expiry and explicit rejection.
-- [x] Integrate the reviewed proposal with existing signed transition and immutable
-  account-binding checks; preserve other grants and the selected retained prefix.
-- [x] Test substituted proof fields, wrong key/account/origin, extra rights,
-  expired/replayed review, invalid signatures and target admission revoked during
-  asynchronous commitment.
-- [x] Test exact duplicate challenge/restart, offline pending approval,
-  lost commitment reply/object eviction, retained browser intent and native
-  restart, without duplicate enrollment or resurrection after revocation.
-- [x] Test changed generations: stale requests remain inspectable and a
-  replacement needs explicit new review.
-- [x] Test expiry, oversized request, proof/rate/ledger/binding limits and missing
-  or corrupt retained state without discarding accepted outcomes.
-- [ ] Qualify the final packed real-browser path: retained browser key, keyboard
-  and narrow-screen owner review, native enrollment, peer key exchange,
-  cross-participant command, same-key reopen and deployed-client acceptance.
+- [x] Review challenge and proof schemas, origin/account/application/key bindings,
+  canonical digest, finite limits, privacy and exact cryptographic domain.
+- [x] Implement authenticated request/status endpoints with bounded persistent
+  state; unavailable or mismatched storage leaves pairing disabled.
+- [x] Implement owner review displaying the exact fingerprint and rights, with
+  same-origin/CSRF checks, expiry and explicit rejection; verify keyboard and
+  narrow-screen use without exposing keys or credentials.
+- [x] Integrate review consumption with the existing signed transition and
+  immutable account-binding checks. Preserve all existing grants and the selected
+  retained prefix; refuse stale or unauthorized changes.
+- [x] Test wrong-account, wrong-app, wrong-origin, substituted-key and
+  substituted-rights proofs; duplicate nonces; expired/replayed reviews; changed
+  authority; and revoked or suspended accounts during asynchronous work.
+- [ ] Test offline coordinator, simultaneous approvals, lost replies, object
+  eviction, browser reload and native-process restart. Exact retries converge on
+  the same committed transition; they do not duplicate or restore a revoked grant.
+- [x] Test generation changes before commitment: the original outcome remains
+  inspectable and any replacement requires a newly reviewed exact proposal.
+- [x] Test expiry, request/body/binding capacity and ledger-full behavior without
+  evicting accepted or uncertain outcome evidence.
+- [ ] Qualify a real browser creating its own key, owner review, native enrollment,
+  peer key exchange, a command observed on the other device and same-key reopen.
+  A successful review screen alone does not satisfy this gate.
 
 Focused evidence is in
 [SDK proof/transport tests](../contract/test/pairing.test.mjs),
@@ -261,7 +321,8 @@ The pairing worker tests plus existing database and signed-control regressions
 passed **43 tests** at the focused checkpoint. The real-browser route in
 [the first-app runner](../scripts/test-first-app.mjs) exercises the actual review
 form and native consumer; its final integrated result belongs to the separate
-acceptance record.
+acceptance record. The simultaneous-distinct-approval scenario remains open;
+ordinary signed-control race tests do not establish that complete pairing path.
 
 ## Delivery boundary
 

@@ -4,7 +4,7 @@ Tendriller deploys one generic engine with a filtered Chronolog participant. Hos
 
 ## Fresh baseline
 
-Use `node scripts/storage-schema.mjs` to identify the current Durable Object schema: **revision 10**, including the pairing ledger and account-setup metadata. This pre-release version supports only fresh matching storage. Apply the account migrations in order, `0001_accounts.sql` through `0004_account_setup.sql`, and create fresh `Tendril` and `Admission` namespaces. The required account-setup migration identifies its own schema revision 2 and retains allocation fences. Do not point this baseline at revision 9 page storage, reinterpret an earlier setup ledger or translate old application records. Missing or mismatched storage disables the affected operation.
+Use `node scripts/storage-schema.mjs` to identify the current Durable Object schema: **revision 10**, including the pairing ledger and account-setup metadata. This pre-release version supports only fresh matching storage. Apply the account migrations in order, `0001_accounts.sql` through `0005_account_setup_recovery.sql`, and create fresh `Tendril` and `Admission` namespaces. The required account-setup migrations advance their own schema marker to revision 3 and retain allocation fences. Do not point this baseline at revision 9 page storage, reinterpret an earlier setup ledger or translate old application records. Missing or mismatched storage disables the affected operation.
 
 `scripts/provision.mjs` plans/provisions explicitly named fresh resources and writes a complete configuration. Review the intended Worker, D1 database, R2 bucket, service domain and page-domain isolation before deploying that configuration. Checked-in staging/production configuration is not evidence that resources have been prepared for the current baseline. The service workflow requires an explicit ready variable and matching storage-schema declaration; advance these only after fresh provisioning and verification.
 
@@ -45,8 +45,8 @@ additive `0002_integration_oauth.sql` account migration and registering exact
 clients, MCP resource, bridge credentials and signing keys. That OAuth migration
 alone adds no Durable Object schema revision; the complete current engine uses
 the fresh revision 10 baseline above. Account-bound setup additionally requires
-`0004_account_setup.sql` and the client's currently granted `tendrils:create`
-scope. Ordinary host deployments keep OAuth disabled when `OAUTH_CONFIG_JSON`
+`0004_account_setup.sql`, `0005_account_setup_recovery.sql` and the client's
+currently granted `tendrils:create` scope. Ordinary host deployments keep OAuth disabled when `OAUTH_CONFIG_JSON`
 is absent, and existing clients acquire no new scope automatically.
 
 ## Durable Object traffic budgets

@@ -160,10 +160,16 @@ editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
 scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
-The [account-bound setup and reviewed device pairing follow-ups](ONBOARDING_PROTOCOL_FOLLOWUPS.md)
-record the required interaction improvements, their current authority
-boundaries and unimplemented acceptance tasks. They require explicit durable
-protocol/state work; discovery improvements do not enable those proposed APIs.
+The [account-bound setup and reviewed device pairing protocol](ONBOARDING_PROTOCOL_FOLLOWUPS.md)
+documents the implemented candidate interfaces and their acceptance gates.
+Account setup retains one client credential and allocation across retries.
+Pairing uses the browser's own key proof, a native proposal prepared before owner
+review, and a durable ordering pause until the exact signed outcome is resolved.
+The helper window is finite; closing or restarting a participant does not erase
+uncertain work. Public SDK/endpoint and tutorial helper tests cover their named
+boundaries. The exact packed first-app/browser run, selected-host MCP run and
+unaided cold-start exercise are separate evidence; source changes do not deploy
+the features or complete those qualifications.
 
 ## Live MCP reviewer qualification
 

@@ -31,7 +31,8 @@ consent, publish code, or establish a live ChatGPT connection.
    before enabling the feature. The OAuth migration itself is additive and
    does not rewrite existing account/page data. The current complete engine
    also packages `0003_assistant_connections.sql` and the required
-   `0004_account_setup.sql` (account-setup schema revision 2); apply pending
+   `0004_account_setup.sql` and `0005_account_setup_recovery.sql`
+   (account-setup schema marker 3); apply pending
    compatible account migrations in order. Provision fresh matching Durable
    Object revision 10 storage for this setup/pairing release under
    [operations](OPERATIONS.md); do not point it at revision 9 page records.

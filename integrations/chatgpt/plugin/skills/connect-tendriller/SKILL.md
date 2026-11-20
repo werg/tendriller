@@ -48,6 +48,15 @@ runtime is unavailable, name that prerequisite and offer a concrete handoff to a
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
 new app's executable participant.
 
+Use the starter's reviewed browser pairing flow. The browser retains its own
+key and request; the existing native owner durably pauses ordering and stages
+the exact signed proposal before owner review. The service-origin review binds
+the fingerprint, account, narrow rights, generation and retained prefix. The
+native helper has a finite window; timeout or restart preserves uncertain work
+and the ordering pause. Reopen that same participant and reconcile the original
+outcome rather than signing a replacement. A committed grant still needs a real
+session connection and cross-device command/read evidence.
+
 Run the starter's assistant participant for ordinary approved queries and
 commands. Event forwarding is an explicit `--events` choice with its own owner
 review; it does not configure a subscription, extend the process lifetime or
