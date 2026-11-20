@@ -16,3 +16,18 @@ export function createPage(service: string, body: CreateRequest, options?: Clien
 export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown> }
 export function describeService(service: string, options?: ClientOptions): Promise<ServiceDescriptor>;
 export function requireService(descriptor: ServiceDescriptor, requirements?: { contract?: number }): ServiceDescriptor;
+export function requireServiceOrigin(service: string): string;
+export interface ServiceReadiness {
+  schemaVersion: 1;
+  serviceOrigin: string;
+  environment: { id: string; label: string; kind: 'deployment' | 'preview' | 'local' };
+  build: { coreRelease: string; runtimeId: string; sourceCommit: string | null };
+  mode: 'open' | 'creation_paused' | 'read_only' | 'unavailable';
+  creation: { available: boolean; code: null | 'creation_paused' | 'unavailable'; message: string; nextAction: string };
+  writes: { available: boolean; code: null | 'read_only' | 'unavailable' };
+  readinessUrl: string;
+  statusUrl: string;
+  checkedAt: string;
+}
+export function describeReadiness(service: string, options?: ClientOptions & { signal?: AbortSignal }): Promise<ServiceReadiness>;
+export function requireCreationReady(readiness: ServiceReadiness, options?: { service?: string }): ServiceReadiness;
