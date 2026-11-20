@@ -31,9 +31,9 @@ export async function createNativeEngine() { calls++; if (failure) throw failure
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));
   }
-  let mode = initialMode, creationPaused = false;
+  let mode = initialMode, creationPaused = false, beforeServiceReply = () => {};
   const calls = [];
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     calls.push([request.method, request.url]);
     response.setHeader('Content-Type', 'application/json');
     if (request.url === '/api/readiness') {
@@ -45,8 +45,10 @@ export async function createNativeEngine() { calls++; if (failure) throw failure
         creation: { available: mode === 'open', code: mode === 'open' ? null : mode === 'unavailable' ? 'unavailable' : 'creation_paused', message: 'Current service state.', nextAction: 'Keep this origin.' },
         writes: { available: mode === 'open' || mode === 'creation_paused', code: mode === 'unavailable' ? 'unavailable' : mode === 'read_only' ? 'read_only' : null },
         readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status', checkedAt: new Date().toISOString() }));
-    } else if (request.url === '/api/service') response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {} }));
-    else if (request.url === '/api/tendrils' && request.method === 'POST') {
+    } else if (request.url === '/api/service') {
+      await beforeServiceReply();
+      response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {} }));
+    } else if (request.url === '/api/tendrils' && request.method === 'POST') {
       if (creationPaused) { response.writeHead(503); response.end(JSON.stringify({ error: { code: 'creation_paused', message: 'New tendrils are temporarily paused' } })); return; }
       response.writeHead(201);
       response.end(JSON.stringify(handleFor(origin)));
@@ -57,7 +59,8 @@ export async function createNativeEngine() { calls++; if (failure) throw failure
   const origin = `http://127.0.0.1:${server.address().port}`;
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(directory, { recursive: true, force: true }); });
   return { directory, origin, calls, engine, handle: handleFor(origin), setup: await import(pathToFileURL(join(directory, 'setup.mjs')).href),
-    setMode: value => { mode = value; }, pauseAtCreation: () => { creationPaused = true; } };
+    setMode: value => { mode = value; }, pauseAtCreation: () => { creationPaused = true; },
+    beforeServiceReply: callback => { beforeServiceReply = callback; } };
 }
 
 for (const variant of ['events', 'sql']) {
@@ -145,19 +148,34 @@ test('conflicting or corrupt reviewed recovery records fail before any creation 
   }
 });
 
-test('incomplete retained setup or recovery evidence never becomes permission to create a replacement', async t => {
+for (const variant of ['events', 'sql']) {
+test(`downloadable ${variant} setup never treats incomplete retained evidence as permission to create a replacement`, async t => {
   for (const name of ['descriptor.json', 'account-setup.json', 'account-setup-result.json',
     'owner-page-url.txt', 'host-adoption-' + 'd'.repeat(64) + '-response.json', 'device.sqlite']) {
-    const f = await fixture(t);
+    const f = await fixture(t, 'open', variant);
     const privatePath = join(f.directory, '.tendriller');
     await mkdir(privatePath, { mode: 0o700 });
     await writeFile(join(privatePath, name), 'retained-original-evidence');
     await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), { code: 'setup_recovery_required' });
     assert.deepEqual(f.calls, []);
+    if (f.engine) assert.equal(f.engine.calls, 0, 'retained project state is checked before loading the SQL engine');
     assert.equal(await readFile(join(privatePath, name), 'utf8'), 'retained-original-evidence');
     await assert.rejects(access(join(privatePath, 'handle.json')), { code: 'ENOENT' });
   }
 });
+
+test(`downloadable ${variant} setup preserves a recovery record restored during preflight`, async t => {
+  const f = await fixture(t, 'open', variant), privatePath = join(f.directory, '.tendriller');
+  f.beforeServiceReply(async () => {
+    await mkdir(privatePath, { mode: 0o700 });
+    await writeFile(join(privatePath, 'account-setup-result.json'), 'restored-original-receipt');
+  });
+  await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), { code: 'setup_recovery_required' });
+  assert.deepEqual(f.calls, [['GET', '/api/readiness'], ['GET', '/api/service']], 'restored evidence blocks the later create request');
+  assert.equal(await readFile(join(privatePath, 'account-setup-result.json'), 'utf8'), 'restored-original-receipt');
+  await assert.rejects(access(join(privatePath, 'handle.json')), { code: 'ENOENT' });
+});
+}
 
 test('an original handle does not hide a conflicting retained application descriptor', async t => {
   const f = await fixture(t), privatePath = join(f.directory, '.tendriller');

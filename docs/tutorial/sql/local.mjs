@@ -1,5 +1,5 @@
 // Node-only private project state. This module is never bundled into the page.
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@tendriller/core';
 
@@ -24,6 +24,16 @@ export async function savePrivate(name, value) {
     if (existing !== text) throw Error(`Refusing to replace saved setup record ${name}; inspect the original setup.`);
   }
   return value;
+}
+
+// Losing the host handle never makes an existing signer or recovery journal a
+// fresh application. Keep that state intact until the original handle is restored.
+export async function requireFreshProject() {
+  const files = await readdir(privateDirectory).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  if (files.length) throw Object.assign(Error('This project retains setup or recovery state. Restore and resume that original application before continuing; no replacement page creation was attempted. Use a separate empty project only for an explicitly new application.'), { code: 'setup_recovery_required' });
 }
 
 export async function project({ signal } = {}) {

@@ -5,7 +5,7 @@ import { bytesDigest, describeApplication, participantGrant, signTransitionReque
 import { openNativeDevice } from '@chronolog/peer-session/native';
 import { definition } from './domain.mjs';
 import { createNativeEngine } from './engine.mjs';
-import { databasePath, devicePath, project, readPrivate, savePrivate } from './local.mjs';
+import { databasePath, devicePath, project, readPrivate, savePrivate, requireFreshProject } from './local.mjs';
 
 export async function createProject(service, owner, name = 'Shared inventory') {
   if (!service || !owner) throw Error('Usage: npm run create -- https://YOUR_HOST VERIFIED_OWNER_EMAIL "Shared inventory"');
@@ -15,11 +15,15 @@ export async function createProject(service, owner, name = 'Shared inventory') {
     if (new URL(existing.api).origin !== origin) throw Object.assign(Error('The saved handle belongs to another service origin. Resume it only with its matching connector, or use a separate directory for the requested service; never copy private device state between services.'), { code: 'service_origin_mismatch' });
     return { serviceOrigin: origin, page_url: existing.page_url, resumed: true, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
   }
+  await requireFreshProject();
   requireCreationReady(await describeReadiness(origin), { service: origin });
   requireService(await describeService(origin));
   // Load optional native code only after same-origin readiness and compatibility
   // pass, but diagnose its absence before creating any hosted page.
   await createNativeEngine();
+  // A checkpoint restored during readiness or engine loading still prevents
+  // allocating a replacement page for this private application directory.
+  await requireFreshProject();
   const handle = await createPage(origin, { owner, name });
   await savePrivate('handle.json', handle);
   return { serviceOrigin: origin, page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
