@@ -12,7 +12,7 @@ export const ONBOARDING_DOCS = Object.freeze([
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md',
 ]);
 export const TUTORIAL_FILES = Object.freeze([
-  '.gitignore', 'README.md', 'package.json', 'domain.mjs', 'setup.mjs',
+  '.gitignore', 'README.md', 'package.json', 'domain.mjs', 'setup.mjs', 'account-setup.mjs',
   'session.mjs', 'assistant.mjs', 'local.mjs', 'build.mjs', 'index.html', 'page.mjs', 'worker.mjs',
   'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
   'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',

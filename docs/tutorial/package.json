@@ -7,6 +7,8 @@
   },
   "scripts": {
     "create": "node setup.mjs create",
+    "setup:prepare": "node account-setup.mjs prepare",
+    "setup:finish": "node account-setup.mjs finish",
     "init": "node setup.mjs init",
     "enroll": "node setup.mjs enroll",
     "build": "node build.mjs",

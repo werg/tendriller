@@ -87,7 +87,7 @@ test('the downloadable starter contains complete parseable source and no local p
       }
     }
   }
-  for (const path of ['session.mjs', 'local.mjs', 'worker.mjs',
+  for (const path of ['session.mjs', 'local.mjs', 'worker.mjs', 'account-setup.mjs',
     'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
     'media/panel.mjs', 'media/inference-client.mjs', 'media/inference-peer.mjs', 'media/provider-openai.mjs',
     'sql/setup.mjs', 'sql/session.mjs', 'sql/engine.mjs', 'sql/domain.mjs', 'sql/demo.mjs', 'sql/worker.mjs'])
@@ -104,6 +104,7 @@ test('building a starter excludes nested private state, provider secrets, genera
       cpSync(join(root, path), join(directory, path));
     }
     for (const path of ['.tendriller/handle.json', '.tendriller/device.sqlite', '.tendriller/epoch.json',
+      '.tendriller/account-setup.json', '.tendriller/account-setup-result.json', '.tendriller/account-setup-interrupted.tmp',
       'node_modules/secret.txt', 'page/config.mjs', '.env',
       'helpers/.env', 'media/.env', 'media/provider-local.mjs', 'media/provider-secrets.json',
       'sql/.env', 'sql/.tendriller/handle.json', 'sql/.tendriller/device.sqlite', 'sql/.tendriller/initial-input.json',
