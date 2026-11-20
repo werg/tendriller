@@ -34,6 +34,36 @@ or reset command. Configure the application using the normal
 [first-app lifecycle](../../../docs/BUILD_AN_APP.md). The existing host setup,
 participant, and signed publication APIs apply to this sample.
 
+The adjacent `review-app.mjs` runs this lifecycle with public SDK imports. Copy
+it and `review-domain.mjs` into a private working directory and install the exact
+qualified `@tendriller/core` and events-capable `@chronolog/peer-session` archives
+there. Keep this working directory outside the upload package.
+
+1. Run `node review-app.mjs create /private/path/test-access.json` and open the
+   returned page while signed in through the private test link. This claims it
+   through the regular owner flow. Staging must allow creation during this step.
+2. Run `node review-app.mjs init`, then `node review-app.mjs propose`. Open the
+   returned review URL and approve `checklist`, `completeItem`, and
+   `item.completed` for the sample account.
+3. Start `node review-app.mjs run` under the operator's process supervisor. It
+   retains one native signer, reconnects its assistant adapter, checkpoints
+   forwarded completion events, and publishes signed checklist snapshots.
+   The sample page's **Open the latest snapshot** link opens the current signed
+   snapshot after a command. Application queries read current Chronolog state.
+4. Run `node scripts/test-review-app.mjs /private/review-project
+   /private/path/test-access.json` from the core repository before trying the
+   ChatGPT prompts. It verifies live OAuth, listing, schemas, reads, an applied
+   command, exact retry, the event inbox, three denied operations, signed code
+   and reload. Start with a fresh sample. The test deliberately marks Check
+   labels complete and records its results under the private project's
+   `acceptance/` directory.
+
+Use a separate freshly initialized app for the final ChatGPT recording if its
+initial item needs to be incomplete. Keep the demonstrated participant running
+throughout review. Restart it from the same private working directory and device
+store. A service acceptance report records `chatgptConversationVerified: false`
+until the actual ChatGPT conversation has been checked with the publisher.
+
 Enroll an assistant connection named **Review checklist** with query
 `checklist`, command `completeItem`, and event `item.completed`. Forward native
 events from topic `completed`, projecting each payload to
