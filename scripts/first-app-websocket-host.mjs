@@ -1,0 +1,44 @@
+/**
+ * Network boundary for the isolated first-app test host, never deployed code.
+ *
+ * workerd 1.20261110.1 can exchange both Close frames on a cold hibernatable
+ * socket without finishing its external TCP connection. Keeping that object
+ * active can retain the connection indefinitely. The packed host and its
+ * hibernating Durable Objects still run unchanged behind this ordinary Worker
+ * WebSocket endpoint. This forwards actual messages and Close frames; it never
+ * adds application traffic, resets an object, or terminates a client transport.
+ *
+ * The qualifier must still require raw client sockets to reach CLOSED and the
+ * native owner process to exit naturally. Passing this adapter's regression is
+ * not evidence that the upstream runtime's direct TCP close bug has been fixed.
+ *
+ * https://github.com/cloudflare/workerd/issues/8185
+ * https://github.com/cloudflare/workerd/issues/7566
+ *
+ * Install as the first Miniflare Worker with PACKED_HOST bound to the unchanged
+ * packed Worker. Bindings such as ACCOUNTS remain on that named packed Worker.
+ */
+export const FIRST_APP_WEBSOCKET_PROXY_WORKER = `
+export default {
+  async fetch(request, env) {
+    const response = await env.PACKED_HOST.fetch(request);
+    if (!response.webSocket) return response;
+
+    const upstream = response.webSocket;
+    const [client, server] = Object.values(new WebSocketPair());
+    upstream.binaryType = server.binaryType = 'arraybuffer';
+    for (const [from, to] of [[upstream, server], [server, upstream]]) {
+      from.addEventListener('message', event => to.send(event.data));
+      from.addEventListener('close', event => {
+        if (event.code === 1005) to.close();
+        else if (event.code === 1006) to.close(1011, 'Test host WebSocket closed abnormally');
+        else to.close(event.code, event.reason);
+      });
+      from.addEventListener('error', () => to.close(1011, 'Test host WebSocket failed'));
+    }
+    upstream.accept();
+    server.accept();
+    return new Response(null, { status: 101, headers: response.headers, webSocket: client });
+  },
+};
+`;
