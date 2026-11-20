@@ -110,6 +110,8 @@ if (assistant) {
   ]);
   if (resource.resource !== `${base}/mcp` || resource.authorization_servers?.length !== 1 ||
       resource.authorization_servers[0] !== base || issuer.issuer !== base ||
+      !Array.isArray(resource.scopes_supported) || !resource.scopes_supported.length ||
+      resource.scopes_supported.some(scope => !issuer.scopes_supported?.includes(scope)) ||
       issuer.authorization_endpoint !== `${base}/oauth/authorize` || issuer.token_endpoint !== `${base}/oauth/token` ||
       issuer.authorization_response_iss_parameter_supported !== true || issuer.client_id_metadata_document_supported !== true ||
       !issuer.code_challenge_methods_supported?.includes('S256') || !issuer.token_endpoint_auth_methods_supported?.includes('none') ||

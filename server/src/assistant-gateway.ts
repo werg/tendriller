@@ -1,7 +1,6 @@
 import type { Env } from './env';
 import { browserIdentity, ensureOAuthSchema, redirect } from './accounts/oauth-data';
 import { inspectAccessToken } from './accounts/oauth-tokens';
-import { OAUTH_SCOPES } from './accounts/oauth-support';
 import { servicePage } from './accounts/ui';
 import { escapeHtml } from './inject';
 import { HttpError, isPlainObject, json, readBody } from './http';
@@ -104,7 +103,7 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
   if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') {
     if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
     return json({ resource: config.resource, authorization_servers: [config.issuer],
-      scopes_supported: OAUTH_SCOPES, bearer_methods_supported: ['header'] });
+      scopes_supported: [...new Set(config.clients.flatMap(client => client.scopes))], bearer_methods_supported: ['header'] });
   }
 
   if (path === '/connections' || path.startsWith('/connections/')) {

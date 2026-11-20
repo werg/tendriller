@@ -52,6 +52,17 @@ it('challenges an empty OAuth setup probe and serves the public resource-templat
   const probe = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } });
   expect(probe.status).toBe(401);
   expect(probe.headers.get('WWW-Authenticate')).toContain(ISSUER + '/.well-known/oauth-protected-resource/mcp');
+  // ChatGPT requests all scopes advertised by the protected resource, rather
+  // than limiting itself to those in authorization-server metadata.
+  const resource = await (await request('/.well-known/oauth-protected-resource/mcp', settings)).json() as { scopes_supported: string[] };
+  expect(resource.scopes_supported).toEqual(['applications:read']);
+  const authorization = await request('/oauth/authorize?' + new URLSearchParams({
+    client_id: 'chatgpt', redirect_uri: REDIRECT, state: 'chatgpt-discovery', resource: ISSUER + '/mcp',
+    response_type: 'code', scope: resource.scopes_supported.join(' '),
+    code_challenge_method: 'S256', code_challenge: await challengeFor('s'.repeat(43)),
+  }), settings);
+  expect(authorization.status).toBe(303);
+  expect(new URL(authorization.headers.get('Location')!, ISSUER).pathname).toBe('/auth');
   const templates = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/templates/list' }) });
   expect(templates.status).toBe(200);
@@ -629,6 +640,9 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('get_profile')).result.structuredContent.id).not.toEqual((await second.tool('get_profile')).result.structuredContent.id);
     expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual(['application.event']);
     expect((await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.queries[0].name).toBe('notes');
+    expect((await first.tool('call_application_command', { applicationId: first.id, command: 'addNote', input: {},
+      operationId: 'invalid-before-admission' })).result.structuredContent.code).toBe('invalid_application_input');
+    await inDO(a.page.id, t => expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands')).toEqual({ n: 0 }));
     const announcement = (await first.tool('open_application_inbox', { applicationId: first.id })).result;
     expect(announcement.structuredContent).not.toHaveProperty('activity');
     const proof = announcement._meta.activity.proof;
