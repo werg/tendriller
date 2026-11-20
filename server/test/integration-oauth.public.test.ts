@@ -601,6 +601,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     Object.assign(t.env, settings); return previous;
   });
   await inDO(b.page.id, t => { Object.assign(t.env, settings); });
+  let restoreSocketProbe: (() => void) | undefined;
   const oauth = (await oauthConfig(bind))!, adapters: AssistantParticipant[] = [], sessions: { close(): Promise<void> }[] = [];
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
     rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, discoveryUpgrades: 0, discoverySentBytes: 0, discoveryReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
@@ -673,8 +674,15 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await checkStatus(review(blueprints.queries, 'https://evil.example'), 403);
     await checkStatus(review(blueprints.queries), 303);
     let dropNextResult = false, droppedResult: Record<string, any> | null = null;
+    const backupQueries = { started: 0, finished: 0 };
     const start = (whichKey = key, peer = session) => {
-      const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createApplicationTools(peer),
+      const native = createApplicationTools(peer);
+      const tools = { ...native, async call(...args: Parameters<typeof native.call>) {
+        const observed = whichKey === backupKey && args[0] === 'query';
+        if (observed) backupQueries.started++;
+        try { return await native.call(...args); } finally { if (observed) backupQueries.finished++; }
+      } };
+      const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools,
         ...blueprints, openSocket: (_url, protocols) => {
           const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
           socket.send = data => {
@@ -734,7 +742,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       return res.json<any>();
     };
     const tool = (name: string, args: Record<string, unknown> = {}) => rpc('tools/call', { name, arguments: args });
-    return { adapter, session, eventName, gid, rpc, tool, review, reviewAction, startBackup, backupKey, id: f.page.application.id,
+    return { adapter, session, eventName, gid, rpc, tool, review, reviewAction, startBackup, backupKey, backupQueries, id: f.page.application.id,
       loseNextResult: () => { dropNextResult = true; droppedResult = null; }, lostResult: () => droppedResult };
   }
   const sent: { id: string; body: string }[] = [];
@@ -930,6 +938,49 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_watchers')).toBeNull());
 
     const { standby, backup } = await first.startBackup();
+    // Restore both MCP sockets before testing reply identity. No pending call
+    // exists at this explicit hibernation boundary.
+    await evictDurableObject(stub(a.page.id));
+    const socketProbe = { dispatched: 0, replies: 0, sameReference: 0, sameAttachment: 0, sameInstance: 0, closeReference: 0, elapsedMs: null as number | null };
+    await inDO(a.page.id, t => {
+      Object.assign(t.env, settings);
+      const prototype = Object.getPrototypeOf(t), send = WebSocket.prototype.send, message = prototype.webSocketMessage,
+        fetch = prototype.fetch, close = prototype.webSocketClose;
+      let owner: object;
+      const known = t.ctx.getWebSockets('application-mcp');
+      const attachments = new Set(known.map(socket => JSON.stringify(socket.deserializeAttachment())));
+      prototype.fetch = function(req: Request) { if (this.tid === t.tid) owner = this; return fetch.call(this, req); };
+      prototype.webSocketClose = function(socket: WebSocket, code: number, reason: string) {
+        if (known.includes(socket)) socketProbe.closeReference++;
+        return close.call(this, socket, code, reason);
+      };
+      const pending = new Map<string, { socket: WebSocket; attachment: string; at: number; owner: object }>();
+      WebSocket.prototype.send = function(data: string | ArrayBuffer | ArrayBufferView) {
+        if (typeof data === 'string') {
+          let body; try { body = JSON.parse(data); } catch { /* Observe JSON metadata only. */ }
+          if (body?.type === 'call' && attachments.has(JSON.stringify(this.deserializeAttachment()))) {
+            socketProbe.dispatched++;
+            pending.set(body.id, { socket: this, attachment: JSON.stringify(this.deserializeAttachment()), at: Date.now(), owner });
+          }
+        }
+        return send.call(this, data);
+      };
+      prototype.webSocketMessage = async function(socket: WebSocket, data: string | ArrayBuffer) {
+        if (typeof data === 'string') {
+          let body; try { body = JSON.parse(data); } catch { /* Observe JSON metadata only. */ }
+          const call = body && pending.get(body.id);
+          if (body?.type === 'result' && call) {
+            socketProbe.replies++;
+            socketProbe.sameReference += Number(socket === call.socket);
+            socketProbe.sameInstance += Number(this === call.owner);
+            socketProbe.sameAttachment += Number(JSON.stringify(socket.deserializeAttachment()) === call.attachment);
+            socketProbe.elapsedMs = Date.now() - call.at;
+          }
+        }
+        return message.call(this, socket, data);
+      };
+      restoreSocketProbe = () => { WebSocket.prototype.send = send; prototype.webSocketMessage = message; prototype.fetch = fetch; prototype.webSocketClose = close; };
+    });
     await first.adapter.close();
     // close() settles the local loop; wait for the remote close handshake before
     // testing the separate already-offline-provider scenario.
@@ -938,8 +989,12 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(backup.status).toMatchObject({ database: 'ready', phase: 'ready', connectedPeers: 1, generation: first.session.status.generation });
     expect(first.session.signal.aborted).toBe(false);
     expect(standby.online).toBe(true);
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result)
+    const fallback = (await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result;
+    expect(fallback, JSON.stringify({ socket: socketProbe, native: first.backupQueries }))
       .toMatchObject({ structuredContent: { value: [{ text: 'Rope checked' }] } });
+    expect(socketProbe).toMatchObject({ dispatched: 1, replies: 1, sameReference: 1, sameAttachment: 1, sameInstance: 1, closeReference: 1 });
+    expect(first.backupQueries).toEqual({ started: 1, finished: 1 });
+    restoreSocketProbe!(); restoreSocketProbe = undefined;
     const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
     expect(unresolved).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: first.session.deviceId } });
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
@@ -1089,6 +1144,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
       .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
   } finally {
+    restoreSocketProbe?.();
     outbound.mockRestore();
     mounted?.close();
     await Promise.all(adapters.map(item => item.close()));
