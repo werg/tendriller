@@ -265,7 +265,12 @@ export async function closeLocalTransport() {
   if ([...sockets].some(socket => socket.readyState < 2)) throw Error('Native owner left an open fixture WebSocket');
   await Promise.all([...sockets].map(socket => new Promise((resolve, reject) => {
     const close = () => { clearTimeout(timer); socket.removeEventListener('close', close); resolve(); };
-    const timer = setTimeout(() => { socket.removeEventListener('close', close); reject(Error('Native WebSocket close handshake did not finish')); }, 3000);
+    const timer = setTimeout(() => {
+      socket.removeEventListener('close', close);
+      const url = new URL(socket.url), lane = url.searchParams.get('lane');
+      reject(Error('Native WebSocket close handshake did not finish: ' + url.pathname +
+        (['reliable','live'].includes(lane) ? ' lane=' + lane : '') + ' readyState=' + socket.readyState));
+    }, 3000);
     socket.addEventListener('close', close, {once:true}); if (socket.readyState === 3) close();
   })));
   // This pool belongs to the loopback/TLS fixture, not to the public bootstrap.
