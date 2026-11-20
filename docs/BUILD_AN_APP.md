@@ -431,6 +431,32 @@ does not establish enrollment, retained state, deployed OAuth, mobile durability
 or Internet connectivity. The broader [release gates](RELEASE_COMPOSITION.md)
 remain separate from this first-app acceptance.
 
+### Retain and verify a private checkpoint
+
+Keep the complete project and its `.tendriller/` directory in a persistent,
+access-controlled location. That directory contains the setup credential,
+device database, signing material, saved initialization/publication attempts and
+optional assistant identity/cursor; retaining only the public `page/` files or
+the page URL cannot resume the participant. Never add private state to a source
+commit, publication archive, chat transcript or browser bundle.
+
+For a filesystem checkpoint, stop the owned participant cleanly and confirm its
+process has exited before copying the complete private directory. Preserve file
+permissions and all database sidecars; do not copy an actively written SQLite
+file on its own. Verify the destination exists and its copied file bytes match
+before reporting a backup. A failed helper or an ephemeral working directory
+does not establish durable storage. Record the private destination separately
+from the public report without printing credentials.
+
+Resume with the same project, selected service origin and saved device. Use
+`tendril --session ./session.mjs --mode own self`, the explicit `query notes null`,
+and `publication-operation ORIGINAL_ID` to inspect the retained identity, data
+and original publication receipt. Stop that probe before restarting the resident
+participant. A restore exercise must use one owner of the signer at a time; do
+not run a copied device concurrently with its original. Recheck the actual
+browser/MCP exchange after restarting: a successful checkpoint does not keep a
+native process alive or authenticate a separate browser session.
+
 ## Adapt the app to the user's task
 
 Keep the complete session composition and replace the notes domain/UI with the
@@ -505,7 +531,12 @@ npm run assistant
 ```
 
 Use `assistant` **instead of** `peer`: it runs the same native participant with
-the declared `notes`, `addNote` and minimal `note.added` event adapter. Keep it
+the declared `notes` query and `addNote` command. Optional `note.added` forwarding
+requires `--events` on both preparation and the running adapter, plus the owner's
+corresponding permission review. It does not configure a future ChatGPT turn.
+The runner distinguishes preparation, the native PID, adapter status, skipped
+unapproved events and shutdown; verify a real round trip before claiming a
+connection. Keep it
 under the execution environment's process supervisor. The prepare command prints
 the real permission-review URL even before claim. Give the owner the ready page
 and that URL together; sign-in adopts the prepared application and makes the
