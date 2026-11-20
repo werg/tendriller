@@ -69,90 +69,118 @@ Worker source change. The separate `/api/service` contract remains unchanged.
 
 ## 1. Get the starter and matching public packages
 
-Use **Node 24**, npm, Git, curl and a SHA-256 checker. Public artifact downloads
-require no GitHub login. The first app uses the SQL-free event package. SQL,
-native RTC and WASM engines are optional later capabilities.
-For relational guards and multi-entity transactions, use the concrete
-[SQL alternative](STATE_MODELS.md); do not configure this events definition first
-and then attempt to replace its immutable authority.
+Use **Node 24**, npm, curl, tar and a SHA-256 checker. The released first-app
+archive contains the maintained starter and its exact public SDK, tools and
+Chronolog events packages. Ordinary setup does not need a second repository
+checkout or a Chronolog build. SQL, native RTC and WASM engines are separate
+optional capabilities. For relational guards and multi-entity transactions, use
+the concrete [SQL alternative](STATE_MODELS.md) before configuring authority.
 
-Replace the service origin with the domain the user gave you. Read its live
-descriptor before creating anything:
+Set the origin to the domain supplied by the user or selected connector. Keep it
+for readiness, package matching, creation, owner sign-in and assistant setup.
+Read both host descriptors **before downloading or installing packages**:
 
 ```sh
-TENDRILLER_ORIGIN=https://tendriller.dev
+: "${TENDRILLER_ORIGIN:?Set the selected service origin before continuing}"
+export TENDRILLER_ORIGIN
 mkdir shared-notes
 cd shared-notes
+curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/readiness" -o readiness.json
 curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/service" -o service.json
-cat service.json
-curl --fail --show-error --location "$TENDRILLER_ORIGIN/downloads/tendriller-first-app.tgz" -o first-app.tgz
-tar -xzf first-app.tgz
+node --input-type=module <<'JS'
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const readiness = JSON.parse(readFileSync('readiness.json'));
+const service = JSON.parse(readFileSync('service.json'));
+const origin = process.env.TENDRILLER_ORIGIN;
+assert.equal(new URL(origin).origin, origin, 'Use the exact selected service origin.');
+assert.equal(readiness.schemaVersion, 1, 'Upgrade the selected host readiness endpoint.');
+assert.equal(readiness.serviceOrigin, origin, 'Do not cross service origins.');
+assert.equal(readiness.mode, 'open', readiness.creation?.nextAction || 'Creation is unavailable.');
+assert.equal(readiness.creation?.available, true, 'Creation is unavailable at this host.');
+assert.equal(service.contract, 3, 'This starter requires core contract 3.');
+assert.equal(service.core_release, readiness.build?.coreRelease, 'Host descriptors disagree.');
+assert.match(service.core_release, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+assert.match(readiness.build?.runtimeId, /^[a-f0-9]{64}$/);
+JS
 ```
 
-The archive extracts the tutorial files into the current directory. If the target
-host does not yet serve this archive, copy `docs/tutorial/` from the matching
-[Tendriller source](https://github.com/werg/tendriller). Record the source commit.
-This tutorial's enrollment command requires a host that exposes
-`owner_account_id` in authenticated agent `info()` responses. If that field is
-absent, the host needs the onboarding update; the tool reports that boundary.
+These requests do not follow redirects. A missing endpoint, paused creation,
+unavailable service or different origin stops setup here. Report the returned
+reason and operator action; do not switch deployments or start source builds.
+Creation checks readiness again immediately before provisioning because service
+state can change after this preflight.
 
-As soon as these packages are available, create the real page in step 2 and
-continue through initialization, building and publication before asking for sign-in.
-Then give the owner the ready page URL. Never stop to request a "claimed" reply.
-Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
-[static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
-Keep the published page as the verification target for this tutorial's actual
-account, device enrollment and session.
-
-Get the SDK and tools from the host's advertised release, and check their hashes:
+Download the first-app archive from the host's advertised immutable release:
 
 ```sh
 TENDRILLER_RELEASE=$(node -p "JSON.parse(require('fs').readFileSync('service.json','utf8')).core_release")
-mkdir artifacts
 TENDRILLER_RELEASE_URL="https://github.com/werg/tendriller/releases/download/v$TENDRILLER_RELEASE"
-for artifact in "tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
-  "tendriller-tools-$TENDRILLER_RELEASE.tgz" SHA256SUMS manifest.json
+mkdir artifacts
+for artifact in "tendriller-first-app-$TENDRILLER_RELEASE.tgz" SHA256SUMS manifest.json
 do
   curl --fail --show-error --location "$TENDRILLER_RELEASE_URL/$artifact" -o "artifacts/$artifact"
 done
-cd artifacts
-sha256sum --ignore-missing --check SHA256SUMS
-cd ..
-npm install --save-exact "./artifacts/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
-  "./artifacts/tendriller-tools-$TENDRILLER_RELEASE.tgz"
+(cd artifacts && sha256sum --ignore-missing --check SHA256SUMS)
+tar -xzf "artifacts/tendriller-first-app-$TENDRILLER_RELEASE.tgz"
+node --input-type=module <<'JS'
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const composition = JSON.parse(readFileSync('composition.json'));
+const release = JSON.parse(readFileSync('artifacts/manifest.json'));
+const readiness = JSON.parse(readFileSync('readiness.json'));
+const {id, ...body} = composition;
+const kit = release.artifacts.find(item => item.file === release.first_app.file);
+assert.equal(createHash('sha256').update(readFileSync('artifacts/' + kit.file)).digest('hex'), kit.sha256);
+assert.equal(createHash('sha256').update(JSON.stringify(body)).digest('hex'), id);
+assert.equal(id, release.composition.id, 'The starter belongs to another release composition.');
+assert.equal(composition.version, readiness.build.coreRelease, 'Core release mismatch.');
+assert.equal(composition.runtime, readiness.build.runtimeId, 'Host runtime mismatch.');
+assert.equal(composition.core.dirty, false);
+assert.equal(composition.core.source, release.source_commit);
+if (readiness.build.sourceCommit !== null)
+  assert.equal(composition.core.source, readiness.build.sourceCommit, 'Host source checkpoint mismatch.');
+JS
+(cd packages && sha256sum --check SHA256SUMS)
+TENDRILLER_SESSION_ARCHIVE=$(node -p "JSON.parse(require('fs').readFileSync('composition.json','utf8')).components.find(x=>x.role==='session').file")
+npm install --ignore-scripts --save-exact \
+  "./packages/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
+  "./packages/tendriller-tools-$TENDRILLER_RELEASE.tgz" \
+  "./packages/$TENDRILLER_SESSION_ARCHIVE"
 npm install --save-dev --save-exact esbuild@0.28.2
 ```
 
-Chronolog's public session package is currently produced from exact source; do
-not assume `npm install @chronolog/peer-session` retrieves the required package.
-The source baseline for this tutorial is
-`d3efeb6d75ac24bb9b44899f27d6940475ab55e9`. Build its ordinary events archive:
+Keep `composition.json`, the release manifest, archive hashes and the generated
+`package-lock.json`. The composition binds the complete SDK/runtime/engine/tools
+set, the source starter, the pinned Chronolog session and embedded generation
+control provenance. The first-app archive carries the three packages this app
+installs; the manifest also identifies the runtime and engine used by the host.
+A runtime ID describes browser assets, not every host Worker byte. When the host
+has no source checkpoint configured, its full deployed identity still needs the
+operator's [release composition evidence](RELEASE_COMPOSITION.md).
 
-```sh
-git clone https://github.com/werg/chronolog-db.git ../chronolog-source
-git -C ../chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
-cd ../chronolog-source
-corepack pnpm install --frozen-lockfile --ignore-scripts
-node tools/package-peer-session.mjs
-cd ../shared-notes
-npm install --save-exact ../chronolog-source/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz
-```
+If the versioned archive is unavailable or these checks fail, the operator must
+publish and qualify the matching release. Do not mix a mutable hosted starter
+with packages from another same-version source tree. The separate
+[first-app source archive](/downloads/tendriller-first-app.tgz) remains useful for
+inspection, but it is not the complete release composition.
 
-Keep the archive's reported SHA-256, `provenance.json`, exact source SHA and the
-application's `package-lock.json`. If an operator supplies a different qualified
-composition, use its exact matching package instead and run the same acceptance
-checks. A source baseline is not a claim that an arbitrary host/package pair has
-passed deployed qualification. [Release composition](RELEASE_COMPOSITION.md)
-explains that separate gate.
+As soon as installation finishes, create the real page in step 2 and continue
+through initialization, building and publication before asking for sign-in.
+Then give the owner the ready page URL. Never stop to request a "claimed" reply.
+Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
+[static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
+Keep the published page as the verification target for the actual account,
+device enrollment and session. Enrollment requires `owner_account_id` in the
+host's authenticated agent `info()` response; absence is a host upgrade boundary.
 
-The SQL-free session packer consumes the installed workspace directly; disabling
-install scripts avoids unrelated native SQL engine compilation. SQL/native RTC
-packages have separate build and installation requirements.
-
-For unreleased core development, build the matching checkout with `npm ci` and
-`npm run build:artifacts`, then install its `dist/tendriller-sdk-*.tgz` and
-`dist/tendriller-tools-*.tgz` in this application. Never import core's private
-server/test modules or Chronolog's source internals into the app.
+For unreleased core development, commit a clean matching checkout, run `npm ci`,
+`npm run build:artifacts` and `npm run release:artifacts`, then qualify its exact
+first-app archive with `npm run test:first-app -- --first-app-archive
+/absolute/tendriller-first-app-VERSION.tgz`. This creates local candidate artifacts;
+it does not publish a release or qualify a deployed host. Never import core's
+private server/test modules or Chronolog's source internals into the app.
 
 ## 2. Create the application and let the owner claim it
 

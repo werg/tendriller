@@ -52,6 +52,14 @@ An independently packaged workerd fixture can read `@tendriller/engine/testing-r
 
 Every build writes exact source commit/tree, clean/dirty state and archive SHA-256 values to `dist/provenance.json`. The engine embeds portable Chronolog provenance and hashes. Independent qualification copies clean artifacts and verifies their hashes before installing; a branch name does not identify tested bytes.
 
+Tools record the same source identity in `dist/tools-manifest.json`.
+`release:artifacts` requires both proofs to match the clean checkout, checks the
+actual packed metadata/exports and runtime bytes, and binds all four core
+archives, the exact served starter and the pinned public Chronolog session in
+`dist/composition.json`. It also creates a versioned first-app archive containing
+the starter and local SDK/tools/session packages. `dist/manifest.json` binds the
+composition, first-app archive and provenance files for immutable publication.
+
 Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree. Release publication is separate from deployment. Use `check:release` and the repository's release workflow for a deliberately selected release ref.
 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
@@ -104,9 +112,13 @@ failed preparation, fixed reviewed values and explicit reapplication lineage. Th
 `Agent onboarding` workflow runs it with a pinned Chronolog source commit and
 the repository's Playwright container. It needs no production credentials.
 
-For a local run, build the events-only Chronolog archive as described in
-[Build an app](BUILD_AN_APP.md), run `npm run build:artifacts`, then supply that
-archive's absolute path to `test:first-app`. Use Playwright's installed Chromium,
+For a local release candidate, commit a clean checkpoint, run
+`npm run build:artifacts` and `npm run release:artifacts`, then pass
+`--first-app-archive /absolute/tendriller-first-app-VERSION.tgz` to `test:first-app`.
+That mode verifies and installs the packages carried by the kit; the release
+workflow requires it before publication. `--session-archive` remains available
+for deliberate alternate-source and SQL qualification, without claiming that it
+is the released first-app composition. Use Playwright's installed Chromium,
 or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chromium executable.
 If the environment cannot start
 a browser, `--native-only` runs setup, durable commands/reopen, bundling and signed

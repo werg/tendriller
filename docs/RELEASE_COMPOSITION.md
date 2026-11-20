@@ -24,6 +24,56 @@ gh workflow run webrtc.yml --repo werg/chronolog-db --ref <chronolog-branch-or-t
 
 Verify the run's `headSha` is the recorded Chronolog SHA and the host input is the selected Tendriller SHA, then inspect its `application-*` artifact and `composition.json`. The checkout step rejects abbreviated companion refs and verifies their exact commits. The workflow's ordinary push and PR runs retain their pinned reference pair, so candidate qualification does not silently move an established release checkpoint. If this candidate passes, update the pinned pair in a reviewed PR and run the default-branch workflow again.
 
+## Prepare and qualify the first-app release
+
+From a clean core checkpoint, run `npm run build:artifacts` and
+`npm run release:artifacts`. Release preparation rejects dirty or stale core,
+engine and tools provenance, mismatched versions/contracts/runtime identities,
+missing public exports, altered runtime bytes and a stale served starter. It
+reads the pinned public Chronolog archive from `package.json`; it does not
+substitute a registry package or rebuild a moving companion branch.
+
+`dist/composition.json` has a content-derived identity over these exact inputs:
+
+| Component | Bound evidence |
+| --- | --- |
+| SDK, runtime, engine and tools | Archive SHA-256 and size, core source commit/tree, clean provenance, contract and runtime ID |
+| First-app source | Allowlisted starter archive SHA-256 and size, checked byte-for-byte against this core checkpoint |
+| Chronolog session | Public archive SHA-256 and size, full source commit/tree, clean events profile |
+| Embedded generation controls | Full source commit/tree and clean provenance inside the hashed engine archive |
+
+The versioned `tendriller-first-app-VERSION.tgz` contains that starter,
+`composition.json` and local SDK/tools/session packages. `manifest.json` binds
+the kit's own bytes, the separate composition file and build provenance. Its
+composition ID does not include the kit hash, avoiding a self-referential archive.
+`SHA256SUMS` covers every published component. Preserve the whole manifest and
+all referenced artifacts when transferring a candidate between jobs.
+
+Run the exact kit through the independent consumer:
+
+```sh
+npm run test:first-app -- --first-app-archive /absolute/tendriller-first-app-VERSION.tgz
+```
+
+This uses the packed engine, verifies the kit against the release manifest,
+compares its source with the actual served starter, installs the bundled public
+archives in a separate empty-cache consumer, and exercises native and Chromium
+behavior. The core release workflow requires this gate before publication and
+retains `.results/first-app.json`. `--native-only` is an explicitly partial local
+check and does not satisfy that workflow's full browser gate. Generating a
+composition is not itself qualification; assess the recorded checks and limits.
+
+Release uploads verify exact tag/source identity and existing asset bytes before
+uploading anything. They never move tags or overwrite differing same-name
+assets, and publish `manifest.json` last. Already published versions must get a
+new version when package code, starter source or composition metadata changes.
+CI can produce candidates on a development branch without publishing or deploying.
+
+The scripted local kit check does not establish live OAuth, selected ChatGPT
+connector approval or calls, Internet/native RTC, mobile behavior, persistent
+process hosting, or an unaided fresh-agent journey. Keep those operator and
+cold-start gates alongside the exact source and archive evidence.
+
 ## Stage the host
 
 Build and deploy the selected core commit to fresh staging storage. Run `node scripts/check-deployment.mjs https://staging.tendriller.dev`; it checks a real Durable Object read as well as public endpoints. Then exercise OAuth return, owner claim, a signed page publication, page reload, and an independent agent/browser exchange. Keep creation paused if the shared Durable Object quota or a required check fails. `STAGING_READY` and `STAGING_STORAGE_SCHEMA` must describe the actual staging deployment before CI may deploy it automatically.

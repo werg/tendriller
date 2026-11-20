@@ -51,7 +51,7 @@ try {
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
-import { createClient, requireService } from '@tendriller/core';
+import { createClient, requireService, describeReadiness, requireCreationReady, requireServiceOrigin } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
 import { createApplicationBinding } from '@tendriller/core/application';
 import { onboardingDescriptor, ASSISTANT_GUIDES } from '@tendriller/core/onboarding';
@@ -67,6 +67,8 @@ import { startServer } from '@tendriller/tools/preview';
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 const application = { id: '12'.repeat(32) };
+for (const api of [describeReadiness, requireCreationReady, requireServiceOrigin]) assert.equal(typeof api, 'function');
+assert.equal(requireServiceOrigin('https://staging.example/'), 'https://staging.example');
 assert.equal(onboardingDescriptor('https://staging.example').documentation.mcp, 'https://staging.example' + ASSISTANT_GUIDES.start);
 assert.match(createAssistantKey(), /^td_a_[a-f0-9]{64}$/);
 for (const api of [createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
@@ -108,7 +110,8 @@ await assert.rejects(signals.send('typing', null), {code:'signal_unavailable'});
 `);
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
-import {createClient, createPage} from '@tendriller/core';
+import {createClient, createPage, describeReadiness, requireCreationReady, requireServiceOrigin,
+  type ServiceReadiness} from '@tendriller/core';
 import type {RuntimeApi, RuntimeConfiguration} from '@tendriller/core/contract';
 import type {ApplicationBackend, ApplicationOperation} from '@tendriller/core/application';
 import {createApplicationBinding} from '@tendriller/core/application';
@@ -133,6 +136,10 @@ application.onRecovery(notice => { const loss:boolean=notice.unknownLoss; void l
 application.onStatus(status => { const peers:number=status.connectedPeers; void peers; });
 await application.inspectRecovery();
 const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
+const origin: string = requireServiceOrigin('https://host.test');
+const readiness: ServiceReadiness = await describeReadiness(origin, {signal:new AbortController().signal});
+const ready: ServiceReadiness = requireCreationReady(readiness, {service:origin});
+void ready;
 void client.peers.application(); void client.peers.publication();
 const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
   openDirectConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; },

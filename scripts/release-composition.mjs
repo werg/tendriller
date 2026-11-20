@@ -45,7 +45,11 @@ export function packedArchive(path) {
 
 function packageExports(archive, required, label) {
   const exports = archive.package.exports;
-  if (!exports || required.some(name => exports[name] === undefined)) fail(`${label} is missing an advertised public export.`);
+  if (!exports || required.some(name => {
+    const value = exports[name];
+    return typeof value !== 'string' && !(value && typeof value === 'object' &&
+      (typeof value.import === 'string' || typeof value.default === 'string'));
+  })) fail(`${label} is missing an advertised public export.`);
   function target(value) {
     if (typeof value === 'string') {
       if (!value.startsWith('./') || value.split('/').includes('..')) fail(`${label} has an invalid public export target.`);
