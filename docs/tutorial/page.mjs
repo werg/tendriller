@@ -1,6 +1,7 @@
 import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
 import { createViewStore, operationReference } from '@tendriller/core/collaboration';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
+import { createSubmissionState } from './helpers/submission-state.mjs';
 import { createLiveView } from './helpers/live-view.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { mountReviewedMedia } from './media/panel.mjs';
@@ -24,7 +25,18 @@ function retainedPending() {
   return retained ? { ...retained.context, id: retained.reference.operationId, reference: retained.reference } : null;
 }
 let attachment, session, liveView, operationView, observedOperation, media;
-let preparingSubmission = false;
+const submission = createSubmissionState(renderSubmission);
+function renderSubmission(state) {
+  $('#editor').disabled = false;
+  $('#submit').disabled = !state.canSubmit;
+  $('#inspect').disabled = !state.canInspect;
+  $('#retry').disabled = !state.canRetry;
+  $('#reapply').disabled = !state.canReapply;
+  $('#refresh').disabled = !state.attached || state.working;
+  $('#submission-status').textContent = state.message;
+  $('#form').setAttribute('aria-busy', String(state.working));
+  media?.setBlocked(!state.canSubmit);
+}
 let pending = retainedPending();
 const report = error => { $('#result').textContent = error.message ?? String(error); };
 const operationStatus = document.createElement('p');
@@ -39,6 +51,11 @@ if (pending) {
   $('#result').textContent = `Unresolved operation ${pending.id}. Inspect or retry its original identity before submitting another note.`;
 }
 $('#note').addEventListener('input', () => writeLocal('draft', $('#note').value));
+$('#operation-id').addEventListener('input', () => {
+  writeLocal('operation', $('#operation-id').value);
+  submission.update({ selected: $('#operation-id').value, observed: null });
+});
+submission.update({ pending, selected: $('#operation-id').value });
 
 function savePending(value) {
   // Each view owns its reference to the common signed journal. Removing this
@@ -52,9 +69,7 @@ function savePending(value) {
     pending = { ...value, reference };
   } else pending = null;
   if (previous?.reference && previous.id !== value?.id) viewStore.removeOperation(previous.reference);
-  $('#submit').disabled = Boolean(pending);
-  $('#reapply').disabled = true;
-  media?.setBlocked(Boolean(pending) || preparingSubmission);
+  submission.update({ pending, selected: $('#operation-id').value, observed: null });
 }
 function retainObservedReference(state) {
   if (!state || pending?.id !== state.operationId) return;
@@ -65,14 +80,7 @@ function retainObservedReference(state) {
   viewStore.retainOperation(reference, context);
   pending = { ...pending, reference };
 }
-function beginSubmission() {
-  if (pending || preparingSubmission) throw Error('Resolve the current submission before starting another operation.');
-  preparingSubmission = true; $('#submit').disabled = true; media?.setBlocked(true);
-  return () => {
-    preparingSubmission = false; $('#submit').disabled = Boolean(pending);
-    media?.setBlocked(Boolean(pending));
-  };
-}
+function beginSubmission() { return submission.begin(); }
 const commandOf = value => value.command ?? 'addNote';
 const inputOf = value => value.input ?? { text: value.text };
 function acceptedOrRejected(result) {
@@ -148,6 +156,8 @@ function observeOperation(id, operation) {
   operationView = createOperationView(session, { operationId: id, operation,
     onChange({ state, coverage, waitingForShared }) {
       retainObservedReference(state);
+      if (id === submission.snapshot.selected) submission.update({ observed: state });
+      acceptedOrRejected(state);
       const label = !state ? 'No saved attempt visible; preserve the original input and ID.'
         : state.status === 'saved' ? 'Saved on this device; waiting for applied execution.'
         : state.status === 'applied' ? `Applied: ${state.outcome}${state.rejectionCode ? ` (${state.rejectionCode})` : ''}.`
@@ -172,7 +182,7 @@ $('#connect').addEventListener('click', async () => {
       profileId, applicationId: configuration.applicationId, definitionId: 'shared-notes', definitionVersion: '2',
       timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
         ...(identity?.publication ? { publicationId: identity.publication } : {}) },
-      onOwnerReplaced() { $('#connection').textContent = 'The session owner restarted. Reload to reconnect this retained device and inspect pending work.'; },
+      onOwnerReplaced() { submission.update({ attached: false, coherent: false }); $('#connection').textContent = 'The session owner restarted. Reload to reconnect this retained device and inspect pending work.'; },
     });
     session = attachment.session; $('#device-key').value = session.deviceId;
     if (pending?.reference && (pending.reference.author !== session.deviceId || pending.reference.historyId !== session.historyId))
@@ -182,7 +192,7 @@ $('#connect').addEventListener('click', async () => {
       viewId = session.endpoint.context.viewId; sessionStorage.setItem(viewKey, viewId);
       viewStore = createViewStore({ storage: localStorage, applicationId: configuration.applicationId, profileId, viewId });
       pending = retainedPending(); $('#note').value = readLocal('draft') ?? ''; $('#operation-id').value = readLocal('operation') ?? '';
-      $('#submit').disabled = Boolean(pending);
+      submission.update({ pending, selected: $('#operation-id').value, observed: null });
       if (offeredDraft) {
         const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy the other view’s draft';
         copy.addEventListener('click', () => { $('#note').value = offeredDraft; writeLocal('draft', offeredDraft); copy.remove(); });
@@ -193,27 +203,31 @@ $('#connect').addEventListener('click', async () => {
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
     liveView = createLiveView(session, { query: 'notes', input: null,
-      onStatus(status) { $('#data-status').textContent = `Data: ${status.database}; application: ${status.phase}`; },
+      onStatus(status) { submission.application(status); $('#data-status').textContent = `Data: ${status.database}; application: ${status.phase}`; },
       onRecovery(notice) {
+        submission.update({ coherent: false });
         $('#recovery').hidden = false;
         $('#recovery').textContent = `Selected history changed. ${notice.abandoned.length} known operations were excluded; unknown loss: ${notice.unknownLoss}. Inspect the original operation before deciding whether to submit new work.`;
-      }, onError: report,
+      }, onError(error) { submission.update({ coherent: false }); report(error); },
     });
-    liveView.subscribe(renderNotes);
+    liveView.subscribe(snapshot => { renderNotes(snapshot); submission.read(snapshot); });
     media = mountReviewedMedia({ container: $('#media-panel'), session, runtime: window.tendril,
       nativeDeviceId: configuration.nativeDeviceId,
       getContext: () => liveView.snapshot ? { revision: liveView.snapshot.revision, collection: 'shared-notes' } : null,
-      prepareCommit: prepareEvidence, commit: submitEvidence, blocked: Boolean(pending),
+      prepareCommit: prepareEvidence, commit: submitEvidence, blocked: !submission.snapshot.canSubmit,
       onVoiceDraft(text) {
         $('#note').value = [$('#note').value, text].filter(Boolean).join('\n');
         writeLocal('draft', $('#note').value);
       },
     });
     session.participation.onStatus(status => {
+      const wasConnected = submission.snapshot.connected;
+      submission.participation(status);
+      if (!wasConnected && submission.snapshot.connected) void refresh().catch(report);
       $('#connection').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}. Keep the native peer running.`;
     });
     if ($('#operation-id').value) observeOperation($('#operation-id').value);
-    $('#editor').disabled = false; $('#close').disabled = false;
+    submission.update({ attached: true }); $('#close').disabled = false;
     installed = true;
     // The query activates data. Status observation handles later key delivery.
     await refresh();
@@ -224,7 +238,7 @@ $('#connect').addEventListener('click', async () => {
       liveView?.close(); operationView?.close(); media?.close();
       try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
       session = attachment = undefined;
-      $('#editor').disabled = true; $('#close').disabled = true;
+      submission.update({ attached: false, coherent: false }); $('#close').disabled = true;
       // A partially installed runtime binding cannot be replaced in this page.
       // Close the owned store first, then make the required reload explicit.
       busy(facadeOpened);
@@ -236,18 +250,20 @@ $('#connect').addEventListener('click', async () => {
 
 $('#form').addEventListener('submit', async event => {
   event.preventDefault();
-  let release;
+  let release, original;
   try {
     release = beginSubmission();
     const text = $('#note').value.trim();
     if (!text) throw Error('Write a note first.');
     if (text.length > 2000) throw Error('Edit the note to 2,000 characters or fewer before saving. Nothing was submitted.');
     const before = await refresh();
+    if (!submission.snapshot.available) throw Error('Connection changed while reading notes.');
     const operationId = crypto.randomUUID();
     // Save the reference before submitting. This is a UI reference, not a
     // second delivery queue; Chronolog owns and retries the signed attempt.
     $('#operation-id').value = operationId; writeLocal('operation', operationId);
     savePending({ id: operationId, command: 'addNote', input: { text }, basedOn: before.revision });
+    original = pending;
     const operation = await session.command('addNote', { text }, { operationId, basedOn: before.revision });
     observeOperation(operationId, operation);
     $('#result').textContent = `Saved locally as ${operationId}. Waiting for applied execution…`;
@@ -255,7 +271,9 @@ $('#form').addEventListener('submit', async event => {
     $('#result').textContent = `Applied: ${result.outcome}. Operation ${operationId}. Retained coverage is separate; explicit recovery can exclude applied work.`;
     acceptedOrRejected(result);
     await refresh();
-  } catch (error) { report(Error(`${error.message} Inspect or retry the displayed operation ID; do not resubmit uncertain work with a new ID.`)); }
+  } catch (error) { report(Error(original && pending?.id !== original.id
+    ? `${error.message} Operation ${original.id} already resolved; inspect its applied outcome. Your current draft is retained.`
+    : submission.failure(error, original ?? pending))); }
   finally { release?.(); }
 });
 
@@ -266,7 +284,6 @@ async function prepareEvidence({ candidate, reviewed, operationId, signal }) {
   if (!capturedRevision || capturedRevision.length > 16384) throw Error('The captured revision exceeds this example’s input limit. Nothing was submitted.');
   const release = beginSubmission();
   try {
-    $('#operation-id').value = operationId; writeLocal('operation', operationId);
     let source = reviewed.source;
     if (!source) {
       // Manual review works without a provider. Staging begins only after the
@@ -285,6 +302,7 @@ async function prepareEvidence({ candidate, reviewed, operationId, signal }) {
     if (source.candidateId !== candidate.id || source.sha256 !== candidate.sha256 ||
         source.reference.applicationId !== session.applicationId || source.reference.historyId !== session.historyId)
       throw Error('The reviewed source no longer matches this application, history and candidate.');
+    if (!submission.snapshot.available) throw Error('Connection changed during evidence preparation. Nothing was submitted.');
     const input = { text, source, capturedRevision };
     $('#operation-id').value = operationId; writeLocal('operation', operationId);
     savePending({ id: operationId, command: 'addEvidence', input, basedOn: candidate.context.revision });
@@ -307,19 +325,21 @@ async function submitEvidence({ candidate, reviewed, operationId, signal }) {
 
 $('#inspect').addEventListener('click', async () => {
   try {
+    if (!submission.snapshot.canInspect) throw Error('Connect and select an operation to inspect.');
     const { inspection } = await observeOperation($('#operation-id').value).refresh();
     $('#result').textContent = JSON.stringify({
       ...(pending?.id === $('#operation-id').value ? { command: commandOf(pending), reviewedInput: inputOf(pending) } : {}),
       inspection,
     }, null, 2);
     acceptedOrRejected(inspection?.state);
-    $('#reapply').disabled = !(pending?.id === $('#operation-id').value &&
-      ['abandoned', 'needsReapply'].includes(inspection?.state.status));
+    submission.update({ observed: inspection?.state });
   }
   catch (error) { report(error); }
 });
 $('#retry').addEventListener('click', async () => {
+  let release;
   try {
+    release = submission.begin('retry');
     const id = $('#operation-id').value;
     const original = await session.operations.get(id);
     retainObservedReference(original);
@@ -335,14 +355,17 @@ $('#retry').addEventListener('click', async () => {
     $('#result').textContent = JSON.stringify(result, null, 2); acceptedOrRejected(result);
     await refresh();
   } catch (error) { report(error); }
+  finally { release?.(); }
 });
 $('#reapply').addEventListener('click', async () => {
-  $('#reapply').disabled = true;
+  let release;
   try {
+    release = submission.begin('reapply');
     const previous = pending;
     const before = await refresh();
     const inspected = await session.operations.get(previous.id);
     if (!['abandoned', 'needsReapply'].includes(inspected?.status)) throw Error('The original operation is no longer eligible for reviewed reapplication.');
+    if (!submission.snapshot.available) throw Error('Connection changed while reviewing reapplication.');
     const id = crypto.randomUUID();
     savePending({ id, command: commandOf(previous), input: inputOf(previous), basedOn: before.revision,
       reapplies: previous.id, originOperationId: previous.originOperationId ?? previous.reapplies ?? previous.id });
@@ -352,18 +375,20 @@ $('#reapply').addEventListener('click', async () => {
     const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
     $('#result').textContent = JSON.stringify(result, null, 2); acceptedOrRejected(result); await refresh();
   } catch (error) { report(error); }
+  finally { release?.(); }
 });
 $('#refresh').addEventListener('click', () => { void refresh().catch(report); });
 
 async function close() {
+  submission.update({ attached: false, connected: false, coherent: false });
   liveView?.close(); operationView?.close(); media?.close();
   try { await attachment?.detach(); }
-  finally { $('#editor').disabled = true; $('#close').disabled = true;
+  finally { $('#close').disabled = true;
     $('#connection').textContent = 'Connection closed. Reload to reconnect this existing device.'; }
 }
 $('#close').addEventListener('click', () => { void close().catch(report); });
 window.addEventListener('pagehide', event => {
-  if (event.persisted) void attachment?.suspend().catch(report);
+  if (event.persisted) { submission.update({ connected: false, coherent: false }); void attachment?.suspend().catch(report); }
   else void close().catch(() => {});
 });
 window.addEventListener('pageshow', event => {
