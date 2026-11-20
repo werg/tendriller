@@ -7,10 +7,11 @@ import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
 import {superviseParticipant} from './helpers/participant-lifecycle.mjs';
 import {servePeerInference} from './media/inference-service.mjs';
-import {serveSignalRequests} from './helpers/signal-request.mjs';
+import {serveSignalRequests, sendPieces} from './helpers/signal-request.mjs';
 ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
 const owned = await openSession(), {session,supervisor} = owned;
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
+const lifecycleLog = [];
 let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null;
 const close = () => closing ??= (async () => {
   const errors = [];
@@ -24,7 +25,8 @@ const close = () => closing ??= (async () => {
 })();
 try {
   pairings = superviseParticipant({owned,watch:owned.watchSetup,
-    report:({pairing}) => { if(pairing) pairingStatus={state:pairing.state,code:pairing.code ?? null}; }});
+    report:(value) => { if(value.pairing) pairingStatus={state:value.pairing.state,code:value.pairing.code ?? null};
+      if (lifecycleLog.length < 200) lifecycleLog.push({at:Date.now(),...(value.pairing ? {pairing:value.pairing.state,pairingId:value.pairing.pairingId ?? null} : {state:value.state ?? null,setup:value.setup ?? null})}); }});
   inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: 2,
     async infer({bytes, mediaType, source, signal}) {
       signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
@@ -34,6 +36,11 @@ try {
   });
   // Every participation change, with its peer set, so the harness can count churn.
   const participationLog = [];
+  // Application status transitions (phase, generation, database) for failure diagnosis.
+  const statusLog = [];
+  session.onStatus?.(status => { const last = statusLog.at(-1);
+    if (statusLog.length < 500 && (!last || last.phase !== status.phase || last.generation !== status.generation || last.database !== status.database))
+      statusLog.push({at:Date.now(),phase:status.phase,generation:status.generation,database:status.database}); });
   session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); });
   const requestsStopped = new AbortController();
   void serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
@@ -47,7 +54,7 @@ try {
     try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus};
+      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,statusLog,lifecycleLog};
       else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
       else if(request.action==='signal-state') {
         // Periodic state updates, as a dashboard sends them.
@@ -56,12 +63,19 @@ try {
       }
       else if(request.action==='signal-burst') {
         // A reply larger than one signal, sent piece by piece as an app would: each send awaited, none retried.
-        const failures=[], started=Date.now();
+        const failures=[], started=Date.now(), pieceMs=[];
+        // Event-loop lag beside the sends tells a stalled process from a stalled transport.
+        let lagMax=0, tick=Date.now(); const lag=setInterval(()=>{ const now=Date.now(); lagMax=Math.max(lagMax, now-tick-50); tick=now; },50);
+        // Sent as an app sends a reply (the starter's retrying piece sender); retries are reported.
+        let retries=0;
         for(let index=0;index<request.pieces;index++){
-          try{await session.signals.send(request.topic,{id:request.id,i:index,n:request.pieces,z:'x'.repeat(request.bytes)},{ttlMs:30000});}
+          const pieceStarted=Date.now();
+          try{retries+=await sendPieces(session,request.topic,[{id:request.id,i:index,n:request.pieces,z:'x'.repeat(request.bytes)}]);}
           catch(error){failures.push(error.code||error.message);}
+          pieceMs.push(Date.now()-pieceStarted);
         }
-        result={sent:request.pieces-failures.length,failures,ms:Date.now()-started};
+        clearInterval(lag);
+        result={sent:request.pieces-failures.length,failures,retries,ms:Date.now()-started,pieceMs,eventLoopLagMaxMs:lagMax,participation:session.participation.status.phase};
       }
       else if(request.action==='ordering-pause') result={pause:await session.orderingPause()};
       else if(request.action==='pairing-process') result=await owned.processPairings();

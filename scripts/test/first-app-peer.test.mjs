@@ -28,7 +28,7 @@ export async function openSession() {
     supervisor:{ownerInstanceId:'fixture-owner'},
     async close(){await appendFile(${JSON.stringify(calls)},'owner\\n');clearInterval(resource);}};
 }`);
-  await writeFile(join(directory, 'helpers/signal-request.mjs'), 'export function serveSignalRequests(){return Promise.resolve();}');
+  await writeFile(join(directory, 'helpers/signal-request.mjs'), 'export function serveSignalRequests(){return Promise.resolve();} export async function sendPieces(){return 0;}');
   await writeFile(join(directory, 'media/inference-service.mjs'), `import {appendFile} from 'node:fs/promises';
 export function servePeerInference(){return {snapshot(){return {};},async close(){
   await appendFile(${JSON.stringify(calls)},'inference\\n');
