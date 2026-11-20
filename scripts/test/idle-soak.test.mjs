@@ -129,12 +129,12 @@ test('worker completion keeps all request counts and clears only the exact prove
  class Page extends EventEmitter {async goto(){} async close(){} async bringToFront(){visibility=this.cover?'hidden':'visible';order.push(visibility);}async waitForFunction(_f,wanted){assert.equal(visibility,wanted);}async evaluate(){return visibility;}}
  const ctx=new EventEmitter();ctx.pages=()=>[];ctx.newPage=async()=>{const p=new Page();p.cover=!created.length;created.push(p);ctx.emit('page',p);return p;};
  const script={url:()=> 'https://fixture.invalid/worker.mjs',resourceType:()=> 'script'},other={url:()=> 'https://fixture.invalid/data',resourceType:()=> 'fetch'};
- ctx.load=()=>{ctx.emit('request',script);ctx.emit('request',other);ctx.emit('requestfinished',script);complete(script.url());assert.equal(events.at(-1).pending,1);ctx.emit('requestfinished',other);};
+ ctx.load=()=>{ctx.emit('request',script);ctx.emit('request',other);ctx.emit('requestfinished',script);complete(script.url());assert.equal(events.at(-1).pending,1);ctx.emit('requestfinished',other);complete('https://fixture.invalid/unobserved-worker.mjs');};
  const adapter=join(dir,'adapter.mjs');writeFileSync(adapter,'export async function ready({context}){context.load();} export async function reconnect(){return true;}');
  try{
  const browser=await startBrowser({...config,adapter},e=>events.push(e),{chromium:{},launchContext:async()=>({context:ctx,endpoint:'ws://fixture',close:async()=>{}}),observeBootstraps:async(_endpoint,done)=>{complete=done;return{finish:async()=>order.push('worker-proof'),close:async()=>order.push('detached')};}});
  assert.deepEqual(await browser.phase('background'),{observed:'hidden'});assert.equal(events.filter(e=>e.kind==='requests').length,2);assert.equal(events.filter(e=>e.kind==='activity').at(-1).pending,0);
- assert(order.indexOf('worker-proof')<order.lastIndexOf('hidden'));assert(order.indexOf('detached')<order.lastIndexOf('hidden'));assert.equal(browser.workerBootstrapEvidence().completedLoads,1);
- const later={url:script.url,resourceType:script.resourceType};ctx.emit('request',later);assert.equal(events.at(-2).pending,1);assert.equal(events.filter(e=>e.kind==='requests').length,3);ctx.emit('requestfinished',later);await browser.close();
+ assert(order.indexOf('worker-proof')<order.lastIndexOf('hidden'));assert(order.indexOf('detached')<order.lastIndexOf('hidden'));assert.equal(browser.workerBootstrapEvidence().completedLoads,2);
+ const later={url:script.url,resourceType:script.resourceType};ctx.emit('request',later);assert.equal(events.at(-2).pending,1);assert.equal(events.filter(e=>e.kind==='requests').length,3);ctx.emit('requestfinished',later);const unseen={url:()=> 'https://fixture.invalid/unobserved-worker.mjs',resourceType:()=> 'script'};ctx.emit('request',unseen);assert.equal(events.at(-2).pending,1);assert.equal(events.filter(e=>e.kind==='requests').length,4);ctx.emit('requestfinished',unseen);await browser.close();
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
