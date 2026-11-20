@@ -1,5 +1,6 @@
 /** Static publication fixture: application behavior belongs to a supplied session. */
 import http from 'node:http';
+import type { Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +42,30 @@ export class MockServer {
       (page.noSw ? '<script>window.__TENDRIL_NO_SW__=true</script>' : '') +
       `<script src="${this.runtimeUrl(page)}tendril.js"></script><title>Page ${page.id}</title></head><body>${page.html}</body></html>`;
     const publication = { html, files, manifest }; page.publications.set(version, publication); return publication;
+  }
+  /** A receive-only, healthy publication endpoint; all other sockets remain observable failures. */
+  async prepareBrowser(page: Page, fixture: MockTendril) {
+    const endpoint = new URL('_tendril/publication-ready', this.url(fixture));
+    endpoint.protocol = 'ws:';
+    await page.routeWebSocket('**/*', route => {
+      if (route.url() !== endpoint.href) { route.close({ code: 1008, reason: 'Unexpected application transport' }); return; }
+      route.onMessage(() => { route.close({ code: 1008, reason: 'Publication watch is receive-only' }); });
+      route.send(JSON.stringify({ type: 'publication', version: 1, current: fixture.version }));
+    });
+    await page.addInitScript(() => {
+      const traffic = (window as any).__fixtureTransport = { sockets: [] as any[] };
+      const NativeSocket = window.WebSocket;
+      window.WebSocket = class extends NativeSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols);
+          const record = { url: String(url), protocols, received: [] as string[], sent: [] as unknown[] };
+          traffic.sockets.push(record);
+          this.addEventListener('message', event => record.received.push(event.data));
+          const send = this.send.bind(this);
+          this.send = data => { record.sent.push(data); send(data); };
+        }
+      };
+    });
   }
   async start() {
     this.server = http.createServer((req, res) => this.http(req, res));
