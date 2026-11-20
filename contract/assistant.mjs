@@ -54,8 +54,10 @@ export async function proposeApplicationAssistant({ api, token, key, backupKeys 
 
 /** The existing participant executes approved native tools. The socket is inert when idle. */
 export function connectApplicationAssistant({ api, key, session, tools, queries = [], commands = [], onStatus = () => {},
-  openSocket = (url, protocols) => new WebSocket(url, protocols), signal }) {
+  openSocket = (url, protocols) => new WebSocket(url, protocols), initialConnectTimeoutMs = 600_000, signal }) {
   if (!keyFormat.test(key)) throw error('INVALID_ASSISTANT_KEY');
+  if (!Number.isSafeInteger(initialConnectTimeoutMs) || initialConnectTimeoutMs < 1000 || initialConnectTimeoutMs > 600_000)
+    throw error('INVALID_ASSISTANT_STARTUP_TIMEOUT');
   const url = socketUrl(api), stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, session.signal, ...(signal ? [signal] : [])]);
   const allowed = { query: new Set(queries), command: new Set(commands) };
@@ -100,7 +102,10 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
   }
   async function run() {
     let failures = 0, connectedBefore = false;
+    const startupDeadline = Date.now() + initialConnectTimeoutMs;
     while (!lifetime.aborted) {
+      const remaining = connectedBefore ? Infinity : startupDeadline - Date.now();
+      if (remaining <= 0) { onStatus({ state: 'disconnected', reason: 'startup_timeout' }); break; }
       let transport, terminal = false, openedAt = 0;
       try {
         transport = openSocket(url, [PROTOCOL, key, 'td_device_' + session.deviceId]);
@@ -114,7 +119,7 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
             resolve(code);
           };
           const abort = () => { try { transport.close(); } finally { done(1000); } };
-          const timer = setTimeout(() => { if (transport.readyState !== 1) abort(); }, 7000);
+          const timer = setTimeout(() => { if (transport.readyState !== 1) abort(); }, Math.min(7000, remaining));
           lifetime.addEventListener('abort', abort, { once: true });
           transport.addEventListener('open', () => {
             clearTimeout(timer);
@@ -141,10 +146,12 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
         for (const resolve of acknowledgements.values()) resolve({ error: 'APPLICATION_ASSISTANT_OFFLINE' });
       }
       if (lifetime.aborted || terminal) break;
-      // Unapproved or misconfigured endpoints must not loop forever.
+      // Give human sign-in/consent the same bounded window as browser pairing.
+      // Once connected, idle sockets hibernate; revocation remains terminal.
       if (openedAt && Date.now() - openedAt >= 10_000) failures = 0;
-      if (++failures >= 6 && !connectedBefore) { onStatus({ state: 'disconnected', reason: 'retry_limit' }); break; }
-      const wait = Math.min(60_000, 1000 * 2 ** Math.min(failures - 1, 6)) + Math.floor(Math.random() * 250);
+      failures++;
+      const backoff = Math.min(60_000, 1000 * 2 ** Math.min(failures - 1, 6)) + Math.floor(Math.random() * 250);
+      const wait = connectedBefore ? backoff : Math.min(backoff, Math.max(0, startupDeadline - Date.now()));
       onStatus({ state: 'reconnecting', retryInMs: wait });
       await delay(wait, lifetime).catch(() => {});
     }

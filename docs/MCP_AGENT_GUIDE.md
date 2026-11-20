@@ -106,3 +106,5 @@ For background delivery, verify a supported subscription or show the live inbox;
 a mounted card or a connected page does not guarantee that this ChatGPT
 conversation will wake after the turn ends. A stopped participant cannot execute
 new queries or commands: resume it from its retained store.
+
+During initial sign-in and consent, the native assistant adapter retries with backoff for up to ten minutes, matching the reviewed pairing window. Keep its process running while the owner reviews. An explicit `startup_timeout` means resume the same project and reopen the pairing window if necessary; do not replace its device or setup intent. After connection, idle adapter sockets hibernate. Revoked or replaced adapters stop immediately.

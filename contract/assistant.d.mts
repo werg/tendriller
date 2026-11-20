@@ -36,6 +36,8 @@ export function connectApplicationAssistant(options: AssistantEndpoint & Assista
   tools: { call(name: string, input: unknown, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
   onStatus?: (status: { state: string; reason?: string; retryInMs?: number }) => void;
   openSocket?: (url: string, protocols: string[]) => WebSocket;
+  /** Initial sign-in/consent window, 1000–600000 ms; defaults to ten minutes. */
+  initialConnectTimeoutMs?: number;
   signal?: AbortSignal;
 }): AssistantParticipant;
 export function forwardApplicationEvents<Event extends { readonly id: string }>(options: {
