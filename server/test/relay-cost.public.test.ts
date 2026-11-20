@@ -99,11 +99,11 @@ it.each(['session', 'link'] as const)('checks %s expiry on each packet even with
   const p = await pair();
   try {
     await inDO(p.id, t => {
-      if (reason === 'session') t.db.run("UPDATE page_sessions SET expires_at=? WHERE role='guest'", t.now() + 10_000);
-      if (reason === 'link') t.db.run("UPDATE links SET expires_at=? WHERE role='guest'", t.now() + 10_000);
+      if (reason === 'session') t.db.run("UPDATE page_sessions SET expires_at=? WHERE role='guest'", t.now() + 60_000);
+      if (reason === 'link') t.db.run("UPDATE links SET expires_at=? WHERE role='guest'", t.now() + 60_000);
     });
     await p.exchange();
-    await advance(p.id, 10_001);
+    await advance(p.id, 60_001);
     // No SQL mutation or policy-refresh alarm occurs between warming and expiry.
     p.a.reliable.send(new Uint8Array([1]));
     await expect.poll(() => p.a.signal.aborted && p.b.signal.aborted).toBe(true);

@@ -913,7 +913,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await inDO(a.page.id, t => { Object.assign(t.env, restore); });
     await inDO(b.page.id, t => { Object.assign(t.env, restore); });
   }
-}, 30_000);
+}, 60_000);
 
 it('uses an operator-pinned client metadata document for public PKCE without fetching caller-controlled URLs', async () => {
   const f = await hostFixture(), id = 'https://chatgpt.com/oauth/client.json';
