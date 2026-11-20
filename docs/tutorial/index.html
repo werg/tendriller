@@ -33,19 +33,21 @@
   </section>
   <section id="recovery" role="alert" hidden></section>
   <form id="form">
-    <fieldset id="editor" disabled>
+    <fieldset id="editor">
       <legend>Add a retained note</legend>
       <label for="note">Note</label>
-      <textarea id="note" maxlength="2000" required></textarea>
-      <p class="muted">Draft text stays on this device. Sending creates a signed operation in the shared application.</p>
-      <button id="submit" type="submit">Save note</button>
+      <textarea id="note" maxlength="2000" required aria-describedby="draft-help submission-status"></textarea>
+      <p id="draft-help" class="muted">Draft text stays on this device. Sending creates a signed operation in the shared application.</p>
+      <p id="submission-status" role="status">Draft only. Connect this device before saving.</p>
+      <button id="submit" type="submit" disabled>Save note</button>
       <h2>Inspect uncertain work</h2>
       <label for="operation-id">Operation ID</label>
-      <input id="operation-id" spellcheck="false">
-      <button id="inspect" type="button" class="secondary">Inspect operation</button>
-      <button id="retry" type="button" class="secondary">Retry same operation</button>
+      <input id="operation-id" spellcheck="false" aria-describedby="operation-help">
+      <p id="operation-help" class="muted">Inspect a retained operation before retrying. Retry keeps its original input and ID; reapply requires reviewing current notes.</p>
+      <button id="inspect" type="button" disabled class="secondary">Inspect operation</button>
+      <button id="retry" type="button" disabled class="secondary">Retry same operation</button>
       <button id="reapply" type="button" class="secondary" disabled>Reapply after reviewing current notes</button>
-      <button id="refresh" type="button" class="secondary">Refresh notes</button>
+      <button id="refresh" type="button" disabled class="secondary">Refresh notes</button>
     </fieldset>
   </form>
   <pre id="result" role="status" aria-live="polite">No operation submitted.</pre>
