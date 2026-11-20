@@ -1,58 +1,65 @@
-import { currentPrincipal, pagePolicy, type PagePrincipal } from "./access";
-import { HttpError } from "./http";
-import type { Tendril } from "./tendril";
+import { currentPrincipal, pagePolicy, type PagePrincipal } from './access';
+import { HttpError } from './http';
+import type { Tendril } from './tendril';
 
-const tag = "publication-watch";
+const tag = 'publication-watch';
+export const PUBLICATION_WATCH_PROTOCOL = 'tendriller.publication.v1';
 interface Watch {
   kind: typeof tag;
+  protocol: 1;
   principal: PagePrincipal;
   key: string;
+  current: number;
+}
+const attachment = (socket: WebSocket): Watch | null => {
+  const value = socket.deserializeAttachment() as Watch | null;
+  return value?.kind === tag && value.protocol === 1 ? value : null;
+};
+export const isPublicationWatch = (socket: WebSocket): boolean => socket.deserializeAttachment()?.kind === tag;
+const selected = (t: Tendril) => t.db.get<number>('current', 0);
+function send(socket: WebSocket, value: Watch, current: number): void {
+  socket.send(JSON.stringify({ type: 'publication', version: 1, current }));
+  socket.serializeAttachment({ ...value, current } satisfies Watch);
 }
 
-export function isPublicationWatch(socket: WebSocket): boolean {
-  return socket.deserializeAttachment()?.kind === tag;
-}
-
-function ready(socket: WebSocket): void {
-  socket.send("ready");
-  socket.close(1000, "Publication ready");
-}
-
-export function watchPublication(t: Tendril, principal: PagePrincipal, key: string): Response {
+/** Authentication belongs to the page, not to the independently enrolled application participant. */
+export function watchPublication(t: Tendril, req: Request, principal: PagePrincipal, key: string): Response {
+  if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(x => x.trim()).includes(PUBLICATION_WATCH_PROTOCOL))
+    throw new HttpError(400, 'publication_protocol_required');
   const active = t.ctx.getWebSockets(tag).filter(socket => {
     if (socket.readyState !== WebSocket.READY_STATE_OPEN) return false;
-    const watch = socket.deserializeAttachment() as Watch;
-    if (currentPrincipal(t, watch.principal, watch.key)) return true;
-    socket.close(4003, "Page access ended");
-    return false;
+    const value = attachment(socket);
+    if (value && currentPrincipal(t, value.principal, value.key)) return true;
+    socket.close(4003, 'Page access ended'); return false;
   });
-  if (active.length >= 32)
-    throw new HttpError(429, "watch_limit", "Too many viewers waiting for publication");
+  if (active.length >= 32) throw new HttpError(429, 'watch_limit', 'Too many publication viewers');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, [tag]);
-  server.serializeAttachment({ kind: tag, principal, key } satisfies Watch);
-  // A publication may have landed between delivery of the holding HTML and
-  // this upgrade. The same replay covers reconnection and hibernation.
-  if (t.db.get<number>("current", 0) > 0) ready(server);
-  return new Response(null, { status: 101, webSocket: client });
+  const value: Watch = { kind: tag, protocol: 1, principal, key, current: selected(t) };
+  send(server, value, value.current);
+  return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PUBLICATION_WATCH_PROTOCOL } });
 }
 
-export async function notifyPublicationWatchers(t: Tendril): Promise<void> {
-  const watchers = t.ctx.getWebSockets(tag).filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN);
-  if (!watchers.length) return;
-  const policies = new Map<string | null, ReturnType<typeof pagePolicy>>();
-  await Promise.all(watchers.map(async socket => {
-    const { principal, key } = socket.deserializeAttachment() as Watch;
-    const visitor = principal.role === "guest" ? principal.accountId : null;
-    try {
-      let check = policies.get(visitor);
-      if (!check) policies.set(visitor, check = pagePolicy(t, visitor));
-      const active = await check === "active";
-      if (socket.readyState !== WebSocket.READY_STATE_OPEN) return;
-      if (active && currentPrincipal(t, principal, key)) ready(socket);
-      else socket.close(4003, "Page access ended");
-    } catch {
-      try { socket.close(1011, "Publication watch interrupted"); } catch { /* disconnected */ }
-    }
-  }));
+/** Every committed selection (including earlier versions and zero) invalidates the displayed notice. */
+export function notifyPublicationWatchers(t: Tendril): void {
+  t.afterCommit(async () => {
+    const policies = new Map<string | null, ReturnType<typeof pagePolicy>>();
+    const watchers = t.ctx.getWebSockets(tag).filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN);
+    await Promise.all(watchers.map(async socket => {
+      const value = attachment(socket);
+      if (!value) { socket.close(4003, 'Publication watch expired'); return; }
+      try {
+        if (!currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
+        if (value.current === selected(t)) return;
+        const visitor = value.principal.role === 'guest' ? value.principal.accountId : null;
+        let policy = policies.get(visitor);
+        if (!policy) policies.set(visitor, policy = pagePolicy(t, visitor));
+        if (await policy !== 'active' || !currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
+        if (socket.readyState !== WebSocket.READY_STATE_OPEN) return;
+        // Read after the async policy check. Concurrent notifications cannot send an older snapshot later.
+        const current = selected(t), latest = attachment(socket);
+        if (latest && latest.current !== current) send(socket, latest, current);
+      } catch { try { socket.close(1011, 'Publication watch interrupted'); } catch { /* disconnected */ } }
+    }));
+  });
 }

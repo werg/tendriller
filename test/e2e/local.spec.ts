@@ -13,7 +13,7 @@ test('verified owner claims a page and executes its signed authored module', asy
     expect(handle.token).toMatch(/^tk_/);
     await signInFixture(context); await claim(context, handle);
     const notified = page.waitForEvent('websocket', socket => socket.url().endsWith('/_tendril/publication-ready'))
-      .then(socket => socket.waitForEvent('framereceived', frame => frame.payload === 'ready'));
+      .then(socket => socket.waitForEvent('framereceived', frame => JSON.parse(String(frame.payload)).current === 1));
     const readinessRequests: string[] = [];
     page.on('request', request => {
       if (request.method() === 'HEAD' && request.url().endsWith('/_tendril/publication-ready')) readinessRequests.push(request.url());

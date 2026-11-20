@@ -1,4 +1,3 @@
-import { notifyPublicationWatchers } from "./publication-watch";
 import { selectedApplication } from "./application";
 import { peerBootstrap } from "./peers";
 // Immutable signed code publication storage and serving.
@@ -174,7 +173,6 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
       by,
       source: "server",
     });
-    if (next === 1) t.afterCommit(() => notifyPublicationWatchers(t));
     return next;
   });
   return n;
