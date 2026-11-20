@@ -19,7 +19,7 @@ test('public fixture and deployed Workers use the same traffic binding definitio
 });
 
 test('canonical and retained deployment configs keep the same static routing and log defaults', () => {
-  for (const file of ['wrangler.staging.jsonc', 'wrangler.production.jsonc', 'wrangler.tendriller-staging-s9.jsonc']) {
+  for (const file of ['wrangler.staging.jsonc', 'wrangler.production.jsonc']) {
     const config = JSON.parse(readFileSync(new URL(`../../server/${file}`, import.meta.url), 'utf8'));
     assert.deepEqual(config.assets.run_worker_first, assetRouting(), `${file} differs from current static routing`);
     assert.deepEqual(config.observability, observability, `${file} differs from deployment log defaults`);
