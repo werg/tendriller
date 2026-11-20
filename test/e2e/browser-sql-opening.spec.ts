@@ -11,6 +11,7 @@ async function expectAppliedAndReplicated(source: Page, target: Page, text: stri
     // The UI's operation.applied() has a declared 15s deadline. Start the
     // unchanged 5s remote-display deadline only after actual local application.
     await expect(source.locator('#status')).toHaveText(/Applied here|Shared with another device/, { timeout: 15_000 });
+    console.info('SQL_FIXTURE_APPLIED', JSON.stringify(await source.evaluate(() => (window as any).inspectAcceptanceState?.())));
     await expect(target.getByText(text, { exact: true })).toBeVisible();
   } catch (error) {
     const inspect = (page: Page) => page.evaluate(() => (window as any).inspectAcceptanceState?.()).catch(() => null);
