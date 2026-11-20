@@ -17,6 +17,30 @@ export function observable(message) {
   }
 }
 
+export function observableTracker(clock = () => new Date().toISOString()) {
+  const started = new Map(), timed = new Set(['commandExecution', 'mcpToolCall']);
+  return message => {
+    const item = message.params?.item;
+    if (message.method === 'item/started') {
+      if (timed.has(item?.type) && typeof item.id === 'string' && item.id.length <= 256) {
+        const key = item.type + ':' + item.id;
+        if (!started.has(key)) {
+          if (started.size >= 4096) started.delete(started.keys().next().value);
+          started.set(key, clock());
+        }
+      }
+      return null; // No start payload, reasoning, or raw notification is retained.
+    }
+    const event = observable(message);
+    if (event?.event === 'item' && timed.has(event.type)) {
+      const key = event.type + ':' + event.id;
+      event.startedAt = started.get(key) ?? null; event.completedAt = clock(); started.delete(key);
+    }
+    if (event?.event === 'turn') started.clear();
+    return event;
+  };
+}
+
 export class AppServer {
   constructor({ cwd, env, config = [], onEvent = () => {}, spawnHost = spawn, deadlineMs = 60000, executable = 'codex' }) {
     this.pending = new Map(); this.sequence = 0; this.deadlineMs = deadlineMs;
@@ -27,11 +51,12 @@ export class AppServer {
     this.child.once('exit', () => this.fail('App-server exited'));
     this.child.stdin.on('error', () => this.fail('App-server input closed'));
     this.lines = createInterface({ input: this.child.stdout });
+    const track = observableTracker();
     this.lines.on('line', line => {
       let m; try { m = JSON.parse(line); } catch { return; }
       if (m.method) {
         if (m.id !== undefined) this.write({ id: m.id, error: { code: -32601, message: 'Interactive requests unsupported; report the missing capability.' } });
-        else { const event = observable(m); if (event) onEvent(event); }
+        else { const event = track(m); if (event) onEvent(event); }
       } else {
         const entry = this.pending.get(m.id);
         if (!entry) return;

@@ -5,7 +5,7 @@ import { importReviewPackages } from '../review/packages.mjs';
 import { nativeMeasurement } from './observer-native.mjs';
 import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress, relayTransportMeasurement } from './observer-data.mjs';
 import { hash, now, checks } from './evidence.mjs';
-import { mcpDiscovery } from './discovery.mjs';
+import { mcpDiscovery, discoveryTiming, installationItems } from './discovery.mjs';
 
 function token(text, value) {
   return text.split(/[^A-Za-z0-9_.:-]+/u).includes(value);
@@ -328,10 +328,9 @@ export class StarterObserver {
       const successful = items.filter(i => i.type === 'commandExecution' && i.exitCode === 0 && typeof i.command === 'string');
       const paths = ['/api/service', '/.well-known/tendriller.json', '/api/readiness', '/docs/BUILD_AN_APP.md'];
       const reads = paths.map(path => need(successful.find(i => i.command.includes(config.origin + path)), 'model-read-' + path));
-      const install = successful.find(i => /\b(npm|pnpm|yarn)\b.*\b(install|ci|add)\b/u.test(i.command));
-      if (install && Date.parse(reads[2].at) >= Date.parse(install.at)) throw new MeasurementError('model-installed-before-readiness', 'failed');
-      return { urls: paths.map((path, i) => ({ url: config.origin + path, observedAt: reads[i].at, commandHash: hash(reads[i].command) })),
-        source: 'Successful model terminal reads; web-only or opaque tool traces remain unmeasured', installObserved: Boolean(install) };
+      const installations = installationItems(items), timing = discoveryTiming(reads, installations);
+      return { urls: paths.map((path, i) => ({ url: config.origin + path, observedAt: reads[i].completedAt, commandHash: hash(reads[i].command) })),
+        source: 'Successful model terminal reads; web-only or opaque tool traces remain unmeasured', installObserved: installations.length > 0, ...timing };
     }
     if (check === 'unavailable-peer') {
       if (options.phase === 'before') {
