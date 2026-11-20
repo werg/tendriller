@@ -20,6 +20,11 @@ Copy `scripts/idle-soak/config.example.json` and `adapter.example.mjs` **outside
 
 **Run scope: the supplied bootstrap is native-only, without the optional MCP adapter.** This scope is recorded in evidence; it does not qualify the optional adapter or model dispatch. Model-turn counts remain null and the aggregate result remains incomplete until actual dispatch coverage is supplied. The maintained bootstrap opens the app first and counts actual pairing reconciliation (including notifications, retries and expiry), participation-status and session-change callbacks. It reports this native wakeup coverage over private IPC. It does not configure an assistant adapter or claim coverage of external model dispatch. Extend the existing bootstrap with explicit hooks for any optional adapter/model paths before claiming that coverage; do not treat a tool call as a model turn.
 
+The driver verifies a coherent read before hiding the page. It performs no UI
+interaction during hidden quiet time; after that interval ends, it brings the app
+forward for the explicit reconnect/read boundary. The first-app close action
+requires a reload before reconnecting its retained device.
+
 The adapter's `reconnect` must prove a real application session reconnect (ideally an applied cross-participant read). Merely checking that an old “connected” label remains visible is insufficient. An explicit offline/online transition and app disconnect/reconnect are boundary activity. They are measured separately; no commands are injected into quiet phases. Active retry has three attempts / 30 seconds, with expiry/cancellation; never add retry loops to the quiet wait.
 
 `audit()` returns coverage booleans for actual model dispatch and native wakeup instrumentation. Defaults are false; reports show **null**, never zero, for unobserved counts. Instrument a private native bootstrap with `globalThis[Symbol.for('tendriller.idle-soak.record')]('wakeups')` at actual setup-notification processing and `('modelTurns')` at actual model dispatch, or use the adapter's event-driven `observe({record,signal})`. Only claim coverage after all relevant dispatch paths are instrumented. A running native callback is not evidence of a future ChatGPT conversation wake.
