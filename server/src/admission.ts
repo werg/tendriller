@@ -36,6 +36,10 @@ export class Admission extends DurableObject<Env> {
     if (!/^[a-z2-7]{12}$/.test(id)) return errorResponse(400, "bad_request", "Invalid tendril id");
     const sql = this.ctx.storage.sql;
     const now = Date.now();
+    if (url.pathname === '/status' && req.method === 'GET') {
+      const row = sql.exec('SELECT released FROM creations WHERE id=?',id).toArray()[0] as {released:number}|undefined;
+      return json({state:row ? row.released ? 'released':'reserved':'absent'});
+    }
     if (url.pathname === "/release" && req.method === "POST") {
       const changed = sql.exec("UPDATE creations SET released = 1 WHERE id = ? AND released = 0 RETURNING ts", id).toArray() as { ts: number }[];
       if (this.live !== undefined) this.live -= changed.length;
@@ -64,6 +68,11 @@ export class Admission extends DurableObject<Env> {
       return json({ ok: true });
     }
     if (url.pathname !== "/reserve" || req.method !== "POST") return errorResponse(404, "not_found", "Not found");
+    // Account setup owns an independently scheduled expiry journal. Reject a
+    // delayed reserve after that deadline, including one arriving after cleanup.
+    const setupDeadline = req.headers.get('x-setup-expires-at');
+    if (setupDeadline !== null && (!/^\d{1,16}$/.test(setupDeadline) || !Number.isSafeInteger(Number(setupDeadline)) || Number(setupDeadline) <= now))
+      return errorResponse(410, 'setup_expired', 'The account setup admission deadline expired');
     if (sql.exec("SELECT id FROM creations WHERE id = ?", id).toArray().length) return json({ ok: true });
     const hourCap = Number(this.env.PUBLIC_CREATIONS_PER_HOUR ?? 100);
     const liveCap = Number(this.env.PUBLIC_UNCLAIMED_CAP ?? 1000);

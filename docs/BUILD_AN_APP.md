@@ -34,7 +34,7 @@ There is no missing `deployment.mjs` to invent.
 | Build the UI | Bundle the page and owning Worker | `page/` contains the complete authored graph and public configuration |
 | Publish | Use the creator session's saved signed publication | A receipt and selected immutable release ready for the owner’s first signed-in visit |
 | Owner sign-in | Give the person the already-published page and any prepared permission-review URL | Existing authority, keys and code retained; no new publication needed |
-| Connect the browser | Create its device, explicitly enroll its public key, then connect | The session acquires keys from the native peer and shows real connection/data status |
+| Connect the browser | Request access with its own device, let the native peer stage an exact proposal, review it, then connect | The reviewed signed grant is committed; the session acquires keys and reads real application state |
 | Verify | Submit, reload, read, inspect and retry | Retained notes and the same device/operation identities survive reopening |
 
 The owner sign-in and enrollment decision are real authority boundaries. Prepare
@@ -42,104 +42,216 @@ the code and exact commands before asking for those actions. A missing grant or
 package is a setup issue to diagnose; it is not a reason to silently substitute
 another persistence service.
 
-## 1. Get the starter and matching public packages
+## Check the selected host before installing
 
-Use **Node 24**, npm, Git, curl and a SHA-256 checker. Public artifact downloads
-require no GitHub login. The first app uses the SQL-free event package. SQL,
-native RTC and WASM engines are optional later capabilities.
-For relational guards and multi-entity transactions, use the concrete
-[SQL alternative](STATE_MODELS.md); do not configure this events definition first
-and then attempt to replace its immutable authority.
-
-Replace the service origin with the domain the user gave you. Read its live
-descriptor before creating anything:
+Use the MCP connection's `serviceOrigin`, or the exact origin the user supplied.
+Read its advertised `interfaces.readiness` at `/api/readiness` before downloading
+packages, installing dependencies or asking for the owner's email. MCP guide,
+profile and application-list responses include the same live `readiness` data.
 
 ```sh
 TENDRILLER_ORIGIN=https://tendriller.dev
-mkdir shared-notes
-cd shared-notes
-curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/service" -o service.json
-cat service.json
-curl --fail --show-error --location "$TENDRILLER_ORIGIN/downloads/tendriller-first-app.tgz" -o first-app.tgz
-tar -xzf first-app.tgz
+curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/readiness"
 ```
 
-The archive extracts the tutorial files into the current directory. If the target
-host does not yet serve this archive, copy `docs/tutorial/` from the matching
-[Tendriller source](https://github.com/werg/tendriller). Record the source commit.
-This tutorial's enrollment command requires a host that exposes
-`owner_account_id` in authenticated agent `info()` responses. If that field is
-absent, the host needs the onboarding update; the tool reports that boundary.
+Continue only after an HTTP 200 response with `schemaVersion: 1`, the matching
+`serviceOrigin`, `mode: "open"` and `creation.available: true`. A successful HTTP
+read can still report `creation_paused` or `read_only`; stop new-app setup and
+report `creation.nextAction`. Missing preflight (404) requires a host update;
+network errors, 503 and malformed responses leave readiness unverified. Do not
+silently fall back to creating on this or another host. The result is advisory:
+creation still checks current service state, rate limits and admission.
 
-As soon as these packages are available, create the real page in step 2 and
-continue through initialization, building and publication before asking for sign-in.
-Then give the owner the ready page URL. Never stop to request a "claimed" reply.
-Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
-[static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
-Keep the published page as the verification target for this tutorial's actual
-account, device enrollment and session.
+The response identifies the environment by its canonical origin, with an optional
+operator label, and reports the core release and immutable runtime ID. A missing
+`build.sourceCommit` is explicit; a runtime hash alone does not identify every
+Worker source change. The separate `/api/service` contract remains unchanged.
 
-Get the SDK and tools from the host's advertised release, and check their hashes:
+## 1. Get the starter and matching public packages
+
+Use **Node 24**, npm, curl, tar and a SHA-256 checker. The released first-app
+archive contains the maintained starter and its exact public SDK, tools and
+Chronolog events packages. Ordinary setup does not need a second repository
+checkout or a Chronolog build. SQL, native RTC and WASM engines are separate
+optional capabilities. For relational guards and multi-entity transactions, use
+the concrete [SQL alternative](STATE_MODELS.md) before configuring authority.
+
+Set the origin to the domain supplied by the user or selected connector. Keep it
+for readiness, package matching, creation, owner sign-in and assistant setup.
+Read both host descriptors **before downloading or installing packages**:
+
+```sh
+: "${TENDRILLER_ORIGIN:?Set the selected service origin before continuing}"
+export TENDRILLER_ORIGIN
+mkdir shared-notes
+cd shared-notes
+curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/readiness" -o readiness.json
+curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/service" -o service.json
+node --input-type=module <<'JS'
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const readiness = JSON.parse(readFileSync('readiness.json'));
+const service = JSON.parse(readFileSync('service.json'));
+const origin = process.env.TENDRILLER_ORIGIN;
+assert.equal(new URL(origin).origin, origin, 'Use the exact selected service origin.');
+assert.equal(readiness.schemaVersion, 1, 'Upgrade the selected host readiness endpoint.');
+assert.equal(readiness.serviceOrigin, origin, 'Do not cross service origins.');
+assert.equal(readiness.mode, 'open', readiness.creation?.nextAction || 'Creation is unavailable.');
+assert.equal(readiness.creation?.available, true, 'Creation is unavailable at this host.');
+assert.equal(service.contract, 3, 'This starter requires core contract 3.');
+assert.equal(service.core_release, readiness.build?.coreRelease, 'Host descriptors disagree.');
+assert.match(service.core_release, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+assert.match(readiness.build?.runtimeId, /^[a-f0-9]{64}$/);
+JS
+```
+
+These requests do not follow redirects. A missing endpoint, paused creation,
+unavailable service or different origin stops setup here. Report the returned
+reason and operator action; do not switch deployments or start source builds.
+Creation checks readiness again immediately before provisioning because service
+state can change after this preflight.
+
+Download the first-app archive from the host's advertised immutable release:
 
 ```sh
 TENDRILLER_RELEASE=$(node -p "JSON.parse(require('fs').readFileSync('service.json','utf8')).core_release")
-mkdir artifacts
 TENDRILLER_RELEASE_URL="https://github.com/werg/tendriller/releases/download/v$TENDRILLER_RELEASE"
-for artifact in "tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
-  "tendriller-tools-$TENDRILLER_RELEASE.tgz" SHA256SUMS manifest.json
+mkdir artifacts
+for artifact in "tendriller-first-app-$TENDRILLER_RELEASE.tgz" SHA256SUMS manifest.json
 do
   curl --fail --show-error --location "$TENDRILLER_RELEASE_URL/$artifact" -o "artifacts/$artifact"
 done
-cd artifacts
-sha256sum --ignore-missing --check SHA256SUMS
-cd ..
-npm install --save-exact "./artifacts/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
-  "./artifacts/tendriller-tools-$TENDRILLER_RELEASE.tgz"
+(cd artifacts && sha256sum --ignore-missing --check SHA256SUMS)
+tar -xzf "artifacts/tendriller-first-app-$TENDRILLER_RELEASE.tgz"
+node --input-type=module <<'JS'
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const composition = JSON.parse(readFileSync('composition.json'));
+const release = JSON.parse(readFileSync('artifacts/manifest.json'));
+const readiness = JSON.parse(readFileSync('readiness.json'));
+const {id, ...body} = composition;
+const kit = release.artifacts.find(item => item.file === release.first_app.file);
+assert.equal(createHash('sha256').update(readFileSync('artifacts/' + kit.file)).digest('hex'), kit.sha256);
+assert.equal(createHash('sha256').update(JSON.stringify(body)).digest('hex'), id);
+assert.equal(id, release.composition.id, 'The starter belongs to another release composition.');
+assert.equal(composition.version, readiness.build.coreRelease, 'Core release mismatch.');
+assert.equal(composition.runtime, readiness.build.runtimeId, 'Host runtime mismatch.');
+assert.equal(composition.core.dirty, false);
+assert.equal(composition.core.source, release.source_commit);
+if (readiness.build.sourceCommit !== null)
+  assert.equal(composition.core.source, readiness.build.sourceCommit, 'Host source checkpoint mismatch.');
+if (readiness.build.compositionId != null)
+  assert.equal(id, readiness.build.compositionId, 'Host release composition mismatch.');
+JS
+(cd packages && sha256sum --check SHA256SUMS)
+TENDRILLER_SESSION_ARCHIVE=$(node -p "JSON.parse(require('fs').readFileSync('composition.json','utf8')).components.find(x=>x.role==='session').file")
+npm install --ignore-scripts --save-exact \
+  "./packages/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
+  "./packages/tendriller-tools-$TENDRILLER_RELEASE.tgz" \
+  "./packages/$TENDRILLER_SESSION_ARCHIVE"
 npm install --save-dev --save-exact esbuild@0.28.2
 ```
 
-Chronolog's public session package is currently produced from exact source; do
-not assume `npm install @chronolog/peer-session` retrieves the required package.
-The source baseline for this tutorial is
-`d3efeb6d75ac24bb9b44899f27d6940475ab55e9`. Build its ordinary events archive:
+Keep `composition.json`, the release manifest, archive hashes and the generated
+`package-lock.json`. The composition binds the complete SDK/runtime/engine/tools
+set, the source starter, the pinned Chronolog session and embedded generation
+control provenance. The first-app archive carries the three packages this app
+installs; the manifest also identifies the runtime and engine used by the host.
+A runtime ID describes browser assets, not every host Worker byte. Automated
+deployments report both their source checkpoint and complete composition ID.
+When either identity is absent, the host's full deployed identity still needs the
+operator's [release composition evidence](RELEASE_COMPOSITION.md).
+
+If the versioned archive is unavailable or these checks fail, the operator must
+publish and qualify the matching release. Do not mix a mutable hosted starter
+with packages from another same-version source tree. The separate
+[first-app source archive](/downloads/tendriller-first-app.tgz) remains useful for
+inspection, but it is not the complete release composition.
+
+As soon as installation finishes, create the real page in step 2 and continue
+through initialization, building and publication before asking for sign-in.
+Then give the owner the ready page URL. Never stop to request a "claimed" reply.
+Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
+[static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
+Keep the published page as the verification target for the actual account,
+device enrollment and session. Enrollment requires `owner_account_id` in the
+host's authenticated agent `info()` response; absence is a host upgrade boundary.
+
+For unreleased core development, commit a clean matching checkout, run `npm ci`,
+`npm run build:artifacts` and `npm run release:artifacts`, then qualify its exact
+first-app archive with `npm run test:first-app -- --first-app-archive
+/absolute/tendriller-first-app-VERSION.tgz`. This creates local candidate artifacts;
+it does not publish a release or qualify a deployed host. Never import core's
+private server/test modules or Chronolog's source internals into the app.
+
+## 2. Create the application for the intended owner
+
+### From an account-linked MCP connection
+
+Use the connector's linked account with its granted `tendrils:create` permission.
+The host resolves the verified owner; no owner email or OAuth access token needs
+to enter the local project. First retain one private setup intent:
 
 ```sh
-git clone https://github.com/werg/chronolog-db.git ../chronolog-source
-git -C ../chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
-cd ../chronolog-source
-corepack pnpm install --frozen-lockfile --ignore-scripts
-node tools/package-peer-session.mjs
-cd ../shared-notes
-npm install --save-exact ../chronolog-source/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz
+npm run setup:prepare -- "$TENDRILLER_ORIGIN" "Shared notes"
 ```
 
-Keep the archive's reported SHA-256, `provenance.json`, exact source SHA and the
-application's `package-lock.json`. If an operator supplies a different qualified
-composition, use its exact matching package instead and run the same acceptance
-checks. A source baseline is not a claim that an arbitrary host/package pair has
-passed deployed qualification. [Release composition](RELEASE_COMPOSITION.md)
-explains that separate gate.
+This local command atomically saves `.tendriller/account-setup.json` before
+printing `prepare` and `inspect` tool arguments. The file contains the original
+operation ID, request digest, application ID and private setup credential. The
+printed `prepare.arguments` contains only the public name, mode, operation and
+application identities, and credential commitment. Do not print or copy the
+private intent into chat or the page.
 
-The SQL-free session packer consumes the installed workspace directly; disabling
-install scripts avoids unrelated native SQL engine compilation. SQL/native RTC
-packages have separate build and installation requirements.
+Call `prepare_tendril_setup` through the **same selected account-linked
+connector** with those exact `prepare.arguments`. The server checks current
+readiness, the existing creation permission and the account's verified identity.
+Save its public result object from `structuredContent` as
+`.tendriller/account-setup-result.json`. When its `state` is `ready`, complete
+the local handle:
 
-For unreleased core development, build the matching checkout with `npm ci` and
-`npm run build:artifacts`, then install its `dist/tendriller-sdk-*.tgz` and
-`dist/tendriller-tools-*.tgz` in this application. Never import core's private
-server/test modules or Chronolog's source internals into the app.
+```sh
+npm run setup:finish -- .tendriller/account-setup-result.json
+```
 
-## 2. Create the application and let the owner claim it
+`setup:finish` verifies the exact origin, operation, digest, commitment,
+application and page metadata before combining the result with the already
+saved credential. It writes `.tendriller/handle.json` without replacing an
+existing handle. Its `handle_saved` output means preparation can continue;
+`connected` remains false until actual application connections are verified.
 
-Use the actual owner's verified email:
+If a tool response is lost or its state is `prepared`, `provisioning` or
+`reconciliation_required`, call `inspect_tendril_setup` using the printed
+`inspect.arguments`. Retry preparation only with the original public request
+when the reported next action permits it. Rerunning `setup:prepare` in the same
+directory resumes its saved intent; changed names, origins or operation IDs
+are rejected. Never create another intent just because the response was late.
+If the private file is lost, restore its verified checkpoint. Neither inspection
+nor `list_tendril_setups` can reconstruct its secret; they do not authorize a
+replacement credential or page.
+
+A missing tool or creation scope is an explicit catalog/deployment/consent
+prerequisite. Keep this origin and original intent while resolving it; do not
+extract another client's OAuth credentials or silently switch account routes.
+
+### From a domain without account-linked creation
+
+The existing anonymous route remains available with the actual owner's verified
+login email. It checks readiness and the host contract, creates a page and saves
+the returned private handle:
 
 ```sh
 npm run create -- "$TENDRILLER_ORIGIN" owner@example.com "Shared notes"
 ```
 
-The command checks the host contract, creates the page and saves its returned
-handle privately in `.tendriller/handle.json`. It prints the page URL and next
-step. Keep preparing: initialize, build, publish and start the participant before
+Unlike the account-linked operation, a lost anonymous-create response cannot be
+reconstructed from a locally retained setup intent. Inspect host/account state
+before issuing another create. Do not repeat anonymous creation to work around
+an uncertain account-linked operation.
+
+Both routes print the page URL and next step. Keep preparing: initialize, build,
+publish and start the participant before
 asking the owner to open the ready URL and sign in. Agent
 credentials cannot claim the page for them. An unclaimed page expires after
 24 hours; report a blocked claim explicitly.
@@ -154,8 +266,122 @@ signing key or an application data key.
 
 The supplied `.gitignore` excludes `.tendriller/`, `node_modules/` and `page/`.
 Keep the private directory out of commits and published files. Creation is a
-separate action from initialization: if the create response is lost before the
-handle is saved, inspect the host/account state before issuing another create.
+separate action from initialization; neither a saved handle nor an accepted
+setup result establishes device enrollment, assistant approval or an online
+participant.
+
+### Continue the same app after setup credential expiry or loss
+
+The account-linked setup credential expires 24 hours after preparation, including
+after the owner claims the page. Revoking its admitting OAuth grant also stops
+that credential. Claim preserves the application, its signed authority, data and
+publication; continued native access needs an independently reviewed host
+binding. The owner can approve that binding before expiry. An unclaimed page
+that has already expired cannot be recovered through delegation.
+
+1. Stop the running native peer or assistant cleanly and retain its complete
+   private checkpoint. Keep `.tendriller/account-setup.json`, `handle.json`,
+   `descriptor.json`, `device.sqlite` and all signed operation records intact.
+2. Have the owner open the existing `page_url` and append `_tendril/manage` to
+   its trailing slash, for example `https://PAGE_HOST/s/OWNER_KEY/_tendril/manage`.
+   They sign in as the same owner and choose **Agent connection → Add agent**.
+   Use a recognizable name such as `native-continuation`. For the complete
+   first-app workflow select **Read host status**, **Connect enrolled
+   participants**, **Update signed application control**, **Publish signed
+   code** and **Propose assistant access**. Omit publication or assistant access
+   when that participant does not need it. These host permissions preserve the
+   separately signed application grants. The setup name is reserved.
+3. Save the returned ten-minute, one-use code in
+   `.tendriller/delegation-code.txt` using a private local editor. Keep the file
+   accessible only to the project owner. Supply the file path to the command;
+   keep the code itself out of chat, shell arguments, logs and page assets:
+
+   ```sh
+   npm run host:adopt -- "$TENDRILLER_ORIGIN" .tendriller/delegation-code.txt
+   ```
+
+4. The helper checks the selected host's explicit delegation support, then binds
+   the request to the retained service, page and application,
+   requires a non-replacing delegation code, and retains its submission before
+   sending. It saves the private response before selecting the credential in
+   `.tendriller/host-credential.json`. The original handle, setup intent, native
+   signer and operation records remain unchanged. A later explicit **Add agent**
+   approval can select another credential atomically while retaining both
+   adoption histories. A retained older attempt cannot roll back that newer
+   selection. Before selection, the helper verifies the credential through the
+   same host's authenticated `GET /api/t/PAGE_ID/self`; a revoked credential or
+   unavailable verification stays unselected. With the peer still stopped,
+   inspect the same identity and retained data:
+
+   ```sh
+   npx tendril --session ./session.mjs --mode own self
+   npx tendril --session ./session.mjs --mode own query notes null
+   npm run peer
+   ```
+
+   Verify the original application/device IDs and existing notes, then reconnect
+   the same browser profile. A saved host credential does not prove a live
+   session. If assistant access used the old setup credential, stop the peer,
+   run `npm run assistant:prepare`, have the owner review its new proposal for
+   this same app, then run `npm run assistant`. Retain the existing assistant
+   key and event cursor. Host delegation does not approve assistant permissions.
+
+Use **Add agent** for this continuation. The separate **Replace all agent
+credentials for recovery** action revokes every existing host token when its
+code is used; the starter rejects that code. Neither route grants a new device
+signing key or changes signed membership.
+
+If the setup secret or original handle is lost, first restore its verified
+private checkpoint. When the native device and signed descriptor survive but
+the host credential cannot be restored, use the same account-linked connector
+to `inspect_tendril_setup` with the original operation ID. If that ID was also
+lost, `list_tendril_setups` provides the bounded retained allocations; identify
+the original page and application, then inspect that operation. Save the exact
+public inspection result, including an `expired` result, as
+`.tendriller/account-setup-result.json`. The helper can validate this result
+against the retained descriptor and redeem the owner's reviewed delegation for
+that same app. A missing or conflicting identity record stops continuation.
+
+After reviewed delegation is saved, `host-credential.json` together with the
+retained descriptor can identify that same application even if `handle.json`
+is missing. `npm run create` recognizes this state and returns `resumed: true`
+with the existing page URL; it does not preflight or allocate another page.
+Conflicting service, page or application evidence stops the command. If only
+incomplete setup, signer or recovery files remain, `setup_recovery_required`
+requires restoration or continuation of that original project. Keep these
+records; use a separate empty directory only for an explicitly new application.
+A local resumed result still needs the authority and data checks above.
+
+When the connector is disconnected too, the owner can sign in directly at
+`SERVICE_ORIGIN/dashboard/setups`, inspect the original setup, and copy its
+**Open existing page** link into the private file
+`.tendriller/owner-page-url.txt`. Keep `.tendriller/descriptor.json` and the native
+device checkpoint. The same `host:adopt` command can use that exact owner link
+and pinned application identity without a connector token, a reconstructed
+setup secret or a new operation. This read-only dashboard shows at most 100
+retained records and never claims, recreates or reconfigures the page.
+
+If the native signer or application keys are also missing, host delegation
+cannot recreate them: restore the device checkpoint or use the application's
+explicit signed recovery procedure with surviving authorized devices.
+
+An `adoption_outcome_unknown` means the code may have been consumed and its
+credential reply was not durably retained. The helper will not send that code
+again. The owner must inspect the named agent in the same management screen,
+disconnect that named binding if it exists, and explicitly approve a fresh
+**Add agent** code. Keep the failed attempt and original app records. When the
+response was saved but local selection was interrupted, rerunning the same
+command reuses the private response and verifies the current credential without
+submitting the code again. `host_credential_unverified` retains that response
+while the owner inspects revocation or a network failure. A stale attempt reports
+`host_selection_changed` and leaves the later credential selected. Concurrent
+selection reports `host_selection_busy`; retry after the other command exits.
+If a command crashed while holding `.tendriller/host-selection.lock`, confirm
+all adoption commands have stopped before removing only that lock and resuming
+the saved response. Keep every attempt, response and application checkpoint.
+`delegation_unavailable` means that the selected host could not confirm these
+preconditions; no code was submitted. Have the operator deploy the matching host
+and retain the same service origin while resolving that prerequisite.
 
 ## 3. Define retained state and initialize the native session
 
@@ -237,6 +463,7 @@ The implementation is deliberately ordinary:
 | --- | --- |
 | `domain.mjs` | One definition shared by native and browser execution |
 | `setup.mjs` | Explicit create, initial authority/generation and reviewed device enrollment |
+| `host-adoption.mjs` | Retain and redeem owner-reviewed host delegation for the same application |
 | `local.mjs` | Private local setup records and the authenticated native host client |
 | `session.mjs` | Complete resumable native bootstrap for the CLI and running peer |
 | `worker.mjs` | Browser identity, verified authority, session ownership, participation and key acquisition |
@@ -304,25 +531,64 @@ therefore shows the next setup action explicitly.
 
 ## 6. Enroll and connect the owner's browser
 
-Open the published page while signed in as its owner. Choose **Set up this
-browser**. This explicit action creates or resumes a browser-owned identity,
-closes that short setup owner, and displays its public key. It transfers no
-private key or plaintext epoch key.
-
-Verify that this is the intended owner's browser. Stop `npm run peer` or `npm run assistant` if it is
-already running, then copy the exact command shown in the page:
+Start the private project's native participant before browser review:
 
 ```sh
-npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
-npm run peer # Or restart npm run assistant when using MCP access.
+npm run peer # Or npm run assistant when using MCP access.
 ```
 
-Enrollment uses the current native coordinator's complete retained prefix,
-preserves existing grants and key commitments, explicitly binds the new device
-to `info().owner_account_id`, and saves the exact signed control-change request
-before sending it. A lost reply retries that saved request. The script refuses
-an unexpected coordinator or an existing grant rather than silently selecting
-another history or widening device rights.
+Open the published page while signed in as its owner and choose **Request browser
+access**. The page retains one public request ID before networking. A short-lived
+Worker opens this browser's own retained identity under its exclusive device
+lock and signs the service challenge. That challenge binds the key, account,
+application, service/page origins, exact read/write rights, current authority and
+expiry. The private key stays in Worker storage.
+
+The same native owner saves the pairing intent, **durably pauses command
+ordering**, and retains the exact signed control proposal before submitting it
+for review. The pause drains earlier ordering work and freezes the selected
+prefix; merely checking that the generation has not changed would miss later
+writes within that generation. The proposal preserves all existing grants,
+epoch/key commitments and recovery floor and adds only the proved account/key
+with the narrow browser rights. The service validates the normal signed control
+admission without selecting a new generation at this stage.
+
+Open **Review this exact browser request**. If preparation is still
+pending, keep the native owner running and reopen the review once it has staged
+the proposal. On the service-origin page, compare the complete fingerprint with
+the browser's displayed key and review the account, application, origins, rights,
+selected generation, retained prefix and proposal digest. Choose **Approve this
+device** only for that exact proposal. Review has same-origin and CSRF checks;
+it does not itself install the device grant. The native owner saves the exact
+commit attempt, then submits the reviewed transition. The server rechecks
+current account access and authority inside the serialized normal selector.
+
+The native review window lasts at most ten minutes, with idle checks backing off
+to thirty seconds.
+Closing it does not erase a durable pause. Native records under `.tendriller/`
+retain `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
+`pairing-ID-commit.json` and `pairing-ID-outcome.json`; the pause belongs to the
+same device store. After a timeout, lost response or restart, reopen that same
+participant to reconcile the original outcome before resuming ordering.
+Uncertain or mismatched outcomes stay paused. Do not delete retained evidence,
+rebase the proposal or create another signer to get past the pause. Exact
+receipt recovery works even after a later generation change, and never restores
+a subsequently revoked grant.
+
+Choose **Check pairing status**, or return from the review tab for one bounded
+status read. There is no continuous browser poll. Only **Enrollment committed**
+means the reviewed signed grant is installed. Reloads retain the same request
+and browser key. Expired, denied or stale requests offer an explicit new review
+for that device; uncertain outcomes remain on the original request.
+
+For a deliberate inspection/retry step with the resident owner stopped,
+`npm run pair` performs one prepare/inspect/commit pass. It does not wait for human
+approval or the later independent receipt-verification pass. If it prepares or
+submits a proposal, restart the same native participant to finish or reconcile
+that request; keep the native process running for the complete pairing flow.
+`npm run enroll -- PUBLIC_KEY`
+remains a deliberate manual administration route; the ordinary browser flow
+uses its own signed proof and the complete proposal review above.
 
 This first app grants the browser **read and write**, with **no publication,
 administration, coordination or recovery authority**. This keeps the first
@@ -375,6 +641,33 @@ does not establish enrollment, retained state, deployed OAuth, mobile durability
 or Internet connectivity. The broader [release gates](RELEASE_COMPOSITION.md)
 remain separate from this first-app acceptance.
 
+### Retain and verify a private checkpoint
+
+Keep the complete project and its `.tendriller/` directory in a persistent,
+access-controlled location. That directory contains the setup credential,
+device database, signing material, saved initialization/publication attempts,
+reviewed host credentials and adoption attempts, and
+optional assistant identity/cursor; retaining only the public `page/` files or
+the page URL cannot resume the participant. Never add private state to a source
+commit, publication archive, chat transcript or browser bundle.
+
+For a filesystem checkpoint, stop the owned participant cleanly and confirm its
+process has exited before copying the complete private directory. Preserve file
+permissions and all database sidecars; do not copy an actively written SQLite
+file on its own. Verify the destination exists and its copied file bytes match
+before reporting a backup. A failed helper or an ephemeral working directory
+does not establish durable storage. Record the private destination separately
+from the public report without printing credentials.
+
+Resume with the same project, selected service origin and saved device. Use
+`tendril --session ./session.mjs --mode own self`, the explicit `query notes null`,
+and `publication-operation ORIGINAL_ID` to inspect the retained identity, data
+and original publication receipt. Stop that probe before restarting the resident
+participant. A restore exercise must use one owner of the signer at a time; do
+not run a copied device concurrently with its original. Recheck the actual
+browser/MCP exchange after restarting: a successful checkpoint does not keep a
+native process alive or authenticate a separate browser session.
+
 ## Adapt the app to the user's task
 
 Keep the complete session composition and replace the notes domain/UI with the
@@ -414,12 +707,14 @@ mobile suspension.
 | --- | --- |
 | Create is unavailable or contract mismatches | Read `/api/service` and the error; use a compatible host/package pair. Preserve the requested platform and report the actual blocker. |
 | `forbidden` during configuration | Check the current private setup credential and its scopes, expiry and page identity. Configuration and signed publication support unclaimed pages; claim is not a prerequisite. |
+| `setup_expired`, `setup_binding_inactive`, or a revoked setup token on a claimed page | Follow [same-app continuation](#continue-the-same-app-after-setup-credential-expiry-or-loss): owner **Add agent**, retain its private code and use `host:adopt`. Preserve the original signer and setup operation. |
 | `peer_application_unconfigured` | Run the explicit initial configuration; a page handle alone has no application authority. |
 | `PEER_NO_SELECTED_GENERATION` | Complete the saved first `create` transition before opening the session. |
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Native CLI and `npm run peer` cannot share one open writer. |
-| Browser is not enrolled | Verify its displayed public key, run the explicit owner-bound enrollment command, then reconnect. Account login and device grants are separate. |
+| Browser is not enrolled | Request access from its retained browser device, keep the native peer running to stage the exact proposal, and complete the service-origin owner review. Check committed status before connecting. Account login and device grants are separate. |
+| Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Reopen the same native owner after a bounded window closes; reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |
 | Publication forbidden | Inspect the current explicit publisher grant and submitting account authorization. Administration is a separate right. |
 | Stale publication or control transition | Inspect the selected head and saved request. Retry exact uncertain work; review a fresh change after a conflict. |
@@ -449,7 +744,12 @@ npm run assistant
 ```
 
 Use `assistant` **instead of** `peer`: it runs the same native participant with
-the declared `notes`, `addNote` and minimal `note.added` event adapter. Keep it
+the declared `notes` query and `addNote` command. Optional `note.added` forwarding
+requires `--events` on both preparation and the running adapter, plus the owner's
+corresponding permission review. It does not configure a future ChatGPT turn.
+The runner distinguishes preparation, the native PID, adapter status, skipped
+unapproved events and shutdown; verify a real round trip before claiming a
+connection. Keep it
 under the execution environment's process supervisor. The prepare command prints
 the real permission-review URL even before claim. Give the owner the ready page
 and that URL together; sign-in adopts the prepared application and makes the

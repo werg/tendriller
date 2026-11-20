@@ -3,6 +3,8 @@ import type { Role } from "../../contract/index.mjs";
 import type { Link, Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { safeEqual, sha256Hex } from "./ids";
+import { SETUP_SCOPES, setupCredentialActive, type SetupCredentialBinding } from './setup-credential';
+import { publicBase } from './urls';
 
 export const AGENT_SCOPES = ['host:read', 'host:manage', 'agents:delegate', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'] as const;
 export type AgentScope = typeof AGENT_SCOPES[number];
@@ -50,12 +52,35 @@ const localToken = (t: Tendril, hash: string) => t.db.cached(`access:token:${has
 const localSession = (t: Tendril, hash: string) => t.db.cached(`access:session:${hash}`, () =>
   t.db.one<{ account_id: string; role: Role; expires_at: number }>("SELECT account_id,role,expires_at FROM page_sessions WHERE hash=?", hash));
 
+function localSetupBinding(t: Tendril, principal: AgentPrincipal): SetupCredentialBinding | null {
+  const setup = t.db.get<SetupCredentialBinding | null>('account_setup', null), binding = principal.binding;
+  if (!setup || !binding || typeof binding.id !== 'string' || !binding.id || binding.revision !== 1 ||
+      !Array.isArray(binding.scopes) || binding.scopes.length !== SETUP_SCOPES.length ||
+      SETUP_SCOPES.some(scope => !binding.scopes.includes(scope)) ||
+      setup.page !== t.tid || setup.service_origin !== publicBase(t.env) ||
+      setup.commitment !== principal.credentialHash || typeof setup.digest !== 'string' || !/^[a-f0-9]{64}$/.test(setup.digest) ||
+      !Number.isSafeInteger(setup.expires_at) || setup.expires_at <= t.now() ||
+      ['account_id', 'client_id', 'grant_id'].some(key => typeof setup[key as keyof SetupCredentialBinding] !== 'string' || !setup[key as keyof SetupCredentialBinding]))
+    return null;
+  return setup;
+}
+
+/** Inspect the fixed setup binding without promoting a damaged record to legacy authority. */
+export function setupCredentialBinding(t: Tendril, credentialHash: string): SetupCredentialBinding | null {
+  if (localToken(t, credentialHash)?.name !== 'setup') return null;
+  const binding = agentBinding(t, 'setup');
+  return localSetupBinding(t, { kind: 'agent', name: 'setup', credentialHash, ...(binding ? { binding } : {}) });
+}
+
 export async function authenticateAgentToken(t: Tendril, token: string): Promise<AgentPrincipal> {
   const hash = await sha256Hex(token);
   const row = localToken(t, hash);
   if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
   const binding = agentBinding(t, row.name);
-  return { kind: "agent", name: row.name, credentialHash: hash, ...(binding ? { binding } : {}) };
+  const principal: AgentPrincipal = { kind: "agent", name: row.name, credentialHash: hash, ...(binding ? { binding } : {}) };
+  if (row.name === 'setup' && !await freshPrincipal(t, principal))
+    throw new HttpError(401, 'setup_binding_inactive', 'The fixed setup credential expired, changed, or lost its admitting account/client grant. Use the owner’s reviewed delegation route.');
+  return principal;
 }
 
 export async function authenticateAgent(t: Tendril, req: Request): Promise<AgentPrincipal> {
@@ -127,7 +152,21 @@ export function currentPrincipal(t: Tendril, principal: Principal, pageKey?: str
   if (principal.kind === "page") return localPagePrincipal(t, principal, pageKey);
   if (localToken(t, principal.credentialHash)?.name !== principal.name) return null;
   const binding = agentBinding(t, principal.name);
-  return JSON.stringify(binding) === JSON.stringify(principal.binding ?? null) ? principal : null;
+  if (JSON.stringify(binding) !== JSON.stringify(principal.binding ?? null)) return null;
+  if (principal.name === 'setup' && !localSetupBinding(t, principal)) return null;
+  return principal;
+}
+
+/** Refresh external setup-grant policy before work; synchronous commits still recheck local expiry/revocation. */
+export async function freshPrincipal(t: Tendril, principal: Principal, pageKey?: string): Promise<Principal | null> {
+  const current = currentPrincipal(t, principal, pageKey);
+  if (!current) return null;
+  if (current.kind === 'agent' && current.name === 'setup') {
+    const setup = localSetupBinding(t, current);
+    if (!setup || !await setupCredentialActive(t.env, setup)) return null;
+    return currentPrincipal(t, current, pageKey);
+  }
+  return current;
 }
 
 /** Route ownership retains the exact credential incarnation for narrow revocation.

@@ -10,7 +10,7 @@ Worker, install a service, link a human account or trigger a ChatGPT turn.
 
 Use Node 24 or newer on the build machine and service host. The pinned public
 session package is the events-only Chronolog build at
-`d3efeb6d75ac24bb9b44899f27d6940475ab55e9`. SQL or native RTC variants require their
+`15573014f4536369d7bd2f8a4b894a0d9fb69812`. SQL or native RTC variants require their
 own matched build and qualification; the default application uses the maintained
 encrypted relay fallback. Keep the coordinating participant available separately.
 

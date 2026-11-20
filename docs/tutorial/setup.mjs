@@ -1,25 +1,38 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { createPage, describeService, requireService } from '@tendriller/core';
+import { createPage, describeService, requireService, requireServiceOrigin, describeReadiness, requireCreationReady } from '@tendriller/core';
 import { bytesDigest, bytesToHex, describeApplication, eventExecutionManifest,
   executionManifestArtifacts, participantGrant, signTransitionRequest, verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { definition } from './domain.mjs';
-import { devicePath, project, readPrivate, savePrivate } from './local.mjs';
+import { devicePath, project, readPrivate, savePrivate, readHostHandle, hostIdentity, requireHostHandle, requireFreshProject } from './local.mjs';
+
+async function resumeProject(origin) {
+  const existing = await readHostHandle(true);
+  if (existing) {
+    if (new URL(existing.api).origin !== origin) throw Object.assign(Error('The saved handle belongs to another service origin. Resume it only with its matching connector, or use a separate directory for the requested service; never copy private device state between services.'), { code: 'service_origin_mismatch' });
+    requireHostHandle(existing, await hostIdentity(origin));
+    if (await readPrivate('host-credential.json', true)) return { serviceOrigin: origin, page_url: existing.page_url, resumed: true,
+      next: 'Resume the retained native participant with its reviewed host credential and verify the existing application and data. Keep its signer, descriptor and signed operation records; do not initialize a replacement.' };
+    return { serviceOrigin: origin, page_url: existing.page_url, resumed: true, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
+  }
+  await requireFreshProject();
+  return null;
+}
 
 export async function createProject(service, owner, name = 'Shared notes') {
-  const existing = await readPrivate('handle.json', true);
-  if (existing) return { page_url: existing.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
   if (!service || !owner) throw Error('Usage: npm run create -- https://YOUR_HOST VERIFIED_OWNER_EMAIL "Shared notes"');
-  const url = new URL(service);
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
-      !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) {
-    throw Error('Supply an HTTPS service origin (HTTP is allowed only for localhost development).');
-  }
-  requireService(await describeService(url.origin));
-  const handle = await createPage(url.origin, { owner, name });
+  const origin = requireServiceOrigin(service);
+  const resumed = await resumeProject(origin);
+  if (resumed) return resumed;
+  requireCreationReady(await describeReadiness(origin), { service: origin });
+  requireService(await describeService(origin));
+  // A checkpoint restored while preflight was running still wins over creation.
+  const restored = await resumeProject(origin);
+  if (restored) return restored;
+  const handle = await createPage(origin, { owner, name });
   await savePrivate('handle.json', handle);
-  return { page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
+  return { serviceOrigin: origin, page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
 }
 
 export async function initializeProject() {
@@ -119,13 +132,21 @@ export async function enrollBrowser(publicKey) {
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
+export async function pairReviewedBrowsers() {
+  const { openSession } = await import('./session.mjs');
+  const owned = await openSession();
+  try { return { pairings: await owned.processPairings(), next: 'Start npm run peer and refresh browser pairing status before connecting.' }; }
+  finally { await owned.close(); }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [action, ...args] = process.argv.slice(2);
   try {
     const result = action === 'create' ? await createProject(...args)
       : action === 'init' ? await initializeProject()
         : action === 'enroll' ? await enrollBrowser(args[0])
-          : (() => { throw Error('Use create, init, or enroll. See https://tendriller.dev/docs/BUILD_AN_APP.md.'); })();
+          : action === 'pair' ? await pairReviewedBrowsers()
+            : (() => { throw Error('Use create, init, pair, or enroll. See /docs/BUILD_AN_APP.md on the selected service origin.'); })();
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
 }

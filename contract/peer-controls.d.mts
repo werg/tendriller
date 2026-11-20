@@ -1,6 +1,6 @@
 import type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, SignedTransitionRequest, TransitionRequest,
   ApplicationDescription, SignedApplicationDescriptor, SignedApplicationSchema, SignedPublication } from './peer-authority.mjs';
-import type { PeerParticipantClient } from './peer-participant.mjs';
+import type { PeerParticipantClient, ParticipantExchangeOptions } from './peer-participant.mjs';
 export type { AuthorityBundle, PeerGrant, HistoryPoint, SignedGeneration, SignedTransitionRequest,
   ApplicationDescription, ApplicationInputSchema, SignedApplicationDescriptor, SignedApplicationSchema } from './peer-authority.mjs';
 export interface PeerAccountBinding { readonly publicKey: string; readonly accountId: string }
@@ -37,7 +37,7 @@ export interface PeerControlUpdate {
 }
 export interface PeerControlsClient {
   /** Unverified transport evidence. Pin the descriptor and verify through Chronolog before using it. */
-  application(): Promise<AuthorityBundle>;
+  application(options?: ParticipantExchangeOptions): Promise<AuthorityBundle>;
   /** Immutable schemas and genesis envelope. Verify against the pinned descriptor using Chronolog. */
   definition(): Promise<PeerApplicationPublication>;
   /** Creates durable control state; no browser or native process gains a permanent role. */

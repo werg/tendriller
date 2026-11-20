@@ -53,6 +53,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
     const body = await readJson(req, 4096), scopes = agentScopes(body.scopes, principal.binding?.scopes);
     for (const scope of scopes) requireAgentScope(principal, scope);
     if (typeof body.name !== 'string' || !/^[A-Za-z0-9_.@-]{1,64}$/.test(body.name)) throw new HttpError(400, 'invalid_agent_name');
+    if (body.name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'The setup name is reserved for the fixed account-bound creation credential.');
     if (t.db.one('SELECT 1 FROM tokens WHERE name=?', body.name)) throw new HttpError(409, 'exists');
     if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
     const token = await t.addToken(body.name, scopes, () => {
@@ -64,6 +65,8 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   const rotate = /^tokens\/([^/]+)\/rotate$/.exec(rest);
   if (rotate && method === 'POST') {
     const name = rotate[1], binding = agentBinding(t, name);
+    if (name === 'setup' && t.db.get('account_setup', null))
+      throw new HttpError(403, 'setup_credential_fixed', 'This setup credential is bound to the retained creation commitment. Use the owner’s reviewed delegation route instead of rotating it.');
     if (!binding || !t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found');
     if (name !== principal.name) {
       requireAgentScope(principal, 'agents:delegate');
@@ -162,13 +165,15 @@ route("POST", /^release$/, t => withUnconfiguredPeerApplication(t, async () => {
     await reopened.body?.cancel();
     const reserved = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": t.tid } }));
     if (!reserved.ok) return reserved;
-  }
+    await reserved.body?.cancel();
+  } else await reopened.body?.cancel();
   try {
     const row = await t.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = NULL, claimed_at = NULL WHERE id = ? AND owner_account = ? RETURNING id")
       .bind(t.tid, owner).first();
     if (!row) throw new HttpError(409, "owner_changed", "Owner changed during release");
   } catch (err) {
-    await admission.fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+    const released = await admission.fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+    await released.body?.cancel();
     throw err;
   }
   t.db.del("owner_account");

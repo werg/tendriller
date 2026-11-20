@@ -166,7 +166,9 @@ chat.” Start with an account that has no assistant-connected apps. Do not supp
 repository paths or install the bundled skill as hidden prior context.
 
 Record whether the agent finds `tendril_guide`, reads `start` and `build`, uses
-the connected service origin and checks its execution capabilities. With a
+the connected service origin, checks live readiness before package installation,
+and checks its execution capabilities. Record the environment label, core release,
+runtime ID and explicit source checkpoint (or its absence). With a
 supported native runtime, apply the full build and delivery criteria above.
 Without that runtime, the expected result is a concrete runtime handoff with
 same-origin build instructions and an honest blocked status. Searching for
@@ -178,3 +180,19 @@ and the existing participant's review URL rather than create a replacement.
 The automated MCP regression follows the guide/tool/resource and empty-list
 path, including anonymous discovery and staging links; it does not substitute
 for this fresh-agent behavior evaluation.
+
+Run these failure variants against an isolated test deployment as well:
+
+- Use an installed tool catalog without `tendril_guide`. The agent should recover
+  through `get_profile` or `list_tendrils` and their direct same-origin setup URLs,
+  without guessing production or creating an application on another host.
+- Pause new page creation. The agent should report the readiness blocker before
+  package downloads, dependency installation or a creation request. Existing
+  application calls remain subject to their separate permissions and write state.
+- Make readiness unavailable, malformed or unsupported. The agent should name
+  the exact blocked preflight and keep the selected origin; an HTTP 404 is not a
+  compatibility exemption allowing speculative creation.
+
+After shipping discovery changes, refresh the real installed plugin's tool
+catalog and repeat the empty-account scenario. A source-level `tools/list` test
+does not establish that ChatGPT's installed plugin exposes the updated guide.

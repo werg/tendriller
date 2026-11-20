@@ -1,5 +1,5 @@
 import { PEER_RELAY_LIMITS as LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/relay.mjs';
-import { accountActive, pageAccessAllowed, participantIdentity, type Principal } from './access';
+import { accountActive, pageAccessAllowed, participantIdentity, freshPrincipal, type Principal } from './access';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
@@ -48,7 +48,7 @@ function owner(t: Tendril, principal: Principal): string {
 async function authorize(t: Tendril, principal: Principal): Promise<number> {
   const until = t.now() + LIMITS.authorizationMs;
   owner(t, principal);
-  const allowed = await pageAccessAllowed(t);
+  const allowed = await pageAccessAllowed(t) && await freshPrincipal(t, principal);
   owner(t, principal);
   if (!allowed || t.now() >= until)
     throw new HttpError(403, 'forbidden', 'Peer relay access is no longer active');
@@ -134,6 +134,13 @@ async function refreshSession(t: Tendril, session: string, state: Refresh): Prom
     const allowed = await policyCheck(state, () => pageAccessAllowed(t));
     refreshMembers(t, session, state);
     if (!allowed) throw new Error('Peer host access revoked');
+    const setupPrincipals = new Map(values.flatMap(value => value.principal.kind === 'agent' && value.principal.name === 'setup'
+      ? [[value.principal.credentialHash, value.principal] as const] : []));
+    for (const principal of setupPrincipals.values()) {
+      const allowed = await policyCheck(state, () => freshPrincipal(t, principal));
+      refreshMembers(t, session, state);
+      if (!allowed) throw new Error('Peer setup grant revoked');
+    }
     // The page-policy join already checks its owner account. Other participants
     // need their own policy read, shared across that account's two lanes.
     const accounts = new Set(values.flatMap(value => value.principal.kind === 'page' && value.principal.accountId &&

@@ -4,6 +4,14 @@ Follow [Choose retained state](https://tendriller.dev/docs/STATE_MODELS.md).
 This directory is a separate application with its own private handle and device
 store. It does not convert or overwrite the Shared Notes application.
 
+Use the selected service's `/api/readiness` before acquiring or building the
+optional SQL packages. `create` repeats that anonymous check and the host
+contract check before loading native SQL code, then verifies the engine before
+creating a page. Paused, read-only, unavailable or unsupported readiness stops
+setup without private state or a production fallback. A saved handle resumes
+only against the same service origin, without creating another page or reopening
+an engine; retain the original directory and signing identity on resume.
+
 `domain.mjs` declares the schema, a one-time seed command, and one guarded
 transfer that changes two bins, inserts a receipt and emits an event atomically.
 `setup.mjs` creates and configures the hosted application with its signed schema

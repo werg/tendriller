@@ -1,6 +1,8 @@
+import { routeAccountSetup } from './account-setup';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
 import { parseActivityTicket } from './assistant-activity';
 import { routeAssistant } from './assistant-gateway';
+import { routeDevicePairingReview } from './device-pairing';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
 import { assertValid, schemaDocument } from "../../contract/index.mjs";
@@ -9,6 +11,7 @@ import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
 import { routeIntegrationOAuth } from "./accounts/integration-oauth";
 import { dashboard } from "./accounts/keys";
+import { setupDashboard } from './accounts/setups';
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
 import { adminPage, appealPage } from "./abuse/admin";
@@ -21,7 +24,7 @@ import { serviceDescriptor } from "./descriptor";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
-import { requireCreationOpen, reserveCreationIp } from "./service-state";
+import { requireCreationOpen, reserveCreationIp, serviceReadiness } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
 import type { CacheContext } from "./immutable-cache";
 
@@ -154,6 +157,8 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return withCors(await api(req, env, url));
   }
 
+  if (path.startsWith('/pairings/')) return routeDevicePairingReview(req, env, url);
+
   if (path === '/mcp' || path === '/connections' || path.startsWith('/connections/') ||
     path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp')
     return routeAssistant(req, env, url);
@@ -165,6 +170,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/admin" || path === "/admin/action" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
+  if (path === '/dashboard/setups' || path.startsWith('/dashboard/setups/')) return setupDashboard(req,env,url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
@@ -233,6 +239,13 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   try {
     if (path === "/api/service" && req.method === "GET")
       return json(serviceDescriptor(), 200, { Link: onboardingLinks(publicBase(env)) });
+    if (path === "/api/readiness") {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Readiness is read-only');
+      const readiness = await serviceReadiness(env);
+      const response = json(readiness, readiness.mode === 'unavailable' ? 503 : 200, { Link: onboardingLinks(publicBase(env)) });
+      return req.method === 'HEAD' ? new Response(null, response) : response;
+    }
+    if (path === "/api/setup") return routeAccountSetup(req, env);
     if (path === "/api/tendrils") {
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
       await requireCreationOpen(env);
@@ -259,12 +272,14 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
           const admission = env.ADMISSION.get(env.ADMISSION.idFromName("global"));
           const allowed = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": id } }));
           if (!allowed.ok) return allowed;
+          await allowed.body?.cancel();
           let indexed = false;
           const cancel = async () => {
             try {
               if (indexed) await env.ACCOUNTS!.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
             } finally {
-              await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
+              const cancelled = await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
+              await cancelled.body?.cancel();
             }
           };
           let res: Response;
@@ -303,18 +318,26 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     }
 
     if (path === "/api/adopt") {
+      if (req.method === 'GET') return json({ schemaVersion: 1, serviceOrigin: publicBase(env),
+        delegation: { applicationBound: true, nonReplacing: true, responseRecovery: false } }, 200, { 'Cache-Control': 'no-store' });
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
-      const text = await req.text();
+      const text = new TextDecoder().decode(await readBody(req, 4096));
       let code = "";
+      let expectedMode: 'delegate' | undefined, applicationId: string | undefined;
       try {
-        code = String(JSON.parse(text || "{}").code ?? "").trim();
+        const input = JSON.parse(text || "{}");
+        if (!isPlainObject(input) || typeof input.code !== 'string' ||
+          input.expectedMode !== undefined && input.expectedMode !== 'delegate' ||
+          input.applicationId !== undefined && (typeof input.applicationId !== 'string' || !/^[a-f0-9]{64}$/.test(input.applicationId)))
+          return errorResponse(400, 'invalid_adoption_request', 'Provide a code and, for reviewed delegation, its application identity and expectedMode delegate.');
+        code = input.code.trim(); expectedMode = input.expectedMode as 'delegate' | undefined; applicationId = input.applicationId as string | undefined;
       } catch {
         return errorResponse(400, "bad_json", "Request body is not valid JSON");
       }
       const m = /^([a-z2-7]{12})-(\d{6})$/.exec(code);
       if (!m) return errorResponse(400, "invalid_code", "Adopt codes look like <tendril id>-<6 digits>");
       return stub(env, m[1]).fetch(
-        new Request("https://tendril.internal/adopt", { method: "POST", headers: { "x-tendril-id": m[1], "Content-Type": "application/json" }, body: JSON.stringify({ code }) }),
+        new Request("https://tendril.internal/adopt", { method: "POST", headers: { "x-tendril-id": m[1], "Content-Type": "application/json" }, body: JSON.stringify({ code, expectedMode, applicationId }) }),
       );
     }
 

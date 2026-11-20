@@ -1,13 +1,14 @@
 import { PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL, validatePeerBootstrap, validatePeerDescription } from '../../contract/peers.mjs';
-import { participantIdentity, requireAgentScope, pageAccessAllowed, accountActive } from './access';
+import { participantIdentity, requireAgentScope, pageAccessAllowed, accountActive, freshPrincipal } from './access';
 import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
 import { handlePeerParticipant } from './peer-participant';
 import { handleInvitations } from './peer-invitations';
 import { handleRelay } from './peer-relay';
+import { handleDevicePairing } from './device-pairing';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|pairing)$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -48,7 +49,8 @@ export function nextPeerDeadline(t: Tendril): number | null {
 export function expirePeers(t: Tendril): void { peers(t); }
 
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
-  if (!authorized(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
+  if (!authorized(t, principal) || !await freshPrincipal(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
+  if (path === 'peers/pairing') return handleDevicePairing(t, req, url, principal);
   if (path === 'peers/participant') return handlePeerParticipant(t, req, principal);
   if (path === 'peers/invitations') return handleInvitations(t, req, url, principal);
   if (path === 'peers/relay') return handleRelay(t, req, url, principal);
@@ -123,14 +125,14 @@ async function forwardDescription(t: Tendril, ws: WebSocket, message: string): P
     description = validatePeerDescription(input.description);
     if (description.type !== (value.role === 'offerer' ? 'offer' : 'answer')) throw new Error('role');
   } catch { ws.close(1008, 'Invalid or repeated WebRTC description'); return; }
-  if (!authorized(t, value.principal) || !await pageAccessAllowed(t) ||
+  if (!authorized(t, value.principal) || !await freshPrincipal(t, value.principal) || !await pageAccessAllowed(t) ||
       value.principal.kind === 'page' && value.principal.accountId && !await accountActive(t, value.principal.accountId)) {
     ws.close(4003, 'Peer host access revoked'); return;
   }
   const other = peers(t, value.channel).find(peer => peer !== ws && attachment(peer)?.session === value!.session);
   if (!other) { ws.close(1013, 'Rendezvous peer disconnected'); return; }
   const candidate = attachment(other)!;
-  if (candidate.principal.kind === 'page' && candidate.principal.accountId && !await accountActive(t, candidate.principal.accountId)) {
+  if (!await freshPrincipal(t, candidate.principal) || candidate.principal.kind === 'page' && candidate.principal.accountId && !await accountActive(t, candidate.principal.accountId)) {
     other.close(4003, 'Peer host access revoked'); ws.close(1013, 'Rendezvous peer disconnected'); return;
   }
   // Account lookups can yield to a revocation, expiry or replacement session.

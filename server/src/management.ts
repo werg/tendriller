@@ -1,6 +1,6 @@
 import type { Tendril } from './tendril';
 import type { PagePrincipal } from './access';
-import { agentScopes } from './access';
+import { agentScopes, currentPrincipal } from './access';
 import { addActivity } from './activity';
 import { listVersions, pointers } from './files';
 import { escapeHtml } from './inject';
@@ -8,6 +8,7 @@ import { HttpError, readBody } from './http';
 import { sha256Hex, sixDigits } from './ids';
 import { ADOPT_CODE_TTL } from './limits';
 import { serviceStyle } from './accounts/ui';
+import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
 
 const text = (value: unknown) => escapeHtml(String(value ?? ''));
 
@@ -19,34 +20,55 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     if (!owner) throw new HttpError(403, 'forbidden', 'Only the signed-in owner can manage this page');
     if (!(req.headers.get('Content-Type') ?? '').startsWith('application/x-www-form-urlencoded'))
       throw new HttpError(415, 'unsupported_media_type', 'Expected a management form');
+    const binding = hostApprovalBinding(t, principal.accountId!);
+    const commit = async (write: () => void) => {
+      await requireHostApprovalPolicy(t, binding);
+      t.transaction(() => {
+        requireHostApprovalBinding(t, binding);
+        if (!currentPrincipal(t, principal, req.headers.get('x-tendril-key') ?? undefined))
+          throw new HttpError(401, 'unauthorized', 'The owner session changed. Sign in and review this action again.');
+        write();
+      });
+    };
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
     const action = form.get('action');
     if (action === 'delegate-agent') {
       const name = form.get('name')?.trim() ?? '';
       if (!/^[A-Za-z0-9_.@-]{1,64}$/.test(name)) throw new HttpError(400, 'invalid_agent_name', 'Choose a short agent name.');
-      if (t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(409, 'agent_name_in_use');
-      if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+      if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'Choose an agent name other than the fixed setup binding.');
       const selected = form.getAll('scopes'), scopes = agentScopes(selected.length ? selected : ['host:read', 'participants:connect']);
       const code = `${t.tid}-${sixDigits()}`, expires = t.now() + ADOPT_CODE_TTL;
-      t.db.set('adopt', { hash: await sha256Hex(code), expires_at: expires, attempts: 0, mode: 'delegate', name, scopes });
-      addActivity(t, { kind: 'agent_delegation', summary: `The owner approved an additional scoped agent: ${name}`, by: `owner:${principal.accountId}` });
+      const hash = await sha256Hex(code);
+      await commit(() => {
+        if (t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(409, 'agent_name_in_use');
+        if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+        t.db.set('adopt', { ...binding, hash, expires_at: expires, attempts: 0, mode: 'delegate', name, scopes } satisfies HostApproval);
+        addActivity(t, { kind: 'agent_delegation', summary: `The owner approved an additional scoped agent: ${name}`, by: `owner:${principal.accountId}` });
+      });
       message = `Give this one-time code to ${name}: ${code}. It expires in ten minutes. Existing agents keep their access.`;
     } else if (action === 'connect-agent') {
       const code = `${t.tid}-${sixDigits()}`, expires = t.now() + ADOPT_CODE_TTL;
-      t.db.set('adopt', { hash: await sha256Hex(code), expires_at: expires, attempts: 0 });
-      addActivity(t, { kind: 'adopt_code', summary: 'The owner created an agent connection code', by: `owner:${principal.accountId}` });
+      const hash = await sha256Hex(code);
+      await commit(() => {
+        t.db.set('adopt', { ...binding, hash, expires_at: expires, attempts: 0 } satisfies HostApproval);
+        addActivity(t, { kind: 'adopt_code', summary: 'The owner created an agent connection code', by: `owner:${principal.accountId}` });
+      });
       message = `Recovery code: ${code}. It expires in ten minutes. Using it replaces all existing agent credentials.`;
     } else if (action === 'disconnect-agent') {
       const name = form.get('agent') ?? '';
-      if (!t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found', 'No such agent');
-      t.db.run('DELETE FROM tokens WHERE name=?', name);
-      t.db.del('agent_binding:' + name);
-          message = `Disconnected ${name}.`;
+      await commit(() => {
+        if (!t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found', 'No such agent');
+        t.db.run('DELETE FROM tokens WHERE name=?', name);
+        t.db.del('agent_binding:' + name);
+      });
+      message = `Disconnected ${name}.`;
     } else if (action === 'approve-guest' || action === 'decline-guest') {
       const account = form.get('account') ?? '', link = form.get('link') ?? '';
-      if (!t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=0', account, link))
-        throw new HttpError(404, 'not_found', 'This guest request is no longer pending');
-      t.db.run('UPDATE guest_accounts SET approved=? WHERE account_id=? AND link_id=?', action === 'approve-guest' ? 1 : -1, account, link);
+      await commit(() => {
+        if (!t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=0', account, link))
+          throw new HttpError(404, 'not_found', 'This guest request is no longer pending');
+        t.db.run('UPDATE guest_accounts SET approved=? WHERE account_id=? AND link_id=?', action === 'approve-guest' ? 1 : -1, account, link);
+      });
       message = action === 'approve-guest' ? 'Guest access approved.' : 'Guest access declined.';
     } else throw new HttpError(400, 'bad_request', 'Unknown management action');
   } else if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method_not_allowed');
@@ -61,7 +83,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     const fields = `<input type="hidden" name="account" value="${text(pending.account_id)}"><input type="hidden" name="link" value="${text(pending.link_id)}">`;
     return `<li>${text(account?.email ?? pending.account_id)}<div class="actions">${form('approve-guest', fields, 'Approve')}${form('decline-guest', fields, 'Decline')}</div></li>`;
   }))).join('');
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>Page recovery · Tendriller</title>${serviceStyle}<style>li{margin:1rem 0}li p{margin:.2rem 0}form{display:inline-block;margin:.4rem .5rem .4rem 0}h2{margin-top:2rem}</style></head><body><main><header><strong>Tendriller</strong><a href="${text(base)}">Return to page</a></header><h1>Page recovery</h1><p>${text(t.db.get('name', 'Tendril'))} · ${text(principal.role)} access</p>${message ? `<p class="notice" role="status">${text(message)}</p>` : ''}${owner ? `<section><h2>Agent connection</h2><p>Add an independently revocable agent with its own host permissions. Application signing grants remain separate.</p>${form('delegate-agent', '<label>Agent name <input name="name" required maxlength="64"></label><label><input type="checkbox" name="scopes" value="host:read" checked> Read host status</label><label><input type="checkbox" name="scopes" value="participants:connect" checked> Connect enrolled participants</label><label><input type="checkbox" name="scopes" value="publication:write"> Publish signed code</label><label><input type="checkbox" name="scopes" value="assistant:manage"> Propose assistant access</label>', 'Add agent')}<details><summary>Replace all agent credentials for recovery</summary><p>Using this recovery code revokes every existing agent token.</p>${form('connect-agent', '', 'Create replacing recovery code')}</details><ul>${agents || '<li>No agent is connected.</li>'}</ul></section><section><h2>Guest requests</h2><ul>${guests || '<li>No pending requests.</li>'}</ul></section><section><h2>Publications</h2><p>Restoring earlier code requires a new signed Chronolog publication. The release history and application recovery remain independent.</p><ol>${versions || '<li>No page has been published.</li>'}</ol></section>` : '<p>The signed-in owner can manage agent connections, guest access, and publications.</p>'}<footer><a href="${text(t.env.PUBLIC_BASE + '/dashboard')}">Account dashboard</a><a href="${text(base + '_tendril/report')}">Report this page</a></footer></main></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>Page recovery · Tendriller</title>${serviceStyle}<style>li{margin:1rem 0}li p{margin:.2rem 0}form{display:inline-block;margin:.4rem .5rem .4rem 0}h2{margin-top:2rem}</style></head><body><main><header><strong>Tendriller</strong><a href="${text(base)}">Return to page</a></header><h1>Page recovery</h1><p>${text(t.db.get('name', 'Tendril'))} · ${text(principal.role)} access</p>${message ? `<p class="notice" role="status">${text(message)}</p>` : ''}${owner ? `<section><h2>Agent connection</h2><p>Add an independently revocable agent with its own host permissions. Application signing grants remain separate.</p>${form('delegate-agent', '<label>Agent name <input name="name" required maxlength="64"></label><label><input type="checkbox" name="scopes" value="host:read" checked> Read host status</label><label><input type="checkbox" name="scopes" value="participants:connect" checked> Connect enrolled participants</label><label><input type="checkbox" name="scopes" value="control:write"> Update signed application control</label><label><input type="checkbox" name="scopes" value="publication:write"> Publish signed code</label><label><input type="checkbox" name="scopes" value="assistant:manage"> Propose assistant access</label>', 'Add agent')}<details><summary>Replace all agent credentials for recovery</summary><p>Using this recovery code revokes every existing agent token.</p>${form('connect-agent', '', 'Create replacing recovery code')}</details><ul>${agents || '<li>No agent is connected.</li>'}</ul></section><section><h2>Guest requests</h2><ul>${guests || '<li>No pending requests.</li>'}</ul></section><section><h2>Publications</h2><p>Restoring earlier code requires a new signed Chronolog publication. The release history and application recovery remain independent.</p><ol>${versions || '<li>No page has been published.</li>'}</ol></section>` : '<p>The signed-in owner can manage agent connections, guest access, and publications.</p>'}<footer><a href="${text(t.env.PUBLIC_BASE + '/dashboard')}">Account dashboard</a><a href="${text(base + '_tendril/report')}">Report this page</a></footer></main></body></html>`;
   return new Response(req.method === 'HEAD' ? null : html, { headers: {
     // Keep Origin on same-origin navigation POSTs for the management forms.
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin',

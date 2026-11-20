@@ -9,7 +9,7 @@ import {
   type ApplicationDescription, type SignedApplicationSchema,
   type PeerAuthority,
 } from '@chronolog/peer-generation/control';
-import { accountActive, pageAccessAllowed, currentPrincipal, type Principal } from './access';
+import { accountActive, pageAccessAllowed, currentPrincipal, freshPrincipal, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
@@ -64,7 +64,8 @@ async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
   const account = identity(t, principal), owner = t.db.get<string | null>('owner_account', null);
   // Page policy already joins and checks this owner's active account. A guest
   // still needs its own fresh account query; neither result survives this call.
-  if (!await pageAccessAllowed(t) || owner !== null && account !== owner && !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
+  if (!await pageAccessAllowed(t) || owner !== null && account !== owner && !await accountActive(t, account) || !await freshPrincipal(t, principal))
+    throw new HttpError(403, 'forbidden');
   if (t.db.get<string | null>('owner_account', null) !== owner || identity(t, principal) !== account)
     throw new HttpError(403, 'forbidden');
 }
@@ -213,8 +214,16 @@ export function peerControlError(error: unknown): never {
 }
 
 export type PeerControlAction = 'read' | 'configure' | 'select' | 'administer' | 'definition';
+/** Extra local admission for an exact reviewed enrollment; the signed protocol still decides authority. */
+export interface PeerControlAdmission {
+  /** Verify and retain a proposal without selecting a generation or binding accounts. */
+  readonly prepareOnly?: boolean;
+  prepare(authority: PeerAuthority, request: SignedTransitionRequest, control: unknown): Promise<void>;
+  check(): Promise<void>;
+  guard(): void;
+}
 /** Portable protocol dispatch; the HTTP transport owns bounded admission and framing. */
-export async function exchangePeerControl(t: Tendril, principal: Principal, action: PeerControlAction, input?: unknown): Promise<unknown> {
+export async function exchangePeerControl(t: Tendril, principal: Principal, action: PeerControlAction, input?: unknown, admission?: PeerControlAdmission): Promise<unknown> {
   const ownerAction = action === 'administer';
   identity(t, principal, ownerAction || action === 'configure');
   return serial(t, async state => {
@@ -327,6 +336,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
         const previousFingerprint = t.db.get<string | null>(fingerprintKey, null);
         if (previousFingerprint !== null) {
           if (fingerprint !== previousFingerprint) throw new HttpError(409, 'peer_transition_id_reused', 'The transition identity already binds different controls or account bindings');
+          if (admission?.prepareOnly) throw new HttpError(409, 'peer_transition_already_selected', 'Inspect the retained transition before preparing another proposal.');
           const selected = await service.select(request); await freshAccess(t, principal); authorize(); return selected;
         }
         if (bundle.generations.some(generation => generation.payload.transition.payload.transitionId === request.payload.transitionId))
@@ -367,8 +377,19 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           checkedBindings = bindings.filter(binding => requiredAccounts.has(binding.publicKey));
           await checkAccounts(t, checkedBindings);
         }
-        state.guard = () => { authorize(); checkAccountAdmission(t, checkedBindings); };
-        state.check = async () => { await freshAccess(t, principal); await checkAccounts(t, checkedBindings); };
+        if (admission) {
+          const authority = await readAuthority(t, state);
+          // Invalid signatures or prefix proofs must not reserve a reviewed request.
+          await authority.authorizeTransition(request, control);
+          await admission.prepare(authority, request, value.control);
+          if (admission.prepareOnly) {
+            await freshAccess(t, principal); await checkAccounts(t, checkedBindings); await admission.check();
+            authorize(); checkAccountAdmission(t, checkedBindings); admission.guard();
+            return null;
+          }
+        }
+        state.guard = () => { authorize(); checkAccountAdmission(t, checkedBindings); admission?.guard(); };
+        state.check = async () => { await freshAccess(t, principal); await checkAccounts(t, checkedBindings); await admission?.check(); };
         state.pendingAccounts = bindings;
         state.pendingFingerprint = { key: fingerprintKey, value: fingerprint };
         try {
@@ -378,6 +399,20 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
       }
       throw new HttpError(405, 'method_not_allowed');
     } catch (error) { return peerControlError(error); }
+  });
+}
+
+/** The selector commits this fingerprint atomically with the signed generation and account bindings. */
+export async function peerControlSelectionMatches(t: Tendril, prepared: { request: SignedTransitionRequest; control: unknown }): Promise<boolean> {
+  const key = `peer_generation_transition:${await peerDigest([prepared.request.payload.applicationId, prepared.request.payload.transitionId])}`;
+  return t.db.get<string | null>(key, null) === await peerDigest(['select', prepared]);
+}
+
+/** Internal reviewed enrollment shares the control serializer. Its caller must authenticate the account afresh. */
+export function withPeerPairingAuthority<T>(t: Tendril, work: (authority: PeerAuthority) => Promise<T>): Promise<T> {
+  return serial(t, async state => {
+    try { return await work(await readAuthority(t, state)); }
+    catch (error) { return peerControlError(error); }
   });
 }
 

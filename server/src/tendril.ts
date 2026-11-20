@@ -1,3 +1,4 @@
+import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
 import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch } from "./publication-watch";
@@ -19,6 +20,8 @@ import { reviewAssistant } from './assistant-admission';
 import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgradeAssistantAdapter } from './assistant-socket';
 import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
+import { requireHostApproval, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
+import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
 import { handleMcp } from './mcp';
@@ -123,10 +126,15 @@ export class Tendril extends DurableObject<Env> {
     await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
   }
 
+  async ensureSetupExpiry(at: number): Promise<void> {
+    await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
+  }
+
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const kind = url.pathname.split("/")[1];
     try {
+      if (kind === "setup") return await setupPage(this, req);
       if (kind === "create") return await this.create(req);
       if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) {
@@ -175,6 +183,7 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
       if (kind === 'assistant-review') return await reviewAssistant(this, req);
+      if (kind === 'pairing-review') return await reviewDevicePairing(this, req);
       if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
       if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
@@ -277,20 +286,47 @@ export class Tendril extends DurableObject<Env> {
     if (!this.exists()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     const body = await readJson(req, 4096);
     const code = typeof body.code === "string" ? body.code.trim() : "";
-    const a = this.db.get<{ hash: string; expires_at: number; attempts: number; mode?: 'delegate'; name?: string; scopes?: AgentScope[] } | null>("adopt", null);
-    if (!a || a.expires_at < this.now()) {
-      this.db.del("adopt");
+    const a = this.db.get<HostApproval | null>("adopt", null);
+    if (!a || a.expires_at <= this.now()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
+    requireHostApproval(this, a);
+    // Re-run the bound owner/write policy after token hashing and before commit.
+    const policy = () => requireHostApprovalPolicy(this, a);
+    const currentCode = () => {
+      requireHostApproval(this, a);
+      if (JSON.stringify(this.db.get('adopt', null)) !== JSON.stringify(a) || a.expires_at <= this.now())
+        throw new HttpError(409, 'adoption_changed', 'The reviewed code changed or was already used. Ask the owner to inspect the named binding before issuing another code.');
+    };
+    const valid = safeEqual(await sha256Hex(code), a.hash);
+    await policy();
+    if (!valid) {
+      this.transaction(() => {
+        // A late failed attempt cannot restore an already redeemed/replaced code.
+        currentCode();
+        a.attempts += 1;
+        if (a.attempts >= ADOPT_MAX_ATTEMPTS) this.db.del('adopt');
+        else this.db.set('adopt', a);
+      });
       throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     }
-    if (!safeEqual(await sha256Hex(code), a.hash)) {
-      a.attempts += 1;
-      if (a.attempts >= ADOPT_MAX_ATTEMPTS) this.db.del("adopt");
-      else this.db.set("adopt", a);
-      throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
-    }
-    this.db.del("adopt");
-    if (a.mode !== 'delegate') this.db.run("DELETE FROM tokens");
-    const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes);
+    // A retained native app asks for non-replacing delegation only. Check both
+    // bindings before consuming the one-use code or issuing any credential.
+    if (body.expectedMode !== undefined && (body.expectedMode !== 'delegate' || a.mode !== 'delegate'))
+      throw new HttpError(409, 'adoption_mode_mismatch', 'Use Add agent on the owner management page; this code would replace existing agent credentials.');
+    if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
+      throw new HttpError(409, 'adoption_application_mismatch', 'This code belongs to another application. Preserve the original app and ask its owner for delegation.');
+    const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes, () => {
+      // Hashing the token yields. A replacement/expired/redeemed code must not
+      // authorize another binding after that await; consume it atomically.
+      currentCode();
+      if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
+        throw new HttpError(409, 'adoption_application_mismatch');
+      if (a.mode === 'delegate') {
+        if (this.db.one('SELECT 1 FROM tokens WHERE name=?', a.name!)) throw new HttpError(409, 'agent_name_in_use');
+        if ((this.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+      }
+      this.db.del('adopt');
+      if (a.mode !== 'delegate') this.db.run('DELETE FROM tokens');
+    }, policy);
     addActivity(this, { kind: a.mode === 'delegate' ? 'agent_delegated' : "adopted", summary: a.mode === 'delegate'
       ? `An independently revocable agent binding ${a.name} joined this tendril`
       : "A new agent session adopted this tendril; earlier agent tokens were revoked" });
@@ -298,9 +334,12 @@ export class Tendril extends DurableObject<Env> {
     return json(this.handle(token));
   }
 
-  async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {}): Promise<string> {
+  async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {},
+    prepare?: () => Promise<void>): Promise<string> {
+    if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'The setup credential name is reserved for its committed account operation. Choose another agent name.');
     const token = newToken();
     const hash = await sha256Hex(token);
+    if (prepare) await prepare();
     this.transaction(() => {
       authorize();
       this.db.run("INSERT INTO tokens (name, hash, created_at, last_used) VALUES (?, ?, ?, NULL)", name, hash, this.now());
@@ -491,6 +530,8 @@ export class Tendril extends DurableObject<Env> {
   private async claimOwnerSerialized(accountId: string, identities: unknown[]): Promise<Response> {
     const current = this.db.get<string | null>("owner_account", null);
     if (current && current !== accountId) throw new HttpError(403, "claimed", "Another account owns this tendril");
+    const intendedAccount = this.db.get<string | null>("intended_owner_account", null);
+    if (intendedAccount && intendedAccount !== accountId) throw new HttpError(403, "wrong_owner", "This setup belongs to a different linked account");
     const expected = this.db.get<string | null>("intended_owner", null);
     if (!current && expected && !ownerMatches(expected, identities)) throw new HttpError(403, "wrong_owner", "This tendril was made for another account");
     if (!current) {
@@ -498,15 +539,21 @@ export class Tendril extends DurableObject<Env> {
       try {
         const lifetime = this.db.get('peer_generation_configuration', null) ? 'resident' : this.db.get('lifetime', 'ad_hoc');
         row = await this.env.ACCOUNTS.prepare(`UPDATE tendrils SET owner_account = ?, claimed_at = COALESCE(claimed_at, ?), lifetime = ?
-          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?) RETURNING id`)
-          .bind(accountId, this.now(), lifetime, this.tid, accountId).first();
+          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?)
+          AND (? IS NULL OR EXISTS(SELECT 1 FROM accounts a JOIN identities i ON i.account_id=a.id
+            JOIN identity_emails e ON e.provider=i.provider AND e.subject=i.subject
+            WHERE a.id=? AND lower(e.email)=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL)) RETURNING id`)
+          .bind(accountId, this.now(), lifetime, this.tid, accountId, intendedAccount, intendedAccount, expected).first();
       } catch (err) {
         if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
         if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
         if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
         throw err;
       }
-      if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
+      if (!row) {
+        if (intendedAccount) throw new HttpError(403,'owner_verification_required','The intended account must still be active and verify the original owner email before claim.');
+        throw new HttpError(409, "claimed", "This tendril was claimed already");
+      }
       this.transaction(() => {
         adoptPreparedPeerApplication(this, accountId);
         this.db.set("owner_account", accountId);
@@ -535,8 +582,9 @@ export class Tendril extends DurableObject<Env> {
       }
     }
     await adoptPreparedAssistant(this, accountId);
-    await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
+    const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
       .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
+    await releasedAdmission.body?.cancel();
     this.scheduleAlarm();
     if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "held", "This page was held after screening. The owner can appeal.");
     return json({ role: "owner" });
@@ -687,7 +735,11 @@ export class Tendril extends DurableObject<Env> {
   }
 
   private scheduleCommittedAlarm(): Promise<void> | void {
-    if (!this.exists()) return;
+    if (!this.exists()) {
+      const setupDue = nextSetupDeadline(this);
+      if (setupDue !== null) return this.alarms.ensure(Math.max(setupDue - this.skew, Date.now() + 1));
+      return;
+    }
     const now = this.now(), times = [this.db.get<number>('next_cleanup', now + DAY)];
     const peerDue = nextPeerDeadline(this), expires = this.expiresAt();
     if (peerDue !== null) times.push(peerDue);
@@ -702,9 +754,14 @@ export class Tendril extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     await this.alarms.fired();
-    if (!this.exists()) return;
     this.handlingAlarm = true;
     try {
+      if (!this.exists()) {
+        await expireSetupReservation(this);
+        this.handlingAlarm = false;
+        await this.scheduleCommittedAlarm();
+        return;
+      }
       try { await recoverLifetimeChange(this); }
       catch (error) { console.error('Lifetime recovery remains pending', error); }
       // Expiry removes the entire object, so pruning and reconciling the same
@@ -780,9 +837,10 @@ export class Tendril extends DurableObject<Env> {
       await this.env.ACCOUNTS.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
     }
     if (releaseAdmission) {
-      await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global")).fetch(new Request("https://admission.internal/release", {
+      const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global")).fetch(new Request("https://admission.internal/release", {
         method: "POST", headers: { "x-tendril-id": id },
       }));
+      await releasedAdmission.body?.cancel();
     }
     await this.ctx.storage.deleteAll();
     this.db.clearCache();

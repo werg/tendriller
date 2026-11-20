@@ -4,8 +4,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -16,19 +15,27 @@ import { Agent, setGlobalDispatcher } from 'undici';
 import { chromium, expect } from '@playwright/test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
+import { TUTORIAL_FILES } from './onboarding.mjs';
+import { nativeTestPeerSource, closeTestPeer } from './first-app-peer.mjs';
+import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
+import { verifyFirstAppComposition } from './first-app-composition.mjs';
+import { CONTRACT_VERSION } from '../contract/index.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
-  'session-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
+  'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
   'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' },
 } });
-if (!values['session-archive']) throw Error('Usage: node scripts/test-first-app.mjs --session-archive /absolute/chronolog-peer-session-COMMIT.tgz [--native-only | --sql-native-only] [--report FILE] [--keep]');
+if (!values['session-archive'] && !values['first-app-archive'])
+  throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
+if (values['session-archive'] && values['first-app-archive']) throw Error('Use the companion inside the first-app archive; do not override its composition.');
 if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
+if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile.');
 const sqlOnly = Boolean(values['sql-native-only']);
-const sessionArchive = resolve(values['session-archive']);
+let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
-const directory = await mkdtemp(join(tmpdir(), 'tendriller-first-app-'));
+const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
 const app = join(directory, 'application');
 const SERVICE = 'https://service.localhost:8790';
 const execute = promisify(execFile);
@@ -39,7 +46,8 @@ const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql
   limits: ['Synthetic local owner session; no OAuth provider tested.',
     sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
       : 'Local Chromium and encrypted WebSocket relay; no Internet, native RTC or mobile qualification.',
-    'Scripted tutorial execution; not an unassisted fresh-agent usability result.'], steps: [] };
+    'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
+    'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
 let host, peer, browser, page, stage = 'preflight';
 
 // Every request, including a followed redirect or literal IP, is restricted to
@@ -76,13 +84,6 @@ async function files(directory) {
   return (await Promise.all(entries.map(entry => entry.isDirectory()
     ? files(join(directory, entry.name)) : [join(directory, entry.name)]))).flat();
 }
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
-  try { await exited; } finally { clearTimeout(timer); }
-}
 async function packDependency(name) {
   const path = dirname(require.resolve(`${name}/package.json`));
   const result = JSON.parse(await run('npm', ['pack', '--ignore-scripts', '--offline', '--json',
@@ -115,16 +116,33 @@ try {
   const { version } = await jsonFile(join(root, 'package.json'));
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
-  const archives = Object.fromEntries(['sdk', 'tools', 'engine'].map(name =>
+  const archives = Object.fromEntries(['sdk', 'tools', 'engine', 'runtime'].map(name =>
     [name, join(root, 'dist', `tendriller-${name}-${version}.tgz`)]));
   for (const artifact of [...proof.artifacts, ...toolsProof.artifacts]) {
     assert.equal(sha256(await readFile(join(root, 'dist', artifact.file))), artifact.sha256, `Archive changed: ${artifact.file}`);
   }
   report.core = { source: proof.source, dirty: proof.dirty, version,
     artifacts: Object.fromEntries(await Promise.all(Object.entries(archives).map(async ([name, path]) => [name, sha256(await readFile(path))]))) };
+  let kit;
+  if (values['first-app-archive']) {
+    const archive = resolve(values['first-app-archive']);
+    const release = await jsonFile(join(root, 'dist/manifest.json'));
+    const record = release.artifacts.find(item => item.role === 'first-app' && item.file === release.first_app?.file);
+    assert.ok(record, 'The release manifest must bind the first-app archive.');
+    assert.equal(sha256(await readFile(archive)), record.sha256, 'The first-app archive must match the release manifest.');
+    const composition = JSON.parse(await run('tar', ['-xOf', archive, 'composition.json']));
+    await verifyFirstAppComposition({ release, composition, coreProof: proof, toolsProof, archives, version, contract: CONTRACT_VERSION });
+    kit = { archive, release, composition, record };
+    passed('complete exact-kit SDK/runtime/engine/tools identities before isolated host startup');
+  }
   const engine = join(directory, 'engine'); await mkdir(engine);
   await run('tar', ['-xzf', archives.engine, '-C', engine]);
   const engineProof = await jsonFile(join(engine, 'package/provenance.json'));
+  if (kit) {
+    assert.equal(engineProof.dirty, false);
+    assert.equal(engineProof.source, kit.composition.core.source, 'The packed host must have the exact composition source.');
+    assert.equal(engineProof.sourceTree, kit.composition.core.sourceTree, 'The packed host must have the exact composition tree.');
+  }
   for (const [path, hash] of Object.entries(engineProof.files))
     assert.equal(sha256(await readFile(join(engine, 'package', path))), hash, `Packed engine changed: ${path}`);
 
@@ -138,17 +156,39 @@ try {
   // The engine archive is already one bundled module; source-loader rules do
   // not apply to it (and are intentionally unsupported by the v5 converter).
   const { modulesRules: _sourceRules, ...workerOptions } = sourceOptions;
-  host = new Miniflare({ ...convertV4MiniflareOptions({ ...workerOptions,
-    scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
-    bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost' },
+  // These credentials exist only in the isolated synthetic host. Exercise the
+  // actual OAuth verifier, scope checks and MCP setup route without a provider.
+  const oauthKey = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const oauthJwk = { ...await crypto.subtle.exportKey('jwk', oauthKey.privateKey), alg: 'ES256', kid: 'first-app-test' };
+  const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
+    redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
+  host = new Miniflare({ ...convertV4MiniflareOptions({
     host: '127.0.0.1', port: 8790, https: true, cf: false,
+    workers: [
+      { name: 'first-app-network', modules: true, script: FIRST_APP_WEBSOCKET_PROXY_WORKER,
+        compatibilityDate: workerOptions.compatibilityDate, serviceBindings: { PACKED_HOST: 'first-app-packed-host' } },
+      { ...workerOptions, name: 'first-app-packed-host',
+        scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
+        bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
+          OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration),
+          ...(kit ? { SERVICE_SOURCE_COMMIT: kit.composition.core.source, SERVICE_COMPOSITION_ID: kit.composition.id } : {}) } },
+    ],
   }), resourcePersistencePath: join(directory, 'host-state'), resourceTmpPath: join(directory, 'host-tmp'),
   enableDevRegistry: false, logRequests: false });
   await host.ready;
-  const accounts = await host.getD1Database('ACCOUNTS');
-  for (const query of unstable_splitSqlQuery(await readFile(join(engine, 'package/migrations/0001_accounts.sql'), 'utf8')))
-    await accounts.prepare(query).run();
+  const accounts = await host.getD1Database('ACCOUNTS', 'first-app-packed-host');
+  for (const migration of (await readdir(join(engine, 'package/migrations')))
+    .filter(name => /^\d+_[a-z0-9_]+\.sql$/.test(name)).sort())
+    for (const query of unstable_splitSqlQuery(await readFile(join(engine, 'package/migrations', migration), 'utf8')))
+      await accounts.prepare(query).run();
   const now = Date.now(), ownerToken = 'tendriller-local-e2e-session';
+  const oauthGrant = crypto.randomUUID(), oauthJti = crypto.randomUUID();
+  const jwtPart = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const signingInput = jwtPart({ alg: 'ES256', typ: 'JWT', kid: oauthJwk.kid }) + '.' + jwtPart({
+    iss: SERVICE, aud: SERVICE + '/mcp', sub: 'e2e-owner', client_id: 'first-app-test', sid: oauthGrant,
+    jti: oauthJti, scope: 'tendrils:create tendrils:list', exp: Math.floor((now + 86_400_000) / 1000) });
+  const oauthToken = signingInput + '.' + Buffer.from(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' },
+    oauthKey.privateKey, new TextEncoder().encode(signingInput))).toString('base64url');
   await accounts.batch([
     accounts.prepare("UPDATE service_state SET mode = 'open' WHERE id = 1"),
     accounts.prepare('INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)').bind('e2e-owner', now, 'owner@example.test'),
@@ -157,7 +197,19 @@ try {
     accounts.prepare('INSERT INTO identity_emails (provider, subject, email) VALUES (?, ?, ?)').bind('github', 'e2e-subject', 'owner@example.test'),
     accounts.prepare('INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
       .bind(sha256(ownerToken), 'e2e-owner', now, now + 86_400_000),
+    accounts.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?)')
+      .bind(oauthGrant, 'e2e-owner', 'first-app-test', SERVICE + '/mcp', 'tendrils:create tendrils:list', now, now + 86_400_000),
+    accounts.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES(?,?,?,?,?,?)')
+      .bind(sha256(oauthToken), oauthGrant, oauthJti, 'tendrils:create tendrils:list', now, now + 86_400_000),
   ]);
+  if (kit) {
+    const readiness = await (await fetch(SERVICE + '/api/readiness')).json();
+    assert.equal(readiness.serviceOrigin, SERVICE);
+    assert.equal(readiness.build.sourceCommit, kit.composition.core.source);
+    assert.equal(readiness.build.compositionId, kit.composition.id);
+    assert.equal(readiness.creation.available, true);
+    passed('actual isolated service readiness advertises the same source and composition');
+  }
   passed('packed host with isolated storage');
 
   checkpoint('download first-app source and install exact public packages');
@@ -166,7 +218,31 @@ try {
   const sourceBytes = new Uint8Array(await source.arrayBuffer());
   report.tutorial_sha256 = sha256(sourceBytes);
   const sourceArchive = join(directory, 'first-app.tgz'); await writeFile(sourceArchive, sourceBytes);
-  await run('tar', ['-xzf', sourceArchive, '-C', app]);
+  if (kit) {
+    const { archive: firstAppArchive, composition, record } = kit;
+    assert.equal(sha256(await readFile(firstAppArchive)), record.sha256, 'The first-app archive changed after preflight.');
+    await run('tar', ['-xzf', firstAppArchive, '-C', app]);
+    assert.deepEqual(await jsonFile(join(app, 'composition.json')), composition, 'Extracted first-app identity changed after preflight.');
+    assert.equal(composition.components.find(item => item.role === 'starter')?.sha256, report.tutorial_sha256,
+      'The isolated host must serve the starter bound by the release composition.');
+    // Compare every extracted source file with the actual served archive, then
+    // install the archives carried by the release kit, not checkout dependencies.
+    for (const file of TUTORIAL_FILES) {
+      const original = await execute('tar', ['-xOf', sourceArchive, file], { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 });
+      assert.equal(sha256(await readFile(join(app, file))), sha256(original.stdout), `First-app source changed: ${file}`);
+    }
+    for (const item of composition.components.filter(item => ['sdk', 'tools', 'session'].includes(item.role))) {
+      const path = join(app, 'packages', item.file);
+      assert.equal(sha256(await readFile(path)), item.sha256, `First-app package changed: ${item.role}`);
+      if (item.role === 'session') sessionArchive = path;
+      else {
+        assert.equal(sha256(await readFile(archives[item.role])), item.sha256);
+        archives[item.role] = path;
+      }
+    }
+    assert.ok(sessionArchive, 'The first-app archive must carry its pinned session package.');
+    report.composition = { id: composition.id, first_app_sha256: record.sha256 };
+  } else await run('tar', ['-xzf', sourceArchive, '-C', app]);
   const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
     await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
   await run('npm', ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund',
@@ -184,7 +260,30 @@ try {
 ${createLocalDispatcher.toString()}
 const dispatcher = createLocalDispatcher();
 setGlobalDispatcher(dispatcher);
-globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []) { super(url, { protocols, dispatcher }); } };
+const sockets = new Set();
+globalThis.WebSocket = class extends WebSocket {
+  constructor(url, protocols = []) {
+    super(url, { protocols, dispatcher }); sockets.add(this);
+    this.addEventListener('close', () => sockets.delete(this), {once:true});
+  }
+};
+export async function closeLocalTransport() {
+  // Never turn a leaked OPEN application socket into a successful owner close.
+  if ([...sockets].some(socket => socket.readyState < 2)) throw Error('Native owner left an open fixture WebSocket');
+  await Promise.all([...sockets].map(socket => new Promise((resolve, reject) => {
+    const close = () => { clearTimeout(timer); socket.removeEventListener('close', close); resolve(); };
+    const timer = setTimeout(() => {
+      socket.removeEventListener('close', close);
+      const url = new URL(socket.url), lane = url.searchParams.get('lane');
+      reject(Error('Native WebSocket close handshake did not finish: ' + url.pathname +
+        (['reliable','live'].includes(lane) ? ' lane=' + lane : '') + ' readyState=' + socket.readyState));
+    }, 3000);
+    socket.addEventListener('close', close, {once:true}); if (socket.readyState === 3) close();
+  })));
+  // This pool belongs to the loopback/TLS fixture, not to the public bootstrap.
+  // Graceful close drains outstanding requests; it does not destroy live work.
+  await dispatcher.close();
+}
 `);
   const project = sqlOnly ? join(app, 'sql') : app;
   const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
@@ -201,7 +300,34 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   }
 
   checkpoint('create, initialize and publish before owner claim');
-  await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
+  if (sqlOnly) await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
+  else {
+    const preparation = JSON.parse(await node(['account-setup.mjs', 'prepare', SERVICE, 'First-app qualification']));
+    const privateIntent = await jsonFile(join(project, '.tendriller/account-setup.json'));
+    assert.equal(JSON.stringify(preparation).includes(privateIntent.credential), false);
+    const mcp = async (name, args) => {
+      const response = await fetch(SERVICE + '/mcp', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+        headers: { Authorization: 'Bearer ' + oauthToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
+      assert.equal(response.status, 200);
+      const reply = await response.json();
+      assert.ok(reply.result && reply.result.isError !== true, 'The actual linked-account setup tool must succeed.');
+      return reply.result.structuredContent;
+    };
+    // Deliberately ignore the first ready reply: inspect restores the same page
+    // using only the previously retained operation and local credential.
+    const first = await mcp(preparation.prepare.tool, preparation.prepare.arguments);
+    const recovered = await mcp(preparation.inspect.tool, preparation.inspect.arguments);
+    assert.equal(recovered.pageId, first.pageId); assert.equal(recovered.state, 'ready');
+    assert.equal(JSON.stringify(recovered).includes(privateIntent.credential), false);
+    const receiptPath = join(project, '.tendriller/account-setup-result.json');
+    await writeFile(receiptPath, JSON.stringify(recovered), { mode: 0o600, flag: 'wx', flush: true });
+    await node(['account-setup.mjs', 'finish', receiptPath]);
+    assert.equal((await jsonFile(join(project, '.tendriller/handle.json'))).token, privateIntent.credential);
+    await node(['account-setup.mjs', 'finish', receiptPath]);
+    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
+    passed('account-linked MCP setup with private preflight intent and exact lost-reply recovery');
+  }
   const handle = await jsonFile(join(project, '.tendriller/handle.json'));
   const localPage = new URL(handle.page_url); localPage.port = '8790';
   const beforeClaim = JSON.parse(await node(['setup.mjs', 'init']));
@@ -213,6 +339,9 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     report.preclaim_code = { totalBytes: preparedSizes.reduce((sum, n) => sum + n, 0), largestFileBytes: Math.max(...preparedSizes) };
     preparedPublication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
     assert.ok(preparedPublication.publication.id);
+    assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
+      { publication: preparedPublication.publication, receipt: preparedPublication },
+      'A separate native process must reopen the original signed intent and retained receipt.');
   }
   passed('native application initialized and first signed UI published before claim');
   const initialClaim = await fetch(localPage, { redirect: 'manual' });
@@ -280,7 +409,11 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   const publication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
   const retry = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
   assert.deepEqual(retry, publication, 'Exact publication retry must recover its original receipt.');
+  assert.deepEqual(publication, preparedPublication, 'Owner claim and rebuild must preserve the pre-claim publication identity.');
+  assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
+    { publication: publication.publication, receipt: publication }, 'Exact retry and another process reopen preserve the acknowledged receipt.');
   report.publication_id = publication.publication.id;
+  passed('retained publication receipt inspected after native process reopen and exact retry');
   passed('public-only authored graph, signed publication and exact publication retry');
   report.native_checks = 'passed';
 
@@ -321,54 +454,28 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     await page.setViewportSize({ width: 1280, height: 960 });
     await context.addCookies([{ name: '__Host-tendriller', value: ownerToken,
       domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
-    checkpoint('create and enroll the actual browser device');
+    checkpoint('prove and review the actual browser device');
     await page.goto(handle.page_url);
     await page.locator('#create-device').click();
     await expect(page.locator('#device-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 30_000 });
     const browserDevice = await page.locator('#device-key').inputValue();
-    await node(['setup.mjs', 'enroll', browserDevice]);
-    await node(['setup.mjs', 'enroll', browserDevice]);
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending', { timeout: 30_000 });
+    const reviewUrl = await page.locator('#pairing-review').getAttribute('href');
+    await page.reload();
+    await page.locator('#pairing-refresh').click();
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending');
+    assert.equal(await page.locator('#pairing-review').getAttribute('href'), reviewUrl, 'Reload must retain the original pairing request.');
+    assert.equal(await page.locator('#device-key').inputValue(), browserDevice);
     report.browser_device_id = browserDevice;
-    passed('independent browser signer and exact authorized enrollment retry');
 
     // Drive the same real native bootstrap without a second store owner. This is
     // the agent side of the test; it adds no protocol, backend or fixture state.
     // Only the inference provider function is replaced, inside this private test
     // process. Signals, encrypted content and reviewed commands remain real.
     const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
-    await writeFile(join(app, 'test-peer.mjs'), `import assert from 'node:assert/strict';
-  import {createInterface} from 'node:readline';
-  import {openSession} from './session.mjs';
-  import {servePeerInference} from './media/inference-service.mjs';
-  const {session,supervisor} = await openSession();
-  const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidencePng.toString('base64'))}, 'base64'));
-  let inferenceCalls = 0, inferenceSource = null;
-  const inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDevice)}], maxRequests: 2,
-    async infer({bytes, mediaType, source, signal}) {
-      signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
-      inferenceCalls++; inferenceSource = source;
-      return {text: 'Suggested fixture observation'};
-    },
-  });
-  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
-  for await (const line of createInterface({input:process.stdin})) {
-    const request=JSON.parse(line);
-    try {
-      let result;
-      if(request.action==='query') result=await session.query('notes',null);
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status};
-      else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
-      else if(request.action==='command') {
-        const before=await session.query('notes',null);
-        const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
-        result=await operation.applied({signal:AbortSignal.timeout(30000)});
-      } else if(request.action==='close') {await inference.close(); await session.close(); console.log(JSON.stringify({id:request.id,closed:true})); break;}
-      else throw Error('Unknown test action');
-      console.log(JSON.stringify({id:request.id,result}));
-    } catch(error) {console.log(JSON.stringify({id:request.id,error:error.message}));}
-  }
-  await inference.close(); await session.close();
-  `);
+    await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
+      evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice, transportModule: pathToFileURL(preload).href,
+    }));
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
       const waiting = new Map(); let sequence = 0, readyResolve, readyReject, stderr = '';
@@ -381,7 +488,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
         waiting.delete(value.id); clearTimeout(held.timer);
         if (value.error) held.reject(Error(value.error)); else held.resolve(value.result ?? value);
       });
-      child.once('exit', code => {
+      child.once('close', code => {
         const error = Error(`Native peer exited (${code}): ${stderr}`); readyReject(error);
         for (const held of waiting.values()) { clearTimeout(held.timer); held.reject(error); } waiting.clear();
       });
@@ -403,6 +510,48 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       return client;
     }
     await startPeer();
+    checkpoint('retain the exact reviewed prefix across native restart');
+    await expect.poll(async () => (await peer.request('ordering-pause')).pause,
+      { timeout: 30_000, message: 'The native participant must durably pause ordering before owner review.' }).not.toBeNull();
+    const paused = (await peer.request('ordering-pause')).pause;
+    assert.match(paused.operationId, /^pairing:/);
+    assert.ok(paused.base);
+    await closeTestPeer(peer); peer = undefined;
+    await startPeer();
+    assert.deepEqual((await peer.request('ordering-pause')).pause, paused,
+      'Closing and reopening the native owner must preserve the exact review prefix.');
+    const prepared = await peer.request('pairing-process');
+    assert.equal(prepared.find(item => item.publicKey === browserDevice)?.state, 'pending',
+      'The original signed proposal must be prepared and awaiting owner review.');
+    // A pending proof alone cannot authorize enrollment. The actual native
+    // participant prepares and retains the full signed control change first.
+    const reviewPage = await context.newPage();
+    const reviewResponse = await reviewPage.goto(reviewUrl);
+    assert.match(reviewResponse.headers()['content-security-policy'], /frame-ancestors 'none'/);
+    await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
+    await expect(reviewPage.locator('#pairing-proposal')).toContainText(paused.base.point.generation);
+    await reviewPage.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await reviewPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The complete pairing proposal must remain readable without horizontal page overflow.');
+    await reviewPage.screenshot({ path: join(dirname(reportPath), 'first-app-pairing-review-mobile.png'), fullPage: true });
+    report.screenshots.pairing_review_narrow_viewport = 'first-app-pairing-review-mobile.png';
+    await expect(reviewPage.getByRole('button', { name: 'Approve this device', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await reviewPage.locator('#pairing-approve').focus();
+    await expect(reviewPage.locator('#pairing-approve')).toBeFocused();
+    await reviewPage.keyboard.press('Enter');
+    await expect(reviewPage.locator('[role=status]')).toContainText('approved');
+    await reviewPage.close();
+    await expect.poll(async () => {
+      await page.locator('#pairing-refresh').click();
+      return page.locator('#pairing-status').getAttribute('data-state');
+    }, { timeout: 30_000, message: 'The same running native owner must commit the exact approved proposal.' }).toBe('committed');
+    await expect.poll(async () => (await peer.request('ordering-pause')).pause,
+      { timeout: 30_000, message: 'Only verified committed authority may release the retained pause.' }).toBeNull();
+    await peer.request('pairing-process');
+    await page.locator('#pairing-refresh').click();
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'committed');
+    report.pairing = { reviewed_prefix: paused.base, recovered_native_pause: true, committed: true };
+    passed('retained browser proof, full owner review, durable native pause across restart and exact signed enrollment');
     const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
     assert.equal(attached.deviceId, device.deviceId);
     assert.equal(attached.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);
@@ -454,7 +603,50 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     checkpoint('close and reopen both original devices');
     await page.locator('#close').click();
     await expect(page.locator('#connection')).toContainText('Connection closed');
-    await peer.request('close'); await stop(peer.child); peer = undefined;
+    await closeTestPeer(peer); peer = undefined;
+
+    checkpoint('continue the same application with owner-reviewed host access');
+    const retainedDescriptor = await readFile(join(project, '.tendriller/descriptor.json'));
+    const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
+    const management = await context.newPage();
+    await management.goto(new URL('_tendril/manage', handle.page_url).href);
+    const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
+    await delegation.locator('input[name="name"]').fill('native-continuation');
+    for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
+      await delegation.locator(`input[name="scopes"][value="${scope}"]`).check();
+    await delegation.getByRole('button', { name: 'Add agent', exact: true }).click();
+    const notice = await management.locator('[role="status"]').textContent();
+    const code = notice?.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
+    assert.ok(code, 'The actual owner review must return a one-use code for the retained page.');
+    await writeFile(join(project, '.tendriller/delegation-code.txt'), code + '\n', { mode: 0o600, flag: 'wx', flush: true });
+    // Retain a private checkpoint but make the original handle unavailable to
+    // the tutorial. Recovery must use the public receipt and signed descriptor.
+    await rename(join(project, '.tendriller/handle.json'), join(project, '.tendriller/handle-before-reviewed-adoption.json'));
+    const adopted = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
+    assert.equal(adopted.state, 'host_credential_saved');
+    assert.equal(adopted.pageId, handle.id); assert.equal(adopted.applicationId, handle.application.id);
+    const resumedAdoption = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
+    assert.equal(resumedAdoption.attemptId, adopted.attemptId);
+    assert.equal(resumedAdoption.resumed, true, 'A retained response is reused without redeeming the code twice.');
+    await management.locator('form:has(input[name="agent"][value="setup"])').getByRole('button', { name: 'Disconnect', exact: true }).click();
+    await expect(management.locator('[role="status"]')).toContainText('Disconnected setup.');
+    await management.close();
+    const rejectedSetup = await fetch(handle.api, { headers: { Authorization: 'Bearer ' + handle.token }, redirect: 'error' });
+    assert.equal(rejectedSetup.status, 401, 'The old setup credential must no longer authorize host access.');
+    await rejectedSetup.body?.cancel();
+    const resumedCreation = JSON.parse(await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'Retain the existing application']));
+    assert.equal(resumedCreation.resumed, true); assert.equal(resumedCreation.page_url, handle.page_url);
+    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
+    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM tendrils').first()).n, 1,
+      'Recovery and creation retry must not allocate a second page through either setup route.');
+    assert.deepEqual(await readFile(join(project, '.tendriller/descriptor.json')), retainedDescriptor);
+    assert.deepEqual(await readFile(join(project, '.tendriller/initialized.json')), retainedInitialization);
+    assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
+      { publication: preparedPublication.publication, receipt: preparedPublication });
+    report.host_continuation = { application_id: handle.application.id, native_device_id: device.deviceId,
+      original_setup_revoked: true, original_handle_unavailable: true, retained_response_reused: true };
+    passed('actual owner-scoped delegation, retained response recovery and same-app continuation after setup revocation and handle loss');
+
     await startPeer(); assert.equal((await peer.request('query')).value.length, 4);
     await page.reload(); await page.locator('#connect').click();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
@@ -521,6 +713,8 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       content_id: evidenceNote.source.reference.id, operation_id: evidenceNote.operationId };
     report.limits.push('Inference provider output is injected in the private native test process; no live provider, credential validity or billing tested.');
     passed('human-edited evidence command retains exact source identity and survives browser reopen');
+    await closeTestPeer(peer); peer = undefined;
+    passed('native supervisor cleanup and natural child exit without forced termination');
     report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = 5;
     console.log('First-app native/browser integration passed. Synthetic local claim and relay limits are recorded in the report.');
   }
@@ -531,7 +725,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+      'connection', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
     try {
       await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
@@ -544,7 +738,9 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   if (error.stderr) process.stderr.write(error.stderr);
   throw error;
 } finally {
-  if (peer) { await peer.request('close').catch(() => {}); await stop(peer.child); }
+  if (peer) await closeTestPeer(peer).catch(error => {
+    report.native_cleanup = { status: 'failed', message: error.message };
+  });
   await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
   await mkdir(dirname(reportPath), { recursive: true });
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');

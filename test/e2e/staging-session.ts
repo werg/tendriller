@@ -1,27 +1,30 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import type { BrowserContext } from '@playwright/test';
+import { preflightStaging, STAGING_ORIGIN } from '../../scripts/staging-preflight.mjs';
 
-export const staging = 'https://staging.tendriller.dev';
+export const staging = STAGING_ORIGIN;
 
 function writeStaging(sql: string) {
   execFileSync(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute',
-    'tendriller-staging-s9-accounts', '--remote', '--config', 'server/wrangler.staging.jsonc',
+    'ACCOUNTS', '--remote', '--config', 'server/wrangler.staging.jsonc',
     '--command', sql], { stdio: 'pipe', timeout: 45_000 });
 }
 
 /** Provision an ordinary, short-lived service session for an isolated fixture owner. */
-export function stagingSession() {
+export async function stagingSession({ preflight = preflightStaging, write = writeStaging } = {}) {
+  // Direct Playwright invocation must have the same gate as the workflow wrapper.
+  await preflight();
   const id = randomUUID();
   const email = `e2e-${id}@example.test`;
   const token = randomBytes(32).toString('hex');
   const hash = createHash('sha256').update(token).digest('hex');
   const started = Date.now();
   const expires = started + 15 * 60_000;
-  const removeAccount = () => writeStaging(`DELETE FROM accounts WHERE id = '${id}' AND NOT EXISTS
+  const removeAccount = () => write(`DELETE FROM accounts WHERE id = '${id}' AND NOT EXISTS
     (SELECT 1 FROM tendrils WHERE owner_account = '${id}');`);
   try {
-    writeStaging(`
+    write(`
     INSERT INTO accounts (id, created_at, email) VALUES ('${id}', ${started}, '${email}');
     INSERT INTO identities (provider, subject, account_id, login, email, created_at)
       VALUES ('e2e', '${id}', '${id}', 'Staging test account', '${email}', ${started});

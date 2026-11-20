@@ -108,13 +108,35 @@ reader supplies them. A known coordinator need not currently be reachable.
 
 ## Enroll a browser without distributing secrets
 
-The published Worker creates a device only after the explicit setup action and
-reports **only its public key**. The owner verifies the intended browser. The
-native enrollment command reads authenticated `info().owner_account_id`, keeps
-all current grants and the exact complete coordinator prefix, and prepares a
-`reason: 'control-change'` transition with the next control revision and the new
-explicit account binding. The complete signed request and control update are
-saved before their first send; retries reuse them.
+The explicit browser setup action retains one public request and creates or
+reopens that browser's own device under its exclusive profile lock. A short-lived
+Worker signs a bounded service challenge with that identity; the key, account,
+application, origins, rights, expected generation and expiry are fixed by the
+proof. `pairing-browser.mjs` retains only public intent, and
+`pairing-worker.mjs` keeps private key operations inside the device owner.
+
+The existing native owner processes the request through `pairing-native.mjs`.
+It retains its intent, calls the public durable `session.pauseOrdering(id)`, and
+prepares the usual `reason: 'control-change'` transition with the exact drained
+prefix, next control revision and proved account binding. All existing grants
+and key commitments remain intact. The complete signed request and full control
+update are saved and staged with `client.prepare` **before** the service-origin
+owner review. The owner approves that fingerprint, narrow rights and exact
+proposal digest. The normal serialized host selector rechecks current authority
+and account access when committing it.
+
+The native loop is bounded to ten minutes, with idle checks backing off to thirty
+seconds. A timeout, lost commit reply or
+process close preserves both the exact request and durable ordering pause.
+On reopen, verify the original signed transition and complete reviewed payload
+before adopting it and resuming ordering. A mismatch or unavailable status stays
+paused; never substitute a new prefix or signer. `npm run pair` performs one
+bounded pass with the resident owner stopped; it does not wait for owner review
+or later independent receipt verification. Restart the same native participant
+to finish or reconcile a prepared/submitted proposal, and keep it running for
+the complete pairing flow. The deliberate manual `enroll`
+command still uses authenticated `info().owner_account_id` for a separately
+verified owner device; it is not the ordinary browser pairing flow.
 
 The published code never receives the agent token, native signer or plaintext
 epoch key. On connect, the browser uses its page's authenticated same-origin
@@ -205,11 +227,21 @@ implemented supported evolution path explicitly.
 
 ## Own shutdown and uncertain operations
 
-Await `session.close()` before reopening the same native store or terminating a
-gracefully closing browser Worker. Close the page's RTC helper as well. Abrupt
-browser termination is a separate durability case to test, not a substitute for
-normal cleanup. Do not run the tutorial native peer and a CLI command against its
-same device concurrently.
+For a native session returned by the tutorial's `openSession()`, await the
+returned `owned.close()` before reopening its store. This closes the supervisor,
+its attachment listener and ownership fence as well as the session; closing only
+`owned.session` leaves supervisor resources behind. The inference launcher owns
+the same supervisor and follows the same shutdown path.
+
+Ordinary CLI commands use `--mode attach` against the running peer. Closing that
+attachment detaches it without stopping the owner or sibling clients. Reserve
+`--mode own` for deliberate standalone ownership while the peer is stopped; two
+owners must not open the same device store concurrently.
+
+An application that owns a bare session must await `session.close()` before
+reopening its store or terminating a gracefully closing browser Worker. Close
+its RTC helper as well. Abrupt browser termination is a separate durability case
+to test, not a substitute for normal cleanup.
 
 Canceling `operation.applied({ signal })` cancels the wait; it does not replace or
 erase the saved signed attempt. Inspect the original operation, retry it, or

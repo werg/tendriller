@@ -20,12 +20,30 @@ Use its `topic` argument for the maintained instructions themselves: `build`,
 browsing tool to read those documents. Use the `serviceOrigin` returned by MCP
 throughout; staging must stay on staging.
 
+If an installed plugin does not expose `tendril_guide`, `get_profile` and
+`list_tendrils` also return the service identity and direct `setup.startHere`,
+`setup.buildGuide` and `setup.discoveryUrl` links. Read those exact URLs and
+refresh the installed plugin's tool catalog when possible. Do not infer the
+target environment from the plugin name or substitute the production example
+domain. The public profile remains opaque; discovery does not reveal login
+email, account credentials or application keys.
+
 ## Build a new application
 
 1. Call `tendril_guide` with `topic: "build"` and read `topic: "capabilities"`
    for reusable state, UI, sensor and media modules. The build guide contains
    the actual runnable starter, package acquisition and exact lifecycle commands.
-2. Check your execution tools. The supplied native participant needs **Node 24**,
+2. Before downloading or installing packages, read the same-origin
+   `setup.readinessUrl` (or `onboarding.interfaces.readiness`) at `/api/readiness`. Require an HTTP
+   200 response with `schemaVersion: 1`, the exact selected `serviceOrigin`,
+   `mode: "open"` and `creation.available: true`. A paused/read-only service can
+   return HTTP 200 with creation disabled. Stop new-app setup and report its
+   `creation.nextAction`; do not repeatedly retry or switch to another origin.
+   A 404 means this host lacks the supported preflight and needs an update;
+   a network error, 503 or invalid response means readiness is unverified.
+   Neither permits speculative creation. Existing app calls can continue under
+   their independent permissions and the reported write availability.
+3. Check your execution tools. The supplied native participant needs **Node 24**,
    package installation, filesystem storage, outbound HTTPS/WebSockets and a
    process that can remain running. A shell that runs a short command does not
    by itself establish that process lifetime. If available, use it and follow
@@ -33,28 +51,38 @@ throughout; staging must stay on staging.
    concrete handoff to the person's coding-agent/runtime with this same service
    origin and guide. Do not search for unrelated plugins or promise that MCP
    alone hosts a new app's executable participant.
-3. Read `https://tendriller.dev/api/service` and
-   `https://tendriller.dev/.well-known/tendriller.json`. Download
-   `https://tendriller.dev/downloads/tendriller-first-app.tgz`. Use the supplied
-   files; do not invent a deployment module or substitute a separate backend
-   merely because the session is not configured yet.
-4. Get the owner's verified login email if unknown. Provision early using the
-   starter's create command (HTTP `POST https://tendriller.dev/api/tendrils`
-   with JSON `{"owner":"their-email","name":"App name"}`). This is the supported
-   creation route even though MCP's application tools operate on already
-   connected apps. Save the private returned handle in the execution environment
-   and initialize, build and publish the first signed version before asking the
-   person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep tokens and keys out
-   of chat and published HTML. Check the actual service response for availability.
-5. Follow **create → define state → configure authority and initial
+4. Read the selected origin's `/api/service` and
+   `/.well-known/tendriller.json`. Follow `firstApp.release` and the build guide
+   to download the immutable `tendriller-first-app-VERSION.tgz` kit, verify its
+   composition against the host identity, and install its local `packages/`
+   archives. The mutable `/downloads/tendriller-first-app.tgz` is source for
+   inspection, not a matching package composition. Use the supplied files;
+   do not invent a deployment module or substitute a separate backend merely
+   because the session is not configured yet.
+5. Use the linked account's `tendrils:create` permission. Run the starter's
+   `npm run setup:prepare -- SERVICE_ORIGIN "App name"`, then call
+   `prepare_tendril_setup` with its exact public `prepare.arguments`. The native
+   project has already retained the private credential; only its commitment
+   enters MCP. The host derives the intended owner without asking for an email.
+   Save the public ready result and run `npm run setup:finish -- RESULT.json`
+   to reconstruct the same private handle. For a lost reply, call
+   `inspect_tendril_setup` for the original operation. Never generate a new intent
+   or use anonymous creation to replace an uncertain setup. A missing creation
+   scope or tool needs the matching deployment/catalog/consent update.
+   Initialize, build and publish the first signed version before asking the
+   person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep private
+   setup records, tokens and keys out of chat and published HTML. Direct-domain
+   setup without a linked creation account retains its explicit email-based
+   route in the build guide.
+6. Follow **create → define state → configure authority and initial
    generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a host
    handle does not create application commands or a running session.
-6. To use the app from this MCP connection, read `topic: "connect"`. Attach
+7. To use the app from this MCP connection, read `topic: "connect"`. Attach
    `@tendriller/core/assistant` to the *existing* application participant, propose
    its declared capabilities before claim, and give the owner the ready page and
    returned permission-review URL. The supplied starter has `npm run assistant:prepare`
    and `npm run assistant` for this route. They choose what to expose. Keep that participant available for calls.
-7. Refresh `list_tendrils`, call `describe_application`, make a real query and
+8. Refresh `list_tendrils`, call `describe_application`, make a real query and
    the requested command, then verify the applied result and retained state
    after reload. Use `topic: "delivery"` for the completion evidence and report
    the actual running process and how to resume its saved device store.

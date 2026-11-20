@@ -13,13 +13,24 @@ not to create a replacement identity or backend.
 
 ## MCP has no applications or the agent cannot find setup
 
-Call `tendril_guide` with `topic: "start"`; the tool returns the maintained
-[MCP workflow](MCP_AGENT_GUIDE.md) without browsing. An empty `list_tendrils`
-means no assistant-connected apps for that account. Use `topic: "build"` for a
+Call `tendril_guide` with `topic: "start"` for the maintained
+[MCP workflow](MCP_AGENT_GUIDE.md). If that tool is missing from an installed plugin, use the same-origin
+`setup.startHere` or `setup.discoveryUrl` returned by `get_profile` or
+`list_tendrils`, then refresh the plugin's tool catalog. A missing tool or guide
+does not authorize switching the application to a different service origin.
+An empty `list_tendrils` means no assistant-connected apps for that account. Use `topic: "build"` for a
 new application and its supported HTTP creation route, or `topic: "connect"`
 for the existing participant's proposal and owner review. Check Node 24, retained
 storage and actual process lifetime before promising a connected new app. A
 missing runtime requires a concrete runtime handoff, not another website plugin.
+
+Before installing packages for a new app, read the selected origin's
+`/api/readiness` and check `creation.available`, not just HTTP success. A paused
+service returns a concrete next action without creating an account or page.
+`mode: "unavailable"`, a network failure or an invalid response means stop setup;
+404 means the host needs the readiness endpoint. Keep the original service
+origin. Restoring creation is an operator action, not a reason to create on
+production or repeat rejected requests.
 
 If the guide tool is absent, refresh the client's cached tool catalog or recreate
 the custom connection after confirming the intended service origin and deployed
@@ -62,7 +73,14 @@ artifact versions in the private build record so mismatches are visible.
 | --- | --- |
 | `/api/service` returns HTML, a challenge, or `invalid_response` | Check that the URL is the service origin, not a page or agent API URL. Inspect HTTP status and content type. If ordinary automated clients are blocked before the Worker, report the host access problem with a redacted response. Do not treat it as a successful descriptor. |
 | `contract_mismatch`, missing package export, or incompatible definition/engine artifacts | Compare the host contract, core release and exact installed artifact manifests. Follow [artifact acquisition](tools/ARTIFACTS.md) and the [release composition](RELEASE_COMPOSITION.md) record. Supply a compatible public Chronolog session archive; the core host's control dependency is not the full native/browser session package. Do not assume that unrelated latest package versions compose. |
-| `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. Ask the owner to use the page's management connection flow if the agent credential has been revoked. A different account's credential or browser cookie is not a substitute. |
+| `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. For a claimed application, use [same-app owner delegation](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss) to retain a reviewed credential with `npm run host:adopt`; do not create another page or signer. |
+| `setup_expired` or `setup_binding_inactive` after owner claim | The 24-hour setup credential or its original OAuth grant is no longer active. Have the same owner open `page_url` + `_tendril/manage`, choose **Add agent**, review the native scopes and save its one-use code privately. Redeem it with `npm run host:adopt -- SERVICE_ORIGIN .tendriller/delegation-code.txt`, then reopen the retained native device and verify existing data. Claim does not extend the setup credential. |
+| `setup_recovery_required` from `npm run create` | The directory retains setup, signer or recovery evidence without a usable handle. Preserve it and restore or continue the original application. A reviewed host credential plus the matching retained descriptor resumes the same page even when the original handle is missing; incomplete or conflicting evidence cannot authorize replacement creation. |
+| `adoption_outcome_unknown` | The one-use code may have been consumed without a retained response. Keep the private attempt. The owner inspects its named agent, disconnects that binding if present and explicitly approves another **Add agent** code. If a response was retained, the same helper reuses it and verifies current access without redeeming the code again. |
+| `host_credential_unverified` | The retained delegation response could not be verified through the same host's authenticated `self` endpoint. Inspect network state and the named binding with the owner. Keep the response; repeating verification sends no one-use code. A revoked binding needs a new reviewed delegation. |
+| `host_selection_changed` or `host_selection_busy` | A later renewal or another command owns credential selection. Do not roll back the later selected credential. Let the other command finish. After a crash, confirm all adoption commands have stopped before removing only `.tendriller/host-selection.lock` and resuming; retain all attempts and responses. |
+| `delegation_unavailable` | The selected host did not confirm the required `GET /api/adopt` capability. No code was submitted. Ask the operator to deploy the matching host and keep the original service origin. |
+| `host_identity_required` or `host_handle_mismatch` | Restore the original private checkpoint. If only host credentials were lost, retain the signed descriptor/device and save the original setup inspection as `.tendriller/account-setup-result.json`. With the connector disconnected, have the owner inspect `SERVICE_ORIGIN/dashboard/setups` and save its original page link as `.tendriller/owner-page-url.txt`. Resolve identity conflicts before delegation. Missing signing keys still require a device checkpoint or explicit application recovery. |
 | Sign-in is shown, `wrong_owner`, or `claimed` | Have the human open the returned owner `page_url` and sign in with the intended verified identity. If another account owns the page, report that mismatch. Agent credentials cannot claim the page on the owner's behalf. |
 | `forbidden` while configuring, or `account_required` while making a page resident | Confirm owner claim and the current account's authority. Host control configuration is owner administration. A page display role cannot perform it. Read the specific error message; `forbidden` can also mean revoked access. |
 | `lifetime_pending` | Inspect current host info and retry the same requested lifetime after account storage recovers. Do not alternate lifetime values to work around an uncertain account write. |
@@ -70,6 +88,13 @@ artifact versions in the private build record so mismatches are visible.
 
 Unclaimed pages expire after 24 hours. Creating another page is a new application
 setup decision, not a recovery mechanism for an existing claimed application.
+The account-linked setup credential has its own 24-hour deadline even for a
+claimed resident page. The starter retains reviewed host credentials separately
+from the initial handle, so `project()` and terminal attachment resume the same
+application after owner delegation. Stop and restart an already running native
+participant to select the new credential. Assistant access tied to the former
+credential requires `npm run assistant:prepare` and a fresh owner permission
+review; the existing assistant key and event cursor can remain intact.
 See [membership](MEMBERSHIP.md) for the independent account and device rights.
 
 ## Definition, authority and enrollment

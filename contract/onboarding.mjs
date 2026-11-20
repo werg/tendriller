@@ -9,16 +9,22 @@ import { CONTRACT_VERSION, CORE_RELEASE } from './index.mjs';
 
 /** Public navigation only. This document grants no account or device authority. */
 export function onboardingDescriptor(base) {
-  const url = (path) => new URL(path, base).href;
+  const origin = new URL(base).origin;
+  const url = (path) => new URL(path, origin).href;
   return {
     schema_version: 1,
     name: 'Tendriller',
     contract: CONTRACT_VERSION,
     core_release: CORE_RELEASE,
+    serviceOrigin: origin,
     service: url('/'),
     start_here: url(ASSISTANT_GUIDES.build),
     agent_instructions: url('/agent.md'),
     starter: url('/downloads/tendriller-first-app.tgz'),
+    firstApp: { release: {
+      manifest: `https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/manifest.json`,
+      archive: `https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/tendriller-first-app-${CORE_RELEASE}.tgz`,
+    } },
     capabilities: url('/.well-known/tendriller-capabilities.json'),
     documentation: {
       index: url('/llms.txt'), full: url('/llms-full.txt'),
@@ -35,6 +41,7 @@ export function onboardingDescriptor(base) {
     },
     interfaces: {
       service_descriptor: url('/api/service'),
+      readiness: url('/api/readiness'),
       contract: url('/contract/v3.json'),
       create_page: { method: 'POST', url: url('/api/tendrils'), required: ['owner'] },
     },
@@ -75,6 +82,8 @@ export function onboardingDescriptor(base) {
 
 /** Discovery stays outside the strict, existing service-descriptor JSON schema. */
 export function onboardingLinks(base) {
-  return `<${new URL('/agent.md', base).href}>; rel="describedby"; type="text/markdown", ` +
-    `<${new URL('/.well-known/tendriller.json', base).href}>; rel="service-desc"; type="application/json"`;
+  const origin = new URL(base).origin;
+  return `<${new URL('/agent.md', origin).href}>; rel="describedby"; type="text/markdown", ` +
+    `<${new URL('/.well-known/tendriller.json', origin).href}>; rel="service-desc"; type="application/json", ` +
+    `<${new URL('/api/readiness', origin).href}>; rel="monitor"; type="application/json"`;
 }

@@ -13,7 +13,8 @@ names Gabriel Pickard; select the corresponding verified identity in the portal.
 
 Install Node 24, the qualified Codex CLI (`npm install --global
 @openai/codex@0.170.0`), Chromium (`npx playwright install --with-deps chromium`)
-and dependencies with `npm ci`. Build with `npm run build:artifacts`. With the
+and dependencies with `npm ci`. From a clean checkpoint, run
+`npm run build:artifacts` and `npm run release:artifacts`. With the
 operator's Cloudflare deployment access and existing private account record, run:
 
 ```sh
@@ -24,6 +25,16 @@ npm run test:plugin:live -- \
 ```
 
 Use the production config and its matching private account for production.
+Before package acquisition, the workflow checks open readiness and deployed
+source/release/runtime identity using only public reads. Before renewing the
+account or creating a fixture, it checks the
+selected host's readiness and exact source/release/runtime/composition identity.
+The fixture installs the SDK and Chronolog session named by that composition,
+verifies their actual hashes against the current source pin, and reports those
+identities. A mismatched deployment, missing readiness or paused staging or production stops
+the run; it does not select another origin or an older archive. The recording
+rechecks deployment identity at completion. This fixture does not qualify the
+first-app kit or a browser-owned application peer; those have separate gates.
 The command creates its own synthetic app, prepares signed UI before claim,
 starts the participant, signs in with the static form, claims that prepared
 publication, approves application access and completes real OAuth with PKCE.
@@ -42,9 +53,11 @@ agent behavior**. Never relabel them as a ChatGPT conversation. The publisher's
 successful ChatGPT connection can be recorded separately as reported evidence.
 
 The fixture is deleted and its participant stopped after the test; an existing
-reviewer sample is untouched. Production creation is never automatically opened
-if paused. Staging can be opened briefly for fixture creation, with its mode
-restored immediately. If cleanup fails, the private temporary project is retained
+reviewer sample is untouched. Qualification never changes service mode. A paused
+host must be inspected and deliberately restored by its operator before rerunning
+qualification. The runner checks readiness again after dependency installation;
+a later creation pause remains a creation failure, without an override or another
+origin. If cleanup fails, the private temporary project is retained
 for operator recovery. `--no-video` explicitly skips recording for diagnostics.
 
 [Native MCP live qualification](../../../.github/workflows/plugin-qualification.yml)
@@ -141,3 +154,11 @@ for a later clean review rather than inventing a reset API.
 OpenAI's [submission guide](https://developers.openai.com/plugins/deploy/submission)
 defines the current review requirements. Do not claim directory submission,
 publication or ChatGPT web testing without evidence of that action.
+
+## Account setup permission
+
+New plugin connections request `tendrils:create` alongside the existing app
+permissions so `prepare_tendril_setup`, inspection and recovery are available.
+The host must allow this scope for the configured client. Existing OAuth grants
+retain their original scopes; reconnect with explicit consent when creation is
+needed. Never treat an existing read/write grant as account-setup authorization.

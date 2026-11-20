@@ -8,7 +8,9 @@ alone does not establish it.
 
 ## Start provisioning early
 
-1. Read the requested origin's `/api/service`, onboarding descriptor and
+1. Read the selected connector's service origin and `/api/readiness` before
+   installing or building. Stop if creation is paused or readiness is unavailable;
+   keep the same origin. Then read `/api/service`, onboarding descriptor and
    [capability map](CAPABILITIES.md). Identify the smallest native application path.
 2. Obtain the owner's verified email if it is missing. Use the supplied create
    command and retain the private setup handle. Continue through authority,
@@ -41,8 +43,9 @@ The process participates in the selected application and observes real changes.
 It stays alive until stopped. Its private device store must survive future
 invocations. Start it in the supported execution environment and retain enough
 process information to monitor, stop and restart it. The CLI and this process
-cannot simultaneously own the same native store; stop the peer before a CLI
-query/publication/enrollment, then reopen it.
+cannot simultaneously own the same native store. Ordinary CLI queries and
+commands use `--mode attach` while the supervisor runs. Stop the peer before
+standalone publication/enrollment with `--mode own`, then reopen the same profile.
 
 For an agent integration, connect the session's public application tools and
 changes to the agent's actual execution loop. `createApplicationTools` and
@@ -57,6 +60,13 @@ Name the process lifetime explicitly:
 | A durable machine/service with a configured, verified process owner | Identify that owner, its restart mechanism and the persistent device location; test a restart |
 | A temporary agent execution environment | State its known lifetime or that lifetime is unverified; arrange a supported persistent participant if ongoing service is required |
 | Only the hosted page remains | The signed UI is available, but ongoing native coordination or agent responses still require the relevant participant |
+
+Record whether a private checkpoint actually exists in storage that survives the
+execution environment, and verify a same-device reopen before calling it
+resumable. A local ZIP or failed upload is not a verified remote checkpoint.
+Stop the owner before copying its private database unless the storage API
+provides a consistent backup. Exclude tokens, epoch keys and device databases
+from public source archives and authored page assets.
 
 Page residency retains hosted control and code. It does not run a native process,
 retain every application's data, or prevent browser suspension. The first-app
@@ -73,6 +83,15 @@ optional [Cloudflare assistant](CLOUDFLARE_ASSISTANT.md) adds same-origin
 OAuth-protected application tools, explicit MCP Events subscriptions and a
 live inbox card. Use its route table and
 `describe_application` to establish the connection's capabilities.
+
+Claim, assistant permission review, and browser device enrollment are separate
+states. A successful sign-in in the person's browser does not authenticate an
+agent's independent browser. Keep that page at the owner sign-in handoff until
+its own session is authenticated, then verify the displayed device public key.
+Do not report a proposed review URL or an open socket alone as a completed
+browser/MCP connection. A preview relay is optional; when unavailable, use the
+actual published page for supported browser verification and state any remaining
+browser execution limit explicitly.
 
 These routes do not provide or qualify a universal ChatGPT conversation wake
 adapter. OAuth ownership alone does not subscribe a conversation. Establish

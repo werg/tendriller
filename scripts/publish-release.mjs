@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyReleaseArtifacts } from './release-composition.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const dist = join(root, 'dist');
@@ -18,6 +18,7 @@ const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding:
 if (manifest.source_commit !== source || (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== source)) {
   throw new Error('The release manifest and workflow must identify the exact checked-out source commit.');
 }
+verifyReleaseArtifacts(root, manifest);
 
 // Callers may add generated metadata files after the ref; discovery is always last.
 const files = [...manifest.artifacts.map(artifact => artifact.file), ...process.argv.slice(3), 'manifest.json'];
@@ -25,12 +26,6 @@ if (new Set(files).size !== files.length) throw new Error('Release asset names m
 for (const file of files) {
   if (file !== basename(file) || !/^[a-zA-Z0-9._-]+$/.test(file)) throw new Error(`Invalid release asset name: ${file}`);
   readFileSync(join(dist, file));
-}
-for (const artifact of manifest.artifacts) {
-  const bytes = readFileSync(join(dist, artifact.file));
-  if (bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) {
-    throw new Error(`Built release asset does not match manifest: ${artifact.file}`);
-  }
 }
 
 function api(path, allowMissing = false) {

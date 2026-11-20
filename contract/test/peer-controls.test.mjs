@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPeersClient, createPeerParticipantClient, createParticipantRequest, createParticipantResponse } from '../peers.mjs';
+import { createClient } from '../client.mjs';
 const applicationId = 'ab'.repeat(32);
 const bundle = { descriptor: { payload: { profile: 'peer-generation-v1', definitionDigest: 'digest' }, signature: 'signed' }, controls: [], generations: [] };
 const publication = { descriptor: bundle.descriptor, definition: { id: 'test', version: '1', schema: null, commands: [], queries: [] }, schema: null };
@@ -78,4 +79,29 @@ test('cancelled calls and forbidden convenience facets never resolve scope or co
       { signal: cancelled.signal }), /session closed/);
   }
   assert.equal(lookups, 0); assert.equal(requests, 0);
+});
+
+test('application authority cancellation reaches the public HTTP transport and prevents cancelled retries', async () => {
+  const entered = Promise.withResolvers(), controller = new AbortController();
+  const reason = Error('pairing window closed');
+  let requests = 0;
+  const host = createClient({ api: 'https://host.test/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token' }, {
+    applicationId,
+    fetch: async (url, { signal }) => {
+      requests++;
+      assert.equal(url, 'https://host.test/api/t/aaaaaaaaaaaa/peers/participant');
+      assert.equal(signal, controller.signal);
+      entered.resolve();
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  const reading = host.peers.application({ signal: controller.signal });
+  const rejected = assert.rejects(reading, error => error === reason);
+  await entered.promise;
+  controller.abort(reason);
+  await rejected;
+  await assert.rejects(host.peers.application({ signal: controller.signal }), error => error === reason);
+  assert.equal(requests, 1, 'an already-cancelled authority read does not contact the host');
 });

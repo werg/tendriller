@@ -83,6 +83,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      source_commit: ${{ steps.composition.outputs.source_commit }}
+      composition_id: ${{ steps.composition.outputs.composition_id }}
+      manifest_sha256: ${{ steps.composition.outputs.manifest_sha256 }}
+      core_release: ${{ steps.composition.outputs.core_release }}
+      runtime_id: ${{ steps.composition.outputs.runtime_id }}
+      engine_sha256: ${{ steps.composition.outputs.engine_sha256 }}
+      starter_sha256: ${{ steps.composition.outputs.starter_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,14 +104,32 @@ jobs:
       - run: npm run build:artifacts
       - run: npm run test:consumer
       - run: npm run release:artifacts
+      - name: Record the exact deployment composition
+        id: composition
+        run: |
+          node --input-type=module <<'JS'
+          import {readFileSync, appendFileSync} from 'node:fs';
+          import {createHash} from 'node:crypto';
+          const manifestBytes = readFileSync('dist/manifest.json');
+          const manifest = JSON.parse(manifestBytes);
+          const values = {source_commit: manifest.source_commit, composition_id: manifest.composition.id,
+            manifest_sha256: createHash('sha256').update(manifestBytes).digest('hex'),
+            core_release: manifest.version, runtime_id: manifest.runtime,
+            engine_sha256: manifest.artifacts.find(item => item.role === 'engine').sha256,
+            starter_sha256: manifest.artifacts.find(item => item.role === 'starter').sha256};
+          appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key,value]) => `${key}=${value}\n`).join(''));
+          JS
       - uses: actions/upload-artifact@v4
         with:
           name: public-packages
           if-no-files-found: error
           path: |
             dist/tendriller-*.tgz
+            dist/chronolog-peer-session-*.tgz
             dist/manifest.json
+            dist/composition.json
             dist/provenance.json
+            dist/tools-manifest.json
             dist/SHA256SUMS
 
   staging:
@@ -116,14 +142,26 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      TENDRILLER_EXPECTED_SOURCE_COMMIT: ${{ needs.artifacts.outputs.source_commit }}
+      TENDRILLER_EXPECTED_COMPOSITION_ID: ${{ needs.artifacts.outputs.composition_id }}
+      TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+      TENDRILLER_EXPECTED_CORE_RELEASE: ${{ needs.artifacts.outputs.core_release }}
+      TENDRILLER_EXPECTED_RUNTIME_ID: ${{ needs.artifacts.outputs.runtime_id }}
+      TENDRILLER_EXPECTED_ENGINE_SHA256: ${{ needs.artifacts.outputs.engine_sha256 }}
+      TENDRILLER_EXPECTED_STARTER_SHA256: ${{ needs.artifacts.outputs.starter_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
+      # A normal deployed host advertises these public versioned downloads.
+      # Keep intentional unpublished branch previews in their separate workflow.
+      - name: Require the exact public release before deployment
+        run: node scripts/check-published-release.mjs
       - run: npm ci
       - run: npm run build:deploy
+      - run: node scripts/check-deployment-artifacts.mjs
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
         id: current
@@ -140,11 +178,16 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
-        run: npx wrangler deploy --config server/wrangler.staging.jsonc --durable-objects-code-update-mode immediate
+        run: >-
+          npx wrangler deploy --config server/wrangler.staging.jsonc --durable-objects-code-update-mode immediate
+          --var "SERVICE_SOURCE_COMMIT:$TENDRILLER_EXPECTED_SOURCE_COMMIT"
+          --var "SERVICE_COMPOSITION_ID:$TENDRILLER_EXPECTED_COMPOSITION_ID"
       - if: steps.current.outputs.current == 'true'
         id: smoke
         run: |
-          node scripts/check-deployment.mjs https://staging.tendriller.dev --assistant
+          node scripts/check-deployment.mjs https://staging.tendriller.dev --assistant \
+            --source-commit "$TENDRILLER_EXPECTED_SOURCE_COMMIT" --composition-id "$TENDRILLER_EXPECTED_COMPOSITION_ID" \
+            --core-release "$TENDRILLER_EXPECTED_CORE_RELEASE" --runtime-id "$TENDRILLER_EXPECTED_RUNTIME_ID"
           echo "deployed=true" >> "$GITHUB_OUTPUT"
 
   staging_acceptance:
@@ -169,14 +212,24 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      TENDRILLER_EXPECTED_SOURCE_COMMIT: ${{ needs.artifacts.outputs.source_commit }}
+      TENDRILLER_EXPECTED_COMPOSITION_ID: ${{ needs.artifacts.outputs.composition_id }}
+      TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+      TENDRILLER_EXPECTED_CORE_RELEASE: ${{ needs.artifacts.outputs.core_release }}
+      TENDRILLER_EXPECTED_RUNTIME_ID: ${{ needs.artifacts.outputs.runtime_id }}
+      TENDRILLER_EXPECTED_ENGINE_SHA256: ${{ needs.artifacts.outputs.engine_sha256 }}
+      TENDRILLER_EXPECTED_STARTER_SHA256: ${{ needs.artifacts.outputs.starter_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
+      - name: Require the exact public release before deployment
+        run: node scripts/check-published-release.mjs
       - run: npm ci
       - run: npm run build:deploy
+      - run: node scripts/check-deployment-artifacts.mjs
       - run: node scripts/check-legal.mjs
       - name: Check for a newer master commit
         id: current
@@ -193,6 +246,12 @@ jobs:
       - if: steps.current.outputs.current == 'true'
         run: node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
-        run: npx wrangler deploy --config server/wrangler.production.jsonc --durable-objects-code-update-mode immediate
+        run: >-
+          npx wrangler deploy --config server/wrangler.production.jsonc --durable-objects-code-update-mode immediate
+          --var "SERVICE_SOURCE_COMMIT:$TENDRILLER_EXPECTED_SOURCE_COMMIT"
+          --var "SERVICE_COMPOSITION_ID:$TENDRILLER_EXPECTED_COMPOSITION_ID"
       - if: steps.current.outputs.current == 'true'
-        run: node scripts/check-deployment.mjs https://tendriller.dev --assistant
+        run: >-
+          node scripts/check-deployment.mjs https://tendriller.dev --assistant
+          --source-commit "$TENDRILLER_EXPECTED_SOURCE_COMMIT" --composition-id "$TENDRILLER_EXPECTED_COMPOSITION_ID"
+          --core-release "$TENDRILLER_EXPECTED_CORE_RELEASE" --runtime-id "$TENDRILLER_EXPECTED_RUNTIME_ID"

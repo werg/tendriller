@@ -39,6 +39,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       REVIEW_ACCESS_PATH: /tmp/tendriller-review-access.json
+      REVIEW_ORIGIN: ${{ matrix.environment == 'staging' && 'https://staging.tendriller.dev' || 'https://tendriller.dev' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,9 +50,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Check selected host source and readiness before package acquisition
+        run: node scripts/review/preflight.mjs --source-only --origin "$REVIEW_ORIGIN"
       - run: npm ci
-      - run: npm install --global @openai/codex@0.170.0
       - run: npm run build:artifacts
+      - run: npm run release:artifacts
       - name: Load private reviewer credentials
         env:
           REVIEW_ACCESS_JSON: ${{ secrets.TENDRILLER_REVIEW_ACCESS_JSON }}
@@ -61,6 +64,9 @@ jobs:
             if (!process.env.REVIEW_ACCESS_JSON) throw Error("Configure the environment secret TENDRILLER_REVIEW_ACCESS_JSON");
             JSON.parse(process.env.REVIEW_ACCESS_JSON);
             writeFileSync(process.env.REVIEW_ACCESS_PATH, process.env.REVIEW_ACCESS_JSON, { mode: 0o600 });'
+      - name: Verify the exact live composition before renewing credentials
+        run: node scripts/review/preflight.mjs --config server/wrangler.${{ matrix.environment }}.jsonc --access "$REVIEW_ACCESS_PATH"
+      - run: npm install --global @openai/codex@0.170.0
       - name: Renew the same dedicated account without rotating its credentials
         run: node scripts/provision-test-access.mjs --config server/wrangler.${{ matrix.environment }}.jsonc --output "$REVIEW_ACCESS_PATH" --days 90 --renew
       - name: Exercise real native MCP tools and record all packaged cases
@@ -71,6 +77,7 @@ jobs:
           name: native-mcp-${{ matrix.environment }}-evidence
           # Explicit allowlist: never upload private handles, access records or raw host diagnostics.
           path: |
+            .results/plugin-review/preflight.json
             .results/plugin-review/report.json
             .results/plugin-review/fixture-failure.json
             .results/plugin-review/walkthrough.webm

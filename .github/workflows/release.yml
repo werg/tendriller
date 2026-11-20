@@ -30,14 +30,22 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run check:release
       - run: npm run release:artifacts
+      - name: Qualify the exact first-app release archive
+        run: |
+          release_version=$(node -p "require('./package.json').version")
+          npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$release_version.tgz"
       - uses: actions/upload-artifact@v4
         with:
           name: core-release
           path: |
             dist/tendriller-*.tgz
+            dist/chronolog-peer-session-*.tgz
             dist/manifest.json
+            dist/composition.json
             dist/provenance.json
+            dist/tools-manifest.json
             dist/SHA256SUMS
+            .results/first-app.json
       - name: Publish immutable release candidate assets
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
         env:

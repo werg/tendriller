@@ -33,4 +33,4 @@ try {
   await service.done;
 } catch (error) {
   if (!stopped.signal.aborted) { console.error(error.message); process.exitCode = 1; }
-} finally { try { await service?.close(); } finally { await owned?.session.close(); } }
+} finally { try { await service?.close(); } finally { await owned?.close(); } }

@@ -1,5 +1,5 @@
 import type { Tendril } from './tendril';
-import { activeAdapters } from './assistant-admission';
+import { activeAdapters, freshAdapters } from './assistant-admission';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL, ASSISTANT_SOCKET_TAG, REQUEST_LIMIT, fields } from './assistant-shared';
 import { pagePolicy } from './access';
 import { HttpError } from './http';
@@ -28,16 +28,16 @@ export async function upgradeAssistantAdapter(t: Tendril, req: Request) {
   const deviceId = protocols.find(token => /^td_device_[a-f0-9]{64}$/u.test(token))?.slice('td_device_'.length);
   if (!protocols.includes(ASSISTANT_PROTOCOL) || !credential || !deviceId) throw new HttpError(401, 'adapter_not_approved');
   const adapterHash = await sha256Hex(credential), allowed = () => activeAdapters(t).some(hash => safeEqual(hash, adapterHash));
-  if (!allowed()) throw new HttpError(401, 'adapter_not_approved');
+  if (!(await freshAdapters(t)).some(hash => safeEqual(hash, adapterHash))) throw new HttpError(401, 'adapter_not_approved');
   if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'forbidden');
   await withSelectedAssistantGeneration(t, async (_generation, canUseDevice) => {
-    if (!await canUseDevice(deviceId, false) && !await canUseDevice(deviceId, true) || !allowed())
+    if (!await canUseDevice(deviceId, false) && !await canUseDevice(deviceId, true) || !(await freshAdapters(t)).includes(adapterHash) || !allowed())
       throw new HttpError(403, 'adapter_device_not_enrolled');
     const previous = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', adapterHash);
     if (previous && previous.device_id !== deviceId) throw new HttpError(409, 'adapter_device_changed', 'Use this credential with its original Chronolog device.');
     if (!previous) t.db.run('INSERT INTO assistant_devices(adapter_hash,device_id) VALUES(?,?)', adapterHash, deviceId);
   });
-  if (!allowed()) throw new HttpError(403, 'forbidden');
+  if (!(await freshAdapters(t)).includes(adapterHash) || !allowed()) throw new HttpError(403, 'forbidden');
   const connectionEpoch = t.db.get<number>('assistant_adapter_epoch:' + adapterHash, 0) + 1;
   t.db.set('assistant_adapter_epoch:' + adapterHash, connectionEpoch);
   const [client, server] = Object.values(new WebSocketPair());
@@ -55,7 +55,7 @@ export function closeAssistantAdapter(t: Tendril, socket: WebSocket) {
 
 export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame: string | ArrayBuffer) {
   const attached = attachment(socket);
-  if (!attached || !activeAdapters(t).includes(attached.adapterHash)) { socket.close(4003, 'Application grant revoked'); return; }
+  if (!attached || !(await freshAdapters(t)).includes(attached.adapterHash)) { socket.close(4003, 'Application grant revoked'); return; }
   if (attached.connectionEpoch !== t.db.get('assistant_adapter_epoch:' + attached.adapterHash, 0)) {
     socket.close(4000, 'Provider connection superseded'); return;
   }
@@ -91,9 +91,9 @@ export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame:
   }
 }
 
-export function onlineAssistantAdapters(t: Tendril): { hash: string; bindingId: string; deviceId: string; connectionEpoch: number; socket: WebSocket }[] {
+export async function onlineAssistantAdapters(t: Tendril): Promise<{ hash: string; bindingId: string; deviceId: string; connectionEpoch: number; socket: WebSocket }[]> {
   const sockets = t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG);
-  return activeAdapters(t).flatMap(hash => {
+  return (await freshAdapters(t)).flatMap(hash => {
     const socket = sockets.find(ws => ws.readyState === WebSocket.READY_STATE_OPEN && attachment(ws)?.adapterHash === hash &&
       attachment(ws)?.connectionEpoch === t.db.get('assistant_adapter_epoch:' + hash, 0));
     return socket ? [{ hash, bindingId: providerBindingId(hash), deviceId: attachment(socket)!.deviceId,
@@ -102,7 +102,9 @@ export function onlineAssistantAdapters(t: Tendril): { hash: string; bindingId: 
 }
 
 export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal, consumerId = 'bridge'): Promise<unknown> {
-  if (ws.readyState !== WebSocket.READY_STATE_OPEN) throw offline();
+  const attached = attachment(ws);
+  if (!attached || !(await freshAdapters(t)).includes(attached.adapterHash) || ws.readyState !== WebSocket.READY_STATE_OPEN ||
+      attached.connectionEpoch !== t.db.get('assistant_adapter_epoch:' + attached.adapterHash, 0)) throw offline();
   let pending = inflight.get(t);
   if (!pending) inflight.set(t, pending = new Map());
   if (pending.size >= 8) throw new HttpError(429, 'application_busy');

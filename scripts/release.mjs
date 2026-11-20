@@ -1,15 +1,6 @@
-import {execFileSync} from 'node:child_process';
-import {readFileSync, readdirSync, writeFileSync, existsSync} from 'node:fs';
-import {join, resolve} from 'node:path';
-import {createHash} from 'node:crypto';
-import {CORE_RELEASE, CONTRACT_VERSION} from '../contract/index.mjs';
-const root=resolve(import.meta.dirname,'..'),dist=join(root,'dist');
-const source_commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
-const artifactFiles=readdirSync(dist).filter(name=>/^tendriller-(sdk|runtime|engine|tools)-.*\.tgz$/.test(name)).sort();
-const expected=['sdk','runtime','engine','tools'].map(name=>`tendriller-${name}-${CORE_RELEASE}.tgz`).sort();
-if(JSON.stringify(artifactFiles)!==JSON.stringify(expected))throw Error('Build exactly one matching SDK/runtime/engine/tools release before publication.');
-const artifacts=artifactFiles.map(file=>{const bytes=readFileSync(join(dist,file));return{file,url:`https://github.com/werg/tendriller/releases/download/v${CORE_RELEASE}/${file}`,sha256:createHash('sha256').update(bytes).digest('hex'),size:bytes.length,type:'application/gzip'};});
-const manifest={format:'tendriller-core-release',version:CORE_RELEASE,contract:CONTRACT_VERSION,source_commit,runtime:JSON.parse(readFileSync(join(dist,'runtime/assets/manifest.json'))).id,artifacts};
-writeFileSync(join(dist,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');
-writeFileSync(join(dist,'SHA256SUMS'),artifacts.map(item=>`${item.sha256}  ${item.file}`).join('\n')+'\n');
-console.log(`Prepared ${artifacts.length} immutable core release assets from ${source_commit}`);
+import { resolve } from 'node:path';
+import { CORE_RELEASE, CONTRACT_VERSION } from '../contract/index.mjs';
+import { prepareRelease } from './release-composition.mjs';
+
+const manifest = prepareRelease({ root: resolve(import.meta.dirname, '..'), version: CORE_RELEASE, contract: CONTRACT_VERSION });
+console.log(`Prepared ${manifest.artifacts.length} immutable release assets from ${manifest.source_commit}; composition ${manifest.composition.id}`);

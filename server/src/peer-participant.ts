@@ -2,7 +2,7 @@ import {
   validateParticipantRequest, createParticipantResponse, PARTICIPANT_LIMITS,
 } from '@chronolog/peer-generation/participant';
 import type { Principal } from './access';
-import { requireAgentScope, participantIdentity } from './access';
+import { requireAgentScope, participantIdentity, freshPrincipal } from './access';
 import type { Tendril } from './tendril';
 import { selectedApplication } from './application';
 import { HttpError, json, readJson } from './http';
@@ -26,6 +26,7 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
   active.set(budget, principalAdmitted + 1);
   try {
     const message = validateParticipantRequest(await readJson(req, Math.max(PARTICIPANT_LIMITS.bytes.control, PARTICIPANT_LIMITS.bytes.publication)));
+    if (!await freshPrincipal(t, principal)) throw new HttpError(403, 'forbidden', 'Participant access is no longer active');
     if (message.applicationId !== selection.id) throw new HttpError(409, 'peer_participant_scope_mismatch');
     if (principal.kind === 'agent') {
       requireAgentScope(principal, 'participants:connect');

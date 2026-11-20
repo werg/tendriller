@@ -20,7 +20,7 @@ try {
     '--cache', join(directory, 'npm-cache'), '--pack-destination', directory, join(root, 'node_modules/@cloudflare/workers-types')]));
   run('npm', ['install', '--ignore-scripts', '--offline', '--omit=dev', '--no-audit', '--no-fund',
     '--cache', join(directory, 'npm-cache'), join(directory, typesArchive.filename),
-    ...['sdk', 'runtime', 'engine'].map(name => join(root, 'dist', `tendriller-${name}-${CORE_RELEASE}.tgz`))]);
+    ...['sdk', 'runtime', 'engine', 'tools'].map(name => join(root, 'dist', `tendriller-${name}-${CORE_RELEASE}.tgz`))]);
   const core = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/core/package.json')));
   const runtime = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/runtime/package.json')));
   const engine = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/package.json')));
@@ -51,20 +51,28 @@ try {
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
-import { createClient, requireService } from '@tendriller/core';
+import { createClient, requireService, describeReadiness, requireCreationReady, requireServiceOrigin } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
 import { createApplicationBinding } from '@tendriller/core/application';
 import { onboardingDescriptor, ASSISTANT_GUIDES } from '@tendriller/core/onboarding';
-import { createAssistantKey } from '@tendriller/core/assistant';
+import { createAssistantKey, createApplicationAgentKey, proposeApplicationAssistant,
+  connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
 import { createSignalBinding } from '@tendriller/core/signals';
 import { createParticipantRequest, createParticipantResponse, createPeerIntroductions } from '@tendriller/core/peers';
 import { startRuntime } from '@tendriller/runtime/kernel';
 import { createVoice } from '@tendriller/runtime/voice';
+import { pack } from '@tendriller/tools/pack';
+import { withSession } from '@tendriller/tools/session';
+import { startServer } from '@tendriller/tools/preview';
 import schema from '@tendriller/core/schema' with {type: 'json'};
 import manifest from '@tendriller/runtime/manifest' with {type: 'json'};
 const application = { id: '12'.repeat(32) };
+for (const api of [describeReadiness, requireCreationReady, requireServiceOrigin]) assert.equal(typeof api, 'function');
+assert.equal(requireServiceOrigin('https://staging.example/'), 'https://staging.example');
 assert.equal(onboardingDescriptor('https://staging.example').documentation.mcp, 'https://staging.example' + ASSISTANT_GUIDES.start);
 assert.match(createAssistantKey(), /^td_a_[a-f0-9]{64}$/);
+for (const api of [createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
+  forwardApplicationEvents, pack, withSession, startServer]) assert.equal(typeof api, 'function');
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/integration-oauth-schema')), 'utf8'));
@@ -102,7 +110,8 @@ await assert.rejects(signals.send('typing', null), {code:'signal_unavailable'});
 `);
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
-import {createClient, createPage} from '@tendriller/core';
+import {createClient, createPage, describeReadiness, requireCreationReady, requireServiceOrigin,
+  type ServiceReadiness} from '@tendriller/core';
 import type {RuntimeApi, RuntimeConfiguration} from '@tendriller/core/contract';
 import type {ApplicationBackend, ApplicationOperation} from '@tendriller/core/application';
 import {createApplicationBinding} from '@tendriller/core/application';
@@ -127,7 +136,12 @@ application.onRecovery(notice => { const loss:boolean=notice.unknownLoss; void l
 application.onStatus(status => { const peers:number=status.connectedPeers; void peers; });
 await application.inspectRecovery();
 const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
+const origin: string = requireServiceOrigin('https://host.test');
+const readiness: ServiceReadiness = await describeReadiness(origin, {signal:new AbortController().signal});
+const ready: ServiceReadiness = requireCreationReady(readiness, {service:origin});
+void ready;
 void client.peers.application(); void client.peers.publication();
+void client.peers.application({ signal: new AbortController().signal });
 const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
   openDirectConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; },
   openRelayConnection: async options => { await options.relay.ready; return { kind:'raw' as const, close() {} }; } });
@@ -162,7 +176,70 @@ export default {
 } satisfies typeof worker;
 `);
   run(process.execPath, [join(root,'node_modules/typescript/bin/tsc'),'--noEmit','--strict','--target','es2022','--module','nodenext','--moduleResolution','nodenext','--lib','es2023,dom','consumer.mts','worker.mts']);
-  console.log('Independent SDK/runtime/engine consumer passed with strict declarations and only public artifacts.');
+  // Collaboration is an optional SDK surface with an explicit public companion.
+  // Install its exact archive only after proving the basic host needs no hidden
+  // Chronolog dependency; never resolve it through the repository's node_modules.
+  const packageJson = JSON.parse(readFileSync(join(root, 'package.json')));
+  const sessionSource = packageJson.devDependencies['@chronolog/peer-session'];
+  assert.ok(sessionSource.startsWith('file:'), 'Pin the qualified public Chronolog archive.');
+  run('npm', ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund',
+    '--cache', join(directory, 'npm-cache'), resolve(root, sessionSource.slice(5))]);
+  writeFileSync(join(directory, 'collaboration.mjs'), `
+import assert from 'node:assert/strict';
+import { createCollaborationDefinition, createCollaborationClient } from '@tendriller/core/collaboration';
+import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/collaboration/browser';
+import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
+import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeSession } from '@tendriller/core/collaboration/native';
+import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
+import { createSetupIntent, setupRequest, completeSetupIntent, inspectTendrilSetup } from '@tendriller/core/setup';
+import { createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge } from '@tendriller/core/pairing';
+import { openPeerApplication, createApplicationOwner } from '@chronolog/peer-session';
+import { openNativeDevice } from '@chronolog/peer-session/native';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+for (const api of [createCollaborationDefinition, createCollaborationClient, openBrowserOwner,
+  createBrowserIdentity, serveBrowserOwner, createNativeSessionSupervisor, attachNativeSession,
+  diagnoseApplicationSession, openPeerApplication, createApplicationOwner,
+  openNativeDevice, connectApplicationOwner, createSetupIntent, setupRequest, completeSetupIntent,
+  inspectTendrilSetup, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
+assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
+`);
+  run(process.execPath, ['collaboration.mjs']);
+  writeFileSync(join(directory, 'collaboration.mts'), `
+import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
+  type AssistantParticipant, type AssistantCallerContext } from '@tendriller/core/assistant';
+import { createCollaborationDefinition, createCollaborationClient, type CollaborationSession } from '@tendriller/core/collaboration';
+import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/collaboration/browser';
+import { serveBrowserOwner, type BrowserOwnerConfiguration } from '@tendriller/core/collaboration/worker';
+import { createNativeSessionSupervisor, attachNativeSession, type NativeSessionOwner } from '@tendriller/core/collaboration/native';
+import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/core/collaboration/diagnostics';
+import { createSetupIntent, completeSetupIntent, type SetupIntent, type SetupResult } from '@tendriller/core/setup';
+import { createDevicePairingClient, signDevicePairingChallenge, type DevicePairingChallenge } from '@tendriller/core/pairing';
+declare const setupIntent: SetupIntent;
+declare const setupResult: SetupResult;
+declare const pairingChallenge: DevicePairingChallenge;
+const restored = await completeSetupIntent(setupIntent, setupResult);
+const pairingClient = createDevicePairingClient({url: restored.api + '/peers/pairing'});
+void createSetupIntent; void pairingClient; void signDevicePairingChallenge; void pairingChallenge;
+declare const session: CollaborationSession;
+declare const owner: NativeSessionOwner;
+declare const browser: BrowserOwnerOptions;
+declare const worker: BrowserOwnerConfiguration;
+const definition = createCollaborationDefinition({id:'consumer',version:'1'});
+const client = createCollaborationClient({session});
+const report: DiagnosticReport = await diagnoseApplicationSession(session);
+const attached = await openBrowserOwner(browser);
+await attached.detach();
+const serving = serveBrowserOwner(worker);
+const supervisor = await createNativeSessionSupervisor({directory:'/private',profileId:'consumer',openOwner:()=>owner});
+const key: string = createApplicationAgentKey();
+void proposeApplicationAssistant; void connectApplicationAssistant; void attachNativeSession;
+void definition; void client; void report; void serving; void supervisor; void key;
+declare const participant: AssistantParticipant;
+declare const caller: AssistantCallerContext;
+void participant; void caller;
+`);
+  run(process.execPath, [join(root,'node_modules/typescript/bin/tsc'),'--noEmit','--strict','--target','es2022','--module','nodenext','--moduleResolution','nodenext','--lib','es2023,dom','collaboration.mts']);
+  console.log('Independent SDK/runtime/engine/tools and pinned collaboration consumer passed runtime imports and strict declarations using only public artifacts.');
 } catch(error) {
   if(error.stdout) process.stderr.write(error.stdout);
   if(error.stderr) process.stderr.write(error.stderr);

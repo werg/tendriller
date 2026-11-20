@@ -2,6 +2,7 @@ import { test, expect, request, chromium } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { LOCAL_WORKER_HOST_RULES } from '../../scripts/e2e-network.mjs';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
   requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
 
@@ -70,7 +71,7 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     context = await chromium.launchPersistentContext(directory, {
       channel: 'chromium', headless: true, ignoreHTTPSErrors: true,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: ['--host-resolver-rules=MAP *.localhost 127.0.0.1'],
+      args: [`--host-resolver-rules=${LOCAL_WORKER_HOST_RULES}`],
     });
     const page = await context.newPage();
     await signInFixture(context); await claim(context, handle);

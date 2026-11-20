@@ -1,6 +1,6 @@
 import { callbackUrl, deliveryDisposition, signedHeaders, verifyCallback, webhookKey } from '../../integrations/chatgpt/webhook-data.mjs';
 import { notifyAssistantActivity } from './assistant-activity';
-import { activeAdapters, connection, type Connection } from './assistant-admission';
+import { freshAdapters, connection, type Connection } from './assistant-admission';
 import { APP_ID, EVENT_LIMIT, MCP_APPLICATION_EVENT, assistantOAuth, fields, requireScope, string, type Principal } from './assistant-shared';
 import { activeGrant, registeredGrant, type OAuthGrant } from './accounts/oauth-data';
 import { admitPageTraffic } from './traffic-budget';
@@ -77,12 +77,12 @@ export async function ingestAssistantEvent(t: Tendril, adapterHash: string, devi
   const generation = string(body.generation, 64, APP_ID), payload = JSON.stringify(body.payload);
   const context = callerContext(body.context);
   if (new TextEncoder().encode(payload).byteLength > EVENT_LIMIT) throw new HttpError(413, 'event_too_large');
-  // The socket is already approved. D1 checks happen on connection and egress;
-  // the hot ingest path uses local revocation and the regional traffic budget.
+  // A setup-backed adapter also checks its admitting grant at ingress; its
+  // cached key is not independent authority after setup expiry or revocation.
   await admitPageTraffic(t.env, t.tid, connection(t)?.owner ?? null);
   const retained = await withSelectedAssistantGeneration(t, async (selected, canUseDevice) => {
     if (selected !== generation) throw new HttpError(409, 'event_generation_changed');
-    if (!await canUseDevice(deviceId, false) || !activeAdapters(t).includes(adapterHash))
+    if (!await canUseDevice(deviceId, false) || !(await freshAdapters(t)).includes(adapterHash))
       throw new HttpError(403, 'adapter_device_not_enrolled');
     if (!connection(t)?.events.some(event => event.name === name)) throw new HttpError(403, 'event_not_approved');
     const prior = t.db.one<{ seq: number; payload: string }>(
@@ -324,7 +324,7 @@ export async function runAssistantDelivery(t: Tendril) {
     try {
       const oauth = await assistantOAuth(t.env);
       if (!oauth) return { blocked: 'oauth_unavailable' } as const;
-      if (!activeAdapters(t).length || await pagePolicy(t) !== 'active') return { blocked: 'page_unavailable' } as const;
+      if (!(await freshAdapters(t)).length || await pagePolicy(t) !== 'active') return { blocked: 'page_unavailable' } as const;
       return { oauth };
     } catch { return { blocked: 'configuration_unavailable' } as const; }
   })();
@@ -375,7 +375,7 @@ export async function runAssistantDelivery(t: Tendril) {
           defer(job, 'subscription_changed', 100); return { pending: null };
         }
         if (live.expires_at <= t.now()) { finish(job, 'expired'); return { pending: null }; }
-        if (!activeAdapters(t).length) { defer(job, 'page_unavailable'); return { pending: null }; }
+        if (!(await freshAdapters(t)).length) { defer(job, 'page_unavailable'); return { pending: null }; }
         attempts++;
         t.db.run('UPDATE assistant_jobs SET attempts=?,block_reason=NULL WHERE event_seq=? AND watcher_id=? AND lease=?',
           attempts, job.event_seq, job.watcher_id, lease);

@@ -13,6 +13,7 @@ workflow and the host before creating anything:
 
 ```sh
 tendril guide --server https://tendriller.dev --pretty
+tendril readiness --server https://tendriller.dev --pretty
 tendril service --server https://tendriller.dev --pretty
 ```
 
@@ -21,6 +22,14 @@ links for that service origin. It is offline: it creates no page, reads no
 private handle, and does not claim the host is reachable. `service --server`
 reads `/api/service` without credentials, even if page credentials are present
 in the environment. Use the actual staging or self-hosted origin throughout.
+
+`readiness` reads uncached `/api/readiness` anonymously. Inspect it before
+installing or building application packages. A paused/read-only or unavailable
+service blocks creation; a missing endpoint requires a host upgrade. `new`
+requires an explicit `--server` or `TENDRIL_SERVER` and repeats the preflight. It
+never defaults creation to production. Readiness is advisory: if the service
+pauses before the POST, the original creation error is retained and no handle is
+saved. Do not retry on another origin.
 
 `service --tendril NAME` still reads the selected page's effective limits.
 Without either flag, a configured page is used if available; otherwise the
@@ -179,6 +188,40 @@ for applied execution by default. `--saved` returns after the exact attempt is
 saved; `--shared` additionally waits for retained coverage. A timeout leaves the
 original attempt available. Inspect it or retry that same identity. Applied and
 shared observations can later be abandoned by an explicit recovery selection.
+
+An omitted query input is `{}` for compatibility. The starter's `notes` query
+requires JSON `null`, so use `query notes null`. `--shared` waits for another
+eligible participant to retain the work; a single native peer can apply a write
+without satisfying that additional condition. Operation inspection is scoped to
+the current signing device and authenticated binding. Keep the full
+`operationReference` returned by MCP/attachments when moving between tools;
+another signer or a short external ID is not the same native journal entry.
+
+`--timeout` is in **seconds**, for example `--timeout 120`, with a default of 30.
+Timeout cancels observation, not a saved signed attempt. Errors preserve the
+timeout/action cause separately from local cleanup failures.
+
+### Reconcile a publication after an uncertain response
+
+Stop the native owner before using its standalone publication control:
+
+```sh
+npx tendril --session ./session.mjs --mode own --timeout 120 publication
+npx tendril --session ./session.mjs --mode own publication-operation notes-release-1
+```
+
+The second command reads the same device's saved signed intent and any retained
+host acknowledgement; it sends no publication. It requires the qualified
+Chronolog package with publication receipt inspection. Acknowledgement proves
+the host accepted that signed graph, not that it remains the current selected
+release. The first command verifies the selected signed history.
+
+Publish errors include the original operation/publication identity, the phase,
+and `outcome`: `unknown` when a response is uncertain, `committed` when a valid
+receipt was observed, or `not_submitted` when preparation failed. A known receipt
+survives failure of the subsequent selected-head read or local cleanup. Preserve
+the authored bytes and original operation; inspect before an exact retry. Never
+change the operation ID merely because the invocation failed.
 
 A reviewed reapplication names the old operation, a new identity, current input
 and the current captured revision:

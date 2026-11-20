@@ -219,8 +219,11 @@ it('shares one traffic-triggered policy read across a full bidirectional burst a
     expect(p.all.every(value => value.messages.length === 1)).toBe(true);
     expect(checks).toBe(1);
     release.resolve();
-    await expect.poll(() => p.a.reliable.messages.length + p.b.reliable.messages.length).toBe(2 + 2 * LIMITS.pendingPackets);
-    await expect.poll(() => p.a.live.messages.length + p.b.live.messages.length).toBe(4);
+    // Drain the full megabyte burst through real Worker sockets. The default
+    // one-second assertion window is shorter than a contended test transport;
+    // this bound remains well inside the relay's 30-second progress lease.
+    await expect.poll(() => p.a.reliable.messages.length + p.b.reliable.messages.length, { timeout: 5000 }).toBe(2 + 2 * LIMITS.pendingPackets);
+    await expect.poll(() => p.a.live.messages.length + p.b.live.messages.length, { timeout: 5000 }).toBe(4);
     await inDO(h.id, async t => {
       for (const [peerId, lanes] of [[left, p.a], [right, p.b]] as const) for (const lane of ['reliable', 'live'] as const) {
         const delivered = lanes[lane].messages.slice(1) as ArrayBuffer[];
@@ -232,7 +235,7 @@ it('shares one traffic-triggered policy read across a full bidirectional burst a
         for (const message of delivered) await t.webSocketMessage(sender, receipt(p.session, message));
       }
     });
-    await expect.poll(() => p.all.reduce((sum, value) => sum + value.messages.filter(message => typeof message === 'string').length, 0))
+    await expect.poll(() => p.all.reduce((sum, value) => sum + value.messages.filter(message => typeof message === 'string').length, 0), { timeout: 5000 })
       .toBe(4 + 2 * LIMITS.pendingPackets + 2);
     expect(checks).toBe(1);
     // A later authorization window must read policy again; no account-policy TTL outlives it.
@@ -241,7 +244,7 @@ it('shares one traffic-triggered policy read across a full bidirectional burst a
       const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
       await t.webSocketMessage(sender, packet(LIMITS.pendingPackets + 1));
     });
-    await expect.poll(() => p.b.reliable.messages.filter(message => message instanceof ArrayBuffer).length).toBe(LIMITS.pendingPackets + 1);
+    await expect.poll(() => p.b.reliable.messages.filter(message => message instanceof ArrayBuffer).length, { timeout: 5000 }).toBe(LIMITS.pendingPackets + 1);
     expect(checks).toBe(2);
   } finally { release.resolve(); await restore(); p.close(); }
 });

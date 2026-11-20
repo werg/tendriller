@@ -1,5 +1,5 @@
 import { activeGrant } from './accounts/oauth-data';
-import { activeAdapters, connection } from './assistant-admission';
+import { freshAdapters, connection } from './assistant-admission';
 import { APP_ID, assistantOAuth, type Principal } from './assistant-shared';
 import { HttpError } from './http';
 import { TENDRIL_ID_RE } from './ids';
@@ -69,7 +69,7 @@ export function isAssistantActivity(ws: WebSocket) {
 export async function upgradeAssistantActivity(t: Tendril, req: Request) {
   const supplied = await parseActivityTicket(t.env, req, t.tid), oauth = await assistantOAuth(t.env), scope = connection(t);
   if (!supplied || !oauth || !scope?.events.length || supplied.a !== scope.owner || supplied.v !== scope.inboxVersion ||
-      !activeAdapters(t).length || !APP_ID.test(scope.applicationId)) throw new HttpError(401, 'activity_ticket_expired');
+      !(await freshAdapters(t)).length || !APP_ID.test(scope.applicationId)) throw new HttpError(401, 'activity_ticket_expired');
   const grant = await activeGrant(t.env, oauth, supplied.g, supplied.a);
   if (!grant?.scope.split(' ').includes('applications:read') || connection(t)?.inboxVersion !== scope.inboxVersion ||
       !consumerCurrent(t, { id: supplied.b, revision: supplied.br, verification: supplied.bv }))
@@ -95,7 +95,7 @@ export async function notifyAssistantActivity(t: Tendril) {
         !consumerCurrent(t, { id: value.b, revision: value.br, verification: value.bv })) { socket.close(4003, 'Inbox access expired'); return; }
     let grant = grants.get(value.g);
     if (!grant) { grant = activeGrant(t.env, oauth, value.g, scope.owner); grants.set(value.g, grant); }
-    if (!(await grant)?.scope.split(' ').includes('applications:read') || connection(t)?.inboxVersion !== scope.inboxVersion || !activeAdapters(t).length) {
+    if (!(await grant)?.scope.split(' ').includes('applications:read') || connection(t)?.inboxVersion !== scope.inboxVersion || !(await freshAdapters(t)).length) {
       socket.close(4003, 'Inbox access revoked'); return;
     }
     try { socket.send('{"type":"changed"}'); } catch { /* disconnected */ }

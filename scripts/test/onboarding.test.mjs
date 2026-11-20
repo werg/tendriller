@@ -13,7 +13,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const publicRoot = join(root, 'server/public');
 const links = content => [...content.matchAll(/\[[^\]\n]*\]\(([^\s)]+)\)/g)].map(match => match[1]);
 const digest = value => createHash('sha256').update(value).digest('hex');
-const dynamicPaths = new Set(['/', '/api/service', '/.well-known/tendriller.json',
+const dynamicPaths = new Set(['/', '/api/service', '/api/readiness', '/.well-known/tendriller.json',
   '/.well-known/tendriller-capabilities.json', '/contract/v3.json',
   '/.well-known/oauth-protected-resource/mcp', '/auth', '/connections', '/oauth/connections', '/privacy', '/terms']);
 
@@ -34,6 +34,20 @@ test('MCP, published onboarding and installable skill retain one current discove
   assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
   for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery'])
     assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
+  for (const path of ['AGENTS.md', 'agent.md', 'docs/MCP_AGENT_GUIDE.md',
+    'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md']) {
+    const content = readFileSync(join(root, path), 'utf8');
+    assert(content.includes('/api/readiness'), `${path} lost the pre-installation readiness check`);
+    assert(content.includes('firstApp.release'), `${path} lost the immutable first-app composition route`);
+  }
+  for (const fallback of ['setup.startHere', 'setup.buildGuide', 'setup.discoveryUrl'])
+    assert(skill.includes(fallback), `Packaged skill lost the stale-tool fallback ${fallback}`);
+  for (const path of ['AGENTS.md', 'agent.md', 'docs/BUILD_AN_APP.md', 'docs/MCP_AGENT_GUIDE.md',
+    'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md']) {
+    const content = readFileSync(join(root, path), 'utf8');
+    for (const step of ['prepare_tendril_setup', 'inspect_tendril_setup', 'setup:finish'])
+      assert(content.includes(step), `${path} lost the retained account-setup route ${step}`);
+  }
 });
 
 test('the domain-only onboarding graph points to shipped public documents and the starter', () => {
@@ -79,7 +93,7 @@ test('the downloadable starter contains complete parseable source and no local p
       }
     }
   }
-  for (const path of ['session.mjs', 'local.mjs', 'worker.mjs',
+  for (const path of ['session.mjs', 'local.mjs', 'worker.mjs', 'account-setup.mjs', 'host-adoption.mjs',
     'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
     'media/panel.mjs', 'media/inference-client.mjs', 'media/inference-peer.mjs', 'media/provider-openai.mjs',
     'sql/setup.mjs', 'sql/session.mjs', 'sql/engine.mjs', 'sql/domain.mjs', 'sql/demo.mjs', 'sql/worker.mjs'])
@@ -96,6 +110,9 @@ test('building a starter excludes nested private state, provider secrets, genera
       cpSync(join(root, path), join(directory, path));
     }
     for (const path of ['.tendriller/handle.json', '.tendriller/device.sqlite', '.tendriller/epoch.json',
+      '.tendriller/account-setup.json', '.tendriller/account-setup-result.json', '.tendriller/account-setup-interrupted.tmp',
+      '.tendriller/host-credential.json', '.tendriller/host-adoption-private.json', '.tendriller/host-adoption-private-response.json', '.tendriller/delegation-code.txt',
+      '.tendriller/owner-page-url.txt', '.tendriller/host-selection.lock',
       'node_modules/secret.txt', 'page/config.mjs', '.env',
       'helpers/.env', 'media/.env', 'media/provider-local.mjs', 'media/provider-secrets.json',
       'sql/.env', 'sql/.tendriller/handle.json', 'sql/.tendriller/device.sqlite', 'sql/.tendriller/initial-input.json',
@@ -121,4 +138,24 @@ test('building a starter excludes nested private state, provider secrets, genera
     else process.env.OPENAI_API_KEY = providerKey;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+// Tool discovery is scope-filtered: a packaged connection must actually request
+// the permission used by the documented account-bound setup path.
+test('the installable MCP connection requests account setup permission explicitly', () => {
+  const manifest = JSON.parse(readFileSync(join(root, 'integrations/chatgpt/plugin/mcp.json'), 'utf8'));
+  const auth = manifest.mcpServers.tendriller.extensions['com.openai'].auth;
+  assert(auth.baseScopes.includes('tendrils:create'));
+  assert.equal(new Set(auth.baseScopes).size, auth.baseScopes.length);
+});
+
+test('events and SQL starter qualification use the current pinned session source', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const archive = join(root, pkg.devDependencies['@chronolog/peer-session'].replace(/^file:/, ''));
+  const provenance = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/provenance.json'], { encoding: 'utf8' }));
+  const source = provenance.source;
+  assert.match(source, /^[a-f0-9]{40}$/);
+  const workflow = readFileSync(join(root, '.github/workflows/agent-onboarding.yml'), 'utf8');
+  assert.equal(workflow.split('ref: ' + source).length - 1, 2, 'Both starter profiles must use the qualified session source');
+  assert(workflow.includes(`chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`));
 });

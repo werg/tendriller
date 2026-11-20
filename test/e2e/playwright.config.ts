@@ -1,4 +1,9 @@
 import { defineConfig } from "@playwright/test";
+import { installLocalWorkerDns, LOCAL_WORKER_HOST_RULES } from "../../scripts/e2e-network.mjs";
+
+// This config loads in both the runner (webServer readiness) and test workers
+// (APIRequestContext); Chromium's resolver flag only covers browser requests.
+installLocalWorkerDns();
 
 export default defineConfig({
   testDir: ".",
@@ -11,7 +16,7 @@ export default defineConfig({
     browserName: "chromium",
     baseURL: "https://service.localhost:8790",
     ignoreHTTPSErrors: true,
-    launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--host-resolver-rules=MAP *.localhost 127.0.0.1"] },
+    launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--host-resolver-rules=${LOCAL_WORKER_HOST_RULES}`] },
     permissions: ["camera", "microphone", "geolocation"],
     trace: "retain-on-failure",
     screenshot: "only-on-failure",

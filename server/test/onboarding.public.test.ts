@@ -40,6 +40,7 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
     name: 'Tendriller',
     contract: CONTRACT_VERSION,
     core_release: CORE_RELEASE,
+    serviceOrigin: origin,
     service: origin + '/',
     start_here: origin + guidePath,
     agent_instructions: origin + '/agent.md',
@@ -53,12 +54,13 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
     },
     interfaces: {
       service_descriptor: origin + '/api/service',
+      readiness: origin + '/api/readiness',
       contract: origin + '/contract/v3.json',
       create_page: { method: 'POST', url: origin + '/api/tendrils', required: ['owner'] },
     },
   });
   const navigation = [value.service, value.start_here, value.agent_instructions, value.starter, value.capabilities,
-    ...Object.values(value.documentation), value.interfaces.service_descriptor,
+    ...Object.values(value.documentation), value.interfaces.service_descriptor, value.interfaces.readiness,
     value.interfaces.contract, value.interfaces.create_page.url];
   for (const target of navigation) {
     const url = new URL(String(target));

@@ -3,17 +3,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
-import { createClient } from '../../dist/sdk/client.mjs';
-import { verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
 import { nativeHost } from './codex-host.mjs';
 import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess, authorizeReview } from './access.mjs';
+import { preflightReviewDeployment, reviewProvenance } from './preflight.mjs';
 
-export async function recordReview({ project, accessPath, output, video = true, frameMs = 1500 }) {
+export async function recordReview({ project, accessPath, output, composition, video = true, frameMs = 1500 }) {
   project = resolve(project); output = resolve(output);
   const access = readReviewAccess(accessPath), handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json')));
   assert.equal(new URL(handle.api).origin, access.origin);
+  const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
+  // The SDK and verifier use the same installed public archives as the native fixture.
+  const require = createRequire(resolve(project, 'package.json'));
+  const { createClient } = await import(pathToFileURL(require.resolve('@tendriller/core')).href);
+  const { verifyAuthorityBundle, verifyPublicationManifest } = await import(pathToFileURL(require.resolve('@chronolog/peer-session')).href);
   const definition = JSON.parse(readFileSync(new URL('../../integrations/chatgpt/plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
   assert.equal(cases.positive.length, 6, 'Update the qualification when packaged cases change');
@@ -21,8 +27,7 @@ export async function recordReview({ project, accessPath, output, video = true, 
   mkdirSync(output, { recursive: true, mode: 0o700 });
   const report = { passed: false, client: 'Codex app-server MCP', codex: execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim(),
     agentBehaviorEvaluated: false, chatgptWebVerified: false, usesModelTokens: false,
-    sourceRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '../..'), encoding: 'utf8' }).trim(),
-    sdkVersion: JSON.parse(readFileSync(new URL('../../package.json', import.meta.url))).version,
+    ...reviewProvenance(composition, readiness), browserApplicationPeerQualified: false, firstAppKitQualified: false,
     denialScope: 'Unlisted application ID rejected; no live second-account fixture is provisioned by this runner',
     origin: access.origin, applicationId: handle.application.id, cases: [], checks: [] };
   const browser = await chromium.launch();
@@ -44,7 +49,7 @@ export async function recordReview({ project, accessPath, output, video = true, 
     const server = client.status.data.find(item => item.name === 'tendriller_review');
     assert(server && server.tools.tendril_guide && server.tools.call_application_command);
     report.checks.push('Static reviewer login, live OAuth consent, PKCE and native MCP discovery');
-    await present('Production MCP connected', access.origin + '/mcp', { client: report.codex, authenticated: server.authStatus, tools: Object.keys(server.tools).sort() });
+    await present('Selected service MCP connected', access.origin + '/mcp', { client: report.codex, authenticated: server.authStatus, tools: Object.keys(server.tools).sort() });
     const call = async (tool, arguments_ = {}) => {
       const result = await client.call(tool, arguments_);
       report.checks.push(tool);
@@ -126,6 +131,8 @@ export async function recordReview({ project, accessPath, output, video = true, 
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs * 2));
     report.checks.push('Signed page publication, exact retry, no duplicate event, rejected writes leave state unchanged, persistence after reload');
     await present('All packaged cases passed', 'Live data and signed publication verified after reload.', { positive: 6, negative: 3, client: report.codex, publication: report.publication, chatgptWebVerified: false });
+    const finalReadiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
+    report.deploymentAtCompletion = reviewProvenance(composition, finalReadiness).deployment;
     report.passed = true;
   } catch (error) {
     const message = String(error.message).replaceAll(access.code, '[private access code]');

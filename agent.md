@@ -1,7 +1,10 @@
 # Build a Tendriller application
 
 **The deliverable is a running hosted application connected to the user's work.**
-Initiate provisioning, configure the session, publish the first signed UI and
+Check the selected service's `/api/readiness` before installing or provisioning.
+Continue new-app setup only when creation is available; otherwise report the
+same-origin next action. Initiate provisioning, configure the session, publish
+the first signed UI and
 start the participant before asking the owner to sign in. Read
 [delivery and process lifetime](docs/AGENT_DELIVERY.md); source files alone do not
 establish the requested result.
@@ -34,16 +37,29 @@ created application's code by itself.
 
 1. Read that origin's `/api/service` for its contract/release and
    `/.well-known/tendriller.json` for the first-app guide and machine-readable route.
+   Before downloading or installing packages, require matching-origin open
+   creation readiness from `/api/readiness`; stop on a pause, unavailable or
+   unsupported readiness. The build guide verifies the immutable
+   `firstApp.release` kit and its local packages against this host's identity.
    `/llms.txt` is the ordered index; `/llms-full.txt` is the combined onboarding text.
    Search `/.well-known/tendriller-capabilities.json` for the task's state, refresh,
    media, voice and preview needs before implementing equivalent plumbing.
 2. Follow **create → define state → configure authority and the first
    generation → publish → owner sign-in → connect devices → verify** in the build guide.
-3. Ask for the owner's verified email when it is not known. Create the real page
-   early, initialize and publish its first version, start the participant, and
+3. With an account-linked MCP connection, run `setup:prepare`, call
+   `prepare_tendril_setup` with its public arguments, and use `setup:finish`
+   to reconstruct the private handle from the exact ready result. The server
+   derives the verified owner; preserve the private original intent and call
+   `inspect_tendril_setup` after a lost reply. The direct-domain route without account-linked creation
+   asks for the actual owner's verified email. Create the real page early,
+   initialize and publish its first version, start the participant, and
    prepare any assistant-access proposal before giving the owner the ready URL.
    Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
    page and signs in; explicit browser enrollment and assistant consent follow.
+   Use the browser's retained-key pairing request and the same running native
+   owner. Its bounded helper pauses ordering and stages the exact signed
+   proposal before owner review. Preserve uncertain requests and their durable
+   pause across restart; approve only the complete displayed proposal.
    Do the setup in the agent's
    supported runtime and preserve it so later invocations can resume.
 4. Finish only after a browser command is visible in a native read, a native
@@ -53,7 +69,7 @@ created application's code by itself.
 
 ## Reuse the supplied implementation
 
-Start from the downloadable source and actually import or adapt its session,
+Start from the verified first-app kit and actually import or adapt its session,
 reactive-view, operation-view, reviewed-input, camera and voice modules. The
 [pattern guide](docs/APP_PATTERNS.md) and [media/inference example](docs/AI_INPUT.md)
 identify those files. Record which current implementations you used; reading
@@ -136,9 +152,12 @@ Do not recreate keys, identity or transition IDs when resuming a partial setup.
 The complete [bootstrap](docs/SESSION_BOOTSTRAP.md) covers this missing connection
 between configuration and session opening.
 
-For later enrollment, the authenticated agent's `host.info()` includes
+For ordinary browser enrollment, use the starter's challenge/proof, native
+preparation, service-origin owner review and exact signed commitment. The
+browser retains its own key; account sign-in grants no device rights. For a
+deliberate manual enrollment, the authenticated agent's `host.info()` includes
 `owner_account_id` (`null` until claimed). Use it as an explicit account binding
-only for a verified device belonging to that owner. It grants no device rights.
+only for a separately verified device belonging to that owner.
 
 Chronolog owns the device signer, local byte store, database, operation journal, peer connections and replication. Use its native or browser Worker session entry for your environment. Bootstrap from the host's public definition and authority, pin the descriptor, and verify all signed evidence through Chronolog. Keep browser execution and replication in the owned Worker.
 

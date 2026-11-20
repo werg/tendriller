@@ -1,27 +1,32 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { createPage, describeService, requireService } from '@tendriller/core';
+import { createPage, describeService, requireService, requireServiceOrigin, describeReadiness, requireCreationReady } from '@tendriller/core';
 import { bytesDigest, describeApplication, participantGrant, signTransitionRequest, verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeDevice } from '@chronolog/peer-session/native';
-import { prepareSqlApplication, openSqlApplication } from '@chronolog/peer-session/sql';
 import { definition } from './domain.mjs';
 import { createNativeEngine } from './engine.mjs';
-import { databasePath, devicePath, project, readPrivate, savePrivate } from './local.mjs';
+import { databasePath, devicePath, project, readPrivate, savePrivate, requireFreshProject } from './local.mjs';
 
 export async function createProject(service, owner, name = 'Shared inventory') {
-  await createNativeEngine(); // Diagnose an unavailable optional capability before creating a hosted page.
-  const existing = await readPrivate('handle.json', true);
-  if (existing) return { page_url: existing.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
   if (!service || !owner) throw Error('Usage: npm run create -- https://YOUR_HOST VERIFIED_OWNER_EMAIL "Shared inventory"');
-  const url = new URL(service);
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
-      !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) {
-    throw Error('Supply an HTTPS service origin (HTTP is allowed only for localhost development).');
+  const origin = requireServiceOrigin(service);
+  const existing = await readPrivate('handle.json', true);
+  if (existing) {
+    if (new URL(existing.api).origin !== origin) throw Object.assign(Error('The saved handle belongs to another service origin. Resume it only with its matching connector, or use a separate directory for the requested service; never copy private device state between services.'), { code: 'service_origin_mismatch' });
+    return { serviceOrigin: origin, page_url: existing.page_url, resumed: true, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
   }
-  requireService(await describeService(url.origin));
-  const handle = await createPage(url.origin, { owner, name });
+  await requireFreshProject();
+  requireCreationReady(await describeReadiness(origin), { service: origin });
+  requireService(await describeService(origin));
+  // Load optional native code only after same-origin readiness and compatibility
+  // pass, but diagnose its absence before creating any hosted page.
+  await createNativeEngine();
+  // A checkpoint restored during readiness or engine loading still prevents
+  // allocating a replacement page for this private application directory.
+  await requireFreshProject();
+  const handle = await createPage(origin, { owner, name });
   await savePrivate('handle.json', handle);
-  return { page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
+  return { serviceOrigin: origin, page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
 }
 
 export async function initializeProject() {
@@ -37,6 +42,7 @@ export async function initializeProject() {
     });
     const epochKey = new Uint8Array(Buffer.from(initial.epochKey, 'base64'));
     const engine = await createNativeEngine();
+    const { prepareSqlApplication, openSqlApplication } = await import('@chronolog/peer-session/sql');
     let prepared = await readPrivate('schema.json', true);
     if (!prepared) prepared = await savePrivate('schema.json', await prepareSqlApplication({
       engine, applicationId: handle.application.id, definition, schemaAdministrator: device.identity,
@@ -104,6 +110,7 @@ export async function enrollBrowser(publicKey) {
       throw Error('Enrollment expects this local device to be the current coordinator. Inspect authority; do not select an older prefix.');
     }
     const prepared = await readPrivate('schema.json');
+    const { openSqlApplication } = await import('@chronolog/peer-session/sql');
     session = await openSqlApplication({ device, definition, authority, schema: prepared.schema, databasePath,
       createEngine: () => createNativeEngine() });
     const base = await session.recoveryPoint();
@@ -134,7 +141,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const result = action === 'create' ? await createProject(...args)
       : action === 'init' ? await initializeProject()
         : action === 'enroll' ? await enrollBrowser(args[0])
-          : (() => { throw Error('Use create, init, or enroll. See https://tendriller.dev/docs/STATE_MODELS.md.'); })();
+          : (() => { throw Error('Use create, init, or enroll. See /docs/STATE_MODELS.md on the selected service origin.'); })();
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
 }

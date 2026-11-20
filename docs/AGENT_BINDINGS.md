@@ -11,6 +11,19 @@ Redeeming this code through the existing adoption endpoint is additive. Existing
 agents remain authorized. **Replace all agent credentials for recovery** is a
 separate, explicit action and retains the replacing recovery semantics.
 
+For a retained application, redeem the code with
+`POST <service origin>/api/adopt` and a JSON body containing `code`,
+`expectedMode: "delegate"` and the original `applicationId`. The host verifies
+those preconditions before consuming the code or issuing a credential. The
+starter first checks `GET <service origin>/api/adopt` for the same-origin
+version-1 declaration of `applicationBound` and `nonReplacing` delegation.
+An older host that cannot confirm those preconditions receives no code. The
+response is a private handle for the same page; retain it before selecting it
+locally. This one-use endpoint cannot reconstruct a lost credential response.
+Inspect the named binding with the owner before another reviewed delegation.
+The [starter continuation helper](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss)
+retains that boundary and never resends an uncertain redemption.
+
 An agent with `agents:delegate` can use `POST <api>/tokens` with a unique `name`
 and `scopes`. The selected scopes must be a subset of that agent's own scopes.
 There are at most 32 host bindings per tendril. Available scopes are:
@@ -28,7 +41,10 @@ There are at most 32 host bindings per tendril. Available scopes are:
 `GET <api>/self` reports the actual host binding and its scope. The binding ID
 survives `POST <api>/tokens/<name>/rotate`; the previous credential immediately
 stops authenticating and the binding revision advances. A credential can rotate
-itself. Rotating or revoking another binding requires delegation authority covering
+itself, except the fixed account-setup binding: its credential commitment cannot
+rotate, its name is reserved, and it expires after 24 hours or when its admitting
+OAuth grant becomes inactive. Owner claim does not extend it. Use reviewed
+delegation for continued access to the same claimed app. Rotating or revoking another binding requires delegation authority covering
 all of that binding's scopes. `DELETE <api>/tokens/<name>` removes only that agent.
 
 Names are display and local management labels. A new binding reusing a revoked

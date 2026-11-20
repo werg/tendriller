@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+          ref: 15573014f4536369d7bd2f8a4b894a0d9fb69812
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -45,9 +45,13 @@ jobs:
           node tools/package-peer-session.mjs
       - run: npm run build:artifacts
         working-directory: core
-      - name: Exercise the downloaded tutorial in a real browser
+      - run: npm run release:artifacts
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz"
+      - name: Exercise the exact first-app release kit in a real browser
+        working-directory: core
+        run: |
+          release_version=$(node -p "require('./package.json').version")
+          npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$release_version.tgz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -68,7 +72,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+          ref: 15573014f4536369d7bd2f8a4b894a0d9fb69812
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -84,7 +88,7 @@ jobs:
         working-directory: core
       - name: Exercise SQL initialization, guarded writes and reopen
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d-sql.tgz" --sql-native-only
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-15573014-sql.tgz" --sql-native-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:
