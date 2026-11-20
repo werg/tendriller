@@ -34,7 +34,7 @@ if (values['first-app-archive'] && values['sql-native-only']) throw Error('The f
 const sqlOnly = Boolean(values['sql-native-only']);
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
-const directory = await mkdtemp(join(tmpdir(), 'tendriller-first-app-'));
+const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
 const app = join(directory, 'application');
 const SERVICE = 'https://service.localhost:8790';
 const execute = promisify(execFile);
