@@ -12,6 +12,7 @@ const fixture = `
 import { DurableObject } from 'cloudflare:workers';
 export class Channel extends DurableObject {
   lastClose;
+  held;
   fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === '/denied') return new Response('authorization required', {
@@ -21,9 +22,19 @@ export class Channel extends DurableObject {
       for (const socket of this.ctx.getWebSockets()) socket.close(1013, 'Server completed its work');
       return new Response('close requested');
     }
+    if (url.pathname === '/release') {
+      this.held.close(1000, 'Owner completed cleanup');
+      return new Response('released');
+    }
     if (url.pathname === '/state') return Response.json(this.lastClose ?? null);
     const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server);
+    if (url.pathname === '/hold') {
+      this.held = server;
+      server.addEventListener('close', event => {
+        this.lastClose = { code: event.code, reason: event.reason, readyState: server.readyState };
+      });
+      server.accept({ allowHalfOpen: true });
+    } else this.ctx.acceptWebSocket(server);
     return new Response(null, { status: 101, webSocket: client,
       headers: { 'Sec-WebSocket-Protocol': 'fixture.close.v1' } });
   }
@@ -66,7 +77,7 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
     await Promise.all(agents.map(agent => agent.close()));
     await rm(directory, { recursive: true, force: true });
   });
-  async function open(base, id) {
+  async function open(base, id, path = '/') {
     const physical = { socket: null, eof: false, closed: false };
     const connect = buildConnector({});
     const dispatcher = new Agent({ connect(options, callback) {
@@ -80,7 +91,7 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
       });
     } });
     agents.push(dispatcher);
-    const url = route(base, '/', id); url.protocol = 'ws:';
+    const url = route(base, path, id); url.protocol = 'ws:';
     const socket = new WebSocket(url, { dispatcher, protocols: ['fixture.close.v1'] });
     socket.binaryType = 'arraybuffer';
     const closed = Promise.withResolvers();
@@ -120,6 +131,26 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
   const serverClosed = await open(proxied, 'proxied-cold');
   await (await fetch(route(proxied, '/close', 'proxied-cold'))).text();
   await closedCleanly(serverClosed, { code: 1013, reason: 'Server completed its work' });
+
+  // A host that receives Close but has not acknowledged it must remain visible
+  // to the raw-socket cleanup gate. Do not let the proxy auto-ack on its behalf.
+  const held = await open(proxied, 'held', '/hold');
+  held.socket.close(1000, 'Owner completed cleanup');
+  const heldState = await deadline((async () => {
+    for (;;) {
+      const state = await (await fetch(route(proxied, '/state', 'held'))).json();
+      if (state) return state;
+      await wait(10);
+    }
+  })(), 'Upstream did not receive the owner Close frame');
+  assert.equal(heldState.readyState, WebSocket.CLOSING);
+  await wait(75);
+  assert.equal(held.socket.readyState, WebSocket.CLOSING,
+    'The network boundary must not hide a missing upstream Close acknowledgment');
+  assert.equal(held.physical.eof, false);
+  assert.equal(held.physical.closed, false);
+  await (await fetch(route(proxied, '/release', 'held'))).text();
+  await closedCleanly(held, { code: 1000, reason: 'Owner completed cleanup' });
 
   const owned = await open(proxied, 'owned');
   await wait(50);

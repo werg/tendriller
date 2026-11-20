@@ -36,8 +36,10 @@ export default {
       });
       from.addEventListener('error', () => to.close(1011, 'Test host WebSocket failed'));
     }
-    upstream.accept();
-    server.accept();
+    // A Close from one side must wait for the other side's acknowledgment.
+    // Default auto-replies would hide a retained upstream half-open socket.
+    upstream.accept({ allowHalfOpen: true });
+    server.accept({ allowHalfOpen: true });
     return new Response(null, { status: 101, headers: response.headers, webSocket: client });
   },
 };
