@@ -18,7 +18,29 @@ Copy `scripts/idle-soak/config.example.json` and `adapter.example.mjs` **outside
 - `wrangler`: absolute installed `wrangler/bin/wrangler.js`. `wrangler login` must already be valid for the account. The collector captures `wrangler auth token --json` privately in memory with piped stdout/stderr, supports bearer or global-key credentials, and never prints credential values. No token is placed in argv, config, checkpoints or evidence.
 - A persistent **headed Chromium display** is needed to verify real `document.visibilityState`. A dedicated Chromium is attached through public `connectOverCDP({noDefaults:true})`; normal Playwright launches force focus emulation and disable background throttling, which would distort this measurement. A second blank tab backgrounds the app, and bringing the app to front restores foreground residency. The runner fails if observed visibility differs. Do not substitute mocked visibility, a frozen page, laptop sleep or simulated clock time. A continuously available Xvfb display is suitable if verified on the host. Supply DISPLAY/XAUTHORITY to the user service as needed. Keep the host awake and online.
 
-**Run scope: the supplied bootstrap is native-only, without the optional MCP adapter.** This scope is recorded in evidence; it does not qualify the optional adapter or model dispatch. Model-turn counts remain null and the aggregate result remains incomplete until actual dispatch coverage is supplied. The maintained bootstrap opens the app first and counts actual pairing reconciliation (including notifications, retries and expiry), participation-status and session-change callbacks. It reports this native wakeup coverage over private IPC. It does not configure an assistant adapter or claim coverage of external model dispatch. Extend the existing bootstrap with explicit hooks for any optional adapter/model paths before claiming that coverage; do not treat a tool call as a model turn.
+**Default run scope: native-only, without the optional MCP adapter.** The maintained bootstrap records `native-only-without-mcp-adapter`. It opens the app first and counts actual pairing reconciliation (notifications, retries and expiry), participation-status and session-change callbacks. No optional assistant module is imported in this mode.
+
+### Optional native MCP adapter and event forwarding
+
+To measure the existing app's approved tool provider as well, append `--assistant` to the maintained bootstrap's argument array. Add `--events` only when the same app already has approved event permissions and a reviewed event-prefix checkpoint:
+
+```json
+"native": {
+  "argv": ["/ABSOLUTE/PATH/TO/node", "/ABSOLUTE/QUALIFIED/CHECKOUT/scripts/idle-soak/native-bootstrap.mjs", "--assistant", "--events"],
+  "cwd": "/PRIVATE/synthetic-starter"
+}
+```
+
+Before starting this mode:
+
+1. Stop the previous soak runner and confirm its native participant has exited **before any proposal, owner review or other preparation traffic**. Such traffic contaminates provider quiet windows even if it originates outside the observed process. Preserve its interrupted checkpoint; it earns no completed 48-hour credit. Never open a concurrent owner for the same native store.
+2. In that same retained app, the operator explicitly runs its canonical `assistant.mjs prepare` (with `--events` iff the measured bootstrap will use events), retains the existing assistant key, and completes normal owner review on the selected service origin. Confirm the exact proposal, reader/command permissions, optional event permissions and selected native signer. Do not replace the application, device, resident host credential, original setup intent or operation records. A changed key, capability set, host credential or proposal needs explicit matching review before a soak.
+3. If using events, inspect a coherent applied read of the exact existing synthetic event prefix. Retain the original cursor and the reviewed revision/event IDs, and prepare the app's `assistant-event-cursor.json` at that verified boundary. Do not reset an uncertain cursor, silently skip new events, replay previously exported events, create replacement notes or discard retained progress. This is explicit private operator preparation, never bootstrap setup or quiet-window work.
+4. Use the already installed app's canonical `runAssistant`. Its `prepareAssistant` request on startup is permitted only as an **idempotent** resumption of the operator-precompleted matching proposal/review. No setup, consent automation or model invocation belongs in the measured bootstrap. If approval is absent or mismatched, do not begin a quiet segment; correct the operator preparation outside measurement.
+
+The optional mode records `native-with-mcp-adapter`. It passes the already-open observed owner and its reconciliation wrapper to canonical `runAssistant` through the `open` hook; no second owner or copied assistant lifecycle is created. Its readiness message requires actual `adapter_online`, native following/coordinating participation, successful initial reconciliation and a successful application query. Assistant setup/status and adapter reports also count as observed native callbacks. The event loop, approval/revocation fencing, failure backoff and event forwarding remain owned by the canonical app helper. Cleanup closes the shared owner exactly once.
+
+Both scopes report model dispatch as **unobserved**: `counts.modelTurns` remains **null**, not zero. MCP provider/event-forwarding coverage does not establish a ChatGPT/model turn or future conversation wake. The aggregate result remains incomplete until actual external model-dispatch coverage is supplied separately. `--events` without `--assistant` is rejected.
 
 The driver verifies a coherent read before hiding the page. It performs no UI
 interaction during hidden quiet time; after that interval ends, it brings the app
@@ -50,7 +72,7 @@ systemctl --user status tendriller-idle-soak.service
 The user's systemd manager must persist after logout (administrator enables lingering if necessary). The unit uses `KillMode=control-group`, 60s restart backoff, at most three starts/day, private umask, and a 20s shutdown deadline. Do not use a 48h GitHub Actions job or leave the foreground shell as the lifetime guarantee. No service is installed or started by this implementation.
 
 Before measuring, the native bootstrap must confirm application activation,
-participation readiness and initial setup reconciliation. Each residency boundary
+participation readiness and initial setup reconciliation; `--assistant` also requires the actual approved adapter to be online. Each residency boundary
 then requires no observed in-flight client requests and two seconds with no
 observed client activity, bounded to thirty
 seconds total. Continuous startup activity fails that barrier; startup traffic
@@ -99,7 +121,7 @@ Stop with `systemctl --user disable --now tendriller-idle-soak.service`. Retain 
 
 ## Verification and references
 
-Run `node --test scripts/test/idle-soak.test.mjs` and `node --test contract/test/setup-watch.test.mjs`. These cover virtual 48h inactivity, revoked-watch expiry, bounded retries/cancellation, residency/reconnect observations, missing/schema-denied metrics, hourly scoped queries, budgets and private persistence. They do not establish live hibernation, provider billing, the real desktop browser's visibility behavior or a completed overnight soak. Parent integration owns the repository-wide check gates.
+Run `node --test scripts/test/idle-soak-native-bootstrap.test.mjs scripts/test/idle-soak-warmup.test.mjs scripts/test/idle-soak.test.mjs` and `node --test contract/test/setup-watch.test.mjs`. These cover virtual 48h inactivity, revoked-watch expiry, bounded retries/cancellation, residency/reconnect observations, missing/schema-denied metrics, hourly scoped queries, budgets and private persistence. They do not establish live hibernation, provider billing, the real desktop browser's visibility behavior or a completed overnight soak. Parent integration owns the repository-wide check gates.
 
 Primary documentation inspected 2026-11-20: [DO analytics](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/), [Workers analytics](https://developers.cloudflare.com/workers/observability/metrics-and-analytics/), [dynamic GraphQL introspection](https://developers.cloudflare.com/analytics/graphql-api/features/discovery/introspection/), [GraphQL authentication](https://developers.cloudflare.com/analytics/graphql-api/getting-started/authentication/), [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/). The collector uses authenticated live schema discovery because field availability and entitlement can differ by account.
 
