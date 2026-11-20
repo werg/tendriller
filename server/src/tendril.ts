@@ -286,14 +286,43 @@ export class Tendril extends DurableObject<Env> {
     const body = await readJson(req, 4096);
     const code = typeof body.code === "string" ? body.code.trim() : "";
     const a = this.db.get<{ hash: string; expires_at: number; attempts: number; mode?: 'delegate'; name?: string; scopes?: AgentScope[] } | null>("adopt", null);
-    if (!a || a.expires_at < this.now()) {
-      this.db.del("adopt");
-      throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
-    }
-    if (!safeEqual(await sha256Hex(code), a.hash)) {
-      a.attempts += 1;
-      if (a.attempts >= ADOPT_MAX_ATTEMPTS) this.db.del("adopt");
-      else this.db.set("adopt", a);
+    if (!a || a.expires_at <= this.now()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
+    const owner = this.db.get<string | null>('owner_account', null);
+    const localPolicy = () => {
+      if (!owner || !this.exists() || this.db.get('disabled', false) || this.db.get('owner_account', null) !== owner)
+        throw new HttpError(403, 'disabled', 'This tendril is unavailable');
+    };
+    const policy = async () => {
+      // One primary snapshot checks writes and the claimed page's current owner.
+      // Re-run after token hashing, immediately before consuming the code.
+      const row = await this.env.ACCOUNTS.prepare(`SELECT s.mode, t.state, t.owner_account,
+        a.id AS owner_id, a.suspended_at, a.deleting_at FROM service_state s
+        LEFT JOIN tendrils t ON t.id=? LEFT JOIN accounts a ON a.id=t.owner_account WHERE s.id=1`)
+        .bind(this.tid).first<{ mode: string; state: string | null; owner_account: string | null;
+          owner_id: string | null; suspended_at: number | null; deleting_at: number | null }>();
+      if (!row || !['open', 'creation_paused', 'read_only'].includes(row.mode))
+        throw new HttpError(503, 'unavailable', 'Service state is not initialized');
+      if (row.mode === 'read_only') throw new HttpError(503, 'read_only', 'Writes are temporarily paused');
+      localPolicy();
+      if (row.state !== 'active' || row.owner_account !== owner || row.owner_id !== owner ||
+        row.suspended_at !== null || row.deleting_at !== null)
+        throw new HttpError(403, 'disabled', 'This tendril is unavailable');
+    };
+    const currentCode = () => {
+      localPolicy();
+      if (JSON.stringify(this.db.get('adopt', null)) !== JSON.stringify(a) || a.expires_at <= this.now())
+        throw new HttpError(409, 'adoption_changed', 'The reviewed code changed or was already used. Ask the owner to inspect the named binding before issuing another code.');
+    };
+    const valid = safeEqual(await sha256Hex(code), a.hash);
+    await policy();
+    if (!valid) {
+      this.transaction(() => {
+        // A late failed attempt cannot restore an already redeemed/replaced code.
+        currentCode();
+        a.attempts += 1;
+        if (a.attempts >= ADOPT_MAX_ATTEMPTS) this.db.del('adopt');
+        else this.db.set('adopt', a);
+      });
       throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     }
     // A retained native app asks for non-replacing delegation only. Check both
@@ -305,13 +334,12 @@ export class Tendril extends DurableObject<Env> {
     const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes, () => {
       // Hashing the token yields. A replacement/expired/redeemed code must not
       // authorize another binding after that await; consume it atomically.
-      if (JSON.stringify(this.db.get('adopt', null)) !== JSON.stringify(a) || a.expires_at <= this.now())
-        throw new HttpError(409, 'adoption_changed', 'The reviewed code changed or was already used. Ask the owner to inspect the named binding before issuing another code.');
+      currentCode();
       if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
         throw new HttpError(409, 'adoption_application_mismatch');
       this.db.del('adopt');
       if (a.mode !== 'delegate') this.db.run('DELETE FROM tokens');
-    });
+    }, policy);
     addActivity(this, { kind: a.mode === 'delegate' ? 'agent_delegated' : "adopted", summary: a.mode === 'delegate'
       ? `An independently revocable agent binding ${a.name} joined this tendril`
       : "A new agent session adopted this tendril; earlier agent tokens were revoked" });
@@ -319,10 +347,12 @@ export class Tendril extends DurableObject<Env> {
     return json(this.handle(token));
   }
 
-  async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {}): Promise<string> {
+  async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {},
+    prepare?: () => Promise<void>): Promise<string> {
     if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'The setup credential name is reserved for its committed account operation. Choose another agent name.');
     const token = newToken();
     const hash = await sha256Hex(token);
+    if (prepare) await prepare();
     this.transaction(() => {
       authorize();
       this.db.run("INSERT INTO tokens (name, hash, created_at, last_used) VALUES (?, ?, ?, NULL)", name, hash, this.now());

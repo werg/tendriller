@@ -1,5 +1,7 @@
 import { expect, it } from 'vitest';
+import { env } from 'cloudflare:workers';
 import { api, create, inDO, ownerHeaders, req } from './helpers';
+import { sha256Hex } from '../src/ids';
 
 it('serves recovery independently of authored code and enforces owner and origin boundaries', async () => {
   const h = await create();
@@ -90,4 +92,100 @@ it('requires the reviewed delegation mode and exact application before consuming
   expect(await inDO(h.id, t => t.db.get('agent_binding:retained-native', null)))
     .toMatchObject({ scopes: ['host:read', 'participants:connect', 'control:write'] });
   expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM tokens'))).toEqual({ n: 2 });
+});
+
+it('preserves a reviewed code when writes, its page or its owner no longer permit redemption', async () => {
+  for (const reason of ['read_only', 'disabled', 'suspended', 'deleting', 'page_deleting'] as const) {
+    const h = await create(), url = h.page_url + '_tendril/manage';
+    const issued = await req(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'action=delegate-agent&name=retained-native&scopes=host%3Aread&scopes=participants%3Aconnect' });
+    const code = new RegExp(h.id + '-[0-9]{6}').exec(await issued.text())![0];
+    const before = await inDO(h.id, t => ({ code: t.db.get('adopt', null), owner: t.db.get('owner_account', '') }));
+    if (reason === 'read_only') await env.ACCOUNTS.prepare("UPDATE service_state SET mode='read_only' WHERE id=1").run();
+    if (reason === 'disabled') await inDO(h.id, t => t.db.set('disabled', true));
+    if (reason === 'suspended') await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), before.owner).run();
+    if (reason === 'deleting') await env.ACCOUNTS.prepare('UPDATE accounts SET deleting_at=? WHERE id=?').bind(Date.now(), before.owner).run();
+    if (reason === 'page_deleting') await env.ACCOUNTS.prepare("UPDATE tendrils SET state='deleting' WHERE id=?").bind(h.id).run();
+    try {
+      const response = await req('/api/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, expectedMode: 'delegate', applicationId: h.application.id }) });
+      expect(response.status, reason).toBe(reason === 'read_only' ? 503 : 403);
+      expect(await response.json()).toMatchObject({ error: { code: reason === 'read_only' ? 'read_only' : 'disabled' } });
+      expect(await inDO(h.id, t => t.db.get('adopt', null)), reason).toEqual(before.code);
+      expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM tokens')), reason).toEqual({ n: 1 });
+    } finally {
+      await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run();
+    }
+  }
+});
+
+it('rechecks write admission after asynchronous token preparation without consuming the code', async () => {
+  const h = await create(), url = h.page_url + '_tendril/manage';
+  const issued = await req(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'action=delegate-agent&name=retained-native&scopes=host%3Aread' });
+  const code = new RegExp(h.id + '-[0-9]{6}').exec(await issued.text())![0];
+  const before = await inDO(h.id, t => t.db.get('adopt', null));
+  const restore = await inDO(h.id, t => {
+    const original = t.addToken;
+    t.addToken = async (...args) => {
+      await t.env.ACCOUNTS.prepare("UPDATE service_state SET mode='read_only' WHERE id=1").run();
+      return original.apply(t, args);
+    };
+    return () => { t.addToken = original; };
+  });
+  try {
+    const response = await req('/api/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, expectedMode: 'delegate', applicationId: h.application.id }) });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: { code: 'read_only' } });
+    expect(await inDO(h.id, t => t.db.get('adopt', null))).toEqual(before);
+    expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM tokens'))).toEqual({ n: 1 });
+  } finally {
+    await inDO(h.id, restore);
+    await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run();
+  }
+  const retry = await req('/api/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, expectedMode: 'delegate', applicationId: h.application.id }) });
+  expect(retry.status).toBe(200);
+  const delegated = await retry.json() as { token: string };
+  expect((await api({ ...h, token: delegated.token }, 'GET', 'self')).status).toBe(200);
+});
+
+it('a late failed redemption cannot restore the code replaced during its policy read', async () => {
+  const h = await create(), url = h.page_url + '_tendril/manage';
+  const issued = await req(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'action=delegate-agent&name=retained-native&scopes=host%3Aread' });
+  const code = new RegExp(h.id + '-[0-9]{6}').exec(await issued.text())![0];
+  const wrongCode = code.slice(0, -1) + ((Number(code.at(-1)) + 1) % 10);
+  const replacementCode = code.slice(0, -1) + ((Number(code.at(-1)) + 2) % 10);
+  const replacementHash = await sha256Hex(replacementCode);
+  const original = await inDO(h.id, t => t.db.get<object>('adopt', {}));
+  const replacement = { ...original, hash: replacementHash };
+  const restore = await inDO(h.id, t => {
+    const database = t.env.ACCOUNTS; let replaced = false;
+    t.env.ACCOUNTS = new Proxy(database, { get(target, key) {
+      if (key !== 'prepare') { const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; }
+      return (query: string) => {
+        const statement = target.prepare(query);
+        if (!query.includes('FROM service_state s')) return statement;
+        return { bind(...values: unknown[]) {
+          const bound = statement.bind(...values);
+          return { async first() {
+            const row = await bound.first();
+            if (!replaced) { replaced = true; t.db.set('adopt', replacement); }
+            return row;
+          } };
+        } };
+      };
+    } });
+    return () => { t.env.ACCOUNTS = database; };
+  });
+  try {
+    const response = await req('/api/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: wrongCode, expectedMode: 'delegate', applicationId: h.application.id }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: 'adoption_changed' } });
+    expect(await inDO(h.id, t => t.db.get('adopt', null))).toEqual(replacement);
+    expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM tokens'))).toEqual({ n: 1 });
+  } finally { await inDO(h.id, restore); }
 });
