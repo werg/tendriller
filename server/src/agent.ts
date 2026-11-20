@@ -165,13 +165,15 @@ route("POST", /^release$/, t => withUnconfiguredPeerApplication(t, async () => {
     await reopened.body?.cancel();
     const reserved = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": t.tid } }));
     if (!reserved.ok) return reserved;
-  }
+    await reserved.body?.cancel();
+  } else await reopened.body?.cancel();
   try {
     const row = await t.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = NULL, claimed_at = NULL WHERE id = ? AND owner_account = ? RETURNING id")
       .bind(t.tid, owner).first();
     if (!row) throw new HttpError(409, "owner_changed", "Owner changed during release");
   } catch (err) {
-    await admission.fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+    const released = await admission.fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": t.tid } }));
+    await released.body?.cancel();
     throw err;
   }
   t.db.del("owner_account");

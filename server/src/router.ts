@@ -272,12 +272,14 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
           const admission = env.ADMISSION.get(env.ADMISSION.idFromName("global"));
           const allowed = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": id } }));
           if (!allowed.ok) return allowed;
+          await allowed.body?.cancel();
           let indexed = false;
           const cancel = async () => {
             try {
               if (indexed) await env.ACCOUNTS!.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
             } finally {
-              await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
+              const cancelled = await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
+              await cancelled.body?.cancel();
             }
           };
           let res: Response;
