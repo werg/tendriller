@@ -57,7 +57,7 @@
     "ipaddr.js": "^2.5.0",
     "phonon-tts": "0.7.1"
   },
-  "version": "0.3.0-rc.15",
+  "version": "0.3.0-rc.16",
   "engines": {
     "node": ">=22.15.0"
   }
