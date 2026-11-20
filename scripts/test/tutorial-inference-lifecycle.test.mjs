@@ -13,6 +13,8 @@ for (const cleanupFailure of [false, true]) {
     const directory = await mkdtemp(join(tmpdir(), 'inference-lifecycle-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     await mkdir(join(directory, 'media'));
+    await mkdir(join(directory, 'helpers'));
+    await copyFile(new URL('../../docs/tutorial/helpers/cli-lifetime.mjs', import.meta.url), join(directory, 'helpers/cli-lifetime.mjs'));
     for (const name of ['inference-peer.mjs', 'inference-protocol.mjs']) {
       await copyFile(new URL(`../../docs/tutorial/media/${name}`, import.meta.url), join(directory, 'media', name));
     }

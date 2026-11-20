@@ -6,6 +6,7 @@ import { createApplicationTools } from '@chronolog/peer-session';
 import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
 import { project, privateDirectory, readPrivate, savePrivate } from './local.mjs';
 import { openSession } from './session.mjs';
+import { createCliLifetime } from './helpers/cli-lifetime.mjs';
 import { superviseParticipant } from './helpers/participant-lifecycle.mjs';
 
 export async function prepareAssistant({ events = false, signal } = {}) {
@@ -27,13 +28,13 @@ async function checkpoint(cursor) {
 export async function runAssistant({ signal, events = false } = {}, {
   prepare = prepareAssistant, open = openSession, connect = connectApplicationAssistant,
   tools = createApplicationTools, forward = forwardApplicationEvents, watch,
-  report = value => console.log(JSON.stringify(value)),
+  onOwned, onClosed, report = value => console.log(JSON.stringify(value)),
 } = {}) {
   signal?.throwIfAborted();
   let options, owned, lifecycle;
   try {
     // The native owner and its setup watcher must outlive optional proposal work.
-    owned = await open({ signal });
+    owned = await open({ signal }); onOwned?.();
     report({ state: 'participant_running', pid: process.pid, applicationId: owned.session.applicationId,
       processLifetime: 'Until this process or its execution environment stops; optional MCP connectivity has an independent lifetime.',
       checkpointDirectory: privateDirectory.pathname, futureWakeVerified: false });
@@ -62,16 +63,19 @@ export async function runAssistant({ signal, events = false } = {}, {
   } finally {
     try { await lifecycle?.close(); } finally { await owned?.close(); }
     report({ state: 'stopped', connected: false, pid: process.pid });
+    if (owned) onClosed?.();
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const stop = new AbortController();
-  for (const event of ['SIGINT', 'SIGTERM']) process.once(event, () => stop.abort());
+  const cli = createCliLifetime();
   try {
     const args = process.argv.slice(2), events = args.includes('--events');
     const action = args.filter(arg => arg !== '--events');
     if (action.length > 1 || action.length && !['prepare', 'run'].includes(action[0])) throw Error('Use npm run assistant[:prepare] -- [--events]. Event forwarding is optional and does not configure future chat wake.');
-    if (action[0] === 'prepare') console.log(JSON.stringify((await prepareAssistant({ events, signal: stop.signal })).review));
-    else await runAssistant({ signal: stop.signal, events });
-  } catch (error) { if (!stop.signal.aborted) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; } }
+    if (action[0] === 'prepare') console.log(JSON.stringify((await prepareAssistant({ events, signal: cli.signal })).review));
+    else await runAssistant({ signal: cli.signal, events }, { onOwned: cli.opened, onClosed: cli.closed });
+  } catch (error) { cli.fail(error); }
+  // Only the standalone entry point owns disposal of this process. A completed
+  // owner may leave Undici close handshakes behind; embedding never exits here.
+  process.exit(await cli.finish());
 }

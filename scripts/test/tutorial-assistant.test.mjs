@@ -11,6 +11,7 @@ async function fixture(t) {
   for (const name of ['assistant.mjs', 'session.mjs', 'local.mjs', 'domain.mjs', 'pairing-native.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
   await mkdir(join(directory, 'helpers'));
   await copyFile(join(root,'docs/tutorial/helpers/participant-lifecycle.mjs'),join(directory,'helpers/participant-lifecycle.mjs'));
+  await copyFile(join(root, 'docs/tutorial/helpers/cli-lifetime.mjs'), join(directory, 'helpers/cli-lifetime.mjs'));
   for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));

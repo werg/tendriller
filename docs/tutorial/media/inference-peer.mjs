@@ -6,11 +6,15 @@
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createCliLifetime } from '../helpers/cli-lifetime.mjs';
 import { openSession } from '../session.mjs';
 import { servePeerInference } from './inference-service.mjs';
 import { digestPattern } from './inference-protocol.mjs';
 
-const { values } = parseArgs({ options: { 'allow-device': { type: 'string', multiple: true },
+// The exported runner never owns the embedding process.
+export async function runInference({ args = process.argv.slice(2), signal } = {}, { onOwned, onClosed } = {}) {
+  signal?.throwIfAborted();
+const { values } = parseArgs({ args, options: { 'allow-device': { type: 'string', multiple: true },
   'max-requests': { type: 'string', default: '1' }, model: { type: 'string' }, provider: { type: 'string' },
   'max-output-tokens': { type: 'string', default: '600' } }, strict: true });
 const allowedDevices = values['allow-device'] ?? [], maxRequests = Number(values['max-requests']);
@@ -20,17 +24,20 @@ const providerUrl = values.provider ? pathToFileURL(resolve(values.provider)).hr
 const provider = await import(providerUrl);
 if (typeof provider.createInferenceProvider !== 'function') throw Error('The chosen native provider must export createInferenceProvider(options).');
 const infer = await provider.createInferenceProvider({ model: values.model, maxOutputTokens: Number(values['max-output-tokens']) });
-const stopped = new AbortController();
-process.once('SIGINT', () => stopped.abort()); process.once('SIGTERM', () => stopped.abort());
-let owned, service;
-try {
-  owned = await openSession({ signal: stopped.signal });
-  service = servePeerInference({ session: owned.session, allowedDevices, maxRequests, infer, signal: stopped.signal,
-    onStatus: status => console.log(JSON.stringify({ inference: status })) });
-  console.log(`Credential-protected inference peer: ${owned.session.deviceId}`);
-  console.log('Requests and suggestions are visible to application readers. Provider credentials remain in this native process.');
-  console.log('Suggestions require page review and a separate declared command. Ctrl-C closes the peer; restart explicitly renews this process budget.');
-  await service.done;
-} catch (error) {
-  if (!stopped.signal.aborted) { console.error(error.message); process.exitCode = 1; }
-} finally { try { await service?.close(); } finally { await owned?.close(); } }
+  let owned, service;
+  try {
+    owned = await openSession({ signal }); onOwned?.();
+    service = servePeerInference({ session: owned.session, allowedDevices, maxRequests, infer, signal,
+      onStatus: status => console.log(JSON.stringify({ inference: status })) });
+    console.log(`Credential-protected inference peer: ${owned.session.deviceId}`);
+    console.log('Requests and suggestions are visible to application readers. Provider credentials remain in this native process.');
+    console.log('Suggestions require page review and a separate declared command. Ctrl-C closes the peer; restart explicitly renews this process budget.');
+    await service.done;
+  } finally { try { await service?.close(); } finally { await owned?.close(); } if (owned) onClosed?.(); }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const cli = createCliLifetime();
+  try { await runInference({ signal: cli.signal }, { onOwned: cli.opened, onClosed: cli.closed }); }
+  catch (error) { cli.fail(error); }
+  process.exit(await cli.finish());
+}
