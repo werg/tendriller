@@ -17,7 +17,11 @@ beforeAll(async () => {
 });
 async function fixture(options: { verified?: boolean; scope?: string; account?: string; client?: string; email?: string } = {}) {
   const account = options.account ?? crypto.randomUUID(), client = options.client ?? 'setup-client', email = options.email ?? account + '@example.test';
-  const now = Date.now(), grant = crypto.randomUUID(), scope = options.scope ?? 'tendrils:create', ip = `198.18.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`;
+  const now = Date.now(), grant = crypto.randomUUID(), scope = options.scope ?? 'tendrils:create';
+  // A two-octet random suffix collides in the larger recovery matrix and
+  // accidentally shares quota with an unrelated fixture. Keep intentional
+  // same-IP races on one fixture; independent ones get a 96-bit test address.
+  const ip = '2001:db8:' + crypto.randomUUID().replaceAll('-', '').slice(0, 24).match(/.{4}/g)!.join(':');
   const settings: Env = { ...env, OAUTH_SIGNING_JWK: signing, OAUTH_CONFIG_JSON: JSON.stringify({ resource: ORIGIN + '/mcp', clients: [
     { id: client, name: 'Setup client', redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create','tendrils:list'] },
   ] }) };
@@ -686,3 +690,71 @@ for (const write of ['allocation','index','result'] as const) for (const timing 
       state.storage.sql.exec('SELECT id,released FROM creations WHERE id=?',pageId).toArray())).toEqual([{id:pageId,released:0}]);
   });
 }
+
+for (const timing of ['before', 'after'] as const) {
+  it(`recovers one setup after an Admission reserve ${timing === 'before' ? 'request is lost before delivery' : 'reply is lost after reservation'}`, async () => {
+    const f = await fixture(), intent = await f.intent(), transport = f.settings.ADMISSION;
+    const pageId = await accountSetupPageId(ORIGIN, f.account, f.client, intent.operationId);
+    let fired = false;
+    f.settings.ADMISSION = { idFromName: name => transport.idFromName(name), get(id) {
+      const object = transport.get(id);
+      return { async fetch(request: Request) {
+        const target = !fired && new URL(request.url).pathname === '/reserve';
+        if (target && timing === 'before') { fired = true; throw Error('ADMISSION_REQUEST_NOT_DELIVERED'); }
+        const response = await object.fetch(request);
+        if (target && timing === 'after') {
+          fired = true; await response.body?.cancel(); throw Error('ADMISSION_REPLY_LOST_AFTER_RESERVATION');
+        }
+        return response;
+      } } as DurableObjectStub;
+    } } as DurableObjectNamespace;
+    const interrupted = await f.prepare(intent);
+    expect(fired).toBe(true);
+    expect(interrupted.body).toMatchObject({ state: 'provisioning', code: 'setup_outcome_unknown', pageId });
+    expect(await inDO(pageId, t => ({ exists: t.exists(), reservation: t.db.get('account_setup_reservation', null) })))
+      .toMatchObject({ exists: false, reservation: { state: 'pending', commitment: intent.credentialCommitment } });
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({ count: 1 });
+    const admissions = env.ADMISSION.get(env.ADMISSION.idFromName('global'));
+    expect(await runInDurableObject(admissions, (_instance, state) => state.storage.sql.exec('SELECT id FROM creations WHERE id=?', pageId).toArray()))
+      .toEqual(timing === 'after' ? [{ id: pageId }] : []);
+    expect(f.admissionResponses.every(response => response.body === null || response.bodyUsed)).toBe(true);
+    f.settings.ADMISSION = transport;
+    await evictDurableObject(stub(pageId)); await evictDurableObject(admissions);
+    const recovered = await f.prepare(intent), repeated = await f.prepare(intent);
+    expect(recovered.body).toMatchObject({ state: 'ready', pageId, credentialCommitment: intent.credentialCommitment });
+    expect(repeated.body).toEqual(recovered.body);
+    expect((await completeSetupIntent(intent, recovered.body)).token).toBe(intent.credential);
+    expect(await env.ACCOUNTS.prepare('SELECT page_id FROM account_setups WHERE account_id=?').bind(f.account).all()).toMatchObject({ results: [{ page_id: pageId }] });
+    expect(await env.ACCOUNTS.prepare('SELECT page_id FROM account_setup_allocations WHERE account_id=?').bind(f.account).all()).toMatchObject({ results: [{ page_id: pageId }] });
+    expect(await env.ACCOUNTS.prepare('SELECT id FROM tendrils WHERE creator_ip=?').bind(f.ip).all()).toMatchObject({ results: [{ id: pageId }] });
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({ count: 1 });
+    expect(await inDO(pageId, t => t.db.all('SELECT name,hash FROM tokens'))).toEqual([{ name: 'setup', hash: intent.credentialCommitment }]);
+    expect(await runInDurableObject(env.ADMISSION.get(env.ADMISSION.idFromName('global')), (_instance, state) =>
+      state.storage.sql.exec('SELECT id,released FROM creations WHERE id=?', pageId).toArray())).toEqual([{ id: pageId, released: 0 }]);
+  });
+}
+
+it('reconstructs the original setup after its final successful MCP reply is discarded and both objects restart', async () => {
+  const f = await fixture(), intent = await f.intent(), pageId = await accountSetupPageId(ORIGIN, f.account, f.client, intent.operationId);
+  const call = (name: string, args: object) => f.request('/mcp', { method: 'POST', body: JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args },
+  }) });
+  const lost = await call('prepare_tendril_setup', setupRequest(intent));
+  expect(lost.status).toBe(200);
+  // The caller never receives/parses the result. Only its retained local intent
+  // survives; neither an acknowledgement nor a second create is assumed.
+  await lost.body?.cancel();
+  expect(await env.ACCOUNTS.prepare('SELECT state FROM account_setups WHERE page_id=?').bind(pageId).first()).toEqual({ state: 'ready' });
+  const retained = await inDO(pageId, t => ({ tokens: t.db.all('SELECT name,hash FROM tokens'), links: t.db.all('SELECT id,key FROM links') }));
+  await evictDurableObject(stub(pageId)); await evictDurableObject(env.ADMISSION.get(env.ADMISSION.idFromName('global')));
+  const response = await call('inspect_tendril_setup', { operationId: intent.operationId });
+  const inspection = await response.json() as { result: { isError?: boolean; structuredContent: SetupResult } };
+  expect(inspection.result.isError).not.toBe(true);
+  expect(inspection.result.structuredContent).toMatchObject({ state: 'ready', pageId, requestDigest: intent.requestDigest });
+  expect(JSON.stringify(inspection)).not.toContain(intent.credential);
+  expect((await completeSetupIntent(intent, inspection.result.structuredContent)).token).toBe(intent.credential);
+  expect((await f.prepare(intent)).body).toEqual(inspection.result.structuredContent);
+  expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({ count: 1 });
+  expect(await inDO(pageId, t => ({ tokens: t.db.all('SELECT name,hash FROM tokens'), links: t.db.all('SELECT id,key FROM links') }))).toEqual(retained);
+  expect(retained.tokens).toEqual([{ name: 'setup', hash: intent.credentialCommitment }]);
+});
