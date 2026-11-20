@@ -250,7 +250,7 @@ node scripts/agent-acceptance/cli.mjs run \
   --release-root /private/clean-deployed-release \
   --access /private/review-access.json \
   --output /private/acceptance/new-domain-run \
-  --adapter /private/observers/checklist-observer.mjs \
+  --observer-config /private/acceptance/new-domain-observer.json \
   --seconds 1800
 ```
 
@@ -321,10 +321,142 @@ private. Login uses a static URL and a separately filled private account code;
 credentials are never a model input. Exact review text must be chosen by the
 evaluator after inspection, not guessed or approved by checking every checkbox.
 
-### Observer adapter protocol
+### Maintained starter observer (no custom module)
 
-Fresh agents may author different file layouts and command interfaces. The harness
-therefore does not import their private modules or guess native stores. Supply a
+Use `--observer-config /absolute/private/run-observer.json` for a checklist or
+shared-notes app derived from the published starter. The maintained observer is
+`scripts/agent-acceptance/observer.mjs`; there is no executable for the operator
+to author. The config can be absent at launch and completed **after** the innocent
+agent produces its project. It is read only by the evaluator, never sent to the
+model. Keep it outside the agent project. A nested native project within the
+run's empty `project/` is supported. Do not infer paths or identities from this
+example: copy them from the app actually produced in that run.
+
+```json
+{
+  "protocol": "tendriller-starter-observer-v1",
+  "origin": "https://staging.tendriller.dev",
+  "applicationId": "ACTUAL_64_HEX_APPLICATION_ID",
+  "historyId": "ACTUAL_SIGNED_HISTORY_ID",
+  "native": {
+    "project": "/private/acceptance/new-domain-run/project/actual-app",
+    "module": "session.mjs",
+    "export": "attachSession",
+    "profile": "main",
+    "handle": { "file": ".tendriller/handle.json" },
+    "descriptor": { "file": ".tendriller/descriptor.json" },
+    "deviceId": { "file": ".tendriller/initialized.json", "pointer": "/deviceId" },
+    "deviceStore": ".tendriller/device.sqlite",
+    "process": {
+      "pid": 12345,
+      "argv": ["/absolute/node", "session.mjs"],
+      "resume": ["/absolute/node", "session.mjs"],
+      "storage": ".tendriller/device.sqlite"
+    }
+  },
+  "query": {
+    "name": "notes", "input": null, "rows": "/value",
+    "marker": "/text", "operationId": "/operationId", "author": "/author"
+  },
+  "browser": {
+    "device": { "selector": "#device-key", "read": "value" },
+    "rows": "#notes li",
+    "status": { "selector": "#connection", "read": "text" },
+    "waitingText": "ACTUAL_VISIBLE_WAITING_TEXT"
+  },
+  "commands": {
+    "browser-to-agent": { "name": "addNote" },
+    "agent-to-browser": {
+      "name": "addNote", "input": { "text": "unique agent marker" },
+      "marker": "unique agent marker", "operationId": "unique-local-agent-operation"
+    },
+    "lost-command-response": {
+      "name": "addNote", "input": { "text": "unique lost-wait marker" },
+      "marker": "unique lost-wait marker", "operationId": "unique-local-lost-operation"
+    }
+  },
+  "publication": { "operationId": "ACTUAL_SIGNED_PUBLICATION_OPERATION_ID" }
+}
+```
+
+All `pointer` and query field paths are JSON Pointers, relative to the referenced
+JSON object. File paths are relative to `native.project` unless absolute.
+`native.deviceId` can alternatively be the actual public key string; `process.pid`
+can be a JSON file reference. JSONL references accept `format: "jsonl"`, `line`
+(a zero-based index or `"last"`) and a pointer into that entry. The process check
+reads Linux `/proc`, matching actual cwd, argv and birth token, rather than
+accepting a caller's "running" flag. It never sends signals or controls services.
+Update the PID after an explicit restart; the retained identity binding stays fixed.
+
+The observer validates the selected-origin handle, page/application/history and
+pinned signed descriptor, pins identities on its first observation, then attaches
+to the **existing** native session. It never falls back to `openSession`, creates
+a signer, resets authority or opens a replacement native store. Native probes run
+in bounded child processes with raw stdout/stderr discarded. The public codec and
+Ed25519 verify the v1 signed attempt ID, exact envelope, historical grant and command
+header; the existing native session supplies applied execution and coherent reads.
+No private signing or epoch keys are exported. Host publication/authority checks
+use the installed public SDK's actual verifiers. This envelope check does not
+independently decrypt/re-execute the operation body.
+
+Browser measurements read the paired owner's actual page, public runtime identity,
+device field and rendered rows. They require the configured app's page URL and a
+distinct browser identity. `owner navigate` and `reopen` may use that one
+observer-validated page URL on the service's page subdomain; this does not enable
+arbitrary foreign navigation. No browser state or receipts are injected.
+
+For checklist projections without operation/author columns, set
+`query.operationId` to `null` and configure `query.eventTopic`, `query.eventId`
+(such as `/payload/id`), and `query.rowId` (such as `/id`). The observer joins a
+single authenticated operation event to its projected row within the **same
+revision**; changed revisions block and require another observation. A missing
+join cannot pass from a matching label alone. The browser row must expose the
+operation ID (notes mode) or joined item ID (event mode), either in its text or
+through an actual DOM attribute named by `browser.rowIdentityAttribute` (for
+example `data-item-id`). If the produced app exposes neither, record the missing
+metric; do not provide implementation advice to repair the baseline's score.
+
+Use the normal `observe --input /private/check.json` controller command. Supported
+check inputs and their sequence:
+
+| Check | Input/options and observed proof |
+| --- | --- |
+| `preclaim-publication` | Observe before claim; independently verify the selected signed publication and unclaimed host response. |
+| `authority`, `publication` | Verify pinned authority, grants and selected generation; publication also checks the saved preclaim head against the browser runtime identity. |
+| `browser-to-agent` | Owner adds a unique marker through the ordinary UI. Supply `options.operationId` and `options.marker` from the visible result. Signed author must equal the measured browser device. |
+| `agent-to-browser` | `options.action: "submit"` submits the configured command once using a coherent revision and stable local operation ID. Observe again without an action when the browser renders it. Native attachment aliases and the canonical signed ID are both retained. |
+| `browser-reload`, `native-reopen` | Supply `options` with `phase: "before"`, `operationId`, `author`, `command`, `marker`. Perform actual owner reload/reopen or explicit same-store native restart, then observe with `phase: "after"` and the same fields. Native restart requires a new process birth token and the same measured store inode/device/signing identity and signed attempt. No process is restarted by the observer. |
+| `lost-command-response` | `options.action: "submit-lost"` submits the configured operation, then deliberately interrupts its applied waiter. This remains blocked until `action: "retry"` inspects/retries the same saved signed attempt and sees one applied result in native and browser rows. If a response won the interruption race, it reports that the loss was not established. |
+| `lost-publication-response` | Configure `publication.intent` (a file reference selecting the existing signed publication) and `publication.assets` (its saved public SDK asset array). `options.action: "drop"` retains the exact intent before calling publish, discards the real acknowledgement, and retains only its witness digest. `action: "retry"` must recover the identical versioned receipt and selected signed head. This is evaluator-side acknowledgement loss, not a network partition or browser retry qualification. No publication is newly signed by this observer. |
+| `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` selecting the actual `websocket-relay` or `webrtc` metric. A configured desired transport is not evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
+| `unavailable-peer` | `options.phase: "before"` measures the native process and browser. Stop only this disposable participant externally. `phase: "offline"` verifies its exit and actual visible waiting text. Resume the same device and observe with normal browser-to-agent marker/operation options. |
+| `discovery` | Measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs, requiring readiness before any observed install. Opaque or web-only tool traces stay blocked. |
+| `missing-setup` | Configure `missingSetup.report` to a separate actual harness run report and `expectedCode` to its prerequisite code. It must name this origin, a different attempt, blocked status and a concrete next action. |
+| `cleanup` | After the agent/operator cleans up only the disposable app and stops its participant, verify actual host `not_found` plus the disappearance of the previously measured process birth token. Requires the preclaim and native process checkpoints. The observer does no deletion or service control. |
+
+For example, after the owner adds a note:
+
+```json
+{
+  "check": "browser-to-agent",
+  "options": { "operationId": "ACTUAL_BROWSER_OPERATION", "marker": "unique browser marker" }
+}
+```
+
+The controller returns `status` and explicit `missing`/`mismatches` metrics.
+Missing files, unsupported attachment diagnostics, absent browser/session metrics
+and incomplete before/after sequences remain `blocked`; a mismatched measured
+identity, signature, operation, row or receipt is `failed`. It never fills gaps
+with caller-provided success booleans. Private checkpoints are retained beneath
+the run's `observer/` directory and never enter the model prompt or shareable
+report. Keep a failed baseline intact. Unsupported checks do not require authoring
+another module: leave them blocked, or record separately attributed external-host
+evidence through the protocol below. There is no claim of universal app introspection.
+
+### External observer adapter protocol
+
+For hosts or applications outside the maintained starter observer's supported
+measurements, the explicit external adapter remains available. Supply a
 **trusted evaluator executable** outside the agent's project with `--adapter`.
 It receives one JSON request on stdin, returns exactly one JSON observation on
 stdout, and exits within 30 seconds. The harness supplies PATH only, bounds output

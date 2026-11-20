@@ -46,6 +46,8 @@ function fixture(t) {
   for (const dir of ['bin', 'dist', 'publisher', 'remote/assets']) mkdirSync(join(root, dir), { recursive: true });
   for (const file of ['publish-release.mjs', 'release-composition.mjs', 'onboarding.mjs', 'runtime-manifest.mjs', 'archive-metadata.mjs'])
     copyFileSync(new URL('../' + file, import.meta.url), join(root, 'publisher', file));
+  mkdirSync(join(root, 'integrations/chatgpt/plugin'), { recursive: true });
+  copyFileSync(new URL('../../integrations/chatgpt/plugin/build.mjs', import.meta.url), join(root, 'integrations/chatgpt/plugin/build.mjs'));
   writeFileSync(join(root, 'bin/gh'), fakeGh); chmodSync(join(root, 'bin/gh'), 0o755);
   writeFileSync(join(root, 'bin/package.json'), '{"type":"module"}');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
@@ -69,7 +71,7 @@ function fixture(t) {
   const compositionBody = { format: 'tendriller-release-composition-v1', version: '1.2.3', contract: 3,
     core: identity, runtime: 'c'.repeat(64), chronolog: { session: chronolog, generation: chronolog }, components };
   const composition = { ...compositionBody, id: digest(JSON.stringify(compositionBody)) };
-  const artifacts = [...components, component('composition', 'composition.json', composition),
+  const artifacts = [...components, component('plugin', 'tendriller-chatgpt-plugin.zip', 'plugin bytes'), component('composition', 'composition.json', composition),
     component('first-app', 'first-app.tgz', 'complete first-app bytes'),
     component('core-provenance', 'provenance.json', { ...identity, artifacts: components.filter(item => ['sdk', 'runtime', 'engine'].includes(item.role)) }),
     component('tools-provenance', 'tools-manifest.json', { version: '1.2.3', contract: 3, runtime: composition.runtime,
@@ -173,7 +175,7 @@ test('publication refuses a checkout changed after release preparation', t => {
 
 test('publication refuses an incomplete composition before creating a release', t => {
   const f = fixture(t);
-  for (const role of ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance']) {
+  for (const role of ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin']) {
     f.setManifest({ artifacts: f.manifest.artifacts.filter(item => item.role !== role) });
     const result = f.publish();
     assert.notEqual(result.status, 0, role);

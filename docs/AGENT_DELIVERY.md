@@ -36,11 +36,14 @@ to silently switch the user's application to another stack.
 The starter provides a complete persistent device/session owner:
 
 ```sh
-npm run peer
+npm run serve
 ```
 
 The process participates in the selected application and observes real changes.
-It stays alive until stopped. Its private device store must survive future
+It stays alive until stopped, including while MCP access is unapproved or its
+optional adapter is disconnected. Authenticated setup notifications let later
+devices pair without restarting it, with no idle status polling. Its private
+device store must survive future
 invocations. Start it in the supported execution environment and retain enough
 process information to monitor, stop and restart it. The CLI and this process
 cannot simultaneously own the same native store. Ordinary CLI queries and

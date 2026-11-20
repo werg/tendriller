@@ -8,6 +8,13 @@ const route = identity => ({ kind: 'invitation', peerId: identity });
 function fixture(overrides = {}, opener, options = {}) {
   const calls = [], openings = [], relayOpenings = [], channels = [];
   const peers = {
+    watchDiscovery(identity, options) {
+      calls.push(['watch', identity, options]);
+      const ended = Promise.withResolvers();
+      const close = () => { options.signal.removeEventListener('abort', close); ended.resolve(); };
+      options.signal.addEventListener('abort', close, { once: true });
+      return { ready: Promise.resolve(), notifications: { async *[Symbol.asyncIterator]() { yield {type:'ready'}; await ended.promise; } }, close };
+    },
     async discover(value) { calls.push(['discover', value]); return { peers: [] }; },
     async advertise(value, options) { calls.push(['advertise', value, options]); },
     async withdraw(value, options) { calls.push(['withdraw', value, options]); },
@@ -54,20 +61,22 @@ test('construction is inert and discovery pins only valid remote identities with
 
 test('availability carries identity and routes only, forwards cancellation, and owns no renewal timer', async () => {
   const f = fixture(), controller = new AbortController(), selected = { signal: controller.signal };
+  const notifications = f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  assert.deepEqual(await notifications.next(), {value:{type:'ready'},done:false});
   const reading = f.discovery.invitations(selected)[Symbol.asyncIterator]().next();
   await Promise.resolve(); f.calls.length = 0;
-  await f.discovery.advertise({ identity: local, storageId: 'owned-disk', generation: 'never-published', point: { sequence: 9 } }, { ...selected, ttlMs: 120000 });
-  assert.deepEqual(f.calls, [['advertise', { peerId: local, storageId: 'owned-disk', routes: [route(local)] }, { ...selected, ttlMs: 120000 }]]);
+  await f.discovery.advertise({ identity: local, storageId: 'owned-disk', generation: 'never-published', point: { sequence: 9 } }, { ...selected });
+  assert.deepEqual(f.calls, [['advertise', { peerId: local, storageId: 'owned-disk', routes: [route(local)] }, { ...selected }]]);
   await f.discovery.withdraw(selected);
   assert.deepEqual(f.calls[1], ['withdraw', local, selected]);
-  await assert.rejects(f.discovery.advertise({ identity: remote, storageId: 'disk' }, { ...selected, ttlMs: 120000 }), { code: 'invalid_introduction' });
+  await assert.rejects(f.discovery.advertise({ identity: remote, storageId: 'disk' }, { ...selected }), { code: 'invalid_introduction' });
   const stopped = new AbortController(); stopped.abort(Error('session closed'));
   for (const action of [() => f.discovery.read({ signal: stopped.signal }),
     () => f.discovery.withdraw({ signal: stopped.signal }),
-    () => f.discovery.advertise({ identity: local, storageId: 'disk' }, { signal: stopped.signal, ttlMs: 120000 })])
+    () => f.discovery.advertise({ identity: local, storageId: 'disk' }, { signal: stopped.signal })])
     await assert.rejects(action(), /session closed/);
   assert.equal(f.calls.length, 2);
-  controller.abort(); await reading;
+  controller.abort(); await reading; await notifications.return();
 });
 
 test('outbound introduction uses a fresh channel, the paired role and closes host signaling after raw connection', async () => {
@@ -144,16 +153,18 @@ test('advertising waits for the owned invitation listener acknowledgement and re
     controller.signal.addEventListener('abort', () => stopped.resolve(), { once: true });
     return { ready: ready.promise, invitations: { async *[Symbol.asyncIterator]() { await stopped.promise; } }, close() {} };
   } });
-  const first = f.discovery.advertise({ identity: local, storageId: 'disk' }, { ...selected, ttlMs: 120000 });
+  const first = f.discovery.advertise({ identity: local, storageId: 'disk' }, { ...selected });
   await Promise.resolve(); assert.deepEqual(f.calls, [], 'No listener has started yet');
+  const notifications = f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  await notifications.next(); f.calls.length = 0;
   const reading = f.discovery.invitations(selected)[Symbol.asyncIterator]().next();
   await Promise.resolve(); assert.deepEqual(f.calls, [], 'Opening a socket is not an acknowledgement');
   ready.resolve(); await first;
   assert.equal(f.calls[0][0], 'advertise');
-  controller.abort(); await reading;
+  controller.abort(); await reading; await notifications.return();
 
   const cancelled = new AbortController();
-  const waiting = f.discovery.advertise({ identity: local, storageId: 'disk' }, { signal: cancelled.signal, ttlMs: 120000 });
+  const waiting = f.discovery.advertise({ identity: local, storageId: 'disk' }, { signal: cancelled.signal });
   cancelled.abort(Error('session ended before listening'));
   await assert.rejects(waiting, /session ended before listening/);
   assert.equal(f.calls.length, 1);
@@ -206,4 +217,124 @@ test('owner cancellation never opens a relay and failed relay framing closes bot
   const failed = fixture({}, async () => { throw Error('direct failed'); }, { openRelayConnection: async () => { throw Error('relay framing failed'); } });
   await assert.rejects(failed.transport.open({ peer: { identity: remote, route: route(remote) } }, options()), /relay framing failed/);
   assert.deepEqual(failed.calls.map(call => call[0]), ['rendezvous', 'invite', 'closeSignaling', 'relay', 'closeRelay']);
+});
+
+
+test('discovery notifications are required, initial watch readiness gates advertise, and iterator return releases the watch', async () => {
+  assert.throws(()=>fixture({watchDiscovery:undefined}), {code:'invalid_introduction'});
+  const gate = Promise.withResolvers(), stop = new AbortController(); let watcherCloses = 0, watchOptions;
+  const f = fixture({watchDiscovery(identity, options) {
+    watchOptions = {identity,options};
+    return {ready:gate.promise,notifications:{async *[Symbol.asyncIterator]() {await gate.promise; yield {type:'ready'}; yield {type:'changed'}; yield {type:'ready'};}},
+      close(){watcherCloses++;}};
+  }});
+  const selected = {signal:stop.signal};
+  const invitation = f.discovery.invitations(selected)[Symbol.asyncIterator]().next();
+  await Promise.resolve(); f.calls.length=0;
+  const advertising = f.discovery.advertise({identity:local,storageId:'disk'},selected);
+  const events = f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  const initial = events.next(); await Promise.resolve(); await Promise.resolve(); assert.deepEqual(f.calls,[]);
+  assert.deepEqual(watchOptions,{identity:local,options:selected});
+  gate.resolve(); assert.deepEqual(await initial,{value:{type:'ready'},done:false}); await advertising;
+  assert.equal(f.calls[0][0],'advertise');
+  assert.deepEqual(await events.next(),{value:{type:'changed'},done:false});
+  assert.deepEqual(await events.next(),{value:{type:'ready'},done:false});
+  assert.equal(f.calls.length,1,'The adapter must not advertise or read automatically on notification delivery');
+  await events.return(); assert.equal(watcherCloses,1);
+  const late = f.discovery.advertise({identity:local,storageId:'disk'},selected);
+  stop.abort(Error('owner stopped')); await assert.rejects(late,/owner stopped/); await invitation;
+});
+
+test('duplicate notification readers, cancelled subscriptions and failure cleanup never create replacement watchers', async () => {
+  const controller = new AbortController(); let closes = 0;
+  const f = fixture({watchDiscovery() {return {ready:Promise.resolve(),notifications:{async *[Symbol.asyncIterator]() {
+    yield {type:'ready'}; throw Error('subscription revoked');}},close(){closes++;}};}});
+  const selected={signal:controller.signal}, first=f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  await first.next(); await assert.rejects(f.discovery.notifications(selected)[Symbol.asyncIterator]().next(),{code:'invalid_introduction'});
+  await assert.rejects(first.next(),/subscription revoked/); assert.equal(closes,1);
+  controller.abort(Error('already cancelled'));
+  await assert.rejects(f.discovery.notifications(selected)[Symbol.asyncIterator]().next(),/already cancelled/);
+  assert.equal(closes,1);
+});
+
+function notificationDriver() {
+  const queue=[],stopped=Promise.withResolvers();let wake,ended=false;
+  return {ready:Promise.resolve(),push(type){queue.push({type});wake?.();wake=undefined;},
+    notifications:{async *[Symbol.asyncIterator](){while(!ended){if(queue.length){yield queue.shift();continue;}await new Promise(resolve=>{wake=resolve;});}}},
+    close(){ended=true;wake?.();stopped.resolve();},closed:stopped.promise};
+}
+async function advertisingFixture(overrides={}) {
+  const watch=notificationDriver(),controller=new AbortController();
+  const f=fixture({watchDiscovery:()=>watch,...overrides}),selected={signal:controller.signal};
+  const notifications=f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  const initial=notifications.next();watch.push('ready');await initial;
+  const invitations=f.discovery.invitations(selected)[Symbol.asyncIterator]();const waiting=invitations.next();
+  await Promise.resolve();
+  return {...f,watch,selected,notifications,controller,
+    async close(){controller.abort();await waiting;await notifications.return();},
+  };
+}
+
+test('only effective confirmed advertisement payloads cause HTTP; changed metadata is inert and ready always invalidates',async()=>{
+  const f=await advertisingFixture();
+  const value={identity:local,storageId:'disk',point:{sequence:1},role:'coordinator'};
+  await f.discovery.advertise(value,f.selected);
+  await f.discovery.advertise({...value,point:{sequence:2},role:'follower',generation:'new-head'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,1);
+  const changed=f.notifications.next();f.watch.push('changed');assert.equal((await changed).value.type,'changed');
+  await f.discovery.advertise(value,f.selected);assert.equal(f.calls.filter(call=>call[0]==='advertise').length,1);
+  const reconnected=f.notifications.next();f.watch.push('ready');assert.equal((await reconnected).value.type,'ready');
+  await f.discovery.advertise(value,f.selected);assert.equal(f.calls.filter(call=>call[0]==='advertise').length,2);
+  await f.discovery.advertise({...value,storageId:'different-disk'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,3);
+  await f.discovery.withdraw(f.selected);await f.discovery.advertise({...value,storageId:'different-disk'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,4);
+  await f.close();
+});
+
+test('a lost advertisement response stays unconfirmed and an explicit retry sends the exact same payload',async()=>{
+  const attempts=[];
+  const f=await advertisingFixture({async advertise(value){attempts.push(value);if(attempts.length===1)throw Error('response lost');}});
+  await assert.rejects(f.discovery.advertise({identity:local,storageId:'disk',point:1},f.selected),/response lost/);
+  await f.discovery.advertise({identity:local,storageId:'disk',point:2},f.selected);
+  assert.equal(attempts.length,2);assert.deepEqual(attempts[0],attempts[1]);
+  await f.discovery.advertise({identity:local,storageId:'disk',point:3},f.selected);assert.equal(attempts.length,2);
+  await f.close();
+});
+
+test('invitation listener replacement invalidates confirmed availability even with unchanged wire routes',async()=>{
+  const listeners=[];const f=await advertisingFixture({listenInvitations(){
+    const closed=Promise.withResolvers();const listener={ready:Promise.resolve(),invitations:{async *[Symbol.asyncIterator](){await closed.promise;}},close:()=>closed.resolve()};
+    listeners.push(listener);return listener;
+  }});
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);listeners[0].close();await Promise.resolve();await new Promise(resolve=>setImmediate(resolve));
+  const nextStop=new AbortController(),nextOptions={signal:nextStop.signal};
+  const invitations=f.discovery.invitations(nextOptions)[Symbol.asyncIterator]();const waiting=invitations.next();await Promise.resolve();
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,2);
+  listeners[1].close();await waiting;nextStop.abort();await f.close();
+});
+
+test('a response from before reconnect cannot confirm presence on the new watch generation',async()=>{
+  const gate=Promise.withResolvers();let attempts=0;
+  const f=await advertisingFixture({async advertise(){attempts++;if(attempts===1)await gate.promise;}});
+  const pending=f.discovery.advertise({identity:local,storageId:'disk'},f.selected);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(attempts,1);
+  const reconnect=f.notifications.next();f.watch.push('ready');await reconnect;gate.resolve();await pending;
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);assert.equal(attempts,2);
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);assert.equal(attempts,2);
+  await f.close();
+});
+
+test('an aborted acknowledgment or a failed changed payload cannot confirm any previous payload',async()=>{
+  let attempts=0,abortAfterAck;
+  const f=await advertisingFixture({async advertise(){attempts++;if(attempts===2)throw Error('changed payload uncertain');abortAfterAck?.abort(Error('caller ended'));}});
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);
+  await assert.rejects(f.discovery.advertise({identity:local,storageId:'other-disk'},f.selected),/uncertain/);
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);assert.equal(attempts,3);
+  abortAfterAck=new AbortController();
+  await assert.rejects(f.discovery.advertise({identity:local,storageId:'other-disk'},{signal:abortAfterAck.signal}),/caller ended/);
+  abortAfterAck=undefined;
+  await f.discovery.advertise({identity:local,storageId:'other-disk'},f.selected);assert.equal(attempts,5);
+  await f.close();
 });

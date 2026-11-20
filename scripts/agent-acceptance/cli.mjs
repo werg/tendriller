@@ -11,11 +11,13 @@ import { Evidence, privateDirectory, innocentPrompt, now, hash, readJson, extern
 import { createOwner, mcpBridge } from './owner.mjs';
 import { adapterCall } from './adapter.mjs';
 import { sourceIdentity } from '../release-composition.mjs';
+import { StarterObserver } from './observer.mjs';
 
 const help = `Usage (Node 24, Codex app-server, Playwright Chromium):
   node scripts/agent-acceptance/cli.mjs run --origin https://HOST --mode domain|mcp
     --output /private/new-run --release-root /clean/exact-deployed-checkout
-    --access /private/review-access.json [--adapter /absolute/trusted-observer]
+    --access /private/review-access.json [--observer-config /private/run-observer.json]
+    [--adapter /absolute/external-observer]
     [--no-browser] [--model MODEL] [--seconds 1800]
   ... send --output RUN --input /private/{kind,text}.json
   ... owner --output RUN --input /private/owner-action.json
@@ -54,7 +56,8 @@ export async function run(values) {
   const mode = values.mode ?? 'domain';
   if (!['domain', 'mcp'].includes(mode)) throw Error('Mode must be domain or mcp');
   if (!smoke && (!values.origin || !values['release-root'] || (!values.access && !values['no-browser']))) throw Error('Live runs require origin, release-root and owner access or an external adapter');
-  if (!smoke && values['no-browser'] && (!values.adapter || mode === 'mcp')) throw Error('No-browser requires an observer; MCP requires genuine account OAuth in the owner browser');
+  if (values.adapter && values['observer-config']) throw Error('Choose maintained --observer-config or an external --adapter');
+  if (!smoke && values['no-browser'] && (!values.adapter && !values['observer-config'] || mode === 'mcp')) throw Error('No-browser requires an observer; MCP requires genuine account OAuth in the owner browser');
   if (values.adapter && !isAbsolute(values.adapter)) throw Error('Adapter must be an absolute trusted executable path');
   const seconds = Number(values.seconds ?? (smoke ? 20 : 1800));
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 7200) throw Error('Seconds must be between 1 and 7200');
@@ -67,6 +70,9 @@ export async function run(values) {
     network: 'Host network; no network sandbox', approvals: 'never', sandbox: 'danger-full-access' } });
   let host, browser, bridge, server, timer, busy = false, threadId, closing = false, resolveDone;
   const done = new Promise(resolve => { resolveDone = resolve; });
+  // Configuration may be completed after the innocent agent produces its app.
+  // It is evaluator-only and never included in any model message.
+  const observer = values['observer-config'] ? new StarterObserver({ configPath: resolve(values['observer-config']), runDirectory: directory, project, origin }) : null;
   const close = async () => {
     if (closing) return; closing = true; clearTimeout(timer);
     if (server) { server.close(); server.closeAllConnections(); }
@@ -102,6 +108,7 @@ export async function run(values) {
         const { chromium } = await import('@playwright/test');
         browser = await createOwner({ accessPath: resolve(values.access), chromium, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
           record: value => evidence.private('owner', value) });
+        if (observer) observer.owner = browser.owner;
         evidence.data.environment.browser = browser.version;
       } else evidence.data.limits.push('Owner browser unavailable: external observer evidence is required.');
     }
@@ -161,13 +168,18 @@ export async function run(values) {
           evidence.intervention(input.kind, input.text); result = await turn(input.text);
         } else if (input.action === 'owner') {
           if (!browser) throw Error('Use the external owner adapter');
-          result = await browser.owner.act(input.input);
+          let publishedPageUrl;
+          if (observer && ['navigate', 'reopen'].includes(input.input.action)) {
+            try { publishedPageUrl = observer.config().handle.page_url; } catch {} // Service-origin sign-in/review still works before app config exists.
+          }
+          result = await browser.owner.act(input.input, { publishedPageUrl });
         } else if (input.action === 'observe') {
-          if (!values.adapter) throw Error('Configure a trusted --adapter for independent observations');
-          const observation = await adapterCall(values.adapter, { ...input.input, protocol: 'tendriller-agent-adapter-v1', action: 'observe',
-            runDirectory: directory, project, origin });
+          if (!observer && !values.adapter) throw Error('Configure --observer-config or a trusted external --adapter');
+          const observation = observer ? await observer.observe(input.input) : await adapterCall(values.adapter,
+            { ...input.input, protocol: 'tendriller-agent-adapter-v1', action: 'observe', runDirectory: directory, project, origin });
           if (observation.check !== input.input.check) throw Error('Observer returned a different check');
-          evidence.observation(observation, 'external-observer'); result = { recorded: true };
+          evidence.observation(observation, observer ? 'maintained-starter-observer' : 'external-observer');
+          result = { recorded: true, status: observation.status, ...(['missing', 'mismatches'].some(key => observation.evidence[key]) ? { metrics: observation.evidence } : {}) };
         } else if (input.action === 'stop') { res.end('{}'); await close(); return; }
         else throw Error('Unknown controller action');
         res.end(JSON.stringify(result));
@@ -206,7 +218,7 @@ export function control(directory, input) {
 export async function main() {
   process.umask(0o077);
   const { values, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries([
-    ...['origin', 'mode', 'output', 'release-root', 'access', 'adapter', 'model', 'seconds', 'input'].map(key => [key, { type: 'string' }]),
+    ...['origin', 'mode', 'output', 'release-root', 'access', 'adapter', 'observer-config', 'model', 'seconds', 'input'].map(key => [key, { type: 'string' }]),
     ['no-browser', { type: 'boolean' }], ['help', { type: 'boolean' }],
   ]) });
   const command = positionals[0];

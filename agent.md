@@ -57,8 +57,9 @@ created application's code by itself.
    Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
    page and signs in; explicit browser enrollment and assistant consent follow.
    Use the browser's retained-key pairing request and the same running native
-   owner. Its bounded helper pauses ordering and stages the exact signed
-   proposal before owner review. Preserve uncertain requests and their durable
+   owner. Its hibernating setup subscription receives later device requests
+   without idle polling. That owner pauses ordering and stages the exact signed
+   proposal before owner review. Optional MCP adapter failures leave it running. Preserve uncertain requests and their durable
    pause across restart; approve only the complete displayed proposal.
    Do the setup in the agent's
    supported runtime and preserve it so later invocations can resume.

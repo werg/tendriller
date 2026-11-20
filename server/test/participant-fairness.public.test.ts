@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { api, apiJson, create, inDO, type Handle } from './helpers';
+import { api, apiJson, create, inDO, req, ownerHeaders, type Handle } from './helpers';
 import { peerApi, peerApiJson, peerOwnerApi, participantMessage } from './peer-exchange';
 import { PEER_DIRECTORY_LIMITS, PEER_INVITATION_LIMITS, PEER_INVITATION_PROTOCOL, PEER_RELAY_LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
 import { authenticateAgentToken, type PagePrincipal } from '../src/access';
@@ -13,16 +13,28 @@ const advertisement = (peerId: string) => ({ peerId, storageId: `store:${peerId}
 
 it('named agent bindings and the human owner share discovery capacity while revocation stays narrow', async () => {
   const handle = await create(), one = await agent(handle, 'one'), two = await agent(handle, 'two'), three = await agent(handle, 'three');
-  for (let i = 0; i < PEER_DIRECTORY_LIMITS.peersPerPrincipal; i++)
-    expect((await peerApi(i % 2 ? one : two, 'discovery/advertise', { advertisement: advertisement(`shared-${i}`) })).status).toBe(200);
-  expect((await peerApi(three, 'discovery/advertise', { advertisement: advertisement('additional-token') })).status).toBe(429);
-  expect((await peerOwnerApi(handle, 'discovery/advertise', { advertisement: advertisement('same-human') })).status).toBe(429);
-  expect((await peerApi(one, 'discovery/withdraw', { peerId: 'shared-0' })).status).toBe(409);
-  expect((await api(handle, 'DELETE', 'tokens/one')).ok).toBe(true);
-  const remaining = (await peerApiJson(two, 'discovery/read')).peers;
-  expect(remaining).toHaveLength(PEER_DIRECTORY_LIMITS.peersPerPrincipal / 2);
-  expect(remaining.every((row: any) => Number(row.advertisement.peerId.split('-')[1]) % 2 === 0)).toBe(true);
-  expect((await peerApi(three, 'discovery/advertise', { advertisement: advertisement('new-after-revoke') })).status).toBe(200);
+  const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.discovery.v1' }, sockets: WebSocket[] = [];
+  const watch = async (h: Handle, id: string) => {
+    const response = await api(h, 'GET', 'peers/discovery/watch?peerId=' + id, undefined, headers);
+    if (response.status === 101) { response.webSocket!.accept(); sockets.push(response.webSocket!); }
+    return response;
+  };
+  try {
+    for (let i = 0; i < PEER_DIRECTORY_LIMITS.peersPerPrincipal; i++) {
+      expect((await watch(i % 2 ? one : two, `shared-${i}`)).status).toBe(101);
+      expect((await peerApi(i % 2 ? one : two, 'discovery/advertise', { advertisement: advertisement(`shared-${i}`) })).status).toBe(200);
+    }
+    expect((await watch(three, 'additional-token')).status).toBe(429);
+    expect((await req(handle.page_url + '_tendril/peers/discovery/watch?peerId=same-human',
+      { headers: { ...ownerHeaders(handle.page_url), ...headers } })).status).toBe(429);
+    expect((await peerApi(one, 'discovery/withdraw', { peerId: 'shared-0' })).status).toBe(409);
+    expect((await api(handle, 'DELETE', 'tokens/one')).ok).toBe(true);
+    const remaining = (await peerApiJson(two, 'discovery/read')).peers;
+    expect(remaining).toHaveLength(PEER_DIRECTORY_LIMITS.peersPerPrincipal / 2);
+    expect(remaining.every((row: any) => Number(row.advertisement.peerId.split('-')[1]) % 2 === 0)).toBe(true);
+    expect((await watch(three, 'new-after-revoke')).status).toBe(101);
+    expect((await peerApi(three, 'discovery/advertise', { advertisement: advertisement('new-after-revoke') })).status).toBe(200);
+  } finally { for (const socket of sockets) socket.close(); }
 });
 
 it('listener and relay quotas cannot be multiplied by additive credentials or credential rotation', async () => {
@@ -69,6 +81,7 @@ it('a saturated account retains no more than half the participant request slots'
       await expect(handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), c))
         .rejects.toMatchObject({ status: 429, code: 'peer_principal_busy' });
       const account = crypto.randomUUID(), sessionHash = crypto.randomUUID(), link = await t.createLink('guest', 'independent account', null);
+      await t.env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, Date.now(), account + '@example.test').run();
       t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', account, link.id, t.now());
       t.db.run('INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,?,?)', sessionHash, account, 'guest', t.now() + 86400_000);
       const guest: PagePrincipal = { kind: 'page', role: 'guest', name: account, accountId: account, linkId: link.id, sessionHash };

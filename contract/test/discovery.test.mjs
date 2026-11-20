@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPeersClient, validatePeerAdvertisement, PEER_DIRECTORY_LIMITS, createParticipantResponse } from '../peers.mjs';
+import { createPeersClient, validatePeerAdvertisement, PEER_DIRECTORY_LIMITS, createParticipantResponse, validatePeerAdvertisementPresence, validatePeerDirectory } from '../peers.mjs';
 const advertisement = () => ({ peerId: 'peer-a', storageId: 'device-a',
   routes: [{ kind: 'rendezvous', channel: 'introductions-a' }] });
 
@@ -17,21 +17,22 @@ test('discovery hints are bounded, copied, immutable, and contain no credential 
 
 test('directory SDK performs only explicit requests and validates server hints', async () => {
   const calls = [], ad = advertisement();
-  const lease = { advertisement: ad, expiresAt: 120000, refreshAfter: 60000 };
+  const presence = { advertisement: ad };
   const client = createPeersClient({ base: 'https://host.test/api', applicationId: 'ab'.repeat(32), request: async (path, options) => {
     calls.push({ path, options });
     const action = options.body.action;
-    return createParticipantResponse(options.body, action === 'advertise' ? lease : action === 'withdraw' ? { withdrawn: 'peer-a' } : { applicationId: 'ab'.repeat(32), peers: [lease] });
+    return createParticipantResponse(options.body, action === 'advertise' ? presence : action === 'withdraw' ? { withdrawn: 'peer-a' } : { applicationId: 'ab'.repeat(32), peers: [presence] });
   } });
   assert.equal(calls.length, 0);
-  assert.deepEqual(await client.advertise(ad), lease);
-  assert.deepEqual(calls[0].options.body.payload, { advertisement: ad, ttlMs: PEER_DIRECTORY_LIMITS.defaultTtlMs });
-  assert.deepEqual((await client.discover()).peers, [lease]);
+  assert.deepEqual(await client.advertise(ad), presence);
+  assert.deepEqual(calls[0].options.body.payload, { advertisement: ad });
+  assert.deepEqual((await client.discover()).peers, [presence]);
   await client.withdraw('peer-a');
   assert.deepEqual(calls.map(call => [call.path, call.options.body.facet, call.options.body.action]), [
     ['peers/participant', 'discovery', 'advertise'], ['peers/participant', 'discovery', 'read'], ['peers/participant', 'discovery', 'withdraw'],
   ]);
-  await assert.rejects(client.advertise(ad, { ttlMs: 1 }), { code: 'invalid_advertisement' });
+  assert.throws(() => validatePeerAdvertisementPresence({ ...presence, expiresAt: 120000, refreshAfter: 60000 }), { code: 'invalid_advertisement' });
+  assert.throws(() => validatePeerDirectory({ applicationId: 'app', peers: [{ ...presence, expiresAt: 1 }] }), { code: 'invalid_advertisement' });
   assert.equal(calls.length, 3);
 });
 

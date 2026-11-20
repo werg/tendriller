@@ -1,14 +1,13 @@
 /** Bounded routing hints. Nothing in this directory grants application authority. */
 export const PEER_DIRECTORY_LIMITS = Object.freeze({ peers: 64, peersPerPrincipal: 8, routes: 4,
-  defaultTtlMs: 120_000, minTtlMs: 30_000, maxTtlMs: 600_000, advertisementBytes: 16_384 });
+  advertisementBytes: 16_384 });
 export class PeerDiscoveryError extends Error {
-  constructor(code, message) { super(message); this.name = 'PeerDiscoveryError'; this.code = code; }
+  constructor(code, message) { super(message); this.name = 'PeerDiscoveryError'; this.code = code; this.retryable = false; }
 }
 const invalid = message => { throw new PeerDiscoveryError('invalid_advertisement', message); };
 const object = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const exact = (value, fields) => object(value) && Object.keys(value).every(key => fields.includes(key));
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(value);
-const natural = value => Number.isSafeInteger(value) && value >= 0;
 export function validatePeerId(value) {
   if (!identifier(value)) invalid('Expected a bounded peer identity');
   return value;
@@ -36,20 +35,14 @@ export function validatePeerAdvertisement(value) {
   if (new Set(routes.map(route => JSON.stringify(route))).size !== routes.length) invalid('Peer routes must be distinct');
   return Object.freeze({ peerId: value.peerId, storageId: value.storageId, routes: Object.freeze(routes) });
 }
-export function validatePeerTtl(value = PEER_DIRECTORY_LIMITS.defaultTtlMs) {
-  if (!Number.isSafeInteger(value) || value < PEER_DIRECTORY_LIMITS.minTtlMs || value > PEER_DIRECTORY_LIMITS.maxTtlMs)
-    invalid('Peer advertisement lifetime is outside the supported range');
-  return value;
-}
-export function validatePeerAdvertisementLease(value) {
-  if (!exact(value, ['advertisement', 'expiresAt', 'refreshAfter']) || !natural(value.expiresAt) ||
-      !natural(value.refreshAfter) || value.refreshAfter >= value.expiresAt) invalid('Invalid advertisement lease');
-  return Object.freeze({ advertisement: validatePeerAdvertisement(value.advertisement), expiresAt: value.expiresAt, refreshAfter: value.refreshAfter });
+export function validatePeerAdvertisementPresence(value) {
+  if (!exact(value, ['advertisement'])) invalid('Invalid advertisement presence');
+  return Object.freeze({ advertisement: validatePeerAdvertisement(value.advertisement) });
 }
 export function validatePeerDirectory(value) {
   if (!exact(value, ['applicationId', 'peers']) || !identifier(value.applicationId) || !Array.isArray(value.peers) ||
       value.peers.length > PEER_DIRECTORY_LIMITS.peers) invalid('Invalid peer directory');
-  const peers = value.peers.map(validatePeerAdvertisementLease);
+  const peers = value.peers.map(validatePeerAdvertisementPresence);
   if (new Set(peers.map(peer => peer.advertisement.peerId)).size !== peers.length) invalid('Duplicate directory peer');
   return Object.freeze({ applicationId: value.applicationId, peers: Object.freeze(peers) });
 }

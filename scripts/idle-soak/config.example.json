@@ -1,0 +1,25 @@
+{
+  "hours": 48,
+  "expectedNoteCount": 0,
+  "isolated": true,
+  "account": "REPLACE_32_HEX_ACCOUNT",
+  "worker": "tendriller-idle-soak-UNIQUE",
+  "namespaces": ["REPLACE_TENDRIL_NAMESPACE_32_HEX", "REPLACE_ADMISSION_NAMESPACE_32_HEX"],
+  "pageUrl": "https://DEDICATED-STAGING-ORIGIN/t/REPLACE",
+  "provenance": {
+    "sourceCommit": "REPLACE_DEPLOYED_40_HEX_COMMIT",
+    "compositionId": "REPLACE_DEPLOYED_64_HEX_COMPOSITION",
+    "schema": "REPLACE_DEPLOYED_SCHEMA",
+    "environment": "isolated-staging",
+    "transport": "REPLACE_DIRECT_OR_RELAY"
+  },
+  "native": {
+    "argv": ["/ABSOLUTE/PATH/TO/node", "/ABSOLUTE/QUALIFIED/CHECKOUT/scripts/idle-soak/native-bootstrap.mjs"],
+    "cwd": "/PRIVATE/synthetic-starter"
+  },
+  "browserProfile": "/PRIVATE/idle-soak/browser-profile",
+  "adapter": "/PRIVATE/idle-soak/adapter.mjs",
+  "wrangler": "/ABSOLUTE/QUALIFIED/CHECKOUT/node_modules/wrangler/bin/wrangler.js",
+  "metricsLagMs": 900000,
+  "headless": false
+}

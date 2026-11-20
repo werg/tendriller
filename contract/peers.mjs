@@ -1,4 +1,6 @@
-import { validatePeerAdvertisement, validatePeerAdvertisementLease, validatePeerDirectory, validatePeerId, validatePeerTtl } from './discovery.mjs';
+import { createPeerDiscoveryWatcher, validatePeerDiscoveryWatchOptions, PeerDiscoveryWatchError, PEER_DISCOVERY_PROTOCOL } from './discovery-watch.mjs';
+export * from './discovery-watch.mjs';
+import { validatePeerAdvertisement, validatePeerAdvertisementPresence, validatePeerDirectory, validatePeerId } from './discovery.mjs';
 export * from './discovery.mjs';
 import { createPeerControlsClient } from './peer-controls.mjs';
 export { createPeerControlsClient } from './peer-controls.mjs';
@@ -13,7 +15,8 @@ const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
   constructor(code, message) { super(message); this.name = 'PeerConnectionError'; this.code = code; }
 }
-const fail = (code, message) => { throw new PeerConnectionError(code, message); };
+const fail = (code, message) => { throw code === 'invalid_discovery_watch'
+  ? new PeerDiscoveryWatchError(code, message) : new PeerConnectionError(code, message); };
 export function validatePeerBootstrap(value) {
   if (!value || value.version !== 2 || !Array.isArray(value.endpoints) || value.endpoints.length > MAX_BOOTSTRAP_ENDPOINTS ||
       Object.keys(value).some(key => !['version', 'endpoints'].includes(key))) fail('invalid_bootstrap', 'Expected a bounded version 2 introduction endpoint list');
@@ -149,13 +152,27 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
     async discover(options = {}) { return validatePeerDirectory(await participant.request('discovery', 'read', {}, options)); },
     async advertise(value, options = {}) {
-      return validatePeerAdvertisementLease(await participant.request('discovery', 'advertise',
-        { advertisement: validatePeerAdvertisement(value), ttlMs: validatePeerTtl(options.ttlMs) }, options));
+      return validatePeerAdvertisementPresence(await participant.request('discovery', 'advertise',
+        { advertisement: validatePeerAdvertisement(value) }, options));
     },
     async withdraw(peerId, options = {}) {
       peerId = validatePeerId(peerId);
       const result = await participant.request('discovery', 'withdraw', { peerId }, options);
       if (!result || result.withdrawn !== peerId) fail('invalid_response', 'Invalid withdrawal response');
+    },
+    watchDiscovery(peerId, options = {}) {
+      if (typeof peerId !== 'string' || !/^[0-9a-f]{64}$/.test(peerId)) fail('invalid_discovery_watch', 'Discovery requires a signing peer identity');
+      validatePeerDiscoveryWatchOptions(options);
+      if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+      let url;
+      try { url = socketUrl('peers/discovery/watch', 'invalid_discovery_watch'); }
+      catch { fail('invalid_discovery_watch', 'Discovery requires a secure service URL without credentials'); }
+      url.searchParams.set('peerId', peerId);
+      const watchProtocols = [PEER_DISCOVERY_PROTOCOL, ...protocols.filter(value =>
+        ![PEER_DISCOVERY_PROTOCOL, PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL].includes(value))];
+      return createPeerDiscoveryWatcher(() => (options.socket || socket)(url.href, watchProtocols), { ...options,
+        probeAccess: options.probeAccess ?? (({ signal }) => request('self', { signal })),
+      });
     },
     listenInvitations(peerId, options = {}) {
       peerId = validatePeerId(peerId);

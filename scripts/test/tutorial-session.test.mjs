@@ -64,6 +64,12 @@ const peers = {
   },
   discover: async () => ({ peers: [] }), advertise: async () => {}, withdraw: async () => {},
   invite: unused, rendezvous: unused, relay: unused,
+  watchDiscovery(_identity, { signal }) {
+    const ended = Promise.withResolvers();
+    const close = () => { signal.removeEventListener('abort', close); ended.resolve(); };
+    if (signal.aborted) close(); else signal.addEventListener('abort', close, { once: true });
+    return { ready: Promise.resolve(), close, notifications: { async *[Symbol.asyncIterator]() { yield {type:'ready'}; await ended.promise; } } };
+  },
   listenInvitations(_identity, { signal }) {
     const ended = Promise.withResolvers();
     const close = () => { signal.removeEventListener('abort', close); ended.resolve(); };

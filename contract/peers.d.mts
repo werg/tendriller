@@ -37,9 +37,11 @@ export interface PeersClient extends PeerControlsClient {
   setBootstrap(hints: PeerBootstrap): Promise<PeerBootstrap>;
   /** Explicit lookup on join/reconnect. No background polling is installed. */
   discover(options?: { readonly signal?: AbortSignal }): Promise<PeerDirectory>;
-  /** Coalesced availability hints. Peer authentication and authority are verified independently. */
-  advertise(advertisement: PeerAdvertisement, options?: { readonly ttlMs?: number; readonly signal?: AbortSignal }): Promise<PeerAdvertisementLease>;
+  /** Socket-bound availability hints. Peer authentication and authority are verified independently. */
+  advertise(advertisement: PeerAdvertisement, options?: { readonly signal?: AbortSignal }): Promise<PeerAdvertisementPresence>;
   withdraw(peerId: string, options?: { readonly signal?: AbortSignal }): Promise<void>;
+  /** Receive ready on each watch connection, then directory-change invalidations. No idle polling. */
+  watchDiscovery(peerId: string, options?: PeerDiscoveryWatchOptions): PeerDiscoveryWatcher;
   /** Hibernatable connection invitations; no heartbeat or application traffic. */
   listenInvitations(peerId: string, options?: PeerInvitationOptions): PeerInvitationListener;
   /** On-demand late-join/reconnect hint. Peer authentication remains independent. */
@@ -60,7 +62,7 @@ export declare function createPeersClient(options: {
   readonly protocols?: readonly string[];
   readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
 }): PeersClient;
-import type { PeerAdvertisement, PeerAdvertisementLease, PeerDirectory } from './discovery.mjs';
+import type { PeerAdvertisement, PeerAdvertisementPresence, PeerDirectory } from './discovery.mjs';
 export * from './discovery.mjs';
 import type { PeerControlsClient } from './peer-controls.mjs';
 export * from './peer-controls.mjs';
@@ -71,3 +73,6 @@ import type { PeerRelay, PeerRelayOptions } from './relay.mjs';
 export * from './relay.mjs';
 
 export { createPeerIntroductions } from './introductions.mjs';
+
+import type { PeerDiscoveryWatchOptions, PeerDiscoveryWatcher } from './discovery-watch.mjs';
+export * from './discovery-watch.mjs';

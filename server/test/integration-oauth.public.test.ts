@@ -603,7 +603,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
   await inDO(b.page.id, t => { Object.assign(t.env, settings); });
   const oauth = (await oauthConfig(bind))!, adapters: AssistantParticipant[] = [], sessions: { close(): Promise<void> }[] = [];
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
-    rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
+    rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, discoveryUpgrades: 0, discoverySentBytes: 0, discoveryReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
     relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
   const checkStatus = async (pending: Promise<Response>, status: number) => {
     const response = await pending, body = await response.text();

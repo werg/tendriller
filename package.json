@@ -38,7 +38,10 @@
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "test:collaboration:native": "node --test collaboration/test/native*.test.mjs",
     "test:collaboration:browser": "node scripts/test-collaboration-browser.mjs",
-    "test:plugin:live": "node scripts/review/qualify-live.mjs"
+    "test:plugin:live": "node scripts/review/qualify-live.mjs",
+    "test:agent:acceptance": "node scripts/agent-acceptance/cli.mjs",
+    "test:idle:soak": "node scripts/idle-soak/run.mjs",
+    "test:idle:metrics": "node scripts/idle-soak/metrics.mjs"
   },
   "devDependencies": {
     "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-d625546c.tgz",

@@ -24,11 +24,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: core
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
           ref: 15573014f4536369d7bd2f8a4b894a0d9fb69812
           path: chronolog
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24

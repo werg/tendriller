@@ -7,13 +7,12 @@ export interface PeerAdvertisement {
   readonly storageId: string;
   readonly routes: readonly PeerRoute[];
 }
-export interface PeerAdvertisementLease { readonly advertisement: PeerAdvertisement; readonly expiresAt: number; readonly refreshAfter: number }
-export interface PeerDirectory { readonly applicationId: string; readonly peers: readonly PeerAdvertisementLease[] }
-export declare const PEER_DIRECTORY_LIMITS: Readonly<{ peers: number; peersPerPrincipal: number; routes: number; defaultTtlMs: number; minTtlMs: number; maxTtlMs: number; advertisementBytes: number }>;
-export declare class PeerDiscoveryError extends Error { readonly code: string; constructor(code: string, message: string) }
+export interface PeerAdvertisementPresence { readonly advertisement: PeerAdvertisement }
+export interface PeerDirectory { readonly applicationId: string; readonly peers: readonly PeerAdvertisementPresence[] }
+export declare const PEER_DIRECTORY_LIMITS: Readonly<{ peers: number; peersPerPrincipal: number; routes: number; advertisementBytes: number }>;
+export declare class PeerDiscoveryError extends Error { readonly code: string; readonly retryable: false; constructor(code: string, message: string) }
 export declare function validatePeerId(value: unknown): string;
 export declare function validatePeerRoute(value: unknown): PeerRoute;
 export declare function validatePeerAdvertisement(value: unknown): PeerAdvertisement;
-export declare function validatePeerTtl(value?: unknown): number;
-export declare function validatePeerAdvertisementLease(value: unknown): PeerAdvertisementLease;
+export declare function validatePeerAdvertisementPresence(value: unknown): PeerAdvertisementPresence;
 export declare function validatePeerDirectory(value: unknown): PeerDirectory;

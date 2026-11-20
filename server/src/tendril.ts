@@ -1,3 +1,4 @@
+import { isDiscoverySocket, closeDiscoverySocket } from './discovery';
 import { isSetupWatch, notifySetupChanged } from './setup-watch';
 import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
@@ -224,6 +225,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isDiscoverySocket(ws)) { ws.close(1008, 'Discovery watch is receive-only'); return; }
     if (isSetupWatch(ws)) { ws.close(1008, 'Setup watch is receive-only'); return; }
     if (isPublicationWatch(ws)) { ws.close(1008, "Publication watch is receive-only"); return; }
     if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
@@ -238,12 +240,14 @@ export class Tendril extends DurableObject<Env> {
     ws.close(1008, "Unsupported participant transport");
   }
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    if (isDiscoverySocket(ws)) closeDiscoverySocket(this, ws);
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch {}
     if (isPeerSocket(ws)) closePeer(this, ws);
     if (isRelaySocket(ws)) closeRelay(this, ws);
     if (isAssistantAdapter(ws)) closeAssistantAdapter(this, ws);
   }
   async webSocketError(ws: WebSocket): Promise<void> {
+    if (isDiscoverySocket(ws)) { closeDiscoverySocket(this, ws); try { ws.close(1011); } catch {} return; }
     if (isRelaySocket(ws)) { closeRelay(this, ws); return; }
     if (isAssistantAdapter(ws)) { closeAssistantAdapter(this, ws); try { ws.close(1011); } catch {} return; }
     if (isPeerSocket(ws)) closePeer(this, ws);
