@@ -384,20 +384,20 @@ login or a ChatGPT link. The script also accepts `--engine-archive` and `--repor
 for a selected public package and explicit report destination.
 
 Without `CHRONOLOG_SESSION_PACKAGE`, real native cases report explicit skips.
-Build the pinned public events artifact and extract its archive to enable them:
+Use the exact clean public events archive pinned by this core checkout. It is
+already retained under `test/artifacts`; no second source checkout is needed:
 
 ```sh
-git clone https://github.com/werg/chronolog-db.git chronolog-source
-git -C chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
-cd chronolog-source
-corepack pnpm install --frozen-lockfile --ignore-scripts
-node tools/package-peer-session.mjs
-mkdir -p /absolute/private/native-test-package
-tar -xzf artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz \
-  -C /absolute/private/native-test-package --strip-components=1
 cd /absolute/path/to/tendriller
+session_archive=$(node -p "require('./package.json').devDependencies['@chronolog/peer-session'].slice(5)")
+mkdir -p /absolute/private/native-test-package
+tar -xzf "$session_archive" \
+  -C /absolute/private/native-test-package --strip-components=1
 CHRONOLOG_SESSION_PACKAGE=/absolute/private/native-test-package npm run test:chatgpt
 ```
+
+Keep `provenance.json` with that package and record its full source, clean status
+and archive hash for the run. Do not substitute a similarly named old archive.
 
 The [ChatGPT integration workflow](../../.github/workflows/chatgpt-integration.yml)
 uses Node 24 and the [release builder](deploy/README.md) to build clean exact
@@ -407,10 +407,7 @@ exercise the packed host/account flow, and check runtime imports. Its
 public packages, bridge template, deployment tools, hash manifest and host
 qualification report. `chatgpt-integration-qualification` retains the build and
 test logs. Installation and private configuration remain explicit operator
-steps; no generated private credentials enter either artifact. The reference local
-artifact built from that source had SHA-256
-`673a6ecdf6c6741721efbb250f711f3acf7fa9784624ad5bcbf6596e5a00996c`;
-record each actual build's hash instead of identifying tested bytes only by a
+steps; no generated private credentials enter either artifact. Record each actual build's hash instead of identifying tested bytes only by a
 branch name. No production credentials or remote deployment are used by this gate.
 
 | Check | Evidence | Explicit remaining boundary |
