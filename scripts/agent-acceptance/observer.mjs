@@ -5,6 +5,7 @@ import { importReviewPackages } from '../review/packages.mjs';
 import { nativeMeasurement } from './observer-native.mjs';
 import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress, relayTransportMeasurement } from './observer-data.mjs';
 import { hash, now, checks } from './evidence.mjs';
+import { mcpDiscovery } from './discovery.mjs';
 
 function token(text, value) {
   return text.split(/[^A-Za-z0-9_.:-]+/u).includes(value);
@@ -315,6 +316,15 @@ export class StarterObserver {
       const file = join(this.runDirectory, 'observable.jsonl');
       if (!existsSync(file)) throw new MeasurementError('model-discovery-trace');
       const items = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const reportPath = join(this.runDirectory, 'report.json');
+      const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : {};
+      if (report.mode === 'mcp') {
+        same(report.mcp?.origin, config.origin, 'mcp-discovery-configured-origin');
+        const catalogs = readFileSync(join(this.runDirectory, 'catalog.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+        const deployment = need(report.deployment, 'mcp-discovery-deployment');
+        return mcpDiscovery(items, { origin: config.origin, build: { coreRelease: deployment.sdkVersion, sourceCommit: deployment.sourceRevision,
+          runtimeId: deployment.runtimeId, compositionId: deployment.compositionId }, catalog: catalogs[0]?.status });
+      }
       const successful = items.filter(i => i.type === 'commandExecution' && i.exitCode === 0 && typeof i.command === 'string');
       const paths = ['/api/service', '/.well-known/tendriller.json', '/api/readiness', '/docs/BUILD_AN_APP.md'];
       const reads = paths.map(path => need(successful.find(i => i.command.includes(config.origin + path)), 'model-read-' + path));
