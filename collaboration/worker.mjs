@@ -17,9 +17,28 @@ function rootLimits(value = {}) {
 }
 
 /** One public owner composition for SharedWorker and the Web-Lock-elected fallback. */
+/** Chromium discards the files of origin-private storage (OPFS) that nothing has
+ * touched for roughly ten minutes in an off-the-record profile (private windows,
+ * test browsers), even while the owner holds them open. A healthy session may not
+ * read its record store for that long, and the next open then fails closed with
+ * APPLICATION_DATA_STORAGE_MISSING. While a session is open, list its record
+ * directories periodically (names only; no reads or writes of records). */
+export function keepStorageInUse(signal, intervalMs = 60_000) {
+  if (!intervalMs || typeof navigator === 'undefined' || typeof navigator.storage?.getDirectory !== 'function') return;
+  const touch = async () => {
+    const root = await navigator.storage.getDirectory();
+    for await (const [name, handle] of root.entries()) {
+      if (handle.kind !== 'directory' || !name.startsWith('chronolog-')) continue;
+      for await (const _key of handle.keys()) { /* listing is the access */ }
+    }
+  };
+  const timer = setInterval(() => { void touch().catch(() => {}); }, intervalMs);
+  signal.addEventListener('abort', () => clearInterval(timer), { once: true });
+}
+
 export function serveBrowserOwner(options) {
   const scope = options.scope ?? globalThis, lifetime = new AbortController(), roots = new Map(), identities = new Set();
-  let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
+  let profileId, openSession, createIdentity, ownerOptions, storageKeepAliveMs, limits = defaults;
   let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, retireTimer, closing, scopeRoot, sessionAborted;
   const post = (endpoint, value) => { try { endpoint.postMessage(value); } catch { /* The remote page may have gone away. */ } };
   const failure = (record, id, error) => post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', id,
@@ -50,7 +69,8 @@ export function serveBrowserOwner(options) {
   // Register root listeners synchronously; first Worker events can arrive while
   // configuration awaits network or storage. Pending roots are bounded too.
   const configured = Promise.resolve().then(() => typeof options.load === 'function' ? options.load({ signal: lifetime.signal }) : options).then(value => {
-    ({ profileId, openSession, createIdentity, ownerOptions = {} } = value);
+    ({ profileId, openSession, createIdentity, ownerOptions = {}, storageKeepAliveMs = 60_000 } = value);
+    if (!Number.isSafeInteger(storageKeepAliveMs) || storageKeepAliveMs < 0) throw Error('OWNER_CONFIGURATION_INVALID');
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(profileId) || typeof openSession !== 'function') throw Error('OWNER_CONFIGURATION_INVALID');
     limits = rootLimits(value.rootLimits);
     let count = 0;
@@ -69,6 +89,7 @@ export function serveBrowserOwner(options) {
         owner = createApplicationOwner(owned.session, { ...ownerOptions, host: owned.control,
           prepareCommand: (endpoint, name, input) => prepareCollaborationCommand(endpoint, name, input, owned.session.deviceId) });
         sessionAborted = () => { void close().catch(() => {}); };
+        keepStorageInUse(owned.session.signal, storageKeepAliveMs);
         owned.session.signal.addEventListener('abort', sessionAborted, { once: true });
         if (owned.session.signal.aborted) sessionAborted();
         return owner;
