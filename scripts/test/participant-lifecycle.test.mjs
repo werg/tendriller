@@ -64,3 +64,14 @@ test('notifications arriving during reconciliation coalesce without concurrent s
   f.notice(approved()); f.notice(approved()); f.notice(approved()); gate.resolve(); await flush();
   assert.equal(max, 1); assert.equal(calls, 2); await f.lifecycle.close();
 });
+
+
+test('commit reconciles its retained ordering pause immediately without another notice', async () => {
+  let paused = true, calls = 0;
+  const f = fixture({ owned: { session: { signal: new AbortController().signal, orderingPause: async () => paused },
+    processPairings: async () => { calls++; if (calls === 1) return [{ state: 'committed' }]; paused = false; return [{ state: 'verified' }]; }
+  } });
+  f.notice(approved()); await flush(); await flush();
+  assert.equal(calls, 2); assert.equal(paused, false);
+  await f.lifecycle.close();
+});

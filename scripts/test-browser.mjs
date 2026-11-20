@@ -16,6 +16,11 @@ for (const [config, ...files] of suites) {
   });
   if (code) failed.push(config);
 }
+const starterCode = await new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, ['--test', 'scripts/test/browser/starter-submission.test.mjs'], { stdio: 'inherit' });
+  child.once('error', reject); child.once('exit', code => resolve(code ?? 1));
+});
+if (starterCode) failed.push('starter submission lifecycle');
 if (failed.length) {
   console.error(`Browser suites requiring attention: ${failed.join(", ")}`);
   process.exitCode = 1;
