@@ -5,10 +5,23 @@ let mock: MockServer;
 test.beforeAll(async () => { mock = new MockServer(); await mock.start(); });
 test.afterAll(async () => { await mock.stop(); });
 async function open(page: Page, fixture: MockTendril) {
+  await mock.prepareBrowser(page, fixture);
   await page.goto(mock.url(fixture));
-  await page.waitForFunction(() => !!window.tendril);
+  await page.waitForFunction(() => !!window.tendril && (window as any).__fixtureTransport.sockets[0]?.received.length === 1);
 }
-test('the sole runtime is quiet and exposes explicit application and live bindings', async ({ page }) => {
+async function expectOnlyHealthyPublicationWatch(page: Page, fixture: MockTendril) {
+  const endpoint = new URL('_tendril/publication-ready', mock.url(fixture)); endpoint.protocol = 'ws:';
+  expect(await page.evaluate(() => (window as any).__fixtureTransport.sockets)).toEqual([{
+    url: endpoint.href, protocols: ['tendriller.publication.v1'],
+    received: [JSON.stringify({ type: 'publication', version: 1, current: fixture.version })], sent: [],
+  }]);
+  // The exact single socket above excludes every application/peer/data transport.
+  // Any socket that escaped interception would also reach this upgrade counter.
+  expect(mock.upgrades).toBe(0);
+  expect(mock.requests.filter(path => path.startsWith(mock.base(fixture)) && path.includes('_tendril/') && !path.includes('/runtime/'))).toEqual([]);
+}
+test('the sole runtime has only a healthy publication watch and exposes explicit application and live bindings', async ({ page }) => {
+  await page.clock.install();
   const fixture = mock.create();
   await open(page, fixture);
   expect(await page.evaluate(() => ({
@@ -20,8 +33,8 @@ test('the sole runtime is quiet and exposes explicit application and live bindin
     legacyState: 'state' in window.tendril,
     storage: Object.keys(localStorage),
   }))).toEqual({ application: false, signals: false, host: ['peers', 'request'], device: false, profile: false, legacyState: false, storage: [] });
-  expect(mock.upgrades).toBe(0);
-  expect(mock.requests.filter(path => path.startsWith(mock.base(fixture)) && path.includes('_tendril/') && !path.includes('/runtime/'))).toEqual([]);
+  await page.clock.fastForward(48 * 3600_000);
+  await expectOnlyHealthyPublicationWatch(page, fixture);
   await page.evaluate(() => window.tendril.ready());
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
   await expect(page.getByRole('link', { name: 'Manage page' })).toBeVisible();
@@ -30,7 +43,8 @@ test('the sole runtime is quiet and exposes explicit application and live bindin
   expect(mock.requests.filter(path => path === mock.base(fixture) + '_tendril/info')).toHaveLength(1);
 });
 
-test('application installation binds one identity without starting host transport', async ({ page }) => {
+test('application installation adds no transport to the healthy publication watch', async ({ page }) => {
+  await page.clock.install();
   const fixture = mock.create(); await open(page, fixture);
   const result = await page.evaluate(async () => {
     const application = { id: window.__TENDRIL__.application.id, capabilities: ['events'],
@@ -44,7 +58,8 @@ test('application installation binds one identity without starting host transpor
     return { same: installed === application, available: window.tendril.application.available, repeated };
   });
   expect(result).toEqual({ same: true, available: true, repeated: 'backend_already_selected' });
-  expect(mock.upgrades).toBe(0);
+  await page.clock.fastForward(48 * 3600_000);
+  await expectOnlyHealthyPublicationWatch(page, fixture);
 });
 
 test('publications retain distinct code graphs across two tabs and offline reload', async ({ page, context }) => {
