@@ -45,7 +45,8 @@ await registry.select(await p.signTransitionRequest({ applicationId: descriptor.
   coordinator: device.identity.publicKey, requester: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, device.identity));
 const initial = await openNativeApplication({ device, definition, authority: await registry.read(), epochKeys: new Map([[0, key]]) });
 try { await initial.query('notes', null); } finally { await initial.close(); }
-const records = new Map([['descriptor.json', descriptor], ['handle.json', { application: { id: descriptor.payload.applicationId } }]]);
+const records = new Map([['descriptor.json', descriptor], ['handle.json', { application: { id: descriptor.payload.applicationId },
+  api: 'https://tendriller.test/api/tendrils/aaaaaaaaaaaa', page_url: 'https://aaaaaaaaaaaa.pages.test/s/test/', token: 'synthetic-test-token' }]]);
 export const readPrivate = async name => structuredClone(records.get(name) ?? null);
 export const savePrivate = async (name, value) => { records.set(name, structuredClone(value)); return value; };
 const unused = () => { throw Error('The isolated fixture has no remote peers'); };

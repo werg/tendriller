@@ -1,38 +1,37 @@
-// A short-lived, fenced device owner signs the account-bound challenge. The page
-// receives public status only; the signing key stays in retained Worker storage.
-import { acquireApplicationOwnerLock, openBrowserDevice } from '@chronolog/peer-session/worker';
+// Only this fenced Worker opens the browser signer for a pairing proof.
+import { openBrowserDevice, acquireApplicationOwnerLock } from '@chronolog/peer-session/worker';
 import { createDevicePairingClient, signDevicePairingChallenge } from '@tendriller/core/pairing';
+import { checkBrowserPairing } from './pairing-browser.mjs';
 
-self.onmessage = async ({ data }) => {
-  self.onmessage = null;
-  let lock, device, reply;
+let handling = false;
+self.addEventListener('message', async ({ data }) => {
+  if (handling || data?.protocol !== 'tendriller-tutorial-pairing-v1') return;
+  handling = true;
+  let device, lock, status, failure;
   try {
-    if (data?.action !== 'prove' || typeof data.requestId !== 'string' || !/^[a-f0-9]{64}$/.test(data.publicKey))
-      throw Error('A retained public pairing request is required.');
-    const signal = AbortSignal.timeout(25_000);
+    const signal = AbortSignal.timeout(30000);
     const response = await fetch(new URL('./configuration.json', import.meta.url), { signal, cache: 'no-store', redirect: 'error' });
-    if (!response.ok) throw Error('Application configuration is unavailable.');
-    const configuration = await response.json();
-    if (new URL(configuration.page_url).origin !== self.location.origin)
-      throw Error('Pair this device from its own signed application page.');
-    lock = await acquireApplicationOwnerLock(`tendriller-notes-${configuration.applicationId}`, { signal });
-    device = await openBrowserDevice({ name: lock.profileId });
-    if (device.identity.publicKey !== data.publicKey) throw Error('Reopen the retained browser device for this pairing request.');
+    if (!response.ok) throw Error('The signed application configuration is unavailable.');
+    const configuration = await response.json(), profileId = `tendriller-notes-${configuration.applicationId}`;
+    if (data.profileId !== profileId || typeof data.requestId !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(data.requestId) ||
+        new URL(configuration.page_url).origin !== self.location.origin) throw Error('Pairing must use the retained profile on its signed page origin.');
+    lock = await acquireApplicationOwnerLock(profileId, { signal });
+    device = await openBrowserDevice({ name: profileId, create: data.publicKey === undefined });
+    if (data.publicKey && data.publicKey !== device.identity.publicKey) throw Error('The retained browser key changed. Preserve this request and recover the original profile.');
     const client = createDevicePairingClient({ url: new URL('_tendril/peers/pairing', configuration.page_url) });
-    let status = await client.challenge({ requestId: data.requestId, publicKey: data.publicKey,
-      rights: { reader: true, writer: true } }, { signal });
-    if (status.challenge.applicationId !== configuration.applicationId || status.challenge.serviceOrigin !== configuration.serviceOrigin)
-      throw Error('The pairing challenge belongs to another service or application.');
+    const retained = { requestId: data.requestId, publicKey: device.identity.publicKey };
+    status = checkBrowserPairing(await client.challenge({ requestId: data.requestId, publicKey: device.identity.publicKey,
+      rights: { reader: true, writer: true } }, { signal }), configuration, retained);
+    retained.challenge = status.challenge;
     if (status.state === 'challenge') {
       const signature = await signDevicePairingChallenge(status.challenge, device.identity);
-      status = await client.prove(status.pairingId, signature, { signal });
+      status = checkBrowserPairing(await client.prove(status.pairingId, signature, { signal }), configuration, retained);
     }
-    reply = { ok: true, status };
-  } catch (error) {
-    reply = { ok: false, code: error.code || error.name, message: error.message };
-  } finally {
-    try { try { await device?.close(); } finally { await lock?.close(); } }
-    catch { reply = { ok: false, code: 'pairing_cleanup_failed', message: 'The pairing owner could not close cleanly. Preserve this device and inspect the same request after reloading.' }; }
+  } catch (error) { failure = { code: error.code || error.name, message: error.message || 'Pairing could not be completed. Resume the retained request.' }; }
+  finally {
+    try { await device?.close(); } catch { failure ??= { code: 'PAIRING_DEVICE_CLOSE', message: 'The browser device did not close cleanly. Preserve this profile and request.' }; }
+    try { await lock?.close(); } catch { failure ??= { code: 'PAIRING_LOCK_CLOSE', message: 'The browser owner fence did not release. Retry this same profile after it closes.' }; }
+    // The page terminates this Worker only after all owned resources released.
+    self.postMessage({ protocol: 'tendriller-tutorial-pairing-v1', id: data.id, ...(failure ? { error: failure } : { status }) });
   }
-  self.postMessage(reply);
-};
+});
