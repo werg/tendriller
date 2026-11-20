@@ -57,16 +57,18 @@ function runtime({events=false, failConnect=false}={}) {
   const stop=new AbortController(), calls=[], reports=[], closed=Promise.withResolvers(), watchClosed=Promise.withResolvers();
   const session={applicationId:'a'.repeat(64),signal:stop.signal};
   const dependencies={
-    prepare:async options=>{assert.equal(options.events,events);return {options:{api:'https://staging.example/api/t/aaaaaaaaaaaa',token:'private'},review:{proposed:'a'.repeat(64),reviewUrl:'https://staging.example/review'}};},
-    open:async()=>({session,close:async()=>{calls.push('owner_closed');}}),
+    prepare:async options=>{calls.push('prepare');assert.equal(options.events,events);return {options:{api:'https://staging.example/api/t/aaaaaaaaaaaa',token:'private'},review:{proposed:'a'.repeat(64),reviewUrl:'https://staging.example/review'}};},
     tools:()=>({}),
-    watch({onChange}){queueMicrotask(()=>onChange({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'consent'}}));
+    watch({onChange}){calls.push('watch');queueMicrotask(()=>onChange({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'consent'}}));
       return {closed:watchClosed.promise,close(){watchClosed.resolve();calls.push('watch_closed');}};},
     connect(){if(failConnect)throw Object.assign(Error('unavailable'),{code:'APPROVAL_UNAVAILABLE'});
       return {closed:closed.promise,waitUntilOnline:async()=>{calls.push('online');},close(){calls.push('adapter_closed');closed.resolve();}};},
     forward:async()=>{calls.push('events_forwarded');},report:value=>reports.push(value),
   };
-  return {stop,calls,reports,closed,dependencies};
+  const watch = dependencies.watch;
+  dependencies.open = async () => {calls.push('open'); return {session, processPairings:async()=>{calls.push('pairings');return [];},watchSetup:watch,close:async()=>{calls.push('owner_closed');}};};
+  delete dependencies.watch;
+  return {stop,calls,reports,closed,watchClosed,dependencies};
 }
 test('optional adapter exit preserves the owner until the process is explicitly stopped',async t=>{
   const {module}=await fixture(t),f=runtime();let ended=false;
@@ -87,4 +89,42 @@ test('optional event forwarding cannot turn finite history iteration into applic
   const run=module.runAssistant({signal:f.stop.signal,events:true},f.dependencies);await flush();await flush();
   assert(f.calls.includes('events_forwarded'));assert(!f.calls.includes('owner_closed'));
   f.stop.abort();await run;assert(f.calls.includes('owner_closed'));
+});
+
+
+test('native owner and setup pairing run before a stalled proposal, then use its late proposal ID', async t => {
+  const {module} = await fixture(t), f = runtime(), gate = Promise.withResolvers();
+  const prepare = f.dependencies.prepare;
+  f.dependencies.prepare = async options => { f.calls.push('preparing'); await gate.promise; return prepare(options); };
+  const run = module.runAssistant({signal:f.stop.signal}, f.dependencies);
+  await flush(); await flush();
+  assert.deepEqual(f.calls.slice(0, 2), ['open', 'watch']);
+  assert(f.calls.includes('pairings')); assert(!f.calls.includes('online'));
+  assert(f.reports.some(x => x.state === 'participant_running' && x.processLifetime.includes('Until this process')));
+  gate.resolve(); await flush(); await flush();
+  assert(f.calls.includes('online')); assert(!f.calls.includes('owner_closed'));
+  f.stop.abort(); await run;
+});
+
+test('proposal errors leave native pairing live and abort fences late preparation completion', async t => {
+  const {module} = await fixture(t), f = runtime();
+  f.dependencies.prepare = async () => { throw Object.assign(Error('private diagnostic'), {code:'NETWORK_UNAVAILABLE'}); };
+  const run = module.runAssistant({signal:f.stop.signal}, f.dependencies);
+  await flush(); await flush();
+  assert(f.calls.includes('pairings')); assert(!f.calls.includes('owner_closed'));
+  assert(f.reports.some(x => x.state === 'assistant_preparation_failed' && x.code === 'NETWORK_UNAVAILABLE'));
+  assert(f.reports.some(x => x.state === 'assistant_retry'));
+  assert(!JSON.stringify(f.reports).includes('private diagnostic'));
+  f.stop.abort(); await run;
+  assert.equal(f.calls.filter(x => x === 'owner_closed').length, 1);
+
+  const late = runtime(), gate = Promise.withResolvers();
+  const prepare = late.dependencies.prepare;
+  late.dependencies.prepare = async options => { await gate.promise; return prepare(options); };
+  const pending = module.runAssistant({signal:late.stop.signal}, late.dependencies);
+  await flush(); late.stop.abort(); await pending;
+  gate.resolve(); await flush(); await flush();
+  assert(!late.reports.some(x => x.state === 'proposal_prepared'));
+  assert(!late.calls.includes('online'));
+  assert.equal(late.calls.filter(x => x === 'owner_closed').length, 1);
 });
