@@ -1,3 +1,4 @@
+import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 // Package public onboarding from the same maintained sources used in the repo.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -43,6 +44,6 @@ export function buildOnboardingAssets(root, out) {
   mkdirSync(join(out, 'downloads'), { recursive: true });
   // Explicit inputs prevent accidental publication of local devices, handles,
   // keys, node_modules or generated UI from a developer's tutorial checkout.
-  execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner',
+  execFileSync('tar', [...ARCHIVE_METADATA,
     '-czf', join(out, TUTORIAL_DOWNLOAD.slice(1)), '-C', join(root, 'docs/tutorial'), ...TUTORIAL_FILES]);
 }

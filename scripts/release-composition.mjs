@@ -1,3 +1,4 @@
+import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 // Bind exact public packages and first-app inputs before release publication.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -206,7 +207,7 @@ export function prepareRelease({ root, version, contract }) {
     const localPackages = components.filter(item => ['sdk', 'tools', 'session'].includes(item.role));
     for (const item of localPackages) copyFileSync(join(dist, item.file), join(directory, 'packages', item.file));
     writeFileSync(join(directory, 'packages/SHA256SUMS'), localPackages.map(item => `${item.sha256}  ${item.file}`).join('\n') + '\n');
-    execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner',
+    execFileSync('tar', [...ARCHIVE_METADATA,
       '-czf', join(dist, firstAppFile), '-C', directory, ...TUTORIAL_FILES, 'composition.json', 'packages']);
   } finally { rmSync(directory, { recursive: true, force: true }); }
   const extras = [component(dist, 'composition', 'composition.json'), component(dist, 'first-app', firstAppFile),

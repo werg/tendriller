@@ -1,3 +1,4 @@
+import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 // Optional Node artifacts consume the built public packages. They are never
 // imported by the Worker or the browser runtime.
 import { build } from 'esbuild';
@@ -76,7 +77,7 @@ writeJson(join(out, 'package.json'), { name: '@tendriller/tools', version: pkg.v
 });
 writeJson(join(dist, 'tools-inputs.json'), [...inputs].sort());
 const archive = `tendriller-tools-${pkg.version}.tgz`;
-execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf', join(dist, archive), '-C', out, '.']);
+execFileSync('tar', [...ARCHIVE_METADATA, '-czf', join(dist, archive), '-C', out, '.']);
 const bytes = readFileSync(join(dist, archive));
 const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const sourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim();
