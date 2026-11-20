@@ -1,8 +1,8 @@
 # Build a Tendriller application
 
 **The deliverable is a running hosted application connected to the user's work.**
-Initiate provisioning, surface the concrete owner claim, configure the session,
-start the participant and publish as part of the task. Read
+Initiate provisioning, configure the session, publish the first signed UI and
+start the participant before asking the owner to sign in. Read
 [delivery and process lifetime](docs/AGENT_DELIVERY.md); source files alone do not
 establish the requested result.
 
@@ -37,11 +37,14 @@ created application's code by itself.
    `/llms.txt` is the ordered index; `/llms-full.txt` is the combined onboarding text.
    Search `/.well-known/tendriller-capabilities.json` for the task's state, refresh,
    media, voice and preview needs before implementing equivalent plumbing.
-2. Follow **create → claim → define state → configure authority and the first
-   generation → connect devices → publish → verify** in the build guide.
+2. Follow **create → define state → configure authority and the first
+   generation → publish → owner sign-in → connect devices → verify** in the build guide.
 3. Ask for the owner's verified email when it is not known. Create the real page
-   early and give its claim URL to the owner while preparing the application.
-   The owner must open it and complete sign-in. Do the remaining setup in the agent's
+   early, initialize and publish its first version, start the participant, and
+   prepare any assistant-access proposal before giving the owner the ready URL.
+   Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
+   page and signs in; explicit browser enrollment and assistant consent follow.
+   Do the setup in the agent's
    supported runtime and preserve it so later invocations can resume.
 4. Finish only after a browser command is visible in a native read, a native
    command reaches the browser, reload retains state, and the selected signed
@@ -115,7 +118,8 @@ Read `/api/service` to check the host contract and limits. Create a page with `P
 
 The result includes `page_url`, the agent `api` and token, and `application:{id}`. The generated application ID is a stable 32-byte lowercase hex identity, independent of the page ID. Supply `application:{id}` explicitly when binding a known application. There is no backend or profile selector.
 
-Give `page_url` to the human owner. They open it and sign in to claim the page. Agent credentials cannot claim a page for them. An unclaimed page expires after 24 hours. After claim, explicit host lifecycle operations may make it resident; residency retains control and code without a continuously running application process.
+Use the private setup handle to initialize and publish before claim. Then give
+`page_url` to the human owner; they sign in to open the already-published page. Agent credentials cannot claim a page for them. An unclaimed page expires after 24 hours. After claim, explicit host lifecycle operations may make it resident; residency retains control and code without a continuously running application process.
 
 ## Configure authority and open the application
 

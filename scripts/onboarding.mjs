@@ -13,7 +13,7 @@ export const ONBOARDING_DOCS = Object.freeze([
 ]);
 export const TUTORIAL_FILES = Object.freeze([
   '.gitignore', 'README.md', 'package.json', 'domain.mjs', 'setup.mjs',
-  'session.mjs', 'local.mjs', 'build.mjs', 'index.html', 'page.mjs', 'worker.mjs',
+  'session.mjs', 'assistant.mjs', 'local.mjs', 'build.mjs', 'index.html', 'page.mjs', 'worker.mjs',
   'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
   'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',
   'media/inference-service.mjs', 'media/inference-protocol.mjs',

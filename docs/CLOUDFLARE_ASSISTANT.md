@@ -46,8 +46,8 @@ live inbox. These are service-wide settings.
 
 ## Enroll an application
 
-1. Follow [Build an app](BUILD_AN_APP.md) through owner claim, signed definition,
-   selected generation and a working application participant. Keep that
+1. Follow [Build an app](BUILD_AN_APP.md) through signed definition, selected generation, published UI and a working
+   application participant. These can be prepared before owner claim. Keep that
    participant available according to [Agent delivery](AGENT_DELIVERY.md).
 2. Use the public helper below from the participant's private setup process.
    Save the adapter key in that participant's private store and reuse it on
@@ -56,7 +56,9 @@ live inbox. These are service-wide settings.
    Give each already enrolled Chronolog device only its own adapter key. The proposal's commands and queries must exist in the signed native
    definition. Describe what each exported event will contain so the owner can
    review the outbound data.
-3. Give the owner the returned `reviewUrl`. They sign in and choose the exact
+3. Give the owner the already-published page and returned `reviewUrl` together.
+   An unclaimed proposal is prepared privately; owner sign-in makes it reviewable
+   without another agent action. They sign in and choose the exact
    queries, commands and events to expose. Editing permissions preserves access
    and subscriptions for unchanged capabilities. Removing an event or changing
    its declared projection removes that event's retained data and subscriptions.

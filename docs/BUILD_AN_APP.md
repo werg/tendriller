@@ -29,10 +29,11 @@ There is no missing `deployment.mjs` to invent.
 | Step | Do this | Evidence that it worked |
 | --- | --- | --- |
 | Discover | Read the host's `/api/service`, this guide and the supplied starter | Host contract, release and limits are known |
-| Create | Create the page; its owner opens the returned URL and signs in | An owned page handle and stable application ID |
+| Create | Create the page privately and retain the setup handle; keep preparing | A page handle and stable application ID |
 | Define state | Declare `addNote` and `notes`; configure authority and select the first generation | The native session opens and reads a coherent empty notes view |
 | Build the UI | Bundle the page and owning Worker | `page/` contains the complete authored graph and public configuration |
 | Publish | Use the creator session's saved signed publication | A receipt and selected immutable release; the hosted UI opens |
+| Owner sign-in | Give the person the already-published page and any prepared permission-review URL | Existing authority, keys and code retained; no new publication needed |
 | Connect the browser | Create its device, explicitly enroll its public key, then connect | The session acquires keys from the native peer and shows real connection/data status |
 | Verify | Submit, reload, read, inspect and retry | Retained notes and the same device/operation identities survive reopening |
 
@@ -70,8 +71,9 @@ This tutorial's enrollment command requires a host that exposes
 `owner_account_id` in authenticated agent `info()` responses. If that field is
 absent, the host needs the onboarding update; the tool reports that boundary.
 
-As soon as these packages are available, create the real page in step 2 and give
-its claim URL to the owner. Prepare the task's UI/domain while they sign in.
+As soon as these packages are available, create the real page in step 2 and
+continue through initialization, building and publication before asking for sign-in.
+Then give the owner the ready page URL. Never stop to request a "claimed" reply.
 Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
 [static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
 Keep the published page as the verification target for this tutorial's actual
@@ -136,8 +138,9 @@ npm run create -- "$TENDRILLER_ORIGIN" owner@example.com "Shared notes"
 ```
 
 The command checks the host contract, creates the page and saves its returned
-handle privately in `.tendriller/handle.json`. It prints only the page URL and
-next step. Give that URL to the owner, who opens it and signs in. Agent
+handle privately in `.tendriller/handle.json`. It prints the page URL and next
+step. Keep preparing: initialize, build, publish and start the participant before
+asking the owner to open the ready URL and sign in. Agent
 credentials cannot claim the page for them. An unclaimed page expires after
 24 hours; report a blocked claim explicitly.
 This is a real provisioning step to attempt now, rather than a prerequisite to
@@ -161,7 +164,7 @@ Its `notes` query reads those events from one coherent view and returns the
 verified author and operation ID separately from the note's payload. Local
 drafts stay in page-local storage; they are not a second application database.
 
-After owner claim:
+Immediately after creation, before owner claim:
 
 ```sh
 npm run init
@@ -410,7 +413,7 @@ mobile suspension.
 | Observation | Meaning and next action |
 | --- | --- |
 | Create is unavailable or contract mismatches | Read `/api/service` and the error; use a compatible host/package pair. Preserve the requested platform and report the actual blocker. |
-| `forbidden` during configuration | Confirm the owner claimed the page and the agent handle belongs to it. Owner sign-in is not agent-automatable authority. |
+| `forbidden` during configuration | Check the current private setup credential and its scopes, expiry and page identity. Configuration and signed publication support unclaimed pages; claim is not a prerequisite. |
 | `peer_application_unconfigured` | Run the explicit initial configuration; a page handle alone has no application authority. |
 | `PEER_NO_SELECTED_GENERATION` | Complete the saved first `create` transition before opening the session. |
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
@@ -434,3 +437,23 @@ Give the owner the actual review URL and verify one applied writeback through
 the same service origin. See [Connect any application](CLOUDFLARE_ASSISTANT.md#enroll-an-application)
 for participant setup and [guide a user through ChatGPT](CHATGPT_INTEGRATION.md#agent-walkthrough)
 for installation, account linking and workspace sharing.
+
+
+## Prepare MCP access before sign-in
+
+For a chat-linked Shared Notes app, after publication run:
+
+```sh
+npm run assistant:prepare
+npm run assistant
+```
+
+Use `assistant` **instead of** `peer`: it runs the same native participant with
+the declared `notes`, `addNote` and minimal `note.added` event adapter. Keep it
+under the execution environment's process supervisor. The prepare command prints
+the real permission-review URL even before claim. Give the owner the ready page
+and that URL together; sign-in adopts the prepared application and makes the
+permission review available. It does not approve MCP data access automatically.
+Use a finite setup-status check if needed, without requiring a chat acknowledgement.
+The owner still explicitly enrolls their browser and approves assistant capabilities.
+A source ZIP or temporary process is not durable hosting for the native participant.

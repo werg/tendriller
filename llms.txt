@@ -4,7 +4,7 @@
 
 ## Start here, in order
 
-- [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): recommended complete first application; create → claim → define state → configure authority and first generation → connect devices → publish → verify.
+- [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): recommended complete first application; create → define state → configure authority and first generation → publish → owner sign-in → connect devices → verify.
 - [Capability map](https://tendriller.dev/docs/CAPABILITIES.md): task keywords to existing APIs, exact runtime imports and current executable modules; state, reactive views, operations, camera, voice, inference and preview.
 - [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, surface the real owner claim, start the participant, and hand over the live page with receipt, process lifetime and resume evidence.
 - [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): complete native setup/session, browser Worker, UI and build files; follow the build guide for compatible public packages.

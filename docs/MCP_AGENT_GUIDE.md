@@ -43,15 +43,17 @@ throughout; staging must stay on staging.
    with JSON `{"owner":"their-email","name":"App name"}`). This is the supported
    creation route even though MCP's application tools operate on already
    connected apps. Save the private returned handle in the execution environment
-   and give the person its actual `page_url` to claim. Keep tokens and keys out
+   and initialize, build and publish the first signed version before asking the
+   person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep tokens and keys out
    of chat and published HTML. Check the actual service response for availability.
-5. Follow **create → claim → define state → configure authority and initial
-   generation → connect devices → publish signed UI → verify**. Creating a host
+5. Follow **create → define state → configure authority and initial
+   generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a host
    handle does not create application commands or a running session.
 6. To use the app from this MCP connection, read `topic: "connect"`. Attach
    `@tendriller/core/assistant` to the *existing* application participant, propose
-   its declared capabilities, and give the owner the returned permission-review
-   URL. They choose what to expose. Keep that participant available for calls.
+   its declared capabilities before claim, and give the owner the ready page and
+   returned permission-review URL. The supplied starter has `npm run assistant:prepare`
+   and `npm run assistant` for this route. They choose what to expose. Keep that participant available for calls.
 7. Refresh `list_tendrils`, call `describe_application`, make a real query and
    the requested command, then verify the applied result and retained state
    after reload. Use `topic: "delivery"` for the completion evidence and report

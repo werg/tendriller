@@ -70,7 +70,7 @@ test('guide starts from a domain offline and does not open a saved handle or cre
   assert.equal(guide.start_here, `${origin}/docs/BUILD_AN_APP.md`);
   assert.equal(guide.troubleshooting, `${origin}/docs/TROUBLESHOOTING.md`);
   assert.equal(guide.service_descriptor, `${origin}/api/service`);
-  assert.deepEqual(guide.workflow.map(item => item.id), ['create', 'claim', 'define', 'configure', 'connect', 'publish', 'verify']);
+  assert.deepEqual(guide.workflow.map(item => item.id), ['create', 'define', 'configure', 'publish', 'claim', 'connect', 'verify']);
   assert.match(guide.prerequisites.join(' '), /page token alone does not grant/);
   assert.doesNotMatch(result.stdout, /private-fixture-token/);
   assert.deepEqual(calls, []);
